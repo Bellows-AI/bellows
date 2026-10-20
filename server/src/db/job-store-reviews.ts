@@ -9,12 +9,16 @@
  * removal all reach the reviews (`job-store-actions.ts`, `job-store-worker.ts`).
  */
 
-import { OBJECTIVE_MODE, USER_SCOPE } from '@factory-ai/core';
-import type { Fragment, Sql, TransactionSql } from 'postgres';
+import { OBJECTIVE_MODE, USER_SCOPE, type JobMode } from '@factory-ai/core';
+import type { TransactionSql } from 'postgres';
 import type { ReviewEvidence } from './evidence-policy.js';
 import { readReviewEvidence } from './job-store-evidence.js';
-import { exists, stopRows } from './job-store-rows.js';
+import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { buildClaimResult } from './job-store-claim.js';
+import { resolveClaimExecutor } from './job-store-claim-executor.js';
+import { exists, workspacePathFor } from './job-store-rows.js';
 import type {
+    Claim,
     FailureKind,
     JobStatus,
     JobStoreContext,
@@ -39,6 +43,9 @@ export const reviewRefOf = (callerId: string, key: string): string => `refs/fact
 
 interface CallerRow {
     id: string;
+    claim_seq: string;
+    claimed_by: string | null;
+    lease_expires_at: Date;
     root_job_id: string;
     created_by: string | null;
     repo: string | null;
@@ -50,6 +57,7 @@ interface CallerRow {
 
 interface ReviewRow {
     id: string;
+    review_caller_seq: string | null;
     review_key: string;
     review_profile: string;
     review_revision: string;
@@ -84,7 +92,7 @@ async function reviewByKey(
     key: string
 ): Promise<ReviewRow | undefined> {
     const [row] = await tx<ReviewRow[]>`
-        select id, review_key, review_profile, review_revision, status, output, failure_kind
+        select id, review_caller_seq, review_key, review_profile, review_revision, status, output, failure_kind
         from job
         where org_id = ${orgId} and review_of = ${callerId} and review_key = ${key}
     `;
@@ -99,26 +107,13 @@ async function lockedCaller(
     leaseToken: string
 ): Promise<CallerRow | undefined> {
     const [caller] = await tx<CallerRow[]>`
-        select id, root_job_id, created_by, repo, executor, executor_scope, mode, reviewers from job
+        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, created_by, repo, executor, executor_scope, mode,
+               reviewers
+        from job
         where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
         for update
     `;
     return caller;
-}
-
-/**
- * Stops every live review of the given callers — what a caller's Stop, its verdict and its dead
- * retirement all do, so no review outlives the work it assessed (issue #549). A queued review
- * settles `stopped`, a leased one is stamped and its heartbeat delivers the kill; one that already
- * ended is left alone, which is what makes a retried Stop change nothing.
- */
-export async function stopReviewsOf(
-    sql: Sql | TransactionSql,
-    stop: { orgId: string; wallTick: Fragment; stoppedBy: string | null },
-    callerIds: readonly string[]
-): Promise<void> {
-    if (callerIds.length === 0) return;
-    await stopRows(sql, { ...stop, where: sql`review_of = any(${[...callerIds]}::uuid[])` });
 }
 
 export async function requestReviewFor(
@@ -136,30 +131,206 @@ export async function requestReviewFor(
         if (caller.mode !== OBJECTIVE_MODE) return { result: 'unsupported' };
         const evidence = () => readReviewEvidence(tx, { orgId, rootJobId: caller.root_job_id }, null);
         const stored = await reviewByKey(tx, orgId, id, request.key);
-        if (stored) return { result: 'existing', review: viewOf(stored, await evidence()) };
+        if (stored) return storedAnswer(ctx, tx, caller, { stored, evidence: await evidence() });
         const spec = caller.reviewers?.find((profile) => profile.name === request.profile);
-        if (!spec) return { result: 'unknown_profile' };
-        // The reviewer's worktree starts from this ref in the SHARED clone: it must be the one
-        // snapshot namespace of this caller and key, never another's ref or a branch.
-        if (request.ref !== reviewRefOf(caller.id, request.key)) return { result: 'invalid_ref' };
-        const [root] = await tx<{ command: string }[]>`
-            select command from job where org_id = ${orgId} and id = ${caller.root_job_id}
-        `;
-        const { command } = reviewerPrompts(spec, root?.command ?? '');
-        // id and root_job_id are the SAME uuid, as a task's root row is: the review is its own thread.
-        await tx`
-            insert into job (
-                org_id, command, created_by, repo, executor, executor_scope, id, root_job_id, mode,
-                review_of, review_key, review_profile, review_spec, review_revision, review_ref
-            )
-            select ${orgId}, ${command}, ${caller.created_by}, ${caller.repo}, ${caller.executor},
-                   ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
-                   ${id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref}
-            from (select gen_random_uuid() as x) s
-        `;
-        const created = await reviewByKey(tx, orgId, id, request.key);
-        return { result: 'created', review: viewOf(created!, await evidence()) };
+        const refusal = refusalOf(caller, request, spec);
+        if (refusal) return { result: refusal };
+        // One review of a caller runs at a time: the next key waits for the verdict of this one.
+        const running = await runningReview(tx, orgId, id);
+        if (running) return { result: 'running', review: viewOf(running, await evidence()) };
+        const created = await insertReview(tx, orgId, { caller, spec: spec!, request });
+        const claim = await reviewClaim(ctx, tx, created.id);
+        return { result: 'created', review: viewOf(created, await evidence()), claim };
     });
+}
+
+/** A finished review is answered from its row; a live one is leased to THIS caller claim. */
+async function storedAnswer(
+    ctx: JobStoreContext,
+    tx: TransactionSql,
+    caller: CallerRow,
+    found: { stored: ReviewRow; evidence: ReviewEvidence }
+): Promise<RequestReviewResult> {
+    const { stored, evidence } = found;
+    if (stored.status !== 'running') return { result: 'existing', review: viewOf(stored, evidence) };
+    return { result: 'existing', ...(await leasedView(ctx, tx, caller, { row: stored, evidence })) };
+}
+
+async function runningReview(tx: TransactionSql, orgId: string, callerId: string): Promise<ReviewRow | undefined> {
+    const [row] = await tx<ReviewRow[]>`
+        select id, review_caller_seq, review_key, review_profile, review_revision, status, output, failure_kind
+        from job where org_id = ${orgId} and review_of = ${callerId} and status = 'running'
+        limit 1
+    `;
+    return row;
+}
+
+/** Why a new review is refused before any row is written, or null. */
+function refusalOf(
+    caller: CallerRow,
+    request: ReviewRequest,
+    spec: ReviewerSpec | undefined
+): 'unknown_profile' | 'invalid_ref' | null {
+    if (!spec) return 'unknown_profile';
+    // The reviewer's worktree starts from this ref in the SHARED clone: it must be the one
+    // snapshot namespace of this caller and key, never another's ref or a branch.
+    return request.ref === reviewRefOf(caller.id, request.key) ? null : 'invalid_ref';
+}
+
+/**
+ * The review row, born leased to the caller's claim: it never waits in the open queue (issue #774).
+ * `id` and `root_job_id` are the SAME uuid, as a task's root row is: the review is its own thread.
+ */
+async function insertReview(
+    tx: TransactionSql,
+    orgId: string,
+    new_: { caller: CallerRow; spec: ReviewerSpec; request: ReviewRequest }
+): Promise<ReviewRow> {
+    const { caller, spec, request } = new_;
+    const [root] = await tx<{ command: string }[]>`
+        select command from job where org_id = ${orgId} and id = ${caller.root_job_id}
+    `;
+    const { command } = reviewerPrompts(spec, root?.command ?? '');
+    await tx`
+        insert into job (
+            org_id, command, created_by, repo, executor, executor_scope, id, root_job_id, mode,
+            review_of, review_key, review_profile, review_spec, review_revision, review_ref,
+            status, claimed_by, lease_token, lease_expires_at, attempts, claim_seq, started_at,
+            review_caller_seq
+        )
+        select ${orgId}, ${command}, ${caller.created_by}, ${caller.repo}, ${caller.executor},
+               ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
+               ${caller.id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref},
+               'running', ${caller.claimed_by}, gen_random_uuid(), ${caller.lease_expires_at}, 1, 1, now(),
+               ${caller.claim_seq}
+        from (select gen_random_uuid() as x) s
+    `;
+    return (await reviewByKey(tx, orgId, caller.id, request.key))!;
+}
+
+/**
+ * The claim of a review that is running: re-leased when the caller's claim moved on (a lost runner
+ * is claimed again and asks the same key — the session the lost reviewer reported resumes, the
+ * superseded lease dies with its token), the same live claim handed back again when this very
+ * caller claim asks twice (a response lost in flight).
+ */
+async function leaseRunning(
+    ctx: JobStoreContext,
+    tx: TransactionSql,
+    caller: CallerRow,
+    reviewId: string
+): Promise<Claim | undefined> {
+    const { orgId, wallTick } = ctx;
+    // The old lease may have finished the review since the caller read it `running`: lock the row
+    // and hand out a claim only for a review that still is.
+    const [live] =
+        await tx`select 1 from job where org_id = ${orgId} and id = ${reviewId} and status = 'running' for update`;
+    if (!live) return undefined;
+    const expiry = tx.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
+    await tx`
+        update job set
+            lease_token = gen_random_uuid(),
+            claim_seq = claim_seq + 1,
+            claimed_by = ${caller.claimed_by},
+            lease_expires_at = ${caller.lease_expires_at},
+            review_caller_seq = ${caller.claim_seq},
+            interruptions = interruptions || jsonb_build_array(${expiry}::jsonb || jsonb_build_object('claimSeq', claim_seq)),
+            started_at = now(),
+            wall_clock_ms = case when started_at is null then wall_clock_ms else ${wallTick} end,
+            runtime = null
+        where org_id = ${orgId} and id = ${reviewId} and status = 'running'
+          and review_caller_seq is distinct from ${caller.claim_seq}
+    `;
+    return reviewClaim(ctx, tx, reviewId);
+}
+
+/** A review read `running`, leased; when it finished meanwhile, its current row answers with no claim. */
+async function leasedView(
+    ctx: JobStoreContext,
+    tx: TransactionSql,
+    caller: CallerRow,
+    read: { row: ReviewRow; evidence: ReviewEvidence }
+): Promise<{ review: ReviewView; claim?: Claim }> {
+    const { row, evidence } = read;
+    const claim = await leaseRunning(ctx, tx, caller, row.id);
+    if (claim) return { review: viewOf(row, evidence), claim };
+    const fresh = (await reviewByKey(tx, ctx.orgId, caller.id, row.review_key))!;
+    return { review: viewOf(fresh, evidence) };
+}
+
+interface ReviewClaimRow {
+    id: string;
+    command: string;
+    attempts: number;
+    max_attempts: number;
+    claim_seq: string;
+    lease_token: string;
+    lease_expires_at: Date;
+    created_by: string | null;
+    session_id: string | null;
+    repo: string | null;
+    parent_job_id: string | null;
+    executor: string | null;
+    executor_scope: string | null;
+    workflow_node: string | null;
+    workflow_name: string | null;
+    mode: JobMode;
+    review_spec: ReviewerSpec;
+    review_ref: string;
+    resumes_interrupted: boolean;
+}
+
+/**
+ * A running review's claim (issue #549, #774): the row is its own thread, leased under the profile's
+ * frozen spec. What it does NOT carry is the point — no minted GitHub token and no member env
+ * beyond the profile's `connections`, no gates, no publish, no helpers, no policy to enforce on
+ * itself — and what it does carry that others do not is the profile's own system prompt and
+ * `reviewRun`, the snapshot ref its worktree starts from and the wall-clock budget the profile
+ * grants. The board decides all of it; the caller names none of it.
+ */
+async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: string): Promise<Claim> {
+    const { orgId, env, executorConfig, hasWorkspaces } = ctx;
+    const [row] = await tx<ReviewClaimRow[]>`
+        select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
+               session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
+               review_spec, review_ref,
+               (session_id is not null
+                and coalesce((interruptions -> -1 ->> 'claimSeq')::bigint = claim_seq - 1, false))
+                   as resumes_interrupted
+        from job where org_id = ${orgId} and id = ${reviewId}
+    `;
+    const spec = row!.review_spec;
+    const executor = await resolveClaimExecutor(tx, { env, executorConfig, grant: spec.connections }, row!);
+    const claim = buildClaimResult(
+        {
+            ...row!,
+            follow_up: false,
+            root_command: row!.command,
+            skills: [],
+            has_jira_connection: false,
+            base_branch: null,
+            last_attempt: false,
+            own_session: row!.session_id !== null,
+        },
+        row!.id,
+        {
+            ...executor,
+            claimPath: workspacePathFor(orgId, hasWorkspaces, row!.created_by),
+            claimGates: null,
+            claimServices: [],
+            planRevision: null,
+            planRefusal: null,
+            claimPolicy: null,
+            claimReviewers: [],
+            publish: false,
+            helperPlans: undefined,
+            masterPrompt: reviewerPrompts(spec, '').masterPrompt,
+            turnContext: null,
+            // A reviewer selects no skills and no managed connection: nothing to refuse.
+            skillRefusal: null,
+        }
+    );
+    return { ...claim, reviewRun: { profile: spec.name, ref: row!.review_ref, timeoutMinutes: spec.timeoutMinutes } };
 }
 
 export async function readReviewFor(
@@ -170,14 +341,15 @@ export async function readReviewFor(
 ): Promise<ReadReviewResult> {
     const { sql, orgId } = ctx;
     return sql.begin(async (tx): Promise<ReadReviewResult> => {
-        const [caller] = await tx<{ root_job_id: string }[]>`
-            select root_job_id from job
-            where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
-        `;
+        const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
         const row = await reviewByKey(tx, orgId, id, key);
         if (!row) return { result: 'unknown' };
         const evidence = await readReviewEvidence(tx, { orgId, rootJobId: caller.root_job_id }, null);
+        // A running review is the caller claim's to supervise: a re-claimed caller that reads it
+        // (a different key's request answers `running`) takes the lease over here.
+        if (row.status === 'running')
+            return { result: 'ok', ...(await leasedView(ctx, tx, caller, { row, evidence })) };
         return { result: 'ok', review: viewOf(row, evidence) };
     });
 }

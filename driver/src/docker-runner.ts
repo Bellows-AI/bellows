@@ -1,6 +1,6 @@
 import { JOB_LABEL } from './labels.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
-import { type DockerGateDeps, runDockerGate } from './docker-gate.js';
+import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
     dockerKill,
     dockerKillFor,
@@ -33,6 +33,7 @@ import {
     stepHostOf,
     supervisedStepMembers,
 } from './supervised-steps.js';
+import { reviewRunOf } from './review-step.js';
 import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
@@ -713,6 +714,9 @@ export function createDockerRunner(
         }),
         runGate: (job, gate, signal) => runDockerGate(gateDeps(deps, job), job, gate, signal),
         resizeGate: async () => false, // no in-place resize: the gate container keeps its GATE_* sizing
+        resizeReviewer: async () => false, // likewise the reviewer container: it keeps its RUNNER_* sizing
+        runReview: (caller, review, session, control) =>
+            runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, signal),

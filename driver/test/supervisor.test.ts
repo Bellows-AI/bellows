@@ -21,6 +21,7 @@ import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
     GATE_FILES,
+    REVIEW_FILES,
     GATE_LOST_MS,
     MAILBOX_FILES,
     MAILBOXES,
@@ -280,7 +281,14 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
     const root = mkdtempSync(join(tmpdir(), 'supervisor-'));
     dirs.push(root);
     const dir = (box: keyof typeof MAILBOXES) => join(root, MAILBOXES[box].path.split('/').pop()!);
-    const box = { in: dir('in'), out: dir('out'), export: dir('export'), own: dir('supervisor'), gate: dir('gate') };
+    const box = {
+        in: dir('in'),
+        out: dir('out'),
+        export: dir('export'),
+        own: dir('supervisor'),
+        gate: dir('gate'),
+        review: dir('review'),
+    };
     for (const path of Object.values(box)) mkdirSync(path, { recursive: true });
     // The agent's own directories inside its two mailboxes, which the supervisor creates (issue #814).
     const agent = { in: join(box.in, AGENT_MAILBOX_DIR), out: join(box.out, AGENT_MAILBOX_DIR) };
@@ -1342,6 +1350,115 @@ describe('the supervisor run: gate steps through the gate mailbox', () => {
     });
 });
 
+const REVIEWING = { SUPERVISOR_REVIEWER: '1', SUPERVISOR_GATE_LOST_MS: '300', SUPERVISOR_GATE_CANCEL_MS: '300' };
+const reviewStep = (id: string, argv: string[], extra: Partial<QueuedStep> = {}): QueuedStep =>
+    step(id, 'review', argv, { cwd: WORKTREE, ...extra });
+
+describe('the supervisor run: review steps through the review mailbox (issue #774)', () => {
+    it('hands the reviewer its argv as one quoted command, its worktree and env, and answers the output', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: 'the review' }));
+        driver.order(reviewStep('review-1', ['claude', '-p', "it's"], { env: { KEY: 'v' } }));
+        await until('the review answer', () => driver.answers.has('review-1'));
+        expect(driver.answers.get('review-1')).toMatchObject({ exitCode: 0, stdout: 'the review', timedOut: false });
+        expect(loop.seen).toEqual([
+            { id: 'review-1', command: "'claude' '-p' 'it'\\''s'", cwd: WORKTREE, env: 'KEY=v\n' },
+        ]);
+        expect(readdirSync(join(supervised.box.review, GATE_FILES.done))).toEqual([]);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers 124, timed out, for a review past its deadline', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(reviewStep('review-1', ['sleep', '60'], { timeoutMs: 200 }));
+        await until('the review answer', () => driver.answers.has('review-1'));
+        expect(loop.cancelled).toEqual(['review-1']);
+        expect(driver.answers.get('review-1')).toMatchObject({ exitCode: 124, timedOut: true });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('opens the review mailbox to the reviewer\u2019s group: its directories and the request it claims', async () => {
+        // The reviewer is another uid of the supervisor's group (REVIEWER_UID, GATE_GID): it must
+        // create the loop's heartbeat, claim a request by rename and write its answer beside it
+        // (test:jobs: "can't create /factory/review/alive: Permission denied").
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(reviewStep('review-1', ['sleep', '60'], { env: { KEY: 'v' }, timeoutMs: 60_000 }));
+        await until('the review to be taken', () => loop.seen.length === 1);
+        const mode = (...parts: string[]) => statSync(join(supervised.box.review, ...parts)).mode & 0o777;
+        const groupWritable = (m: number) => (m & 0o070) === 0o070;
+        for (const dir of ['', GATE_FILES.requests, GATE_FILES.running, GATE_FILES.done]) {
+            expect(groupWritable(mode(dir)), `the review mailbox ${dir || 'root'}`).toBe(true);
+        }
+        expect(groupWritable(mode(GATE_FILES.running, 'review-1')), 'the claimed request').toBe(true);
+        driver.cancel.push('review-1');
+        await until('the review answer', () => driver.answers.has('review-1'));
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('cancels a review off the control poll, answering the 130 the driver discards', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(reviewStep('review-1', ['sleep', '60'], { timeoutMs: 60_000 }));
+        await until('the review to be taken', () => loop.seen.length === 1);
+        driver.cancel.push('review-1');
+        await until('the review answer', () => driver.answers.has('review-1'));
+        expect(loop.cancelled).toEqual(['review-1']);
+        expect(driver.answers.get('review-1')).toMatchObject({ exitCode: 130, timedOut: false });
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('answers no exit — no verdict — for a reviewer that went silent mid-review', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(reviewStep('review-1', ['sleep', '60'], { timeoutMs: 60_000 }));
+        await until('the review to be taken', () => loop.seen.length === 1);
+        loop.beating = false;
+        await until('the review answer', () => driver.answers.has('review-1'));
+        expect(driver.answers.get('review-1')).toMatchObject({ exitCode: null, timedOut: false });
+        expect(driver.answers.get('review-1')?.stderr).toMatch(/lost mid-run/);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('interrupts a review still running when the driver orders `finish`', async () => {
+        const driver = await startDriver();
+        driver.autoFinish = false;
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        supervised.agentExits(0);
+        await until('the report', () => driver.reports.length === 1);
+        driver.order(reviewStep('review-1', ['sleep', '60'], { timeoutMs: 60_000 }));
+        await until('the review to be taken', () => loop.seen.length === 1);
+        driver.order(ORDER_FINISH);
+        await supervised.done;
+        expect(loop.cancelled).toEqual(['review-1']);
+        expect(supervised.ledger('review-1').invocations['i-1']).toMatchObject({ state: 'interrupted' });
+    });
+
+    it('refuses a review step in a group with no reviewer container, without writing a request', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver);
+        driver.order(reviewStep('review-1', ['claude']));
+        await until('the review answer', () => driver.answers.has('review-1'));
+        expect(driver.answers.get('review-1')).toMatchObject({ exitCode: 126 });
+        expect(driver.answers.get('review-1')?.stderr).toMatch(/no reviewer container/);
+        expect(existsSync(join(supervised.box.review, GATE_FILES.requests))).toBe(false);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+});
+
 describe('what crosses the mailboxes', () => {
     it('writes no credential into a directory the agent mounts, nor into the exporter’s', async () => {
         const driver = await startDriver();
@@ -1402,6 +1519,21 @@ describe('what crosses the mailboxes', () => {
         expect(MAILBOXES.gate).toMatchObject({ supervisor: 'rw', agent: null, exporter: null, gate: 'rw' });
         for (const box of [MAILBOXES.in, MAILBOXES.out, MAILBOXES.export, MAILBOXES.supervisor]) {
             expect(box.gate, box.name).toBeNull();
+        }
+    });
+
+    it('gives the review mailbox to the supervisor and the reviewer container alone (#774)', () => {
+        expect(MAILBOXES.review).toMatchObject({
+            supervisor: 'rw',
+            agent: null,
+            exporter: null,
+            gate: null,
+            reviewer: 'rw',
+        });
+        expect(MAILBOXES.review.path).toBe('/factory/review');
+        expect(REVIEW_FILES).toEqual(GATE_FILES);
+        for (const box of [MAILBOXES.in, MAILBOXES.out, MAILBOXES.export, MAILBOXES.supervisor, MAILBOXES.gate]) {
+            expect(box.reviewer, box.name).toBeNull();
         }
     });
 

@@ -453,4 +453,25 @@ describe('the continuous claude-code exporter', () => {
         expect(h.stored(SESSION).toString()).toBe(all);
         expect(h.manifests[0]).toMatchObject({ state: 'complete' });
     });
+
+    // Issue #774 (B5): a review's close-time export is this same script run once, with no mailbox
+    // and no drain order — the closing is the step's own env.
+    it('in one-shot mode uploads what is there, closes the manifest as ordered, and exits', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), `${records(3)}{"n":3,"cut`);
+        h.start({ FACTORY_EXPORT_DIR: '', EXPORT_ONCE: 'partial', EXPORT_ONCE_CAUSE: 'review_failed' });
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(records(3));
+        expect(h.manifests).toHaveLength(1);
+        expect(h.manifests[0]).toMatchObject({ state: 'partial', terminalCause: 'review_failed' });
+    });
+
+    it('in one-shot mode closes a finished review complete', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(2));
+        h.start({ FACTORY_EXPORT_DIR: '', EXPORT_ONCE: 'complete' });
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(records(2));
+        expect(h.manifests[0]).toMatchObject({ state: 'complete', terminalCause: null });
+    });
 });

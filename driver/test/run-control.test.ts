@@ -371,7 +371,7 @@ describe('the images ship the cooperative Stop', () => {
     it.each(['claude', 'opencode'])('the %s image bakes the mailbox mount points node-owned', (name) => {
         const dockerfile = read(`docker/${name}-executor/Dockerfile`);
         expect(dockerfile).toContain(
-            'RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate && chown -R node:node /factory'
+            'RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory'
         );
     });
 });

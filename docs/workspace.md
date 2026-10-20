@@ -5,7 +5,7 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
 | Concern | Code | Test |
 | --- | --- | --- |
 | `ORG_WORKSPACE_ROOT`, its default and refusals | `server/src/config.ts` | `server/test/config.workspace.test.ts` |
-| Creating a member's tree at sign-in | `server/src/workspace/provision.ts` | `server/test/workspace.provision.test.ts` |
+| Creating a member's tree at sign-in, and its group-writable `.factory/reviewer` (the in-pod reviewer's home, a subPath the kubelet would otherwise make root-owned) — also made by every claim that declares reviewers, so no task waits on the dashboard being opened | `server/src/workspace/provision.ts` (`ensureReviewerHome`), `server/src/routes/job-handlers-worker.ts` (`handleClaimJob`) | `server/test/workspace.provision.test.ts`, `server/test/routes.jobs.test.ts` |
 | Path construction (`workspaceDir`), cloning, git argv and credentials | `server/src/workspace/reconcile.ts` | `server/test/workspace.reconcile.test.ts` |
 | The clone queue, claim, restart recovery | `server/src/workspace/queue.ts` | `server/test/workspace.queue.test.ts` |
 | Branch / commit / size facts and their cache | `server/src/workspace/facts.ts` | `server/test/workspace.facts.test.ts` |

@@ -13,6 +13,7 @@ import type { JobState } from './loop-attempt.js';
 import { closeRunControl, releaseGateSession } from './loop-gates.js';
 import { handBackFence, leaveDecision, standDown } from './loop-fence.js';
 import { transition } from './loop-phase.js';
+import { cancelReviews } from './loop-review.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, VerdictBody } from './loop-types.js';
 
 const MS_PER_SECOND = 1_000;
@@ -40,6 +41,8 @@ export function attemptQuiesce(
             if (state.graceTimer) clearTimeout(state.graceTimer);
             state.wake();
             await beating;
+            // A review still running ends with its caller: cancelled, its row settled, the reviewer released.
+            await cancelReviews(state);
         })());
 }
 

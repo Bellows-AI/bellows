@@ -45,6 +45,12 @@ export const gateLoopScript = script('gate-loop.sh');
 /** The gate container's command on both executors: the loop, with the gate shell it runs each request under. */
 export const gateLoopArgv = (): string[] => ['sh', '-c', gateLoopScript, 'gate-loop', gateShellScript];
 
+/** The reviewer container's loop over the review mailbox (issue #774): see scripts/review-loop.sh. */
+export const reviewLoopScript = script('review-loop.sh');
+
+/** The reviewer container's command on both executors: the loop, running each request's executor entrypoint argv. */
+export const reviewLoopArgv = (): string[] => ['sh', '-c', reviewLoopScript, 'review-loop'];
+
 /** A declared service sidecar's liveness probe (kubernetes): see scripts/service-generation-probe.sh. */
 export const serviceGenerationProbeScript = script('service-generation-probe.sh');
 

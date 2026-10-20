@@ -54,7 +54,7 @@ import {
     startServiceFleet,
 } from './k8s-services.js';
 import { groupServices } from './services.js';
-import { resizeGateSidecar, runGateInGroup } from './k8s-gate.js';
+import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGroup } from './k8s-gate.js';
 import {
     answerPreview,
     expectOk,
@@ -72,6 +72,7 @@ import {
 import { abortableSleep, pollFor, type Sleep } from './poll.js';
 import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
+import { reviewRunOf } from './review-step.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
@@ -649,6 +650,9 @@ export function createKubernetesRunner(
         }),
         runGate: (job, gate, signal) => runGateInGroup(deps, job, gate, signal),
         resizeGate: (job, phase) => resizeGateSidecar(deps, job, phase),
+        resizeReviewer: (job, phase) => resizeReviewerSidecar(deps, job, phase),
+        runReview: (caller, review, session, control) =>
+            runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

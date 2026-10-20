@@ -6,12 +6,12 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { BoardJob, ServiceStatus } from './board.js';
+import type { BoardJob, ReviewClaim, ServiceStatus } from './board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 import type { SnapshotResult } from './review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
-import type { GateStepRequest } from './supervised-steps.js';
+import type { GateStepRequest, ReviewControl } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
 import type { KillRecord } from './termination.js';
 
@@ -448,10 +448,33 @@ export interface Runner {
      * kubelet to apply it, never a verdict. Docker has nothing to resize and answers false.
      */
     resizeGate(job: BoardJob, phase: GateSizing): Promise<boolean>;
+    /**
+     * The same for the reviewer container (issue #774): low (`idle`) between reviews, the runner's
+     * own requests (`run`) while one runs. Best-effort, as `resizeGate`; docker answers false.
+     */
+    resizeReviewer(job: BoardJob, phase: ReviewerSizing): Promise<boolean>;
+    /**
+     * Runs one named reviewer's review in the CALLER's task group (issue #774): the reviewer's home,
+     * its worktree restored at the snapshot ref, and the executor run in the group's reviewer
+     * container, as supervised steps over the caller's control channel. `session` resumes the
+     * review's own session (a re-leased review). The answer is the review step's result; a setup
+     * that failed answers a failed result, a lost supervisor rejects (`stepLost`) — no verdict —
+     * and an abort of `control.signal` cancels the review through the step channel. With `control.exporter` the review's
+     * transcript is exported as one more step once it has ended (amendment B5), under the review row.
+     */
+    runReview(
+        caller: BoardJob,
+        review: ReviewClaim,
+        session: RunSession | null,
+        control?: ReviewControl
+    ): Promise<StepResult>;
 }
 
 /** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */
 export type GateSizing = 'idle' | 'verify';
+
+/** The two sizes a reviewer container is resized between: low between reviews, the runner's requests for one. */
+export type ReviewerSizing = 'idle' | 'run';
 
 /**
  * The most of a runner's output this process will hold in memory — the board truncates too; this

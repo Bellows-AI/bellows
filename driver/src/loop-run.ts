@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
 import { repoCacheProblem } from './claim.js';
+import { pickSession } from './runner-plan.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
@@ -39,15 +39,6 @@ import { awaitSyncTurn } from './sync-queue.js';
 import { stepLost } from './step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from './services.js';
-
-function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
-    // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
-    // none — the runner scrapes the id the run used and reports it when the outcome lands. A
-    // follow-up claim carries the session opencode itself created, restored via `--session` on
-    // the runner.
-    if (executorType === OPENCODE) return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : null;
-    return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : { id: randomUUID(), resume: false };
-}
 
 /** How the attempt's log line names the session it runs under. */
 const sessionNote = (session: RunSession | null): string =>

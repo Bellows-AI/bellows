@@ -3,7 +3,7 @@ import type { BoardJob, ReviewAnswer, ReviewReport, ReviewRequest } from '../src
 import { createGateServer } from '../src/gates.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { recordEnding, transition } from '../src/loop-phase.js';
-import { createReviewRelay, reviewerQuestionRelay } from '../src/loop-review.js';
+import { createReviewRelay } from '../src/loop-review.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from '../src/review-control.js';
 import type { SnapshotResult } from '../src/review-snapshot.js';
@@ -353,11 +353,5 @@ describe('the review relay: what an attempt may ask for', () => {
         await expect(relay.request('sec-1', 'security')).resolves.toEqual({
             refused: 'the board could not be reached; ask again',
         });
-    });
-});
-
-describe('a reviewer’s own control channel', () => {
-    it('refuses every question: a reviewer reports to its caller, not to a member', async () => {
-        await expect(reviewerQuestionRelay.ask('q1', [])).resolves.toBe('refused');
     });
 });

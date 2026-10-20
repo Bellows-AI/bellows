@@ -4,6 +4,9 @@ import {
     npmQuietEnv,
     opencodeDataDir,
     RESUME_MAY_BE_UNWRITTEN_ENV,
+    REVIEWER_HOME,
+    reviewerDataName,
+    reviewerTranscriptName,
     repoCacheEnv,
     SESSION_ID,
     transcriptDir,
@@ -17,6 +20,7 @@ import {
     opencodeTurnPrompt,
 } from './master-prompt.js';
 import { baseBranchOf, worktreeDir } from './publish.js';
+import { randomUUID } from 'node:crypto';
 import type { RunSession } from './runner.js';
 
 /**
@@ -162,4 +166,42 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
 /** The plan for whichever executor the task's profile selected. */
 export function runnerPlan(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerPlan {
     return job.executorType === OPENCODE ? opencodePlan(config, job, session) : claudePlan(config, job, session);
+}
+
+/** The executor image's ENTRYPOINT as argv, which a reviewer container runs as a command (issue #774). */
+const entrypointArgv = (job: BoardJob): string[] => [
+    '/usr/local/bin/factory-launch',
+    job.executorType === OPENCODE ? '/usr/local/bin/opencode-executor' : '/usr/local/bin/claude-executor',
+];
+
+/**
+ * What the reviewer container runs for one review (issue #774): the executor entrypoint's argv, and
+ * the plan's env with the two places a run keeps session state moved into the reviewer's own home
+ * (`REVIEWER_HOME`, mounted from the task volume read-write) — the transcript store and opencode's
+ * database would otherwise sit in the member tree, which the reviewer mounts read-only.
+ */
+export function reviewerPlan(
+    config: DriverConfig,
+    review: BoardJob,
+    session: RunSession | null
+): { argv: string[]; env: [string, string][] } {
+    const plan = runnerPlan(config, review, session);
+    const home: Record<string, string> = {
+        FACTORY_TRANSCRIPT_DIR: `${REVIEWER_HOME}/${reviewerTranscriptName(review)}`,
+        XDG_DATA_HOME: `${REVIEWER_HOME}/${reviewerDataName(review)}`,
+    };
+    return {
+        argv: [...entrypointArgv(review), ...plan.cliArgs],
+        env: plan.envPairs.map(([name, value]) => [name, home[name] ?? value]),
+    };
+}
+
+/** The session a claim's run uses: the one it resumes, or a fresh one the driver mints (claude-code only). */
+export function pickSession(job: BoardJob, executorType: BoardJob['executorType']): RunSession | null {
+    // opencode mints its own session ids (`ses_…`) and cannot adopt one, so a fresh run gets
+    // none — the runner scrapes the id the run used and reports it when the outcome lands. A
+    // follow-up claim carries the session opencode itself created, restored via `--session` on
+    // the runner.
+    if (executorType === OPENCODE) return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : null;
+    return job.resumeSessionId ? { id: job.resumeSessionId, resume: true } : { id: randomUUID(), resume: false };
 }

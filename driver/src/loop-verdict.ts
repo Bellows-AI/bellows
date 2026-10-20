@@ -7,7 +7,7 @@
  */
 
 import type { Board, BoardJob, LeaseState, VerdictEvidence } from './board.js';
-import { runBudgetMs, runTimeoutMs } from './claim.js';
+import { runTimeoutMs } from './claim.js';
 import type { HelperFailureReport } from './helpers.js';
 import { type GateFailure, setupFailureNote } from './loop-gates.js';
 import {
@@ -159,7 +159,7 @@ function setupNotes(rt: LoopRuntime, finish: FinishCtx): string {
 /** How much of the whole (unclamped) run budget `environment.setup` took; empty when none ran. */
 export const setupSpentNote = (config: { jobTimeoutMs: number }, job: BoardJob): string =>
     typeof job.setupMs === 'number'
-        ? `[driver] ${job.setupMs}ms of the ${runBudgetMs(config, job)}ms run budget went to environment.setup`
+        ? `[driver] ${job.setupMs}ms of the ${config.jobTimeoutMs}ms run budget went to environment.setup`
         : '';
 
 /** How long `environment.setup` ran before the agent (issue #733); absent when none ran. */

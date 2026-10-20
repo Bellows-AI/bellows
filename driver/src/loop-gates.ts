@@ -10,7 +10,7 @@ import type { JobState } from './loop-attempt.js';
 import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
-import { createReviewRelay, reviewerQuestionRelay } from './loop-review.js';
+import { createReviewRelay } from './loop-review.js';
 import { attachTranscriptExport } from './loop-export.js';
 import type { LoopRuntime } from './loop-types.js';
 import { worktreeRelDir } from './publish.js';
@@ -176,7 +176,7 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
     await sizeGateForVerify(rt, job);
     const started = Date.now();
     const running = manager
-        .runSetup(key, { signal: state.signal, timeoutMs: setupTimeoutMs(rt.config, job) })
+        .runSetup(key, { signal: state.signal, timeoutMs: setupTimeoutMs(rt.config) })
         .catch(refusedToRun);
     const raced = await raceStep(state.signal, running);
     const run = raced?.value;
@@ -208,18 +208,12 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         const token = randomUUID();
         const agentToken = randomUUID();
         const exporterToken = randomUUID();
-        // A named reviewer's run (issue #549) gets the stop poll and nothing else: no publish, no
-        // reviewer of its own, and its questions are refused — it reports to its caller, not a member.
-        if (job.reviewRun) {
-            gates.server.openControl(token, reviewerQuestionRelay);
-        } else {
-            gates.server.openControl(
-                token,
-                createQuestionRelay(rt, job, state),
-                createPublishRelay(rt, job, state),
-                createReviewRelay(rt, job, state)
-            );
-        }
+        gates.server.openControl(
+            token,
+            createQuestionRelay(rt, job, state),
+            createPublishRelay(rt, job, state),
+            createReviewRelay(rt, job, state)
+        );
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);

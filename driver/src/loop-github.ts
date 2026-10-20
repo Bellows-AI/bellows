@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import { claimRestoresTree } from './claim.js';
+import { claimContinuesSession } from './claim.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { SyncTurn } from './sync-queue.js';
 
@@ -16,11 +16,11 @@ export async function askGithubToken(rt: LoopRuntime, job: BoardJob, what: strin
 }
 
 /**
- * The token a starting claim's fetch reaches GitHub with; a restore, a reviewer's tree and a repo-less
+ * The token a starting claim's fetch reaches GitHub with; a restore and a repo-less
  * job fetch nothing. A throwing ask hands the granted turn on, since no sync will hold it.
  */
 export async function checkoutToken(rt: LoopRuntime, job: BoardJob, turn: SyncTurn): Promise<string | undefined> {
-    if (!job.repo || job.reviewRun || claimRestoresTree(job)) return undefined;
+    if (!job.repo || claimContinuesSession(job)) return undefined;
     try {
         return (await askGithubToken(rt, job, 'the checkout sync')) ?? undefined;
     } catch (e) {
