@@ -19,9 +19,7 @@ import {
 import { skillCatalog } from '../skills.js';
 import { bad, body, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
-import { join } from 'node:path';
 import { fullName, UUID } from '../config.js';
-import { ensureReviewerHome } from '../workspace/provision.js';
 import {
     HTTP_CONFLICT,
     HTTP_NO_CONTENT,
@@ -230,11 +228,11 @@ function sendCreated(reply: FastifyReply, created: { id: string; replayed?: bool
 }
 
 export async function handleClaimJob(
-    claiming: { orgs: OrgRegistry; firstJobClaim: BoardScanner; workspaceRoot: string | null },
+    claiming: { orgs: OrgRegistry; firstJobClaim: BoardScanner },
     request: FastifyRequest,
     reply: FastifyReply
 ) {
-    const { orgs, firstJobClaim, workspaceRoot } = claiming;
+    const { orgs, firstJobClaim } = claiming;
     const claimRoute = await resolveClaimRoute(orgs, request, reply);
     if (!claimRoute) return reply;
     const { boards, worker, lease } = claimRoute;
@@ -247,17 +245,6 @@ export async function handleClaimJob(
     // 204, not 200 with a null: an idle poll is the common case and it should not have to be
     // parsed to be recognised.
     if (claim.value === null) return reply.code(HTTP_NO_CONTENT).send();
-    // A task that declares reviewers gets their home on the member's tree before its pod names it,
-    // whether or not the member ever opened the dashboard (issue #774). A failure is logged, not
-    // thrown: the claim is made, and the reviewer start reports the missing directory.
-    const { workspacePath, reviewerProfiles } = claim.value;
-    if (workspaceRoot && workspacePath && reviewerProfiles?.length) {
-        try {
-            ensureReviewerHome(join(workspaceRoot, workspacePath));
-        } catch (e) {
-            request.log.error({ err: e }, 'reviewer home was not made');
-        }
-    }
     return reply.code(HTTP_OK).send(claim.value);
 }
 

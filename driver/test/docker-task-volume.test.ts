@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { REVIEWER_TREE_PATH } from '../src/claim.js';
+import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { applyCloseTimeReadout, tickCacheWatch } from '../src/docker-close-read.js';
 import { ensureTaskVolume, taskVolumeIsOurs } from '../src/docker-task-volume.js';
@@ -8,6 +8,7 @@ import { OPENCODE } from '../src/executors.js';
 import type { RunOutcome } from '../src/runner.js';
 import {
     TASK_GENERATION_LABEL,
+    TASK_MOUNT,
     TASK_ROOT_LABEL,
     taskInitScript,
     taskMountArgs,
@@ -67,8 +68,8 @@ describe("the thread's docker task volume (issue #775)", () => {
         const d = daemon(OURS);
         await ensureTaskVolume(d.deps, job);
         expect(creates(d.calls)).toEqual([]);
-        // Nothing but the inspect: no reviewer, so no init container either.
-        expect(d.calls).toHaveLength(1);
+        // The inspect, then the root init of the volume root: no reviewer, so no second init.
+        expect(d.calls.map((a) => a[0])).toEqual(['volume', 'run']);
     });
 
     it.each([[null], [{ [TASK_ROOT_LABEL]: '99999999-9999-4999-8999-999999999999' }], [{ other: 'x' }]])(
@@ -122,20 +123,30 @@ describe("the thread's docker task volume (issue #775)", () => {
         expect(d.calls.some((a) => a.includes('rm') || a.includes('prune'))).toBe(false);
     });
 
-    it('makes the reviewer home with one hardened throwaway container when the thread reviews', async () => {
+    it('hands the volume root to the task group with a root init before anything mounts it, as fsGroup does', async () => {
+        for (const state of ['absent', OURS] as const) {
+            const d = daemon(state);
+            await ensureTaskVolume(d.deps, job);
+            const runs = d.calls.filter((a) => a[0] === 'run');
+            expect(runs).toHaveLength(1);
+            const [run] = runs;
+            expect(run).toEqual(expect.arrayContaining(['--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'CHOWN']));
+            expect(run).toEqual(expect.arrayContaining(['--rm', ...taskMountArgs(job)]));
+            expect(run).toEqual(expect.arrayContaining(['-c', taskInitScript, 'init', TASK_MOUNT, String(GATE_GID)]));
+            // Last: after the inspect and any create, so the init mounts a labelled volume and never makes one.
+            expect(d.calls.findIndex((a) => a[0] === 'run')).toBe(d.calls.length - 1);
+        }
+    });
+
+    it('makes the reviewer home with a second hardened throwaway container, as the task user, when the thread reviews', async () => {
         const d = daemon(OURS);
         await ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] });
         const runs = d.calls.filter((a) => a[0] === 'run');
-        expect(runs).toHaveLength(1);
-        const [run] = runs;
+        expect(runs).toHaveLength(2);
+        const run = runs[1]!;
         expect(run).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--rm', ...taskMountArgs(job)]));
+        expect(run).toEqual(expect.arrayContaining(['--user', `${GATE_UID}:${GATE_GID}`]));
         expect(run).toEqual(expect.arrayContaining(['-c', taskInitScript, 'init', REVIEWER_TREE_PATH]));
-    });
-
-    it.each([[undefined], [[]]])('starts no init container for reviewerProfiles %j', async (reviewerProfiles) => {
-        const d = daemon('absent');
-        await ensureTaskVolume(d.deps, { ...job, reviewerProfiles } as BoardJob);
-        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 });
 

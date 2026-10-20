@@ -4,6 +4,7 @@ import { type DriverConfig, executorImage } from './config.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from './claim.js';
 import { type ExecDocker, readDocker } from './docker-runner-support.js';
 import {
+    TASK_MOUNT,
     TASK_ROOT_LABEL,
     taskInitScript,
     taskMountArgs,
@@ -48,8 +49,8 @@ export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob): P
  * later one (issue #775). Presence is judged by inspecting the volume by name, as the kubernetes
  * executor GETs its claim: a refused or malformed inspect throws, and nothing is created or mounted
  * on it; a volume of the name without the thread's root label is refused, never adopted. An aborted
- * attempt creates nothing. A thread with a reviewer also gets the reviewer's home made before the
- * reviewer's container mounts it.
+ * attempt creates nothing. The volume root is handed to the task group by a root init, and a thread
+ * with a reviewer also gets the reviewer's home made before the reviewer's container mounts it.
  */
 export async function ensureTaskVolume(
     deps: { config: DriverConfig; execDocker: ExecDocker },
@@ -67,6 +68,29 @@ export async function ensureTaskVolume(
     } else if (read.value[TASK_ROOT_LABEL] !== taskRootOf(job)) {
         throw new Error(`the volume ${name} exists but is not labelled as the task volume of job ${job.id}`);
     }
+    // A fresh named volume's root is root:root 0755, which the task user cannot create a thread
+    // directory in: kubernetes hands it to GATE_GID through fsGroup, the daemon has no such thing.
+    await deps.execDocker(
+        [
+            'run',
+            ...containerHardeningArgs(),
+            '--cap-add',
+            'CHOWN',
+            '--rm',
+            '--user',
+            '0:0',
+            ...taskMountArgs(job),
+            '--entrypoint',
+            'sh',
+            executorImage(deps.config, job.executorType),
+            '-c',
+            taskInitScript,
+            'init',
+            TASK_MOUNT,
+            String(GATE_GID),
+        ],
+        { timeout: INIT_DEADLINE_MS }
+    );
     if ((job.reviewerProfiles?.length ?? 0) === 0) return;
     await deps.execDocker(
         [

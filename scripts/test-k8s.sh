@@ -203,12 +203,12 @@ cleanup() {
         # forever on a pod whose delete it never reaches.
         kubectl delete jobs -l "factory.job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
         # The smoke origin pod and Service, and the task volumes the driver created for this
-        # run's org (labelled factory.task-org, issue #775) — a claim a runner pod still mounts is
-        # held under pvc-protection, so they follow the Jobs above.
+        # release (labelled factory.task-root and the release, issue #775) — a claim a runner pod
+        # still mounts is held under pvc-protection, so they follow the Jobs above.
         kubectl delete pod "$RELEASE-origin" fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
         kubectl delete service "$RELEASE-origin" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
-        [ -z "${member:-}" ] ||
-            kubectl delete pvc -l "factory.task-org=$member" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+        kubectl delete networkpolicy "$RELEASE-origin-egress" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1
+        kubectl delete pvc -l "factory.task-root,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
     fi
     if [ "${state_installed:-}" = '1' ]; then
         helm uninstall "$STATE_RELEASE" -n "$NAMESPACE" >/dev/null 2>&1
@@ -314,12 +314,11 @@ expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
     "resources: ['secrets']
       verbs: ['create', 'delete']"
 # The checkout claim that makes the re-claim fence atomic: POSTed to take the checkout, read to
-# order the contenders, patched to revoke an orphaned claim before its reap, deleted to release or
-# take over. `get` is safe on ConfigMaps and would not be on secrets — the claim carries no secret
+# order the contenders, deleted to release or take over. `get` is safe on ConfigMaps and would not be on secrets — the claim carries no secret
 # material.
 expect_contains     'the driver role manages the checkout claim' "$rbac" \
     "resources: ['configmaps']
-      verbs: ['create', 'get', 'delete', 'patch']"
+      verbs: ['create', 'get', 'delete']"
 # Issue #773: the gate and the declared services are sidecars of the runner Job's pod, so the
 # driver creates no pod, no Service and reads no event. Pods are listed to find a Job's pod and
 # deleted by the re-claim fence's sweep, nothing more.
@@ -798,17 +797,7 @@ expect_contains 'the admission policy fences deletes by label' "$admission" "'fa
 expect_contains 'the admission policy matches the gate resize' "$admission" "operations: ['UPDATE']
               resources: ['pods/resize']"
 expect_contains 'the admission policy lets a resize change only the gate' "$admission" "c.name == 'gate'"
-# The Role's namespace-wide configmaps `patch` (issue #821) reaches only a checkout claim, and only
-# to revoke it: labels and data kept, no annotation but factory.revoked changed.
-expect_contains 'the admission policy matches configmap updates' "$admission" "operations: ['UPDATE']
-              resources: ['configmaps']"
-expect_contains 'the admission policy updates only checkout claims' "$admission" \
-    "oldObject.metadata.name.matches('^factory-job-[0-9a-f-]+-claim\$')"
-expect_contains 'the admission policy keeps a claim update to its data' "$admission" 'object.data == oldObject.data'
-expect_contains 'the admission policy keeps a claim update to its labels' "$admission" \
-    'object.metadata.labels == oldObject.metadata.labels'
-expect_contains 'the admission policy lets a claim update change only factory.revoked' "$admission" \
-    "k == 'factory.revoked'"
+expect_not_contains 'the admission policy admits no checkout claim update' "$admission" 'factory.revoked'
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
 expect_contains 'the admission policy refuses subPathExpr on task volume mounts' "$admission" '!has(m.subPathExpr)'
@@ -1632,6 +1621,28 @@ kubectl run "$RELEASE-origin" -n "$NAMESPACE" --image="$STUB_REF" --restart=Neve
 EOF
     )" -- sh >/dev/null 2>&1
 kubectl expose pod "$RELEASE-origin" -n "$NAMESPACE" --port=9418 >/dev/null 2>&1
+# The runner policy blocks the pod network (10.0.0.0/8 on kind), where this origin lives, so a task
+# pod could not reach it: the lane alone admits this release's runner pods to the origin's git port.
+kubectl apply -n "$NAMESPACE" -f - >/dev/null 2>&1 <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+    name: $RELEASE-origin-egress
+spec:
+    podSelector:
+        matchLabels:
+            app.kubernetes.io/instance: $RELEASE
+        matchExpressions:
+            - {key: factory.job, operator: Exists}
+    policyTypes: [Egress]
+    egress:
+        - to:
+              - podSelector:
+                    matchLabels:
+                        run: $RELEASE-origin
+          ports:
+              - {protocol: TCP, port: 9418}
+EOF
 kubectl wait --for=condition=Ready --timeout=180s "pod/$RELEASE-origin" -n "$NAMESPACE" >/dev/null 2>&1
 repo_seeded="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- git ls-remote "git://127.0.0.1:9418/$SMOKE_REPO.git" 2>&1 || true)"
 case "$repo_seeded" in
@@ -2018,26 +2029,6 @@ expect_contains 'the policy refuses a claim that is not a task volume' "$task_ot
     'named for their labelled thread root and generation'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
-
-# The checkout claim's revoke (issue #821): the one update the driver may make, to a claim alone.
-# The probe objects are made as the test's own identity, which no driver policy matches.
-PROBE_CLAIM="factory-job-00000000-0000-4000-8000-000000000821-claim"
-kubectl create configmap "$PROBE_CLAIM" -n "$NAMESPACE" --from-literal=holder=probe --from-literal=claimSeq=1 >/dev/null
-kubectl label configmap "$PROBE_CLAIM" -n "$NAMESPACE" factory.job=admission-probe >/dev/null
-kubectl create configmap admission-probe-plain -n "$NAMESPACE" --from-literal=k=v >/dev/null
-kubectl label configmap admission-probe-plain -n "$NAMESPACE" factory.job=admission-probe >/dev/null
-as_driver_patch() { kubectl patch configmap "$1" --as="$DRIVER_SA" -n "$NAMESPACE" --type=merge -p "$2" --dry-run=server 2>&1; }
-revoked="$(as_driver_patch "$PROBE_CLAIM" '{"metadata":{"annotations":{"factory.revoked":"probe"}}}')"
-expect_contains 'the policy admits revoking a checkout claim' "$revoked" 'patched'
-rewritten="$(as_driver_patch "$PROBE_CLAIM" '{"data":{"holder":"thief"}}')"
-expect_contains 'the policy refuses a claim patch that changes its data' "$rewritten" 'changes only factory.revoked'
-relabelled="$(as_driver_patch "$PROBE_CLAIM" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
-expect_contains 'the policy refuses a claim patch that changes its labels' "$relabelled" 'changes only factory.revoked'
-annotated="$(as_driver_patch "$PROBE_CLAIM" '{"metadata":{"annotations":{"other":"x"}}}')"
-expect_contains 'the policy refuses a claim patch that adds another annotation' "$annotated" 'changes only factory.revoked'
-plain="$(as_driver_patch admission-probe-plain '{"metadata":{"annotations":{"factory.revoked":"probe"}}}')"
-expect_contains 'the policy refuses patching a configmap that is not a checkout claim' "$plain" 'updates only checkout claims'
-kubectl delete configmap "$PROBE_CLAIM" admission-probe-plain -n "$NAMESPACE" >/dev/null
 
 # Issue #382, the half that cannot be asserted by rendering. Phase one proved the CEL is in the
 # document; this proves a real apiserver COMPILES it and refuses on it. The distinction matters

@@ -1,7 +1,4 @@
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -1006,38 +1003,6 @@ describe('POST /api/jobs/claim', () => {
         const instance2 = await harnessWith(stubStore({ claim: withError }));
         const response2 = await post(instance2, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response2.json()).toEqual(withError);
-    });
-
-    // Issue #774: the reviewer's home is a subPath mount of the member's tree. A tree that predates
-    // the reviewer, never opened in the dashboard, has none, and a missing subPath is refused by
-    // docker and made root-owned by the kubelet. The claim that declares reviewers makes it.
-    describe('the reviewer home', () => {
-        const homeOf = (root: string) => join(root, 'org-1', 'user-1', '.factory', 'reviewer');
-        const harnessAt = async (root: string, withClaim: Claim) => {
-            const config = testConfig({ workspaceRoot: root });
-            const instance = await buildApp({
-                config,
-                orgs: staticRegistry({ config, jobs: stubStore({ claim: withClaim }) }),
-            });
-            track(instance);
-            return instance;
-        };
-
-        it('exists, group-writable, once a claim declares reviewers', async () => {
-            const root = mkdtempSync(join(tmpdir(), 'factory-claim-home-'));
-            const withReviewer: Claim = { ...claim, workspacePath: 'org-1/user-1', reviewerProfiles: ['careful'] };
-            const instance = await harnessAt(root, withReviewer);
-            const response = await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
-            expect(response.statusCode).toBe(200);
-            expect(statSync(homeOf(root)).mode & 0o775).toBe(0o775);
-        });
-
-        it('is left alone for a claim without reviewers', async () => {
-            const root = mkdtempSync(join(tmpdir(), 'factory-claim-home-'));
-            const instance = await harnessAt(root, { ...claim, workspacePath: 'org-1/user-1' });
-            await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
-            expect(existsSync(homeOf(root))).toBe(false);
-        });
     });
 
     // The idle poll is the common case: it must be recognisable without parsing a body.

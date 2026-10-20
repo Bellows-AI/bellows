@@ -71,7 +71,7 @@ export function taskVolumeLabels(job: TaskVolumeJob, generation = FIRST_GENERATI
 
 /** The PersistentVolumeClaim of a thread's task volume: no ownerReferences, so nothing garbage-collects it. */
 export function taskVolumeSpec(
-    config: Pick<DriverConfig, 'taskVolume'>,
+    config: Pick<DriverConfig, 'taskVolume' | 'k8sRelease'>,
     job: TaskVolumeJob
 ): {
     apiVersion: 'v1';
@@ -87,7 +87,14 @@ export function taskVolumeSpec(
     return {
         apiVersion: 'v1',
         kind: 'PersistentVolumeClaim',
-        metadata: { name: taskVolumeName(job), labels: taskVolumeLabels(job) },
+        metadata: {
+            name: taskVolumeName(job),
+            // The label every runner Job carries (releaseLabel in k8s-podspec.ts), so one release's cleanup finds its claims.
+            labels: {
+                ...taskVolumeLabels(job),
+                ...(config.k8sRelease ? { 'app.kubernetes.io/instance': config.k8sRelease } : {}),
+            },
+        },
         spec: {
             accessModes: [accessMode],
             resources: { requests: { storage: size } },

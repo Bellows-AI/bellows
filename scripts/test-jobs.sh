@@ -190,7 +190,9 @@ cleanup() {
         # The task volumes the driver created for this run's threads, by the roots in its database.
         for root in $(compose exec -T postgres psql -U factory -d "$DB" -qtA \
             -c 'select distinct coalesce(root_job_id, id) from job' 2>/dev/null); do
-            docker volume rm "factory-task-$root-1" >/dev/null 2>&1
+            for volume in $(docker volume ls -q --filter "label=factory.task-root=$root" 2>/dev/null); do
+                docker volume rm "$volume" >/dev/null 2>&1
+            done
         done
         # Only ever drops a database this run created, and only one named *_test.
         if [ -n "$db_created" ]; then
@@ -1865,13 +1867,15 @@ else
 fi
 
 # The runners of this phase join the project network, so the origin joins it too (its name resolves there).
-docker network connect "${COMPOSE_PROJECT}_default" "$ORIGIN_NAME" >/dev/null 2>&1 ||
+if docker network connect "${COMPOSE_PROJECT}_default" "$ORIGIN_NAME" >/dev/null 2>&1; then
+    compose_job="$(create_job '/fix 987 compose driver lifecycle check')"
+    expect_contains 'the compose driver runs its job' "$(await_settled "$compose_job" 180)" succeeded
+    ran="$(body "$(api GET "/api/jobs/$compose_job")")"
+    expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
+else
+    # Without the origin on the network the job could only wait out its whole settle deadline.
     bad 'the smoke origin joins the compose network' "$(tail -3 "$work/compose-driver.log")"
-
-compose_job="$(create_job '/fix 987 compose driver lifecycle check')"
-expect_contains 'the compose driver runs its job' "$(await_settled "$compose_job" 180)" succeeded
-ran="$(body "$(api GET "/api/jobs/$compose_job")")"
-expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
+fi
 
 docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
 docker network disconnect "${COMPOSE_PROJECT}_default" "$ORIGIN_NAME" >/dev/null 2>&1

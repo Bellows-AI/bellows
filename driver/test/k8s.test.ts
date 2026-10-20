@@ -5199,6 +5199,20 @@ describe("the thread's task volume claim (issue #775)", () => {
         });
     });
 
+    it('carries the release label the runner Jobs carry, so a release cleanup finds its claims', () => {
+        const withRelease = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            K8S_RELEASE: 'lane-a',
+        });
+        expect(taskVolumeSpec(withRelease, job).metadata.labels).toMatchObject({
+            'app.kubernetes.io/instance': 'lane-a',
+        });
+        expect(
+            taskVolumeSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job).metadata.labels
+        ).not.toHaveProperty('app.kubernetes.io/instance');
+    });
+
     it('is created once by a thread first attempt, and read, not created again, by its next', async () => {
         const { request, calls } = routed(() => undefined);
         await sync(request);
