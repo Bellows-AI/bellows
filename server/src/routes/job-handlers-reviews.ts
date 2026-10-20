@@ -66,8 +66,14 @@ export async function handleReviewRequest(orgs: OrgRegistry, request: FastifyReq
     );
     if (!result.ok) return reply;
     const outcome = result.value;
-    if ('review' in outcome)
-        return reply.code(outcome.result === 'created' ? HTTP_CREATED : HTTP_OK).send(outcome.review);
+    if (outcome.result === 'running') {
+        const message = `review ${outcome.review.key} is running; read it first`;
+        return bad(reply, ERROR_CODES.REVIEW_RUNNING, message, HTTP_CONFLICT);
+    }
+    if ('review' in outcome) {
+        const answer = outcome.claim ? { ...outcome.review, claim: outcome.claim } : outcome.review;
+        return reply.code(outcome.result === 'created' ? HTTP_CREATED : HTTP_OK).send(answer);
+    }
     return refusedReview(reply, outcome.result, parsed.value.profile);
 }
 

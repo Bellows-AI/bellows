@@ -26,7 +26,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Objective mode (no `workflow`) | `core/src/job-mode.ts`, `server/migrations/051_job_mode.sql` | `server/test-db/job-store.objective.test.ts` |
 | Skill selection and `skillRefusal` | `core/src/skills.ts`, `server/src/skills.ts`, `server/migrations/055_job_skills.sql` | `core/test/skills.test.ts`, `server/test-db/job-store.skills.test.ts` |
 | Evidence policy and the completion check | `server/src/db/evidence-policy.ts`, `job-store-evidence.ts`, `server/migrations/053_job_evidence.sql` | `server/test/evidence-policy.test.ts`, `server/test-db/job-store.evidence.test.ts` |
-| Independent reviewer jobs (`review_of`) | `server/src/db/job-store-reviews.ts`, `review-prompt.ts`, `server/src/routes/job-handlers-reviews.ts`, `server/migrations/056_job_review.sql` | `server/test-db/job-store.reviews.test.ts`, `server/test/review-prompt.test.ts` |
+| Independent reviewer jobs (`review_of`) | `server/src/db/job-store-reviews.ts`, `review-prompt.ts`, `server/src/routes/job-handlers-reviews.ts`, `server/migrations/056_job_review.sql`, `077_review_inband.sql` (leased in the request, never in the open queue) | `server/test-db/job-store.reviews.test.ts`, `server/test/review-prompt.test.ts` |
 | Agent questions, capped per asking claim (`claim_seq`) | `server/src/db/job-store-questions.ts`, `server/src/routes/job-handlers-questions.ts`, `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql` | `server/test-db/job-store.questions.test.ts` |
 
 ## Driver and runners

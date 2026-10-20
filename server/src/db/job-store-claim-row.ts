@@ -1,5 +1,4 @@
 import type { JobMode } from '@factory-ai/core';
-import type { ReviewerSpec } from './job-store-types.js';
 
 /** The claimed row as the acquisition's RETURNING reads it (`job-store-claim.ts`): what `buildClaimResult` turns into a `Claim`. */
 export interface ClaimCandidateRow {
@@ -20,10 +19,6 @@ export interface ClaimCandidateRow {
     workflow_name: string | null;
     mode: JobMode;
     root_command: string;
-    /** Set only on a named-profile review's row (issue #549): the profile it runs as and the ref it starts from. */
-    review_of: string | null;
-    review_spec: ReviewerSpec | null;
-    review_ref: string | null;
     /** The thread ROOT's selected skills (055), read in the claim's RETURNING. */
     skills: string[];
     /** Whether the thread ROOT selected a managed Jira connection (054), read in the same RETURNING. */

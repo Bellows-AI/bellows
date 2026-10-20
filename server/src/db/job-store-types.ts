@@ -383,12 +383,7 @@ export interface ReviewerSpec {
 }
 
 /** What the caller asks for: the driver measured `revision` and snapshotted it under `ref`. */
-export interface ReviewRequest {
-    key: string;
-    profile: string;
-    revision: string;
-    ref: string;
-}
+export type ReviewRequest = { key: string; profile: string; revision: string; ref: string };
 
 /**
  * One review as the caller reads it. `status` is the review row's own; `verdict` is read from its
@@ -408,9 +403,15 @@ export interface ReviewView {
     evidence: ReviewEvidence;
 }
 
-/** What a request did: a new review (`created`), the stored one (`existing`), or why none. */
+/**
+ * What a request did: a new review (`created`), the stored one (`existing`), or why none. A review
+ * live under the caller's claim carries its `claim` (issue #774): leased in the request's own
+ * transaction, handed back to a retried request, re-leased to a newer caller claim. A finished one
+ * is answered from its row, with no claim. `running` refuses a second key: its `review` is the one
+ * in flight.
+ */
 export type RequestReviewResult =
-    | { result: 'created' | 'existing'; review: ReviewView }
+    | { result: 'created' | 'existing' | 'running'; review: ReviewView; claim?: Claim }
     | { result: 'lost' | 'missing' | 'unsupported' | 'unknown_profile' | 'invalid_ref' };
 
 export type ReadReviewResult = { result: 'ok'; review: ReviewView } | { result: 'lost' | 'missing' | 'unknown' };
@@ -608,7 +609,12 @@ export interface Claim {
     policy?: EvidencePolicy;
     review?: ReviewEvidence;
     /**
-     * Present only on a named-profile review's claim (issue #549): the git ref its worktree starts
+     * The names of the reviewer profiles the repository declares (issue #774), present when there
+     * are any: what the driver provisions one dormant reviewer for. Absent on a reviewer's own claim.
+     */
+    reviewerProfiles?: readonly string[];
+    /**
+     * Present only on a named-profile review's claim (issue #549) (issue #549): the git ref its worktree starts
      * from, and the wall-clock budget its profile grants. Such a claim gets no GitHub credential and
      * no member env beyond the profile's `connections`, never publishes, runs no gates and opens
      * no publish or question relay — the board decides all of that, never the caller.

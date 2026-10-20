@@ -10,6 +10,7 @@ import {
     batchThreadState,
     exists,
     queueReclaimIfThreadDone,
+    stopReviewsOf,
     stopRows,
     workspacePathFor,
     hasRunningMember,
@@ -19,7 +20,6 @@ import { fingerprintOf, missedSettle, recordReceipt, settleReplayOf, type Settle
 import { commitStagedForStop } from './job-store-conclusions.js';
 import { stagedFingerprint } from './job-store-staged.js';
 import { TERMINAL_STATUSES } from './task-summary.js';
-import { stopReviewsOf } from './job-store-reviews.js';
 import { type IdempotencyInput, replayOf, stampKey } from './job-store-idempotency.js';
 import type { EditCommandResult, JobStore, JobStoreContext, JobStatus, SuspendResult } from './job-store-types.js';
 import { wakeOneRound } from './workflow-blocks/runtime.js';

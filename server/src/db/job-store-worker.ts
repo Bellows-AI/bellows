@@ -17,8 +17,8 @@ import {
     issueVerdictReclaim,
     liveVerdictReclaim,
     runtimePatch,
+    stopReviewsOf,
 } from './job-store-rows.js';
-import { stopReviewsOf } from './job-store-reviews.js';
 import type {
     JobStore,
     JobStoreContext,
@@ -370,13 +370,8 @@ async function settleVerdict(
     // The caller's verdict ends its separate reviews (issue #549): one still queued or running
     // has nothing left to inform, so it is stopped rather than left to finish orphaned.
     await stopReviewsOf(tx, { orgId, wallTick, stoppedBy: null }, [completedId]);
-    // A review is a thread nobody marks done: its own verdict is the end of it, so the stamp
-    // lands here and the thread aggregate below reads `done` — the driver is told to reclaim
-    // the review's worktree on this very answer instead of leaving it on the volume.
-    await tx`
-        update job set done_at = coalesce(done_at, now())
-        where org_id = ${orgId} and id = ${completedId} and review_of is not null
-    `;
+    // A review is a thread nobody marks done, and it queues no reclaim of its own (issue #774): its
+    // files live inside its caller's tree and leave with the caller thread's reclaim.
 
     await maybeRecordPublicationAndClose(tx, ctx, { rootJobId, jobRepo, publication: publication ?? null });
 

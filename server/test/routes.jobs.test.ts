@@ -3235,6 +3235,24 @@ describe('POST /api/jobs/:id/review (issue #549)', () => {
         expect((await post(again, REVIEW_URL, REVIEW_REQUEST)).statusCode).toBe(200);
     });
 
+    it('answers a live review with its claim next to the view, and a second key while one runs with 409 REVIEW_RUNNING', async () => {
+        const claim = { id: REVIEW.id, leaseToken: 'lease-of-the-review' } as Claim;
+        const live = await harnessWith(stubStore({ reviewRequest: { result: 'created', review: REVIEW, claim } }));
+        const created = await post(live, REVIEW_URL, REVIEW_REQUEST);
+        expect(created.statusCode).toBe(201);
+        expect(created.json()).toMatchObject({ key: 'security-1', claim: { id: REVIEW.id } });
+
+        const busy = await harnessWith(
+            stubStore({ reviewRequest: { result: 'running', review: { ...REVIEW, key: 'first' } } })
+        );
+        const refused = await post(busy, REVIEW_URL, REVIEW_REQUEST);
+        expect(refused.statusCode).toBe(409);
+        expect(refused.json()).toMatchObject({
+            code: 'REVIEW_RUNNING',
+            error: 'review first is running; read it first',
+        });
+    });
+
     it.each([
         ['an empty key', { key: '' }],
         ['a key with a bad character', { key: 'a b' }],
