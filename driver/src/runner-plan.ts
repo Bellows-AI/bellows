@@ -4,8 +4,8 @@ import {
     npmQuietEnv,
     opencodeDataDir,
     RESUME_MAY_BE_UNWRITTEN_ENV,
-    REVIEWER_DATA,
     REVIEWER_HOME,
+    reviewerDataName,
     reviewerTranscriptName,
     repoCacheEnv,
     SESSION_ID,
@@ -188,7 +188,7 @@ export function reviewerPlan(
     const plan = runnerPlan(config, review, session);
     const home: Record<string, string> = {
         FACTORY_TRANSCRIPT_DIR: `${REVIEWER_HOME}/${reviewerTranscriptName(review)}`,
-        XDG_DATA_HOME: `${REVIEWER_HOME}/${REVIEWER_DATA}`,
+        XDG_DATA_HOME: `${REVIEWER_HOME}/${reviewerDataName(review)}`,
     };
     return {
         argv: [...entrypointArgv(review), ...plan.cliArgs],

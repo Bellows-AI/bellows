@@ -2,8 +2,8 @@ import type { BoardJob, ReviewClaim } from './board.js';
 import {
     CONTROL_TOKEN_ENV,
     CONTROL_URL_ENV,
-    REVIEWER_DATA,
     REVIEWER_HOME,
+    reviewerDataName,
     reviewerTranscriptName,
     reviewerTreeDir,
     runnerClaimEnv,
@@ -171,7 +171,7 @@ async function exportReview(host: StepHost, toRun: ReviewRun, result: StepResult
             : {
                   argv: ['node', '-e', opencodeReadoutScript],
                   env: {
-                      OPENCODE_DB: `${REVIEWER_HOME}/${REVIEWER_DATA}/opencode/opencode.db`,
+                      OPENCODE_DB: `${REVIEWER_HOME}/${reviewerDataName(review)}/opencode/opencode.db`,
                       OPENCODE_DIR: reviewWorktreeDir(host.config, caller, review) ?? '',
                       RUN_STARTED_MS: String(startedAt.getTime()),
                       EXPORT_LIMIT_BYTES: String(REVIEW_READOUT_LIMIT),

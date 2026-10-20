@@ -258,7 +258,7 @@ describe('the reviewer’s close-time export step', () => {
         expect(exportStep.kind).toBe('review');
         expect(exportStep.cwd).toBe(REVIEWER_HOME);
         expect(exportStep.argv).toEqual(['node', '-e', opencodeReadoutScript]);
-        expect(exportStep.env).toMatchObject({ OPENCODE_DB: `${REVIEWER_HOME}/data/opencode/opencode.db` });
+        expect(exportStep.env).toMatchObject({ OPENCODE_DB: `${REVIEWER_HOME}/data/${ROOT}/opencode/opencode.db` });
         expect(exportStep.env.OPENCODE_DIR).toBe(steps[1]!.env.WORKTREE);
         expect(given.readout).toHaveBeenCalledWith('{"session":"ses_1"}');
     });

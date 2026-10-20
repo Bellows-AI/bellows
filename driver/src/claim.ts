@@ -50,7 +50,7 @@ export const REVIEWER_UID = 1002;
 export const REVIEWER_HOME = '/home/reviewer';
 /** The member-tree directory the reviewer's HOME is mounted from: a fixed subPath, never one per review. */
 export const REVIEWER_TREE_DIR = '.factory/reviewer';
-/** Where the reviewer's home keeps its session state: the transcript store (per thread root) and opencode's data directory. */
+/** Where the reviewer's home keeps its session state: the transcript store and opencode's data directory, each per review root. */
 export const REVIEWER_TRANSCRIPTS = 'transcripts';
 export const REVIEWER_DATA = 'data';
 /** That directory as the supervisor and the other containers of the pod see it. */
@@ -59,6 +59,9 @@ export const reviewerTreeDir = (config: Pick<DriverConfig, 'workspaceMount'>, jo
 /** A review's transcript store, in the reviewer's home, named by the thread root. */
 export const reviewerTranscriptName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
     `${REVIEWER_TRANSCRIPTS}/${review.rootJobId ?? review.id}`;
+/** A review's opencode data directory, in the reviewer's home, named by the review root: one session database per review, so a readout never exports another review's rows. */
+export const reviewerDataName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
+    `${REVIEWER_DATA}/${review.rootJobId ?? review.id}`;
 /**
  * The capabilities the agent container starts with (issue #814), as root, every other one dropped:
  * what the tool broker needs to start each command as TOOL_UID. factory-launch drops both, and root,
