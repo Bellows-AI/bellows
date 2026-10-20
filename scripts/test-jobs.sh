@@ -1837,16 +1837,19 @@ compose -p "$COMPOSE_PROJECT" run --rm --use-aliases --name "$COMPOSE_DRIVER" --
 compose_pid=$!
 
 # The anti-stale discriminator: the running container must hold the checkout's driver SOURCE. The
-# first start pays `npm install`, so poll rather than assume; the grep target is the current
-# parser, so a container running a baked dist has nothing to grep and times out here.
+# source is a bind mount, so it is readable the moment the container exists; the slow part is
+# compose creating its volumes, network and container, which a busy daemon stretches past any count
+# of polls. Poll against a deadline while `compose run` is alive, and give up only when it exits.
+# The grep target is the current parser, so a container running a baked dist has nothing to grep.
 mounted=""
-for _ in $(seq 1 120); do
+deadline=$((SECONDS + 300))
+while [ "$SECONDS" -lt "$deadline" ]; do
     if docker exec "$COMPOSE_DRIVER" grep -q '/fix' /app/driver/src/publish.ts 2>/dev/null; then
         mounted=1
         break
     fi
-    # Give up only once `compose run` itself has exited. The container does not exist yet while
-    # compose is still creating volumes and the network, so "no such container" is not an exit.
+    # The container does not exist yet while compose is still creating volumes and the network, so
+    # "no such container" is not an exit.
     kill -0 "$compose_pid" 2>/dev/null || break
     sleep 1
 done
