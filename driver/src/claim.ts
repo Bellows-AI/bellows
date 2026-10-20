@@ -41,6 +41,14 @@ export const GATE_GID = 1000;
  */
 export const TOOL_UID = 1001;
 /**
+ * The uid the task pod's reviewer container runs as (issue #774), in group GATE_GID: distinct from the
+ * CLI's, the tool's and the gate's, so no one of them can signal a review mid-run, and the reviewer's
+ * emptyDir home and mailbox stay its own. Its HOME is an emptyDir of its own, so a review's session
+ * state is never on the task volume (which it mounts read-only).
+ */
+export const REVIEWER_UID = 1002;
+export const REVIEWER_HOME = '/home/reviewer';
+/**
  * The capabilities the agent container starts with (issue #814), as root, every other one dropped:
  * what the tool broker needs to start each command as TOOL_UID. factory-launch drops both, and root,
  * before the CLI runs; no other container the driver starts gets either.

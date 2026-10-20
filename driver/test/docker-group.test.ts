@@ -79,8 +79,8 @@ describe('the supervisor container', () => {
     // of its own container, so it mounts the member's workspace — only the member's own subtree.
     it('mounts every mailbox and the member’s own workspace subtree, nothing broader', () => {
         const mounted = mounts(argv);
-        expect(mounted).toHaveLength(6);
-        for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
+        expect(mounted).toHaveLength(7);
+        for (const box of ['in', 'out', 'export', 'supervisor', 'gate', 'review'] as const) {
             expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(true);
         }
         const workspace = mounted.filter((mount) => mount.includes('workspaces'));

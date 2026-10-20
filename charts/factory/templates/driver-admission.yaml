@@ -23,9 +23,11 @@ service sidecars, every aux Job — because `create jobs` would otherwise be `re
     that sets neither satisfies only the first.
   - the task pod's shape (#773): `hostAliases` map only to 127.0.0.1 (a declared service's name),
     and a `svc-` container is only a restartable init container — the restartable ones are the
-    `gate` and the `svc-` services, nothing else.
+    `gate`, the `reviewer` and the `svc-` services, nothing else.
+  - the reviewer (#774) runs as uid 1002 and mounts the workspace read-only, its review mailbox
+    and its home, nothing else.
 `-resize` fences the one in-place resize the driver makes (issue #773): a `pods/resize` update of a
-pod it labelled `factory.job` that changes no main container and no init container but `gate`.
+pod it labelled `factory.job` that changes no main container and no init container but `gate` or `reviewer`, one of them.
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
 label every runner-owned object carries), so the dashboard's Secret and ConfigMaps are out of
 reach; Secrets only under the per-attempt names and only Opaque (a service-account-token Secret
@@ -177,7 +179,7 @@ spec:
         Issue #773. A declared service is a sidecar of the task pod, reached on the pod's own
         loopback by its name: `hostAliases` may point nowhere else, or a name the agent dials could
         be sent off the pod. Only a restartable init container may be a `svc-` service, and the
-        restartable ones are the gate and the services, nothing else (driver/src/k8s-podspec.ts).
+        restartable ones are the gate, the reviewer and the services, nothing else (driver/src/k8s-podspec.ts).
         */}}
         - expression: >-
               !has(variables.spec.hostAliases) || variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')
@@ -186,8 +188,24 @@ spec:
               variables.spec.containers.all(c, !c.name.startsWith('svc-')) &&
               (!has(variables.spec.initContainers) || variables.spec.initContainers.all(c,
                 (has(c.restartPolicy) && c.restartPolicy == 'Always') ==
-                  (c.name == 'gate' || c.name.startsWith('svc-'))))
-          message: 'a driver-specced pod runs its gate and svc- services only as restartable init containers'
+                  (c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-'))))
+          message: 'a driver-specced pod runs its gate, reviewer and svc- services only as restartable init containers'
+        {{/*
+        Issue #774. The reviewer is a restartable init container of its own uid (1002,
+        driver/src/claim.ts REVIEWER_UID): never the CLI's 1000, the tool's 1001 or any other, and
+        it mounts the member's workspace read-only, its review mailbox and its home, nothing else.
+        */}}
+        - expression: >-
+              variables.spec.containers.all(c, c.name != 'reviewer') &&
+              (!has(variables.spec.initContainers) || variables.spec.initContainers.all(c, c.name != 'reviewer' ||
+                (has(c.securityContext) && has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 1002)))
+          message: 'a driver-specced reviewer runs as its own uid'
+        - expression: >-
+              !has(variables.spec.initContainers) || variables.spec.initContainers.all(c, c.name != 'reviewer' ||
+                !has(c.volumeMounts) || c.volumeMounts.all(m,
+                  (m.name == 'workspaces' && has(m.readOnly) && m.readOnly) ||
+                  m.name == 'ctl-review' || m.name == 'reviewer-home'))
+          message: 'a driver-specced reviewer mounts its workspace read-only, its review mailbox and its home'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding
@@ -225,6 +243,8 @@ spec:
           expression: "has(oldObject.spec.initContainers) ? oldObject.spec.initContainers : []"
         - name: newInit
           expression: "has(object.spec.initContainers) ? object.spec.initContainers : []"
+        - name: changed
+          expression: "variables.newInit.filter(c, !variables.oldInit.exists(o, o == c))"
     validations:
         - expression: "has(object.metadata.labels) && 'factory.job' in object.metadata.labels"
           message: 'the driver resizes only pods it labelled factory.job'
@@ -232,8 +252,9 @@ spec:
           message: 'a driver resize changes no main container'
         - expression: >-
               size(variables.newInit) == size(variables.oldInit) &&
-              variables.newInit.all(c, c.name == 'gate' || variables.oldInit.exists(o, o == c))
-          message: 'a driver resize changes the gate container alone'
+              size(variables.changed) <= 1 &&
+              variables.changed.all(c, c.name == 'gate' || c.name == 'reviewer')
+          message: 'a driver resize changes the gate or the reviewer container alone'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

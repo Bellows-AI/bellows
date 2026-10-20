@@ -424,6 +424,9 @@ export function stubRunner(
             runner.resized.push(phase);
             return true;
         },
+        async resizeReviewer() {
+            return false;
+        },
         ...(options.reapOrphanedClaim
             ? {
                   reapOrphanedClaim: async (orphanJob: BoardJob, claim: { uid: string; holder: string }) => {

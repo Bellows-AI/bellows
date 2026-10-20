@@ -21,6 +21,7 @@ export interface Mailbox {
     agent: 'ro' | 'rw' | null;
     exporter: 'rw' | null;
     gate: 'rw' | null;
+    reviewer: 'rw' | null;
 }
 
 /** `in`: supervisor to agent. The agent reads it and cannot write it, so it cannot forge a Stop or an answer. */
@@ -31,6 +32,7 @@ const IN: Mailbox = {
     agent: 'ro',
     exporter: null,
     gate: null,
+    reviewer: null,
 };
 /** `out`: agent to supervisor — its questions and its heartbeat; the one directory the agent writes. */
 const OUT: Mailbox = {
@@ -40,6 +42,7 @@ const OUT: Mailbox = {
     agent: 'rw',
     exporter: null,
     gate: null,
+    reviewer: null,
 };
 /** `export`: supervisor to exporter. The agent mounts nothing of it. */
 const EXPORT: Mailbox = {
@@ -49,6 +52,7 @@ const EXPORT: Mailbox = {
     agent: null,
     exporter: 'rw',
     gate: null,
+    reviewer: null,
 };
 /** The supervisor's own state: no other container mounts it. */
 const OWN: Mailbox = {
@@ -58,6 +62,7 @@ const OWN: Mailbox = {
     agent: null,
     exporter: null,
     gate: null,
+    reviewer: null,
 };
 /** `gate`: supervisor to gate container — the gate requests and their answers (`GATE_FILES`). The agent mounts nothing of it. */
 const GATE: Mailbox = {
@@ -67,9 +72,21 @@ const GATE: Mailbox = {
     agent: null,
     exporter: null,
     gate: 'rw',
+    reviewer: null,
 };
 
-export const MAILBOXES = { in: IN, out: OUT, export: EXPORT, supervisor: OWN, gate: GATE } as const;
+/** `review`: supervisor to reviewer container (issue #774) — the review requests and their answers (`REVIEW_FILES`). Nothing else mounts it. */
+const REVIEW: Mailbox = {
+    name: 'ctl-review',
+    path: `${CTL_ROOT}/review`,
+    supervisor: 'rw',
+    agent: null,
+    exporter: null,
+    gate: null,
+    reviewer: 'rw',
+};
+
+export const MAILBOXES = { in: IN, out: OUT, export: EXPORT, supervisor: OWN, gate: GATE, review: REVIEW } as const;
 
 /**
  * The gate mailbox's layout (`GATE_FILES` of supervisor.cjs, the names `scripts/gate-loop.sh` spells):
@@ -91,6 +108,8 @@ export const GATE_FILES = {
     exit: 'exit',
     cancel: 'cancel',
 } as const;
+/** The review mailbox's layout is the gate mailbox's (`scripts/review-loop.sh` spells the same names). */
+export const REVIEW_FILES = GATE_FILES;
 /** How long a cancelled or timed-out gate may take to answer before the supervisor answers for it. */
 export const GATE_CANCEL_GRACE_MS = 10_000;
 /** A gate loop whose heartbeat is older than this is lost: its request never ran, or its answer is gone. */
@@ -337,3 +356,5 @@ export const AGENT_CONTAINER = 'agent';
 export const EXPORTER_CONTAINER = 'exporter';
 /** The declared gate image's container, beside the supervisor in a group whose checkout declares gates or setup. */
 export const GATE_CONTAINER = 'gate';
+/** The reviewer container, beside the supervisor in a group whose claim lists reviewer profiles (issue #774). */
+export const REVIEWER_CONTAINER = 'reviewer';

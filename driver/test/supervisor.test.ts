@@ -21,6 +21,7 @@ import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
     GATE_FILES,
+    REVIEW_FILES,
     GATE_LOST_MS,
     MAILBOX_FILES,
     MAILBOXES,
@@ -1402,6 +1403,21 @@ describe('what crosses the mailboxes', () => {
         expect(MAILBOXES.gate).toMatchObject({ supervisor: 'rw', agent: null, exporter: null, gate: 'rw' });
         for (const box of [MAILBOXES.in, MAILBOXES.out, MAILBOXES.export, MAILBOXES.supervisor]) {
             expect(box.gate, box.name).toBeNull();
+        }
+    });
+
+    it('gives the review mailbox to the supervisor and the reviewer container alone (#774)', () => {
+        expect(MAILBOXES.review).toMatchObject({
+            supervisor: 'rw',
+            agent: null,
+            exporter: null,
+            gate: null,
+            reviewer: 'rw',
+        });
+        expect(MAILBOXES.review.path).toBe('/factory/review');
+        expect(REVIEW_FILES).toEqual(GATE_FILES);
+        for (const box of [MAILBOXES.in, MAILBOXES.out, MAILBOXES.export, MAILBOXES.supervisor, MAILBOXES.gate]) {
+            expect(box.reviewer, box.name).toBeNull();
         }
     });
 

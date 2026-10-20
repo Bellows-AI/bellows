@@ -190,6 +190,11 @@ export interface BoardJob {
      * refusal). Both executors start exactly this list; the driver reads no file. Absent: none.
      */
     services?: readonly ServiceSpec[];
+    /**
+     * The names of the reviewer profiles the caller's thread may ask (issue #774); the task pod holds a
+     * reviewer container exactly when this is non-empty. Absent: none.
+     */
+    reviewerProfiles?: readonly string[];
     /** The commit the claim's plan was read at — the tip of the base branch when the board resolved it. */
     planRevision?: string;
     /**
@@ -735,6 +740,14 @@ function questionVerdictOf(response: Response): QuestionVerdict {
 const HTTP_BAD_REQUEST = 400;
 const HTTP_CREATED = 201;
 
+/** The claim's reviewer profile names, or nothing: an empty or malformed list reads as no reviewer (issue #774). */
+function reviewerProfilesOf(value: unknown): { reviewerProfiles?: readonly string[] } {
+    const names = Array.isArray(value) ? (value as unknown[]) : [];
+    return names.length > 0 && names.every((name) => typeof name === 'string')
+        ? { reviewerProfiles: names as string[] }
+        : {};
+}
+
 /**
  * The board's answer to a review request or read. A 409 is two things here — the lease verdict, and
  * a refusal such as an undeclared profile — so the code in the body decides; a 404 is the removed
@@ -843,13 +856,15 @@ export function createBoard({
             // must not survive under exactOptionalPropertyTypes, which refuses assigning
             // `undefined` to this optional property directly — the conditional spread below is
             // the only way to represent "absent".
-            const { helperPlans, turnContext, services, ...rest } = (await response.json()) as Partial<BoardJob>;
+            const { helperPlans, turnContext, services, reviewerProfiles, ...rest } =
+                (await response.json()) as Partial<BoardJob>;
             const claimed = rest;
             const plan = servicePlanOf(services);
             return {
                 ...(claimed as BoardJob),
                 ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
                 ...(plan.services ? { services: plan.services } : {}),
+                ...reviewerProfilesOf(reviewerProfiles),
                 ...knownTurnContext(turnContext),
                 masterPrompt: textOrNull(claimed.masterPrompt),
                 resumeSessionId: claimed.resumeSessionId ?? null,

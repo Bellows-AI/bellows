@@ -6,6 +6,8 @@ import {
     GATE_GID,
     gateEnv,
     GATE_UID,
+    REVIEWER_HOME,
+    REVIEWER_UID,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
     opencodeDbPath,
@@ -19,6 +21,7 @@ import {
     claudeExportScript,
     gateLoopArgv,
     opencodeReadoutScript,
+    reviewLoopArgv,
     serviceProbeArgv,
     supervisorScript,
 } from './container-scripts.js';
@@ -28,6 +31,7 @@ import {
     AGENT_CONTAINER,
     EXPORTER_CONTAINER,
     GATE_CONTAINER,
+    REVIEWER_CONTAINER,
     MAILBOXES,
     SERVICE_GENERATIONS,
     serviceAckVolume,
@@ -48,7 +52,10 @@ import {
     containerHardeningField,
     doNotDisruptField,
     gateResourcesField,
+    mailboxesOf,
     mailboxMount,
+    REVIEWER_HOME_VOLUME,
+    reviewerResourcesField,
     mailboxVolumes,
     podHardeningField,
     resourcesField,
@@ -224,7 +231,13 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 function supervisorContainer(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean; gated: boolean; services: readonly ServiceSpec[] }
+    group: {
+        exporting: boolean;
+        agentless: boolean;
+        gated: boolean;
+        reviewing: boolean;
+        services: readonly ServiceSpec[];
+    }
 ): RunnerPodContainer {
     return {
         name: SUPERVISOR_CONTAINER,
@@ -241,7 +254,7 @@ function supervisorContainer(
         ],
         volumeMounts: [
             workspaceMount(config, workspacePath(job)),
-            ...Object.values(MAILBOXES).map((box) => mailboxMount(box, 'rw')),
+            ...mailboxesOf(group.reviewing).map((box) => mailboxMount(box, 'rw')),
             ...serviceRestartMounts(group.services),
         ],
     };
@@ -336,6 +349,36 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
         workingDir: MAILBOXES.gate.path,
         env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
         volumeMounts: [workspaceMount(config, workspacePath(job)), mailboxMount(MAILBOXES.gate, 'rw')],
+    };
+}
+
+/**
+ * The reviewer container (issue #774): the executor image as a native sidecar, dormant beside the
+ * supervisor for the whole group, running the review loop over the review mailbox only the two of
+ * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
+ * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
+ * publish token, no credential helper, no Secret reference, no claim env. Each request carries the
+ * review's own environment and is gone before the review starts. Its tree is the member's subtree,
+ * read-only (the shared clone and the review's worktree are in it), and its session state is its
+ * own emptyDir home. Sized idle (`reviewerResourcesField`) and resized in place for a review.
+ */
+function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContainer {
+    const hardened = containerHardeningField().securityContext;
+    return {
+        name: REVIEWER_CONTAINER,
+        image: executorImage(config, job.executorType),
+        imagePullPolicy: config.imagePullPolicy,
+        restartPolicy: 'Always',
+        ...reviewerResourcesField(config),
+        securityContext: { ...hardened, runAsUser: REVIEWER_UID, runAsGroup: GATE_GID },
+        command: reviewLoopArgv(),
+        workingDir: MAILBOXES.review.path,
+        env: [{ name: 'HOME', value: REVIEWER_HOME }],
+        volumeMounts: [
+            { ...workspaceMount(config, workspacePath(job)), readOnly: true },
+            mailboxMount(MAILBOXES.review, 'rw'),
+            { name: REVIEWER_HOME_VOLUME, mountPath: REVIEWER_HOME },
+        ],
     };
 }
 
@@ -487,12 +530,14 @@ export function runnerJobSpec(
     // The declared gates and setup run in the group's own gate container, and the declared services
     // beside it on the pod's loopback (issue #773).
     const gateImage = gateImageOf(job);
+    const reviewing = (job.reviewerProfiles?.length ?? 0) > 0;
     const services = groupServices(config, job);
     const servicesFields = servicesPodFields(services);
     // Every init container starts, in order, before the main containers, so no order spares the
     // supervisor a sidecar that never starts: the gate leads, the services follow as declared.
     const sidecars = [
         ...(gateImage ? [gateSidecar(config, job, gateImage)] : []),
+        ...(reviewing ? [reviewerSidecar(config, job)] : []),
         ...services.map((service) => serviceSidecar(config, job, service)),
     ];
     const volumes: RunnerVolume[] = agent?.volumes ?? [
@@ -563,11 +608,17 @@ export function runnerJobSpec(
                             exporting,
                             agentless,
                             gated: gateImage !== null,
+                            reviewing,
                             services,
                         }),
                         ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
-                    volumes: [...volumes, ...mailboxVolumes(), ...servicesFields.volumes],
+                    volumes: [
+                        ...volumes,
+                        ...mailboxVolumes(reviewing),
+                        ...(reviewing ? [{ name: REVIEWER_HOME_VOLUME, emptyDir: {} }] : []),
+                        ...servicesFields.volumes,
+                    ],
                 },
             },
         },

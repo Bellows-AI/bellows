@@ -2,13 +2,20 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { AGENT_LAUNCH_CAPS, workspacePath } from '../src/claim.js';
+import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID, workspacePath } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { WORKSPACE_PATH } from '../src/publish.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
-import { AGENT_CONTAINER, GATE_CONTAINER, serviceContainerOf } from '../src/supervisor-contract.js';
+import { REVIEWER_HOME_VOLUME } from '../src/k8s-podfields.js';
+import {
+    AGENT_CONTAINER,
+    GATE_CONTAINER,
+    MAILBOXES,
+    REVIEWER_CONTAINER,
+    serviceContainerOf,
+} from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -238,9 +245,53 @@ describe('the admission policy fences the task pod shape (#773)', () => {
     it(`admits a ${serviceContainerOf('')} container only as a restartable init container, beside the ${GATE_CONTAINER}`, () => {
         const pods = policy('pods');
         expect(pods).toContain(`variables.spec.containers.all(c, !c.name.startsWith('${serviceContainerOf('')}'))`);
-        expect(pods).toContain(`c.name == '${GATE_CONTAINER}' || c.name.startsWith('${serviceContainerOf('')}')`);
+        expect(pods).toContain(
+            `c.name == '${GATE_CONTAINER}' || c.name == '${REVIEWER_CONTAINER}' || c.name.startsWith('${serviceContainerOf('')}')`
+        );
         const restartable = (pod.initContainers ?? []).filter((c) => c.restartPolicy === 'Always').map((c) => c.name);
         expect(restartable).toEqual([GATE_CONTAINER, serviceContainerOf('cache'), serviceContainerOf('db')]);
         expect(pod.containers.some((c) => c.name.startsWith(serviceContainerOf('')))).toBe(false);
+    });
+
+    // Issue #774: the reviewer is the one other restartable init container name, and the resize may
+    // name it, or the gate, alone.
+    it(`admits the ${REVIEWER_CONTAINER} as the one other restartable init container name`, () => {
+        const pods = policy('pods');
+        expect(pods).toContain(
+            `c.name == '${GATE_CONTAINER}' || c.name == '${REVIEWER_CONTAINER}' || c.name.startsWith('${serviceContainerOf('')}')`
+        );
+        const reviewing = runnerJobSpec(
+            config,
+            {
+                ...job,
+                masterPrompt: 'Factory execution contract',
+                repo: 'Bellows-AI/factory',
+                reviewerProfiles: ['security'],
+            },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        const restartable = (reviewing.initContainers ?? []).filter((c) => c.restartPolicy === 'Always');
+        expect(restartable.map((c) => c.name)).toEqual([REVIEWER_CONTAINER]);
+    });
+
+    it('lets a resize patch name the gate or the reviewer alone', () => {
+        const resize = policy('resize');
+        expect(resize).toContain(`size(variables.changed) <= 1`);
+        expect(resize).toContain(`c.name == '${GATE_CONTAINER}' || c.name == '${REVIEWER_CONTAINER}'`);
+        expect(resize).toContain('a driver resize changes the gate or the reviewer container alone');
+    });
+
+    it('refuses a reviewer that runs as the tool or the gate uid, or mounts anything but its own', () => {
+        const pods = policy('pods');
+        expect(pods).toContain(`c.name != '${REVIEWER_CONTAINER}'`);
+        expect(pods).toContain(`c.securityContext.runAsUser == ${REVIEWER_UID}`);
+        expect(pods).toContain('a driver-specced reviewer runs as its own uid');
+        expect(pods).toContain(
+            'a driver-specced reviewer mounts its workspace read-only, its review mailbox and its home'
+        );
+        expect(pods).toContain(MAILBOXES.review.name);
+        expect(pods).toContain(REVIEWER_HOME_VOLUME);
+        expect(REVIEWER_UID).not.toBe(TOOL_UID);
+        expect(REVIEWER_UID).not.toBe(GATE_UID);
     });
 });

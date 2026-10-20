@@ -852,8 +852,10 @@ expect_contains 'the admission policy maps hostAliases only to loopback' "$admis
     "variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')"
 expect_contains 'the admission policy keeps svc- containers out of the main containers' "$admission" \
     "variables.spec.containers.all(c, !c.name.startsWith('svc-'))"
-expect_contains 'the admission policy restarts only the gate and svc- sidecars' "$admission" \
-    "(c.name == 'gate' || c.name.startsWith('svc-'))"
+expect_contains 'the admission policy restarts only the gate, reviewer and svc- sidecars' "$admission" \
+    "(c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-'))"
+expect_contains 'the admission policy pins the reviewer to its own uid' "$admission" \
+    "c.securityContext.runAsUser == 1002"
 # Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
 expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
     "request.kind.kind == 'Job' && c.name == 'agent' &&"

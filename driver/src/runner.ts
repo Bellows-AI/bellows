@@ -433,10 +433,18 @@ export interface Runner {
      * kubelet to apply it, never a verdict. Docker has nothing to resize and answers false.
      */
     resizeGate(job: BoardJob, phase: GateSizing): Promise<boolean>;
+    /**
+     * The same for the reviewer container (issue #774): low (`idle`) between reviews, the runner's
+     * own requests (`run`) while one runs. Best-effort, as `resizeGate`; docker answers false.
+     */
+    resizeReviewer(job: BoardJob, phase: ReviewerSizing): Promise<boolean>;
 }
 
 /** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */
 export type GateSizing = 'idle' | 'verify';
+
+/** The two sizes a reviewer container is resized between: low between reviews, the runner's requests for one. */
+export type ReviewerSizing = 'idle' | 'run';
 
 /**
  * The most of a runner's output this process will hold in memory — the board truncates too; this
