@@ -35,7 +35,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Claim loop, verdicts, reclaim, staged-then-completed teardown | `driver/src/loop.ts`, `board.ts`, `board-verdict.ts`, `loop-conclusion.ts`, `reclaim-calls.ts`, `claim.ts`, `board-retry.ts`, `verdict-budget.ts` | `driver/test/loop.test.ts`, `board.test.ts`, `board-retry.test.ts`, `loop-containment.test.ts` |
+| Claim loop, verdicts, reclaim, staged-then-completed teardown | `driver/src/loop.ts`, `board.ts`, `board-verdict.ts`, `loop-conclusion.ts`, `loop-phase.ts`, `reclaim-calls.ts`, `claim.ts`, `board-retry.ts`, `verdict-budget.ts` | `driver/test/loop.test.ts`, `loop-phase.test.ts`, `board.test.ts`, `board-retry.test.ts`, `loop-containment.test.ts` |
 | Stand-down fence, interruption vs failure, startup cause, drain handover | `driver/src/loop-fence.ts`, `loop-run.ts`, `termination.ts`, `startup-cause.ts` | `driver/test/loop-fence.test.ts`, `termination.test.ts`, `startup-cause.test.ts`, `loop-phase-faults.test.ts` |
 | Executor conformance tables | `driver/test/fixtures/termination-table.ts`, `fixtures/startup-table.ts` | `driver/test/docker.test.ts`, `k8s.test.ts` |
 | Master prompt; turn-context hook; continuation framing | `driver/src/master-prompt.ts`, `runner-plan.ts`, `continuation.ts`, `docker/claude-executor/turn-context-hook.cjs` | `driver/test/master-prompt.test.ts`, `runner-plan.test.ts`, `continuation.test.ts`, `turn-context-hook.test.ts` |

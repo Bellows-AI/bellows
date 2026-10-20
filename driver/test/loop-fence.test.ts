@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob, LeaseState } from '../src/board.js';
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import { newJobState, raceStep } from '../src/loop-attempt.js';
+import { recordEnding } from '../src/loop-phase.js';
 import { concludeSetup, handBackFence, standDown } from '../src/loop-fence.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop-types.js';
 
@@ -113,7 +114,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('releases nothing for an attempt that never took the claim', async () => {
         const { ctx, calls } = fencedAttempt(false);
-        ctx.state.stopped = true;
+        recordEnding(ctx.state, 'stop');
 
         await handBackFence(ctx);
         expect(await standDown(ctx, 'setup')).toBe(true);
@@ -123,7 +124,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('stands a stopped attempt down as one sequence — release, settle, park', async () => {
         const { ctx, calls, lines } = fencedAttempt();
-        ctx.state.stopped = true;
+        recordEnding(ctx.state, 'stop');
 
         expect(await standDown(ctx, 'setup')).toBe(true);
 
@@ -133,7 +134,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('leaves the attempt to its holder when the lease was lost, without parking it', async () => {
         const { ctx, calls, lines } = fencedAttempt();
-        ctx.state.lost = true;
+        recordEnding(ctx.state, 'lost');
 
         expect(await standDown(ctx, 'setup')).toBe(true);
 
@@ -143,7 +144,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('runs the pre-park hook for a stopped attempt, after the settle and before the park', async () => {
         const { ctx, calls } = fencedAttempt();
-        ctx.state.stopped = true;
+        recordEnding(ctx.state, 'stop');
 
         expect(await standDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
 
@@ -152,7 +153,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it.each(['lost', 'removed'] as const)('skips the pre-park hook when the lease is %s', async (verdict) => {
         const { ctx, calls, lines } = fencedAttempt();
-        ctx.state[verdict] = true;
+        recordEnding(ctx.state, verdict);
 
         expect(await standDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
 
@@ -171,7 +172,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     // Issue #820: runJob's catch asks again after a stand-down that threw; the second ask is a no-op.
     it('stands an attempt down once, however often it is asked', async () => {
         const { ctx, calls } = fencedAttempt();
-        ctx.state.stopped = true;
+        recordEnding(ctx.state, 'stop');
 
         expect(await standDown(ctx, 'setup')).toBe(true);
         expect(await standDown(ctx, 'its run')).toBe(true);
@@ -181,7 +182,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('retries a park the board does not take, then leaves the stop to the lease without throwing', async () => {
         const { ctx, calls, lines } = fencedAttempt();
-        ctx.state.stopped = true;
+        recordEnding(ctx.state, 'stop');
         Object.assign(ctx.rt, { sleep: async () => {} });
         ctx.rt.board.suspend = async () => {
             calls.push('suspend');
@@ -196,7 +197,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('still parks when the pre-park hook throws', async () => {
         const { ctx, calls, lines } = fencedAttempt();
-        ctx.state.stopped = true;
+        recordEnding(ctx.state, 'stop');
 
         const hook = async () => {
             throw new Error('artifact upload refused');

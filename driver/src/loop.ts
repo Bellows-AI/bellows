@@ -10,6 +10,7 @@ import { CLAUDE_CODE } from './executors.js';
 import { withBoardRetry } from './board-retry.js';
 import { type SyncQueue, syncQueue } from './sync-queue.js';
 import { down, type JobState } from './loop-attempt.js';
+import { recordEnding } from './loop-phase.js';
 
 export interface Loop {
     /**
@@ -115,8 +116,7 @@ function completeWithRetry(
 
 /** One attempt handed over: stood down as lost, then its lease handed back as an interruption. */
 async function handOver(rt: LoopRuntime, job: BoardJob, state: JobState, reason: string): Promise<void> {
-    state.handedOver = true;
-    state.lost = true;
+    recordEnding(state, 'handover');
     state.abortNow();
     state.wake();
     const answer = await withBoardRetry(rt, `job ${job.id}: the handover was not accepted`, () =>
@@ -145,7 +145,7 @@ function handoverOf(rt: LoopRuntime) {
         async run(reason: string): Promise<void> {
             // A concluding attempt's verdict is in flight: its own teardown follows it (issue #821).
             const handing = [...live.values()].filter(
-                ({ state }) => !state.finished && !state.concluding && !down(state)
+                ({ state }) => state.phase !== 'ended' && state.phase !== 'concluding' && !down(state)
             );
             await Promise.all(handing.map(({ job, state }) => handOver(rt, job, state, reason)));
             landed();

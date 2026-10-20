@@ -6,6 +6,7 @@
  */
 
 import { down } from './loop-attempt.js';
+import { lostOf, transition } from './loop-phase.js';
 import { withBoardRetry } from './board-retry.js';
 import type { BoardJob, LeaseState } from './board.js';
 import type { RunOutcome } from './runner.js';
@@ -129,9 +130,9 @@ export async function standDown(ctx: AttemptCtx, phase: string, beforePark?: () 
     await ctx.settle();
     ctx.stoodDown = true;
     const { rt, job, state } = ctx;
-    if (state.lost) {
+    if (lostOf(state)) {
         rt.log(`job ${job.id}: the lease was lost during ${phase}, leaving the job to its holder`);
-    } else if (state.removed) {
+    } else if (state.ending?.kind === 'removed') {
         rt.log(`job ${job.id}: removed during ${phase}; the queue owns the tree`);
     } else {
         await beforePark?.().catch((e: Error) =>
@@ -177,7 +178,7 @@ async function park(ctx: AttemptCtx, phase: string): Promise<void> {
  */
 export async function concludeAttempt(ctx: AttemptCtx, verdict: VerdictBody): Promise<LeaseState | null> {
     const { rt, job, state } = ctx;
-    state.concluding = true;
+    transition(state, 'concluding');
     const staged = await withBoardRetry(
         rt,
         `job ${job.id}: the staged verdict was not accepted`,

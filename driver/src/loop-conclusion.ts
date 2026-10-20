@@ -8,6 +8,7 @@
 import type { BoardJob } from './board.js';
 import type { JobState } from './loop-attempt.js';
 import { closeRunControl } from './loop-gates.js';
+import { transition } from './loop-phase.js';
 import type { LoopRuntime } from './loop-types.js';
 
 export function attemptSettlement(
@@ -20,7 +21,7 @@ export function attemptSettlement(
     let tearingDown: Promise<void> | null = null;
     const quiesce = () =>
         (quiescing ??= (async () => {
-            state.finished = true;
+            transition(state, 'ended');
             // In flight for a drain's handover (`loop.ts`) until here.
             rt.live?.delete(job.id);
             if (state.graceTimer) clearTimeout(state.graceTimer);
@@ -34,7 +35,8 @@ export function attemptSettlement(
             // control channel its order travels is still open — and never for an attempt handed over
             // by a drain, nor one whose verdict the board never took (`keepGroup`): either runner is
             // left for the next claim to adopt.
-            if (!state.handedOver && !state.keepGroup) await rt.runner.finish(job).catch(() => undefined);
+            if (state.ending?.kind !== 'handover' && !state.keepGroup)
+                await rt.runner.finish(job).catch(() => undefined);
             closeRunControl(rt, state);
         })());
     return {

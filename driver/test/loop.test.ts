@@ -18,6 +18,7 @@ import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
+import { transition } from '../src/loop-phase.js';
 import {
     type BoardStub,
     config,
@@ -4672,7 +4673,7 @@ describe('the output pump snapshot', () => {
             expect(pump.snapshot().activity).toBe('$ npm run lint');
         } finally {
             vi.useRealTimers();
-            state.finished = true;
+            transition(state, 'ended');
             state.wake();
         }
     });

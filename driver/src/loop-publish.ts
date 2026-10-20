@@ -20,7 +20,7 @@ import type { PublishRelay, PublishVerdict } from './publish-control.js';
  * (`job.publish === false`) and the route says so.
  */
 export function createPublishRelay(rt: LoopRuntime, job: BoardJob, state: JobState): PublishRelay {
-    const gone = (): boolean => state.finished || state.draining || down(state);
+    const gone = (): boolean => state.phase === 'ended' || state.draining || down(state);
     return {
         async publish() {
             if (job.publish === false) return 'forbidden';

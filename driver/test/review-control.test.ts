@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob, ReviewAnswer, ReviewReport, ReviewRequest } from '../src/board.js';
 import { createGateServer } from '../src/gates.js';
 import { newJobState } from '../src/loop-attempt.js';
+import { recordEnding, transition } from '../src/loop-phase.js';
 import { createReviewRelay, reviewerQuestionRelay } from '../src/loop-review.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from '../src/review-control.js';
@@ -293,7 +294,9 @@ describe('the review relay: what an attempt may ask for', () => {
         'asks for nothing once the attempt is %s',
         async (flag) => {
             const { relay, state, calls } = relayFor();
-            state[flag] = true;
+            if (flag === 'draining') state.draining = true;
+            else if (flag === 'finished') transition(state, 'ended');
+            else recordEnding(state, flag === 'stopped' ? 'stop' : flag);
             await expect(relay.request('sec-1', 'security')).resolves.toBe('gone');
             await expect(relay.read('sec-1')).resolves.toBe('gone');
             expect(calls.measured).toBe(0);
@@ -310,7 +313,7 @@ describe('the review relay: what an attempt may ask for', () => {
             runner: {
                 probeTree: async () => 'abc:def',
                 snapshotTree: async () => {
-                    state.lost = true;
+                    recordEnding(state, 'lost');
                     return { ok: true as const, ref: SNAPSHOT_REF };
                 },
             },
@@ -336,11 +339,11 @@ describe('the review relay: what an attempt may ask for', () => {
 
         const lost = relayFor({ answer: { result: 'lost' } });
         await expect(lost.relay.request('sec-1', 'security')).resolves.toBe('gone');
-        expect(lost.state.lost).toBe(true);
+        expect(lost.state.ending?.kind).toBe('lost');
 
         const removed = relayFor({ answer: { result: 'removed' } });
         await expect(removed.relay.read('sec-1')).resolves.toBe('gone');
-        expect(removed.state.removed).toBe(true);
+        expect(removed.state.ending?.kind).toBe('removed');
     });
 
     it('answers a board that cannot be reached as a refusal to ask again, not a crash', async () => {

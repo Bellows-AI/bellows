@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { createGateServer } from '../src/gates.js';
 import { newJobState } from '../src/loop-attempt.js';
+import { recordEnding, transition } from '../src/loop-phase.js';
 import { createPublishRelay } from '../src/loop-publish.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 import type { PublishResult } from '../src/publish.js';
@@ -219,7 +220,9 @@ describe('the publish relay: what an attempt may publish', () => {
         'publishes nothing once the attempt is %s',
         async (flag) => {
             const { relay, state, calls } = relayFor();
-            state[flag] = true;
+            if (flag === 'draining') state.draining = true;
+            else if (flag === 'finished') transition(state, 'ended');
+            else recordEnding(state, flag === 'stopped' ? 'stop' : flag);
             await expect(relay.publish()).resolves.toBe('gone');
             expect(calls.asks).toBe(0);
             expect(calls.published).toEqual([]);
@@ -229,7 +232,7 @@ describe('the publish relay: what an attempt may publish', () => {
     it('publishes nothing when the lease is lost while the credential is asked for', async () => {
         const holder: { state?: ReturnType<typeof newJobState> } = {};
         const made = relayFor({}, () => {
-            if (holder.state) holder.state.lost = true;
+            if (holder.state) recordEnding(holder.state, 'lost');
         });
         holder.state = made.state;
         await expect(made.relay.publish()).resolves.toBe('gone');

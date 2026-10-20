@@ -18,6 +18,7 @@ import {
     sizeGateForVerify,
 } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
+import { lostOf, transition } from './loop-phase.js';
 import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
 import { attemptSettlement } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
@@ -379,12 +380,14 @@ async function launchRun(
         await handBackFence(ctx);
         // Paced like a launched attempt for the gates and publish that follow.
         state.launched = true;
+        transition(state, 'launched');
         return ctx.adopted.outcome;
     }
     // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
     // session id reported for one would name a conversation that never existed.
     await reportNewSession(rt, job, session);
     state.launched = true;
+    transition(state, 'launched');
     // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.
     ctx.fenced = false;
 
@@ -441,7 +444,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      * A session whose gates are all on demand has no pass: its evidence reads `none`, never `passed`.
      */
-    const gating = gateSession?.endPass && !outcome.refused && !state.lost ? gateSession : null;
+    const gating = gateSession?.endPass && !outcome.refused && !lostOf(state) ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
@@ -681,6 +684,8 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     }
 
     const state = newJobState();
+    state.trace = (t) =>
+        log(JSON.stringify({ event: 'attempt-transition', job: job.id, claimSeq: job.claimSeq, ...t }));
     // In flight for a drain's handover (`loop.ts`) until it settles.
     rt.live?.set(job.id, { job, state });
     const beating = heartbeat(rt, job, state);

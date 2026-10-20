@@ -28,7 +28,7 @@ export function createQuestionRelay(rt: LoopRuntime, job: BoardJob, state: JobSt
             }
             // A Stop or the end of the run landed during the board call and already cleaned up:
             // nothing is waiting, so the runtime budget stays unchanged.
-            if (state.finished || state.draining || down(state)) return 'accepted';
+            if (state.phase === 'ended' || state.draining || down(state)) return 'accepted';
             await updateQuestionDeadline(rt, job, state);
             return 'accepted';
         },
