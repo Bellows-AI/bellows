@@ -200,6 +200,11 @@ describe('the claimed job', () => {
             'helperPlans',
             undefined,
         ],
+        // Issue #774: the claim names the reviewer profiles the pod must hold a reviewer for.
+        ['carries the reviewer profile names', { reviewerProfiles: ['security'] }, 'reviewerProfiles', ['security']],
+        ['reads missing reviewer profiles as absent', {}, 'reviewerProfiles', undefined],
+        ['drops an empty reviewerProfiles list', { reviewerProfiles: [] }, 'reviewerProfiles', undefined],
+        ['drops a malformed reviewerProfiles value', { reviewerProfiles: ['a', 1] }, 'reviewerProfiles', undefined],
         // Issue #769: the claim carries the resolved execution plan; a malformed services value is a
         // refusal sentence, never a half-read fleet.
         [

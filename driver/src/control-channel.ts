@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish-control.js';
-import { type ExportRelay, EXPORT_PATH, serveExport } from './export-control.js';
+import { type ExportRelay, type ExportSlot, EXPORT_PATH, serveExport } from './export-control.js';
 import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
 import { REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
 import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review-control.js';
@@ -57,8 +57,14 @@ export interface ControlChannel {
     open(token: string, relay?: QuestionRelay, publisher?: PublishRelay, reviewer?: ReviewRelay): void;
     /** Opens the agent's own token beside the open supervisor `token`: the publish and review routes, no other. */
     grantAgent(token: string, agentToken: string): void;
-    /** Opens the transcript exporter's own token beside the open supervisor `token`: the export routes, no other. */
-    grantExporter(token: string, exporterToken: string): void;
+    /**
+     * Opens the transcript exporter's own token beside the open supervisor `token`: the export routes, no
+     * other. With `exporter` the token is bound to that relay instead of the attempt's own — a review's
+     * close-time export (issue #774) rides the caller's group under the review row's identity.
+     */
+    grantExporter(token: string, exporterToken: string, exporter?: ExportRelay): void;
+    /** Closes a bound exporter token once its step is over; the attempt's own tokens are not touched. */
+    revokeExporter(exporterToken: string): void;
     /** Gives an open token its transcript exporter's relay: the `/export` routes answer 400 until then. */
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Whether the supervisor has contacted this token — its control poll, or a question POST. */
@@ -165,12 +171,12 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
     const controls = new Map<string, ControlEntry>();
     /** An agent token, to the supervisor token of the attempt it belongs to. */
     const agents = new Map<string, string>();
-    /** A transcript exporter's token, to the supervisor token of the attempt it belongs to. */
-    const exporters = new Map<string, string>();
+    /** A transcript exporter's token, to the attempt it belongs to and, for a review's, the relay of its own. */
+    const exporters = new Map<string, { owner: string; slot?: ExportSlot }>();
 
     /** The attempt a token of any role belongs to, or undefined once it is closed. */
     const entryOf = (auth: string): ControlEntry | undefined =>
-        controls.get(auth) ?? controls.get(agents.get(auth) ?? exporters.get(auth) ?? '');
+        controls.get(auth) ?? controls.get(agents.get(auth) ?? exporters.get(auth)?.owner ?? '');
 
     /** The doors a token of a known attempt opens. */
     const doorsOf = (auth: string): readonly Route[] => {
@@ -220,9 +226,11 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
         grantAgent(token, agentToken) {
             if (agentToken !== token) agents.set(agentToken, token);
         },
-        grantExporter(token, exporterToken) {
-            if (exporterToken !== token) exporters.set(exporterToken, token);
+        grantExporter(token, exporterToken, exporter) {
+            if (exporterToken === token) return;
+            exporters.set(exporterToken, exporter ? { owner: token, slot: { relay: exporter } } : { owner: token });
         },
+        revokeExporter: (exporterToken) => void exporters.delete(exporterToken),
         attachExporter(token, exporter) {
             const control = controls.get(token);
             if (control) control.exporting.relay = exporter;
@@ -242,7 +250,7 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             controls.delete(token);
             steps.close(token);
             for (const [agent, owner] of agents) if (owner === token) agents.delete(agent);
-            for (const [exporter, owner] of exporters) if (owner === token) exporters.delete(exporter);
+            for (const [exporter, { owner }] of exporters) if (owner === token) exporters.delete(exporter);
         },
         clear() {
             for (const token of controls.keys()) steps.close(token);
@@ -277,7 +285,8 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
             }
             if (route === 'export') {
                 // Not the supervisor: the exporter's calls never say a supervisor is listening.
-                const answer = await serveExport(control.exporting, request, () => entryOf(auth) === control);
+                const slot = exporters.get(auth)?.slot ?? control.exporting;
+                const answer = await serveExport(slot, request, () => entryOf(auth) === control);
                 respondJson(reply, answer.status, answer.body);
                 return true;
             }

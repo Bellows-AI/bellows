@@ -181,7 +181,7 @@ RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bas
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
 # the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.
-RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate && chown -R node:node /factory \
+RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory \
     && chmod 0700 /factory/in /factory/out
 
 USER node

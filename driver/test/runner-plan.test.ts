@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import type { RunSession } from '../src/runner.js';
-import { runnerPlan } from '../src/runner-plan.js';
+import { reviewerPlan, runnerPlan } from '../src/runner-plan.js';
 
 /**
  * What a runner is asked to do, decided once for both platforms (runner-plan.ts). docker renders
@@ -254,5 +254,20 @@ describe('the per-repo package cache', () => {
         ['a repo label that escapes the cache root', { ...cached(job), repo: 'acme/..' }],
     ])('refuses %s', (_name, j) => {
         expect(() => plan(j, { id: SESSION, resume: false })).toThrow(/refusing to run job .*cache/);
+    });
+});
+
+describe('the reviewer plan', () => {
+    const dataHome = (j: BoardJob) =>
+        reviewerPlan(loadDriverConfig({}), j, null).env.find(([name]) => name === 'XDG_DATA_HOME')?.[1];
+    const review = (id: string, rootJobId: string): BoardJob => ({ ...opencodeJob, id, rootJobId });
+
+    // opencode's readout exports every row of the database it is pointed at, so a database shared
+    // by a member's reviews would upload one review's transcript under another's identity.
+    it('gives each review its own opencode data directory, stable across a re-lease', () => {
+        const first = review('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+        const second = review('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
+        expect(dataHome(first)).not.toBe(dataHome(second));
+        expect(dataHome({ ...first, claimSeq: 2, leaseToken: 'new' })).toBe(dataHome(first));
     });
 });

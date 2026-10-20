@@ -48,6 +48,8 @@ import type { OrgRegistry } from '../orgs.js';
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
+    /** The workspaces root the dashboard mounts; null or absent where tasks have no member tree. */
+    workspaceRoot?: string | null;
 }
 
 /**
@@ -58,7 +60,7 @@ export interface JobRouteDeps {
  * the repo's line-count ceiling. See docs/jobs.md for the protocol these routes implement.
  */
 export const jobRoutes =
-    ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
+    ({ orgs, workspaceRoot = null }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const firstJobClaim = boardScan();
         const firstReclaimClaim = boardScan();
@@ -68,7 +70,7 @@ export const jobRoutes =
         // POST, not GET: claiming mutates. The worker id is required — it is the only thing that
         // says which container is holding a job when one has to be found and killed.
         app.post('/api/jobs/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleClaimJob(orgs, firstJobClaim, request, reply)
+            handleClaimJob({ orgs, firstJobClaim, workspaceRoot }, request, reply)
         );
         // The orphan reaper's batched lease lookup (issue #301). Static segment, registered
         // beside /claim — it wins over /api/jobs/:id the same way the claim route already does.

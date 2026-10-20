@@ -15,16 +15,11 @@ const config = (jobTimeoutMs: number, gateTimeoutMs: number) => ({ jobTimeoutMs,
 
 describe('setupTimeoutMs', () => {
     it('is the gate budget when that is under half the run budget', () => {
-        expect(setupTimeoutMs(config(120 * MINUTE, 10 * MINUTE), job)).toBe(10 * MINUTE);
+        expect(setupTimeoutMs(config(120 * MINUTE, 10 * MINUTE))).toBe(10 * MINUTE);
     });
 
     it('is half the run budget, floored, when the gate budget is larger', () => {
-        expect(setupTimeoutMs(config(15 * MINUTE + 1, 60 * MINUTE), job)).toBe(7.5 * MINUTE);
-    });
-
-    it("halves a named reviewer's own budget, not the operator's", () => {
-        const reviewer = { ...job, reviewRun: { profile: 'p', ref: 'r', timeoutMinutes: 4 } };
-        expect(setupTimeoutMs(config(120 * MINUTE, 10 * MINUTE), reviewer)).toBe(2 * MINUTE);
+        expect(setupTimeoutMs(config(15 * MINUTE + 1, 60 * MINUTE))).toBe(7.5 * MINUTE);
     });
 });
 

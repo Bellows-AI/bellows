@@ -13,10 +13,12 @@ import type {
     QuestionVerdict,
     Reclaim,
     ReclaimRenewal,
+    ReviewClaim,
     RuntimeReport,
 } from '../../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { ExportRelay } from '../../src/export-control.js';
+import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop.js';
@@ -31,6 +33,7 @@ import type {
     AdoptedRun,
     DeadService,
     GateSizing,
+    ReviewerSizing,
     RunOutcome,
     RunSession,
     Runner,
@@ -293,6 +296,13 @@ export function stubRunner(
         deadServices?: () => Promise<DeadService[]>;
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
         restartServices?: (signal: AbortSignal) => Promise<void>;
+        /** One review step's answer (issue #774); absent throws. */
+        runReview?: (
+            caller: BoardJob,
+            review: ReviewClaim,
+            session: RunSession | null,
+            control: ReviewControl
+        ) => Promise<StepResult>;
         /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
         adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>;
     } = {}
@@ -319,6 +329,10 @@ export function stubRunner(
     paused: { id: string; paused: boolean }[];
     /** Every gate resize the loop asked for (issue #773), in order. */
     resized: GateSizing[];
+    /** Every reviewer resize (issue #774), in order. */
+    reviewerResized: ReviewerSizing[];
+    /** Every review the loop ran in a caller's group (issue #774). */
+    reviewed: { caller: BoardJob; review: BoardJob; session: RunSession | null }[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -428,6 +442,23 @@ export function stubRunner(
             runner.resized.push(phase);
             return true;
         },
+        reviewerResized: [] as ReviewerSizing[],
+        async resizeReviewer(_job: BoardJob, phase: ReviewerSizing) {
+            runner.reviewerResized.push(phase);
+            return false;
+        },
+        /** Every review the loop ran in a caller's group (issue #774), replaced by a test that scripts one. */
+        reviewed: [] as { caller: BoardJob; review: BoardJob; session: RunSession | null }[],
+        async runReview(
+            caller: BoardJob,
+            review: ReviewClaim,
+            session: RunSession | null,
+            control: ReviewControl = {}
+        ): Promise<StepResult> {
+            runner.reviewed.push({ caller, review, session });
+            if (!options.runReview) throw new Error('no review scripted');
+            return options.runReview(caller, review, session, control);
+        },
         ...(options.reapOrphanedClaim
             ? {
                   reapOrphanedClaim: async (orphanJob: BoardJob, claim: { uid: string; holder: string }) => {
@@ -499,6 +530,8 @@ export function stubGateStack(
         controlOpened: [] as string[],
         /** Each exporter token granted, beside the supervisor token it belongs to. */
         exportersGranted: [] as [string, string][],
+        /** The review-bound exporter tokens open right now, by token (issue #774). */
+        boundExporters: new Map<string, ExportRelay>(),
         stopsRaised: [] as string[],
         killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
@@ -557,8 +590,12 @@ export function stubGateStack(
                 const control = stack.controls.get(token);
                 if (control) stack.controls.set(agentToken, control);
             },
-            grantExporter: (token: string, exporterToken: string) => {
-                stack.exportersGranted.push([token, exporterToken]);
+            grantExporter: (token: string, exporterToken: string, exporter?: ExportRelay) => {
+                if (exporter) stack.boundExporters.set(exporterToken, exporter);
+                else stack.exportersGranted.push([token, exporterToken]);
+            },
+            revokeExporter: (exporterToken: string) => {
+                stack.boundExporters.delete(exporterToken);
             },
             attachExporter: (token: string, exporter: ExportRelay) => {
                 const control = stack.controls.get(token);

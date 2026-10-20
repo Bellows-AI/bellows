@@ -255,8 +255,8 @@ describe.skipIf(!enabled)('staged conclusions — database', () => {
             revision: 'h:2',
             ref: reviewRefOf(caller.id, 'sec-1'),
         });
-        expect(asked.result).toBe('created');
-        const review = await claim(reviewing);
+        if (asked.result !== 'created' || !asked.claim) throw new Error(`review not created: ${asked.result}`);
+        const review = asked.claim;
         expect(review.id).not.toBe(caller.id);
         await reviewing.stageConclusion(review.id, review.leaseToken, succeeded, LEASE_SECONDS);
         await expireLease(sql, review.id);

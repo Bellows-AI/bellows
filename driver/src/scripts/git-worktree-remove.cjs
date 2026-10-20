@@ -7,7 +7,8 @@
 //
 // Environment (set by the driver; paths only, never credentials):
 //   REPO    — the clone, whose admin dir registers the worktree;
-//   WORKTREE — the task's tree.
+//   WORKTREE — the task's tree;
+//   REVIEW_ROOTS — optional: the directory of the thread's review worktrees, removed with it.
 //
 // WHAT MAY BE REMOVED, and nothing else. The sync created the tree, and every commit on it
 // belongs to this thread; once the thread cannot continue, the tree holds nothing worth
@@ -48,6 +49,8 @@ const fsp = require('node:fs/promises');
 
 const repo = process.env.REPO;
 const wt = process.env.WORKTREE;
+// The directory that holds the thread's review roots; unset or empty for a tree that has none.
+const reviewRoots = process.env.REVIEW_ROOTS || '';
 const ERROR_MESSAGE_MAX_LENGTH = 300;
 
 // Every unlink on a ReadWriteMany NFS mount is a network round trip, and the tree being removed
@@ -179,42 +182,42 @@ function honestWorktreePointer(p) {
  * The clone is gone. Settle the tree from what the tree itself knows, and nothing else:
  * a registered task worktree carries a .git FILE whose gitdir names this clone's admin dir.
  */
-async function reclaimWithoutClone(wtExists) {
+async function reclaimWithoutClone(tree, wtExists) {
     if (!wtExists) return { ok: true, removed: false };
-    if (dotGitEntry(wt)) {
-        if (!honestWorktreePointer(wt)) {
+    if (dotGitEntry(tree)) {
+        if (!honestWorktreePointer(tree)) {
             return refused(
                 'refusing to remove ' +
-                    wt +
+                    tree +
                     ': the path holds a git tree that is not a registered worktree of ' +
                     repo +
                     ' (whose clone is gone); remove it by hand if it is truly stale'
             );
         }
-        await removeTree(wt);
+        await removeTree(tree);
         return { ok: true, removed: true };
     }
     // The bare-leftover case, without the clone that would have pruned after it.
-    await removeTree(wt);
+    await removeTree(tree);
     return { ok: true, removed: true };
 }
 
-async function reclaim() {
-    const wtExists = fs.existsSync(wt);
-    if (!fs.existsSync(repo)) return reclaimWithoutClone(wtExists);
+async function reclaim(tree) {
+    const wtExists = fs.existsSync(tree);
+    if (!fs.existsSync(repo)) return reclaimWithoutClone(tree, wtExists);
     const registered =
         wtExists &&
         git('worktree', 'list', '--porcelain')
             .split('\n')
             .filter((l) => l.startsWith('worktree '))
             .map((l) => l.slice('worktree '.length))
-            .includes(wt);
-    if (!registered && wtExists && dotGitEntry(wt)) {
+            .includes(tree);
+    if (!registered && wtExists && dotGitEntry(tree)) {
         // The refusal is terminal: returning it here means the prune below never runs, so the
         // single verdict this script prints is the refusal itself.
         return refused(
             'refusing to remove ' +
-                wt +
+                tree +
                 ': the path holds a git tree that is not a registered worktree of ' +
                 repo +
                 '; remove it by hand if it is truly stale'
@@ -229,14 +232,43 @@ async function reclaim() {
         // then rmdirs — the shape that took ~8 minutes and died ENOTEMPTY on EFS. The registration
         // check above has already decided this tree may go, so what is left is the removal itself,
         // and the prune below retires the admin entry exactly as `worktree remove` would have.
-        await removeTree(wt);
+        await removeTree(tree);
         removed = true;
     }
     git('worktree', 'prune');
     return { ok: true, removed };
 }
 
-reclaim()
+/**
+ * The thread's review roots (issue #774): every child of REVIEW_ROOTS is a review's worktree, made by
+ * the driver for a reviewer of this thread, and goes by the same rules as the task's own tree. The
+ * directory itself goes when it is empty. A refusal is terminal, as the task tree's is.
+ */
+async function reclaimReviewRoots(removedSoFar) {
+    if (!reviewRoots) return { ok: true, removed: removedSoFar };
+    let names;
+    try {
+        names = fs.readdirSync(reviewRoots);
+    } catch (e) {
+        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return { ok: true, removed: removedSoFar };
+        throw e;
+    }
+    let removed = removedSoFar;
+    for (const name of names) {
+        const verdict = await reclaim(reviewRoots + '/' + name);
+        if (!verdict.ok) return verdict;
+        removed = removed || verdict.removed;
+    }
+    await rmdir(reviewRoots);
+    return { ok: true, removed };
+}
+
+async function reclaimThread() {
+    const verdict = await reclaim(wt);
+    return verdict.ok ? reclaimReviewRoots(verdict.removed) : verdict;
+}
+
+reclaimThread()
     .then((verdict) => console.log(JSON.stringify(verdict)))
     .catch((e) =>
         console.log(

@@ -45,7 +45,9 @@ the plan brief below.
 - A blocker the code confirms amends the plan: fix it yourself when it is local to a step;
   re-spawn the fix-planner with the finding when it disputes the root cause or the approach.
 - A finding that exposes ambiguity in the issue itself is a `BLOCKER` under `fix` Phase 2: STOP and
-  ask the user.
+  ask the user. A design fork it exposes takes the recommended default per `fix` Phase 2.
+- Before this review, run `fix` Phase 2's hazard check on the plan, so Codex spends its round on new
+  problems.
 
 ## Phase 4 replacement — Codex code review (max 2 rounds)
 

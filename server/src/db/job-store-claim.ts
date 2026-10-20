@@ -12,8 +12,7 @@ import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
-import { stopReviewsOf } from './job-store-reviews.js';
-import { workspacePathFor } from './job-store-rows.js';
+import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
 import { stagedUnderLease } from './job-store-staged.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
@@ -28,7 +27,6 @@ import type {
 } from './job-store-types.js';
 import type { ClaimCandidateRow } from './job-store-claim-row.js';
 import { claimCommand } from './follow-up-recap.js';
-import { reviewerPrompts } from './review-prompt.js';
 import { resolveMasterPrompt, resolveTurnContext } from './master-prompt.js';
 import { skillCatalog } from '../skills.js';
 import { isCancelledContinuation, sweepRuntimeWakes } from './workflow-blocks/runtime.js';
@@ -131,7 +129,6 @@ interface ReservedCandidate {
     created_by: string | null;
     repo: string | null;
     workflow_node: string | null;
-    review: boolean;
     base_branch: string | null;
 }
 
@@ -212,6 +209,9 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
             select j.id from job j
             where j.org_id = ${orgId}
               and j.status in ('queued','running')
+              -- A review is leased to its caller's claim in the request's own transaction (issue
+              -- #774); the open queue never offers one.
+              and j.review_of is null
               and j.lease_expires_at <= now()
               and (j.attempts < j.max_attempts or ${recovering})
               and (j.claim_deferred_until is null or j.claim_deferred_until <= now())
@@ -224,7 +224,6 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
             for update skip locked
         )
         returning id, root_job_id, claim_seq, created_by, repo, workflow_node,
-                  (review_spec is not null and review_ref is not null) as review,
                   ${baseBranch} as base_branch
     `;
     return reserved ?? null;
@@ -232,16 +231,13 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
 
 /**
  * The claim's slow half, outside every transaction: the plan read through the GitHub API. A
- * named-profile review never reads the plan (`claimReview`), and neither does a cancelled
- * continuation, which the acquisition settles — so an outage of the plan source never holds up the
+ * cancelled continuation never reads the plan, which the acquisition settles — so an outage of the plan source never holds up the
  * cancellation fence. A read that throws propagates, and the reservation stays as the candidate's
  * backoff.
  */
 async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidate): Promise<ResolvedClaimGates> {
     const { sql, orgId, planReader, hasWorkspaces } = ctx;
-    const skip =
-        reserved.review ||
-        (reserved.workflow_node !== null && (await isCancelledContinuation(sql, orgId, reserved.id)));
+    const skip = reserved.workflow_node !== null && (await isCancelledContinuation(sql, orgId, reserved.id));
     return resolveClaimGates(
         skip ? undefined : planReader,
         { orgId, hasWorkspaces, rootJobId: reserved.root_job_id },
@@ -328,6 +324,7 @@ async function acquireCandidate(
             where org_id = ${orgId} and id = ${reserved.id}
               and claim_seq = ${reserved.claim_seq}
               and status in ('queued','running')
+              and review_of is null
               and lease_expires_at <= now()
               and (attempts < max_attempts or ${recovering})
               and ${sameThreadRunning(reserved.id, rootJobId)}
@@ -339,7 +336,6 @@ async function acquireCandidate(
             -- stopped, and is never claimed again.
             returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
-                      review_of, review_spec, review_ref,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
                       -- Continues the superseded attempt in its session: the newest interruption names
@@ -395,14 +391,11 @@ async function claimNextCandidate(
  * (driver/src/claim.ts) — like every other claim env value, a claude-code row's config does not
  * reach a Remote Control runner, which gets only the baked settings.json and the mounted auth volume.
  * The plan was read before the locks (`prepareCandidate`); the workspace path is the acquired row's.
- *
- * A named-profile review (issue #549) is claimed on its own, narrower terms: the profile's env
- * grant, no gates, no publish — see `claimReview`.
  */
 async function assembleClaim(
     ctx: JobStoreContext,
     tx: TransactionSql,
-    row: Parameters<typeof reviewRowOf>[0] & {
+    row: ClaimCandidateRow & {
         created_by: string | null;
         repo: string | null;
         base_branch: string | null;
@@ -416,8 +409,6 @@ async function assembleClaim(
 ): Promise<Claim> {
     const { orgId, env, githubApp, executorConfig, hasWorkspaces, prs } = ctx;
     const { rootJobId } = prepared;
-    const reviewRow = reviewRowOf(row);
-    if (reviewRow) return claimReview(tx, { env, executorConfig, orgId, hasWorkspaces, rootJobId }, reviewRow);
     const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
@@ -613,55 +604,6 @@ async function resolveClaimEvidence(
     return { policy, review: await readReviewEvidence(tx, { orgId, rootJobId }, snapshot) };
 }
 
-/** The row as a named-profile review's, when it is one: the spec and the ref come together (`job_review_ck`). */
-function reviewRowOf<T extends ClaimCandidateRow>(
-    row: T
-): (T & { review_spec: ReviewerSpec; review_ref: string }) | null {
-    if (row.review_spec === null || row.review_ref === null) return null;
-    return { ...row, review_spec: row.review_spec, review_ref: row.review_ref };
-}
-
-/**
- * A named-profile review's claim (issue #549): the row is its own thread, claimed under the
- * profile's frozen spec. What it does NOT carry is the point — no minted GitHub token and no member
- * env beyond the profile's `connections`, no gates (so no gate error either), no publish, no
- * helpers, no policy to enforce on itself — and what it does carry that others do not is the
- * profile's own system prompt and `reviewRun`, the snapshot ref its worktree starts from and the
- * wall-clock budget the profile grants. The board decides all of it; the caller names none of it.
- */
-async function claimReview(
-    tx: TransactionSql,
-    deps: {
-        env: CreateJobStoreDeps['env'];
-        executorConfig: CreateJobStoreDeps['executorConfig'];
-        orgId: string;
-        hasWorkspaces: boolean;
-        rootJobId: string;
-    },
-    row: ClaimCandidateRow & { executor_scope: string | null; review_spec: ReviewerSpec; review_ref: string }
-): Promise<Claim> {
-    const { env, executorConfig, orgId, hasWorkspaces, rootJobId } = deps;
-    const spec = row.review_spec;
-    const executor = await resolveClaimExecutor(tx, { env, executorConfig, grant: spec.connections }, row);
-    const claim = buildClaimResult({ ...row, command: await claimCommand(tx, orgId, rootJobId, row) }, rootJobId, {
-        ...executor,
-        claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by),
-        claimGates: null,
-        claimServices: [],
-        planRevision: null,
-        planRefusal: null,
-        claimPolicy: null,
-        claimReviewers: [],
-        publish: false,
-        helperPlans: undefined,
-        masterPrompt: reviewerPrompts(spec, '').masterPrompt,
-        turnContext: null,
-        // A reviewer selects no skills and no managed connection: nothing to refuse.
-        skillRefusal: null,
-    });
-    return { ...claim, reviewRun: { profile: spec.name, ref: row.review_ref, timeoutMinutes: spec.timeoutMinutes } };
-}
-
 export interface ResolvedClaimPublish {
     publish: boolean | undefined;
     /** `false` only for an agent-less workflow node; absent otherwise. */
@@ -832,6 +774,7 @@ export function buildClaimResult(
         turnContext,
         policy,
         review,
+        claimReviewers,
     } = resolved;
     return {
         id: row.id,
@@ -869,6 +812,7 @@ export function buildClaimResult(
         ...(planRevision ? { planRevision } : {}),
         ...(policy ? { policy } : {}),
         ...(review ? { review } : {}),
+        ...(claimReviewers.length > 0 ? { reviewerProfiles: claimReviewers.map((profile) => profile.name) } : {}),
         ...(publish !== undefined ? { publish } : {}),
         ...(agent === false ? { agent } : {}),
         ...(helperPlans !== undefined ? { helperPlans } : {}),

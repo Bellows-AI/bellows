@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { claimRestoresTree, RESERVED_ENV_NAMES, runTimeoutMs } from '../src/claim.js';
+import type { BoardJob, ReviewClaim } from '../src/board.js';
+import { RESERVED_ENV_NAMES } from '../src/claim.js';
+import { reviewBudgetMs } from '../src/review-step.js';
 import { loadDriverConfig } from '../src/config.js';
 import type { PublishStep } from '../src/publish.js';
 import { gitReviewSnapshotScript, reviewRefOf, snapshotTree } from '../src/review-snapshot.js';
@@ -80,17 +81,10 @@ describe('snapshotTree', () => {
 describe('a reviewer’s claim', () => {
     const review = { profile: 'security', ref: `refs/factory/review/${ROOT}/sec-1`, timeoutMinutes: 5 };
 
-    it('restores its tree at the snapshot — no fetch, no rebase — where an ordinary first claim syncs', () => {
-        expect(claimRestoresTree(job)).toBe(false);
-        expect(claimRestoresTree({ ...job, reviewRun: review } as BoardJob)).toBe(true);
-        expect(claimRestoresTree({ ...job, followUp: true } as BoardJob)).toBe(true);
-    });
-
     it('runs for its profile’s budget, never past the operator’s ceiling', () => {
         const ceiling = { jobTimeoutMs: 2 * 3_600_000 };
-        expect(runTimeoutMs(ceiling, job)).toBe(ceiling.jobTimeoutMs);
-        expect(runTimeoutMs(ceiling, { ...job, reviewRun: review } as BoardJob)).toBe(5 * 60_000);
-        expect(runTimeoutMs(ceiling, { ...job, reviewRun: { ...review, timeoutMinutes: 600 } } as BoardJob)).toBe(
+        expect(reviewBudgetMs(ceiling, { ...job, reviewRun: review } as ReviewClaim)).toBe(5 * 60_000);
+        expect(reviewBudgetMs(ceiling, { ...job, reviewRun: { ...review, timeoutMinutes: 600 } } as ReviewClaim)).toBe(
             ceiling.jobTimeoutMs
         );
     });

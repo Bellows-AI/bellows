@@ -374,7 +374,9 @@ export interface GateServer {
     /** Opens the agent's own token beside an open supervisor `token`: the publish and review routes only. */
     grantAgent(token: string, agentToken: string): void;
     /** Opens the transcript exporter's own token beside an open supervisor `token`: the export routes only. */
-    grantExporter(token: string, exporterToken: string): void;
+    grantExporter(token: string, exporterToken: string, exporter?: ExportRelay): void;
+    /** Closes a bound exporter token (a review's close-time export) once its step is over. */
+    revokeExporter(exporterToken: string): void;
     /** Gives an open control token its transcript exporter's relay (the `/export` routes). */
     attachExporter(token: string, exporter: ExportRelay): void;
     /**
@@ -586,7 +588,8 @@ export function createGateServer({
         },
         openControl: (token, relay, publisher, reviewer) => channel.open(token, relay, publisher, reviewer),
         grantAgent: (token, agentToken) => channel.grantAgent(token, agentToken),
-        grantExporter: (token, exporterToken) => channel.grantExporter(token, exporterToken),
+        grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),
+        revokeExporter: (exporterToken) => channel.revokeExporter(exporterToken),
         attachExporter: (token, exporter) => channel.attachExporter(token, exporter),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
