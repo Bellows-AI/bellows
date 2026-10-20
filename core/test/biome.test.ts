@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +91,7 @@ describe('biome', () => {
             './lint/no-shared-literals.grit',
             './lint/no-inline-container-scripts.grit',
             './lint/no-cross-package-imports.grit',
+            './lint/no-silent-empty-read.grit',
         ]) {
             expect(config.plugins, `${plugin} is not loaded`).toContain(plugin);
             expect(existsSync(join(root, plugin)), `${plugin} is missing`).toBe(true);
@@ -124,6 +126,92 @@ describe('biome', () => {
         },
         BIOME_CHECK_TIMEOUT_MS
     );
+
+    /**
+     * `lint/no-silent-empty-read.grit` is run against a scratch tree so the probe is a real file
+     * under a `driver/src/` path (the plugin keys on `$filename`) and never touches the repo. Each
+     * positive line is one refused shape; each negative line is a carve-out or a non-read.
+     */
+    describe('no-silent-empty-read', () => {
+        const probe = async (source: string): Promise<{ messages: string[]; errored: string[] }> => {
+            const dir = mkdtempSync(join(tmpdir(), 'silent-read-'));
+            try {
+                mkdirSync(join(dir, 'driver', 'src'), { recursive: true });
+                const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));
+                config.vcs.enabled = false;
+                writeFileSync(join(dir, 'biome.json'), JSON.stringify(config));
+                symlinkSync(join(root, 'lint'), join(dir, 'lint'));
+                writeFileSync(join(dir, 'driver', 'src', 'k8s-probe.ts'), source);
+                const result = await runBiome(['lint', 'driver/src', '--reporter=json', '--max-diagnostics=100'], {
+                    cwd: dir,
+                });
+                const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
+                const plugin = (report.diagnostics ?? []).filter((d) => d.category === 'plugin');
+                return {
+                    messages: plugin.map((d) => d.message ?? ''),
+                    errored: plugin.filter((d) => /errored:/.test(d.message ?? '')).map((d) => d.message ?? ''),
+                };
+            } finally {
+                rmSync(dir, { recursive: true, force: true });
+            }
+        };
+
+        it(
+            'refuses each shape of a failed read collapsed into an empty answer',
+            async () => {
+                const found = await probe(
+                    [
+                        "export const a = await deps.request('GET', '/x').catch(() => null);",
+                        "export const b = await execDocker(['ps']).catch(() => []);",
+                        "export const c = await execDocker(['ps']).catch(() => undefined);",
+                        "export async function f() { try { return await deps.request('GET', '/y'); } catch { return null; } }",
+                        'export const d = JSON.parse(text) as { a: string };',
+                    ].join('\n')
+                );
+                expect(found.errored).toEqual([]);
+                expect(found.messages).toHaveLength(5);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it(
+            'leaves removals, kills and the named carve-outs alone',
+            async () => {
+                const found = await probe(
+                    [
+                        "export const a = await execDocker(['rm', '-f', 'x']).catch(() => null);",
+                        "export const b = await execDocker(['kill', 'x']).catch(() => []);",
+                        "await execDocker(['ps']).catch(() => undefined);",
+                        "export const c = await execDocker(['stats', 'x']).catch(() => null);",
+                        'export const d = await execDocker(servicePsArgs(job)).catch(() => null);',
+                        'export const e = await ctx.execDocker(opencodeCacheProbeArgs(c, j)).catch(() => null);',
+                        "export const g = await deps.request('GET', path).catch(() => null);",
+                        "export async function h() { try { return await deps.request('GET', jobPodsPath(n, r)); } catch { return null; } }",
+                        'export const i = JSON.parse(t) as { kind?: unknown };',
+                        'export const j = JSON.parse(t) as { Status?: string };',
+                    ].join('\n')
+                );
+                expect(found.errored).toEqual([]);
+                expect(found.messages).toEqual([]);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it('names exactly the documented carve-outs', () => {
+            const grit = readFileSync(join(root, 'lint/no-silent-empty-read.grit'), 'utf8');
+            for (const token of [
+                "'stats'",
+                'servicePsArgs($...)',
+                'opencodeCacheProbeArgs($...)',
+                "$_.request('GET', path)",
+                "$_.request('GET', jobPodsPath($...))",
+                'kind[?]: unknown',
+                'Status[?]: string',
+            ]) {
+                expect(grit, `carve-out ${token} is missing from the plugin`).toContain(token);
+            }
+        });
+    });
 
     it('exposes the lint and format scripts and an exact-pinned biome devDependency', () => {
         const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
