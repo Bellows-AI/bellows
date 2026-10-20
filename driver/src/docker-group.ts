@@ -12,9 +12,22 @@ import {
     supervisorEnvFileBody,
     workspacePath,
 } from './claim.js';
-import { claudeExportScript, gateLoopArgv, reviewLoopArgv, supervisorScript } from './container-scripts.js';
+import {
+    bindingWriteArgv,
+    claudeExportScript,
+    gateLoopArgv,
+    reviewLoopArgv,
+    supervisorScript,
+} from './container-scripts.js';
 import { containerHardeningArgs, resourceArgs, workspacesMountArgs } from './docker.js';
-import { ctlVolumeName, groupNetworkArgs, idsOf, mailboxMountArgs, supervisorName } from './docker-mailbox.js';
+import {
+    bindingVolumeName,
+    ctlVolumeName,
+    groupNetworkArgs,
+    idsOf,
+    mailboxMountArgs,
+    supervisorName,
+} from './docker-mailbox.js';
 import {
     type ClosedState,
     type ExecDocker,
@@ -24,21 +37,23 @@ import {
     startupRefusalOf,
 } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
-import { Inconclusive, type RunSession } from './runner.js';
+import { Inconclusive, REBIND_DEADLINE_MS, type RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
     GATE_CONTAINER,
     MAILBOXES,
     mailboxesOf,
     REVIEWER_CONTAINER,
+    SUPERVISOR_BINDING,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_ENV,
     DRIVER_LOST_LOSS,
     SUPERVISOR_EXIT,
     SUPERVISOR_WINDDOWN_MS,
+    type SupervisorBinding,
     type SupervisorReport,
 } from './supervisor-contract.js';
-import { gateImageOf, supervisorLiterals } from './supervisor-plan.js';
+import { bindingBody, gateImageOf, supervisorLiterals } from './supervisor-plan.js';
 import { groupServices, SERVICE_ADDRESS } from './services.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
 
@@ -76,16 +91,18 @@ export const ctlVolumeArgs = (
     job: BoardJob,
     { reclaim = false, reviewing = false }: { reclaim?: boolean; reviewing?: boolean } = {}
 ): string[][] =>
-    mailboxesOf(reviewing).map((box) => [
-        'volume',
-        'create',
-        '--label',
-        `${JOB_LABEL}=${job.id}`,
-        '--label',
-        `${LEASE_LABEL}=${job.leaseToken}`,
-        ...reclaimLabelArgs(reclaim),
-        ctlVolumeName(job, box),
-    ]);
+    [...mailboxesOf(reviewing).map((box) => ctlVolumeName(job, box)), ...(reclaim ? [] : [bindingVolumeName(job)])].map(
+        (name) => [
+            'volume',
+            'create',
+            '--label',
+            `${JOB_LABEL}=${job.id}`,
+            '--label',
+            `${LEASE_LABEL}=${job.leaseToken}`,
+            ...reclaimLabelArgs(reclaim),
+            name,
+        ]
+    );
 
 const reachDriverArgs = (config: DriverConfig): string[] => [
     // The control URL names the driver as the agent's does; Linux needs the name mapped.
@@ -124,6 +141,10 @@ export function supervisorCreateArgs(
         // publish, the helpers, the reclaim) work on the task worktree.
         ...workspacesMountArgs(config, workspacePath(job)),
         ...mailboxesOf(group.reviewing === true).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
+        // The holder binding (#829): the supervisor's alone, written by the driver over `docker exec`.
+        ...(group.reclaim
+            ? []
+            : ['--mount', `type=volume,src=${bindingVolumeName(job)},target=${SUPERVISOR_BINDING.dir}`]),
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
@@ -452,5 +473,30 @@ export async function removeGroup(execDocker: ExecDocker, job: BoardJob): Promis
     }
     for (const box of Object.values(MAILBOXES)) {
         await execDocker(['volume', 'rm', '-f', ctlVolumeName(job, box)]).catch(() => undefined);
+    }
+    await execDocker(['volume', 'rm', '-f', bindingVolumeName(job)]).catch(() => undefined);
+}
+
+/**
+ * Writes `binding` into the supervisor's binding volume (#829): the body rides stdin of one
+ * `docker exec`, never argv. Resolves only on a confirmed write; any rejection means "maybe
+ * written". The error is fixed text: the exec's own message quotes the argv and the stderr.
+ */
+export async function rebindGroup(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    binding: SupervisorBinding,
+    signal: AbortSignal
+): Promise<void> {
+    const body = Buffer.from(bindingBody(binding));
+    if (signal.aborted) throw new Error(`rebinding the task group of job ${job.id} was aborted`);
+    try {
+        await execDocker(['exec', '-i', supervisorName(job), ...bindingWriteArgv(body.length)], {
+            input: body,
+            timeout: REBIND_DEADLINE_MS,
+            signal,
+        });
+    } catch {
+        throw new Error(`rebinding the task group of job ${job.id} failed`);
     }
 }

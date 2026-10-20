@@ -14,6 +14,7 @@ import {
     MAILBOXES,
     REVIEWER_CONTAINER,
     serviceContainerOf,
+    SUPERVISOR_BINDING,
 } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
@@ -295,5 +296,38 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(pods).toContain('.factory/reviewer');
         expect(REVIEWER_UID).not.toBe(TOOL_UID);
         expect(REVIEWER_UID).not.toBe(GATE_UID);
+    });
+});
+
+describe('the admission policy admits the holder binding (#829)', () => {
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' });
+    const pod = runnerJobSpec(
+        config,
+        { ...job, masterPrompt: 'Factory execution contract' },
+        { id: SESSION, resume: false }
+    ).spec.template.spec;
+    const objects = policy('objects');
+
+    it('names the binding volume by the per-attempt Secret, which the pod policy admits', () => {
+        const volume = pod.volumes.find((candidate) => candidate.name === SUPERVISOR_BINDING.volume);
+        expect(volume).toBeDefined();
+        expect('secret' in volume! && volume.secret.secretName).toMatch(pattern);
+    });
+
+    it('matches Secret updates in the objects policy, beside the claim revoke', () => {
+        expect(objects).toMatch(/operations: \['UPDATE'\]\n\s+resources: \['secrets'\]/);
+        expect(objects).toMatch(/operations: \['UPDATE'\]\n\s+resources: \['configmaps'\]/);
+    });
+
+    it('lets a Secret update change only its binding key, keeping labels, type and owner', () => {
+        expect(objects).toContain("k == '" + SUPERVISOR_BINDING.file + "'");
+        expect(objects).toContain('an attempt Secret update changes only its binding');
+        expect(objects).toContain('object.metadata.labels == oldObject.metadata.labels');
+        expect(objects).toContain('variables.newOwners == variables.oldOwners');
+    });
+
+    it('guards the claim-update rules to ConfigMaps', () => {
+        expect(objects).toContain("request.kind.kind != 'ConfigMap' || request.operation != 'UPDATE'");
+        expect(objects).toContain('the driver updates only checkout claims and attempt Secret bindings');
     });
 });

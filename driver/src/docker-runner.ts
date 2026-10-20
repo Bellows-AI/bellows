@@ -1,5 +1,13 @@
 import { JOB_LABEL } from './labels.js';
-import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
+import {
+    awaitSupervisor,
+    closeEndOf,
+    createGroup,
+    rebindGroup,
+    removeGroup,
+    startGroup,
+    supervisorLossOf,
+} from './docker-group.js';
 import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
     dockerKill,
@@ -739,6 +747,7 @@ export function createDockerRunner(
         resizeReviewer: async () => false, // likewise the reviewer container: it keeps its RUNNER_* sizing
         runReview: (caller, review, session, control) =>
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
+        rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, anyOf(signal, ledger.signal(job))),

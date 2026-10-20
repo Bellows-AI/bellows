@@ -14,7 +14,7 @@ COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
 RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash \
-    && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory \
+    && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review /factory/binding && chown -R node:node /factory \
     && chmod 0700 /factory/in /factory/out
 # The reviewer container runs the executor entrypoint by path; the stub answers as a scripted reviewer.
 RUN for e in claude-executor opencode-executor; do \

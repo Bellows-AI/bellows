@@ -27,6 +27,7 @@ import {
     reviewReplyScript,
 } from '../src/review.js';
 import {
+    bindingWriteScript,
     claudeTurnsScript,
     gateLoopScript,
     reviewLoopScript,
@@ -77,6 +78,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['review-loop.sh', 'sh'],
     ['service-generation-probe.sh', 'sh'],
     ['service-generation-bump.sh', 'sh'],
+    ['binding-write.sh', 'sh'],
     ['review-collect.cjs', 'node'],
     ['review-reply.cjs', 'node'],
     ['helper-noop.cjs', 'node'],
@@ -139,6 +141,7 @@ describe('the container scripts', () => {
         expect(reviewLoopScript).toBe(readFileSync(pathOf('review-loop.sh'), 'utf8'));
         expect(serviceGenerationProbeScript).toBe(readFileSync(pathOf('service-generation-probe.sh'), 'utf8'));
         expect(serviceGenerationBumpScript).toBe(readFileSync(pathOf('service-generation-bump.sh'), 'utf8'));
+        expect(bindingWriteScript).toBe(readFileSync(pathOf('binding-write.sh'), 'utf8'));
         expect(reviewCollectScript).toBe(readFileSync(pathOf('review-collect.cjs'), 'utf8'));
         expect(reviewReplyScript).toBe(readFileSync(pathOf('review-reply.cjs'), 'utf8'));
         expect(HELPER_REGISTRY.get('noop')?.scriptBody).toBe(readFileSync(pathOf('helper-noop.cjs'), 'utf8'));

@@ -7,7 +7,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 | Concern | Code | Test |
 | --- | --- | --- |
 | The `Runner` seam both executors implement; executor-neutral state (paths, claim env, outcome parsing, container scripts, argv plan); wire types, transport (a pod log past its stream buffer is answered as its tail, flagged `truncated`), protocol constants | `driver/src/runner.ts`, `k8s-runner.ts`, `claim.ts`, `close-read.ts`, `container-scripts.ts`, `runner-plan.ts`, `k8s-transport.ts` | `driver/test/k8s.test.ts`, `k8s-transport.test.ts`, `scripts.test.ts`, `runner-plan.test.ts`, `close-read.test.ts` |
-| Job specs: runner, readouts (no `.bellows.yaml` readout exists, the claim carries the plan), the pod's supervisor, agent and claude transcript exporter containers, `gate` and `svc-<name>` native sidecars, `emptyDir` mailboxes, per-attempt Secret names, resource and scheduling fields | `driver/src/k8s-podspec.ts`, `k8s-auxspec.ts`, `k8s-podfields.ts` | `driver/test/k8s.test.ts` |
+| Job specs: runner, readouts (no `.bellows.yaml` readout exists, the claim carries the plan), the pod's supervisor, agent and claude transcript exporter containers, `gate` and `svc-<name>` native sidecars, `emptyDir` mailboxes, the supervisor's optional read-only `binding.json` Secret volume, per-attempt Secret names, resource and scheduling fields | `driver/src/k8s-podspec.ts`, `k8s-auxspec.ts`, `k8s-podfields.ts` | `driver/test/k8s.test.ts` |
 | The task group: one Job per attempt, created by its first step (the sync) and ended by the loop's `finish`, not by the agent's exit; the agent container waits on `in/agent/go`; a thread with no attempt reclaims in a supervisor-only group (sync, probe, publish, helpers and reviews are no Jobs; the close-time session readouts remain Jobs until #882) | `driver/src/k8s-group.ts`, `k8s-runner.ts`, `k8s-podspec.ts` | `driver/test/k8s-group.test.ts`, `driver/test/k8s.test.ts` |
 | The re-claim fence, the polling it brackets, what a Stop mid-run leaves, a runner Job deleted under its run (`RunnerVanished`, an infrastructure loss) | `driver/src/k8s-fence.ts`, `k8s-poll.ts`, `k8s-kill.ts` | `driver/test/k8s.test.ts`, `k8s-fence.test.ts` |
 | The cooperative Stop and draft publication: `SUPERVISOR_CONTROL_*` rides the per-attempt Secret into the supervisor container only and polls the driver pod's IP; the agent's `BELLOWS_CONTROL_*` reaches its control proxy alone, never a tool; the exporter's export-only `SUPERVISOR_EXPORT_TOKEN` reaches the exporter alone; the supervisor has no ServiceAccount token | `driver/src/k8s-podspec.ts`, `loop-gates.ts`, `loop-publish.ts` | `driver/test/k8s.test.ts`, `driver/test/publish-control.test.ts` |
@@ -43,7 +43,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   the run is redone, never adopted. `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`,
   `driver/test/k8s.test.ts`.
 - **The driver never reads a Secret back** — the Role grants no `get`/`list`; attempt Secrets are reaped by
-  derived name.
+  derived name; the binding patch's answer is discarded unread.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
   `make reset`. `core/test/makefile.state-preflight.test.ts`.
 - Stated limit: a runner still RUNNING when its driver is lost is swept by the next claim's re-claim fence and
@@ -51,6 +51,9 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   out (`SUPERVISOR_WINDDOWN_MS`) and adopted with its logged report, and a lost driver still alive steps into it
   until its lease or the group's orphan bound ends, the wait outlasting both. A finished one is adoptable until
   its Job's one-hour `ttlSecondsAfterFinished`. `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
+- Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume —
+  up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next
+  control poll. `driver/src/k8s-binding.ts`.
 - Stated limit: why a driver ended a run is recorded on the attempt only where it outlives the kill — a hard-kill
   deletes the Job, its record, its Secrets and its claim before `end` reaches the board, a refused record is
   none — and such a run is redone in its tree and session. `driver/src/termination.ts`,

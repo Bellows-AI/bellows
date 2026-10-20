@@ -54,6 +54,7 @@ import {
     startServiceFleet,
 } from './k8s-services.js';
 import { groupServices } from './services.js';
+import { rebindGroup } from './k8s-binding.js';
 import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGroup } from './k8s-gate.js';
 import {
     answerPreview,
@@ -655,6 +656,7 @@ export function createKubernetesRunner(
         resizeReviewer: (job, phase) => resizeReviewerSidecar(deps, job, phase),
         runReview: (caller, review, session, control) =>
             runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
+        rebind: (group, binding, signal) => rebindGroup(deps, group, binding, signal),
         syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, githubToken),
         finish: (job: BoardJob) => finishGroup(deps, job),

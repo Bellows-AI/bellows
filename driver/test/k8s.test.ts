@@ -9,6 +9,7 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_CREDENTIAL_NAMES,
+    SUPERVISOR_BINDING,
     SUPERVISOR_BINDING_PATH,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_PREFIX,
@@ -49,7 +50,7 @@ import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-tra
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import { ledgerOf, RunnerKilled } from '../src/k8s-kill.js';
-import { CLOSE_READ_DEADLINE_MS } from '../src/runner.js';
+import { CLOSE_READ_DEADLINE_MS, REBIND_DEADLINE_MS } from '../src/runner.js';
 import {
     auxVerdict,
     pollJobToTerminal,
@@ -58,7 +59,7 @@ import {
     readVerdict,
     runnerLossOf,
 } from '../src/k8s-poll.js';
-import { orphanBoundMs } from '../src/supervisor-plan.js';
+import { bindingBody, orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
     claudeTurnsJobSpec,
@@ -10295,5 +10296,122 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
             clock.mockRestore();
         }
         expect(pods.reads()).toBeLessThan(20);
+    });
+});
+
+describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
+    const BINDING = { claimSeq: 4, url: 'http://driver.example:8080', token: 'tok-new-holder' };
+    const SENTINEL = 'sentinel-body-text';
+    const SECRETS = ['tok-new-holder', 'driver.example', SENTINEL];
+    const podOf = (group: BoardJob) =>
+        runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...group, executorType: 'claude-code' },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+    const mountsOf = (pod: ReturnType<typeof podOf>, name: string) =>
+        pod.containers.find((container) => container.name === name)?.volumeMounts ?? [];
+    const patchPath = `/api/v1/namespaces/${namespace}/secrets/${secretName(job)}`;
+    const rebinder = (request: K8sRequest) =>
+        createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            request,
+            async () => {}
+        );
+    const ok = (body = ''): Promise<K8sResponse> => Promise.resolve({ status: 200, body });
+
+    it('mounts an optional read-only Secret item in the supervisor alone, without a subPath', () => {
+        const pod = podOf({ ...job, ...SUPERVISED });
+        expect(pod.volumes).toContainEqual({
+            name: SUPERVISOR_BINDING.volume,
+            secret: {
+                secretName: secretName(job),
+                items: [{ key: SUPERVISOR_BINDING.file, path: SUPERVISOR_BINDING.file }],
+                defaultMode: 0o444,
+                optional: true,
+            },
+        });
+        for (const container of pod.containers) {
+            const bound = mountsOf(pod, container.name).filter((mount) => mount.name === SUPERVISOR_BINDING.volume);
+            if (container.name === SUPERVISOR_CONTAINER) {
+                expect(bound).toEqual([
+                    { name: SUPERVISOR_BINDING.volume, mountPath: SUPERVISOR_BINDING.dir, readOnly: true },
+                ]);
+            } else {
+                expect(bound, container.name).toEqual([]);
+            }
+        }
+    });
+
+    it('gives a reclaim group no binding volume and no mount', () => {
+        const pod = reclaimGroupSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), job, job.leaseToken).spec.template
+            .spec;
+        expect(JSON.stringify(pod)).not.toContain(SUPERVISOR_BINDING.volume);
+    });
+
+    it('merge-patches only the binding key with data, bounded and with the signal', async () => {
+        const seen: { method: string; path: string; body: unknown; options: unknown }[] = [];
+        const signal = new AbortController().signal;
+        await rebinder((method, path, body, options) => {
+            seen.push({ method, path, body, options });
+            return ok();
+        }).rebind(job, BINDING, signal);
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({ method: 'PATCH', path: patchPath });
+        expect(seen[0]!.body).toEqual({
+            data: { [SUPERVISOR_BINDING.file]: Buffer.from(bindingBody(BINDING)).toString('base64') },
+        });
+        const options = seen[0]!.options as { timeoutMs: number; signal: AbortSignal; contentType?: string };
+        expect(options.timeoutMs).toBeLessThanOrEqual(REBIND_DEADLINE_MS);
+        expect(options.signal.aborted).toBe(false);
+        expect(options.contentType).toBeUndefined();
+    });
+
+    it('sends no request for an aborted signal', async () => {
+        const request = vi.fn(() => ok());
+        const controller = new AbortController();
+        controller.abort();
+        await expect(rebinder(request).rebind(job, BINDING, controller.signal)).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
+    });
+
+    it('rejects on 403, 404, 409, 500, a throw and a timeout, never naming the token or the answer', async () => {
+        const answers: (() => Promise<K8sResponse>)[] = [
+            ...[403, 404, 409, 500].map(
+                (status) => () => Promise.resolve({ status, body: `${SENTINEL} tok-new-holder driver.example` })
+            ),
+            () => Promise.reject(new Error('connect ECONNREFUSED tok-new-holder driver.example')),
+            () => Promise.reject(new Error('the call timed out sentinel-body-text')),
+        ];
+        for (const answer of answers) {
+            const error = await rebinder(() => answer())
+                .rebind(job, BINDING, new AbortController().signal)
+                .catch((caught: Error) => caught);
+            expect(error).toBeInstanceOf(Error);
+            for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
+        }
+    });
+
+    it('discards a 2xx answer unread and resolves only after the patch answered', async () => {
+        let answer!: (res: K8sResponse) => void;
+        let done = false;
+        const pending = rebinder(() => new Promise<K8sResponse>((resolve) => (answer = resolve)))
+            .rebind(job, BINDING, new AbortController().signal)
+            .then((value) => {
+                done = true;
+                return value;
+            });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(done).toBe(false);
+        answer({ status: 200, body: '{not json tok-new-holder' });
+        expect(await pending).toBeUndefined();
+    });
+
+    it('refuses an invalid binding before any request', async () => {
+        const request = vi.fn(() => ok());
+        await expect(
+            rebinder(request).rebind(job, { ...BINDING, claimSeq: -1 }, new AbortController().signal)
+        ).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
     });
 });

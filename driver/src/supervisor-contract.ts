@@ -349,7 +349,8 @@ export const SUPERVISOR_ENV = {
 } as const;
 
 /** Where a newer holder names itself to a live supervisor: a file only the supervisor container mounts. */
-export const SUPERVISOR_BINDING_PATH = `${CTL_ROOT}/binding/binding.json`;
+export const SUPERVISOR_BINDING = { volume: 'ctl-binding', dir: `${CTL_ROOT}/binding`, file: 'binding.json' } as const;
+export const SUPERVISOR_BINDING_PATH = `${SUPERVISOR_BINDING.dir}/${SUPERVISOR_BINDING.file}`;
 /** What the binding file holds: a supervisor follows it only to a strictly newer `claimSeq`. */
 export interface SupervisorBinding {
     claimSeq: number;

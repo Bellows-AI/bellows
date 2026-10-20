@@ -190,6 +190,13 @@ describe('the executor isolation record (#382)', () => {
         );
     });
 
+    // Issue #829: a rebind is a Secret patch the kubelet delivers on its own sync, not a push.
+    it('states how late a rebind reaches a live supervisor', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume — up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next control poll."
+        );
+    });
+
     // Issue #821 (D1): a board that takes neither the staged conclusion nor the verdict for a whole
     // lease leaves the group to adoption, which keeps the agent's outcome but not the rest.
     it('states what an outage past the lease costs a finished attempt', () => {

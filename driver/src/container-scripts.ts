@@ -12,7 +12,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { SERVICE_GENERATIONS } from './supervisor-contract.js';
+import { SERVICE_GENERATIONS, SUPERVISOR_BINDING } from './supervisor-contract.js';
 
 export const containerScript = (name: string): string =>
     readFileSync(new URL(`./scripts/${name}`, import.meta.url), 'utf8');
@@ -56,6 +56,19 @@ export const serviceGenerationProbeScript = script('service-generation-probe.sh'
 
 /** The supervisor's acknowledgement read and generation bump of the services: see scripts/service-generation-bump.sh. */
 export const serviceGenerationBumpScript = script('service-generation-bump.sh');
+
+/** Writes the holder binding atomically into the supervisor's binding volume: see scripts/binding-write.sh. */
+export const bindingWriteScript = script('binding-write.sh');
+
+/** The binding write's `exec` command: the body arrives on stdin, `size` is its byte count. */
+export const bindingWriteArgv = (size: number): string[] => [
+    'sh',
+    '-c',
+    bindingWriteScript,
+    'binding-write',
+    SUPERVISOR_BINDING.dir,
+    String(size),
+];
 
 /** The probe's `exec` command for one service's sidecar. */
 export const serviceProbeArgv = (name: string): string[] => [

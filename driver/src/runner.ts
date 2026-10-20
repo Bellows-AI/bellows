@@ -12,7 +12,7 @@ import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from '.
 import type { SnapshotResult } from './review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
 import type { GateStepRequest, ReviewControl } from './supervised-steps.js';
-import type { StepResult } from './supervisor-contract.js';
+import type { StepResult, SupervisorBinding } from './supervisor-contract.js';
 import type { KillRecord } from './termination.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
@@ -194,6 +194,9 @@ export const SERVICE_READY_POLL_MS = 2000;
  * open forever. On expiry the read answers null: unmeasured, never a wrong number.
  */
 export const CLOSE_READ_DEADLINE_MS = 120_000;
+
+/** The whole budget of writing a holder binding to a live supervisor, retries included, on either executor. */
+export const REBIND_DEADLINE_MS = 30_000;
 
 /** The states a platform reports for a declared service that is gone: docker's, then the pod phases. */
 export const DEAD_SERVICE_STATES: ReadonlySet<string> = new Set(['exited', 'dead', 'failed', 'succeeded']);
@@ -468,6 +471,13 @@ export interface Runner {
         session: RunSession | null,
         control?: ReviewControl
     ): Promise<StepResult>;
+    /**
+     * Writes `binding` where the group's live supervisor follows a newer holder (#829): the attempt
+     * Secret's binding key on kubernetes, a supervisor-only volume on docker. Resolves only once the
+     * write is confirmed; any rejection means "maybe written", never "not written". It reads nothing,
+     * revokes nothing and never consults the driver's own groups (the group may be another driver's).
+     */
+    rebind(group: BoardJob, binding: SupervisorBinding, signal: AbortSignal): Promise<void>;
 }
 
 /** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */

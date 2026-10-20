@@ -66,7 +66,7 @@ import {
     type StepHost,
     stepHostOf,
 } from './supervised-steps.js';
-import { SUPERVISOR_ENV } from './supervisor-contract.js';
+import { SUPERVISOR_BINDING, SUPERVISOR_ENV } from './supervisor-contract.js';
 
 /**
  * The kubernetes task group of one attempt (issue #771): the one Job whose pod holds the supervisor,
@@ -179,10 +179,15 @@ export function reclaimGroupSpec(config: DriverConfig, job: BoardJob, holder: st
                 spec: {
                     ...pod,
                     // The job is synthesised, its claim sequence a placeholder: a reclaim group follows no binding.
+                    // Nor does it mount the binding: no one writes it.
                     containers: pod.containers.map((container) => ({
                         ...container,
                         env: container.env?.filter((entry) => !FOLLOWING_ENV.has(entry.name)),
+                        volumeMounts: container.volumeMounts?.filter(
+                            (mount) => mount.name !== SUPERVISOR_BINDING.volume
+                        ),
                     })),
+                    volumes: pod.volumes.filter((volume) => volume.name !== SUPERVISOR_BINDING.volume),
                     ...(worktree ? { initContainers: [releaseContainer(config, job, worktree)] } : {}),
                 },
             },

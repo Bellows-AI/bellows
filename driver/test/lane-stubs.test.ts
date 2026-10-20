@@ -14,7 +14,7 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
  */
 
 const MAILBOX =
-    'mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory';
+    'mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review /factory/binding && chown -R node:node /factory';
 const COPY = 'COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\n';
 // Issue #814: the driver starts every agent container as root, so every stub drops to node behind
 // the tool broker, the executor images' own launcher.

@@ -307,7 +307,7 @@ expect_contains     'the driver role grants the runner calls' "$rbac" \
 # the driver writes values it was handed and never reads one back.
 expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
     "resources: ['secrets']
-      verbs: ['create', 'delete']"
+      verbs: ['create', 'delete', 'patch']"
 # The checkout claim that makes the re-claim fence atomic: POSTed to take the checkout, read to
 # order the contenders, patched to revoke an orphaned claim before its reap, deleted to release or
 # take over. `get` is safe on ConfigMaps and would not be on secrets — the claim carries no secret
@@ -797,6 +797,16 @@ expect_contains 'the admission policy keeps a claim update to its labels' "$admi
     'object.metadata.labels == oldObject.metadata.labels'
 expect_contains 'the admission policy lets a claim update change only factory.revoked' "$admission" \
     "k == 'factory.revoked'"
+# The Role's namespace-wide secrets `patch` (#829) reaches only a per-attempt Secret, and only its
+# binding key: labels, type and owner kept, no other data key changed.
+expect_contains 'the admission policy matches secret updates' "$admission" "operations: ['UPDATE']
+              resources: ['secrets']"
+expect_contains 'the admission policy lets a Secret update change only its binding' "$admission" \
+    "k == 'binding.json'"
+expect_contains 'the admission policy words the Secret binding refusal' "$admission" \
+    'an attempt Secret update changes only its binding'
+expect_contains 'the admission policy guards the claim rules to ConfigMaps' "$admission" \
+    "request.kind.kind != 'ConfigMap' || request.operation != 'UPDATE'"
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
 expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
@@ -1988,6 +1998,22 @@ expect_contains 'the policy refuses a claim patch that adds another annotation' 
 plain="$(as_driver_patch admission-probe-plain '{"metadata":{"annotations":{"factory.revoked":"probe"}}}')"
 expect_contains 'the policy refuses patching a configmap that is not a checkout claim' "$plain" 'updates only checkout claims'
 kubectl delete configmap "$PROBE_CLAIM" admission-probe-plain -n "$NAMESPACE" >/dev/null
+
+# The holder binding (#829): a per-attempt Secret's binding key is the one thing the driver may
+# update on a Secret.
+PROBE_ENV="factory-job-00000000-0000-4000-8000-000000000829-env"
+kubectl create secret generic "$PROBE_ENV" -n "$NAMESPACE" --from-literal=KEEP=1 >/dev/null
+kubectl label secret "$PROBE_ENV" -n "$NAMESPACE" factory.job=admission-probe >/dev/null
+as_driver_secret() { kubectl patch secret "$1" --as="$DRIVER_SA" -n "$NAMESPACE" --type=merge -p "$2" --dry-run=server 2>&1; }
+bound="$(as_driver_secret "$PROBE_ENV" '{"data":{"binding.json":"e30="}}')"
+expect_contains 'the policy admits a binding patch on an attempt Secret' "$bound" 'patched'
+other_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":"eA=="}}')"
+expect_contains 'the policy refuses a Secret patch of another key' "$other_key" 'changes only its binding'
+relabelled_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
+expect_contains 'the policy refuses relabelling an attempt Secret' "$relabelled_secret" 'changes only its binding'
+dashboard_patch="$(as_driver_secret "$RELEASE-factory-dashboard" '{"data":{"binding.json":"e30="}}')"
+expect_contains 'the policy refuses patching the dashboard Secret' "$dashboard_patch" 'only objects labelled factory.job'
+kubectl delete secret "$PROBE_ENV" -n "$NAMESPACE" >/dev/null
 
 # Issue #382, the half that cannot be asserted by rendering. Phase one proved the CEL is in the
 # document; this proves a real apiserver COMPILES it and refuses on it. The distinction matters

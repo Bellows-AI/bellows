@@ -54,6 +54,8 @@ import {
     containerHardeningField,
     doNotDisruptField,
     gateResourcesField,
+    bindingMount,
+    bindingVolume,
     mailboxMount,
     reviewerResourcesField,
     mailboxVolumes,
@@ -264,6 +266,7 @@ function supervisorContainer(
         volumeMounts: [
             workspaceMount(config, workspacePath(job)),
             ...mailboxesOf(group.reviewing).map((box) => mailboxMount(box, 'rw')),
+            bindingMount,
             ...serviceRestartMounts(group.services),
         ],
     };
@@ -624,7 +627,12 @@ export function runnerJobSpec(
                         }),
                         ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
                     ],
-                    volumes: [...volumes, ...mailboxVolumes(reviewing), ...servicesFields.volumes],
+                    volumes: [
+                        ...volumes,
+                        ...mailboxVolumes(reviewing),
+                        bindingVolume(secretName(job)),
+                        ...servicesFields.volumes,
+                    ],
                 },
             },
         },

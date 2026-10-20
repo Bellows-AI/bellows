@@ -13,6 +13,7 @@ import { dockerArgs } from '../src/docker.js';
 import {
     awaitSupervisor,
     createGroup,
+    rebindGroup,
     ctlVolumeArgs,
     exporterCreateArgs,
     exporterName,
@@ -25,17 +26,19 @@ import {
     supervisorCreateArgs,
     supervisorLossOf,
 } from '../src/docker-group.js';
-import { ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
+import { bindingVolumeName, ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
+import { bindingWriteArgv, gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import {
     MAILBOXES,
+    SUPERVISOR_BINDING,
     SUPERVISOR_BINDING_PATH,
     SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_EXIT,
 } from '../src/supervisor-contract.js';
-import { orphanBoundMs } from '../src/supervisor-plan.js';
+import { bindingBody, orphanBoundMs } from '../src/supervisor-plan.js';
+import { REBIND_DEADLINE_MS } from '../src/runner.js';
 
 /*
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
@@ -95,7 +98,7 @@ describe('the supervisor container', () => {
     // of its own container, so it mounts the member's workspace — only the member's own subtree.
     it('mounts every mailbox and the member’s own workspace subtree, nothing broader', () => {
         const mounted = mounts(argv);
-        expect(mounted).toHaveLength(6);
+        expect(mounted).toHaveLength(7);
         for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
             expect(mounted.some((mount) => mount.includes(volumeOf(box)))).toBe(true);
         }
@@ -113,7 +116,7 @@ describe('the supervisor container', () => {
             { exporting: true, agentless: false, reviewing: true },
             '/tmp/supervisor.env'
         );
-        expect(mounts(withReviewer)).toHaveLength(7);
+        expect(mounts(withReviewer)).toHaveLength(8);
         expect(mounts(withReviewer).some((mount) => mount.includes(volumeOf('review')))).toBe(true);
         expect(withReviewer).toContain('SUPERVISOR_REVIEWER=1');
         expect(argv).not.toContain('SUPERVISOR_REVIEWER=1');
@@ -305,7 +308,7 @@ describe('creating and starting the group', () => {
         const { calls, deps } = recorder();
         await createGroup(deps, job, SESSION, { startedAt: START });
         // Without a reviewer the review mailbox has no volume (issue #774).
-        expect(ctlVolumeArgs(job)).toHaveLength(Object.keys(MAILBOXES).length - 1);
+        expect(ctlVolumeArgs(job)).toHaveLength(Object.keys(MAILBOXES).length);
         expect(calls.slice(0, ctlVolumeArgs(job).length)).toEqual(ctlVolumeArgs(job));
         expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
@@ -393,7 +396,9 @@ describe('creating and starting the group', () => {
         await createGroup(deps, reviewing, SESSION, { startedAt: START });
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(reviewing), exporterName(reviewing), reviewerName(reviewing)]);
-        expect(calls.slice(0, Object.keys(MAILBOXES).length)).toEqual(ctlVolumeArgs(reviewing, { reviewing: true }));
+        expect(calls.slice(0, Object.keys(MAILBOXES).length + 1)).toEqual(
+            ctlVolumeArgs(reviewing, { reviewing: true })
+        );
         expect(calls.some((argv) => argv.includes(ctlVolumeName(reviewing, MAILBOXES.review)))).toBe(true);
         const supervisor = calls.find((argv) => argv.includes(supervisorName(reviewing)))!;
         expect(supervisor).toContain('SUPERVISOR_REVIEWER=1');
@@ -599,6 +604,138 @@ describe('the gate container (issue #773)', () => {
                 image
             ).rejects.toThrow(/image/);
             expect(calls.filter((line) => line[0] === 'create' && line.includes(gateName(gated)))).toEqual([]);
+        }
+    });
+});
+
+describe('the holder binding (#829)', () => {
+    const BINDING = { claimSeq: 4, url: 'http://driver.example:8080', token: 'tok-new-holder' };
+    const SECRETS = ['tok-new-holder', 'driver.example'];
+    const reclaimArgs = { exporting: false, agentless: true, reclaim: true };
+    const supervisorArgs = supervisorCreateArgs(
+        config,
+        reviewing,
+        { exporting: true, agentless: false, reviewing: true },
+        '/tmp/supervisor.env'
+    );
+    const exec = (answer: (argv: string[]) => Promise<{ stdout: string; stderr?: string }>) => {
+        const calls: { argv: string[]; options: { input?: Buffer; timeout?: number; signal?: AbortSignal } }[] = [];
+        const execDocker = async (argv: string[], options: (typeof calls)[number]['options'] = {}) => {
+            calls.push({ argv, options });
+            return answer(argv);
+        };
+        return { calls, execDocker: execDocker as never };
+    };
+
+    it('creates one labelled binding volume for an attempt, none for a reclaim group', () => {
+        const volumes = ctlVolumeArgs(job).filter((argv) => argv.includes(bindingVolumeName(job)));
+        expect(volumes).toEqual([
+            [
+                'volume',
+                'create',
+                '--label',
+                `factory.job=${job.id}`,
+                '--label',
+                `factory.lease=${job.leaseToken}`,
+                bindingVolumeName(job),
+            ],
+        ]);
+        expect(bindingVolumeName(job)).toBe(`factory-${SUPERVISOR_BINDING.volume}-${job.id}-${job.leaseToken}`);
+        expect(ctlVolumeArgs(job, { reclaim: true }).flat()).not.toContain(bindingVolumeName(job));
+    });
+
+    it('mounts the binding volume in the supervisor alone, and not in a reclaim supervisor', () => {
+        const mount = `type=volume,src=${bindingVolumeName(reviewing)},target=${SUPERVISOR_BINDING.dir}`;
+        expect(mounts(supervisorArgs)).toContain(mount);
+        const others = [
+            dockerArgs(config, reviewing, SESSION, { envFile: '/tmp/env-file' }),
+            exporterCreateArgs(config, reviewing, START, '/tmp/export.env'),
+            gateCreateArgs(config, gated, 'node:24'),
+            reviewerCreateArgs(config, reviewing),
+        ];
+        for (const argv of others) expect(argv.join(' ')).not.toContain(SUPERVISOR_BINDING.volume);
+        const reclaiming = supervisorCreateArgs(config, job, reclaimArgs, '/tmp/supervisor.env');
+        expect(reclaiming.join(' ')).not.toContain(SUPERVISOR_BINDING.volume);
+    });
+
+    it('removeGroup removes the binding volume with the rest', async () => {
+        const { calls, execDocker } = exec(async () => ({ stdout: '' }));
+        await removeGroup(execDocker, job);
+        expect(calls.map((call) => call.argv)).toContainEqual(['volume', 'rm', '-f', bindingVolumeName(job)]);
+    });
+
+    it('writes the body over stdin of an exec into the supervisor: never argv', async () => {
+        const { calls, execDocker } = exec(async () => ({ stdout: '' }));
+        const signal = new AbortController().signal;
+        await rebindGroup(execDocker, job, BINDING, signal);
+        const body = bindingBody(BINDING);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.argv).toEqual([
+            'exec',
+            '-i',
+            supervisorName(job),
+            ...bindingWriteArgv(Buffer.byteLength(body)),
+        ]);
+        expect(calls[0]!.options.input).toEqual(Buffer.from(body));
+        expect(calls[0]!.options.timeout).toBe(REBIND_DEADLINE_MS);
+        expect(calls[0]!.options.signal).toBe(signal);
+        for (const secret of SECRETS) expect(calls[0]!.argv.join(' ')).not.toContain(secret);
+    });
+
+    it('does not call docker for an aborted signal', async () => {
+        const { calls, execDocker } = exec(async () => ({ stdout: '' }));
+        const controller = new AbortController();
+        controller.abort();
+        await expect(rebindGroup(execDocker, job, BINDING, controller.signal)).rejects.toThrow();
+        expect(calls).toEqual([]);
+    });
+
+    it('rejects on any exec failure, naming neither the token nor the url', async () => {
+        for (const detail of ['No such container', 'is not running', 'binding-write: the binding arrived short']) {
+            const { execDocker } = exec(async () => {
+                throw Object.assign(new Error(`Command failed: docker exec tok-new-holder ${detail}`), {
+                    stderr: `${detail} tok-new-holder driver.example`,
+                });
+            });
+            const error = await rebindGroup(execDocker, job, BINDING, new AbortController().signal).catch(
+                (caught: Error) => caught
+            );
+            expect(error).toBeInstanceOf(Error);
+            for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
+        }
+    });
+
+    it('resolves only after the exec answered', async () => {
+        let answer!: () => void;
+        const { execDocker } = exec(() => new Promise((resolve) => (answer = () => resolve({ stdout: '' }))));
+        let done = false;
+        const pending = rebindGroup(execDocker, job, BINDING, new AbortController().signal).then(() => {
+            done = true;
+        });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(done).toBe(false);
+        answer();
+        await pending;
+        expect(done).toBe(true);
+    });
+
+    it('refuses an invalid binding before any exec', async () => {
+        const bad = [
+            { ...BINDING, claimSeq: -1 },
+            { ...BINDING, claimSeq: 1.5 },
+            { ...BINDING, url: 'ftp://driver.example' },
+            { ...BINDING, token: 'has space' },
+            { ...BINDING, token: 'x'.repeat(257) },
+        ];
+        for (const binding of bad) {
+            const { calls, execDocker } = exec(async () => ({ stdout: '' }));
+            const error = await rebindGroup(execDocker, job, binding, new AbortController().signal).catch(
+                (caught: Error) => caught
+            );
+            expect(error).toBeInstanceOf(Error);
+            expect(calls).toEqual([]);
+            expect(String((error as Error).message)).not.toContain('driver.example');
+            expect(String((error as Error).message)).not.toContain('has space');
         }
     });
 });

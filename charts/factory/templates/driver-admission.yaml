@@ -31,10 +31,12 @@ pod it labelled `factory.job` that changes no main container and no init contain
 `-objects` fences what the driver may create and delete: only objects labelled `factory.job` (the
 label every runner-owned object carries), so the dashboard's Secret and ConfigMaps are out of
 reach; Secrets only under the per-attempt names and only Opaque (a service-account-token Secret
-would mint credentials); pods only deleted (the re-claim fence's sweep). The one update it
-admits is a checkout claim's revoke (issue #821): the Role's `patch` on configmaps is
-namespace-wide, so an update reaches only a `factory-job-<id>-claim` ConfigMap, keeps its labels
-and data, and changes no annotation but `factory.revoked`.
+would mint credentials); pods only deleted (the re-claim fence's sweep). It admits two updates.
+A checkout claim's revoke (issue #821): the Role's `patch` on configmaps is namespace-wide, so an
+update reaches only a `factory-job-<id>-claim` ConfigMap, keeps its labels and data, and changes
+no annotation but `factory.revoked`. A holder binding (#829): the Role's `patch` on secrets is
+namespace-wide too, so an update reaches only a per-attempt Secret, keeps its labels, type and
+owner, and changes no data key but `binding.json`.
 
 Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
 two releases one driver can still reach the other's per-attempt objects — install one release per
@@ -301,6 +303,10 @@ spec:
               apiVersions: ['v1']
               operations: ['UPDATE']
               resources: ['configmaps']
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['UPDATE']
+              resources: ['secrets']
             - apiGroups: ['batch']
               apiVersions: ['v1']
               operations: ['CREATE', 'DELETE']
@@ -317,16 +323,21 @@ spec:
           expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
         - name: newAnnotations
           expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
+        # Read only under a Secret UPDATE: the owner and the type before and after.
+        - name: oldOwners
+          expression: "has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []"
+        - name: newOwners
+          expression: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
     validations:
         - expression: "has(variables.target.metadata.labels) && 'factory.job' in variables.target.metadata.labels"
           message: 'the driver creates and deletes only objects labelled factory.job'
         - expression: >-
-              request.operation != 'UPDATE' ||
+              request.kind.kind != 'ConfigMap' || request.operation != 'UPDATE' ||
               (oldObject.metadata.name.matches('^factory-job-[0-9a-f-]+-claim$') &&
                 has(oldObject.metadata.labels) && 'factory.job' in oldObject.metadata.labels)
-          message: 'the driver updates only checkout claims'
+          message: 'the driver updates only checkout claims and attempt Secret bindings'
         - expression: >-
-              request.operation != 'UPDATE' ||
+              request.kind.kind != 'ConfigMap' || request.operation != 'UPDATE' ||
               (has(object.metadata.labels) && object.metadata.labels == oldObject.metadata.labels &&
                 has(object.data) && has(oldObject.data) && object.data == oldObject.data &&
                 variables.newAnnotations.all(k, k == 'factory.revoked' ||
@@ -338,6 +349,16 @@ spec:
               (variables.target.metadata.name.matches({{ squote $secretName }}) &&
                 (request.operation == 'DELETE' || !has(object.type) || object.type == 'Opaque'))
           message: 'the driver manages only Opaque per-attempt Secrets'
+        - expression: >-
+              request.kind.kind != 'Secret' || request.operation != 'UPDATE' ||
+              (has(object.metadata.labels) && object.metadata.labels == oldObject.metadata.labels &&
+                (has(object.type) ? object.type : '') == (has(oldObject.type) ? oldObject.type : '') &&
+                variables.newOwners == variables.oldOwners &&
+                has(object.data) &&
+                object.data.all(k, k == 'binding.json' ||
+                  (has(oldObject.data) && k in oldObject.data && oldObject.data[k] == object.data[k])) &&
+                (!has(oldObject.data) || oldObject.data.all(k, k in object.data)))
+          message: 'an attempt Secret update changes only its binding'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

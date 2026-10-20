@@ -14,6 +14,7 @@ import {
     SUPERVISOR_ORPHAN_MAX_MS,
     SUPERVISOR_ORPHAN_MIN_MS,
     SUPERVISOR_STEPS_MS,
+    type SupervisorBinding,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
 
@@ -101,3 +102,26 @@ export const agentBackstopMs = (config: DriverConfig, job: BoardJob): number =>
  */
 export const backstopMs = (config: DriverConfig, job: BoardJob): number =>
     agentBackstopMs(config, job) + SUPERVISOR_STEPS_MS;
+
+const BINDING_TOKEN = /^\S{1,256}$/;
+
+/**
+ * The binding file's text: the supervisor follows a binding by the rules of `newerBinding`
+ * (`scripts/supervisor.cjs`), so a body it would ignore is refused here, with a message that
+ * names neither the url nor the token.
+ */
+export function bindingBody(binding: SupervisorBinding): string {
+    const { claimSeq, url, token } = binding;
+    let protocol = '';
+    try {
+        protocol = new URL(url).protocol;
+    } catch {
+        // an unparseable url is refused below
+    }
+    if (!Number.isSafeInteger(claimSeq) || claimSeq < 0) {
+        throw new Error('the holder binding has no valid claim sequence');
+    }
+    if (protocol !== 'http:' && protocol !== 'https:') throw new Error('the holder binding has no valid board url');
+    if (!BINDING_TOKEN.test(token)) throw new Error('the holder binding has no valid token');
+    return JSON.stringify({ claimSeq, url, token });
+}

@@ -1,7 +1,7 @@
 import { AGENT_LAUNCH_CAPS } from './claim.js';
 import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from './config.js';
 import type { ExecutorType } from './executors.js';
-import { type Mailbox, mailboxesOf } from './supervisor-contract.js';
+import { type Mailbox, mailboxesOf, SUPERVISOR_BINDING } from './supervisor-contract.js';
 import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
 
 /**
@@ -236,7 +236,33 @@ export interface RunnerMount {
 export type RunnerVolume =
     | { name: string; persistentVolumeClaim: { claimName: string } }
     | { name: string; emptyDir: Record<string, never> | { medium: 'Memory'; sizeLimit: string } }
-    | TelemetryConfigVolume;
+    | TelemetryConfigVolume
+    | BindingVolume;
+
+/** The supervisor's holder binding (#829): one optional item of the attempt Secret, absent until a rebind. */
+export interface BindingVolume {
+    name: string;
+    secret: { secretName: string; items: { key: string; path: string }[]; defaultMode: number; optional: true };
+}
+
+const BINDING_MODE = 0o444;
+
+export const bindingVolume = (secretName: string): BindingVolume => ({
+    name: SUPERVISOR_BINDING.volume,
+    secret: {
+        secretName,
+        items: [{ key: SUPERVISOR_BINDING.file, path: SUPERVISOR_BINDING.file }],
+        defaultMode: BINDING_MODE,
+        optional: true,
+    },
+});
+
+/** The supervisor's read-only mount of it: the directory itself, no subPath, so the kubelet's updates reach it. */
+export const bindingMount: RunnerMount = {
+    name: SUPERVISOR_BINDING.volume,
+    mountPath: SUPERVISOR_BINDING.dir,
+    readOnly: true,
+};
 
 /**
  * The supervisor's four mailboxes as pod volumes, one emptyDir each (`supervisor-contract.ts`). One

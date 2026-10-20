@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
+import { bindingBody } from '../src/supervisor-plan.js';
 import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
@@ -1585,7 +1586,7 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             supervised,
             file,
             name: (next: Driver, claimSeq: number) =>
-                writeFileSync(file, JSON.stringify({ claimSeq, url: next.url, token: next.token })),
+                writeFileSync(file, bindingBody({ claimSeq, url: next.url, token: next.token })),
             rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
         };
     }

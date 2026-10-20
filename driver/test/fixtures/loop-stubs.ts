@@ -39,7 +39,7 @@ import type {
     Runner,
     RuntimeSample,
 } from '../../src/runner.js';
-import type { StepResult } from '../../src/supervisor-contract.js';
+import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
 import { type SyncQueue, syncQueue } from '../../src/sync-queue.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
@@ -333,6 +333,8 @@ export function stubRunner(
     reviewerResized: ReviewerSizing[];
     /** Every review the loop ran in a caller's group (issue #774). */
     reviewed: { caller: BoardJob; review: BoardJob; session: RunSession | null }[];
+    /** Every holder binding the loop wrote to a group's supervisor (#829), in order. */
+    rebound: { group: BoardJob; binding: SupervisorBinding }[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -449,6 +451,10 @@ export function stubRunner(
         },
         /** Every review the loop ran in a caller's group (issue #774), replaced by a test that scripts one. */
         reviewed: [] as { caller: BoardJob; review: BoardJob; session: RunSession | null }[],
+        rebound: [] as { group: BoardJob; binding: SupervisorBinding }[],
+        async rebind(group: BoardJob, binding: SupervisorBinding): Promise<void> {
+            runner.rebound.push({ group, binding });
+        },
         async runReview(
             caller: BoardJob,
             review: ReviewClaim,
