@@ -29,7 +29,12 @@ import { ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
-import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
+import {
+    MAILBOXES,
+    SUPERVISOR_BINDING_PATH,
+    SUPERVISOR_CREDENTIAL_NAMES,
+    SUPERVISOR_EXIT,
+} from '../src/supervisor-contract.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 
 /*
@@ -119,6 +124,11 @@ describe('the supervisor container', () => {
         expect(argv).toContain(`SUPERVISOR_ORPHAN_MS=${bound}`);
         const exporter = exporterCreateArgs(config, job, START, '/tmp/export.env');
         expect(exporter).toContain(`EXPORT_DRAIN_GIVEUP_MS=${bound}`);
+    });
+
+    it('is told its claim and where a newer holder names itself, which the control pair is not', () => {
+        expect(argv).toContain(`SUPERVISOR_CLAIM_SEQ=${job.claimSeq}`);
+        expect(argv).toContain(`SUPERVISOR_BINDING_FILE=${SUPERVISOR_BINDING_PATH}`);
     });
 
     it('takes its control pair by env file, never by argv', () => {

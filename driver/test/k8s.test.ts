@@ -9,6 +9,7 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_CREDENTIAL_NAMES,
+    SUPERVISOR_BINDING_PATH,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_STEPS_MS,
@@ -7952,6 +7953,27 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
         expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({ name: 'SUPERVISOR_ORPHAN_MS', value: bound });
         expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: bound });
+    });
+});
+
+describe('the holder a supervisor follows, on kubernetes', () => {
+    it('reaches the supervisor container alone: its claim and the file a newer holder names itself in', () => {
+        const pod = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
+        expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({
+            name: 'SUPERVISOR_CLAIM_SEQ',
+            value: String(job.claimSeq),
+        });
+        expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({
+            name: 'SUPERVISOR_BINDING_FILE',
+            value: SUPERVISOR_BINDING_PATH,
+        });
+        const others = pod.containers.filter((container) => container.name !== SUPERVISOR_CONTAINER);
+        expect(JSON.stringify(others)).not.toMatch(/SUPERVISOR_(CLAIM_SEQ|BINDING_FILE)/);
     });
 });
 

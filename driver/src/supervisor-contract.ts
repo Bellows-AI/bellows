@@ -343,7 +343,19 @@ export const SUPERVISOR_ENV = {
     agentless: 'SUPERVISOR_AGENTLESS',
     gate: 'SUPERVISOR_GATE',
     reviewer: 'SUPERVISOR_REVIEWER',
+    // The claim this supervisor's binding belongs to, and the file a newer holder names itself in.
+    claimSeq: 'SUPERVISOR_CLAIM_SEQ',
+    bindingFile: 'SUPERVISOR_BINDING_FILE',
 } as const;
+
+/** Where a newer holder names itself to a live supervisor: a file only the supervisor container mounts. */
+export const SUPERVISOR_BINDING_PATH = `${CTL_ROOT}/binding/binding.json`;
+/** What the binding file holds: a supervisor follows it only to a strictly newer `claimSeq`. */
+export interface SupervisorBinding {
+    claimSeq: number;
+    url: string;
+    token: string;
+}
 
 /** The names that carry the supervisor's and the exporter's credentials: the agent container never receives one. */
 export const SUPERVISOR_CREDENTIAL_NAMES: readonly string[] = [

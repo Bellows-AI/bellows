@@ -163,6 +163,14 @@ interface Driver {
     /** Whether the driver orders `finish` as soon as the supervisor reports; off, the supervisor keeps serving. */
     autoFinish: boolean;
     order(step: QueuedStep): void;
+    /** The bearer token this driver accepts. */
+    token: string;
+    /** Every request it received, whatever the route. */
+    calls: number;
+    /** While set, a step pull waits for it before the queue is read: a holder that hands its step late. */
+    hold: Promise<void> | null;
+    /** While set, every request is dropped unanswered: a driver that is gone. */
+    silent: boolean;
 }
 
 interface Report {
@@ -199,9 +207,19 @@ const readBody = (request: IncomingMessage): Promise<string> =>
     });
 
 /** The driver's run-control endpoint as the supervisor sees it: `/control`, and the question routes. */
-async function startDriver({ release = true }: { release?: boolean } = {}): Promise<Driver> {
+async function startDriver({
+    release = true,
+    token = TOKEN,
+}: {
+    release?: boolean;
+    token?: string;
+} = {}): Promise<Driver> {
     const driver: Driver = {
         url: '',
+        token,
+        calls: 0,
+        hold: null,
+        silent: false,
         stop: false,
         kill: false,
         cancel: [],
@@ -222,12 +240,15 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
                 response.writeHead(status, { 'content-type': 'application/json' });
                 response.end(JSON.stringify(body));
             };
-            if (driver.closed || request.headers.authorization !== `Bearer ${TOKEN}`) return send(401, {});
+            driver.calls += 1;
+            if (driver.silent) return request.socket.destroy();
+            if (driver.closed || request.headers.authorization !== `Bearer ${driver.token}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
                 const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
                 return send(200, { stop: driver.stop, kill: driver.kill, ...cancel });
             }
             if (request.method === 'GET' && request.url?.startsWith('/step?')) {
+                if (driver.hold) await driver.hold;
                 const next = driver.queue.shift();
                 if (next) return send(200, { step: next });
                 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1540,5 +1561,214 @@ describe('what crosses the mailboxes', () => {
     it('names no Kubernetes API in the supervisor, which has none to reach', () => {
         const source = read('driver/src/scripts/supervisor.cjs');
         expect(source).not.toMatch(/serviceaccount|KUBERNETES_SERVICE|\/api\/v1|kubectl/i);
+    });
+});
+
+describe('the supervisor run: following a newer holder (issue #829)', () => {
+    const NEWER_TOKEN = 'tok-newer-holder-secret';
+
+    /** A supervisor of claim 1 that reads its binding file, and the writer of that file. */
+    function bound(driver: Driver, env: Record<string, string> = {}) {
+        const dir = mkdtempSync(join(tmpdir(), 'binding-'));
+        dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        const supervised = run(driver, { SUPERVISOR_CLAIM_SEQ: '1', SUPERVISOR_BINDING_FILE: file, ...env });
+        return {
+            supervised,
+            file,
+            name: (next: Driver, claimSeq: number) =>
+                writeFileSync(file, JSON.stringify({ claimSeq, url: next.url, token: next.token })),
+            rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
+        };
+    }
+
+    it('follows a strictly newer holder: the report and the finish go to it, not to the old one', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the rebind', rebound);
+        expect(supervised.logs).toContain('supervisor: rebound to claim 2');
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.reports).toHaveLength(1);
+        expect(old.reports).toHaveLength(0);
+    });
+
+    it('refuses a holder that is not newer: an equal claim under another token, and an older one', async () => {
+        const [old, other] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(other, 1);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        name(other, 0);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(other.calls).toBe(0);
+        expect(old.reports).toHaveLength(1);
+        expect(supervised.logs.some((line) => line.startsWith('supervisor: rebound'))).toBe(false);
+    });
+
+    const NAMED = (claimSeq: string, url: string, token: string) =>
+        `{"claimSeq":${claimSeq},"url":${JSON.stringify(url)},"token":${JSON.stringify(token)}}`;
+    it.each([
+        ['an empty file', () => ''],
+        ['a partial write', () => '{"claimSeq":2,"url":"http://127'],
+        ['a claim sequence that is a string', (u: string) => NAMED('"2"', u, NEWER_TOKEN)],
+        ['a negative claim sequence', (u: string) => NAMED('-1', u, NEWER_TOKEN)],
+        ['a claim sequence past any number', (u: string) => NAMED('1e309', u, NEWER_TOKEN)],
+        ['a claim sequence of huge digits', (u: string) => NAMED('99999999999999999999', u, NEWER_TOKEN)],
+        ['a url that is not http', () => NAMED('2', 'ftp://127.0.0.1:1', NEWER_TOKEN)],
+        ['no token', (u: string) => NAMED('2', u, '')],
+        ['a token with whitespace', (u: string) => NAMED('2', u, 'tok en')],
+        ['an array', () => '[]'],
+    ])('keeps the holder it has through %s', async (_what, content) => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, file } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        writeFileSync(file, content(next.url));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.calls).toBe(0);
+        expect(old.reports).toHaveLength(1);
+        expect(supervised.logs.join('\n')).not.toContain(NEWER_TOKEN);
+        expect(supervised.logs.join('\n')).not.toContain(next.url);
+    });
+
+    it('keeps the holder it has when the binding is not a readable file', async () => {
+        const old = await startDriver();
+        const { supervised, file } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        mkdirSync(file);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(old.reports).toHaveLength(1);
+    });
+
+    it('never runs a step the old holder hands over after the rebind', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const marker = join(mkdtempSync(join(tmpdir(), 'marker-')), 'ran');
+        dirs.push(join(marker, '..'));
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        let release = () => {};
+        old.hold = new Promise<void>((resolve) => (release = resolve));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        old.order(
+            step('late-1', 'probe', ['node', '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`])
+        );
+        name(next, 2);
+        await until('the rebind', rebound);
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(existsSync(marker)).toBe(false);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(old.answers.has('late-1')).toBe(false);
+    });
+
+    it('keeps the result of a call the old holder handed before the rebind in the ledger only', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.order(step('slow-1', 'probe', ['node', '-e', 'setTimeout(() => {}, 400)']));
+        const { supervised, name, rebound } = bound(old);
+        await until('the call to be running', () => {
+            try {
+                return supervised.ledger('slow-1').invocations['i-1']?.state === 'running';
+            } catch {
+                return false;
+            }
+        });
+        name(next, 2);
+        await until('the rebind', rebound);
+        await until('the call to be done', () => supervised.ledger('slow-1').invocations['i-1']?.state === 'done');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(old.answers.has('slow-1')).toBe(false);
+        expect(next.answers.has('slow-1')).toBe(false);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+    });
+
+    it('delivers the report it already delivered again to the new holder, under the same id', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name } = bound(old);
+        supervised.agentExits(0);
+        await until('the report at the old holder', () => old.reports.length === 1);
+        name(next, 2);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.reports[0]!.id).toBe(old.reports[0]!.id);
+    });
+
+    it('ignores the old holder closing its endpoint once it has rebound', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the rebind', rebound);
+        old.closed = true;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(supervised.report()).toMatchObject({ outcome: 'completed' });
+        expect(next.reports).toHaveLength(1);
+    });
+
+    it('posts a question still pending to the new holder', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name } = bound(old);
+        supervised.agentAsks('q-1');
+        await until('the question at the old holder', () => old.posted.length === 1);
+        name(next, 2);
+        await until('the question at the new holder', () => next.posted.length === 1);
+        expect(next.posted[0]!.id).toBe('q-1');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('follows no holder without a claim sequence of its own', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const dir = mkdtempSync(join(tmpdir(), 'binding-'));
+        dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        writeFileSync(file, JSON.stringify({ claimSeq: 2, url: next.url, token: next.token }));
+        const supervised = run(old, { SUPERVISOR_BINDING_FILE: file });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.calls).toBe(0);
+    });
+
+    it('restarts the orphan bound at a rebind, and keeps it against the new holder', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name } = bound(old, { SUPERVISOR_ORPHAN_MS: '600' });
+        let finished = false;
+        void supervised.done.then(() => (finished = true));
+        supervised.agentExits(0);
+        await until('the report at the old holder', () => old.reports.length === 1);
+        old.silent = true;
+        next.silent = true;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        name(next, 2);
+        // Past the bound counted from the old holder's last word, inside the one counted from the rebind.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        expect(finished).toBe(false);
+        await supervised.done;
+    });
+
+    it('notices a rebind within a second', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the new holder to be called', () => next.calls > 0, 1_000);
+        supervised.agentExits(0);
+        await supervised.done;
     });
 });

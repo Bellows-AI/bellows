@@ -275,6 +275,9 @@ function settingsOf(env) {
         },
         url: env.SUPERVISOR_CONTROL_URL || null,
         token: env.SUPERVISOR_CONTROL_TOKEN || null,
+        // The claim this binding belongs to, and the file a newer holder names itself in; no claim, no following.
+        claimSeq: /^\d{1,15}$/.test(env.SUPERVISOR_CLAIM_SEQ ?? '') ? Number(env.SUPERVISOR_CLAIM_SEQ) : null,
+        bindingFile: env.SUPERVISOR_BINDING_FILE || null,
         controlMs: positive(env, 'SUPERVISOR_CONTROL_MS', DEFAULT_CONTROL_MS),
         tickMs: positive(env, 'SUPERVISOR_TICK_MS', DEFAULT_TICK_MS),
         deadlineMs: positive(env, 'SUPERVISOR_DEADLINE_MS', 0),
@@ -381,6 +384,12 @@ function newRun(settings, now, log) {
         goAt: null,
         finishRequested: false,
         contactedAt: startedAt,
+        // The holder this supervisor answers to: it follows a newer one (`followBinding`), and a request
+        // of an older generation never lands (`ask`). `bindingAbort` ends the old holder's requests.
+        binding: { claimSeq: settings.claimSeq, url: settings.url, token: settings.token },
+        bindingGen: 0,
+        bindingAbort: new AbortController(),
+        refusedBinding: null,
         abort: new AbortController(),
         // Aborted when the group stops taking steps; `inflight` interrupts the one still running.
         pulling: new AbortController(),
@@ -396,18 +405,85 @@ function newRun(settings, now, log) {
     };
 }
 
-/** A call to the driver on this run's behalf: it ends with the run, and an answer counts as contact. */
-const ask = (run, method, route, options = {}) =>
-    call(run.settings, method, route, {
-        abort: run.abort.signal,
-        onContact: () => {
-            run.contactedAt = run.now();
-        },
+/**
+ * A call to the current holder on this run's behalf: it ends with the run or with the holder it was
+ * made to, and an answer counts as contact. An answer that lands after a rebind is dropped as if
+ * the call never returned: the old holder neither hands a step nor counts as contact.
+ */
+async function ask(run, method, route, options = {}) {
+    const gen = run.bindingGen;
+    const abort = AbortSignal.any([
+        run.abort.signal,
+        run.bindingAbort.signal,
+        ...(options.abort ? [options.abort] : []),
+    ]);
+    const answer = await call(run.binding, method, route, {
         ...options,
+        abort,
+        onContact: () => {
+            if (run.bindingGen === gen) run.contactedAt = run.now();
+        },
     });
+    return run.bindingGen === gen ? answer : null;
+}
 
 /** The driver stopped answering for longer than the orphan bound: nobody is left to give this group orders. */
-const orphaned = (run) => Boolean(run.settings.url) && run.now() - run.contactedAt > run.settings.orphanMs;
+const orphaned = (run) => Boolean(run.binding.url) && run.now() - run.contactedAt > run.settings.orphanMs;
+
+/** A binding file's text as a binding strictly newer than `claimSeq`; null for anything else. */
+function newerBinding(text, claimSeq) {
+    let named;
+    try {
+        named = JSON.parse(text);
+    } catch {
+        return null;
+    }
+    if (named === null || typeof named !== 'object' || Array.isArray(named)) return null;
+    if (!Number.isSafeInteger(named.claimSeq) || named.claimSeq <= claimSeq) return null;
+    if (typeof named.token !== 'string' || !/^\S{1,256}$/.test(named.token)) return null;
+    try {
+        if (!['http:', 'https:'].includes(new URL(named.url).protocol)) return null;
+    } catch {
+        return null;
+    }
+    return { claimSeq: named.claimSeq, url: named.url, token: named.token };
+}
+
+/**
+ * Follows a newer holder named in the binding file: a driver that took the task over writes its
+ * claim there. Only a strictly newer, well-formed binding moves this supervisor; an unreadable,
+ * partial or older one keeps the holder it has (never unbinds, never closes). The old holder's
+ * requests are aborted, the report and the pending questions are delivered again to the new one,
+ * and its orphan bound starts afresh. Nothing logged names the url or the token.
+ */
+function followBinding(run) {
+    const { bindingFile } = run.settings;
+    if (!bindingFile || run.binding.claimSeq === null || !run.binding.url || run.closed) return;
+    let text;
+    try {
+        text = fs.readFileSync(bindingFile, 'utf8');
+    } catch {
+        return;
+    }
+    const next = newerBinding(text, run.binding.claimSeq);
+    if (!next) {
+        if (text !== run.refusedBinding && text !== '')
+            run.log('supervisor: ignored a binding that names no newer holder');
+        run.refusedBinding = text;
+        return;
+    }
+    run.bindingAbort.abort();
+    run.bindingAbort = new AbortController();
+    run.bindingGen += 1;
+    run.binding = next;
+    run.contactedAt = run.now();
+    run.reportAcked = null;
+    run.reportRefused = false;
+    run.reportTries = 0;
+    run.reportDueAt = 0;
+    for (const known of run.questions.values()) known.posted = false;
+    run.log(`supervisor: rebound to claim ${next.claimSeq}`);
+}
 
 const ledgerFile = (run, id) => path.join(run.file.ledger, `${encodeURIComponent(id)}.json`);
 
@@ -813,9 +889,14 @@ async function runCall(run, entry, step) {
 }
 
 /** Posts a call's answer until the driver acknowledges it (or says the attempt is over). */
-async function postStepResult(run, step, result) {
+async function postStepResult(run, step, result, gen) {
     let body = { invocation: step.invocation, ...result };
-    for (let attempt = 1; attempt <= STEP_RESULT_ATTEMPTS && !run.abort.signal.aborted; attempt += 1) {
+    // `gen` is the holder the step came from: after a rebind its result stays in the ledger, the new holder redoes the step.
+    for (
+        let attempt = 1;
+        attempt <= STEP_RESULT_ATTEMPTS && !run.abort.signal.aborted && run.bindingGen === gen;
+        attempt += 1
+    ) {
         const answer = await ask(run, 'POST', `${STEP_PATH}/${encodeURIComponent(step.id)}`, { body });
         if (answer?.status === HTTP_PAYLOAD_TOO_LARGE) {
             // Refused, not taken: the verdict still goes back, without the streams the driver would not hold.
@@ -836,14 +917,15 @@ async function postStepResult(run, step, result) {
  * delivery of a gate call still running joins it rather than running it twice.
  */
 async function answerStep(run, step) {
+    const gen = run.bindingGen;
     if (!LANES.includes(step.kind)) {
-        await postStepResult(run, step, await performStep(run, step));
+        await postStepResult(run, step, await performStep(run, step), gen);
         return;
     }
     const lane = run.lanes[step.kind];
     const call = `${step.id}\n${step.invocation}`;
     const running = lane.calls.get(call);
-    const answering = (running ?? performStep(run, step)).then((result) => postStepResult(run, step, result));
+    const answering = (running ?? performStep(run, step)).then((result) => postStepResult(run, step, result, gen));
     if (!running) {
         const performing = answering.finally(() => lane.calls.delete(call));
         lane.calls.set(
@@ -864,7 +946,7 @@ function readLedgerResult(run, step) {
 /** Pulls steps from the driver, one at a time, until the group stops taking them. */
 async function serveSteps(run) {
     const { settings } = run;
-    if (!settings.url) return;
+    if (!run.binding.url) return;
     const pulling = AbortSignal.any([run.abort.signal, run.pulling.signal]);
     while (!pulling.aborted) {
         const wait = settings.stepWaitMs;
@@ -954,7 +1036,7 @@ function scanQuestions(run) {
         run.questions.set(id, { posted: false, settled: false });
         if (size > QUESTION_MAX_BYTES) settle(run, id, { state: 'invalid' });
         else if (run.stopRaised) settle(run, id, { state: 'cancelled' });
-        else if (!run.settings.url) settle(run, id, { state: 'refused' });
+        else if (!run.binding.url) settle(run, id, { state: 'refused' });
     }
 }
 
@@ -1003,7 +1085,7 @@ async function pollQuestion(run, id, known) {
 /** The agent's question files: forwarded once, polled until a person (or a Stop) settles them. */
 async function serveQuestions(run) {
     scanQuestions(run);
-    if (!run.settings.url) return;
+    if (!run.binding.url) return;
     for (const [id, known] of run.questions) {
         if (known.settled) continue;
         if (!known.posted && !(await postQuestion(run, id, known))) continue;
@@ -1012,10 +1094,11 @@ async function serveQuestions(run) {
 }
 
 async function pollControl(run) {
+    followBinding(run);
     const { settings } = run;
     // A gate in flight is polled at the mailbox pace: its cancel is the driver's, and it must not wait.
     const pace = LANES.some((lane) => run.lanes[lane].inFlight > 0) ? settings.tickMs : settings.controlMs;
-    if (!settings.url || run.now() - run.lastControlAt < pace) return;
+    if (!run.binding.url || run.now() - run.lastControlAt < pace) return;
     run.lastControlAt = run.now();
     const answer = await ask(run, 'GET', '/control');
     if (!answer) return;
@@ -1181,7 +1264,7 @@ const reportBody = (run) => ({ ...run.report, serving: serving(run) });
 
 /** Whether the driver has yet to acknowledge the report as it stands now — a departure is a new word to deliver. */
 const reportOwed = (run) =>
-    Boolean(run.settings.url) && run.report !== null && !run.reportRefused && run.reportAcked !== serving(run);
+    Boolean(run.binding.url) && run.report !== null && !run.reportRefused && run.reportAcked !== serving(run);
 
 /** The report and whether the driver took it, on the supervisor's own volume: what a later reader finds. */
 function keepReport(run) {
@@ -1248,6 +1331,7 @@ async function drainExporter(run) {
     const waitUntil = run.now() + settings.drainMs;
     while (run.now() < waitUntil && !orphaned(run)) {
         beat(run);
+        followBinding(run);
         if (readJson(file.exportStatus)?.done === true) return true;
         await sleep(settings.tickMs);
     }
