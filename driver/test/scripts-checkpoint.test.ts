@@ -1,10 +1,20 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
-import { SCRIPT_IDENTITY, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
+import { SCRIPT_IDENTITY, git, hasGit, makeOrigin, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
  * The checkpoint script (issue #775): at an attempt's finalize it commits the whole task tree through
@@ -23,8 +33,9 @@ interface Verdict {
         tip: string;
         parent: string | null;
         branch: string;
+        base: string | null;
         defaultBranch: string | null;
-        prerequisites: { default: string | null; branch: string | null };
+        prerequisites: { ref: string; sha: string }[];
         bundleBytes: number;
         sqliteBytes: number;
         truncated: boolean;
@@ -32,18 +43,20 @@ interface Verdict {
     parts?: { path: string; bytes: number }[];
 }
 
+const runCheckpoint = (env: Record<string, string>): Verdict => {
+    const out = spawnSync('node', ['--no-warnings', SCRIPT], {
+        env: { ...process.env, ...SCRIPT_IDENTITY, ...env },
+        encoding: 'utf8',
+    });
+    return JSON.parse(out.stdout.trim().split('\n').filter(Boolean).pop() ?? '{}');
+};
+
 const hashOf = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
 
 describe.skipIf(!hasGit())('the checkpoint script', () => {
     const fx = setupWorktreeFixture();
 
-    const run = (env: Record<string, string>): Verdict => {
-        const out = spawnSync('node', ['--no-warnings', SCRIPT], {
-            env: { ...process.env, ...SCRIPT_IDENTITY, ...env },
-            encoding: 'utf8',
-        });
-        return JSON.parse(out.stdout.trim().split('\n').filter(Boolean).pop() ?? '{}');
-    };
+    const run = runCheckpoint;
     const outDir = () => join(fx.dir(), 'checkpoint');
     const checkpoint = (extra: Record<string, string> = {}): Verdict =>
         run({ CHECKOUT: fx.checkout(), BRANCH: fx.branch(), OUT_DIR: outDir(), ...extra });
@@ -109,8 +122,14 @@ describe.skipIf(!hasGit())('the checkpoint script', () => {
             parent: head,
             branch: fx.branch(),
             defaultBranch: 'main',
-            prerequisites: { default: main, branch: pushed },
         });
+        expect(header?.prerequisites).toEqual(
+            expect.arrayContaining([
+                { ref: 'refs/remotes/origin/main', sha: main },
+                { ref: `refs/remotes/origin/${fx.branch()}`, sha: pushed },
+            ])
+        );
+        expect(header?.prerequisites.map((p) => p.ref)).not.toContain('refs/remotes/origin/HEAD');
         // The bundle's own prerequisite lines name the same two commits: it carries only what they lack.
         const lines = readFileSync(join(outDir(), 'bundle'), 'latin1').slice(0, 400).split('\n');
         const required = lines.filter((l) => l.startsWith('-')).map((l) => l.slice(1, 41));
@@ -139,6 +158,30 @@ describe.skipIf(!hasGit())('the checkpoint script', () => {
         expect(readFileSync(join(fx.checkout(), 'README.md'), 'utf8')).toBe(before.readme);
         expect(existsSync(join(fx.checkout(), 'gone.txt'))).toBe(before.gone);
     });
+
+    it('removes a checkpoint ref a killed run left behind, even when this run fails early', () => {
+        workedTree();
+        git(fx.checkout(), 'update-ref', 'refs/factory/checkpoint', git(fx.checkout(), 'rev-parse', 'HEAD'));
+        writeFileSync(join(fx.checkout(), '.git', 'index'), 'not an index');
+
+        const verdict = checkpoint();
+
+        expect(verdict.ok).toBe(false);
+        expect(git(fx.checkout(), 'for-each-ref', 'refs/factory')).toBe('');
+    });
+
+    it('survives more than a buffer of `git add` warnings on a big tree', () => {
+        expect(fx.sync()).toMatchObject({ ok: true });
+        git(fx.checkout(), 'config', 'core.autocrlf', 'input');
+        const crlf = 'line\r\nline\r\n';
+        for (let i = 0; i < 12_000; i += 1)
+            writeFileSync(join(fx.checkout(), `crlf-with-a-long-enough-name-${i}.txt`), crlf);
+
+        const verdict = checkpoint();
+
+        expect(verdict).toMatchObject({ ok: true, state: 'complete' });
+        expect(existsSync(join(outDir(), 'add.err'))).toBe(false);
+    }, 60_000);
 
     it('above the cap uploads no bytes: truncated, caused checkpoint_cap, the shas still recorded', () => {
         workedTree();
@@ -182,5 +225,63 @@ describe.skipIf(!hasGit())('the checkpoint script', () => {
             ok: true,
             state: 'none',
         });
+    });
+});
+
+/**
+ * The checkout the sync script makes is a `--filter=blob:none` clone, and the checkpoint runs with
+ * no credential: a bundle range that reaches a commit whose blobs were never fetched would try a
+ * lazy fetch it cannot make. Here the remote is unreachable once the clone exists, so any lazy
+ * fetch is a failure.
+ */
+describe.skipIf(!hasGit())('the checkpoint script in a partial clone', () => {
+    it('bundles an unpushed task branch on a non-default base with no origin/HEAD and no network', () => {
+        const dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-checkpoint-partial-')));
+        const { work, bare } = makeOrigin(dir);
+        git(bare, 'config', 'uploadpack.allowFilter', 'true');
+        git(bare, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
+        // A batch base two commits ahead of main on one file: the clone's checkout fetches only the newer blob.
+        git(work, 'checkout', '-b', 'batch-base');
+        writeFileSync(join(work, 'a.txt'), 'v1\n');
+        git(work, 'add', 'a.txt');
+        git(work, 'commit', '-m', 'a v1');
+        writeFileSync(join(work, 'a.txt'), 'v2\n');
+        git(work, 'commit', '-am', 'a v2');
+        git(work, 'checkout', 'main');
+        writeFileSync(join(work, 'other.txt'), 'main moved\n');
+        git(work, 'add', 'other.txt');
+        git(work, 'commit', '-m', 'main moves');
+        git(work, 'push', '--quiet', `file://${bare}`, 'main', 'batch-base');
+
+        const clone = join(dir, 'task', 'factory');
+        execFileSync('git', ['clone', '--quiet', '--filter=blob:none', '--no-checkout', `file://${bare}`, clone]);
+        git(clone, 'checkout', '--quiet', '-b', 'factory/root', 'origin/batch-base');
+        writeFileSync(join(clone, 'task.txt'), 'unpushed work\n');
+        git(clone, 'add', 'task.txt');
+        git(clone, 'commit', '-m', 'task commit');
+        writeFileSync(join(clone, 'untracked.txt'), 'dirty\n');
+        git(clone, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD');
+        git(clone, 'remote', 'set-url', 'origin', `file://${join(dir, 'gone.git')}`);
+        const refs = Object.fromEntries(
+            git(clone, 'for-each-ref', '--format=%(refname) %(objectname)', 'refs/remotes/origin')
+                .split('\n')
+                .map((l) => l.split(' '))
+        );
+
+        const outDir = join(dir, 'out');
+        const verdict = runCheckpoint({ CHECKOUT: clone, BRANCH: 'factory/root', BASE: 'batch-base', OUT_DIR: outDir });
+
+        expect(verdict).toMatchObject({ ok: true, state: 'complete' });
+        expect(verdict.header).toMatchObject({ base: 'batch-base', defaultBranch: null });
+        expect(verdict.header?.prerequisites).toHaveLength(Object.keys(refs).length);
+        expect(verdict.header?.prerequisites).toEqual(
+            expect.arrayContaining(Object.entries(refs).map(([ref, sha]) => ({ ref, sha })))
+        );
+        const fresh = join(dir, 'fresh');
+        execFileSync('git', ['clone', '--quiet', `file://${bare}`, fresh]);
+        git(fresh, 'bundle', 'verify', join(outDir, 'bundle'));
+        git(fresh, 'fetch', '--quiet', join(outDir, 'bundle'), 'refs/factory/checkpoint:refs/heads/checkpoint');
+        expect(git(fresh, 'show', 'checkpoint:untracked.txt')).toBe('dirty');
+        expect(git(fresh, 'show', 'checkpoint:task.txt')).toBe('unpushed work');
     });
 });

@@ -56,7 +56,7 @@
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
-//   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
+//   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _BASE / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
 //                               takes (issue #775): scripts/checkpoint.cjs by content, the task tree and branch it
 //                               works on, the directory it writes in, the OpenCode database to snapshot. Absent
 //                               the script, the checkout, the branch or the directory: no checkpoint.
@@ -276,7 +276,14 @@ function checkpointOf(env) {
     const branch = env.SUPERVISOR_CHECKPOINT_BRANCH;
     const dir = env.SUPERVISOR_CHECKPOINT_DIR;
     if (!script || !checkout || !branch || !dir) return null;
-    return { script, checkout, branch, dir, opencodeDb: env.SUPERVISOR_CHECKPOINT_OPENCODE_DB || '' };
+    return {
+        script,
+        checkout,
+        branch,
+        dir,
+        base: env.SUPERVISOR_CHECKPOINT_BASE || '',
+        opencodeDb: env.SUPERVISOR_CHECKPOINT_OPENCODE_DB || '',
+    };
 }
 
 function settingsOf(env) {
@@ -1355,6 +1362,7 @@ async function checkpointStage(run) {
             env: {
                 CHECKOUT: checkpoint.checkout,
                 BRANCH: checkpoint.branch,
+                ...(checkpoint.base ? { BASE: checkpoint.base } : {}),
                 OUT_DIR: checkpoint.dir,
                 ...(checkpoint.opencodeDb ? { OPENCODE_DB: checkpoint.opencodeDb } : {}),
             },

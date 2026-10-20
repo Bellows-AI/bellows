@@ -77,7 +77,6 @@ export interface BoardStub extends Board {
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
-    /** The pre-run claims the loop handed back for checkout contention (issue #559). */
     /** The interrupted attempts the loop reported (issue #792). */
     interrupted: ({ id: string } & Interruption)[];
     beats: number;

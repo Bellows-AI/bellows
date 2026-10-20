@@ -7,7 +7,9 @@
 -- checkpoint_job_id / _claim_seq / _executor / _session  the manifest's identity in
 --                                                        artifact_manifest (with the root's own
 --                                                        org_id, member and root_job_id).
--- checkpoint_truncated    the producer hit its cap and uploaded the header only (`checkpoint_cap`).
+-- checkpoint_truncated    the manifest's state is `truncated`: the checkpoint is not whole.
+-- checkpoint_cause        why, from the manifest's terminal cause: `checkpoint_cap` (the producer
+--                         uploaded the header only) or the board's refusal (`stream_cap`, `org_quota`) after partial bytes.
 -- checkpoint_finalized_at when the manifest landed.
 --
 -- This file must contain NO `create extension`, per 005's header.
@@ -18,4 +20,5 @@ alter table job
     add column if not exists checkpoint_executor text,
     add column if not exists checkpoint_session text,
     add column if not exists checkpoint_truncated boolean,
+    add column if not exists checkpoint_cause text,
     add column if not exists checkpoint_finalized_at timestamptz;

@@ -61,5 +61,7 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
   (`driver/src/scripts/task-checkout.cjs`); 20 repositories and 10 executor profiles per member, two clones at a
   time; a symlink raced into `.git/refs` between the facts check and git's read can point one read outside the
   tree (`CONTAINED_HEAD`).
+- **The attempt checkpoint carries no submodule or nested repository** (a gitlink is committed as a pointer, never its
+  contents), and its cap is 256 MiB. `driver/src/scripts/checkpoint.cjs`, `driver/test/scripts-checkpoint.test.ts`.
 - **The package cache is per thread and repo, on the task volume, never shared and never evicted.**
   `driver/src/claim.ts`, `driver/test/runner-plan.test.ts`.

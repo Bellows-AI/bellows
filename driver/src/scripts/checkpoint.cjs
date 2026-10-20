@@ -2,10 +2,12 @@
 // by the task supervisor in its finalize stage, after the publish and before the report. It commits
 // the WHOLE task tree — tracked edits, deletions, untracked files; ignored paths and `.factory/`
 // stay out — through a throwaway index, bundles that commit against what the remote already has
-// (`origin/<default>` and `origin/<task branch>`, whose shas it records), and snapshots the
+// (every `origin/*` remote-tracking ref, each ref and sha recorded as the header's prerequisites;
+// the clone is partial, so nothing else is safe to walk with no credential), and snapshots the
 // OpenCode session database. It never moves the real index, HEAD, a branch or the working tree: the
 // only ref it makes, `refs/factory/checkpoint`, a bundle needs to name its tip, and it removes it.
-// One execFileSync per git call: no value can become a command. One JSON verdict on the last line
+// One execFileSync per git call: no value can become a command; every call runs with
+// GIT_NO_LAZY_FETCH=1, so an object the partial clone never fetched fails fast. One JSON verdict on the last line
 // of stdout:
 //   {ok:true, state:'none'}                                    no checkout: nothing to carry;
 //   {ok:true, state:'complete'|'truncated', cause, header, parts}
@@ -16,6 +18,7 @@
 // Environment (set by the supervisor; paths and a branch name, never a credential):
 //   CHECKOUT    — the task's own tree (`/task/<repo segment>`);
 //   BRANCH      — the branch it runs on (`factory/<thread root id>`);
+//   BASE        — optional: the branch the task bases on (the claim's base; recorded in the header);
 //   OUT_DIR     — where the parts are written; emptied first;
 //   OPENCODE_DB — optional: the OpenCode session database to snapshot (absent file: no snapshot);
 //   CAP_BYTES   — optional: the bytes above which nothing is uploaded (default 256 MiB).
@@ -24,7 +27,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DEFAULT_CAP_BYTES = 268_435_456; // 256 MiB
-const BUNDLE_MAX_BUFFER = 1_048_576;
+const MAX_BUFFER = 1_048_576;
+const ADD_ERR = 'add.err';
 const REASON_MAX_LENGTH = 300;
 const TIP_REF = 'refs/factory/checkpoint';
 const HEADER_VERSION = 1;
@@ -37,6 +41,7 @@ const IDENTITY = {
 
 const checkout = process.env.CHECKOUT;
 const branch = process.env.BRANCH;
+const base = process.env.BASE || null;
 const outDir = process.env.OUT_DIR;
 const opencodeDb = process.env.OPENCODE_DB || '';
 const cap = Number(process.env.CAP_BYTES || DEFAULT_CAP_BYTES);
@@ -45,8 +50,8 @@ const git = (args, env = {}) =>
     execFileSync('git', args, {
         cwd: checkout,
         encoding: 'utf8',
-        env: { ...process.env, ...env },
-        maxBuffer: BUNDLE_MAX_BUFFER,
+        env: { ...process.env, GIT_NO_LAZY_FETCH: '1', ...env },
+        maxBuffer: MAX_BUFFER,
         stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
 
@@ -73,6 +78,24 @@ const optional = (args) => {
 
 const sha = (ref) => optional(['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
 
+/** `git add -A` with stderr in a file: a big tree's warnings can outgrow any buffer. */
+const addAll = (env) => {
+    const errFile = path.join(outDir, ADD_ERR);
+    const fd = fs.openSync(errFile, 'w');
+    try {
+        execFileSync('git', ['add', '-A'], {
+            cwd: checkout,
+            env: { ...process.env, GIT_NO_LAZY_FETCH: '1', ...env },
+            stdio: ['ignore', 'ignore', fd],
+        });
+    } catch (e) {
+        throw new Error(fs.readFileSync(errFile, 'utf8').slice(-REASON_MAX_LENGTH) || String(e.message));
+    } finally {
+        fs.closeSync(fd);
+        fs.rmSync(errFile, { force: true });
+    }
+};
+
 /** The whole tree as one commit, built in a copy of the index so the real one is never written. */
 const commitTree = () => {
     const realIndex = path.resolve(checkout, git(['rev-parse', '--git-path', 'index']));
@@ -80,7 +103,7 @@ const commitTree = () => {
     // Seeded from the real index: the stat cache spares rehashing every file. Absent is a fresh repository.
     if (size(realIndex) !== null) fs.copyFileSync(realIndex, index);
     const env = { GIT_INDEX_FILE: index, ...IDENTITY };
-    git(['add', '-A'], env);
+    addAll(env);
     const tree = git(['write-tree'], env);
     const parent = sha('HEAD');
     const args = [
@@ -100,9 +123,20 @@ const defaultBranch = () => {
     return ref ? ref.replace('refs/remotes/origin/', '') : null;
 };
 
-const bundle = (tip, excluded, file) => {
+/** Every remote-tracking ref (the symbolic origin/HEAD aside) and its commit: what the remote already has. */
+const remoteRefs = () => {
+    const out = git(['for-each-ref', '--format=%(refname) %(objectname) %(symref)', 'refs/remotes/origin']);
+    return out
+        .split('\n')
+        .map((line) => line.split(' '))
+        .filter(([ref, , symref]) => ref && !symref)
+        .map(([ref, objectSha]) => ({ ref, sha: objectSha }));
+};
+
+const bundle = (tip, prerequisites, file) => {
     git(['update-ref', TIP_REF, tip]);
     try {
+        const excluded = [...new Set(prerequisites.map((p) => p.sha))];
         git(['bundle', 'create', file, TIP_REF, ...excluded.map((s) => `^${s}`)]);
     } finally {
         git(['update-ref', '-d', TIP_REF]);
@@ -126,16 +160,17 @@ const main = async () => {
     if (size(path.join(checkout, '.git')) === null) return { ok: true, state: 'none' };
     fs.rmSync(outDir, { recursive: true, force: true });
     fs.mkdirSync(outDir, { recursive: true });
+    // A run killed between update-ref and its delete leaves the ref behind in the real repository.
+    git(['update-ref', '-d', TIP_REF]);
     const { tip, parent } = commitTree();
-    const prerequisites = { default: null, branch: sha(`refs/remotes/origin/${branch}`) };
-    const base = defaultBranch();
-    if (base) prerequisites.default = sha(`refs/remotes/origin/${base}`);
+    const prerequisites = remoteRefs();
     const header = {
         version: HEADER_VERSION,
         tip,
         parent,
         branch,
-        defaultBranch: base,
+        base,
+        defaultBranch: defaultBranch(),
         prerequisites,
         bundleBytes: 0,
         sqliteBytes: 0,

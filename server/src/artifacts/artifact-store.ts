@@ -254,7 +254,8 @@ function createManifestOps({
                         update job set
                             checkpoint_job_id = ${c.job_id}, checkpoint_claim_seq = ${c.claim_seq},
                             checkpoint_executor = ${c.executor}, checkpoint_session = ${c.session_id},
-                            checkpoint_truncated = ${manifest.state === 'truncated'}, checkpoint_finalized_at = now()
+                            checkpoint_truncated = ${manifest.state === 'truncated'},
+                            checkpoint_cause = ${manifest.terminalCause}, checkpoint_finalized_at = now()
                         where org_id = ${c.org_id} and id = ${c.root_job_id}::uuid
                           and exists (
                               select 1 from job holder

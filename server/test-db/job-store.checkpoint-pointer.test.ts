@@ -55,12 +55,14 @@ interface Pointer {
     checkpoint_claim_seq: string | null;
     checkpoint_session: string | null;
     checkpoint_truncated: boolean | null;
+    checkpoint_cause: string | null;
     checkpoint_finalized_at: Date | null;
 }
 const pointerOf = async (id: string) =>
     (
         await sql<Pointer[]>`
-            select checkpoint_job_id, checkpoint_claim_seq, checkpoint_session, checkpoint_truncated, checkpoint_finalized_at
+            select checkpoint_job_id, checkpoint_claim_seq, checkpoint_session, checkpoint_truncated, checkpoint_cause,
+                   checkpoint_finalized_at
             from job where id = ${id}
         `
     )[0]!;
@@ -96,6 +98,7 @@ describe.skipIf(!enabled)('checkpoint pointer — database', () => {
             checkpoint_claim_seq: String(t.first.claimSeq),
             checkpoint_session: 'none',
             checkpoint_truncated: false,
+            checkpoint_cause: null,
         });
         expect((await pointerOf(t.root)).checkpoint_finalized_at).toBeInstanceOf(Date);
     });
@@ -107,7 +110,46 @@ describe.skipIf(!enabled)('checkpoint pointer — database', () => {
             state: 'truncated',
             terminalCause: 'checkpoint_cap',
         });
-        expect(await pointerOf(t.root)).toMatchObject({ checkpoint_truncated: true });
+        expect(await pointerOf(t.root)).toMatchObject({
+            checkpoint_truncated: true,
+            checkpoint_cause: 'checkpoint_cap',
+        });
+    });
+
+    it('tells the producer’s cap from a board 413 after partial bytes: both truncated, each with its own cause', async () => {
+        const t = await task();
+        await artifacts.finalize(t.refOf(t.first.claimSeq), {
+            ...MANIFEST,
+            state: 'truncated',
+            terminalCause: 'stream_cap',
+        });
+        expect(await pointerOf(t.root)).toMatchObject({
+            checkpoint_truncated: true,
+            checkpoint_cause: 'stream_cap',
+        });
+    });
+
+    it('advances the thread root’s pointer from a follow-up’s manifest, under the child’s current claim only', async () => {
+        const t = await task();
+        await jobs.complete(t.id, t.first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const child = await jobs.createFollowUp(t.id, 'adjust', null);
+        if (typeof child === 'string' || !('id' in child))
+            throw new Error(`follow-up refused: ${JSON.stringify(child)}`);
+        const first = await claim();
+        expect(first.id).toBe(child.id);
+        await sql`update job set lease_expires_at = now() where id = ${child.id}`;
+        const second = await claim();
+        expect(second.claimSeq).toBe(first.claimSeq + 1);
+
+        await artifacts.finalize(t.refOf(first.claimSeq, { job: child.id }), COMPLETE);
+        expect(await pointerOf(t.root)).toMatchObject({ checkpoint_job_id: null });
+
+        await artifacts.finalize(t.refOf(second.claimSeq, { job: child.id }), COMPLETE);
+        expect(await pointerOf(t.root)).toMatchObject({
+            checkpoint_job_id: child.id,
+            checkpoint_claim_seq: String(second.claimSeq),
+        });
+        expect(await pointerOf(child.id)).toMatchObject({ checkpoint_job_id: null });
     });
 
     it('stores a superseded claim’s manifest and leaves the pointer alone', async () => {

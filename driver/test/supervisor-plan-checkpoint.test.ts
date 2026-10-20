@@ -37,6 +37,13 @@ describe('the supervisor’s checkpoint environment', () => {
         expect(env[SUPERVISOR_ENV.checkpointMs]).toBe('120000');
     });
 
+    it('hands the checkpoint the claim’s base branch, and none for a task on the remote default', () => {
+        expect(envOf(withControl({ baseBranch: 'batch-sandbox' }))[SUPERVISOR_ENV.checkpointBase]).toBe(
+            'batch-sandbox'
+        );
+        expect(envOf(withControl({}))).not.toHaveProperty(SUPERVISOR_ENV.checkpointBase);
+    });
+
     it('snapshots no database for claude-code', () => {
         const env = envOf(withControl({ executorType: 'claude-code' }));
 

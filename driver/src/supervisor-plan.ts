@@ -3,6 +3,7 @@ import { opencodeDbPath, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { checkpointScript } from './container-scripts.js';
 import { OPENCODE } from './executors.js';
+import { baseBranchOf } from './publish-base.js';
 import { GATE_IMAGE, checkoutDir, checkoutKey, worktreeBranch } from './publish.js';
 import { CHECKPOINT_DIR } from './task-volume.js';
 import {
@@ -78,11 +79,13 @@ export function supervisorLiterals(
  */
 function checkpointLiterals(job: BoardJob): [string, string][] {
     const checkout = checkoutDir(job);
+    const base = baseBranchOf(job);
     if (!checkout || supervisorControlNames(job).length === 0) return [];
     return [
         [SUPERVISOR_ENV.checkpointScript, checkpointScript],
         [SUPERVISOR_ENV.checkpointCheckout, checkout],
         [SUPERVISOR_ENV.checkpointBranch, worktreeBranch(job)],
+        ...(base ? ([[SUPERVISOR_ENV.checkpointBase, base]] as [string, string][]) : []),
         [SUPERVISOR_ENV.checkpointDir, CHECKPOINT_DIR],
         ...(job.executorType === OPENCODE
             ? ([[SUPERVISOR_ENV.checkpointOpencodeDb, opencodeDbPath(job)]] as [string, string][])

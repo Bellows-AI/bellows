@@ -353,6 +353,7 @@ export const SUPERVISOR_ENV = {
     checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
     checkpointCheckout: 'SUPERVISOR_CHECKPOINT_CHECKOUT',
     checkpointBranch: 'SUPERVISOR_CHECKPOINT_BRANCH',
+    checkpointBase: 'SUPERVISOR_CHECKPOINT_BASE',
     checkpointDir: 'SUPERVISOR_CHECKPOINT_DIR',
     checkpointOpencodeDb: 'SUPERVISOR_CHECKPOINT_OPENCODE_DB',
     checkpointMs: 'SUPERVISOR_CHECKPOINT_MS',
