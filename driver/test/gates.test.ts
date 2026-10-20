@@ -532,6 +532,10 @@ describe('the gate server', () => {
         expect((await post({ authorization: 'Bearer tok-2' }, '{"gate":"deploy"}')).status).toBe(NOT_FOUND_STATUS);
         expect((await post({ authorization: 'Bearer tok-2' }, 'not json')).status).toBe(BAD_REQUEST_STATUS);
         expect((await post({ authorization: 'Bearer tok-2' }, '{}')).status).toBe(BAD_REQUEST_STATUS);
+        // A body that parses to a non-object is as malformed as one that does not parse.
+        for (const body of ['null', '[]', '1']) {
+            expect((await post({ authorization: 'Bearer tok-2' }, body)).status).toBe(BAD_REQUEST_STATUS);
+        }
         // Only the declared name ever reaches the manager — never an arbitrary command string.
         expect((await post({ authorization: 'Bearer tok-2' }, '{"command":"rm -rf /"}')).status).toBe(
             BAD_REQUEST_STATUS

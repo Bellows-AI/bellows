@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
     mergeOpencodeOutcome,
     type OpencodeRunOutcome,
@@ -6,7 +6,7 @@ import {
     parseOpencodeRunOutcome,
     readOpencodeWithRetries,
 } from '../src/close-read.js';
-import type { RunOutcome } from '../src/runner.js';
+import { CLOSE_READ_DEADLINE_MS, type RunOutcome } from '../src/runner.js';
 
 /**
  * The opencode close-time readout's retry and merge, shared by both executors (docker: a
@@ -36,6 +36,42 @@ const readAndMerge = async (answers: string[]) => {
 };
 
 describe('the opencode session readout retry', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('stands on its latest answer once the clock runs out, however many tries were left', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        let reads = 0;
+        const slow = async (): Promise<OpencodeRunOutcome> => {
+            reads += 1;
+            vi.setSystemTime(Date.now() + CLOSE_READ_DEADLINE_MS / 2);
+            return opencodeReadFailed(`try ${reads} timed out`);
+        };
+
+        const { scraped, reason } = await readOpencodeWithRetries(slow, async () => {});
+
+        expect(reads).toBe(2);
+        expect(scraped.sessionId).toBeNull();
+        expect(reason).toBe('try 2 timed out');
+    });
+
+    it('stands on its latest answer at once when the attempt is killed, with no further try', async () => {
+        const kill = new AbortController();
+        let reads = 0;
+        const readOnce = async (): Promise<OpencodeRunOutcome> => {
+            reads += 1;
+            kill.abort();
+            return opencodeReadFailed('the readout container failed');
+        };
+
+        const { scraped, reason } = await readOpencodeWithRetries(readOnce, async () => {}, kill.signal);
+
+        expect(reads).toBe(1);
+        expect(scraped.sessionId).toBeNull();
+        expect(reason).toBe('the readout container failed');
+    });
+
     it('takes a session answered on the first try, without waiting', async () => {
         const { outcome, reads, sleeps } = await readAndMerge([SESSION_LINE]);
 

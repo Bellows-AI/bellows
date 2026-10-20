@@ -169,6 +169,18 @@ describe('runReviewSteps', () => {
         expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync']);
     });
 
+    it.each(['null', '[]', '"ok"', '{}', '{"ok":"yes"}', 'not json', ''])(
+        'runs no review when the restore answers %j: an unreadable answer is no go-ahead',
+        async (stdout) => {
+            const { steps, host: stepHost } = sinkOf(async (step) =>
+                step.argv[0] === 'mkdir' ? { exitCode: 0, stdout: '' } : { exitCode: 0, stdout }
+            );
+            const result = await runReviewSteps(stepHost, { caller, review, session: { id: 'sess-1', resume: false } });
+            expect(result.exitCode).toBe(1);
+            expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync']);
+        }
+    );
+
     it('cancels the review step through the channel when its signal aborts', async () => {
         const stop = new AbortController();
         const { cancelled, host: stepHost } = sinkOf(async (step) => {

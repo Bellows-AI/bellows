@@ -218,6 +218,8 @@ const controlEnvFilePath = (job: BoardJob, role: string): string =>
 interface GroupDeps {
     config: DriverConfig;
     execDocker: ExecDocker;
+    /** Removes what a refused create leaves; uncancelled, where `execDocker` ends with the attempt. */
+    teardown?: ExecDocker;
     files: RunnerFiles;
 }
 
@@ -292,7 +294,7 @@ export async function createGroup(
             );
         }
     } catch (e) {
-        await removeGroup(deps.execDocker, job);
+        await removeGroup(deps.teardown ?? deps.execDocker, job);
         // Typed when the daemon's words prove a cause, for the loop's one startup decision (#824 D11).
         throw startupRefusalOf(e);
     }
@@ -307,7 +309,7 @@ async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
     try {
         await deps.execDocker(gateCreateArgs(deps.config, job, image));
     } catch (e) {
-        await removeGroup(deps.execDocker, job);
+        await removeGroup(deps.teardown ?? deps.execDocker, job);
         throw startupRefusalOf(e, { role: 'gate', image });
     }
 }
@@ -318,7 +320,7 @@ async function createReviewer(deps: GroupDeps, job: BoardJob): Promise<void> {
     try {
         await deps.execDocker(reviewerCreateArgs(deps.config, job));
     } catch (e) {
-        await removeGroup(deps.execDocker, job);
+        await removeGroup(deps.teardown ?? deps.execDocker, job);
         throw startupRefusalOf(e);
     }
 }

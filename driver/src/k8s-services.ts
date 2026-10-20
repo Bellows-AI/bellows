@@ -2,7 +2,9 @@ import type { BoardJob, ServiceStatus } from './board.js';
 import { jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { groupsOf, stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
-import { HTTP_ERROR_STATUS, livePodOfItems, parse } from './k8s-transport.js';
+import { asServicePod } from './k8s-pod-shapes.js';
+import { podsOf } from './k8s-poll.js';
+import { boundedBy, boundOf, HTTP_ERROR_STATUS, livePodOfItems, waitOf, withSignal } from './k8s-transport.js';
 import type { K8sContainerStatus, K8sDeps, K8sPod } from './k8s-transport.js';
 import {
     type DeadService,
@@ -13,8 +15,10 @@ import {
     SERVICE_RESTART_TIMEOUT_MS,
     SERVICE_RESTART_TIMEOUT_S,
 } from './runner.js';
-import { awaitServicesRunning, ServicesNotRunning, throwIfStoodDown } from './service-restart.js';
+import { type Bound, pollFor } from './poll.js';
+import { awaitServicesRunning, ServicesNotRunning, stoodDown } from './service-restart.js';
 import { groupServices, type ServiceSpec } from './services.js';
+import { stepLost } from './step-control.js';
 import { runServiceGenerationStep, type StepHost, stepHostOf } from './supervised-steps.js';
 import { SERVICE_NOT_ACKED_EXIT, serviceContainerOf } from './supervisor-contract.js';
 
@@ -87,10 +91,9 @@ async function taskPod(deps: K8sDeps, job: BoardJob): Promise<K8sPod> {
         .catch((e: Error) => {
             throw new Inconclusive(`the task pod could not be listed: ${e.message}`);
         });
-    if (listed.status >= HTTP_ERROR_STATUS) {
-        throw new Inconclusive(`the task pod could not be listed (HTTP ${listed.status})`);
-    }
-    const pod = livePodOfItems(parse<{ items?: K8sPod[] }>(listed.body).items ?? []);
+    const read = podsOf(listed, 'listing the task pod', asServicePod);
+    if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
+    const pod = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
     if (!pod) throw new Inconclusive('the task pod is not listed');
     return pod;
 }
@@ -120,8 +123,8 @@ export function forgetServices(deps: K8sDeps, job: BoardJob): void {
  * `restart` step in its `acked` mode). A lost supervisor is thrown as it is (`stepLost`); any other
  * answer it cannot give is a read that failed.
  */
-async function unacked(host: StepHost, job: BoardJob, names: readonly string[]): Promise<Set<string>> {
-    const read = await runServiceGenerationStep(host, job, 'acked', names);
+async function unacked(host: StepHost, job: BoardJob, names: readonly string[], bound: Bound): Promise<Set<string>> {
+    const read = await runServiceGenerationStep(host, job, { mode: 'acked', names }, bound);
     if (read.exitCode === 0) return new Set();
     if (read.exitCode === SERVICE_NOT_ACKED_EXIT) return new Set(read.stdout.split('\n').filter(Boolean));
     throw new Error(`the services' acknowledgements could not be read: ${(read.stderr || read.stdout).trim()}`);
@@ -137,7 +140,8 @@ async function readyListing(
     const statuses = await readSidecars(deps, job);
     last.statuses = statuses;
     const running = statuses.filter(({ state }) => state === 'running').map(({ name }) => name);
-    const waiting = running.length === statuses.length ? await unacked(host, job, running) : new Set(running);
+    const waiting =
+        running.length === statuses.length ? await unacked(host, job, running, boundOf(deps)) : new Set(running);
     return statuses.map(({ name, image, state, restartCount, ending }) => ({
         name,
         image,
@@ -162,10 +166,15 @@ export async function startServiceFleet(
     if (specs.length === 0) return null;
     const host = await stepHostFor(deps, job);
     const last = { statuses: [] as SidecarStatus[] };
-    await awaitServicesRunning(specs, () => readyListing(deps, host, job, last), deps.sleep, {
-        signal,
-        after: 'the start',
-    });
+    await awaitServicesRunning(
+        specs,
+        (deadline) => readyListing(boundedBy(withSignal(deps, signal), deadline), host, job, last),
+        deps.sleep,
+        {
+            signal,
+            after: 'the start',
+        }
+    );
     recordBaseline(deps, job, last.statuses);
     return null;
 }
@@ -207,56 +216,60 @@ export async function deadServices(deps: K8sDeps, job: BoardJob): Promise<DeadSe
     return out;
 }
 
-/** One restart's SERVICE_RESTART_TIMEOUT_MS budget: spent by the poll count or the clock, whichever is more. */
-interface RestartBudget {
-    started: number;
-    polls: number;
-    signal: AbortSignal;
-}
-
-const spentOf = (budget: RestartBudget): number =>
-    Math.max(budget.polls * SERVICE_READY_POLL_MS, Date.now() - budget.started);
-
-/** The pace between a restart's reads, counted against its budget. */
-async function pace(deps: K8sDeps, budget: RestartBudget): Promise<void> {
-    budget.polls += 1;
-    await deps.sleep(SERVICE_READY_POLL_MS);
-}
-
 /**
  * Bumps every service's generation once each has acknowledged its current one (R2-4), waiting out
- * the bump's refusal meanwhile, and answers the sidecars as they stood at the bump. A pod that
- * cannot be read is read again; one never read to the end of the budget throws `Inconclusive`.
+ * the bump's refusal meanwhile for up to SERVICE_RESTART_TIMEOUT_MS, and answers the sidecars as
+ * they stood at the bump. A pod that cannot be read is read again; one unread, or a bump unanswered, at the
+ * bound throws `Inconclusive`.
  */
 async function bumpWhenAcked(
     deps: K8sDeps,
     job: BoardJob,
     names: readonly string[],
-    budget: RestartBudget
+    signal: AbortSignal
 ): Promise<SidecarStatus[]> {
     const host = stepHostOf(deps);
-    for (;;) {
-        throwIfStoodDown(budget.signal);
-        const counts = await readSidecars(deps, job).catch((e: Error) => {
-            if (spentOf(budget) >= SERVICE_RESTART_TIMEOUT_MS) throw e;
-            return null;
-        });
-        const bumped = counts ? await runServiceGenerationStep(host, job, 'bump', names) : null;
-        if (counts && bumped?.exitCode === 0) return counts;
-        if (bumped && bumped.exitCode !== SERVICE_NOT_ACKED_EXIT) {
-            throw new Error(
-                `the services' generations could not be bumped: ${(bumped.stderr || bumped.stdout).trim()}`
-            );
+    let readError: Error | null = null;
+    let bumpError: Error | null = null;
+    let unackedNames: string[] = [];
+    const live = withSignal(deps, signal);
+    const counts = await pollFor<SidecarStatus[]>(
+        { ...waitOf(live, SERVICE_RESTART_TIMEOUT_MS), everyMs: SERVICE_READY_POLL_MS, abandoned: stoodDown },
+        async (deadline) => {
+            readError = null;
+            bumpError = null;
+            const counts = await readSidecars(boundedBy(live, deadline), job).catch((e: Error) => {
+                readError = e;
+                return null;
+            });
+            const bumped = counts
+                ? await runServiceGenerationStep(host, job, { mode: 'bump', names }, { deadline, signal }).catch(
+                      (e: Error) => {
+                          // A lost supervisor or a stand-down is thrown; a bump the deadline cut off proves nothing.
+                          if (stepLost(e) || signal.aborted) throw e;
+                          bumpError = e;
+                          return null;
+                      }
+                  )
+                : null;
+            if (counts && bumped?.exitCode === 0) return counts;
+            if (bumped && bumped.exitCode !== SERVICE_NOT_ACKED_EXIT) {
+                throw new Error(
+                    `the services' generations could not be bumped: ${(bumped.stderr || bumped.stdout).trim()}`
+                );
+            }
+            if (bumped) unackedNames = bumped.stdout.split('\n').filter(Boolean);
         }
-        if (bumped && spentOf(budget) >= SERVICE_RESTART_TIMEOUT_MS) {
-            const unackedNames = bumped.stdout.split('\n').filter(Boolean);
-            throw new ServicesNotRunning(
-                `service ${unackedNames.map((name) => `"${name}"`).join(', ')} never acknowledged its generation ` +
-                    `${SERVICE_RESTART_TIMEOUT_S}s on`
-            );
-        }
-        await pace(deps, budget);
+    );
+    if (counts) return counts;
+    if (readError) throw readError;
+    if (bumpError) {
+        throw new Inconclusive(`the services' generations were not answered: ${(bumpError as Error).message}`);
     }
+    throw new ServicesNotRunning(
+        `service ${unackedNames.map((name) => `"${name}"`).join(', ')} never acknowledged its generation ` +
+            `${SERVICE_RESTART_TIMEOUT_S}s on`
+    );
 }
 
 /**
@@ -270,15 +283,15 @@ async function bumpWhenAcked(
 export async function restartServiceFleet(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     const specs = groupServices(deps.config, job);
     if (specs.length === 0) return;
-    const budget: RestartBudget = { started: Date.now(), polls: 0, signal };
+    const started = Date.now();
     const names = specs.map(({ name }) => name);
-    const before = new Map((await bumpWhenAcked(deps, job, names, budget)).map((s) => [s.name, s.restartCount]));
+    const before = new Map((await bumpWhenAcked(deps, job, names, signal)).map((s) => [s.name, s.restartCount]));
     const host = stepHostOf(deps);
     const last = { statuses: [] as SidecarStatus[] };
     await awaitServicesRunning(
         specs,
-        async () =>
-            (await readyListing(deps, host, job, last)).map((listed, at) => {
+        async (deadline) =>
+            (await readyListing(boundedBy(withSignal(deps, signal), deadline), host, job, last)).map((listed, at) => {
                 const now = last.statuses[at]!;
                 const was = before.get(now.name) ?? 0;
                 // Not yet restarted, or still on its way back: neither is the answer yet.
@@ -287,7 +300,7 @@ export async function restartServiceFleet(deps: K8sDeps, job: BoardJob, signal: 
                 return listed.state === 'exited' ? { ...listed, state: 'restarting' } : listed;
             }),
         deps.sleep,
-        { timeoutMs: Math.max(0, SERVICE_RESTART_TIMEOUT_MS - spentOf(budget)), signal }
+        { timeoutMs: Math.max(0, SERVICE_RESTART_TIMEOUT_MS - (Date.now() - started)), signal }
     );
     recordBaseline(deps, job, last.statuses);
 }

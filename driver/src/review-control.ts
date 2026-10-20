@@ -1,4 +1,5 @@
 import type { BoardJobStatus, ReviewReport } from './board.js';
+import { parseJsonObject } from './json-parse.js';
 
 /**
  * The control endpoint's reviewer routes (issue #549), one set per control token — so one lease:
@@ -86,12 +87,8 @@ export async function serveReviewRequest(
     raw: string
 ): Promise<ReviewAnswer> {
     if (!relay) return reviewAnswer('forbidden');
-    let fields: { key?: unknown; profile?: unknown } = {};
-    try {
-        fields = JSON.parse(raw) as typeof fields;
-    } catch {
-        return badRequest('the body must be JSON: {"key": …, "profile": …}');
-    }
+    const fields = parseJsonObject(raw);
+    if (fields === null) return badRequest('the body must be JSON: {"key": …, "profile": …}');
     const { key, profile } = fields;
     if (typeof key !== 'string' || !KEY.test(key)) {
         return badRequest('key must be 1..64 characters of letters, digits, _ and -');

@@ -19,7 +19,7 @@ import { jobPath, jobPodsPath } from './k8s-auxspec.js';
 import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
 import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
-import { pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict } from './k8s-poll.js';
+import { podsOf, pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict, readTyped } from './k8s-poll.js';
 import {
     deadServices,
     forgetServices,
@@ -32,14 +32,17 @@ import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGr
 import {
     expectOk,
     HTTP_ERROR_STATUS,
-    HTTP_NOT_FOUND,
-    livePod,
+    isRecord,
+    livePodOfItems,
     MS_PER_SECOND,
-    parse,
     parsePodMetrics,
+    boundedBy,
     POLL_MS,
-    wait,
+    waitOf,
+    withSignal,
 } from './k8s-transport.js';
+import { abortableSleep, pollFor, type Sleep, timeLeft } from './poll.js';
+import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { reviewRunOf } from './review-step.js';
 import { checkoutDir } from './publish.js';
@@ -91,11 +94,17 @@ function headCut(stdout: string): boolean {
  * the run persisted on the task volume. NEVER throws — the scrape is the run's follow-up-ability,
  * finish reason and context vitals, and a failed read is not a failed run.
  */
-async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: string): Promise<OpencodeRunOutcome> {
+async function scrapeOpencodeSession(
+    deps: K8sDeps,
+    job: BoardJob,
+    startedAt: string,
+    deadline: number
+): Promise<OpencodeRunOutcome> {
     try {
         const answered = await runReadoutStep(stepHostOf(deps), job, {
             name: 'opencode-readout',
             ...opencodeReadoutStep(job, startedAt),
+            timeoutMs: Math.min(READOUT_STEP_TIMEOUT_MS, timeLeft(deadline)),
         });
         if (answered.timedOut) return opencodeReadFailed('the session readout exceeded its deadline');
         if (answered.exitCode !== 0) {
@@ -137,9 +146,11 @@ async function attachOpencodeOutcome(
     startedAt: string,
     outcome: RunOutcome
 ): Promise<void> {
+    const live = withSignal(deps, ledgerOf(deps).signal(job));
     const { scraped, reason } = await readOpencodeWithRetries(
-        () => scrapeOpencodeSession(deps, job, startedAt),
-        deps.sleep
+        (deadline) => scrapeOpencodeSession(live, job, startedAt, deadline),
+        deps.sleep,
+        live.signal
     );
     mergeOpencodeOutcome(outcome, scraped, reason);
 }
@@ -157,8 +168,8 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
     } catch {
         return null;
     }
-    if (pods.status >= HTTP_ERROR_STATUS) return null;
-    const live = livePod(pods.body);
+    const read = podsOf(pods, 'listing the runner pods');
+    const live = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
     const services =
         specs.length > 0 && live
             ? sidecarStatuses(live, specs).map(({ name, image, state }) => ({ name, image, state }))
@@ -200,19 +211,24 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
  * waits, bounded, for that, and past the bound falls back to the hard kill every other path uses:
  * the backstop for a supervisor that is gone. Never throws, like `kill`.
  */
-async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
-    const polls = Math.ceil(KILL_WINDDOWN_MS / POLL_MS);
-    for (let poll = 0; poll < polls; poll += 1) {
-        const read = await readJobStatus(deps, runnerName(job), 'reading the runner job').catch(() => null);
-        if (!read) break;
-        if (read.kind === 'notFound' || read.kind === 'terminal') {
-            // The supervisor ended the group, its service sidecars with it: nobody is left to answer its steps.
-            releaseSteps(stepHostOf(deps), job);
-            forgetServices(deps, job);
-            return;
+export async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
+    const ended = await pollFor<'ended' | 'unread'>(
+        { ...waitOf(deps, KILL_WINDDOWN_MS), everyMs: POLL_MS },
+        async (deadline) => {
+            const read = await readJobStatus(
+                boundedBy(deps, deadline),
+                runnerName(job),
+                'reading the runner job'
+            ).catch(() => null);
+            if (!read || read.kind === 'error') return 'unread';
+            if (read.kind === 'notFound' || read.kind === 'terminal') return 'ended';
         }
-        if (read.kind === 'error') break;
-        await deps.sleep(POLL_MS);
+    );
+    if (ended === 'ended') {
+        // The supervisor ended the group, its service sidecars with it: nobody is left to answer its steps.
+        releaseSteps(stepHostOf(deps), job);
+        forgetServices(deps, job);
+        return;
     }
     await killRunner(deps, job);
 }
@@ -236,26 +252,58 @@ function pauseRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Pro
     return next;
 }
 
+interface DeadlineJob {
+    spec?: { activeDeadlineSeconds?: number };
+    metadata?: { uid?: string; annotations?: Record<string, string> };
+}
+
+/** A Job the deadline patch may write to: it names its incarnation (a uid) and every field consumed is well-typed. */
+const asDeadlineJob = (value: unknown): DeadlineJob | null => {
+    if (!isRecord(value) || !isRecord(value.metadata) || !nonEmpty(value.metadata.uid)) return null;
+    const { spec } = value;
+    if (
+        spec !== undefined &&
+        !(isRecord(spec) && (spec.activeDeadlineSeconds === undefined || Number.isFinite(spec.activeDeadlineSeconds)))
+    ) {
+        return null;
+    }
+    const { annotations } = value.metadata;
+    return annotations === undefined || stringsOnly(annotations) ? (value as DeadlineJob) : null;
+};
+
+/** The saved `{deadline, at}` annotation, or null unless both are finite numbers. */
+function asSavedDeadline(saved: string): { deadline: number; at: number } | null {
+    try {
+        const value: unknown = JSON.parse(saved);
+        return isRecord(value) && Number.isFinite(value.deadline) && Number.isFinite(value.at)
+            ? (value as { deadline: number; at: number })
+            : null;
+    } catch {
+        return null;
+    }
+}
+
 /** Save and remove a paused deadline, or restore its budget including the elapsed wait. */
 async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Promise<void> {
     const path = jobPath(deps.config.k8sNamespace, runnerName(job));
-    const read = await deps.request('GET', path);
-    if (read.status === HTTP_NOT_FOUND) return;
-    expectOk(read, 'reading the runner job for its deadline');
-    const current = parse<{
-        spec?: { activeDeadlineSeconds?: number };
-        metadata?: { uid?: string; annotations?: Record<string, string> };
-    }>(read.body);
+    const read = await readTyped(deps, path, 'reading the runner job for its deadline', {
+        shape: asDeadlineJob,
+        once: true,
+    });
+    if (read.kind === 'absent') return;
+    if (read.kind === 'inconclusive') throw new Error(read.reason);
+    const current = read.value;
     const saved = current.metadata?.annotations?.[PAUSED_DEADLINE];
     if (paused && saved) return;
     if (!paused && !saved) return;
     const deadline = current.spec?.activeDeadlineSeconds;
     if (paused && typeof deadline !== 'number') return;
-    const prior = saved ? parse<{ deadline: number; at: number }>(saved) : null;
+    const prior = saved ? asSavedDeadline(saved) : null;
+    if (saved && !prior) throw new Error(`the runner job's saved deadline is not a deadline and a time: ${saved}`);
     const patched = await deps.request('PATCH', path, {
         metadata: {
             // The incarnation just read, by uid: never one created under the name since.
-            ...(current.metadata?.uid ? { uid: current.metadata.uid } : {}),
+            uid: current.metadata?.uid,
             annotations: {
                 [PAUSED_DEADLINE]: paused ? JSON.stringify({ deadline, at: Date.now() }) : null,
             },
@@ -330,8 +378,10 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // left to answer the probe, the publish or the `finish` the loop still sends.
     if (watch.report === null) releaseSteps(host, job);
     const { jobSucceeded } = polled;
+    // The reads after the Job ended stand on the attempt's kill too.
+    const live = withSignal(deps, ledgerOf(deps).signal(job));
     const { exitCode, output, fullLog, logTruncated, vanished, unfinalized, supervisorDeadline } =
-        await readRunnerVerdict(deps, job, jobSucceeded, { report: watch.report });
+        await readRunnerVerdict(live, job, jobSucceeded, { report: watch.report });
     // The run budget ends the agent through the supervisor (its report, then its exit 124), the
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
@@ -350,11 +400,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 
     if (job.executorType === OPENCODE) {
         // The session export rides the same readout, one consistent snapshot with its figures.
-        await attachOpencodeOutcome(deps, job, startedAt, outcome);
+        await attachOpencodeOutcome(live, job, startedAt, outcome);
     }
 
     if (job.executorType === CLAUDE_CODE && session) {
-        const read = await scrapeClaudeCloseRead(deps, job, session.id, startedAt);
+        const read = await scrapeClaudeCloseRead(live, job, session.id, startedAt);
         mergeClaudeCloseRead(outcome, read);
     }
     return outcome;
@@ -435,7 +485,7 @@ async function reclaimWorktree(): Promise<ReclaimResult> {
 export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
-    sleep: (ms: number) => Promise<void> = wait,
+    sleep: Sleep = abortableSleep,
     wiring: { leases?: Board['leases']; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
 ): Runner {
     const { leases, steps, endpoint } = wiring;

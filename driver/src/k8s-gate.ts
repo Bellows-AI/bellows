@@ -4,7 +4,8 @@ import { jobPodsPath } from './k8s-auxspec.js';
 import { gateRequests, reviewerRequests } from './k8s-podfields.js';
 import { stepHostFor } from './k8s-group.js';
 import { runnerName } from './k8s-podspec.js';
-import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, type K8sDeps, livePod } from './k8s-transport.js';
+import { podsOf } from './k8s-poll.js';
+import { HTTP_ERROR_STATUS, HTTP_OK_STATUS, type K8sDeps, livePodOfItems } from './k8s-transport.js';
 import { type ReviewRun, runReviewSteps } from './review-step.js';
 import type { GateSizing, ReviewerSizing } from './runner.js';
 import { type GateStepRequest, runGateStep } from './supervised-steps.js';
@@ -49,11 +50,18 @@ async function resizeSidecar(
     try {
         const namespace = deps.config.k8sNamespace;
         const listed = await deps.request('GET', jobPodsPath(namespace, runnerName(job)));
-        const pod = ok(listed.status) ? livePod(listed.body)?.metadata?.name : undefined;
+        const read = podsOf(listed, 'listing the gate pod');
+        const pod = read.kind === 'value' ? livePodOfItems(read.value)?.metadata?.name : undefined;
         if (!pod) return false;
         const patch = { spec: { initContainers: [{ name: container, resources: { requests } }] } };
         const path = `/api/v1/namespaces/${namespace}/pods/${encodeURIComponent(pod)}/resize`;
-        return ok((await deps.request('PATCH', path, patch, STRATEGIC_MERGE_PATCH_CONTENT_TYPE)).status);
+        return ok(
+            (
+                await deps.request('PATCH', path, patch, {
+                    contentType: STRATEGIC_MERGE_PATCH_CONTENT_TYPE,
+                })
+            ).status
+        );
     } catch {
         return false;
     }

@@ -39,8 +39,8 @@ const readTaskVolume = (execDocker: ExecDocker, job: BoardJob, signal?: AbortSig
  * may mount, because `--mount type=volume` creates a missing one unlabeled, where the reaper
  * never sees it. A refused or unreadable inspect is false.
  */
-export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob): Promise<boolean> {
-    const read = await readTaskVolume(execDocker, job);
+export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob, signal?: AbortSignal): Promise<boolean> {
+    const read = await readTaskVolume(execDocker, job, signal);
     return read.kind === 'value' && read.value[TASK_ROOT_LABEL] === taskRootOf(job);
 }
 

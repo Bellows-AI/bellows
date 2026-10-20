@@ -49,7 +49,8 @@ import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
-import { readVerdict, runnerLossOf } from '../src/k8s-poll.js';
+import { ledgerOf, RunnerKilled } from '../src/k8s-kill.js';
+import { pollRunnerJobUntilTerminal, readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsStep,
@@ -60,7 +61,7 @@ import {
     secretName,
 } from '../src/k8s-podspec.js';
 import { claimName, jobPath, podLogPath } from '../src/k8s-auxspec.js';
-import { KUBELET_RESTART_NOTE, sidecarStatuses } from '../src/k8s-services.js';
+import { KUBELET_RESTART_NOTE, readSidecars, sidecarStatuses } from '../src/k8s-services.js';
 import {
     GATE_GID,
     GATE_UID,
@@ -1512,7 +1513,12 @@ describe('the worktree sync', () => {
                     {
                         metadata: { name: podName },
                         status: {
-                            containerStatuses: [{ state: { waiting: message ? { reason, message } : { reason } } }],
+                            containerStatuses: [
+                                {
+                                    name: AGENT_CONTAINER,
+                                    state: { waiting: message ? { reason, message } : { reason } },
+                                },
+                            ],
                         },
                     },
                 ],
@@ -2049,6 +2055,7 @@ describe('the runner vitals', () => {
             memPercent: null,
         });
         expect(parsePodMetrics('')).toBeNull();
+        expect(parsePodMetrics('null')).toBeNull();
         expect(parsePodMetrics('{"containers":[]}')).toBeNull();
         expect(
             parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: 'busy', memory: '150Mi' } }] }))
@@ -2134,6 +2141,73 @@ describe('the runner vitals', () => {
             cpuPercent: 31,
             memUsedMb: 96,
             memPercent: null,
+        });
+    });
+
+    describe('a pod list read as a typed answer (#869)', () => {
+        const declared: BoardJob = { ...job, services: [{ name: 'db', image: 'postgres:16', environment: [] }] };
+        const depsFor = (body: string): K8sDeps => ({
+            request: async () => ({ status: 200, body }),
+            sleep: async () => {},
+            config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '1' }),
+        });
+        const listing = (init: unknown[], containers: unknown[] = []): string =>
+            JSON.stringify({
+                items: [
+                    {
+                        metadata: { name: podName },
+                        status: { initContainerStatuses: init, containerStatuses: containers },
+                    },
+                ],
+            });
+
+        it('reads a 200 null pod list as unread, never as no pod', async () => {
+            expect((await readImagePullStatus(depsFor('null'), 'factory-runner-x')).podState).toBe('unread');
+        });
+
+        it('reads a pod whose sidecar names an image that is not a string as unread, with no refusal', async () => {
+            const held = {
+                name: 'svc-db',
+                image: 42,
+                state: { waiting: { reason: 'ImagePullBackOff', message: 'no' } },
+            };
+            const read = await readImagePullStatus(depsFor(listing([held])), 'factory-runner-x');
+            expect(read).toMatchObject({ podState: 'unread', blocked: null, held: null });
+            held.image = 'postgres:16' as unknown as number;
+            expect(await readImagePullStatus(depsFor(listing([held])), 'factory-runner-x')).toMatchObject({
+                podState: 'starting',
+                held: { image: 'postgres:16' },
+            });
+        });
+
+        it.each([
+            ['a terminated state without an exit code', { name: 'svc-db', state: { terminated: {} } }],
+            ['a restart count below zero', { name: 'svc-db', state: { running: {} }, restartCount: -1 }],
+            ['a restart count that is a fraction', { name: 'svc-db', state: { running: {} }, restartCount: 1.5 }],
+            [
+                'a previous ending without an exit code',
+                { name: 'svc-db', state: { running: {} }, lastState: { terminated: {} } },
+            ],
+        ])('reads a sidecar with %s as Inconclusive, never as a service failure', async (_name, sidecar) => {
+            await expect(readSidecars(depsFor(listing([sidecar])), declared)).rejects.toBeInstanceOf(Inconclusive);
+            const ended = { name: 'svc-db', state: { terminated: { exitCode: 3 } } };
+            expect((await readSidecars(depsFor(listing([ended])), declared))[0]?.state).toBe('exited');
+        });
+
+        it('reads a null task pod list as Inconclusive', async () => {
+            await expect(readSidecars(depsFor('null'), declared)).rejects.toBeInstanceOf(Inconclusive);
+        });
+
+        it('samples no runtime and resizes nothing over a pod list that is null', async () => {
+            const nulled = routed((method, path) =>
+                method === 'GET' && decodeURIComponent(path).includes('job-name=')
+                    ? { status: 200, body: 'null' }
+                    : undefined
+            );
+            expect(await runner(nulled.request).sampleRuntime(job)).toBeNull();
+            const gated: BoardJob = { ...gatedOf(job), ...SUPERVISED };
+            expect(await runner(nulled.request).resizeGate(gated, 'verify')).toBe(false);
+            expect(nulled.calls.some((call) => call.method === 'PATCH')).toBe(false);
         });
     });
 
@@ -2293,6 +2367,33 @@ describe('the kubernetes runner and the task supervisor', () => {
 });
 
 describe('the kubernetes runner', () => {
+    // #869: the reads after the Job ended stand on the attempt's kill, not on their own patience.
+    it('ends the verdict reads of a finished Job when the attempt is killed', async () => {
+        const { request } = fakeRequest();
+        let hung = false;
+        const hanging: K8sRequest = (method, path, body, options) => {
+            if (!path.includes('/log') || options?.signal === undefined) return request(method, path, body, options);
+            hung = true;
+            return new Promise((_resolve, reject) => {
+                options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+            });
+        };
+        const live = runner(hanging);
+
+        const running = live.run(job, { id: SESSION, resume: false });
+        await vi.waitFor(() => expect(hung).toBe(true));
+        await live.kill(job);
+
+        const ended = await Promise.race([
+            running.then(
+                () => true,
+                () => true
+            ),
+            new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 200)),
+        ]);
+        expect(ended).toBe(true);
+    });
+
     it('sweeps the job label, then creates the job in the configured namespace and reports success', async () => {
         const { request, calls } = fakeRequest();
         const outcome = await runner(request).run(job, { id: SESSION, resume: false });
@@ -2793,6 +2894,7 @@ describe('the kubernetes runner', () => {
                             status: {
                                 containerStatuses: [
                                     {
+                                        name: AGENT_CONTAINER,
                                         state: {
                                             waiting: {
                                                 reason: 'ImagePullBackOff',
@@ -2847,6 +2949,7 @@ describe('the kubernetes runner', () => {
                     status: {
                         containerStatuses: [
                             {
+                                name: AGENT_CONTAINER,
                                 state: {
                                     waiting: { reason: 'CreateContainerConfigError', message: 'secret "x" not found' },
                                 },
@@ -3631,9 +3734,9 @@ describe('the kubernetes runner', () => {
         body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: job.leaseToken, claimSeq: '1' } }),
     };
     const noHolder = { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) };
-    // Read 1 is the pre-create verify (ours); reads 2 through POLL_MAX_CONSECUTIVE_FAILURES + 2 are
+    // Read 1 is the pre-create verify (ours); reads 2 through POLL_MAX_CONSECUTIVE_FAILURES + 1 are
     // the post-create verify; anything after would be the release's read.
-    const spent = (read: number): boolean => read > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+    const spent = (read: number): boolean => read > 1 + POLL_MAX_CONSECUTIVE_FAILURES;
     const verifyCases: {
         name: string;
         claimRead: (read: number) => { status: number; body: string };
@@ -3929,7 +4032,7 @@ describe('the kubernetes runner', () => {
                 failure === 'http' ? /in a row/ : /connection reset/
             );
 
-            expect(failedReads).toBe(POLL_MAX_CONSECUTIVE_FAILURES + 1);
+            expect(failedReads).toBe(POLL_MAX_CONSECUTIVE_FAILURES);
             const claimDeleted = (): boolean =>
                 calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(envJob.id));
             expect(claimDeleted()).toBe(false);
@@ -4003,11 +4106,15 @@ describe('the kubernetes runner', () => {
                     items: [
                         {
                             metadata: { name: `${podName}-old`, deletionTimestamp: '2026-08-29T12:06:00.000Z' },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 7 } } }] },
+                            status: {
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 7 } } }],
+                            },
                         },
                         {
                             metadata: { name: podName },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                            status: {
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } }],
+                            },
                         },
                     ],
                 }),
@@ -4506,9 +4613,9 @@ describe('the reviewer sidecar (issue #774)', () => {
     const resizing = () => {
         const base = fakeRequest();
         const patches: { path: string; body: unknown; contentType: string | undefined }[] = [];
-        const request: K8sRequest = (method, path, body, contentType) => {
+        const request: K8sRequest = (method, path, body, options) => {
             if (method === 'PATCH' && path.endsWith('/resize')) {
-                patches.push({ path, body, contentType });
+                patches.push({ path, body, contentType: options?.contentType });
                 return Promise.resolve({ status: 200, body: '{}' });
             }
             return base.request(method, path, body);
@@ -4578,9 +4685,9 @@ describe('the kubernetes runner and the gates', () => {
         const base = fakeRequest();
         const patches: { path: string; body: unknown; contentType: string | undefined }[] = [];
         const order: string[] = [];
-        const request: K8sRequest = (method, path, body, contentType) => {
+        const request: K8sRequest = (method, path, body, options) => {
             if (method === 'PATCH' && path.endsWith('/resize')) {
-                patches.push({ path, body, contentType });
+                patches.push({ path, body, contentType: options?.contentType });
                 order.push('resize');
                 return Promise.resolve(resize);
             }
@@ -4798,7 +4905,7 @@ describe('the kubernetes services flow (issue #773)', () => {
                             status: {
                                 phase: 'Succeeded',
                                 initContainerStatuses,
-                                containerStatuses: [{ state: { terminated: { exitCode: 0 } } }],
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } }],
                             },
                         },
                     ],
@@ -5006,6 +5113,59 @@ describe('the kubernetes services flow (issue #773)', () => {
         const thrown = await k8s.restartServices(job, live).catch((e: unknown) => e);
         expect(thrown).toBeInstanceOf(ServicesNotRunning);
         expect((thrown as Error).message).toBe('service "cache" never acknowledged its generation 300s on');
+    });
+
+    // #869: a bump nobody answered by the restart deadline proves nothing about the services.
+    it('is inconclusive, not a services failure, when the bump goes unanswered until the restart deadline', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const api = podFake({ cache: running() });
+            const steps = restartSteps();
+            const sink: StepSink = {
+                ...steps.sink,
+                submit: async (token, step, signal) => {
+                    if (step.kind === 'restart' && step.argv[4] === 'bump') {
+                        vi.setSystemTime(Date.now() + 301_000);
+                        throw new Error('the step was cancelled');
+                    }
+                    return steps.sink.submit(token, step, signal);
+                },
+            };
+            const k8s = runner(api.request, servicesOn, undefined, sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(Inconclusive);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('gives the pod read of a bump the time its budget has left, however slow the steps before it', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const api = podFake({ cache: running() });
+            const timeouts: (number | undefined)[] = [];
+            const request: K8sRequest = (method, path, body, options) => {
+                if (method === 'GET' && decodeURIComponent(path).includes('job-name='))
+                    timeouts.push(options?.timeoutMs);
+                return api.request(method, path, body, options);
+            };
+            let bumps = 0;
+            const steps = restartSteps({
+                bump: () => {
+                    bumps += 1;
+                    vi.setSystemTime(Date.now() + (bumps === 1 ? 299_000 : 2_000));
+                    return notAcked('cache');
+                },
+            });
+            const k8s = runner(request, servicesOn, undefined, steps.sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            timeouts.length = 0;
+            await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(ServicesNotRunning);
+            expect(timeouts[0]).toBeGreaterThan(0);
+            expect(timeouts[1]).toBeLessThanOrEqual(1_000);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('fails naming a service that never restarts within the budget', async () => {
@@ -5537,7 +5697,9 @@ describe('the kubernetes runner under opencode', () => {
                     items: [
                         {
                             metadata: { name: podName },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                            status: {
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } }],
+                            },
                         },
                     ],
                 });
@@ -5550,7 +5712,7 @@ describe('the kubernetes runner under opencode', () => {
             // The per-attempt Secret (the runner's attempt pair), created and reaped per attempt.
             if (path === `${ns}/secrets`) {
                 if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
+                return Promise.resolve({ status: 201, body: JSON.stringify({ metadata: { uid: 'secret-uid' } }) });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -5924,23 +6086,31 @@ describe('RUNNER_DO_NOT_DISRUPT on pod templates', () => {
 
 describe('the paused deadline for an agent question', () => {
     it('removes the deadline while waiting and restores it with the actual elapsed wait', async () => {
-        const spec: { activeDeadlineSeconds: number | null } = { activeDeadlineSeconds: 7200 };
-        const annotations: Record<string, string | null> = {};
+        const spec: { activeDeadlineSeconds?: number } = { activeDeadlineSeconds: 7200 };
+        const annotations: Record<string, string> = {};
         const patches: unknown[] = [];
         const request: K8sRequest = async (method, _path, body) => {
             if (method === 'PATCH') {
-                const patch = body as { spec: typeof spec; metadata: { annotations: typeof annotations } };
-                Object.assign(spec, patch.spec);
-                Object.assign(annotations, patch.metadata.annotations);
+                const patch = body as {
+                    spec: { activeDeadlineSeconds: number | null };
+                    metadata: { annotations: Record<string, string | null> };
+                };
+                // A merge patch removes a key set to null.
+                if (patch.spec.activeDeadlineSeconds === null) delete spec.activeDeadlineSeconds;
+                else spec.activeDeadlineSeconds = patch.spec.activeDeadlineSeconds;
+                for (const [key, value] of Object.entries(patch.metadata.annotations)) {
+                    if (value === null) delete annotations[key];
+                    else annotations[key] = value;
+                }
                 patches.push(body);
             }
-            return { status: 200, body: JSON.stringify({ spec, metadata: { annotations } }) };
+            return { status: 200, body: JSON.stringify({ spec, metadata: { uid: 'job-uid', annotations } }) };
         };
         const now = vi.spyOn(Date, 'now').mockReturnValue(1000);
         try {
             const r = runner(request);
             await Promise.all([r.pauseDeadline(job, true), r.pauseDeadline(job, true)]);
-            expect(spec.activeDeadlineSeconds).toBeNull();
+            expect(spec.activeDeadlineSeconds).toBeUndefined();
             expect(patches).toHaveLength(1);
             now.mockReturnValue(1000 + 48 * 3600 * 1000);
             await r.pauseDeadline(job, false);
@@ -5958,12 +6128,73 @@ describe('the paused deadline for an agent question', () => {
         expect(request).toHaveBeenCalledTimes(1);
     });
 
+    it('rejects, sending no PATCH, when the Job GET answers null', async () => {
+        const methods: string[] = [];
+        const request: K8sRequest = async (method) => {
+            methods.push(method);
+            return { status: 200, body: 'null' };
+        };
+        await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/reading the runner job/);
+        expect(methods).toEqual(['GET']);
+    });
+
+    it.each(['not json', '{"deadline":"60","at":1}', '{"deadline":60}', 'null'])(
+        'rejects, sending no PATCH, when a resume finds the saved annotation %s',
+        async (saved) => {
+            const methods: string[] = [];
+            const request: K8sRequest = async (method) => {
+                methods.push(method);
+                return {
+                    status: 200,
+                    body: JSON.stringify({
+                        metadata: { uid: 'job-uid', annotations: { 'bellows.ai/paused-deadline': saved } },
+                    }),
+                };
+            };
+            await expect(runner(request).pauseDeadline(job, false)).rejects.toThrow(/saved deadline/);
+            expect(methods).toEqual(['GET']);
+        }
+    );
+
     it('rejects a refused pause so it can be retried', async () => {
         const request: K8sRequest = async (method) =>
             method === 'PATCH'
                 ? { status: 403, body: '{}' }
-                : { status: 200, body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 } }) };
+                : {
+                      status: 200,
+                      body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 }, metadata: { uid: 'job-uid' } }),
+                  };
         await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/pausing or resuming/);
+    });
+
+    it('preconditions the PATCH on the uid of the Job it read', async () => {
+        const patches: { metadata: { uid?: string } }[] = [];
+        const request: K8sRequest = async (method, _path, body) => {
+            if (method === 'PATCH') patches.push(body as (typeof patches)[number]);
+            return {
+                status: 200,
+                body: JSON.stringify({ spec: { activeDeadlineSeconds: 60 }, metadata: { uid: 'job-uid' } }),
+            };
+        };
+        await runner(request).pauseDeadline(job, true);
+        expect(patches.map((patch) => patch.metadata.uid)).toEqual(['job-uid']);
+    });
+
+    // A Job whose incarnation cannot be named could be a replacement under the name (#869): no write.
+    it.each([
+        ['no uid', { spec: { activeDeadlineSeconds: 120 }, metadata: {} }],
+        ['no metadata', { spec: { activeDeadlineSeconds: 120 } }],
+        ['an empty uid', { spec: { activeDeadlineSeconds: 120 }, metadata: { uid: '' } }],
+        ['a deadline that is no number', { spec: { activeDeadlineSeconds: '120' }, metadata: { uid: 'job-uid' } }],
+        ['annotations that are not strings', { spec: {}, metadata: { uid: 'job-uid', annotations: { a: 1 } } }],
+    ])('rejects, sending no PATCH, when the Job GET answers %s', async (_name, body) => {
+        const methods: string[] = [];
+        const request: K8sRequest = async (method) => {
+            methods.push(method);
+            return { status: 200, body: JSON.stringify(body) };
+        };
+        await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/reading the runner job/);
+        expect(methods).toEqual(['GET']);
     });
 });
 
@@ -6033,6 +6264,37 @@ describe('a Stop on kubernetes (issue #427)', () => {
             finished = true;
             await running;
         }
+    });
+});
+
+describe('a Job status read as a typed answer (#869)', () => {
+    const malformed = JSON.stringify({ status: { succeeded: 'x' } });
+    const depsOf = (): K8sDeps => ({
+        request: async () => ({ status: 200, body: malformed }),
+        sleep: async () => {},
+        config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+    });
+
+    it('reads malformed counters as Inconclusive on the runner poll, never a TypeError or pending', async () => {
+        await expect(pollRunnerJobUntilTerminal(depsOf(), job)).rejects.toBeInstanceOf(Inconclusive);
+    });
+});
+
+describe('the run wait ends on the clock (#869)', () => {
+    const pendingBody = JSON.stringify({ status: { active: 1 } });
+
+    it('ends the runner poll promptly when the attempt is killed during its pause', async () => {
+        const deps: K8sDeps = {
+            request: async () => ({ status: 200, body: pendingBody }),
+            sleep: (_ms, signal) =>
+                new Promise((_resolve, reject) => {
+                    signal?.addEventListener('abort', () => reject(new Error('woken by the abort')), { once: true });
+                }),
+            config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+        };
+        const polling = pollRunnerJobUntilTerminal(deps, job);
+        setTimeout(() => ledgerOf(deps).note(job, 'hard'), 10);
+        await expect(polling).rejects.toBeInstanceOf(RunnerKilled);
     });
 });
 
@@ -8180,6 +8442,17 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
         ).toBe(true);
     });
 
+    it('stands down on a Job create answered 201 null, with no TypeError and both deletes acknowledged', async () => {
+        const { request, calls } = routed((method, path) =>
+            method === 'POST' && path === jobsPath(namespace) ? { status: 201, body: 'null' } : undefined
+        );
+        await expect(build(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/answered no uid/);
+        expect(secretPostOf(calls)).toBeUndefined();
+        const deletes = calls.filter((call) => call.method === 'DELETE').map((call) => call.path);
+        expect(deletes.some((path) => path.startsWith(`${jobPath(namespace, runnerJobName(job))}?`))).toBe(true);
+        expect(deletes.some((path) => path.startsWith(secretsBase))).toBe(true);
+    });
+
     const runnerItem = (lease: string, seq: string, containers: string[]) => ({
         metadata: {
             name: runnerJobName({ ...job, leaseToken: lease }),
@@ -8864,8 +9137,9 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
     it('ends the wait for the supervisor on elapsed time', async () => {
         const pods = podsInTurn([refusals['the platform never brought the group up']]);
         let now = 1_000_000;
+        // The clock runs once the supervisor wait begins: the fence before it has its own bound.
         const clock = vi.spyOn(Date, 'now').mockImplementation(() => {
-            now += 120_000;
+            if (pods.reads() > 0) now += 120_000;
             return now;
         });
         try {

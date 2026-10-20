@@ -255,13 +255,17 @@ export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: 
         }),
         signal
     );
+    // Only a record answering `ok: true` licenses the review: an unreadable answer is inconclusive, never a go-ahead.
     const restore = restored.timedOut
         ? ({ ok: false, reason: detailOf(restored, SYNC_DEADLINE_MS) } as SyncResult)
         : parseLastJsonLine<SyncResult>(restored.stdout, () => ({
-              ok: restored.exitCode === 0,
-              reason: restored.exitCode === 0 ? null : detailOf(restored, SYNC_DEADLINE_MS),
+              ok: false,
+              reason:
+                  restored.exitCode === 0
+                      ? 'the restore answered nothing readable'
+                      : detailOf(restored, SYNC_DEADLINE_MS),
           }));
-    if (!restore.ok) return failed(`the reviewer worktree was not restored: ${restore.reason ?? 'unknown'}`);
+    if (restore.ok !== true) return failed(`the reviewer worktree was not restored: ${restore.reason ?? 'unknown'}`);
 
     const step = stepRequest(review, 'review', {
         id: round > 1 ? `run-${round}` : 'run',

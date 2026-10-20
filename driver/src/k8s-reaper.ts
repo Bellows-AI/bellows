@@ -5,14 +5,15 @@ import {
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     JOB_ID,
-    wait,
     type K8sDeps,
     type K8sRequest,
 } from './k8s-transport.js';
 import { claimPath, secretsPath } from './k8s-auxspec.js';
 import { readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
-import { asIdentified, readTypedList } from './k8s-poll.js';
+import { abortableSleep } from './poll.js';
+import { asIdentified } from './k8s-pod-shapes.js';
+import { readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
@@ -288,7 +289,7 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
 export function createKubernetesReaper({
     config,
     request,
-    sleep = wait,
+    sleep = abortableSleep,
 }: {
     config: DriverConfig;
     request: K8sRequest;

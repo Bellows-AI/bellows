@@ -4,7 +4,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { plannedServices, serviceContainerName, servicePlanRefusal, serviceRunArgs } from '../src/services.js';
 import { supervisorName } from '../src/docker-mailbox.js';
 import { awaitServicesRunning, ServicesNotRunning } from '../src/service-restart.js';
-import { Inconclusive } from '../src/runner.js';
+import { Inconclusive, SERVICE_READY_POLL_MS } from '../src/runner.js';
 import { StepChannelClosed } from '../src/step-control.js';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -176,6 +176,13 @@ describe('awaitServicesRunning (issue #560)', () => {
         expect(lists).toBe(3);
     });
 
+    it('is inconclusive, not ServicesNotRunning, when the budget was spent before any listing (#869)', async () => {
+        const list = () => Promise.reject(new Error('the request deadline passed'));
+        const thrown = await awaitServicesRunning(specs, list, noWait, { timeoutMs: 0 }).catch((e: unknown) => e);
+        expect(thrown).toBeInstanceOf(Inconclusive);
+        expect(thrown).not.toBeInstanceOf(ServicesNotRunning);
+    });
+
     it('throws at once, naming it, when a restarted service is already dead', async () => {
         let lists = 0;
         const list = async () => {
@@ -201,6 +208,19 @@ describe('awaitServicesRunning (issue #560)', () => {
             'service "db" not running 300s after the restart'
         );
         expect(lists).toBe(10);
+    });
+
+    it('hands every listing the absolute deadline of the wait, for the requests inside it to be bounded by', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const started = Date.now();
+        const deadlines: number[] = [];
+        const list = async (deadline: number) => {
+            deadlines.push(deadline);
+            vi.setSystemTime(Date.now() + 100_000);
+            return [status('db', 'pending')];
+        };
+        await expect(awaitServicesRunning(specs, list, noWait)).rejects.toThrow('not running');
+        expect(deadlines).toEqual([started + 300_000, started + 300_000, started + 300_000]);
     });
 
     // R2-1: a listing that never answered proves nothing about the services — the attempt's
@@ -262,7 +282,8 @@ describe('awaitServicesRunning (issue #560)', () => {
         await expect(
             awaitServicesRunning(specs, async () => [status('db', 'running')], sleep, options)
         ).rejects.toThrow('service "cache" not running 300s after the restart');
-        expect(slept).toBe(budget);
+        // The pause after the last poll would only delay the answer: the bound is the clock's.
+        expect(slept).toBe(budget - SERVICE_READY_POLL_MS);
     });
 });
 

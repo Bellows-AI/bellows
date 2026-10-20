@@ -23,21 +23,22 @@ import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, transcriptDir, opencodeDbPath } from './claim.js';
 import {
+    boundedExec,
     type ExecDocker,
     noSuchObject,
     readDocker,
     tabRows,
-    type Sleep,
     type Spawn,
     readUtf8,
 } from './docker-runner-support.js';
+import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
-import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs, CLOSE_READ_DEADLINE_MS } from './docker.js';
+import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
 import { taskVolumeIsOurs } from './docker-task-volume.js';
 import { taskMountArgs } from './task-volume.js';
 import {
@@ -45,6 +46,7 @@ import {
     type AdoptedRun,
     adoptionAbandoned,
     appendTailKept,
+    CLOSE_READ_DEADLINE_MS,
     Inconclusive,
     type KeptLog,
     type RunOutcome,
@@ -132,6 +134,8 @@ export interface CloseReadContext {
     config: DriverConfig;
     job: BoardJob;
     startedAt: string;
+    /** The attempt's kill: it ends the readout's retries, which then stand on their latest answer. */
+    signal?: AbortSignal;
 }
 
 /**
@@ -143,14 +147,19 @@ export interface CloseReadContext {
  * normalized stream) rides the same read, so it is one consistent snapshot with the figures.
  */
 async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
-    const readOnce = async () =>
-        (await taskVolumeIsOurs(ctx.execDocker, ctx.job))
-            ? ctx.execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt)).then(
-                  (read) => parseOpencodeRunOutcome(read.stdout),
-                  (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
-              )
+    const readOnce = async (deadline: number) =>
+        (await taskVolumeIsOurs(ctx.execDocker, ctx.job, ctx.signal))
+            ? ctx
+                  .execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt), {
+                      timeout: timeLeft(deadline),
+                      ...(ctx.signal ? { signal: ctx.signal } : {}),
+                  })
+                  .then(
+                      (read) => parseOpencodeRunOutcome(read.stdout),
+                      (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
+                  )
             : opencodeReadFailed(NO_TASK_VOLUME);
-    const { scraped, reason } = await readOpencodeWithRetries(readOnce, (ms) => new Promise((r) => setTimeout(r, ms)));
+    const { scraped, reason } = await readOpencodeWithRetries(readOnce, abortableSleep, ctx.signal);
     mergeOpencodeOutcome(outcome, scraped, reason);
 }
 
@@ -166,10 +175,12 @@ async function applyClaudeCloseRead(
     session: RunSession | null
 ): Promise<void> {
     if (!readsAgentTurns(ctx.job, session)) return;
-    if (!(await taskVolumeIsOurs(ctx.execDocker, ctx.job))) return mergeClaudeCloseRead(outcome, CLAUDE_READ_NONE);
+    if (!(await taskVolumeIsOurs(ctx.execDocker, ctx.job, ctx.signal)))
+        return mergeClaudeCloseRead(outcome, CLAUDE_READ_NONE);
     const read = await ctx
         .execDocker(claudeTurnsArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt), {
             timeout: CLOSE_READ_DEADLINE_MS,
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
         })
         .then(
             (out) => parseClaudeCloseRead(out.stdout),
@@ -283,19 +294,30 @@ interface DockerEarlier extends EarlierRun {
  * never buffered whole through an exec, whose output cap would fail the adoption of a long run
  * (issue #825). Rejects when `docker logs` does not exit 0.
  */
-function readRunnerLog(spawnFn: Spawn, name: string): Promise<KeptLog> {
+function readRunnerLog(spawnFn: Spawn, name: string, { deadline, signal }: Bound): Promise<KeptLog> {
     return new Promise((resolve, reject) => {
-        const child = spawnFn('docker', ['logs', name], { stdio: ['ignore', 'pipe', 'pipe'] });
+        // The stream ends at the operation's deadline and on the attempt's kill: spawn terminates the child on abort.
+        const late = new AbortController();
+        const timer = setTimeout(() => late.abort(), timeLeft(deadline));
+        const child = spawnFn('docker', ['logs', name], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+            signal: anyOf(signal, late.signal),
+        });
         let kept: KeptLog = { content: '', truncated: false };
         const collect = (text: string) => {
             kept = appendTailKept(kept, text);
         };
         readUtf8(child.stdout, collect);
         readUtf8(child.stderr, collect);
-        child.on('error', reject);
-        child.on('close', (code) =>
-            code === 0 ? resolve(kept) : reject(new Error(`docker logs ${name} exited ${code ?? 'on a signal'}`))
-        );
+        child.on('error', (e) => {
+            clearTimeout(timer);
+            reject(e);
+        });
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            if (code === 0) resolve(kept);
+            else reject(new Error(`docker logs ${name} exited ${code ?? 'on a signal'}`));
+        });
     });
 }
 
@@ -341,7 +363,8 @@ async function readSupervisorReport(execDocker: ExecDocker, prior: BoardJob): Pr
  * terminal. A timeout the dead driver enforced reads as the exit it caused: the deadline died with it.
  */
 export function dockerAdopt(deps: AdoptDeps, job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | null> {
-    return adoptEarlierRun(dockerAdoption(deps), deps.adopted, job, signal);
+    // The supplied stand-down and the attempt's kill end every request, pause and stream of the adoption.
+    return adoptEarlierRun(dockerAdoption(deps), deps.adopted, job, anyOf(signal, deps.ledger.signal(job)));
 }
 
 /** How often the adoption lists the exited runners before a refusing daemon stands the attempt down. */
@@ -355,7 +378,7 @@ interface AdoptDeps {
     spawnFn: Spawn;
     config: DriverConfig;
     ledger: KillLedger;
-    fence: (job: BoardJob) => Promise<void>;
+    fence: (job: BoardJob, signal: AbortSignal) => Promise<void>;
     adopted: Map<string, string>;
 }
 
@@ -366,7 +389,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // A daemon that could not say is no "nothing to adopt": a fresh run's fence would remove a
         // finalizing group unread once it answers again (#824).
         pacing: { attempts: DISCOVERY_ATTEMPTS, retryMs: DISCOVERY_RETRY_MS, sleep: deps.sleep },
-        list: (job) => exitedRunners(execDocker, job),
+        list: (job, bound) => exitedRunners(boundedExec(execDocker, bound), job),
         begin: async () => undefined,
         // The agent's exit is not the run's end: its supervisor may still be draining the exporter and
         // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —
@@ -387,9 +410,12 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // Why the lost driver ended the run, when it did, was recorded on the attempt before its kill: a
         // hard kill explains the supervisor's exit, and every reason is the verdict it was live; so does
         // the final report the supervisor logged, which a crash after it does not unsay (#824).
-        read: async ({ prior, supervisorExit }) => {
-            const kills = await readDockerKills(execDocker, prior);
-            const report = await readSupervisorReport(execDocker, prior);
+        read: async ({ prior, supervisorExit }, _job, signal) => {
+            // One absolute deadline for the evidence and the body read after it, ended by the kill.
+            const bound: Bound = { deadline: Date.now() + CLOSE_READ_DEADLINE_MS, signal };
+            const bounded = boundedExec(execDocker, bound);
+            const kills = await readDockerKills(bounded, prior);
+            const report = await readSupervisorReport(bounded, prior);
             return {
                 end: {
                     kills,
@@ -403,9 +429,9 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
                 body: async () => {
                     const name = containerName(prior);
                     const state = runnerStateOf(
-                        (await execDocker(['inspect', '--format', '{{json .State}}', name])).stdout
+                        (await bounded(['inspect', '--format', '{{json .State}}', name])).stdout
                     );
-                    const full = await readRunnerLog(deps.spawnFn, name);
+                    const full = await readRunnerLog(deps.spawnFn, name, bound);
                     return {
                         exitCode: state.ExitCode,
                         output: reportTail(full.content),
@@ -417,17 +443,17 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
             };
         },
         confirmOwnership: async () => undefined,
-        closeReadout: async (outcome, { prior, session }, _job, startedAt) => {
+        closeReadout: async (outcome, { prior, session }, _job, { startedAt, signal }) => {
             await applyCloseTimeReadout(
                 outcome,
-                { execDocker, config, job: prior, startedAt },
+                { execDocker, config, job: prior, startedAt, ...(signal ? { signal } : {}) },
                 session ? { id: session, resume: false } : null
             );
         },
         recordKey: ({ prior }) => prior.leaseToken,
         // The re-claim fence removes everything older attempts left, the run read spared; a fence that
         // fails leaves the run to the lease, and the next claim reads it again.
-        sweep: (_found, job) => deps.fence(job),
+        sweep: (_found, job, signal) => deps.fence(job, anyOf(signal)),
         rollback: async () => undefined,
     };
 }

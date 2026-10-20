@@ -98,6 +98,23 @@ const skips = (kind: FailureKind, note: string | null, skipWhy: string): Fault =
     skipWhy,
 });
 
+/** The fault for a run that stopped talking before a completed final message, when it did. */
+function prematureFinish(outcome: RunOutcome): Fault | null {
+    const finish = outcome.finishReason;
+    // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
+    // premature stop — the cache fault already says the whole story.
+    if (typeof finish !== 'string' || finish === 'stop' || outcome.cacheLost) return null;
+    // The finish reason says the run stopped talking; the session's last provider error,
+    // when the scrape lifted one, says WHY.
+    const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
+    return skips(
+        'runner_error',
+        `the agent's run ended before it finished (opencode finish reason: "${finish}") — ` +
+            `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`,
+        "the agent's run ended before it finished"
+    );
+}
+
 /**
  * What the agent's own run left behind. An agent that did not finish cleanly left no work for a
  * gate to judge — a failed gate over it would fire the workflow's `gate-failed` edge on work that
@@ -136,22 +153,8 @@ export function agentFaults(outcome: RunOutcome): Fault[] {
                 : skips('runner_error', null, why)
         );
     }
-    const finish = outcome.finishReason;
-    // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
-    // premature stop — the cache fault already says the whole story.
-    if (typeof finish === 'string' && finish !== 'stop' && !outcome.cacheLost) {
-        // The finish reason says the run stopped talking; the session's last provider error,
-        // when the scrape lifted one, says WHY.
-        const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
-        faults.push(
-            skips(
-                'runner_error',
-                `the agent's run ended before it finished (opencode finish reason: "${finish}") — ` +
-                    `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`,
-                "the agent's run ended before it finished"
-            )
-        );
-    }
+    const premature = prematureFinish(outcome);
+    if (premature) faults.push(premature);
     const blocked = blockedReason(outcome);
     if (blocked !== null) {
         faults.push(

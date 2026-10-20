@@ -15,6 +15,7 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const kubernetesDocs = readFileSync(join(ROOT, 'docs/kubernetes.md'), 'utf8');
 const netpolTemplate = readFileSync(join(ROOT, 'charts/factory/templates/runner-networkpolicy.yaml'), 'utf8');
 const chartValues = readFileSync(join(ROOT, 'charts/factory/values.yaml'), 'utf8');
+const agentsDoc = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
 const chartReadme = readFileSync(join(ROOT, 'charts/factory/README.md'), 'utf8');
 
 describe('the EKS prerequisites record', () => {
@@ -230,5 +231,17 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(testingDocs)).toContain(
             'a driver pod and its runner Job deleted together end succeeded in the lost session'
         );
+    });
+
+    // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the
+    // read-fault suites are the enforcement, so the sentences naming them are pinned.
+    it('states that an unconfirmed read is inconclusive and names its enforcement', () => {
+        expect(prose(agentsDoc)).toContain('An unconfirmed read never licenses a delete or a negative verdict.');
+        expect(prose(agentsDoc)).toContain('`lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`');
+        expect(prose(kubernetesDocs)).toContain('**An unconfirmed read is inconclusive, never empty**');
+        expect(prose(kubernetesDocs)).toContain(
+            '`lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`'
+        );
+        expect(prose(kubernetesDocs)).toContain('a `k8s-*.ts` importing from `docker*.ts` belongs in a neutral file');
     });
 });

@@ -33,7 +33,7 @@ export const stringsOnly = (value: unknown): boolean =>
     isRecord(value) && Object.values(value).every((v) => typeof v === 'string');
 
 /** Whether `state` is absent or a record whose present parts are records with the typed fields a decision reads. */
-const validContainerState = (state: unknown): boolean => {
+export const validContainerState = (state: unknown): boolean => {
     if (state === undefined) return true;
     if (!isRecord(state)) return false;
     const { terminated, running, waiting } = state;
@@ -47,10 +47,23 @@ const validContainerState = (state: unknown): boolean => {
     return waiting === undefined || (isRecord(waiting) && optionalStrings(waiting.reason, waiting.message));
 };
 
-/** A pod's `containerStatuses`, when present: a list of records, each named, each with a readable state. */
-export const validContainerStatuses = (statuses: unknown): boolean =>
+/** A pod's container statuses, when present: records, each named, each with a readable state and passing `extra`. */
+export const validContainerStatuses = (
+    statuses: unknown,
+    extra: (status: Record<string, unknown>) => boolean = () => true
+): boolean =>
     statuses === undefined ||
-    (Array.isArray(statuses) && statuses.every((s) => isRecord(s) && nonEmpty(s.name) && validContainerState(s.state)));
+    (Array.isArray(statuses) &&
+        statuses.every((s) => isRecord(s) && nonEmpty(s.name) && validContainerState(s.state) && extra(s)));
+
+/** A container status whose image, when named, is a string. */
+export const validImage = (status: Record<string, unknown>): boolean => optionalStrings(status.image);
+
+/** A sidecar's status: its image, a restart count that is a count, and a previous ending of the same typed shape as `state`. */
+export const validSidecar = (status: Record<string, unknown>): boolean =>
+    validImage(status) &&
+    (status.restartCount === undefined || isCount(status.restartCount)) &&
+    validContainerState(status.lastState);
 
 /** A pod's `conditions`, when present: a list of records with a string type and string words. */
 export const validPodConditions = (conditions: unknown): boolean =>

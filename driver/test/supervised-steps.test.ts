@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Bound } from '../src/poll.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { runTimeoutMs } from '../src/claim.js';
@@ -317,6 +318,12 @@ describe('the sync and the helpers over the supervisor', () => {
             ok: false,
             reason: expect.stringContaining('answered nothing readable'),
         });
+        for (const verdict of ['null', '[]']) {
+            expect(await runSyncStep(sink(() => ok(`${verdict}\n`)).host, job)).toMatchObject({
+                ok: false,
+                reason: expect.stringContaining('answered nothing readable'),
+            });
+        }
         const slow = sink(() => ({ exitCode: null, stdout: '', stderr: '', timedOut: true }));
         expect(await runSyncStep(slow.host, job)).toMatchObject({
             ok: false,
@@ -504,10 +511,58 @@ describe('the supervised-step members both executors share', () => {
 });
 
 describe('the services’ generations over the supervisor (issue #773 D9)', () => {
+    /** A sink whose steps never answer: only the signal of the call ends one. */
+    const hanging = () => {
+        const base = sink().host;
+        return {
+            ...base,
+            sink: {
+                ...base.sink,
+                submit: (_token: string, _step: StepRequest, signal?: AbortSignal) =>
+                    new Promise<StepResult>((_resolve, reject) =>
+                        signal?.addEventListener('abort', () => reject(new Error('the step was cancelled')))
+                    ),
+            },
+        };
+    };
+
+    it('ends at the absolute deadline of the wait it runs in (#869)', async () => {
+        const call = runServiceGenerationStep(
+            hanging(),
+            job,
+            { mode: 'bump', names: ['db'] },
+            { deadline: Date.now() + 30 }
+        );
+
+        await expect(call).rejects.toThrow('the step was cancelled');
+    });
+
+    it('ends on the kill of the wait it runs in (#869)', async () => {
+        const kill = new AbortController();
+        const call = runServiceGenerationStep(
+            hanging(),
+            job,
+            { mode: 'acked', names: ['db'] },
+            { deadline: Date.now() + 600_000, signal: kill.signal }
+        );
+        kill.abort();
+
+        await expect(call).rejects.toThrow('the step was cancelled');
+    });
+
+    it('is refused outright once the deadline has passed (#869)', async () => {
+        const s = sink();
+
+        await expect(
+            runServiceGenerationStep(s.host, job, { mode: 'bump', names: ['db'] }, { deadline: Date.now() - 1 })
+        ).rejects.toThrow(/out of time/);
+        expect(s.submitted).toEqual([]);
+    });
+
     it('reads or bumps the generations as a `restart` step of its own, a fresh one every call', async () => {
         const s = sink();
-        expect(await runServiceGenerationStep(s.host, job, 'acked', ['db', 'cache'])).toEqual(ok());
-        await runServiceGenerationStep(s.host, job, 'bump', ['db', 'cache']);
+        expect(await runServiceGenerationStep(s.host, job, { mode: 'acked', names: ['db', 'cache'] })).toEqual(ok());
+        await runServiceGenerationStep(s.host, job, { mode: 'bump', names: ['db', 'cache'] });
         const [read, bump] = s.submitted;
         expect(read).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('acked', ['db', 'cache']), env: {} });
         expect(bump).toMatchObject({ kind: 'restart', argv: serviceRestartArgv('bump', ['db', 'cache']) });
@@ -607,7 +662,9 @@ describe('awaitFirstContact', () => {
 
     it('answers true at once for a supervisor that already pulled, without sleeping', async () => {
         const { slept, sleep } = noSleep();
-        expect(await awaitFirstContact(hostOf([true]).host, withToken, { sleep, stopped: () => false })).toBe(true);
+        expect(
+            await awaitFirstContact(hostOf([true]).host, withToken, { sleep, signal: new AbortController().signal })
+        ).toBe(true);
         expect(slept).toEqual([]);
     });
 
@@ -615,7 +672,11 @@ describe('awaitFirstContact', () => {
         const { slept, sleep } = noSleep();
         const never = hostOf([false]);
         expect(
-            await awaitFirstContact(never.host, { ...job, supervisorEnv: {} }, { sleep, stopped: () => false })
+            await awaitFirstContact(
+                never.host,
+                { ...job, supervisorEnv: {} },
+                { sleep, signal: new AbortController().signal }
+            )
         ).toBe(true);
         expect(never.calls()).toBe(0);
         expect(slept).toEqual([]);
@@ -625,9 +686,21 @@ describe('awaitFirstContact', () => {
         const { slept, sleep } = noSleep();
         const probe = vi.fn(async () => undefined);
         const h = hostOf([false, false, true]);
-        expect(await awaitFirstContact(h.host, withToken, { sleep, stopped: () => false, probe })).toBe(true);
+        expect(await awaitFirstContact(h.host, withToken, { sleep, signal: new AbortController().signal, probe })).toBe(
+            true
+        );
         expect(slept).toEqual([GROUP_UP_POLL_MS, GROUP_UP_POLL_MS]);
         expect(probe).toHaveBeenCalledTimes(2);
+    });
+
+    it('hands each probe the deadline and the kill of the wait, for its requests to end by (#869)', async () => {
+        const { sleep } = noSleep();
+        const kill = new AbortController();
+        const probe = vi.fn(async (_bound: Bound) => undefined);
+
+        await awaitFirstContact(hostOf([false, true]).host, withToken, { sleep, signal: kill.signal, probe });
+
+        expect(probe).toHaveBeenCalledWith({ deadline: expect.any(Number), signal: kill.signal });
     });
 
     it('ends on elapsed time, probe time included, not on a count of polls', async () => {
@@ -638,9 +711,12 @@ describe('awaitFirstContact', () => {
             return now;
         });
         try {
-            expect(await awaitFirstContact(hostOf([false]).host, withToken, { sleep, stopped: () => false })).toBe(
-                false
-            );
+            expect(
+                await awaitFirstContact(hostOf([false]).host, withToken, {
+                    sleep,
+                    signal: new AbortController().signal,
+                })
+            ).toBe(false);
         } finally {
             spy.mockRestore();
         }
@@ -651,7 +727,7 @@ describe('awaitFirstContact', () => {
     it('throws the killed error at once for a stopped job, before any contact is read', async () => {
         const { slept, sleep } = noSleep();
         const h = hostOf([true]);
-        await expect(awaitFirstContact(h.host, withToken, { sleep, stopped: () => true })).rejects.toThrow(
+        await expect(awaitFirstContact(h.host, withToken, { sleep, signal: AbortSignal.abort() })).rejects.toThrow(
             /killed while its task group came up/
         );
         expect(h.calls()).toBe(0);
@@ -660,22 +736,25 @@ describe('awaitFirstContact', () => {
 
     it('throws killed, not true, when the supervisor answered but the job was killed', async () => {
         await expect(
-            awaitFirstContact(hostOf([true]).host, withToken, { sleep: async () => undefined, stopped: () => true })
+            awaitFirstContact(hostOf([true]).host, withToken, {
+                sleep: async () => undefined,
+                signal: AbortSignal.abort(),
+            })
         ).rejects.toThrow(/killed while its task group came up/);
     });
 
     it('throws killed, not false, when the kill lands in the last sleep before the bound', async () => {
         let now = 0;
-        let killed = false;
+        const killed = new AbortController();
         const spy = vi.spyOn(Date, 'now').mockImplementation(() => now);
         try {
             await expect(
                 awaitFirstContact(hostOf([false]).host, withToken, {
                     sleep: async () => {
                         now += GROUP_UP_WAIT_MS;
-                        killed = true;
+                        killed.abort();
                     },
-                    stopped: () => killed,
+                    signal: killed.signal,
                 })
             ).rejects.toThrow(/killed while its task group came up/);
         } finally {
@@ -684,13 +763,13 @@ describe('awaitFirstContact', () => {
     });
 
     it('lets the killed error win over what the probe threw after the kill', async () => {
-        let killed = false;
+        const killed = new AbortController();
         await expect(
             awaitFirstContact(hostOf([false]).host, withToken, {
                 sleep: async () => undefined,
-                stopped: () => killed,
+                signal: killed.signal,
                 probe: async () => {
-                    killed = true;
+                    killed.abort();
                     throw new Error('the container is held: CreateContainerConfigError');
                 },
             })
@@ -701,7 +780,7 @@ describe('awaitFirstContact', () => {
         await expect(
             awaitFirstContact(hostOf([false]).host, withToken, {
                 sleep: async () => undefined,
-                stopped: () => false,
+                signal: new AbortController().signal,
                 probe: async () => {
                     throw new Error('held');
                 },

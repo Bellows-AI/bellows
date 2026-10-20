@@ -22,6 +22,11 @@ session and checkout rather than restarting, a lost service is recreated, and an
 loss is recorded apart from a run failure, never ending a task `dead` while recoverable state
 exists. Avoiding disruption (node pinning, do-not-disrupt) is a mitigation, not the recovery.
 
+**An unconfirmed read never licenses a delete or a negative verdict.** A failed, timed-out, empty, null
+or malformed answer is inconclusive: the caller leaves the run alone instead of sweeping it, ending it
+or reporting it gone. `lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`,
+`driver/test/docker-read-faults.test.ts`.
+
 **Touching the frontend means running the e2e suite.** A change under `web/src` — a component,
 panel, page, style, label or `aria-*` name — or to a payload a panel renders runs
 `npm run verify:ui` before it ships, and every failure is fixed in the same change: the app if it

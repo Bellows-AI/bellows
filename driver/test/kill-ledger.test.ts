@@ -68,4 +68,35 @@ describe('the kill ledger', () => {
         expect(one.was(job({ id: 'j', leaseToken: 'a' })).hard).toBe(true);
         expect(other.was(job({ id: 'j', leaseToken: 'a' }))).toEqual({ stopped: false, hard: false });
     });
+
+    it('aborts the signal of an attempt on either kind of note, and of no other attempt', () => {
+        const ledger = createKillLedger(fakeStore());
+        const [a, b, c] = [job({ leaseToken: 'a' }), job({ leaseToken: 'b' }), job({ leaseToken: 'c' })];
+        const signals = [ledger.signal(a), ledger.signal(b), ledger.signal(c)];
+        expect(signals.map((signal) => signal.aborted)).toEqual([false, false, false]);
+
+        ledger.note(a, 'stopped');
+        ledger.note(b, 'hard');
+
+        expect(signals.map((signal) => signal.aborted)).toEqual([true, true, false]);
+        expect(ledger.signal(a)).toBe(signals[0]);
+    });
+
+    it('answers an aborted signal for a kill noted before the signal was asked for', () => {
+        const ledger = createKillLedger(fakeStore());
+        ledger.note(job({ leaseToken: 'a' }), 'stopped');
+        expect(ledger.signal(job({ leaseToken: 'a' })).aborted).toBe(true);
+    });
+
+    it('forgets the kill with its signal: the next ask is a fresh one', () => {
+        const ledger = createKillLedger(fakeStore());
+        const first = ledger.signal(job({ leaseToken: 'a' }));
+        ledger.note(job({ leaseToken: 'a' }), 'hard');
+        ledger.forget(job({ leaseToken: 'a' }));
+
+        const next = ledger.signal(job({ leaseToken: 'a' }));
+        expect(first.aborted).toBe(true);
+        expect(next.aborted).toBe(false);
+        expect(next).not.toBe(first);
+    });
 });

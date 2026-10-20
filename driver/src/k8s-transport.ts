@@ -12,6 +12,8 @@ import type { KillLedger } from './kill-ledger.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
+import { parseJsonObject } from './json-parse.js';
+import { type Bound, type Sleep, timeLeft } from './poll.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -53,12 +55,26 @@ export const POLL_MAX_CONSECUTIVE_FAILURES = 15;
  */
 export const REPLACE_MAX_POLLS = 150;
 
+/** The same patience as a wall-clock bound: the sweep ends by elapsed time, slow reads included. */
+export const REPLACE_WAIT_MS = REPLACE_MAX_POLLS * POLL_MS;
+
 /**
  * One API-server request, in milliseconds. The docker runner's child process answers the same
  * guarantee by exiting or not; a socket that never answers would otherwise wedge run() forever,
  * and the lease would be renewed around a run nobody can see.
  */
 const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * What a full pod log transfer is given: it streams for as long as the log is long, so unlike every
+ * other answer it is not cut at REQUEST_TIMEOUT_MS — the caller's own `timeoutMs` (a deadline) is
+ * its bound. A log read that cannot finish inside it is incomplete, never empty and complete.
+ */
+export const LOG_READ_MS = 120_000;
+
+/** The time one call is given: a request's default, shortened by its own `timeoutMs`; a log's own alone. */
+const callTimeoutMs = (log: boolean, own: number | undefined): number =>
+    log ? (own ?? REQUEST_TIMEOUT_MS) : Math.min(REQUEST_TIMEOUT_MS, own ?? REQUEST_TIMEOUT_MS);
 
 /** The tail of the runner's output the board is told about — bounded in lines and, below, in bytes. */
 export const LOG_TAIL_LINES = 1_000;
@@ -220,16 +236,79 @@ export function postRefusal(res: K8sResponse, what: string, ...tolerate: number[
 export type K8sMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
- * One API call. A PATCH is a JSON merge patch unless `contentType` names another patch type — the
- * gate resize's strategic merge patch (issue #773), which merges `initContainers` by name where a
- * merge patch would replace the whole list.
+ * What one call may bring: `contentType`, `signal` and `timeoutMs`. A PATCH is a JSON merge patch
+ * unless `contentType` names another patch type — the gate resize's strategic merge patch (issue
+ * #773), which merges `initContainers` by name where a merge patch would replace the whole list.
+ * An aborted `signal` ends the call at once, and `timeoutMs` shortens (never lengthens) the
+ * transport's own deadline: the call rejects by then, whatever the connection is doing.
  */
+export interface K8sRequestOptions {
+    contentType?: string;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+}
+
+/** One API call. */
 export type K8sRequest = (
     method: K8sMethod,
     path: string,
     body?: unknown,
-    contentType?: string
+    options?: K8sRequestOptions
 ) => Promise<K8sResponse>;
+
+const abandoned = (): Error => new Error('the call was abandoned: its signal aborted');
+
+/**
+ * `deps` refusing every call once `signal` aborts and handing the signal to each request in flight:
+ * the k8s twin of `untilStandDown`. Without a signal, `deps` itself.
+ */
+export function withSignal(deps: K8sDeps, signal?: AbortSignal): K8sDeps {
+    if (!signal) return deps;
+    return {
+        ...deps,
+        signal: deps.signal ? AbortSignal.any([deps.signal, signal]) : signal,
+        request: async (method, path, body, options) => {
+            if (signal.aborted) throw abandoned();
+            return deps.request(method, path, body, {
+                ...options,
+                signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+            });
+        },
+    };
+}
+
+/**
+ * `deps` whose every request ends by the absolute `deadline` (epoch ms) and is refused once it is
+ * past: a multi-request round cannot outlive the bound its poll was given.
+ */
+export function boundedBy(deps: K8sDeps, deadline: number): K8sDeps {
+    const bound = Math.min(deps.deadline ?? Infinity, deadline);
+    return {
+        ...deps,
+        deadline: bound,
+        request: async (method, path, body, options) => {
+            const timeoutMs = Math.min(timeLeft(bound), options?.timeoutMs ?? Infinity);
+            if (timeoutMs === 0) throw new Error('the call was refused: its wait is out of time');
+            return deps.request(method, path, body, { ...options, timeoutMs });
+        },
+    };
+}
+
+/**
+ * The wait a nested poll runs `ms` long in `deps`: no longer than the round it runs in has left
+ * (`boundedBy`), pausing through `deps.sleep` and ending on the signal `withSignal` gave it. The one
+ * place a poll takes the bounds of the wait around it, so a nested retry cannot outlive its caller.
+ */
+export function waitOf(deps: K8sDeps, ms: number): { ms: number; sleep: Sleep; signal?: AbortSignal } {
+    return {
+        ms: Math.min(ms, deps.deadline === undefined ? Infinity : timeLeft(deps.deadline)),
+        sleep: deps.sleep,
+        ...(deps.signal ? { signal: deps.signal } : {}),
+    };
+}
+
+/** The bound of the round `deps` runs in, for a step that is not a request (a supervised step): its deadline and kill. */
+export const boundOf = (deps: K8sDeps): Bound => ({ deadline: deps.deadline ?? Infinity, signal: deps.signal });
 
 /**
  * Every k8s-executor function's transport bundle, in one parameter — the same `RunnerDeps`
@@ -239,8 +318,12 @@ export type K8sRequest = (
  */
 export interface K8sDeps {
     request: K8sRequest;
-    sleep: (ms: number) => Promise<void>;
+    sleep: Sleep;
     config: DriverConfig;
+    /** Set by `boundedBy`: the absolute time (epoch ms) every request and nested wait of these deps ends by. */
+    deadline?: number;
+    /** Set by `withSignal`: the kill every request and nested wait of these deps ends on. */
+    signal?: AbortSignal;
     /**
      * The board's lease lookup (`Board.leases`): what lets the fence take over a checkout claim
      * that carries no claim sequence (`takeOverStaleClaim`). Absent, such a claim is stood down on.
@@ -295,7 +378,8 @@ const STREAM_BUFFER_TAIL = ARTIFACT_LIMIT;
 function collectBody(
     res: IncomingMessage,
     sliding: boolean,
-    done: (response: K8sResponse, prefix: string) => void
+    done: (response: K8sResponse, prefix: string) => void,
+    fail: (error: Error) => void
 ): void {
     let text = '';
     let prefix = '';
@@ -309,7 +393,15 @@ function collectBody(
             truncated = true;
         }
     });
+    // A body cut short is never an answer: a reset, an abort or a close before the end rejects.
+    let ended = false;
+    res.on('error', fail);
+    res.on('aborted', () => fail(new Error('the API server aborted the response')));
+    res.on('close', () => {
+        if (!ended) fail(new Error('the API server closed the response before its end'));
+    });
     res.on('end', () => {
+        ended = true;
         const status = res.statusCode ?? 0;
         // A cut refusal carries the prefix ahead of the tail so its start survives classification;
         // a cut log is its tail alone, flagged — never a stitched body that reads as the whole log.
@@ -358,8 +450,34 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
     // handshake per poll tick and buys the elimination of the reuse race by construction.
     const agent = deps.agent ?? new Agent({ keepAlive: false });
 
-    return (method, path, body, contentType) =>
+    return (method, path, body, options) =>
         new Promise<K8sResponse>((resolve, reject) => {
+            const { signal, contentType } = options ?? {};
+            if (signal?.aborted) {
+                reject(abandoned());
+                return;
+            }
+            // The socket idles out at the deadline, and an absolute timer ends the call at it: a
+            // response that trickles bytes, or stalls open, never resets the first and is cut by
+            // the second.
+            const sliding = POD_LOG_PATH.test(path);
+            const timeoutMs = callTimeoutMs(sliding, options?.timeoutMs);
+            let settled = false;
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const onAbort = () => fail(abandoned());
+            // Exactly one settle: the first of an answer, a failure, the deadline and an abort.
+            const settle = (outcome: () => void) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                signal?.removeEventListener('abort', onAbort);
+                outcome();
+            };
+            const fail = (error: Error) => {
+                if (settled) return;
+                settle(() => reject(error));
+                req.destroy(error);
+            };
             const req = request(
                 {
                     host,
@@ -368,7 +486,8 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     path,
                     ca,
                     agent,
-                    timeout: REQUEST_TIMEOUT_MS,
+                    timeout: timeoutMs,
+                    ...(signal ? { signal } : {}),
                     headers: {
                         // Read per call: a rotated ServiceAccount token must not be remembered.
                         authorization: `Bearer ${readFile(`${serviceAccountDir}/token`, 'utf8').trim()}`,
@@ -377,27 +496,30 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
                     },
                 },
                 (res) =>
-                    collectBody(res, POD_LOG_PATH.test(path), (response, prefix) => {
-                        // The diagnosis line (issue #308): method, path, status and the API's own
-                        // words — the body IS the diagnosis.
-                        const diagnosis = refusalDiagnosis(method, path, response.status, prefix);
-                        if (diagnosis !== null) log(diagnosis);
-                        resolve(response);
-                    })
+                    collectBody(
+                        res,
+                        sliding,
+                        (response, prefix) => {
+                            // The diagnosis line (issue #308): method, path, status and the API's own
+                            // words — the body IS the diagnosis.
+                            const diagnosis = refusalDiagnosis(method, path, response.status, prefix);
+                            if (diagnosis !== null) log(diagnosis);
+                            settle(() => resolve(response));
+                        },
+                        fail
+                    )
             );
+            const deadline = () => new Error(`the API server did not answer within ${timeoutMs}ms`);
+            timer = setTimeout(() => fail(deadline()), timeoutMs);
+            signal?.addEventListener('abort', onAbort, { once: true });
             // A half-open connection would otherwise hold the run forever — and the loop would
             // renew the lease around a runner nobody can observe or finish.
-            req.on('timeout', () => {
-                req.destroy(new Error(`the API server did not answer within ${REQUEST_TIMEOUT_MS}ms`));
-            });
-            req.on('error', reject);
+            req.on('timeout', () => fail(deadline()));
+            req.on('error', fail);
             if (body !== undefined) req.write(JSON.stringify(body));
             req.end();
         });
 }
-
-/** The default `sleep` every k8s-executor factory takes, so the poll loops can be tested without it. */
-export const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface K8sJobStatus {
     succeeded?: number;
@@ -448,10 +570,6 @@ export interface K8sPodList {
  */
 export function livePodOfItems(items: K8sPod[]): K8sPod | undefined {
     return items.find((item) => !item.metadata?.deletionTimestamp);
-}
-
-export function livePod(body: string): K8sPod | undefined {
-    return livePodOfItems(parse<K8sPodList>(body).items ?? []);
 }
 
 /** One container's status: the named one in a multi-container pod, the first in an aux pod's only one. */
@@ -507,15 +625,6 @@ export function readAnswer<T>(response: K8sResponse, what: string, shape: (value
     return value === null
         ? { kind: 'inconclusive', reason: `${what} answered an unexpected shape` }
         : { kind: 'value', value };
-}
-
-/** Parses what the API server answers; a body that is not JSON reads as an empty object. */
-export function parse<T>(body: string): T {
-    try {
-        return JSON.parse(body) as T;
-    } catch {
-        return {} as T;
-    }
 }
 
 /*
@@ -590,12 +699,8 @@ const memMbOfQuantity = (value: string): number | null => {
  * the number the docker dashboard renders either.
  */
 export function parsePodMetrics(body: string): Omit<RuntimeSample, 'sampledAt'> | null {
-    let metrics: { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] };
-    try {
-        metrics = JSON.parse(body) as { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] };
-    } catch {
-        return null;
-    }
+    const metrics = parseJsonObject(body) as { containers?: { usage?: { cpu?: unknown; memory?: unknown } }[] } | null;
+    if (metrics === null) return null;
     const usage = metrics.containers?.[0]?.usage;
     const millicores = typeof usage?.cpu === 'string' ? cpuMillicores(usage.cpu) : null;
     const memUsedMb = typeof usage?.memory === 'string' ? memMbOfQuantity(usage.memory) : null;

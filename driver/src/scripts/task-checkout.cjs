@@ -143,13 +143,26 @@ const CONFLICTING_PATHS_MAX = 50;
 /** The tree's unmerged paths, capped; empty when it has none. */
 const unmergedPaths = () =>
     inw('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean).slice(0, CONFLICTING_PATHS_MAX);
+/**
+ * Whether a path is there: false ONLY on ENOENT/ENOTDIR. Any other error (EACCES, EIO, ...) means
+ * the path could not be read, which is no evidence of absence — it throws, never answers "absent".
+ */
+function present(p) {
+    try {
+        fs.statSync(p);
+        return true;
+    } catch (e) {
+        if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return false;
+        throw new Error('unreadable ' + p + ': ' + (e.code || e.message));
+    }
+}
 const REBASE_DIRS = ['rebase-merge', 'rebase-apply'];
 const rebaseDir = (name) => {
     const resolved = inw('rev-parse', '--git-path', name);
     return path.isAbsolute(resolved) ? resolved : path.resolve(wt, resolved);
 };
 /** Whether a rebase is stopped in the tree — conflicted, or resolved but not yet continued. */
-const rebaseInProgress = () => REBASE_DIRS.some((name) => fs.existsSync(rebaseDir(name)));
+const rebaseInProgress = () => REBASE_DIRS.some((name) => present(rebaseDir(name)));
 /** The branch a stopped rebase is rebasing, or '' when its state names none. */
 const rebasedBranch = () => {
     for (const name of REBASE_DIRS) {
@@ -226,7 +239,7 @@ const missingIndex = () => {
     }
     let index = inw('rev-parse', '--git-path', 'index');
     if (!path.isAbsolute(index)) index = path.resolve(wt, index);
-    return !fs.existsSync(index);
+    return !present(index);
 };
 
 /** The clone or the fetch, under the claim's credential helper when it carries a token. */
@@ -243,7 +256,7 @@ const withCredentials = (...args) =>
 const excludeFactoryState = () => {
     let excludePath = git('rev-parse', '--git-path', 'info/exclude');
     if (!path.isAbsolute(excludePath)) excludePath = path.resolve(repo, excludePath);
-    const existing = fs.existsSync(excludePath) ? fs.readFileSync(excludePath, 'utf8') : '';
+    const existing = present(excludePath) ? fs.readFileSync(excludePath, 'utf8') : '';
     if (existing.split('\n').includes(FACTORY_STATE_EXCLUDE)) return;
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     fs.appendFileSync(
