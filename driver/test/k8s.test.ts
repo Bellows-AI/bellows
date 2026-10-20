@@ -61,7 +61,13 @@ import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
 import { type Call, k8sApiserver } from './fixtures/k8s-apiserver.js';
-import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
+import {
+    carriedPastLoss,
+    decisionOf,
+    LOSS_ROWS,
+    TERMINATION_ROWS,
+    type TerminationRow,
+} from './fixtures/termination-table.js';
 import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
@@ -7470,6 +7476,12 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {
         expect(decisionOf(await ends[row]())).toBe(expected);
+    });
+
+    it.each(LOSS_ROWS)('%s: carries nothing past the loss', async (row) => {
+        const outcome = await ends[row]();
+        expect(outcome.infraLoss).toBeDefined();
+        expect(carriedPastLoss(outcome)).toEqual([]);
     });
 });
 

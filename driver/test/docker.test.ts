@@ -8,7 +8,13 @@ import type { Readable } from 'node:stream';
 import type { BoardJob } from '../src/board.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
 import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
-import { decisionOf, TERMINATION_ROWS, type TerminationRow } from './fixtures/termination-table.js';
+import {
+    carriedPastLoss,
+    decisionOf,
+    LOSS_ROWS,
+    TERMINATION_ROWS,
+    type TerminationRow,
+} from './fixtures/termination-table.js';
 import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/startup-table.js';
 import {
     containerName,
@@ -1921,6 +1927,32 @@ describe('the docker runner', () => {
             started: true,
             infraLoss: 'the runner container was removed before it exited (exit 137)',
         });
+    });
+
+    // A run the platform took away has no container left to read: no throwaway `docker run` runs.
+    it.each([
+        ['claude-code with a session', job],
+        ['opencode', opencodeJob],
+    ])('issues no close-time read for a %s run the platform took away', async (_name, lostJob) => {
+        const runs: string[][] = [];
+        const exec = (args: string[]) => {
+            if (args[0] === 'run') runs.push(args);
+            return args[0] === 'inspect'
+                ? Promise.reject(
+                      Object.assign(new Error('Command failed'), {
+                          stderr: `Error: No such object: ${containerName(lostJob)}\n`,
+                      })
+                  )
+                : Promise.resolve({ stdout: '' });
+        };
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', '', 137),
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
+        });
+        const outcome = await runner.run(lostJob, lostJob === job ? { id: SESSION, resume: false } : null);
+        expect(outcome.infraLoss).toBeDefined();
+        expect(runs).toEqual([]);
     });
 
     it('reads an inspect that fails for any other reason as no loss', async () => {
@@ -5923,6 +5955,12 @@ describe('how a started run ends, on docker (the conformance table)', () => {
 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {
         expect(decisionOf(await endOnDocker(ends[row]))).toBe(expected);
+    });
+
+    it.each(LOSS_ROWS)('%s: carries nothing past the loss', async (row) => {
+        const outcome = await endOnDocker(ends[row]);
+        expect(outcome.infraLoss).toBeDefined();
+        expect(carriedPastLoss(outcome)).toEqual([]);
     });
 });
 

@@ -598,9 +598,13 @@ async function dockerRun(
                         vanished,
                         unfinalized: supervisorLossOf(supervisorExit, false),
                     });
-                    return end.infraLoss ? { ...settled, infraLoss: end.infraLoss } : settled;
+                    // A run the platform took away has nothing left to read: the loss, as kubernetes ends it.
+                    if (end.infraLoss) {
+                        const { exitCode, output, timedOut: lostTimedOut, started } = settled;
+                        return { exitCode, output, timedOut: lostTimedOut, started, infraLoss: end.infraLoss };
+                    }
+                    return applyCloseTimeReadout(settled, { execDocker, config, job, startedAt }, session);
                 })
-                .then((outcome) => applyCloseTimeReadout(outcome, { execDocker, config, job, startedAt }, session))
                 .then(resolve, reject);
         });
     });
