@@ -42,7 +42,13 @@ import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
-import { readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s-poll.js';
+import {
+    auxVerdict,
+    pollRunnerJobUntilTerminal,
+    readImagePullStatus,
+    readVerdict,
+    runnerLossOf,
+} from '../src/k8s-poll.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
 import {
     claudeTurnsJobName,
@@ -4380,11 +4386,15 @@ describe('the kubernetes runner', () => {
                     items: [
                         {
                             metadata: { name: `${podName}-old`, deletionTimestamp: '2026-08-29T12:06:00.000Z' },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 7 } } }] },
+                            status: {
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 7 } } }],
+                            },
                         },
                         {
                             metadata: { name: podName },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                            status: {
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } }],
+                            },
                         },
                     ],
                 }),
@@ -5682,7 +5692,9 @@ describe('the kubernetes runner under opencode', () => {
                     items: [
                         {
                             metadata: { name: podName },
-                            status: { containerStatuses: [{ state: { terminated: { exitCode: 0 } } }] },
+                            status: {
+                                containerStatuses: [{ name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } }],
+                            },
                         },
                     ],
                 });
@@ -6202,6 +6214,23 @@ describe('a Stop on kubernetes (issue #427)', () => {
             finished = true;
             await running;
         }
+    });
+});
+
+describe('a Job status read as a typed answer (#869)', () => {
+    const malformed = JSON.stringify({ status: { succeeded: 'x' } });
+    const depsOf = (): K8sDeps => ({
+        request: async () => ({ status: 200, body: malformed }),
+        sleep: async () => {},
+        config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+    });
+
+    it('reads malformed counters as Inconclusive on an aux verdict, never a TypeError or pending', async () => {
+        await expect(auxVerdict(depsOf(), 'aux-job')).rejects.toBeInstanceOf(Inconclusive);
+    });
+
+    it('reads malformed counters as Inconclusive on the runner poll, never a TypeError or pending', async () => {
+        await expect(pollRunnerJobUntilTerminal(depsOf(), job)).rejects.toBeInstanceOf(Inconclusive);
     });
 });
 

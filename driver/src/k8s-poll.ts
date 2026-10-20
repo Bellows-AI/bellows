@@ -11,7 +11,6 @@ import {
     containerFailure,
     containerStatusOf,
     ERROR_PREVIEW_CHARS,
-    expectOk,
     HTTP_BAD_REQUEST,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
@@ -21,13 +20,12 @@ import {
     isRecord,
     livePodOfItems,
     LOG_TAIL_LINES,
-    parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
     readAnswer,
     refusal,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from './startup-cause.js';
 import { type HeldImage, heldOf, heldUnpullable, unpullableImage } from './k8s-held.js';
 import {
@@ -108,6 +106,10 @@ export const asJob = (value: unknown): ReadJobObject | null => {
     const { annotations } = value.metadata;
     return annotations === undefined || stringsOnly(annotations) ? (value as unknown as ReadJobObject) : null;
 };
+
+/** A Job as a verdict read needs it: a record with a `status` record of valid counts; its identity is not asked. */
+const asJobStatus = (value: unknown): K8sJobStatus | null =>
+    isRecord(value) && isRecord(value.status) && validCounters(value.status) ? (value.status as K8sJobStatus) : null;
 
 /**
  * One GET as a typed read (#869): the value `shape` makes of the body, `absent` on a 404, or
@@ -296,7 +298,9 @@ export async function readJobStatus(deps: K8sDeps, jobName: string, what: string
     const response = await readVerdict(deps, jobPath(deps.config.k8sNamespace, jobName), what);
     if (response.status === HTTP_NOT_FOUND) return { kind: 'notFound' };
     if (response.status >= HTTP_ERROR_STATUS) return { kind: 'error', status: response.status, body: response.body };
-    const status = parse<{ status?: K8sJobStatus }>(response.body).status ?? {};
+    const read = readAnswer(response, what, asJobStatus);
+    if (read.kind !== 'value') throw new Inconclusive(read.kind === 'inconclusive' ? read.reason : `${what}: absent`);
+    const status = read.value;
     const outcome = jobOutcome(status);
     return outcome === 'pending' ? { kind: 'pending' } : { kind: 'terminal', outcome, status };
 }
@@ -398,15 +402,8 @@ export async function readJobPodVerdict(
     what: string
 ): Promise<{ exitCode: number | null; output: string; truncated: boolean; pods: K8sPod[] }> {
     const podsPath = jobPodsPath(deps.config.k8sNamespace, jobName);
-    let pods: K8sPod[];
-    if (strict) {
-        const listed = await readList(deps, podsPath, what, { entry: asPod });
-        pods = listed === ABSENT ? [] : listed;
-    } else {
-        const podsResponse = await readVerdict(deps, podsPath, what);
-        expectOk(podsResponse, what);
-        pods = parse<K8sPodList>(podsResponse.body).items ?? [];
-    }
+    const listed = await readList(deps, podsPath, what, { entry: asPod });
+    const pods = listed === ABSENT ? [] : listed;
     const pod = strict ? runnerPodOf(pods) : livePodOfItems(pods);
     // `container` names the one whose verdict this is when the pod holds several (the runner pod's
     // agent); an aux pod's only container is read by position, as ever.
