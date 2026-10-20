@@ -47,10 +47,14 @@
 // tree a previous attempt left conflicted — a rebase in progress, or unmerged entries — is handed
 // over as it is, without a second rebase; a RESTORE claim reports the same.
 //
-// STARTING claims, tree absent: a partial clone (`--filter=blob:none --no-checkout`), then the
-// branch is created from origin/<branch> when the thread already pushed one (a fresh volume must
-// not cost its commits), else at origin/<base>. A path that holds something this sync did not
-// create is REFUSED, never deleted: whatever uncommitted work sits there belongs to an agent
+// STARTING claims, tree absent: a partial clone (`--filter=blob:none --no-checkout`) into a build
+// directory beside the path, then the branch is created from origin/<branch> when the thread already
+// pushed one (a fresh volume must not cost its commits), else at origin/<base>, and the finished tree
+// is renamed into place: a kill leaves a build directory the next claim removes, never a half-made
+// tree. A git dir with a commit and no index is such a half-made tree of an older sync: removed and
+// built again when it holds nothing else, refused when it holds files. Every git command that can
+// lazily fetch a partial clone's blobs (clone, fetch, checkout, rebase) runs under the credential
+// helper. A path that holds something this sync did not create is REFUSED, never deleted: whatever uncommitted work sits there belongs to an agent
 // session. A remote with NO commits (a scaffolding task) has no origin/<default>: the tree starts
 // empty on an unborn task branch, and an existing tree is not rebased.
 const { execFileSync } = require('node:child_process');
@@ -59,8 +63,9 @@ const path = require('node:path');
 
 const review = Boolean(process.env.REVIEW_REF);
 const reviewRef = process.env.REVIEW_REF;
-const repo = review ? process.env.REPO : process.env.CHECKOUT;
-const wt = review ? process.env.WORKTREE : process.env.CHECKOUT;
+// `let`: a fresh tree is built beside its final path (`createTree`), and these point at the build while it is.
+let repo = review ? process.env.REPO : process.env.CHECKOUT;
+let wt = review ? process.env.WORKTREE : process.env.CHECKOUT;
 const remote = process.env.REMOTE;
 const branch = process.env.BRANCH;
 const restore = process.env.RESTORE === '1';
@@ -71,6 +76,9 @@ const FACTORY_STATE_EXCLUDE = '/.factory/';
 
 const git = (...a) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim();
 const inw = (...a) => execFileSync('git', a, { cwd: wt, encoding: 'utf8' }).trim();
+// A command that can lazily fetch missing blobs of a partial clone (checkout, rebase, and the stash it
+// reapplies) talks to the remote like the clone and the fetch do, so it runs under the same helper.
+const inwFetching = (...a) => inw(...withCredentials(...a));
 const detail = (e, max) => String((e && e.stderr) || (e && e.message) || e).slice(0, max);
 // ENOENT/ENOTDIR is absence; any other errno is a failure to read, never "not there".
 const exists = (p) => {
@@ -196,6 +204,31 @@ const refuse = (r, kind) => {
     process.exit(0);
 };
 
+/** Where a tree is built before it is moved to `final`: a dot-name beside it, which no repo directory can be. */
+const buildDirOf = (final) => path.join(path.dirname(final), '.' + path.basename(final) + '.sync');
+const discardTree = (dir) => fs.rmSync(dir, { recursive: true, force: true });
+// The build in progress, removed if the script leaves before it is moved into place.
+let building = null;
+process.on('exit', () => {
+    if (building) discardTree(building);
+});
+
+/**
+ * Whether the tree has a commit but no index: what a creation killed between the clone and the end of
+ * its checkout leaves. Every file would read as staged-deleted, and a publish's `git add -A` would
+ * commit the repository away. A tree on an unborn branch has no index legitimately.
+ */
+const missingIndex = () => {
+    try {
+        inw('rev-parse', '--verify', '--quiet', 'HEAD');
+    } catch {
+        return false;
+    }
+    let index = inw('rev-parse', '--git-path', 'index');
+    if (!path.isAbsolute(index)) index = path.resolve(wt, index);
+    return !fs.existsSync(index);
+};
+
 /** The clone or the fetch, under the claim's credential helper when it carries a token. */
 const withCredentials = (...args) =>
     process.env.CRED_HELPER
@@ -263,23 +296,36 @@ const assertReviewTreeIsOurs = () => {
 
 /** Links a fresh review worktree on its branch, created from the snapshot when the branch is new. */
 const addReviewWorktree = () => {
-    fs.rmSync(wt, { recursive: true, force: true });
+    // Built beside its path and moved in, so a kill midway leaves a build directory the next claim
+    // removes, never a worktree with a git dir and half a checkout.
+    const build = buildDirOf(wt);
+    discardTree(build);
+    discardTree(wt);
     git('worktree', 'prune');
+    building = build;
     try {
         try {
-            git('worktree', 'add', wt, branch);
+            git('worktree', 'add', build, branch);
         } catch {
-            git('worktree', 'add', '-b', branch, wt, reviewRef);
+            git('worktree', 'add', '-b', branch, build, reviewRef);
         }
+        git('worktree', 'move', build, wt);
     } catch (e) {
+        discardTree(build);
+        git('worktree', 'prune');
         refuse('the review snapshot ' + reviewRef + ' could not be checked out: ' + detail(e, GIT_ERROR_MAX_LENGTH));
     }
+    building = null;
 };
 
 /** A REVIEW claim: a linked worktree of the task's checkout, at its snapshot. */
 const syncReview = () => {
     if (exists(wt + '/.git') && inw('rev-parse', '--is-inside-work-tree') === 'true') {
         assertReviewTreeIsOurs();
+        // A worktree without its index is an interrupted creation, and nobody's work: built again.
+        if (missingIndex()) {
+            addReviewWorktree();
+        }
         return synced();
     }
     if (exists(wt + '/.git')) {
@@ -300,6 +346,14 @@ const syncRestore = () => {
                 wt +
                 ' does not exist on the task volume — there is nothing to continue, and a follow-up is never ' +
                 'restarted fresh off the remote default (re-queue the task to start it over)',
+            KIND_BRANCH_UNRESTORABLE
+        );
+    }
+    if (missingIndex()) {
+        refuse(
+            'the task checkout ' +
+                wt +
+                ' has no index: its creation was interrupted, so it cannot be continued (re-queue the task to start it over)',
             KIND_BRANCH_UNRESTORABLE
         );
     }
@@ -347,18 +401,8 @@ const assertCredentialedOrigin = (present) => {
     }
 };
 
-/** Fetches into the present checkout, or clones it (partial, no checkout) when the path is free. */
-const fetchOrClone = (present) => {
-    if (present) {
-        git(...withCredentials('fetch', 'origin', '--prune'));
-        return;
-    }
-    if (exists(wt)) {
-        refuse(
-            'the checkout path exists and holds something this sync did not create; remove it by hand if it is truly stale: ' +
-                wt
-        );
-    }
+/** Clones the remote (partial, no checkout) into `dest`, under the claim's credential helper. */
+const cloneInto = (dest) =>
     execFileSync(
         'git',
         withCredentials(
@@ -371,11 +415,10 @@ const fetchOrClone = (present) => {
             'origin',
             '--',
             remote,
-            wt
+            dest
         ),
-        { cwd: path.dirname(wt), encoding: 'utf8' }
+        { cwd: path.dirname(dest), encoding: 'utf8' }
     );
-};
 
 /** Puts an existing tree on its task branch and rebases it onto the base; a conflicted tree is handed over. */
 const rebaseExisting = (base, hasBase) => {
@@ -387,13 +430,13 @@ const rebaseExisting = (base, hasBase) => {
     const on = inw('branch', '--show-current');
     if (on !== branch) {
         try {
-            inw('checkout', branch);
+            inwFetching('checkout', branch);
         } catch {
-            inw('checkout', '-b', branch, hasRemoteRef(branch) ? 'origin/' + branch : 'origin/' + base);
+            inwFetching('checkout', '-b', branch, hasRemoteRef(branch) ? 'origin/' + branch : 'origin/' + base);
         }
     }
     try {
-        inw('rebase', '--autostash', 'origin/' + base);
+        inwFetching('rebase', '--autostash', 'origin/' + base);
     } catch (e) {
         // A conflicted rebase stays in place for the agent; any other failure is a refusal.
         if (unmergedPaths().length) return handOver();
@@ -404,14 +447,9 @@ const rebaseExisting = (base, hasBase) => {
     synced();
 };
 
-/** A STARTING claim: clone when absent, fetch when present, then put the tree on the task branch. */
-const syncStarting = () => {
-    const present = exists(wt + '/.git');
-    assertCredentialedOrigin(present);
-    fetchOrClone(present);
-    excludeFactoryState();
-    const def = defaultBranch();
-    const base = baseBranch || def;
+/** The base the tree starts from: the claim's named branch, else the remote default; a named base the remote lacks is refused. */
+const resolveBase = () => {
+    const base = baseBranch || defaultBranch();
     const hasBase = hasRemoteRef(base);
     if (baseBranch && !hasBase) {
         refuse(
@@ -421,12 +459,65 @@ const syncStarting = () => {
             KIND_MISSING_BASE_BRANCH
         );
     }
-    if (!present) {
-        if (hasRemoteRef(branch)) inw('checkout', '-b', branch, 'origin/' + branch);
-        else if (hasBase) inw('checkout', '-b', branch, 'origin/' + base);
-        else startUnborn();
-        return synced();
+    return { base, hasBase };
+};
+
+/**
+ * A fresh tree, built whole beside its path and moved in by one rename: a kill at any step leaves a
+ * build directory the next claim removes, never a git dir with half a checkout where the task's tree
+ * belongs. A path that holds something this sync did not create is REFUSED, never deleted.
+ */
+const createTree = () => {
+    const final = wt;
+    if (exists(final)) {
+        refuse(
+            'the checkout path exists and holds something this sync did not create; remove it by hand if it is truly stale: ' +
+                final
+        );
     }
+    const build = buildDirOf(final);
+    discardTree(build);
+    building = build;
+    cloneInto(build);
+    repo = build;
+    wt = build;
+    excludeFactoryState();
+    const { base, hasBase } = resolveBase();
+    if (hasRemoteRef(branch)) inwFetching('checkout', '-b', branch, 'origin/' + branch);
+    else if (hasBase) inwFetching('checkout', '-b', branch, 'origin/' + base);
+    else startUnborn();
+    repo = final;
+    wt = final;
+    fs.renameSync(build, final);
+    building = null;
+    synced();
+};
+
+/**
+ * An existing git dir with no index and nothing else in it is an interrupted creation of an older
+ * sync: no work is in it, so it is removed and built again. One holding files is refused, never touched.
+ */
+const discardInterruptedTree = () => {
+    if (!missingIndex()) return false;
+    if (fs.readdirSync(wt).some((name) => name !== '.git')) {
+        refuse(
+            'the task checkout ' +
+                wt +
+                ' has no index and holds files: an interrupted checkout that may carry work; remove it by hand if it is truly stale'
+        );
+    }
+    discardTree(wt);
+    return true;
+};
+
+/** A STARTING claim: build the tree when absent, fetch and rebase it when present. */
+const syncStarting = () => {
+    const present = exists(wt + '/.git') && !discardInterruptedTree();
+    assertCredentialedOrigin(present);
+    if (!present) return createTree();
+    git(...withCredentials('fetch', 'origin', '--prune'));
+    excludeFactoryState();
+    const { base, hasBase } = resolveBase();
     return rebaseExisting(base, hasBase);
 };
 

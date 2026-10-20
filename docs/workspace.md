@@ -27,6 +27,11 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
 - **Every writer of the tree writes it group-writable**: CLI (uid 1000) and tools (uid 1001) share group 1000
   (`mkdirShared`, `core.sharedRepository=group`, `gate-shell.sh`); an older tree needs `chmod -R g+rwX <member>`
   once on real-uid storage. `server/test/workspace.reconcile.test.ts`, `driver/test/scripts-gate-shell.test.ts`.
+- **The task tree is built whole or not at all, and the agent cannot fetch history.** `task-checkout.cjs` clones
+  partially (`--filter=blob:none`) into a build directory beside the path and renames it in; its checkout and rebase
+  run under the credential helper. The tool uid holds no token (#814), so on a private repository a command that needs a
+  blob the checkout did not (history before the base) cannot lazily fetch it — a stated limit.
+  `driver/test/scripts-task-checkout-atomic.test.ts`.
 - **The path segment is `app_user.id`, never the login**: `workspaceDir` and `driver/src/task-volume.ts` (the thread root) assert the uuid.
 - **An existing checkout is never touched and nothing is pruned automatically** — `.git` present
   means skip. Clones land in `<name>.tmp-<pid>` and are renamed in; stale `.tmp-` trees are swept at

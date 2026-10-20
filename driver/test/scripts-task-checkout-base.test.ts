@@ -60,8 +60,9 @@ describe.skipIf(!hasGit())('the task checkout script (a named base branch)', () 
 
         expect(result).toMatchObject({ ok: false, kind: 'missing_base_branch' });
         expect(result.reason).toContain(`origin/${BASE}`);
-        // The clone stays (a retry fetches into it), but no task branch was started off the wrong base.
-        expect(git(fx.checkout(), 'branch', '--list', fx.branch())).toBe('');
+        // A tree is built whole or not at all: the refusal leaves no clone, so no task branch was
+        // started off the wrong base and no half-made tree waits for the next claim.
+        expect(existsSync(fx.checkout())).toBe(false);
     });
 
     it('the publish probe reads the base as the branch to compare against', () => {
