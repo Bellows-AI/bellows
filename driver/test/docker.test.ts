@@ -3230,7 +3230,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
     // Pinned (#828, slice 1): a run whose outcome rejects once its group exists finishes that group
     // itself (`docker-runner.ts:680-683`), before the loop decides — though the loop leaves such a
-    // run to its lease so the next claim can adopt it (`concludeThrownRun`, `loop-fence.ts`).
+    // run to its lease so the next claim can adopt it (`thrownRunDecision`, `loop-fence.ts`).
     // Slice 6 removes the finish-on-throw; this pin flips then. Like the harness's pins, it fails
     // only on today's exact removals: any other rejection or removal set returns early and turns
     // the `it.fails` red.

@@ -59,22 +59,6 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
     };
 }
 
-/** A setup that ended after the services step: they go with it. Answers `STOOD_DOWN` for `runPhases`. */
-export async function releaseStartedServices(ctx: AttemptCtx): Promise<typeof STOOD_DOWN> {
-    if (ctx.servicesStarted) await release(ctx.rt, ctx.job);
-    return STOOD_DOWN;
-}
-
-/** Runs the setup phase, releasing services it started even when a conclusion itself throws. */
-export async function releasingOnThrow<T>(ctx: AttemptCtx, phases: (ctx: AttemptCtx) => Promise<T>): Promise<T> {
-    try {
-        return await phases(ctx);
-    } catch (e) {
-        await releaseStartedServices(ctx);
-        throw e;
-    }
-}
-
 /**
  * A failure of the services' machinery rather than of the services (issue #773, R2-1): a lost
  * supervisor (`stepLost`) or a pod or daemon that could not be read (`Inconclusive`). The attempt is

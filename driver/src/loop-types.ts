@@ -3,6 +3,7 @@ import type { DriverConfig } from './config.js';
 import type { AdoptedRun, RunSession, Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { JobState } from './loop-attempt.js';
+import type { GateSession } from './loop-gates.js';
 import type { SyncQueue } from './sync-queue.js';
 
 /**
@@ -60,10 +61,14 @@ export interface AttemptCtx {
     rt: LoopRuntime;
     job: BoardJob;
     state: JobState;
-    /** Ends the attempt: `quiesce`, then its group's teardown — once, however many conclusions ask. */
-    settle: () => Promise<void>;
-    /** Stops the heartbeat and leaves the group standing (issue #821): the half of `settle` a verdict waits for. */
+    /** Stops the heartbeat (issue #821); `end` (`loop-conclusion.ts`) is the only caller, once. */
     quiesce: () => Promise<void>;
+    /** The attempt's one ending (`end`, `loop-conclusion.ts`): the first call decides, later calls await it. */
+    ended?: Promise<LeaseState | null>;
+    /** The gate session the attempt booted, released by `end`'s teardown; unset for a job with none. */
+    gateSession?: GateSession;
+    /** Set once the setup phase let the attempt through: from here `end` always releases its services. */
+    setupDone?: true;
     /**
      * Whether this attempt holds the kubernetes checkout claim: taken by a successful sync, handed
      * to the runner at launch, and given back by `handBackFence` (`loop-fence.ts`) and by nothing
@@ -78,8 +83,6 @@ export interface AttemptCtx {
      * agent, and its agent container is specced for this session.
      */
     session: RunSession | null;
-    /** Set by the first `standDown` that acted (`loop-fence.ts`): the attempt stands down once. */
-    stoodDown?: true;
     /** Set once the services step started the attempt's declared services (`loop-services.ts`). */
     servicesStarted?: true;
     /**
@@ -102,7 +105,7 @@ export type VerdictBody = Parameters<Board['complete']>[1];
  * - `leave` — infrastructure, not a verdict: the claim stays with its lease and the lease decides
  *   (a sync that threw).
  * - `interrupt` — a refusal this driver makes while alive (a services start the daemon or cluster
- *   refused, issue #822): handed back as an interruption carrying `reason` (`interruptAttempt`),
+ *   refused, issue #822): handed back as an interruption carrying `reason` (`interruptDecision`),
  *   left to the lease only when that does not land. No verdict.
  * - `requeue` — checkout contention another driver or a concurrent git caused (issue #559): the
  *   pre-run claim goes back to the board at once, its attempt refunded and its next claim
@@ -122,6 +125,36 @@ export type SetupHalt =
  * A step that is not done answers `null`.
  */
 export type SetupConclusion = SetupHalt | typeof STOOD_DOWN;
+
+/**
+ * An earlier claim's attempt the adoption found and took over (issue #792): a durable record
+ * `runPhases` performs for the step — an interruption `release: false`, under this claim's lease —
+ * and no ending.
+ */
+export interface AdoptedRecord {
+    record: 'interruption';
+    reason: string;
+    claimSeq: number;
+}
+
+/**
+ * How one attempt ends, as data (issue #828): `end` (`loop-conclusion.ts`) lands the durable call
+ * for it, then quiesces and tears down. A path decides; it never acts.
+ *
+ * - `verdict` — stage, then report (`log` said first, when there is one).
+ * - `park` — a stopped attempt: the pump drained, `beforePark` run, then suspended.
+ * - `interrupt` — handed back to the board as an interruption, released.
+ * - `requeue` — a pre-run claim handed back at once (issue #559).
+ * - `leave` — left to the lease; the runner of an attempt that launched stays for the next claim.
+ * - `none` — the board has already moved on (a lost lease, a removed thread, a handover).
+ */
+export type EndDecision =
+    | { kind: 'verdict'; verdict: VerdictBody; log?: string }
+    | { kind: 'park'; phase: string; beforePark?: () => Promise<void> }
+    | { kind: 'interrupt'; reason: string; exitCode: number | null }
+    | { kind: 'requeue'; log: string }
+    | { kind: 'leave'; log: string }
+    | { kind: 'none'; log: string };
 
 /** A setup step's answer that the attempt is down: `runPhases` (`loop-run.ts`) acts on it through `standDown`. */
 export const STOOD_DOWN = 'stood-down' as const;

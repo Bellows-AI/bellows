@@ -71,8 +71,10 @@ export interface JobState {
     /** Writes the line of each `phase`/`ending` change; the loop points it at its log. */
     trace: (transition: AttemptTransition) => void;
     /**
-     * True when neither the staged verdict nor the complete reached the board (issue #821): the
-     * teardown leaves the group and the checkout claim for the next claim to adopt.
+     * True when the runner must outlive the attempt (issues #821, #828): neither the staged verdict
+     * nor the complete, nor the park, interruption or requeue, reached the board, or the attempt is
+     * left to its lease after its launch. `end`'s teardown then leaves the group and the checkout
+     * claim for the next claim to adopt.
      */
     keepGroup: boolean;
     /**

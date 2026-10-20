@@ -5,8 +5,9 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob, LeaseState } from '../src/board.js';
 import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
 import { newJobState, raceStep } from '../src/loop-attempt.js';
+import { end, endIfDown } from '../src/loop-conclusion.js';
 import { recordEnding } from '../src/loop-phase.js';
-import { concludeSetup, handBackFence, standDown } from '../src/loop-fence.js';
+import { handBackFence, setupDecision, standDown } from '../src/loop-fence.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop-types.js';
 
 const JOB = { id: 'job-1' } as BoardJob;
@@ -25,8 +26,8 @@ const CONCLUDED: SetupHalt = {
 };
 
 /**
- * One attempt's fence, stubbed down to the calls it owns: the checkout-claim release, the settle,
- * the suspend and the completion. Everything below is the promise issue #472 makes about a
+ * One attempt's fence, stubbed down to the calls it owns: the checkout-claim release, the group's
+ * end, the suspend and the completion. Everything below is the promise issue #472 makes about a
  * conclusion and a stand-down — a new setup refusal cannot forget the release, because it never
  * gets to act.
  */
@@ -37,6 +38,12 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
     const ctx = {
         rt: {
             runner: {
+                finish: async () => {
+                    calls.push('finish');
+                },
+                releaseServices: async () => {
+                    calls.push('services');
+                },
                 releaseFence: async (released: BoardJob) => {
                     calls.push(`release:${released.id}`);
                 },
@@ -71,9 +78,6 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
         },
         job,
         state: newJobState(),
-        settle: async () => {
-            calls.push('settle');
-        },
         quiesce: async () => {
             calls.push('quiesce');
         },
@@ -84,11 +88,12 @@ function fencedAttempt(fenced = true): { ctx: AttemptCtx; calls: string[]; lines
 }
 
 /**
- * Both sequences begin the same way: the claim goes back before the attempt settles, whatever ended
- * it (issue #469). A stand-down parks a stopped turn and then says what the board said; a conclusion
- * says why it ended and reports it.
+ * Every ending runs the same way (issue #828): the durable board call first, then the heartbeat is
+ * quiesced, the group ends, and the checkout claim goes back last (issue #469) — so the board is told
+ * before anything is destroyed. A stand-down parks a stopped turn and then says what the board said;
+ * a conclusion says why it ended and reports it.
  */
-const CLAIM_BACK = ['release:job-1', 'settle'];
+const TEARDOWN = ['quiesce', 'finish', 'release:job-1'];
 
 /**
  * The rest is structural: "one owner" is a promise about the source, not about any path a test can
@@ -117,18 +122,18 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         recordEnding(ctx.state, 'stop');
 
         await handBackFence(ctx);
-        expect(await standDown(ctx, 'setup')).toBe(true);
+        expect(await endIfDown(ctx, 'setup')).toBe(true);
 
-        expect(calls).toEqual(['settle', 'suspend', 'log']);
+        expect(calls).toEqual(['suspend', 'log', 'quiesce', 'finish']);
     });
 
-    it('stands a stopped attempt down as one sequence — release, settle, park', async () => {
+    it('stands a stopped attempt down as one sequence — park, settle, release', async () => {
         const { ctx, calls, lines } = fencedAttempt();
         recordEnding(ctx.state, 'stop');
 
-        expect(await standDown(ctx, 'setup')).toBe(true);
+        expect(await endIfDown(ctx, 'setup')).toBe(true);
 
-        expect(calls).toEqual([...CLAIM_BACK, 'suspend', 'log']);
+        expect(calls).toEqual(['suspend', 'log', ...TEARDOWN]);
         expect(lines.join('\n')).toContain('stopped during setup');
     });
 
@@ -136,35 +141,36 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         const { ctx, calls, lines } = fencedAttempt();
         recordEnding(ctx.state, 'lost');
 
-        expect(await standDown(ctx, 'setup')).toBe(true);
+        expect(await endIfDown(ctx, 'setup')).toBe(true);
 
-        expect(calls).toEqual([...CLAIM_BACK, 'log']);
+        expect(calls).toEqual(['log', ...TEARDOWN]);
         expect(lines.join('\n')).toContain('lease was lost during setup');
     });
 
-    it('runs the pre-park hook for a stopped attempt, after the settle and before the park', async () => {
+    it('runs the pre-park hook for a stopped attempt, before the park and the settle', async () => {
         const { ctx, calls } = fencedAttempt();
         recordEnding(ctx.state, 'stop');
 
-        expect(await standDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
+        expect(await endIfDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
 
-        expect(calls).toEqual([...CLAIM_BACK, 'hook', 'suspend', 'log']);
+        expect(calls).toEqual(['hook', 'suspend', 'log', ...TEARDOWN]);
     });
 
     it.each(['lost', 'removed'] as const)('skips the pre-park hook when the lease is %s', async (verdict) => {
         const { ctx, calls, lines } = fencedAttempt();
         recordEnding(ctx.state, verdict);
 
-        expect(await standDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
+        expect(await endIfDown(ctx, 'its run', async () => void calls.push('hook'))).toBe(true);
 
-        expect(calls).toEqual([...CLAIM_BACK, 'log']);
+        expect(calls).toEqual(['log', ...TEARDOWN]);
         expect(lines.join('\n')).toContain('during its run');
     });
 
     it('answers an attempt that is not down with nothing done', async () => {
         const { ctx, calls } = fencedAttempt();
 
-        expect(await standDown(ctx, 'setup')).toBe(false);
+        expect(standDown(ctx, 'setup')).toBeNull();
+        expect(await endIfDown(ctx, 'setup')).toBe(false);
 
         expect(calls).toEqual([]);
     });
@@ -174,10 +180,10 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         const { ctx, calls } = fencedAttempt();
         recordEnding(ctx.state, 'stop');
 
-        expect(await standDown(ctx, 'setup')).toBe(true);
-        expect(await standDown(ctx, 'its run')).toBe(true);
+        expect(await endIfDown(ctx, 'setup')).toBe(true);
+        expect(await endIfDown(ctx, 'its run')).toBe(true);
 
-        expect(calls).toEqual([...CLAIM_BACK, 'suspend', 'log']);
+        expect(calls).toEqual(['suspend', 'log', ...TEARDOWN]);
     });
 
     it('retries a park the board does not take, then leaves the stop to the lease without throwing', async () => {
@@ -189,7 +195,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
             throw new BoardHttpError(503, '/api/jobs/job-1/suspend answered 503: down');
         };
 
-        expect(await standDown(ctx, 'setup')).toBe(true);
+        expect(await endIfDown(ctx, 'setup')).toBe(true);
 
         expect(calls.filter((c) => c === 'suspend')).toHaveLength(BOARD_CALL_ATTEMPTS);
         expect(lines.at(-1)).toContain('the board did not take the stop, left to the lease');
@@ -202,9 +208,9 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         const hook = async () => {
             throw new Error('artifact upload refused');
         };
-        expect(await standDown(ctx, 'its run', hook)).toBe(true);
+        expect(await endIfDown(ctx, 'its run', hook)).toBe(true);
 
-        expect(calls).toEqual([...CLAIM_BACK, 'log', 'suspend', 'log']);
+        expect(calls).toEqual(['log', 'suspend', 'log', ...TEARDOWN]);
         expect(lines[0]).toContain('parking anyway: artifact upload refused');
     });
 
@@ -212,15 +218,15 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         ['a leave', LEAVE, null],
         ['a requeue', REQUEUE, 'requeue:job-1'],
     ] satisfies readonly (readonly [string, SetupHalt, string | null])[])(
-        'concludes %s only after the claim is back',
+        'concludes %s with the board told before the claim goes back',
         async (_what, halt, reported) => {
             const { ctx, calls, lines } = fencedAttempt();
 
-            await concludeSetup(ctx, halt);
+            await end(ctx, setupDecision(halt));
 
             // A `leave` reports nothing at all; a `requeue` hands the claim back instead of
             // reporting (issue #559).
-            expect(calls).toEqual([...CLAIM_BACK, 'log', ...(reported === null ? [] : [reported])]);
+            expect(calls).toEqual(['log', ...(reported === null ? [] : [reported]), ...TEARDOWN]);
             expect(lines.join('\n')).toContain(halt.log);
         }
     );
@@ -235,21 +241,21 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         async (_what, halt) => {
             const { ctx, calls, lines } = fencedAttempt();
 
-            await concludeSetup(ctx, halt);
+            await end(ctx, setupDecision(halt));
 
-            expect(calls).toEqual(['log', 'stage:job-1', 'complete:job-1', 'quiesce', 'release:job-1', 'settle']);
+            expect(calls).toEqual(['log', 'stage:job-1', 'complete:job-1', ...TEARDOWN]);
             expect(lines.join('\n')).toContain(halt.log);
         }
     );
 
     // Issue #822: a refusal the driver makes while alive goes back to the board as an interruption,
     // after the claim and with no verdict — the board frees the lease at once and records why.
-    it('hands an interrupt back to the board only after the claim is back, reporting nothing', async () => {
+    it('hands an interrupt back to the board before the claim goes back, reporting nothing', async () => {
         const { ctx, calls, lines } = fencedAttempt();
 
-        await concludeSetup(ctx, { halt: 'interrupt', reason: 'could not start the services: daemon refused' });
+        await end(ctx, setupDecision({ halt: 'interrupt', reason: 'could not start the services: daemon refused' }));
 
-        expect(calls).toEqual([...CLAIM_BACK, 'interrupt:job-1', 'log']);
+        expect(calls).toEqual(['interrupt:job-1', 'log', ...TEARDOWN]);
         expect(lines.join('\n')).toContain(
             'could not start the services: daemon refused, handed back as an interruption'
         );
@@ -264,7 +270,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('defines both fences once, and no other loop file does', () => {
         const definers = loopSources()
-            .filter(([, source]) => /export async function (standDown|concludeSetup)\(/.test(source))
+            .filter(([, source]) => /export (async )?function (standDown|setupDecision)\(/.test(source))
             .map(([file]) => file);
         expect(definers).toEqual(['loop-fence.ts']);
     });
@@ -296,7 +302,7 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
 
     it('fences every phase boundary from loop-run, and nowhere else', () => {
         const callers = loopSources()
-            .filter(([file, source]) => file !== 'loop-fence.ts' && /standDown\(ctx, '/.test(source))
+            .filter(([file, source]) => file !== 'loop-fence.ts' && /endIfDown\(ctx, '/.test(source))
             .map(([file]) => file);
         expect(callers).toEqual(['loop-run.ts']);
     });

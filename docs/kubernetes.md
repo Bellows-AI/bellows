@@ -54,7 +54,7 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   session. `driver/src/termination.ts`, `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
 - Stated limit: a verdict neither staged nor completed within one lease leaves its group and checkout claim to the
   next claim: its agent outcome is adopted, but the gates and the post-processing run again, and an attempt with no
-  budget left can retire `dead` before it is adopted. `driver/src/loop-fence.ts` (`concludeAttempt`).
+  budget left can retire `dead` before it is adopted. `driver/src/loop-conclusion.ts` (`end`).
 - Stated limit: a thread with no attempt reclaims in a supervisor-only group (one Job, no agent; the tool uid's
   `release` init container first), because nothing else holds the task volume; its pod requests are held while
   the gates run. `driver/src/k8s-group.ts` (`reclaimInGroup`, `reclaimGroupSpec`).

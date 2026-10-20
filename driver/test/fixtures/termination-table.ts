@@ -23,7 +23,7 @@ export const TERMINATION_TABLE = {
 export type TerminationRow = keyof typeof TERMINATION_TABLE;
 
 /**
- * The loop's decision on a run's outcome, in its own order (`concludeUnreported`, then the ledger):
+ * The loop's decision on a run's outcome, in its own order (`unreportedDecision`, then the ledger):
  * an infrastructure loss and a container that never started are both handed back as an interruption.
  */
 export function decisionOf(outcome: RunOutcome): string {
