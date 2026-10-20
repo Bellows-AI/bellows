@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import {
+    chmodSync,
     existsSync,
     lstatSync,
     mkdirSync,
@@ -101,6 +102,45 @@ describe.skipIf(!hasGit())('the worktree reclaim script', () => {
         // The targets survive: only the links inside the tree were entries of the tree.
         expect(existsSync(outside)).toBe(true);
         expect(readFileSync(join(outside, 'keep.txt'), 'utf8')).toBe('keep me');
+    });
+
+    // A permission error is no evidence of absence: answering {ok:true,removed:false} for a path
+    // that could not be read would acknowledge a reclaim that removed nothing (#869).
+    describe.skipIf(process.getuid?.() === 0)('a path that cannot be read', () => {
+        const lock = (path: string): (() => void) => {
+            chmodSync(path, 0o000);
+            return () => chmodSync(path, 0o755);
+        };
+
+        it('is no absent worktree: the step answers not-ok with an unreadable reason', () => {
+            const wt = addWorktree(ROOT);
+            const unlock = lock(join(dir, 'worktrees'));
+            try {
+                const { verdict } = remove(wt);
+                expect(verdict.ok).toBe(false);
+                expect(verdict.reason).toContain('unreadable');
+            } finally {
+                unlock();
+            }
+            expect(existsSync(wt)).toBe(true);
+        });
+
+        it('is no absent clone: the worktree beside it is neither removed nor called settled', () => {
+            const wt = addWorktree(ROOT);
+            const moved = join(dir, 'locked');
+            mkdirSync(moved);
+            const lockedClone = join(moved, 'clone');
+            clone = lockedClone;
+            const unlock = lock(moved);
+            try {
+                const { verdict } = remove(wt);
+                expect(verdict.ok).toBe(false);
+                expect(verdict.reason).toContain('unreadable');
+            } finally {
+                unlock();
+            }
+            expect(existsSync(wt)).toBe(true);
+        });
     });
 
     it('prunes a registered worktree whose directory is already gone', () => {
