@@ -190,6 +190,11 @@ export interface BoardJob {
      * refusal). Both executors start exactly this list; the driver reads no file. Absent: none.
      */
     services?: readonly ServiceSpec[];
+    /**
+     * The names of the reviewer profiles the caller's thread may ask (issue #774); the task pod holds a
+     * reviewer container exactly when this is non-empty. Absent: none.
+     */
+    reviewerProfiles?: readonly string[];
     /** The commit the claim's plan was read at — the tip of the base branch when the board resolved it. */
     planRevision?: string;
     /**
@@ -199,12 +204,6 @@ export interface BoardJob {
      */
     policy?: EvidencePolicy;
     review?: ReviewEvidence;
-    /**
-     * Present only on a named reviewer's claim (issue #549): the snapshot ref its worktree starts
-     * from and the wall-clock budget its profile grants. Such a run opens no publish or question
-     * relay, runs no gates and never publishes — the board decided that when it handed the claim out.
-     */
-    reviewRun?: { profile: string; ref: string; timeoutMinutes: number };
     /**
      * The ad-hoc gate credentials the LOOP mints for this attempt (`BELLOWS_GATE_URL` /
      * `BELLOWS_GATE_TOKEN`) — set just before spawn, never by the board, which is why it sits
@@ -341,6 +340,14 @@ export interface ReviewRequest {
 }
 
 /**
+ * A named reviewer's claim (issues #549, #774), handed to the caller's driver in-band with the review
+ * it created or re-leased: the snapshot ref the reviewer's worktree starts from and the wall-clock
+ * budget its profile grants. The reviewer runs inside the caller's task pod, with no publish or
+ * question relay, no gates and no publication — the board decided that when it built the claim.
+ */
+export type ReviewClaim = BoardJob & { reviewRun: { profile: string; ref: string; timeoutMinutes: number } };
+
+/**
  * One review as the board reports it (issue #549): the review row's own status, the verdict read
  * from its output's final marker (`none` until a succeeded run ends on one), its findings, the
  * revision it is bound to, and the THREAD's review evidence as the policy validator sees it now —
@@ -364,7 +371,7 @@ export interface ReviewReport {
  * ref, no such key), or the lease verdicts `lost` and `removed`.
  */
 export type ReviewAnswer =
-    | { result: 'ok'; review: ReviewReport; created: boolean }
+    | { result: 'ok'; review: ReviewReport; created: boolean; claim?: ReviewClaim }
     | { result: 'refused'; reason: string }
     | { result: 'lost' | 'removed' };
 
@@ -735,6 +742,42 @@ function questionVerdictOf(response: Response): QuestionVerdict {
 const HTTP_BAD_REQUEST = 400;
 const HTTP_CREATED = 201;
 
+/** A claim off the wire, read into the shape the loop works with: every optional field defaulted or dropped. */
+function claimOf(wire: Partial<BoardJob>): BoardJob {
+    // Destructured out rather than left in the base spread: an invalid (non-array) value
+    // must not survive under exactOptionalPropertyTypes, which refuses assigning
+    // `undefined` to this optional property directly — the conditional spread below is
+    // the only way to represent "absent".
+    const { helperPlans, turnContext, services, reviewerProfiles, ...claimed } = wire;
+    const plan = servicePlanOf(services);
+    return {
+        ...(claimed as BoardJob),
+        ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
+        ...(plan.services ? { services: plan.services } : {}),
+        ...reviewerProfilesOf(reviewerProfiles),
+        ...knownTurnContext(turnContext),
+        masterPrompt: textOrNull(claimed.masterPrompt),
+        resumeSessionId: claimed.resumeSessionId ?? null,
+        followUp: claimed.followUp ?? false,
+        userId: claimed.userId ?? null,
+        workspacePath: claimed.workspacePath ?? null,
+        rootJobId: claimed.rootJobId ?? null,
+        executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
+        executorRefusal: textOrNull(claimed.executorRefusal),
+        skillRefusal: textOrNull(claimed.skillRefusal),
+        planRefusal: plan.refusal ?? textOrNull(claimed.planRefusal),
+        env: claimed.env ?? {},
+    };
+}
+
+/** The claim's reviewer profile names, or nothing: an empty or malformed list reads as no reviewer (issue #774). */
+function reviewerProfilesOf(value: unknown): { reviewerProfiles?: readonly string[] } {
+    const names = Array.isArray(value) ? (value as unknown[]) : [];
+    return names.length > 0 && names.every((name) => typeof name === 'string')
+        ? { reviewerProfiles: names as string[] }
+        : {};
+}
+
 /**
  * The board's answer to a review request or read. A 409 is two things here — the lease verdict, and
  * a refusal such as an undeclared profile — so the code in the body decides; a 404 is the removed
@@ -742,10 +785,12 @@ const HTTP_CREATED = 201;
  */
 async function reviewAnswerOf(response: Response): Promise<ReviewAnswer> {
     if (response.ok) {
+        const { claim, ...review } = (await response.json()) as ReviewReport & { claim?: Partial<ReviewClaim> };
         return {
             result: 'ok',
-            review: (await response.json()) as ReviewReport,
+            review,
             created: response.status === HTTP_CREATED,
+            ...(claim?.reviewRun ? { claim: claimOf(claim) as ReviewClaim } : {}),
         };
     }
     const body = (await response.json().catch(() => ({}))) as { error?: unknown; code?: unknown };
@@ -839,30 +884,7 @@ export function createBoard({
         async claim(worker) {
             const response = await post('/api/jobs/claim', { worker, leaseSeconds });
             if (response.status === HTTP_NO_CONTENT) return null;
-            // Destructured out rather than left in the base spread: an invalid (non-array) value
-            // must not survive under exactOptionalPropertyTypes, which refuses assigning
-            // `undefined` to this optional property directly — the conditional spread below is
-            // the only way to represent "absent".
-            const { helperPlans, turnContext, services, ...rest } = (await response.json()) as Partial<BoardJob>;
-            const claimed = rest;
-            const plan = servicePlanOf(services);
-            return {
-                ...(claimed as BoardJob),
-                ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
-                ...(plan.services ? { services: plan.services } : {}),
-                ...knownTurnContext(turnContext),
-                masterPrompt: textOrNull(claimed.masterPrompt),
-                resumeSessionId: claimed.resumeSessionId ?? null,
-                followUp: claimed.followUp ?? false,
-                userId: claimed.userId ?? null,
-                workspacePath: claimed.workspacePath ?? null,
-                rootJobId: claimed.rootJobId ?? null,
-                executorType: isExecutorType(claimed.executorType) ? claimed.executorType : null,
-                executorRefusal: textOrNull(claimed.executorRefusal),
-                skillRefusal: textOrNull(claimed.skillRefusal),
-                planRefusal: plan.refusal ?? textOrNull(claimed.planRefusal),
-                env: claimed.env ?? {},
-            };
+            return claimOf((await response.json()) as Partial<BoardJob>);
         },
 
         async heartbeat(job) {

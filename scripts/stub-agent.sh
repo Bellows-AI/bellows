@@ -8,6 +8,34 @@
 # reads the run as lost. The command's stdout and stderr are the run's, unchanged.
 # Pinned by driver/test/lane-stubs.test.ts.
 
+# Review mode (issue #774): `stub-agent.sh review <executor> <executor args…>`, how the stub images'
+# /usr/local/bin/claude-executor and opencode-executor answer when a task group's reviewer container
+# runs them (scripts/stub-runner.Dockerfile). A scripted reviewer: it names who ran it, tries to
+# write into the shared clone it was given read-only and reports whether that failed, optionally
+# holds first (a `STUB-REVIEW-HOLD-<seconds>` marker in the instructions, once per reviewer home, so
+# a re-run after a lost pod answers at once), and ends on the verdict line the board parses.
+if [ "${1:-}" = review ]; then
+    executor=${2:-unknown}
+    shift 2
+    hold=$(printf '%s' "$*" | sed -n 's/.*STUB-REVIEW-HOLD-\([0-9][0-9]*\).*/\1/p' | head -n 1)
+    if [ -n "$hold" ] && [ ! -e "$HOME/.stub-review-held" ]; then
+        printf '' > "$HOME/.stub-review-held"
+        sleep "$hold"
+    fi
+    probe="${GIT_CONFIG_VALUE_1:-/nonexistent}/.stub-review-write"
+    # printf, not `:`: dash exits on a failed redirection of a special builtin.
+    if { printf '' > "$probe"; } 2>/dev/null; then
+        rm -f "$probe"
+        written=written
+    else
+        written=denied
+    fi
+    printf 'review-stub executor=%s uid=%s\n' "$executor" "$(id -u)"
+    printf 'tree-write=%s\n' "$written"
+    echo 'VERDICT: CLEAN'
+    exit 0
+fi
+
 # The supervisor's release (issue #771), as the real entrypoints wait for it: nothing starts until
 # `go`, and a Stop or a kill order that lands first means the agent leaves quietly.
 if [ -n "${FACTORY_CTL_GO:-}" ]; then

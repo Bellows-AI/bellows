@@ -107,6 +107,18 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
   that verifies it.
 - If the plan marks anything `BLOCKER` in Risks / ambiguity, STOP: present the ambiguity and the
   planner's analysis to the user. Do not pick an interpretation yourself.
+- **Design forks go in one batch.** Before the plan becomes final, collect every design fork (the
+  planner's `Design forks` plus your own) and ask them in ONE `AskUserQuestion` call — up to 4
+  questions, the recommended option first in each. More than 4: ask the 4 that most change the plan
+  and take the recommended default for the rest. After that batch a fork found later (planning,
+  review, lanes, GitHub review) never stops the run: take the recommended default, record it in
+  the plan and in the PR body under a "Decided on default" list, and continue — unless the choice
+  is irreversible or outward-facing (data loss, publishing, deleting shared resources), which
+  still asks. An ambiguity in the issue itself stays a `BLOCKER`.
+- **Hazard check before the first review round.** Check the plan's Hazards section against the
+  fix-planner's list (every hazard line in its output format) and amend gaps yourself, so review
+  rounds spend themselves on new problems, not on classes the list already names. Do the same on
+  the diff before the first Phase 4 round.
 
 ## Phase 3 — Implement, TDD
 
@@ -211,8 +223,8 @@ Then:
 5. Open the PR:
    `gh pr create --title "<short title>" --body <body> --base <default-branch>`
    Body must include: a summary of the root cause and the fix, the list of changes, the tests
-   added and how they were verified, and `Fixes #<N>` on its own line so the issue auto-closes on
-   merge. End the body with: `🤖 Generated with [opencode](https://opencode.ai)`
+   added and how they were verified, the "Decided on default" list when any fork took its default,
+   and `Fixes #<N>` on its own line so the issue auto-closes on merge. End the body with: `🤖 Generated with [opencode](https://opencode.ai)`
 6. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL and the
    worktree path — the run continues into Phase 6, which owns the final summary.
 
@@ -259,6 +271,13 @@ Stop conditions — hand back to the user instead of improvising:
   — resolve it and keep going.
 - **Five rounds with comments still open**: STOP. Report what remains and why.
 
+**Stacked slices merge as they go green.** When the work is split into stacked PRs, merge a
+slice's PR (`gh pr merge`, with the method the repo's merged PRs use — check `gh pr list --state
+merged`) as soon as its CI, lanes and bot-review fixes are green; then rebase or retarget the next
+slice's branch onto the default branch, and only then continue the next slice. Never keep more than
+one unmerged slice under the one in progress.
+
 Done means: zero unaddressed comments, the worktree still in place, `sh CLEANUP <N>` run, and the
-PR unmerged — merging is the maintainer's call. Final report: the PR URL, rounds spent, comments addressed, and anything
+PR unmerged (a stacked slice's PR is merged per the rule above; a final or single PR is the
+maintainer's call). Final report: the PR URL, rounds spent, comments addressed, and anything
 left unresolved with the reason.

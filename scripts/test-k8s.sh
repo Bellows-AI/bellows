@@ -800,8 +800,10 @@ expect_contains 'the admission policy lets a claim update change only factory.re
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
 expect_contains 'the admission policy scopes workspace mounts to a member subPath' "$admission" \
-    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\$')"
+    "m.subPath.matches('^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(/[.]factory/reviewer)?\$')"
 expect_contains 'the admission policy refuses subPathExpr on workspace mounts' "$admission" '!has(m.subPathExpr)'
+expect_contains 'the admission policy keeps the reviewer to the credentials Secret' "$admission" \
+    'a driver-specced reviewer references the credentials Secret alone'
 # A pull secret is for the kubelet only: it may appear under imagePullSecrets, never where a
 # container can read it (volumes, env, envFrom).
 pulled="$(gh_render --set 'imagePullSecrets={probe-regcred}' |
@@ -852,8 +854,14 @@ expect_contains 'the admission policy maps hostAliases only to loopback' "$admis
     "variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')"
 expect_contains 'the admission policy keeps svc- containers out of the main containers' "$admission" \
     "variables.spec.containers.all(c, !c.name.startsWith('svc-'))"
-expect_contains 'the admission policy restarts only the gate and svc- sidecars' "$admission" \
-    "(c.name == 'gate' || c.name.startsWith('svc-'))"
+expect_contains 'the admission policy restarts only the gate, reviewer and svc- sidecars' "$admission" \
+    "(c.name == 'gate' || c.name == 'reviewer' || c.name.startsWith('svc-'))"
+expect_contains 'the admission policy pins the reviewer to its own uid' "$admission" \
+    "c.securityContext.runAsUser == 1002"
+expect_contains 'the admission policy lets the reviewer write only its home on the volume' "$admission" \
+    "(m.name == 'workspaces' && m.subPath.endsWith('/.factory/reviewer'))"
+expect_contains 'the admission policy admits the reviewer home subPath beside the member subPath' "$admission" \
+    '(/[.]factory/reviewer)?$'
 # Issue #814: the one capability add admitted, the agent's launch pair, on a runner Job's agent alone.
 expect_contains 'the admission policy admits the launch pair on a runner Job agent alone' "$admission" \
     "request.kind.kind == 'Job' && c.name == 'agent' &&"
@@ -2749,9 +2757,97 @@ ghost_gate_end="$(await_brief "$ghost_gate" 'failed*' 300)"
 expect_contains 'the failure names the gate image' "$(job_output "$ghost_gate")" \
     "the gate image \"$missing_gate\" cannot be pulled"
 
+# e. The reviewer in the task pod (issue #774). A plan declaring a reviewer gives the pod a `reviewer`
+#    sidecar. Idle, a task that never asks holds only the configured idle request, measured here on
+#    the live pod. Then a task asks for a review and its pod is deleted while the first reviewer holds:
+#    the caller is re-claimed, asks the same key again, the review row is re-leased (claim 2), and the
+#    verdict reaches the caller from the new pod.
+begin_phase services-review
+review_idle_release="/workspaces/$member_path/.lane-review-idle"
+commit_plan review 'reviewers:
+  - name: audit
+    instructions: "Audit the tree. STUB-REVIEW-HOLD-90"
+    timeout: 5' && ok 'a plan declaring a reviewer is committed and mirrored' ||
+    bad 'a plan declaring a reviewer is committed and mirrored' 'the plan pod did not commit'
+
+review_rows() { # review_rows <caller id> -> "status|claim_seq" of each rv-k review row, comma-joined
+    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -qtA -v ON_ERROR_STOP=1 -v "id=$1" postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select coalesce(string_agg(status || '|' || claim_seq, ','), '') from job where review_of = :'id' and review_key = 'rv-k';
+SQL
+}
+await_review_rows() { # await_review_rows <caller id> <rows> <seconds> -> 0 once the review rows read exactly <rows>
+    local until=$(($(date +%s) + $3)) r=''
+    while [ "$(date +%s)" -lt "$until" ]; do
+        r="$(review_rows "$1")"
+        [ "$r" = "$2" ] && return 0
+        sleep 1
+    done
+    printf '%s' "$r"
+    return 1
+}
+review_why() { # review_why <caller id> -> why the review rows ended as they did, for a failure message
+    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -qtA -v ON_ERROR_STOP=1 -v "id=$1" postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select coalesce(string_agg(coalesce(failure_kind, '-') || ' ' || left(coalesce(output, ''), 600), ' ;; '), '') from job where review_of = :'id' and review_key = 'rv-k';
+SQL
+}
+reviewer_field() { # reviewer_field <pod> <jsonpath under the reviewer init container>
+    kubectl get pod "$1" -n "$NAMESPACE" -o jsonpath="{.spec.initContainers[?(@.name==\"reviewer\")]$2}" 2>/dev/null
+}
+
+review_idle="$(queue_job "factory-stub-wait-$review_idle_release reviewer idle")"
+review_idle_pod="$(await_runner_pod "$review_idle")"
+if [ -z "$review_idle" ] || [ -z "$review_idle_pod" ]; then
+    bad 'the pod to measure the idle reviewer on is running' "job '$review_idle': $(job_brief "$review_idle")"
+else
+    await_blocked "$review_idle_pod" "$review_idle_release" && ok 'the idle-reviewer task is blocked at its barrier' || give_up
+    idle_cpu="$(reviewer_field "$review_idle_pod" .resources.requests.cpu)"
+    idle_mem="$(reviewer_field "$review_idle_pod" .resources.requests.memory)"
+    [ -n "$idle_cpu" ] && [ -n "$idle_mem" ] && ok "the reviewer sidecar idles at a request of $idle_cpu / $idle_mem" ||
+        bad 'the pod carries a reviewer sidecar with a request' "pod containers: $(kubectl get pod "$review_idle_pod" -n "$NAMESPACE" -o jsonpath='{.spec.initContainers[*].name}')"
+    # Usage, when the cluster has a metrics API; the request is the number that is always known.
+    sleep 20
+    idle_top="$(kubectl top pod "$review_idle_pod" -n "$NAMESPACE" --containers 2>&1 | awk '$2 == "reviewer" { print $3 " / " $4 }')"
+    echo "MEASURED reviewer idle request: ${idle_cpu:-?} cpu / ${idle_mem:-?} memory; usage: ${idle_top:-no metrics API}"
+    release_stub "$review_idle_release"
+fi
+
+review_lost='infrastructure loss: the runner pod was deleted'
+review_task="$(queue_job 'factory-stub-review lane review')"
+review_pod="$(await_runner_pod "$review_task")"
+if [ -z "$review_task" ] || [ -z "$review_pod" ]; then
+    bad 'the reviewing task pod is running' "job '$review_task': $(job_brief "$review_task")"
+else
+    ok 'the reviewing task pod is running'
+    if rows="$(await_review_rows "$review_task" 'running|1' 240)"; then
+        ok 'the review row is created running in the caller pod'
+    else
+        bad 'the review row is created running in the caller pod' "rows: '$rows'"
+    fi
+    kubectl delete pod "$review_pod" -n "$NAMESPACE" --grace-period=5 --wait=false >/dev/null 2>&1
+    review_mid="$(await_brief "$review_task" "*|1|1|$review_lost*" 60)"
+    case "$review_mid" in
+    *"|1|1|$review_lost"*) ok 'the pod lost mid-review is an interruption of the caller' ;;
+    *) bad 'the pod lost mid-review is an interruption of the caller' "status|attempts|count|claimSeq|reason: $review_mid" ;;
+    esac
+    review_end="$(await_brief "$review_task" 'succeeded*' 300)"
+    case "$review_end" in
+    "succeeded|1|1|1|$review_lost"*) ok 'the re-claimed caller completes: one attempt, one interruption' ;;
+    *) bad 'the re-claimed caller completes: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $review_end" ;;
+    esac
+    review_out="$(job_output "$review_task")"
+    expect_contains 'the verdict reaches the caller in the new pod' "$review_out" 'verdict":"clean'
+    expect_contains 'the reviewer ran as uid 1002'                  "$review_out" 'uid=1002'
+    expect_contains 'the reviewer could not write the shared tree'  "$review_out" 'tree-write=denied'
+    rows="$(review_rows "$review_task")"
+    [ "$rows" = 'succeeded|2' ] && ok 'one review row, re-leased once, succeeded' ||
+        bad 'one review row, re-leased once, succeeded' "status|claim_seq: '$rows'; $(review_why "$review_task")"
+fi
+
 # The origin and its mirror carry no plan again: a later phase runs as it always did.
 commit_plan restore '' && ok 'the plan is removed again' || bad 'the plan is removed again' 'the plan pod did not commit'
-for job in $reached $restarted $crashed $ghost $ghost_gate; do
+for job in $reached $restarted $crashed $ghost $ghost_gate $review_idle $review_task; do
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done

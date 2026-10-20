@@ -27,13 +27,17 @@ Return exactly these sections:
 - **Files**: each file to touch, one line on why.
 - **Test plan**: file, test names, what each asserts, and the suite command.
 - **Hazards**: one line each, with the `file:line` it governs:
-  - *Unconfirmed read* — what a failed request, a timeout, an empty, `null` or malformed answer means at each read. It never means "nothing there", and never licenses a delete or a negative verdict.
+  - *Unconfirmed read* — what a failed request, a timeout, an empty, `null` or malformed answer means at each read. It never means "nothing there", and never licenses a delete or a negative verdict. A validated read checks every field its consumer uses (every container list, nested status fields), and a malformed entry is inconclusive.
   - *Cancellation* — where the attempt's signal and deadline reach each wait and each destructive call.
-  - *Wall-clock bounds* — each wait is bounded by elapsed time, requests and retries included, not by a poll count.
+  - *Wall-clock bounds* — each wait is bounded by elapsed time, requests and retries included, not by a poll count. The deadline is absolute wall-clock and covers every nested request, retry and sleep inside the step — not a per-request or socket-inactivity timeout.
+  - *Stream settlement* — a response stream settles on error, abort and premature close, not only data/end.
+  - *Absence vs error* — a filesystem existence check tells absence (ENOENT/ENOTDIR) from any other error.
+  - *RED proof* — every new test is proven RED on the pre-fix code; a test that passes without the fix is called out.
   - *Counterpart* — the other executor's and every sibling call site's version of the same path.
   - *Exit paths* — every way out, a throw included, releases what it holds exactly once.
   - *Stale state* — what is re-read after a wait instead of trusted from before it.
   - *Never started vs ran* — how a workload that never started is told apart from one that ran and ended.
 - **Risks / ambiguity**: anything the executor must NOT decide on its own. If two reasonable implementations would fix different things, say so and mark it `BLOCKER`. The executor will stop and ask the user.
+- **Design forks**: each choice between reasonable designs that is not an issue ambiguity, one line with the recommended option first. The executor asks them all in one batch.
 
 If the issue is not actually a bug, is a duplicate, or the fix would require a shortcut (skipping tests, hardcoding values, disabling checks), do not plan around it — say so in Risks and mark it `BLOCKER`.

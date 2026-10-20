@@ -362,6 +362,21 @@ export function stopRows(
 }
 
 /**
+ * Stops every live review of the given callers — what a caller's Stop, its verdict and its dead
+ * retirement all do, so no review outlives the work it assessed (issue #549). A queued review
+ * settles `stopped`, a leased one is stamped and its heartbeat delivers the kill; one that already
+ * ended is left alone, which is what makes a retried Stop change nothing.
+ */
+export async function stopReviewsOf(
+    sql: Sql | TransactionSql,
+    stop: { orgId: string; wallTick: Fragment; stoppedBy: string | null },
+    callerIds: readonly string[]
+): Promise<void> {
+    if (callerIds.length === 0) return;
+    await stopRows(sql, { ...stop, where: sql`review_of = any(${[...callerIds]}::uuid[])` });
+}
+
+/**
  * `markDone`'s second half, shared by every closure that frees a thread's tree (done, remove's
  * refusal-free sibling, the merge closure's settle points, issue #390): if this settle just made
  * the whole thread terminal, queue its worktree reclaim. The thread is one indexed read off the

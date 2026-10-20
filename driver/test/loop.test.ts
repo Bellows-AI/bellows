@@ -3367,7 +3367,7 @@ describe('environment.setup before the agent starts', () => {
         await drive({ ...board, runner, gates });
 
         expect(setupsBeforeRun).toBe(1);
-        expect(stack.setups[0]?.timeoutMs).toBe(setupTimeoutMs(config(), setupJob(1)));
+        expect(stack.setups[0]?.timeoutMs).toBe(setupTimeoutMs(config()));
         expect(stack.setups[0]?.signal).toBeInstanceOf(AbortSignal);
         expect(seenSetupMs).toBeGreaterThanOrEqual(0);
         expect(board.board.completed[0]).toMatchObject({ status: 'succeeded', setupMs: seenSetupMs });

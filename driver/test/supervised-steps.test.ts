@@ -337,7 +337,9 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
         const s = sink(() => ok('{"ok":true,"removed":true,"reason":null}\n'));
         expect(await runReclaimStep(s.host, job)).toEqual({ ok: true, removed: true, reason: null });
         expect(s.submitted[0]).toMatchObject({ kind: 'reclaim', env: { WORKTREE } });
-        expect(Object.keys(s.submitted[0]!.env).sort()).toEqual(['REPO', 'WORKTREE']);
+        // The caller thread's reclaim also names its review roots: a review leaves its tree there.
+        expect(s.submitted[0]!.env.REVIEW_ROOTS).toBe(`${WORKTREE}.reviews`);
+        expect(Object.keys(s.submitted[0]!.env).sort()).toEqual(['REPO', 'REVIEW_ROOTS', 'WORKTREE']);
     });
 
     it("gives a helper the claim env and the board's minted token only when it writes to GitHub", async () => {
