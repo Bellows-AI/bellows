@@ -5,8 +5,9 @@
  * engine and its rules are `fixtures/read-faults.ts`; each scenario's world is "something there",
  * so every read that guards a delete or a verdict answers non-empty when clean.
  *
- * Today's violations are pinned `it.fails` with their exact line set, read from an unpinned run:
- * typed reads (#869 PR A and B) flip them. The stopAgent and kill of a kubernetes runner
+ * The destructive paths read typed (#869 PR A): a cell that holds is a plain test. What stays pinned
+ * `it.fails` with its exact line set, read from an unpinned run, is the verdict paths (K-V1, K-D1),
+ * which typed reads (#869 PR B) flip. The stopAgent and kill of a kubernetes runner
  * (`k8s-runner.ts`) are not replayed here — their docker twins are.
  */
 import { randomUUID } from 'node:crypto';
@@ -69,7 +70,7 @@ const serverFor = (job: BoardJob, special: Special) =>
 
 /** A pod of `job`, in `phase`, its containers in the states given. */
 const podOf = (name: string, phase: string, labels: Record<string, string>, containers: unknown[] = []) => ({
-    metadata: { name, labels, creationTimestamp: START },
+    metadata: { name, uid: `uid-${name}`, labels, creationTimestamp: START },
     spec: { containers: [{ name: 'main', image: 'postgres:17' }] },
     status: { phase, containerStatuses: containers },
 });
@@ -254,7 +255,10 @@ const adoptFinalizing: Build<K8sRequest> = async (tap, alias) => {
             if (reads >= 3) item.status = { startTime: START, succeeded: 1 } as typeof item.status;
             return {
                 status: 200,
-                body: JSON.stringify({ metadata: { name: item.metadata.name }, status: item.status }),
+                body: JSON.stringify({
+                    metadata: { name: item.metadata.name, uid: item.metadata.uid },
+                    status: item.status,
+                }),
             };
         }
         if (isGet(method, path, `${PODS}?`) && selector(path).includes('job-name=')) {
@@ -320,7 +324,6 @@ const BATCH = `/apis/batch/v1/namespaces/${NS}`;
 const CLAIM = `${API}/configmaps/factory-job-<job>-claim`;
 const OLD_JOBS = `GET ${BATCH}/jobs?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const OLD_PODS = `GET ${API}/pods?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
-const WRITER_PODS = `GET ${API}/pods?labelSelector=factory.job=<job>,factory.lease=<lease>,!factory.service`;
 const secretsOf = (label: string): string[] => [
     `DELETE ${API}/secrets/factory-job-<job>-<${label}>-env`,
     `DELETE ${API}/secrets/factory-gate-<${label}-hash>-env`,
@@ -388,62 +391,20 @@ scenario(
             })),
         ],
     },
-    {
-        // A `null` claim body: `claim.data` of null (`k8s-fence.ts:108`), thrown after the stand-down.
-        null: [pin(`CRASH after null at ${CLAIM_READ}: ${NULL_READ('data')}`)],
-    }
+    {}
 );
 
-scenario(
-    'the sync fence on a claim a live lease holds (K-FH)',
-    fenceHeld,
-    { writes: [`POST ${API}/configmaps`] },
-    {
-        // `claim.data` of a `null` body (`k8s-fence.ts:108`).
-        null: [pin(`CRASH after null at ${CLAIM_READ}: ${NULL_READ('data')}`)],
-    }
-);
+scenario('the sync fence on a claim a live lease holds (K-FH)', fenceHeld, { writes: [`POST ${API}/configmaps`] }, {});
 
-scenario(
-    'the group end while a writer pod still runs (K-T1)',
-    teardownHeld,
-    { writes: secretsOf('lease') },
-    {
-        // No list read as no live writer (`k8s-teardown.ts:122`): the end is confirmed and the claim
-        // given back (`k8s-fence.ts:247`) under a pod still writing.
-        ...pinsFor(GARBAGE, (fault) => [`DELETE after ${fault} at ${WRITER_PODS}: DELETE ${CLAIM}`]),
-        null: [
-            `CRASH after null at ${WRITER_PODS}: ${NULL_READ('items')}`,
-            // `anotherIncarnation` reads `.metadata` of null (`k8s-teardown.ts:129`).
-            `CRASH after null at GET ${BATCH}/jobs/factory-runner-<lease-hash>: ${NULL_READ('metadata')}`,
-            // `readJobStatus` throws on null (`k8s-poll.ts:262`), `jobEndsWithin` reads the throw as not
-            // ended (`k8s-group.ts:254`), and the finished run's Job — kept for adoption — is deleted
-            // (`k8s-group.ts:283` → `k8s-teardown.ts:187`).
-            `DELETE after null at GET ${BATCH}/jobs/factory-runner-<lease-hash>: DELETE ${BATCH}/jobs/factory-runner-<lease-hash>`,
-        ].map(pin),
-    }
-);
+scenario('the group end while a writer pod still runs (K-T1)', teardownHeld, { writes: secretsOf('lease') }, {});
 
-scenario(
-    'the reaper on a superseded lease with an unread runner (K-R1)',
-    reaperSuperseded,
-    { writes: [] },
-    // No list read as no runner Job (`k8s-reaper.ts:93`): the superseded group loses its
-    // `runner` spare (`reaper.ts:136`) and is reaped, Secrets first.
-    pinsFor(GARBAGE, (fault) => [
-        `DELETE after ${fault} at GET ${BATCH}/jobs?labelSelector=factory.job,factory.lease: DELETE ${API}/secrets/factory-job-<job>-<old>-env`,
-    ])
-);
+scenario('the reaper on a superseded lease with an unread runner (K-R1)', reaperSuperseded, { writes: [] }, {});
 
 scenario(
     'the reaper on a gone job whose claim holder still runs a reclaim pod (K-R2)',
     reaperGone,
     { writes: [...secretsOf('lease'), `DELETE ${API}/pods/svc-db`] },
-    // No list read as no holder writer (`k8s-teardown.ts:145` → `k8s-fence.ts:242`): the holder's
-    // groups are ended, Secrets first, on the way to the claim.
-    pinsFor(GARBAGE, (fault) => [
-        `DELETE after ${fault} at GET ${API}/pods?labelSelector=factory.job=<job>,factory.holder=<lease>: DELETE ${API}/secrets/factory-job-<job>-<lease>-env`,
-    ])
+    {}
 );
 
 /** An adoption's runner pod read after its claim is taken. */

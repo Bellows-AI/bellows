@@ -3,7 +3,7 @@ import type { DriverConfig } from './config.js';
 import { awaitSupervisor } from './docker-group.js';
 import { killMarkName } from './docker-mailbox.js';
 import type { ExecDocker } from './docker-runner-support.js';
-import { linesOf, noSuchObject } from './docker-runner-support.js';
+import { idLines, nameLines, noSuchObject, readDocker } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { Inconclusive } from './runner.js';
 import { forgetDeclaredServices, networkName } from './services.js';
@@ -124,8 +124,10 @@ export async function dockerKillFor(deps: TeardownDeps, job: BoardJob, kill: Kil
 export async function dockerServiceTeardown(deps: TeardownDeps, job: BoardJob): Promise<void> {
     if (!deps.config.servicesEnabled) return;
     forgetDeclaredServices(job);
-    const found = await deps
-        .execDocker([
+    // A listing that is refused or is no list of ids removes nothing (#869): no read is a target.
+    const found = await readDocker(
+        deps.execDocker,
+        [
             'ps',
             '-aq',
             '--filter',
@@ -134,24 +136,25 @@ export async function dockerServiceTeardown(deps: TeardownDeps, job: BoardJob): 
             `label=${LEASE_LABEL}=${job.leaseToken}`,
             '--filter',
             `label=${SERVICE_LABEL}`,
-        ])
-        .catch(() => ({ stdout: '' }));
-    for (const id of linesOf(found.stdout)) {
+        ],
+        'listing the attempt services',
+        { parse: idLines }
+    );
+    for (const id of found.kind === 'value' ? found.value : []) {
         await deps.execDocker(['rm', '-f', id]).catch(() => undefined);
     }
     // The gate environment joins this network to reach the fleet, and outlives the attempt on
     // its cooldown; docker refuses to remove a network with an endpoint still attached, so
     // whatever is left on it is detached first.
-    const attached = await deps
-        .execDocker([
-            'network',
-            'inspect',
-            '--format',
-            '{{range .Containers}}{{println .Name}}{{end}}',
-            networkName(job),
-        ])
-        .catch(() => ({ stdout: '' }));
-    for (const name of linesOf(attached.stdout)) {
+    // An unreadable inspect detaches nothing; the removal below stays, and the daemon refuses it
+    // while an endpoint remains.
+    const attached = await readDocker(
+        deps.execDocker,
+        ['network', 'inspect', '--format', '{{range .Containers}}{{println .Name}}{{end}}', networkName(job)],
+        'inspecting the attempt network',
+        { parse: nameLines, absentOn: ['network'] }
+    );
+    for (const name of attached.kind === 'value' ? attached.value : []) {
         await deps.execDocker(['network', 'disconnect', '-f', networkName(job), name]).catch(() => undefined);
     }
     await deps.execDocker(['network', 'rm', networkName(job)]).catch(() => undefined);
@@ -174,20 +177,16 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
     // names are attempt-scoped now precisely so no such ambiguity exists. The label pair
     // (job, lease) resolves to this attempt's containers alone; a stale kill that finds
     // nothing has nothing of its own left to kill.
-    const found = await deps
-        .execDocker([
-            'ps',
-            '-aq',
-            '--filter',
-            `label=${JOB_LABEL}=${job.id}`,
-            '--filter',
-            `label=${LEASE_LABEL}=${job.leaseToken}`,
-        ])
-        .catch(() => ({ stdout: '' }));
+    const found = await readDocker(
+        deps.execDocker,
+        ['ps', '-aq', '--filter', `label=${JOB_LABEL}=${job.id}`, '--filter', `label=${LEASE_LABEL}=${job.leaseToken}`],
+        'listing the attempt group',
+        { parse: idLines }
+    );
     // The whole group — the agent, the supervisor and the exporter: this is the hard kill. The
     // supervised one (`dockerStopAgent`) lets the supervisor end the agent and drain the exporter
     // first, and only comes here past its bound.
-    for (const id of linesOf(found.stdout)) {
+    for (const id of found.kind === 'value' ? found.value : []) {
         await deps.execDocker(['kill', id]).catch(() => undefined);
     }
     // The declared services go with the runner: a killed job's database has no reason to
@@ -218,8 +217,9 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
     if (exit === null) return dockerKill(deps, job);
     // The supervisor ended the group: nobody is left to answer its steps.
     if (deps.steps) releaseSteps({ sink: deps.steps }, job);
-    const running = await deps
-        .execDocker([
+    const running = await readDocker(
+        deps.execDocker,
+        [
             'ps',
             '-q',
             '--filter',
@@ -228,10 +228,12 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
             `label=${LEASE_LABEL}=${job.leaseToken}`,
             '--filter',
             `label=${ROLE_LABEL}=${AGENT_CONTAINER}`,
-        ])
-        .catch(() => null);
-    if (running === null) return dockerKill(deps, job);
-    for (const id of linesOf(running.stdout)) {
+        ],
+        'listing the attempt agent',
+        { parse: idLines }
+    );
+    if (running.kind !== 'value') return dockerKill(deps, job);
+    for (const id of running.value) {
         await deps
             .execDocker(['kill', id])
             .catch(() => deps.execDocker(['rm', '-f', id]))

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
+import { jobPath } from './k8s-auxspec.js';
 import { clearKilled } from './k8s-kill.js';
 import {
     createSuspendedWithSecret,
@@ -22,10 +23,21 @@ import {
     type RunnerJobSpec,
     type RunnerPodContainer,
 } from './k8s-podspec.js';
+import { isLease } from './k8s-shapes.js';
 import { containerHardeningField } from './k8s-podfields.js';
 import { GATE_GID, TOOL_UID, workspacePath } from './claim.js';
 import { RELEASE_DEADLINE_MS, toolTreeReleaseBoundedScript, toolTreeReleaseScript, worktreeDir } from './publish.js';
-import { type PodStartState, readImagePullStatus, readJobStatus, startRefusalOf, unpullableImage } from './k8s-poll.js';
+import {
+    asJob,
+    asIdentified,
+    jobOutcome,
+    type PodStartState,
+    readImagePullStatus,
+    readTyped,
+    readTypedList,
+    startRefusalOf,
+    unpullableImage,
+} from './k8s-poll.js';
 import {
     endRunnerJob,
     GROUP_END_WAIT_MS,
@@ -38,7 +50,7 @@ import {
     type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { is2xx, JOB_ID, MS_PER_SECOND, parse, POLL_MS } from './k8s-transport.js';
+import { MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
@@ -98,8 +110,14 @@ export function forgetGroup(deps: K8sDeps, job: BoardJob): TaskGroup | undefined
 
 /** One listed Job, as much of it as names an earlier group of a holder. */
 interface ListedGroupJob {
-    metadata?: { name?: string; uid?: string; labels?: Record<string, string> };
+    metadata: { name: string; uid: string; labels: Record<string, string> };
 }
+
+/** A listed group Job (#869): identified by name and uid, and carrying the lease its pair is named by. */
+const asHolderGroup = (value: unknown): ListedGroupJob | null => {
+    const item = asIdentified<ListedGroupJob>(value);
+    return item && isLease(item.metadata.labels?.[LEASE_LABEL]) ? item : null;
+};
 
 /**
  * Every group a checkout holder can have left: its attempt's runner group, and each reclaim group
@@ -110,15 +128,15 @@ export async function holderGroupsOf(deps: K8sDeps, job: BoardJob, holder: strin
     const path = `${jobsPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(
         `${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`
     )}`;
-    const listed = await deps.request('GET', path).catch(() => null);
-    if (!listed || !is2xx(listed.status)) return null;
+    const listed = await readTypedList<ListedGroupJob>(deps, path, 'listing the holder groups', {
+        entry: asHolderGroup,
+        once: true,
+    });
+    if (listed.kind !== 'value') return null;
     const groups: GroupRef[] = [runnerGroupOf({ ...job, leaseToken: holder })];
-    for (const item of parse<{ items?: ListedGroupJob[] }>(listed.body).items ?? []) {
-        const lease = item.metadata?.labels?.[LEASE_LABEL];
-        const name = item.metadata?.name;
-        const uid = item.metadata?.uid;
-        if (!lease || !JOB_ID.test(lease) || !name || !uid) return null;
-        groups.push({ pair: { ...job, leaseToken: lease }, jobName: name, uids: { job: uid } });
+    for (const item of listed.value) {
+        const { name, uid, labels } = item.metadata;
+        groups.push({ pair: { ...job, leaseToken: labels[LEASE_LABEL]! }, jobName: name, uids: { job: uid } });
     }
     return groups;
 }
@@ -247,16 +265,27 @@ export async function takeGroupDown(deps: K8sDeps, job: BoardJob): Promise<void>
     await releaseClaimAfterGroupEnd(deps, job, { groups: [runnerGroupOf(job, known?.uids)] });
 }
 
-/** Whether the Job ended (or is gone) within `ms`, read at the poll pace. */
-async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<boolean> {
-    const polls = Math.ceil(ms / POLL_MS);
-    for (let poll = 0; poll < polls; poll += 1) {
-        const read = await readJobStatus(deps, name, 'reading the task group').catch(() => null);
-        if (!read || read.kind === 'error') return false;
-        if (read.kind === 'notFound' || read.kind === 'terminal') return true;
+/** How a Job stood at the end of the wait: `unread` when its last read proved nothing (#869). */
+type JobEnd = 'ended' | 'running' | 'unread';
+
+/**
+ * Whether the Job ended (or is gone) within `ms`, read at the poll pace and bounded by the time it
+ * takes as well as the polls. A read that proves nothing is no evidence of either: it waits on and,
+ * as the last word, answers `unread`.
+ */
+async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<JobEnd> {
+    const started = Date.now();
+    let last: JobEnd = 'running';
+    for (let polls = 0; Math.max(polls * POLL_MS, Date.now() - started) < ms; polls += 1) {
+        const read = await readTyped(deps, jobPath(deps.config.k8sNamespace, name), 'reading the task group', {
+            shape: asJob,
+        });
+        if (read.kind === 'absent') return 'ended';
+        if (read.kind === 'value' && jobOutcome(read.value.status) !== 'pending') return 'ended';
+        last = read.kind === 'value' ? 'running' : 'unread';
         await deps.sleep(POLL_MS);
     }
-    return false;
+    return last;
 }
 
 /**
@@ -280,7 +309,8 @@ export async function finishGroup(deps: K8sDeps, job: BoardJob): Promise<void> {
     const known = forgetGroup(deps, job)!;
     await orderFinish(stepHostOf(deps), job).catch(() => undefined);
     // A supervisor-only group ran no agent: its Job is no run to adopt, and ends destructively.
-    const keep = (await jobEndsWithin(deps, runnerName(job), GROUP_END_WAIT_MS)) && known.agent;
+    // An unread Job is never deleted on that: held, kept, and ended again once it reads (`retryUnconfirmed`).
+    const keep = (await jobEndsWithin(deps, runnerName(job), GROUP_END_WAIT_MS)) !== 'running' && known.agent;
     await releaseClaimAfterGroupEnd(deps, job, { groups: [{ ...runnerGroupOf(job, known.uids), keep }] });
 }
 

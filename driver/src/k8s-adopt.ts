@@ -9,14 +9,17 @@ import {
     finishedAgentRun,
     gateEnvSecretName,
     type ListedRunnerJob,
+    runnerJobName,
     runnerName,
     secretName,
 } from './k8s-podspec.js';
+import { isLease, validRunnerSpec } from './k8s-shapes.js';
 import { deleteSecretAcked } from './k8s-teardown.js';
 import {
     ABSENT,
+    asJob,
+    asNamed,
     asPod,
-    isRecord,
     jobOutcome,
     neverStartedLog,
     readList,
@@ -26,16 +29,9 @@ import {
     runnerPodOf,
     timedOutOf,
 } from './k8s-poll.js';
-import {
-    containerStatusOf,
-    HTTP_BAD_REQUEST,
-    HTTP_ERROR_STATUS,
-    HTTP_NOT_FOUND,
-    JOB_ID,
-    POLL_MS,
-} from './k8s-transport.js';
+import { containerStatusOf, HTTP_BAD_REQUEST, HTTP_ERROR_STATUS, HTTP_NOT_FOUND, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
-import { CLAIM_SEQ_MARK, COMMAND_MARK, LEASE_LABEL, SESSION_MARK } from './labels.js';
+import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
 import {
     AdoptionBlocked,
     type AdoptedRun,
@@ -85,24 +81,26 @@ export interface CloseReads {
     attachOpencodeOutcome(deps: K8sDeps, job: BoardJob, startedAt: string, outcome: RunOutcome): Promise<void>;
 }
 
-/** One listed Job as an agent runner of a claim before `job`'s, or null when it is not one. */
+/**
+ * One listed Job as an agent runner of a claim before `job`'s, or null when it is not one. The
+ * markers an adoption orders and recognizes by are valid when the Job is a runner's
+ * (`asListedRunner`): a Job whose command mark is another valid mark is another command's run.
+ */
 function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | null {
-    const lease = item.metadata?.labels?.[LEASE_LABEL];
-    const seq = item.metadata?.annotations?.[CLAIM_SEQ_MARK] ?? '';
-    const status = item.status ?? {};
-    if (!lease || !JOB_ID.test(lease) || !/^\d+$/.test(seq)) return null;
-    // A queued task's command edited since the run (after a handover) makes that run not its own.
-    if (item.metadata?.annotations?.[COMMAND_MARK] !== commandMark(job.command)) return null;
-    const prior = { ...job, leaseToken: lease };
+    const prior = { ...job, leaseToken: item.metadata?.labels?.[LEASE_LABEL] ?? '' };
+    const annotations = item.metadata?.annotations;
     // Only an agent run of the runner itself (its name is the (job, lease) hash, which no aux Job
     // shares): never a supervisor-only group, never a Job its driver suspended (issue #821).
-    if (!agentRunJob(item, prior) || Number(seq) >= job.claimSeq) return null;
-    const annotations = item.metadata.annotations;
+    if (!agentRunJob(item, prior)) return null;
+    // A queued task's command edited since the run (after a handover) makes that run not its own.
+    if (annotations?.[COMMAND_MARK] !== commandMark(job.command)) return null;
+    const claimSeq = Number(annotations?.[CLAIM_SEQ_MARK]);
+    if (claimSeq >= job.claimSeq) return null;
     return {
         prior,
-        claimSeq: Number(seq),
+        claimSeq,
         session: annotations?.[SESSION_MARK] ?? null,
-        status,
+        status: item.status ?? {},
         finished: finishedAgentRun(item, prior),
         kills: killRecordsOf(annotations),
     };
@@ -128,19 +126,24 @@ function groupStateOf(pods: K8sPod[]): 'over' | 'finalizing' | 'unknown' {
     return state;
 }
 
-/** A listed runner Job, as far as its shape is read: an object. */
-const asListedRunner = (value: unknown): ListedRunner | null => (isRecord(value) ? (value as ListedRunner) : null);
-
-/** A read Job: an object with its metadata, and a status object when it carries one. */
-const asReadJob = (value: unknown): ReadJob | null =>
-    isRecord(value) && isRecord(value.metadata) && (value.status === undefined || isRecord(value.status))
-        ? (value as unknown as ReadJob)
-        : null;
-
-interface ReadJob {
-    metadata: { annotations?: Record<string, string> };
-    status?: K8sJobStatus;
-}
+/**
+ * A listed Job of this job, as far as an adoption reads it (#869): one that names itself and its
+ * lease — every Job the driver creates carries one. A Job named as the runner of that lease also
+ * carries the markers an adoption orders and recognizes it by — a claim sequence in digits within the
+ * safe integers, a command mark — and a spec that says whether it runs an agent; without them it
+ * cannot be told apart from "no earlier run", so the adoption is blocked rather than skipping it.
+ */
+const asListedRunner =
+    (job: BoardJob) =>
+    (value: unknown): ListedRunner | null => {
+        const item = asNamed<ListedRunner>(value);
+        const lease = item?.metadata?.labels?.[LEASE_LABEL];
+        if (!item || !isLease(lease)) return null;
+        if (item.metadata?.name !== runnerJobName({ ...job, leaseToken: lease })) return item;
+        const annotations = item.metadata.annotations;
+        const marked = isSeq(annotations?.[CLAIM_SEQ_MARK]) && isCommandMark(annotations?.[COMMAND_MARK]);
+        return marked && validRunnerSpec(item.spec) ? item : null;
+    };
 
 /** A typed read whose `Inconclusive` stands the adoption down: nothing unconfirmed decides a run (#824). */
 async function confirmed<T>(read: Promise<T>): Promise<T> {
@@ -162,7 +165,9 @@ async function runnerPodsOf(deps: K8sDeps, prior: BoardJob): Promise<K8sPod[]> {
 /** The earlier runners of this job, listed with the verdict reads' patience. */
 async function listEarlierRunners(deps: K8sDeps, job: BoardJob): Promise<ListedRunner[]> {
     const path = jobsSelectorPath(deps.config.k8sNamespace, job);
-    const runners = await confirmed(readList(deps, path, 'listing the earlier runner jobs', { entry: asListedRunner }));
+    const runners = await confirmed(
+        readList(deps, path, 'listing the earlier runner jobs', { entry: asListedRunner(job) })
+    );
     return runners === ABSENT ? [] : runners;
 }
 
@@ -232,7 +237,7 @@ async function awaitFinalized(deps: K8sDeps, prior: BoardJob, signal?: AbortSign
 /** One poll of a finalizing runner: over (its terminal status), gone, still running, or unknown (a read that proves nothing). */
 async function finalizingNow(deps: K8sDeps, prior: BoardJob): Promise<Ended | 'gone' | 'running' | 'unknown'> {
     const path = jobPath(deps.config.k8sNamespace, runnerName(prior));
-    const job = await readObject(deps, path, 'reading the finalizing runner', { shape: asReadJob, once: true }).catch(
+    const job = await readObject(deps, path, 'reading the finalizing runner', { shape: asJob, once: true }).catch(
         (e: unknown) => {
             if (e instanceof Inconclusive) return null;
             throw e;

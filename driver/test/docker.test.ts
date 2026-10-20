@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vitest } from 'vitest';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
@@ -55,7 +56,15 @@ import {
     serviceContainerName,
     serviceRunArgs,
 } from '../src/services.js';
-import { type RunnerFiles, startJobServices } from '../src/docker-runner-support.js';
+import {
+    idLines,
+    listOtherAttemptsOrThrow,
+    nameLines,
+    readDocker,
+    type RunnerFiles,
+    startJobServices,
+    tabRows,
+} from '../src/docker-runner-support.js';
 import { createStepBroker, StepChannelClosed, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
@@ -1176,7 +1185,7 @@ describe('the cache watch', () => {
             // this attempt's ps, and answering it with a container id is what lets the mock see
             // the `docker kill` itself.
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
-                return { stdout: 'runner-1\n' };
+                return { stdout: 'a0a0a0a0a001\n' };
             }
             // The hard kill takes the supervisor down with the agent: its exit is the kill's 137.
             if (args[0] === 'wait') return { stdout: '137\n' };
@@ -1658,6 +1667,17 @@ function runningServicesPs(calls: readonly string[][]): { stdout: string } {
     };
 }
 
+/** A container's id as the daemon prints it: 12 lowercase hex characters, derived from its name. */
+const idOf = (name: string): string => createHash('sha256').update(name).digest('hex').slice(0, 12);
+
+/**
+ * A `ps` answer naming one container: the fence's `--format` listing renders each id beside its
+ * lease label — an older attempt's, as every container of a job carries one — a bare `-q`/`-aq`
+ * listing the id alone.
+ */
+const psListing = (args: string[], id: string): string =>
+    args.includes('--format') ? `${id}\taaaaaaaa-1111-4111-8111-aaaaaaaaaaaa\n` : `${id}\n`;
+
 function labelDaemon({
     readout = '{"ok":true,"reason":null}',
     fail,
@@ -1707,12 +1727,15 @@ function labelDaemon({
                     .join('\n'),
             };
         }
-        // The fence's `--format` asks for each object's lease label beside its name, as docker renders it.
-        const withLease = (args[args.indexOf('--format') + 1] ?? '').includes('factory.lease');
+        // The fence's `--format` asks for each object's lease label beside its name or its id, as
+        // docker renders it: a container's id is the daemon's 12 hex characters, never its name.
+        const format = args[args.indexOf('--format') + 1] ?? '';
+        const withLease = format.includes('factory.lease');
+        const first = (name: string): string => (format.startsWith('{{.ID}}') ? idOf(name) : name);
         return {
             stdout: [...entries.entries()]
                 .filter(([, labels]) => filters.every(([key, value]) => labels[key] === value))
-                .map(([name, labels]) => (withLease ? `${name}\t${labels['factory.lease'] ?? ''}` : name))
+                .map(([name, labels]) => (withLease ? `${first(name)}\t${labels['factory.lease'] ?? ''}` : first(name)))
                 .join('\n'),
         };
     };
@@ -1724,7 +1747,10 @@ function labelDaemon({
         }
         if (args[0] === 'ps') return listed(containers, args);
         if (args[0] === 'rm' && args[1] === '-f') {
-            for (const id of args.slice(2)) containers.delete(id);
+            for (const id of args.slice(2)) {
+                containers.delete(id);
+                for (const name of containers.keys()) if (idOf(name) === id) containers.delete(name);
+            }
             return { stdout: '' };
         }
         if (args[0] === 'network' && args[1] === 'ls') return listed(networks, args);
@@ -2665,7 +2691,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             }
             // The attempt's own service: what the fence's lease-labelled listing shows for it.
             if (args[0] === 'ps')
-                return { stdout: args.includes('--format') ? `svc-id-1\t${job.leaseToken}\n` : 'svc-id-1\n' };
+                return { stdout: args.includes('--format') ? `c0ffee000001\t${job.leaseToken}\n` : 'c0ffee000001\n' };
             // The task supervisor finalized: the group's `wait` answers its exit status.
             if (args[0] === 'wait') return { stdout: '0\n' };
             return { stdout: '' };
@@ -2771,14 +2797,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     const ATTEMPT_B = 'bbbbbbb3-3333-4333-8333-333333333333';
     const attemptA: BoardJob = { ...job, leaseToken: ATTEMPT_A };
     const attemptB: BoardJob = { ...job, leaseToken: ATTEMPT_B };
-    const idFor = (token: string): string => `${token.slice(0, 1)}-svc-id`;
-    const touchesB = (args: string[]): boolean => args.some((arg) => arg.includes(ATTEMPT_B) || arg === 'b-svc-id');
+    const idFor = (token: string): string => token.slice(0, 1).repeat(12);
+    const touchesB = (args: string[]): boolean => args.some((arg) => arg.includes(ATTEMPT_B) || arg === 'bbbbbbbbbbbb');
     const psAnswer = (args: string[]): string => {
         const lease = args.find((arg) => arg.startsWith('label=factory.lease='))?.split('=')[2];
         // A lease-scoped ps answers with that attempt's own id; a job-scoped one — the fence's —
         // answers with a neutral leftover, because the fence legitimately removes EVERYTHING the
         // job label covers: that is its role, and it runs before anything is created.
-        return lease ? `${idFor(lease)}\n` : 'stale-leftover\n';
+        return lease ? `${idFor(lease)}\n` : psListing(args, 'a6a6a6a6a6a6');
     };
 
     it('creates the job network, starts the claim’s service, and joins the runner to it', async () => {
@@ -2889,12 +2915,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const createAt = exec.mock.calls.findIndex((call) => call[0][0] === 'network' && call[0][1] === 'create');
         const afterSetup = exec.mock.calls.slice(createAt).map((call) => call[0]);
         expect(afterSetup).not.toContainEqual(['network', 'rm', networkName(job)]);
-        expect(afterSetup).not.toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(afterSetup).not.toContainEqual(['rm', '-f', 'c0ffee000001']);
 
         const releasedAt = exec.mock.calls.length;
         await runner.releaseServices(job);
         const released = exec.mock.calls.slice(releasedAt).map((call) => call[0]);
-        expect(released).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(released).toContainEqual(['rm', '-f', 'c0ffee000001']);
         expect(released).toContainEqual(['network', 'rm', networkName(job)]);
     });
 
@@ -2967,18 +2993,20 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     it("run()'s fence spares this attempt's own containers and networks", async () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (args[0] === 'ps' && args.includes('--format')) {
-                return { stdout: `own-1\t${job.leaseToken}\nold-1\tolder-lease\n` };
+                return {
+                    stdout: `b0b0b0b0b001\t${job.leaseToken}\nb0b0b0b0b002\taaaaaaaa-1111-4111-8111-aaaaaaaaaaaa\n`,
+                };
             }
             if (args[0] === 'network' && args[1] === 'ls') {
-                return { stdout: `own-net\t${job.leaseToken}\nold-net\tolder-lease\n` };
+                return { stdout: `own-net\t${job.leaseToken}\nold-net\taaaaaaaa-1111-4111-8111-aaaaaaaaaaaa\n` };
             }
             return { stdout: '' };
         });
         await bareServicesRunner(exec, spawnRecording('', 0).fn).run(job, { id: SESSION, resume: false });
 
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['rm', '-f', 'old-1']);
-        expect(calls).not.toContainEqual(['rm', '-f', 'own-1']);
+        expect(calls).toContainEqual(['rm', '-f', 'b0b0b0b0b002']);
+        expect(calls).not.toContainEqual(['rm', '-f', 'b0b0b0b0b001']);
         expect(calls).toContainEqual(['network', 'rm', 'old-net']);
         expect(calls).not.toContainEqual(['network', 'rm', 'own-net']);
     });
@@ -2994,7 +3022,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // container's rm catches, one layer out, and for the same reason.
         expect(firstPsAt).toBeGreaterThanOrEqual(0);
         expect(firstPsAt).toBeLessThan(createAt);
-        expect(calls.slice(0, createAt).some((a) => a[0] === 'rm' && a[1] === '-f' && a[2] === 'svc-id-1')).toBe(true);
+        expect(calls.slice(0, createAt).some((a) => a[0] === 'rm' && a[1] === '-f' && a[2] === 'c0ffee000001')).toBe(
+            true
+        );
     });
 
     it('sends a refused service to the lease, after tearing down what did start', async () => {
@@ -3005,7 +3035,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         );
         expect(seen).toHaveLength(0);
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls).toContainEqual(['rm', '-f', 'c0ffee000001']);
         expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
     });
 
@@ -3024,8 +3054,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             '--filter',
             `label=factory.lease=${job.leaseToken}`,
         ]);
-        expect(calls).toContainEqual(['kill', 'svc-id-1']);
-        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls).toContainEqual(['kill', 'c0ffee000001']);
+        expect(calls).toContainEqual(['rm', '-f', 'c0ffee000001']);
         expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
     });
 
@@ -3043,7 +3073,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'ps') return { stdout: psListing(args, 'c0ffee000001') };
             return { stdout: '' };
         });
         const { fn, seen } = spawnRecording('ran\n', 0);
@@ -3332,7 +3362,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 return { stdout: '' };
             }
             if (args[0] === 'run' && args.includes('--network-alias')) return { stdout: '' };
-            if (args[0] === 'ps') return { stdout: 'svc-id-1\n' };
+            if (args[0] === 'ps') return { stdout: psListing(args, 'c0ffee000001') };
             if (args[0] === 'network' && args[1] === 'rm' && armed) await networkRmGate;
             return { stdout: '' };
         });
@@ -3356,7 +3386,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         releaseNetworkRm!();
         await expect(pending).rejects.toThrow(/ENOENT/);
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(['rm', '-f', 'svc-id-1']);
+        expect(calls).toContainEqual(['rm', '-f', 'c0ffee000001']);
         expect(calls).toContainEqual(['network', 'rm', networkName(job)]);
     });
 
@@ -3379,7 +3409,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 // error-path teardown, held so the close handler gets its turn while the
                 // teardown is still in flight.
                 if (psCount === 3) await teardownPsGate;
-                return { stdout: 'svc-id-1\n' };
+                return { stdout: psListing(args, 'c0ffee000001') };
             }
             return { stdout: '' };
         });
@@ -5324,7 +5354,7 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
                 return Promise.resolve({ stdout: agentPs });
             // The whole group's listing; the service teardown's own listing finds no services.
             if (args[0] === 'ps' && !args.includes('label=factory.service'))
-                return Promise.resolve({ stdout: 'agent-id\nsupervisor-id\nexporter-id\n' });
+                return Promise.resolve({ stdout: 'a1a1a1a1a1a1\na2a2a2a2a2a2\na3a3a3a3a3a3\n' });
             return Promise.resolve({ stdout: '' });
         };
         return { exec, calls };
@@ -5332,11 +5362,11 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
     const kills = (calls: string[][]) => calls.filter((args) => args[0] === 'kill');
 
     it('hard-kills the still-running agent, and only it, when the supervisor exited non-zero', async () => {
-        const { exec, calls } = daemon('70', 'agent-id\n');
+        const { exec, calls } = daemon('70', 'a1a1a1a1a1a1\n');
 
         await dockerRunner(exec).stopAgent(job);
 
-        expect(kills(calls)).toEqual([['kill', 'agent-id']]);
+        expect(kills(calls)).toEqual([['kill', 'a1a1a1a1a1a1']]);
         const listed = calls.find((args) => args[0] === 'ps' && args.includes('label=factory.role=agent'));
         expect(listed).toEqual(
             expect.arrayContaining([`label=factory.job=${job.id}`, `label=factory.lease=${job.leaseToken}`])
@@ -5353,23 +5383,23 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
 
     // Never throws, like the kubernetes twin: a lookup the daemon refused falls back to the hard kill.
     it('falls back to the hard kill of the whole group when the agent lookup fails', async () => {
-        const { exec, calls } = daemon('70', 'agent-id\n', (args) => args.includes('label=factory.role=agent'));
+        const { exec, calls } = daemon('70', 'a1a1a1a1a1a1\n', (args) => args.includes('label=factory.role=agent'));
 
         await dockerRunner(exec).stopAgent(job);
 
         expect(kills(calls)).toEqual([
-            ['kill', 'agent-id'],
-            ['kill', 'supervisor-id'],
-            ['kill', 'exporter-id'],
+            ['kill', 'a1a1a1a1a1a1'],
+            ['kill', 'a2a2a2a2a2a2'],
+            ['kill', 'a3a3a3a3a3a3'],
         ]);
     });
 
     it('force-removes the agent when its kill fails', async () => {
-        const { exec, calls } = daemon('70', 'agent-id\n', (args) => args[0] === 'kill');
+        const { exec, calls } = daemon('70', 'a1a1a1a1a1a1\n', (args) => args[0] === 'kill');
 
         await dockerRunner(exec).stopAgent(job);
 
-        expect(calls).toContainEqual(['rm', '-f', 'agent-id']);
+        expect(calls).toContainEqual(['rm', '-f', 'a1a1a1a1a1a1']);
     });
 });
 
@@ -5393,7 +5423,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
      * The fence's own listing: every container of the job by id and lease — the read run's runner
      * and exporter, and an older attempt's leftover.
      */
-    const FENCE_PS = `runner-id\t${job.leaseToken}\nexporter-id\t${job.leaseToken}\nolder-id\t${OLDER}\n`;
+    const FENCE_PS = `a4a4a4a4a4a4\t${job.leaseToken}\na3a3a3a3a3a3\t${job.leaseToken}\na5a5a5a5a5a5\t${OLDER}\n`;
     /** The fence's volume listing: the read run's mailbox, and the older attempt's. */
     const FENCE_VOLUMES = `read-mailbox\t${job.leaseToken}\nolder-mailbox\t${OLDER}\n`;
 
@@ -5470,10 +5500,10 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(adopted!.outcome.output).toContain('did the work');
         expect(calls[0]).toEqual(expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`, 'status=exited']));
         const read = calls.findIndex((args) => args[0] === 'logs');
-        const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('older-id'));
+        const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('a5a5a5a5a5a5'));
         expect(read).toBeGreaterThanOrEqual(0);
         expect(swept).toBeGreaterThan(read);
-        expect(removals(calls)).toEqual(['older-id', 'older-mailbox']);
+        expect(removals(calls)).toEqual(['a5a5a5a5a5a5', 'older-mailbox']);
     });
 
     it('keeps the read run through every later fence of the adopting attempt', async () => {
@@ -5485,8 +5515,8 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         await runner.probeTree(adopter, new AbortController().signal).catch(() => null);
 
         expect(calls.some((args) => args[0] === 'ps' && !args.includes('status=exited'))).toBe(true);
-        expect(removals(calls)).not.toContain('runner-id');
-        expect(removals(calls)).not.toContain('exporter-id');
+        expect(removals(calls)).not.toContain('a4a4a4a4a4a4');
+        expect(removals(calls)).not.toContain('a3a3a3a3a3a3');
         expect(removals(calls)).not.toContain('read-mailbox');
     });
 
@@ -5498,7 +5528,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             .catch(() => null);
 
         expect(removals(calls)).toEqual(
-            expect.arrayContaining(['runner-id', 'exporter-id', 'older-id', 'read-mailbox', 'older-mailbox'])
+            expect.arrayContaining(['a4a4a4a4a4a4', 'a3a3a3a3a3a3', 'a5a5a5a5a5a5', 'read-mailbox', 'older-mailbox'])
         );
     });
 
@@ -5654,6 +5684,17 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         await expect(dockerRunner(refusingDiscovery(base, 99), { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(
             AdoptionBlocked
         );
+        expect(removals(calls)).toEqual([]);
+    });
+
+    // #869: an earlier runner whose discovery labels are corrupt is no "nothing to adopt" either.
+    it.each([
+        ['a corrupt claim sequence', listing('corrupt')],
+        ['a lease label that is no lease', listing('1', 'corrupt', 'factory-runner-x')],
+    ])('stands down, removing nothing, when an exited runner is listed with %s', async (_name, ps) => {
+        const { exec, calls, logs } = daemon(ps);
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
         expect(removals(calls)).toEqual([]);
     });
 
@@ -5820,7 +5861,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(adopted?.outcome).toMatchObject({ started: true, ...fields });
         expect(adopted?.outcome).not.toHaveProperty('infraLoss');
         // The record is the earlier attempt's, kept with the read run for a later adoption (#821).
-        expect(calls.some((args) => args[0] === 'rm' && args.includes('runner-id'))).toBe(false);
+        expect(calls.some((args) => args[0] === 'rm' && args.includes('a4a4a4a4a4a4'))).toBe(false);
     });
 
     it('adopts a supervised stop its lost driver recorded for a full spool, with the spool fault', async () => {
@@ -6043,7 +6084,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
             }
             if (args[0] === 'inspect') return { stdout: '{"Status":"exited"}' };
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease')))
-                return { stdout: 'runner-1\n' };
+                return { stdout: 'a0a0a0a0a001\n' };
             return { stdout: '' };
         }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
         const runner = dockerRunner(exec, {
@@ -6146,5 +6187,106 @@ describe('how a refused group start ends, on docker (the startup conformance tab
             );
         expect((thrown as Error).message).toContain('EACCES');
         expect(startupDecisionOf(thrown)).toBe('unclassified');
+    });
+});
+
+describe('readDocker and its listing parsers (#869)', () => {
+    const answering = (stdout: string) => async (): Promise<{ stdout: string }> => ({ stdout });
+    const refusing =
+        (stderr: string, extra: object = {}) =>
+        async (): Promise<{ stdout: string }> => {
+            throw Object.assign(new Error('Command failed'), { stderr, ...extra });
+        };
+    const read = <T>(
+        exec: () => Promise<{ stdout: string }>,
+        parse: (stdout: string) => T | null,
+        absentOn?: readonly string[]
+    ) => readDocker(exec, ['volume', 'inspect', 'x'], 'reading x', { parse, ...(absentOn ? { absentOn } : {}) });
+
+    it('reads a refused exec as inconclusive, never as an empty list', async () => {
+        const got = await read(refusing('Error response from daemon: 503'), nameLines);
+        expect(got).toEqual({ kind: 'inconclusive', reason: 'reading x: Command failed' });
+    });
+
+    it('reads a timed-out exec as inconclusive', async () => {
+        const got = await read(refusing('', { killed: true, signal: 'SIGTERM' }), nameLines);
+        expect(got.kind).toBe('inconclusive');
+    });
+
+    it('reads the daemon\'s own "no such volume" as absent only for a kind it was told to expect', async () => {
+        const gone = refusing('Error: No such volume: x');
+        expect(await read(gone, nameLines, ['volume'])).toEqual({ kind: 'absent' });
+        expect((await read(gone, nameLines)).kind).toBe('inconclusive');
+        expect((await read(refusing('Error: No such container: x'), nameLines, ['volume'])).kind).toBe('inconclusive');
+    });
+
+    it('reads an answer that is no listing as inconclusive', async () => {
+        const html = '<html><body>502 Bad Gateway</body></html>';
+        expect((await read(answering(html), nameLines)).kind).toBe('inconclusive');
+        expect((await read(answering(html), idLines)).kind).toBe('inconclusive');
+    });
+
+    it('reads an empty answer as the empty list', async () => {
+        expect(await read(answering(''), nameLines)).toEqual({ kind: 'value', value: [] });
+        expect(await read(answering('\n'), idLines)).toEqual({ kind: 'value', value: [] });
+    });
+
+    it('reads names and ids line by line', async () => {
+        expect(await read(answering('factory-a\nfactory_b.c\n'), nameLines)).toEqual({
+            kind: 'value',
+            value: ['factory-a', 'factory_b.c'],
+        });
+        expect(await read(answering('0123456789ab\n' + 'f'.repeat(64) + '\n'), idLines)).toEqual({
+            kind: 'value',
+            value: ['0123456789ab', 'f'.repeat(64)],
+        });
+    });
+
+    it.each(['null', 'agent-id', '0123456789a', '0123456789AB', `${'f'.repeat(65)}`, '0123456789ab extra'])(
+        'refuses %s as a container id, so it is never a kill or rm target',
+        (line) => {
+            expect(idLines(`0123456789ab\n${line}\n`)).toBeNull();
+        }
+    );
+
+    it.each(['-leading', 'a b', '<html>', '{"x":1}', 'a,b'])('refuses %s as a name', (line) => {
+        expect(nameLines(`ok\n${line}\n`)).toBeNull();
+    });
+
+    it('reads tab rows of exactly the asked fields, an empty label included', async () => {
+        const two = tabRows(2);
+        expect(await read(answering('alpha\tlease-1\nbeta\t\n'), two)).toEqual({
+            kind: 'value',
+            value: [
+                ['alpha', 'lease-1'],
+                ['beta', ''],
+            ],
+        });
+        expect((await read(answering('alpha\n'), two)).kind).toBe('inconclusive');
+        expect((await read(answering('alpha\tb\tc\n'), two)).kind).toBe('inconclusive');
+        expect((await read(answering('<html>\t502\n'), two)).kind).toBe('inconclusive');
+    });
+
+    // #869: the lease is what decides a row is "another attempt's", and so a delete target.
+    describe('the fence listings', () => {
+        const OLD = 'aaaaaaaa-1111-4111-8111-111111111111';
+        const KEPT = { leaseToken: 'bbbbbbbb-2222-4222-8222-222222222222', grammar: /^[0-9a-f]{12,64}$/ };
+        const list = (stdout: string) => listOtherAttemptsOrThrow(async () => ({ stdout }), ['ps'], 'listing', KEPT);
+
+        it('names the rows of other attempts by their lease', async () => {
+            expect(await list(`abcdef123456\t${OLD}\nabcdef123457\t${KEPT.leaseToken}\n`)).toEqual(['abcdef123456']);
+        });
+
+        it.each([
+            ['a lease that is no lease', 'abcdef123456\tcorrupt\n'],
+            ['an empty lease', 'abcdef123456\t\n'],
+            ['a good row beside a corrupt one', `abcdef123456\t${OLD}\nabcdef123457\tcorrupt\n`],
+        ])('reads %s as no listing, never as an attempt to delete', async (_name, stdout) => {
+            await expect(list(stdout)).rejects.toThrow(/listing/);
+        });
+    });
+
+    it('reads a tab row whose first field is not of the asked grammar as inconclusive', () => {
+        expect(tabRows(2, /^[0-9a-f]{12,64}$/)('null\tlease\n')).toBeNull();
     });
 });

@@ -25,7 +25,7 @@ import {
     parseDeadServicePods,
     parseServicePods,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps } from './k8s-transport.js';
 import {
     declaredServiceSpecs,
     forgetDeclaredServices,
@@ -33,6 +33,7 @@ import {
     plannedServices,
     recordDeclaredServices,
 } from './services.js';
+import { asIdentified, readTypedList } from './k8s-poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import type { ServiceSpec } from './services.js';
 
@@ -49,16 +50,13 @@ import type { ServiceSpec } from './services.js';
  * next attempt's fence's business.
  */
 async function sweepFleetKind(deps: K8sDeps, listPath: string, basePath: string): Promise<void> {
-    let response: K8sResponse;
-    try {
-        response = await deps.request('GET', listPath);
-    } catch {
-        return;
-    }
-    if (response.status >= HTTP_ERROR_STATUS) return;
-    const items = parse<{ items?: { metadata?: { name?: string } }[] }>(response.body).items ?? [];
-    for (const item of items) {
-        if (!item.metadata?.name) continue;
+    const read = await readTypedList<{ metadata: { name: string } }>(deps, listPath, 'listing the service fleet', {
+        entry: asIdentified,
+        once: true,
+    });
+    // Nothing is deleted on an unreadable or absent list: the next attempt's fence is the janitor.
+    if (read.kind !== 'value') return;
+    for (const item of read.value) {
         await deps.request('DELETE', `${basePath}/${item.metadata.name}`).catch(() => undefined);
     }
 }

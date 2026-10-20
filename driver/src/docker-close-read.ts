@@ -22,7 +22,15 @@ import {
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
 import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
-import { type ExecDocker, linesOf, noSuchObject, type Sleep, type Spawn, readUtf8 } from './docker-runner-support.js';
+import {
+    type ExecDocker,
+    noSuchObject,
+    readDocker,
+    tabRows,
+    type Sleep,
+    type Spawn,
+    readUtf8,
+} from './docker-runner-support.js';
 import { supervisorLossOf, supervisorName, waitSupervisorExit } from './docker-group.js';
 import { readDockerKills } from './docker-teardown.js';
 import { adoptedVerdictOf, infraLossOf, killEndsGroup, reportFinalized, reportVerdictOf } from './termination.js';
@@ -47,7 +55,7 @@ import {
     reportTail,
 } from './runner.js';
 import { OPENCODE } from './executors.js';
-import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SESSION_MARK } from './labels.js';
+import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, JOB_LABEL, LEASE_LABEL, SESSION_MARK } from './labels.js';
 
 /**
  * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
@@ -205,34 +213,53 @@ export async function tickCacheWatch(
 }
 
 /** The fields of each listed container the adoption reads, tab-separated. */
-const ADOPT_FORMAT = [LEASE_LABEL, CLAIM_SEQ_MARK, SESSION_MARK, COMMAND_MARK].reduce(
-    (format, label) => `${format}\t{{.Label "${label}"}}`,
-    '{{.Names}}'
-);
+const ADOPT_LABELS = [LEASE_LABEL, CLAIM_SEQ_MARK, SESSION_MARK, COMMAND_MARK];
+const ADOPT_FORMAT = ADOPT_LABELS.reduce((format, label) => `${format}\t{{.Label "${label}"}}`, '{{.Names}}');
+
+/**
+ * A listed container's discovery labels (#869). A label it carries must be well formed — a lease, a
+ * claim sequence in digits within the safe integers — or skipping it would read an earlier run as no
+ * run. The runner itself (the name `containerName` gives its lease) must carry all of them: its lease
+ * label the one its name spells, a claim sequence and a command mark. A container with neither
+ * label is no runner. Throws when the listing cannot be trusted; true for the runner of `job`.
+ */
+function isRunnerRow(job: BoardJob, [name, lease, seq, , command]: string[]): boolean {
+    const label = `listing the exited earlier runners: ${name}`;
+    if ((lease !== '' && !UUID_SHAPE.test(lease!)) || (seq !== '' && !isSeq(seq))) {
+        throw new Error(`${label} carries a malformed lease or claim sequence`);
+    }
+    const namedLease = name!.startsWith(`factory-job-${job.id}-`) ? name!.slice(`factory-job-${job.id}-`.length) : '';
+    if (!UUID_SHAPE.test(namedLease)) return false;
+    if (lease !== namedLease || !isSeq(seq) || !isCommandMark(command)) {
+        throw new Error(`${label} is a runner without its lease, claim sequence or command mark`);
+    }
+    return true;
+}
 
 /** The newest EXITED runner container of an earlier claim of this job, by claim sequence; null when none. */
 async function exitedEarlierRunner(
     execDocker: ExecDocker,
     job: BoardJob
 ): Promise<{ prior: BoardJob; claimSeq: number; session: string | null } | null> {
-    const listed = await execDocker([
-        'ps',
-        '-a',
-        '--filter',
-        `label=${JOB_LABEL}=${job.id}`,
-        '--filter',
-        'status=exited',
-        '--format',
-        ADOPT_FORMAT,
-    ]);
+    // A listing that is refused or is no rows of five fields throws: it is never "no earlier run",
+    // which would hand the exited run to a fresh run's fence to remove unread (#869).
+    const listed = await readDocker(
+        execDocker,
+        ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--filter', 'status=exited', '--format', ADOPT_FORMAT],
+        'listing the exited earlier runners',
+        { parse: tabRows(ADOPT_LABELS.length + 1) }
+    );
+    if (listed.kind !== 'value') {
+        throw new Error(listed.kind === 'inconclusive' ? listed.reason : 'listing the exited earlier runners: absent');
+    }
     let newest: { prior: BoardJob; claimSeq: number; session: string | null } | null = null;
-    for (const line of linesOf(listed.stdout)) {
-        const [name, lease = '', seq = '', session = '', command = ''] = line.split('\t');
-        // A queued task's command edited since the run (after a handover) makes that run not its own.
-        if (!UUID_SHAPE.test(lease) || !/^\d+$/.test(seq) || command !== commandMark(job.command)) continue;
+    for (const row of listed.value) {
+        const [name = '', lease = '', seq = '', session = '', command = ''] = row;
+        if (!isRunnerRow(job, [name, lease, seq, session, command])) continue;
+        // A queued task's command edited since the run (after a handover) makes that run not its own:
+        // another valid mark, unlike an unreadable one (thrown above).
+        if (command !== commandMark(job.command)) continue;
         const prior = { ...job, leaseToken: lease };
-        // Only the runner itself: a service, gate or exporter container carries a name of its own.
-        if (name !== containerName(prior)) continue;
         const claimSeq = Number(seq);
         if (claimSeq >= job.claimSeq || (newest && newest.claimSeq >= claimSeq)) continue;
         newest = { prior, claimSeq, session: session || null };

@@ -1,7 +1,17 @@
 import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
+import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import {
+    isCount,
+    nonEmpty,
+    optionalStrings,
+    optionalTimestamp,
+    stringsOnly,
+    validContainerStatuses,
+    validPodConditions,
+} from './k8s-shapes.js';
 import { RunnerKilled, vanishedRunner, wasKilled } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
@@ -15,14 +25,15 @@ import {
     HTTP_OK_STATUS,
     HTTP_SERVER_ERROR_STATUS,
     HTTP_TOO_MANY_REQUESTS,
-    is2xx,
     isMalformedRequest400,
+    isRecord,
     livePod,
     livePodOfItems,
     LOG_TAIL_LINES,
     parse,
     POLL_MAX_CONSECUTIVE_FAILURES,
     POLL_MS,
+    readAnswer,
     refusal,
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sPodList, K8sResponse } from './k8s-transport.js';
@@ -88,58 +99,135 @@ export async function readVerdict(deps: K8sDeps, path: string, what: string, fai
 /** The answer of a typed read whose object the apiserver confirmed absent (404). */
 export const ABSENT = Symbol('absent');
 
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-    typeof value === 'object' && value !== null && !Array.isArray(value);
-
-/** A listed pod, as far as its shape is read: an object whose status, when it carries one, is one too. */
-export const asPod = (value: unknown): K8sPod | null =>
-    isRecord(value) && (value.status === undefined || isRecord(value.status)) ? (value as K8sPod) : null;
+/**
+ * A listed or read object that names itself, as far as a decision on it reads (#869): a `metadata`
+ * with a non-empty string `name`; `uid` a non-empty string, `labels` and `annotations` string maps
+ * and `creationTimestamp` an RFC 3339 time when present; a `status`, when present, a record whose Job
+ * counters are counts. One entry that is not this makes the whole read inconclusive; only a
+ * well-formed entry out of scope is skipped by its caller.
+ */
+export function asNamed<T>(value: unknown): T | null {
+    if (!isRecord(value) || !isRecord(value.metadata)) return null;
+    const { name, uid, labels, annotations, creationTimestamp } = value.metadata;
+    if (!nonEmpty(name) || (uid !== undefined && !nonEmpty(uid)) || !optionalTimestamp(creationTimestamp)) return null;
+    if (labels !== undefined && !stringsOnly(labels)) return null;
+    if (annotations !== undefined && !stringsOnly(annotations)) return null;
+    if (value.status !== undefined && (!isRecord(value.status) || !validCounters(value.status))) return null;
+    return value as T;
+}
 
 /**
- * One GET as a typed read (#824): the value `shape` makes of the body, `ABSENT` on a 404, or an
- * `Inconclusive` throw — a transport failure past the verdict reads' retries (`once`: no retry), a
- * non-2xx answer, or a body that is not JSON or not the shape asked for. Never `{}` or `null`.
+ * `asNamed` for a listing a delete is decided on (#869): the entry also carries a non-empty `uid`,
+ * which the apiserver always sets and the delete's precondition names. An entry without one makes
+ * the whole read inconclusive — it is never deleted unconditionally.
  */
-export async function readObject<T>(
+export function asIdentified<T>(value: unknown): T | null {
+    const item = asNamed<{ metadata: { uid?: string } }>(value);
+    return item && nonEmpty(item.metadata.uid) ? (value as T) : null;
+}
+
+/**
+ * A listed or read pod (#869): named, with its deletion time, phase, words, conditions and every
+ * container status — named, with a typed state — in the grammar `k8s-shapes.ts` gives them. A pod
+ * with no `status` yet is a pod that has not started: no container evidence, which every consumer
+ * reads as "nothing seen".
+ */
+export const asPod = (value: unknown): K8sPod | null => {
+    const pod = asNamed<K8sPod & { metadata: { deletionTimestamp?: unknown } }>(value);
+    if (pod === null || !optionalTimestamp(pod.metadata.deletionTimestamp)) return null;
+    const { status } = pod;
+    if (status === undefined) return pod;
+    const { phase, reason, message, containerStatuses, conditions } = status;
+    if (!optionalStrings(phase, reason, message) || !validPodConditions(conditions)) return null;
+    return validContainerStatuses(containerStatuses) ? pod : null;
+};
+
+/**
+ * A Job's `succeeded`, `failed` and `active` counts, each a non-negative integer when present, and
+ * its `conditions` a list of typed records when present (#869).
+ */
+const validCounters = (status: Record<string, unknown>): boolean =>
+    (status.conditions === undefined ||
+        (Array.isArray(status.conditions) &&
+            status.conditions.every((c) => isRecord(c) && typeof c.type === 'string'))) &&
+    ['succeeded', 'failed', 'active'].every((field) => status[field] === undefined || isCount(status[field]));
+
+/**
+ * A read Job: an identifiable object (`metadata.uid`, which the apiserver always sets and a
+ * replacement under the same name never shares) whose `status` is a record too — `{}` for a fresh
+ * Job — with valid counts (#869). A Job that cannot say which incarnation it is proves nothing about
+ * one: the confirmation, the finish and the retry read it, and none may take it for ours.
+ */
+export interface ReadJobObject {
+    metadata: { uid: string; annotations?: Record<string, string> };
+    status: K8sJobStatus;
+}
+
+export const asJob = (value: unknown): ReadJobObject | null => {
+    if (!isRecord(value) || !isRecord(value.status) || !validCounters(value.status)) return null;
+    if (!isRecord(value.metadata) || !nonEmpty(value.metadata.uid)) return null;
+    const { annotations } = value.metadata;
+    return annotations === undefined || stringsOnly(annotations) ? (value as unknown as ReadJobObject) : null;
+};
+
+/**
+ * One GET as a typed read (#869): the value `shape` makes of the body, `absent` on a 404, or
+ * `inconclusive` — a transport failure past the verdict reads' retries (`once`: no retry), a
+ * non-2xx answer, or a body that is not JSON, not a `Status`, or not the shape asked for. Never
+ * `{}` or `null`, and never a throw.
+ */
+export async function readTyped<T>(
     deps: K8sDeps,
     path: string,
     what: string,
     { shape, once = false }: { shape: (value: unknown) => T | null; once?: boolean }
-): Promise<T | typeof ABSENT> {
+): Promise<Read<T>> {
     let response: K8sResponse;
     try {
         response = once ? await deps.request('GET', path) : await readVerdict(deps, path, what);
     } catch (e) {
-        throw new Inconclusive(`${what}: ${(e as Error).message}`);
+        return { kind: 'inconclusive', reason: `${what}: ${(e as Error).message}` };
     }
-    if (response.status === HTTP_NOT_FOUND) return ABSENT;
-    if (!is2xx(response.status)) {
-        throw new Inconclusive(`${what} answered ${response.status}`);
-    }
-    let body: unknown;
-    try {
-        body = JSON.parse(response.body);
-    } catch {
-        throw new Inconclusive(`${what} answered a body that is not JSON`);
-    }
-    const value = shape(body);
-    if (value === null) throw new Inconclusive(`${what} answered an unexpected shape`);
-    return value;
+    return readAnswer(response, what, shape);
 }
 
-/** `readObject` of a list: every entry `entry` accepts, or `Inconclusive` for a body with no list or any entry it refuses. */
-export function readList<T>(
+/** `readTyped` of a list: every entry `entry` accepts, or inconclusive for a body with no list or any entry it refuses. */
+export function readTypedList<T>(
     deps: K8sDeps,
     path: string,
     what: string,
     { entry, once = false }: { entry: (value: unknown) => T | null; once?: boolean }
-): Promise<T[] | typeof ABSENT> {
+): Promise<Read<T[]>> {
     const shape = (body: unknown): T[] | null => {
         if (!isRecord(body) || !Array.isArray(body.items)) return null;
         const items = body.items.map(entry);
         return items.every((item) => item !== null) ? (items as T[]) : null;
     };
-    return readObject(deps, path, what, { shape, once });
+    return readTyped(deps, path, what, { shape, once });
+}
+
+/** `readTyped` on the throwing channel (#824): `ABSENT` on a 404, an `Inconclusive` throw for a read that proves nothing. */
+export async function readObject<T>(
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    options: { shape: (value: unknown) => T | null; once?: boolean }
+): Promise<T | typeof ABSENT> {
+    const read = await readTyped(deps, path, what, options);
+    if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
+    return read.kind === 'absent' ? ABSENT : read.value;
+}
+
+/** `readObject` of a list. */
+export async function readList<T>(
+    deps: K8sDeps,
+    path: string,
+    what: string,
+    options: { entry: (value: unknown) => T | null; once?: boolean }
+): Promise<T[] | typeof ABSENT> {
+    const read = await readTypedList(deps, path, what, options);
+    if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
+    return read.kind === 'absent' ? ABSENT : read.value;
 }
 
 /**

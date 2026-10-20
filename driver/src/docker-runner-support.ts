@@ -12,12 +12,12 @@ import type { writeFile, rm } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
-import type { BoardJob } from './board.js';
+import { type BoardJob, UUID_SHAPE } from './board.js';
 import type { DriverConfig } from './config.js';
 import { containerName, dockerArgs, parseDockerServicePs } from './docker.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from './telemetry-config.js';
-import type { RunOutcome, RunSession } from './runner.js';
+import type { Read, RunOutcome, RunSession } from './runner.js';
 import {
     declaredServiceSpecs,
     serviceContainerName,
@@ -155,14 +155,65 @@ function refusalText(e: unknown): string {
     return `${stderr} ${err.message ?? ''}`;
 }
 
-/** Lists names by label, or throws `${what}: <the daemon's own message>`. */
-export async function listByLabelOrThrow(execDocker: ExecDocker, args: string[], what: string): Promise<string[]> {
+/** A container's id as `docker ps -q` and `{{.ID}}` answer it: lowercase hex, 12 characters short or 64 long. */
+export const CONTAINER_ID = /^[0-9a-f]{12,64}$/;
+
+/** A docker object's name (`{{.Names}}`, a network or volume name): never prose, HTML or JSON. */
+export const DOCKER_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
+
+/**
+ * A docker read's answer (#869): what the daemon said, parsed by the listing's own parser. A
+ * refusal, and an answer the parser cannot read, are `inconclusive` — never an empty list; only
+ * the daemon's own `no such <kind>` for a kind in `absentOn` is `absent`.
+ */
+export async function readDocker<T>(
+    execDocker: ExecDocker,
+    args: string[],
+    what: string,
+    { parse, absentOn }: { parse: (stdout: string) => T | null; absentOn?: readonly string[] }
+): Promise<Read<T>> {
+    let stdout: string;
     try {
-        return linesOf((await execDocker(args)).stdout);
+        ({ stdout } = await execDocker(args));
     } catch (e) {
-        throw new Error(`${what}: ${(e as Error).message}`);
+        if (absentOn && noSuchObject(e, absentOn)) return { kind: 'absent' };
+        return { kind: 'inconclusive', reason: `${what}: ${(e as Error).message}` };
     }
+    const value = typeof stdout === 'string' ? parse(stdout) : null;
+    return value === null
+        ? { kind: 'inconclusive', reason: `${what}: the daemon answered what is not the listing` }
+        : { kind: 'value', value };
 }
+
+/** A listing's non-blank lines, whole (a tab-separated row may end in an empty field). */
+const rowsOf = (stdout: string): string[] =>
+    stdout
+        .split('\n')
+        .map((line) => line.replace(/\r$/, ''))
+        .filter((line) => line.trim() !== '');
+
+/** The ids one per line, `[]` for an empty answer; null when any line is not an id. */
+export const idLines = (stdout: string): string[] | null => {
+    const ids = rowsOf(stdout).map((line) => line.trim());
+    return ids.every((id) => CONTAINER_ID.test(id)) ? ids : null;
+};
+
+/** The names one per line, `[]` for an empty answer; null when any line is not a name. */
+export const nameLines = (stdout: string): string[] | null => {
+    const names = rowsOf(stdout).map((line) => line.trim());
+    return names.every((name) => DOCKER_NAME.test(name)) ? names : null;
+};
+
+/**
+ * Tab-separated rows of exactly `fields` fields whose first is an id of `grammar`; the rest may be
+ * empty (a label the object lacks). Null when any row has another shape.
+ */
+export const tabRows =
+    (fields: number, grammar: RegExp = DOCKER_NAME) =>
+    (stdout: string): string[][] | null => {
+        const rows = rowsOf(stdout).map((line) => line.split('\t'));
+        return rows.every((row) => row.length === fields && grammar.test(row[0] ?? '')) ? rows : null;
+    };
 
 /** A `--format` listing each object with its lease label, tab-separated. */
 export const LEASE_FORMAT = (field: 'ID' | 'Name'): string => `{{.${field}}}\t{{.Label "${LEASE_LABEL}"}}`;
@@ -170,18 +221,27 @@ export const LEASE_FORMAT = (field: 'ID' | 'Name'): string => `{{.${field}}}\t{{
 /**
  * A `LEASE_FORMAT` listing narrowed to the job's OTHER attempts: this attempt's own — the services
  * and the gate environment the loop started before the runner — are never a leftover, and neither
- * is the earlier run it adopted (`spared`, issue #821), kept until the reaper takes it.
+ * is the earlier run it adopted (`spared`, issue #821), kept until the reaper takes it. `kept.grammar` is
+ * the first field's: container ids for `ps`, names for networks and volumes. Throws
+ * `${what}: <reason>` when the listing cannot be read, so the fence removes nothing on it.
  */
 export async function listOtherAttemptsOrThrow(
     execDocker: ExecDocker,
     args: string[],
     what: string,
-    kept: { leaseToken: string; spared?: string | undefined }
+    kept: { leaseToken: string; spared?: string | undefined; grammar: RegExp }
 ): Promise<string[]> {
-    return (await listByLabelOrThrow(execDocker, args, what)).flatMap((line) => {
-        const [name = '', lease = ''] = line.split('\t');
-        return name && lease !== kept.leaseToken && lease !== kept.spared ? [name] : [];
-    });
+    // Every row names the attempt it belongs to: a lease that is no lease would make the row an
+    // "other attempt" and so a delete target (#869).
+    const parse = (stdout: string): string[][] | null => {
+        const rows = tabRows(2, kept.grammar)(stdout);
+        return rows?.every(([, lease = '']) => UUID_SHAPE.test(lease)) ? rows : null;
+    };
+    const read = await readDocker(execDocker, args, what, { parse });
+    if (read.kind !== 'value') throw new Error(read.kind === 'inconclusive' ? read.reason : `${what}: absent`);
+    return read.value.flatMap(([name = '', lease = '']) =>
+        lease !== kept.leaseToken && lease !== kept.spared ? [name] : []
+    );
 }
 
 /** The services network the runner joins: the one the loop's service start created, if it did. */
