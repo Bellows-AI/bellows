@@ -7,9 +7,8 @@ import {
     Inconclusive,
     type RunOutcome,
 } from './runner.js';
+import { pollFor, type Sleep } from './poll.js';
 import { type EndEvidence, settleEnd } from './termination.js';
-
-type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
 /** An earlier run of this job as an executor lists it: the attempt it ran as and what orders and recognizes it. */
 export interface EarlierRun {
@@ -78,19 +77,28 @@ async function listed<F extends EarlierRun>(
     signal: AbortSignal | undefined
 ): Promise<F[]> {
     const { attempts = 1, retryMs = 0, sleep } = p.pacing ?? {};
-    for (let attempt = 1; ; attempt += 1) {
+    let failure: unknown;
+    const attempt = async (): Promise<F[] | undefined> => {
         try {
             return await p.list(job);
         } catch (e) {
-            if (attempt >= attempts || !sleep) throw blockedUnless(e, LISTING);
+            failure = e;
         }
-        try {
-            await sleep(retryMs, signal);
-        } catch {
-            throw adoptionAbandoned();
-        }
-        if (signal?.aborted) throw adoptionAbandoned();
-    }
+    };
+    const found = sleep
+        ? await pollFor(
+              {
+                  ms: attempts * retryMs,
+                  everyMs: retryMs,
+                  sleep,
+                  ...(signal && { signal }),
+                  abandoned: adoptionAbandoned,
+              },
+              attempt
+          )
+        : await attempt();
+    if (found) return found;
+    throw blockedUnless(failure, LISTING);
 }
 
 /** The newest earlier run of a claim before `job`'s, of the same command, that the executor admits. */

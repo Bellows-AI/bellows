@@ -33,6 +33,8 @@ export async function pollFor<T>(
         if (signal?.aborted) throw abandoned();
         const found = await step(deadline);
         if (found !== undefined) return found;
+        // The pause after the last poll would only delay the answer.
+        if ((polls + 1) * everyMs >= ms) return undefined;
         try {
             await sleep(everyMs, signal);
         } catch (e) {

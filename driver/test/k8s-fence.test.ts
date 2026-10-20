@@ -313,7 +313,7 @@ describe('sweepClaimedFleets', () => {
     it('reads no claim when every kind answers empty', async () => {
         const { deps, calls } = world();
 
-        await sweepClaimedFleets(deps, job);
+        await sweepClaimedFleets(deps, job, new AbortController().signal);
 
         expect(calls.every((call) => call.method === 'GET')).toBe(true);
         expect(calls.some((call) => call.path.startsWith(CONFIGMAPS))).toBe(false);
@@ -324,7 +324,9 @@ describe('sweepClaimedFleets', () => {
             method === 'GET' && path.startsWith(JOBS) ? answer(503) : undefined
         );
 
-        await expect(sweepClaimedFleets(deps, job)).rejects.toThrow(/could not confirm the checkout empty/);
+        await expect(sweepClaimedFleets(deps, job, new AbortController().signal)).rejects.toThrow(
+            /could not confirm the checkout empty/
+        );
 
         expect(deletes(calls)).toEqual([]);
     });
@@ -358,7 +360,7 @@ describe('sweepClaimedFleets', () => {
         await deps.request('POST', CONFIGMAPS, claimBody(job));
         calls.length = 0;
 
-        await sweepClaimedFleets(deps, job);
+        await sweepClaimedFleets(deps, job, new AbortController().signal);
 
         const gone = deletes(calls).map((call) => call.path.split('?')[0]);
         expect(gone).toContain(jobPath(NS, older.metadata.name));
@@ -406,7 +408,9 @@ describe('sweepClaimedFleets', () => {
             method === 'GET' && path.startsWith(JOBS) ? answer(503) : undefined
         );
         try {
-            await expect(sweepClaimedFleets(slow.deps, job)).rejects.toThrow(/could not confirm the checkout empty/);
+            await expect(sweepClaimedFleets(slow.deps, job, new AbortController().signal)).rejects.toThrow(
+                /could not confirm the checkout empty/
+            );
         } finally {
             slow.restore();
         }
@@ -420,7 +424,7 @@ describe('sweepClaimedFleets', () => {
             method === 'GET' && path.startsWith(JOBS) ? answer(200, { items: [stale] }) : undefined
         );
         try {
-            await expect(sweepClaimedFleets(slow.deps, job)).rejects.toThrow();
+            await expect(sweepClaimedFleets(slow.deps, job, new AbortController().signal)).rejects.toThrow();
         } finally {
             slow.restore();
         }
@@ -438,7 +442,9 @@ describe('prepare and launch around the Job POST', () => {
     it('creates no Job when the claim cannot be confirmed before the POST', async () => {
         const { deps, calls } = world((method, path) => (isClaimGet(method, path) ? answer(503) : undefined));
 
-        await expect(prepare(deps, job)).rejects.toThrow(/could not be confirmed before creating the runner job/);
+        await expect(prepare(deps, job, new AbortController().signal)).rejects.toThrow(
+            /could not be confirmed before creating the runner job/
+        );
 
         expect(posts(calls, jobsPath(NS))).toEqual([]);
         expect(deletes(calls)).toEqual([]);
@@ -450,7 +456,7 @@ describe('prepare and launch around the Job POST', () => {
             if (method === 'POST' && path === jobsPath(NS)) created = true;
             return created && isClaimGet(method, path) ? answer(503) : undefined;
         });
-        await prepare(deps, job);
+        await prepare(deps, job, new AbortController().signal);
 
         await expect(launch(deps, job, spec())).rejects.toThrow(/could not be confirmed after creating the runner job/);
 

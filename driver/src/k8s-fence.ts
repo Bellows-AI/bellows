@@ -518,10 +518,10 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<v
  * every deleting round: a stale attempt whose claim was taken over mid-sweep STANDS DOWN having
  * deleted nothing.
  */
-export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     let unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
     const done = await pollFor<true>(
-        { ms: REPLACE_WAIT_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms), ...(signal && { signal }) },
+        { ms: REPLACE_WAIT_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms), signal },
         async (deadline) => {
             // Every request of the round, the deletes included, ends by the bound and refuses once
             // the attempt is killed.
@@ -575,7 +575,7 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
  * only then resumes the Job. A Secret therefore never exists without a Job the fence and the reaper
  * can derive its name from (issue #821), and no pod starts before the claim is verified.
  */
-export async function prepare(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     // Step one: TAKE THE CHECKOUT.
     await acquireClaim(deps, job);
 

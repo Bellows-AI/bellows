@@ -3,6 +3,7 @@ import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
+import { pollFor } from './poll.js';
 import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import { asPod, asStartupPod, validCounters } from './k8s-pod-shapes.js';
 import { ledgerOf, RunnerKilled, vanishedRunner } from './k8s-kill.js';
@@ -15,6 +16,7 @@ import {
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
     HTTP_SERVER_ERROR_STATUS,
+    boundedBy,
     HTTP_TOO_MANY_REQUESTS,
     isMalformedRequest400,
     isRecord,
@@ -60,30 +62,34 @@ export function jobOutcome(status: K8sJobStatus): 'succeeded' | 'failed' | 'pend
  * Go's `net/http`, transient by nature, retried like a 5xx — a genuine JSON `Status` 400 is an
  * API refusal and returns immediately.
  */
-export async function readVerdict(deps: K8sDeps, path: string, what: string, failures = 0): Promise<K8sResponse> {
-    let response: K8sResponse;
-    try {
-        response = await deps.request('GET', path);
-    } catch (e) {
-        if (failures + 1 > POLL_MAX_CONSECUTIVE_FAILURES) throw e;
-        await deps.sleep(POLL_MS);
-        return readVerdict(deps, path, what, failures + 1);
-    }
-    if (
-        response.status !== HTTP_TOO_MANY_REQUESTS &&
-        response.status < HTTP_SERVER_ERROR_STATUS &&
-        !isMalformedRequest400(response.status, response.body)
-    ) {
-        return response;
-    }
-    if (failures + 1 > POLL_MAX_CONSECUTIVE_FAILURES) {
-        throw new Error(
-            `${what} answered ${response.status} ${POLL_MAX_CONSECUTIVE_FAILURES} times in a row: ` +
-                `${response.body.slice(0, ERROR_PREVIEW_CHARS)}`
-        );
-    }
-    await deps.sleep(POLL_MS);
-    return readVerdict(deps, path, what, failures + 1);
+export async function readVerdict(deps: K8sDeps, path: string, what: string): Promise<K8sResponse> {
+    let last: { error: unknown } | { response: K8sResponse } | undefined;
+    let failures = 0;
+    const answered = await pollFor<K8sResponse>(
+        { ms: POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        async (deadline) => {
+            try {
+                const response = await boundedBy(deps, deadline).request('GET', path);
+                if (
+                    response.status !== HTTP_TOO_MANY_REQUESTS &&
+                    response.status < HTTP_SERVER_ERROR_STATUS &&
+                    !isMalformedRequest400(response.status, response.body)
+                ) {
+                    return response;
+                }
+                last = { response };
+            } catch (error) {
+                last = { error };
+            }
+            failures += 1;
+        }
+    );
+    if (answered) return answered;
+    if (last && 'error' in last) throw last.error;
+    throw new Error(
+        `${what} answered ${last?.response.status} ${failures} times in a row: ` +
+            `${last?.response.body.slice(0, ERROR_PREVIEW_CHARS)}`
+    );
 }
 
 /** The answer of a typed read whose object the apiserver confirmed absent (404). */

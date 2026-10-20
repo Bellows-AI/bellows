@@ -4014,9 +4014,9 @@ describe('the kubernetes runner', () => {
         body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: job.leaseToken, claimSeq: '1' } }),
     };
     const noHolder = { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-x' } }) };
-    // Read 1 is the pre-create verify (ours); reads 2 through POLL_MAX_CONSECUTIVE_FAILURES + 2 are
+    // Read 1 is the pre-create verify (ours); reads 2 through POLL_MAX_CONSECUTIVE_FAILURES + 1 are
     // the post-create verify; anything after would be the release's read.
-    const spent = (read: number): boolean => read > 2 + POLL_MAX_CONSECUTIVE_FAILURES;
+    const spent = (read: number): boolean => read > 1 + POLL_MAX_CONSECUTIVE_FAILURES;
     const verifyCases: {
         name: string;
         claimRead: (read: number) => { status: number; body: string };
@@ -4312,7 +4312,7 @@ describe('the kubernetes runner', () => {
                 failure === 'http' ? /in a row/ : /connection reset/
             );
 
-            expect(failedReads).toBe(POLL_MAX_CONSECUTIVE_FAILURES + 1);
+            expect(failedReads).toBe(POLL_MAX_CONSECUTIVE_FAILURES);
             const claimDeleted = (): boolean =>
                 calls.some((call) => call.method === 'DELETE' && call.path === claimPathFor(envJob.id));
             expect(claimDeleted()).toBe(false);

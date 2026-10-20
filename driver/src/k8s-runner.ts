@@ -62,10 +62,12 @@ import {
     livePodOfItems,
     MS_PER_SECOND,
     parsePodMetrics,
+    boundedBy,
     POLL_MS,
     refusal,
     wait,
 } from './k8s-transport.js';
+import { pollFor } from './poll.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
@@ -247,19 +249,24 @@ async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
  * waits, bounded, for that, and past the bound falls back to the hard kill every other path uses:
  * the backstop for a supervisor that is gone. Never throws, like `kill`.
  */
-async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
-    const polls = Math.ceil(KILL_WINDDOWN_MS / POLL_MS);
-    for (let poll = 0; poll < polls; poll += 1) {
-        const read = await readJobStatus(deps, runnerName(job), 'reading the runner job').catch(() => null);
-        if (!read) break;
-        if (read.kind === 'notFound' || read.kind === 'terminal') {
-            // The supervisor ended the group, its service sidecars with it: nobody is left to answer its steps.
-            releaseSteps(stepHostOf(deps), job);
-            forgetServices(deps, job);
-            return;
+export async function stopAgent(deps: K8sDeps, job: BoardJob): Promise<void> {
+    const ended = await pollFor<'ended' | 'unread'>(
+        { ms: KILL_WINDDOWN_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        async (deadline) => {
+            const read = await readJobStatus(
+                boundedBy(deps, deadline),
+                runnerName(job),
+                'reading the runner job'
+            ).catch(() => null);
+            if (!read || read.kind === 'error') return 'unread';
+            if (read.kind === 'notFound' || read.kind === 'terminal') return 'ended';
         }
-        if (read.kind === 'error') break;
-        await deps.sleep(POLL_MS);
+    );
+    if (ended === 'ended') {
+        // The supervisor ended the group, its service sidecars with it: nobody is left to answer its steps.
+        releaseSteps(stepHostOf(deps), job);
+        forgetServices(deps, job);
+        return;
     }
     await killRunner(deps, job);
 }

@@ -273,7 +273,7 @@ export function boundedBy(deps: K8sDeps, deadline: number): K8sDeps {
     return {
         ...deps,
         request: async (method, path, body, options) => {
-            const timeoutMs = timeLeft(deadline);
+            const timeoutMs = Math.min(timeLeft(deadline), options?.timeoutMs ?? Infinity);
             if (timeoutMs === 0) throw new Error('the call was refused: its wait is out of time');
             return deps.request(method, path, body, { ...options, timeoutMs });
         },

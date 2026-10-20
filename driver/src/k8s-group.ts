@@ -50,7 +50,8 @@ import {
     type TeardownIdentity,
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import { MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
+import { boundedBy, MS_PER_SECOND, POLL_MS } from './k8s-transport.js';
+import { pollFor } from './poll.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { ReclaimResult } from './publish.js';
 import type { RunSession } from './runner.js';
@@ -291,19 +292,22 @@ type JobEnd = 'ended' | 'running' | 'unread';
  * takes as well as the polls. A read that proves nothing is no evidence of either: it waits on and,
  * as the last word, answers `unread`.
  */
-async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<JobEnd> {
-    const started = Date.now();
+export async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Promise<JobEnd> {
     let last: JobEnd = 'running';
-    for (let polls = 0; Math.max(polls * POLL_MS, Date.now() - started) < ms; polls += 1) {
-        const read = await readTyped(deps, jobPath(deps.config.k8sNamespace, name), 'reading the task group', {
-            shape: asJob,
-        });
-        if (read.kind === 'absent') return 'ended';
-        if (read.kind === 'value' && jobOutcome(read.value.status) !== 'pending') return 'ended';
+    const ended = await pollFor<true>({ ms, everyMs: POLL_MS, sleep: (wait) => deps.sleep(wait) }, async (deadline) => {
+        const read = await readTyped(
+            boundedBy(deps, deadline),
+            jobPath(deps.config.k8sNamespace, name),
+            'reading the task group',
+            {
+                shape: asJob,
+            }
+        );
+        if (read.kind === 'absent') return true;
+        if (read.kind === 'value' && jobOutcome(read.value.status) !== 'pending') return true;
         last = read.kind === 'value' ? 'running' : 'unread';
-        await deps.sleep(POLL_MS);
-    }
-    return last;
+    });
+    return ended ? 'ended' : last;
 }
 
 /**

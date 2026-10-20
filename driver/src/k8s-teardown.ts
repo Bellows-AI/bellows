@@ -3,7 +3,8 @@ import { jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
 import { secretName } from './k8s-podspec.js';
 import { asPod } from './k8s-pod-shapes.js';
 import { asJob, jobOutcome, type ReadJobObject, readTyped, readTypedList } from './k8s-poll.js';
-import { HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, POLL_MS } from './k8s-transport.js';
+import { pollFor } from './poll.js';
+import { boundedBy, HTTP_CONFLICT, HTTP_NOT_FOUND, is2xx, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps, K8sPod, K8sResponse } from './k8s-transport.js';
 import type { Read } from './runner.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
@@ -142,20 +143,22 @@ const readGroupJob = (deps: K8sDeps, jobName: string): Promise<Read<ReadJobObjec
     readTyped(deps, jobPath(deps.config.k8sNamespace, jobName), 'reading the group Job', { shape: asJob, once: true });
 
 /** Polls, bounded by `GROUP_END_WAIT_MS`, until the Job is over and no live writer pod is listed. */
-async function confirmEnded(deps: K8sDeps, { pair, jobName, keep = false, uids }: GroupRef): Promise<GroupEnd> {
-    const polls = Math.ceil(GROUP_END_WAIT_MS / POLL_MS);
-    for (let poll = 0; poll < polls; poll += 1) {
-        if (poll > 0) await deps.sleep(POLL_MS);
-        const read = await readGroupJob(deps, jobName);
-        if (read.kind === 'inconclusive') return 'held';
-        // A replacement under the same name: its pods share the labels, and none of it is ours.
-        if (anotherIncarnation(read, uids)) return 'superseded';
-        if (!jobOver(read, keep)) continue;
-        const none = await noLiveWriter(deps, pair);
-        if (none === null) return 'held';
-        if (none) return 'ended';
-    }
-    return 'held';
+export async function confirmEnded(deps: K8sDeps, { pair, jobName, keep = false, uids }: GroupRef): Promise<GroupEnd> {
+    const ended = await pollFor<GroupEnd>(
+        { ms: GROUP_END_WAIT_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        async (deadline) => {
+            const round = boundedBy(deps, deadline);
+            const read = await readGroupJob(round, jobName);
+            if (read.kind === 'inconclusive') return 'held';
+            // A replacement under the same name: its pods share the labels, and none of it is ours.
+            if (anotherIncarnation(read, uids)) return 'superseded';
+            if (!jobOver(read, keep)) return;
+            const none = await noLiveWriter(round, pair);
+            if (none === null) return 'held';
+            if (none) return 'ended';
+        }
+    );
+    return ended ?? 'held';
 }
 
 /** An identity's Secret: its own, by the uid its create answered when known. */

@@ -1,0 +1,214 @@
+/**
+ * The verdict, end, kill and adoption waits (#869) are bounded by wall-clock time on one poll, and
+ * every request inside a poll gets the time left. Each case moves the clock INSIDE the request, so
+ * a wait bounded by a count of polls would keep going long past its bound.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { type AdoptPrimitives, adoptEarlierRun } from '../src/adopt-skeleton.js';
+import type { BoardJob } from '../src/board.js';
+import { loadDriverConfig } from '../src/config.js';
+import { awaitFinalized } from '../src/k8s-adopt.js';
+import { jobPath } from '../src/k8s-auxspec.js';
+import { jobEndsWithin } from '../src/k8s-group.js';
+import { readVerdict } from '../src/k8s-poll.js';
+import { runnerName } from '../src/k8s-podspec.js';
+import { stopAgent } from '../src/k8s-runner.js';
+import { confirmEnded, GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
+import { POLL_MAX_CONSECUTIVE_FAILURES, POLL_MS, type K8sDeps, type K8sRequestOptions } from '../src/k8s-transport.js';
+import { AdoptionBlocked } from '../src/runner.js';
+import { KILL_WINDDOWN_MS, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
+
+const NS = 'factory';
+const job: BoardJob = {
+    id: '11111111-1111-4111-8111-111111111111',
+    command: 'fix the failing build',
+    attempts: 1,
+    maxAttempts: 3,
+    lastAttempt: false,
+    claimSeq: 2,
+    leaseToken: '99999999-9999-4999-8999-999999999999',
+    leaseExpiresAt: '2026-08-29T12:05:00.000Z',
+    executorType: 'claude-code',
+    executorRefusal: null,
+    planRefusal: null,
+    skillRefusal: null,
+    masterPrompt: 'prompt',
+    resumeSessionId: null,
+    followUp: false,
+    ownSession: false,
+    continuesInterrupted: false,
+    userId: '44444444-4444-4444-8444-444444444444',
+    workspacePath: 'bellows/user',
+    rootCommand: 'fix the failing build',
+};
+const RUNNER_JOB = jobPath(NS, runnerName(job));
+const RUNNING = JSON.stringify({ metadata: { uid: 'job-uid' }, status: { active: 1 } });
+const SLOW_MS = 40_000;
+
+interface Seen {
+    method: string;
+    path: string;
+    timeoutMs: number | undefined;
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+/** A clock only the requests and sleeps move: each request takes `stepMs`, answering `answer`. */
+function clockWorld(
+    stepMs: number,
+    answer: (method: string, path: string, seen: Seen[]) => Promise<{ status: number; body: string }>
+) {
+    let now = 7_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const seen: Seen[] = [];
+    const deps: K8sDeps = {
+        request: async (method, path, _body, options?: K8sRequestOptions) => {
+            seen.push({ method, path, timeoutMs: options?.timeoutMs });
+            now += stepMs;
+            return answer(method, path, seen);
+        },
+        sleep: async (ms) => {
+            now += ms;
+        },
+        config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NS }),
+    };
+    return { deps, seen, elapsed: () => now - 7_000_000 };
+}
+
+const running = async () => ({ status: 200, body: RUNNING });
+const unavailable = async () => ({ status: 503, body: 'unavailable' });
+const timed = (seen: Seen[]) => seen.every((s) => s.timeoutMs !== undefined);
+
+describe('readVerdict', () => {
+    it('gives up after the wall-clock patience when every request hangs, not after 15 request timeouts', async () => {
+        const world = clockWorld(SLOW_MS, async () => {
+            throw new Error('timed out');
+        });
+
+        await expect(readVerdict(world.deps, RUNNER_JOB, 'reading the job')).rejects.toThrow(/timed out/);
+
+        expect(world.seen.length).toBeLessThanOrEqual(2);
+        expect(world.elapsed()).toBeLessThan(POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS + SLOW_MS * 2);
+        expect(world.seen.every((s) => (s.timeoutMs ?? Infinity) <= POLL_MAX_CONSECUTIVE_FAILURES * POLL_MS)).toBe(
+            true
+        );
+    });
+});
+
+describe('jobEndsWithin', () => {
+    it('ends at the bound with the last word `unread` when slow reads prove nothing, each read given the time left', async () => {
+        const world = clockWorld(SLOW_MS, unavailable);
+
+        expect(await jobEndsWithin(world.deps, runnerName(job), 60_000)).toBe('unread');
+
+        expect(world.seen.length).toBeLessThanOrEqual(2);
+        expect(timed(world.seen)).toBe(true);
+    });
+});
+
+describe('confirmEnded', () => {
+    it('holds at the bound when slow reads show the Job still running, each read given the time left', async () => {
+        const world = clockWorld(SLOW_MS, running);
+
+        expect(await confirmEnded(world.deps, { pair: job, jobName: runnerName(job) })).toBe('held');
+
+        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(GROUP_END_WAIT_MS / SLOW_MS) + 1);
+        expect(timed(world.seen)).toBe(true);
+    });
+});
+
+describe('stopAgent', () => {
+    it('escalates to the kill at the bound when slow reads show the agent still running', async () => {
+        let killed = false;
+        const world = clockWorld(SLOW_MS, async (method, path) => {
+            if (method === 'DELETE') killed = true;
+            return path === RUNNER_JOB && !killed
+                ? { status: 200, body: RUNNING }
+                : { status: 404, body: '{"kind":"Status"}' };
+        });
+
+        await stopAgent(world.deps, job);
+
+        const beforeKill = world.seen.slice(
+            0,
+            world.seen.findIndex((s) => s.method === 'DELETE')
+        );
+        const reads = beforeKill.filter((s) => s.method === 'GET' && s.path === RUNNER_JOB);
+        expect(killed).toBe(true);
+        expect(reads.length).toBeLessThanOrEqual(Math.ceil(KILL_WINDDOWN_MS / SLOW_MS) + 2);
+        expect(reads.every((s) => s.timeoutMs !== undefined)).toBe(true);
+    });
+});
+
+describe('awaitFinalized', () => {
+    it('answers null at the bound when slow reads show the runner still running', async () => {
+        const world = clockWorld(SLOW_MS, running);
+
+        expect(await awaitFinalized(world.deps, job, new AbortController().signal)).toBeNull();
+
+        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / SLOW_MS) + 1);
+        expect(timed(world.seen)).toBe(true);
+    });
+
+    it('blocks the adoption at the bound when slow reads never answer', async () => {
+        const world = clockWorld(SLOW_MS, unavailable);
+
+        await expect(awaitFinalized(world.deps, job, new AbortController().signal)).rejects.toBeInstanceOf(
+            AdoptionBlocked
+        );
+
+        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / SLOW_MS) + 1);
+    });
+
+    it('gives the pod read after a finished Job the time left, not a fresh request timeout', async () => {
+        const world = clockWorld(SLOW_MS, async (_method, path) =>
+            path === RUNNER_JOB
+                ? { status: 200, body: JSON.stringify({ metadata: { uid: 'job-uid' }, status: { succeeded: 1 } }) }
+                : { status: 503, body: 'unavailable' }
+        );
+
+        await expect(awaitFinalized(world.deps, job, new AbortController().signal)).rejects.toBeInstanceOf(
+            AdoptionBlocked
+        );
+
+        expect(timed(world.seen)).toBe(true);
+    });
+
+    it('is abandoned by the attempt signal before another read', async () => {
+        const kill = new AbortController();
+        const world = clockWorld(1_000, async () => {
+            kill.abort();
+            return { status: 200, body: RUNNING };
+        });
+
+        await expect(awaitFinalized(world.deps, job, kill.signal)).rejects.toThrow(/abandoned|stand/i);
+
+        expect(world.seen.length).toBe(1);
+    });
+});
+
+describe('adoptEarlierRun listing', () => {
+    it('stands down at the wall-clock bound of its paced listing when each listing is slow', async () => {
+        let now = 9_000_000;
+        vi.spyOn(Date, 'now').mockImplementation(() => now);
+        let lists = 0;
+        const p = {
+            pacing: {
+                attempts: 3,
+                retryMs: 2_000,
+                sleep: async (ms: number) => {
+                    now += ms;
+                },
+            },
+            list: async () => {
+                lists += 1;
+                now += 10_000;
+                throw new Error('daemon unavailable');
+            },
+        } as unknown as AdoptPrimitives<never>;
+
+        await expect(adoptEarlierRun(p, new Map(), job)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(lists).toBe(1);
+    });
+});
