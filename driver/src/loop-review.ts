@@ -113,12 +113,15 @@ export function superviseReview(
     supervision: { caller: BoardJob; review: ReviewClaim; key: string }
 ): void {
     const { caller, review, key } = supervision;
-    if (state.reviews.has(key)) return;
+    const lease = `${review.id}:${review.claimSeq}`;
+    // A claim this attempt already ended arrived late (a delayed read or replayed request answer).
+    if (state.reviews.has(key) || state.endedReviewLeases.has(lease)) return;
     const { stop, release } = newReviewStop(state);
     const cause: StopCause = { boardCancel: false };
     const settled = superviseOne(rt, state, { caller, review, stop, cause }).finally(() => {
         release();
         state.reviews.delete(key);
+        state.endedReviewLeases.add(lease);
     });
     state.reviews.set(key, {
         cancel: () => stop.abort(),

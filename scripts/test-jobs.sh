@@ -1630,6 +1630,8 @@ rvo_out="$(field "$(body "$(api GET "/api/jobs/$rvo")")" output)"
 expect_contains 'the opencode review ran through opencode-executor' "$rvo_out" 'executor=opencode-executor'
 expect_contains 'the opencode review ends clean'                   "$rvo_out" 'verdict":"clean'
 
+# Clear the reviewer plan before later phases reuse the smoke repository.
+write_bellows ''
 stop_driver
 fi
 

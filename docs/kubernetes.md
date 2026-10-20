@@ -30,8 +30,8 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - **Credentials go by reference, never by value**, and **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`). Both pinned in `driver/test/k8s.test.ts`.
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every
-  workspaces mount uses `workspaceMount()`'s `<org>/<user id>` subPath, `hostAliases` map only to `127.0.0.1` and
-  only the `gate` and `svc-` sidecars restart — or admission refuses it. `driver/test/k8s-admission.test.ts`.
+  workspaces mount uses `workspaceMount()`'s `<org>/<user id>` subPath (the reviewer's home: its `REVIEWER_TREE_DIR`), `hostAliases` map only to
+  `127.0.0.1` and only the `gate`, `reviewer` and `svc-` sidecars restart — or admission refuses it. `driver/test/k8s-admission.test.ts`.
 - **The agent container's env holds no GitHub token and no route to the step channel**; the claim env and the
   board's GitHub token are a step's own `env`, and the agent's helper caches its own in a Memory `emptyDir`.
   `driver/test/supervised-steps.test.ts`, `driver/test/github-credential.test.ts`.

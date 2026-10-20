@@ -137,6 +137,43 @@ function supervising(
     return { board: board.board, runner, state, rt, logs, start, settled };
 }
 
+describe('a review claim that arrives after its lease ended (issue #774)', () => {
+    const lateAnswer = (t: ReturnType<typeof supervising>, claim: ReviewClaim) => {
+        const answer = { result: 'ok' as const, review: REPORT('running'), created: false, claim };
+        t.board.requestReview = async () => answer;
+        t.board.readReview = async () => answer;
+        t.runner.snapshotTree = async () => ({ ok: true, ref: REVIEW.reviewRun.ref });
+        return createReviewRelay(t.rt, job(1), t.state);
+    };
+
+    it('is not run again when a delayed read answer reaches the driver after settlement', async () => {
+        const t = supervising({ probeTree: 'head:abc', runReview: async () => STEP() });
+        t.start();
+        await t.settled();
+        await lateAnswer(t, REVIEW).read('sec-1');
+        await t.settled();
+        expect(t.runner.reviewed).toHaveLength(1);
+    });
+
+    it('is not run again when a replayed request answer reaches the driver after settlement', async () => {
+        const t = supervising({ probeTree: 'head:abc', runReview: async () => STEP() });
+        t.start();
+        await t.settled();
+        await lateAnswer(t, REVIEW).request('sec-1', 'security');
+        await t.settled();
+        expect(t.runner.reviewed).toHaveLength(1);
+    });
+
+    it('supervises a newer lease of the same review', async () => {
+        const t = supervising({ probeTree: 'head:abc', runReview: async () => STEP() });
+        t.start();
+        await t.settled();
+        await lateAnswer(t, { ...REVIEW, claimSeq: REVIEW.claimSeq + 1 } as ReviewClaim).read('sec-1');
+        await t.settled();
+        expect(t.runner.reviewed).toHaveLength(2);
+    });
+});
+
 describe('a review the board leased in-band (issue #774)', () => {
     it('is restored and run in the caller’s group, its row heartbeat and completed with the step’s output', async () => {
         const t = supervising({ runReview: async () => STEP() });

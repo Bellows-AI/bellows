@@ -287,6 +287,27 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
         expect('claim' in replay && replay.claim?.leaseToken).toBe(again.claim.leaseToken);
     });
 
+    it('re-leases a running review to the caller’s next claim when it is READ, so a different key can never strand it', async () => {
+        const store = storeWith({ reviewers: [SECURITY] });
+        const caller = await claimed(store);
+        const first = await ask(caller);
+        if (!('claim' in first) || !first.claim) throw new Error('no review claim');
+        await sql`update job set lease_expires_at = now() - interval '1 minute' where org_id = ${ORG} and id = ${caller.id}`;
+        const reclaimed = await store.claim('driver-2', LEASE_SECONDS);
+        expect(reclaimed?.id).toBe(caller.id);
+
+        const read = await store.readReview(reclaimed!.id, reclaimed!.leaseToken, 'sec-1');
+        if (read.result !== 'ok' || !read.claim) throw new Error('no review claim on the read');
+        expect(read.claim.id).toBe(first.review.id);
+        expect(read.claim.leaseToken).not.toBe(first.claim.leaseToken);
+        expect(await rowOf(first.review.id)).toMatchObject({ review_caller_seq: String(reclaimed!.claimSeq) });
+        // A second read of this claim is the same lease, and a finished review carries none.
+        const replay = await store.readReview(reclaimed!.id, reclaimed!.leaseToken, 'sec-1');
+        expect('claim' in replay && replay.claim?.leaseToken).toBe(read.claim.leaseToken);
+        await reviewRuns(store, reclaimed!, `ok\n${REVIEW_VERDICT_MARKER}`);
+        expect(await store.readReview(reclaimed!.id, reclaimed!.leaseToken, 'sec-1')).not.toHaveProperty('claim');
+    });
+
     it('answers a finished review from its row, with no claim', async () => {
         const store = storeWith({ reviewers: [SECURITY] });
         const caller = await claimed(store);

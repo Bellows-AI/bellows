@@ -128,6 +128,11 @@ export interface JobState {
      * group and ends with it. A key already here starts no second supervisor (`loop-review.ts`).
      */
     reviews: Map<string, ReviewSupervision>;
+    /**
+     * The review leases (`id:claimSeq`) this attempt has already ended (completed, failed or released):
+     * a delayed answer carrying one starts nothing, a newer lease of the same review is supervised.
+     */
+    endedReviewLeases: Set<string>;
     /** Questions whose answers have not been delivered yet. */
     pendingQuestions: Set<string>;
     questionPausedAt: number | null;
@@ -188,6 +193,7 @@ export function newJobState(): JobState {
         draining: false,
         graceTimer: null,
         reviews: new Map(),
+        endedReviewLeases: new Set(),
         pendingQuestions: new Set(),
         questionPausedAt: null,
         deadlineUpdate: Promise.resolve(),

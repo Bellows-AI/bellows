@@ -264,4 +264,11 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain('while IFS= read -r container_id; do');
         expect(SCRIPT).toContain('[ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1');
     });
+
+    // The smoke repository is shared by every phase: a reviewer plan left committed would give later
+    // phases' claims reviewerProfiles and reviewer containers they never asked for.
+    it('clears the reviewer plan before the review phase stops its driver', () => {
+        const phase = SCRIPT.slice(SCRIPT.indexOf('begin_phase review'), SCRIPT.indexOf('begin_phase workflows'));
+        expect(phase).toMatch(/verdict":"clean'\n\n[^\n]*\nwrite_bellows ''\nstop_driver\nfi/);
+    });
 });

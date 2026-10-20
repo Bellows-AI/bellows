@@ -123,7 +123,9 @@ export async function handleReviewRead(orgs: OrgRegistry, request: FastifyReques
     );
     if (!result.ok) return reply;
     const outcome = result.value;
-    if ('review' in outcome) return reply.code(HTTP_OK).send(outcome.review);
+    if ('review' in outcome) {
+        return reply.code(HTTP_OK).send(outcome.claim ? { ...outcome.review, claim: outcome.claim } : outcome.review);
+    }
     if (outcome.result === 'missing') return notFoundJob(reply);
     if (outcome.result === 'lost') return leaseLost(reply);
     return bad(reply, ERROR_CODES.REVIEW_NOT_FOUND, 'No review was requested under that key', HTTP_NOT_FOUND);

@@ -3332,6 +3332,14 @@ describe('POST /api/jobs/:id/review-read (issue #549)', () => {
         expect(store.reviewReads).toEqual([{ id: ID, key: 'security-1' }]);
     });
 
+    it('answers a running review with its re-leased claim next to the view', async () => {
+        const claim = { id: REVIEW.id, leaseToken: 'lease-of-the-review' } as Claim;
+        const instance = await harnessWith(stubStore({ reviewRead: { result: 'ok', review: REVIEW, claim } }));
+        const response = await post(instance, REVIEW_READ_URL, { leaseToken: TOKEN, key: 'security-1' });
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({ key: 'security-1', claim: { id: REVIEW.id } });
+    });
+
     it.each([
         ['unknown', 404, 'REVIEW_NOT_FOUND'],
         ['missing', 404, 'NOT_FOUND'],

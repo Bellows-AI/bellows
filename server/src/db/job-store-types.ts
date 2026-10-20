@@ -414,7 +414,10 @@ export type RequestReviewResult =
     | { result: 'created' | 'existing' | 'running'; review: ReviewView; claim?: Claim }
     | { result: 'lost' | 'missing' | 'unsupported' | 'unknown_profile' | 'invalid_ref' };
 
-export type ReadReviewResult = { result: 'ok'; review: ReviewView } | { result: 'lost' | 'missing' | 'unknown' };
+/** A review still running carries its `claim`, re-leased to the reading caller claim as a request would. */
+export type ReadReviewResult =
+    | { result: 'ok'; review: ReviewView; claim?: Claim }
+    | { result: 'lost' | 'missing' | 'unknown' };
 
 /**
  * What a member's answer did. `invalid` is a key set that does not match the stored question

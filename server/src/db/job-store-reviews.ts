@@ -323,14 +323,16 @@ export async function readReviewFor(
 ): Promise<ReadReviewResult> {
     const { sql, orgId } = ctx;
     return sql.begin(async (tx): Promise<ReadReviewResult> => {
-        const [caller] = await tx<{ root_job_id: string }[]>`
-            select root_job_id from job
-            where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
-        `;
+        const caller = await lockedCaller(tx, orgId, id, leaseToken);
         if (!caller) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
         const row = await reviewByKey(tx, orgId, id, key);
         if (!row) return { result: 'unknown' };
         const evidence = await readReviewEvidence(tx, { orgId, rootJobId: caller.root_job_id }, null);
+        // A running review is the caller claim's to supervise: a re-claimed caller that reads it
+        // (a different key's request answers `running`) takes the lease over here.
+        if (row.status === 'running') {
+            return { result: 'ok', review: viewOf(row, evidence), claim: await leaseRunning(ctx, tx, caller, row.id) };
+        }
         return { result: 'ok', review: viewOf(row, evidence) };
     });
 }
