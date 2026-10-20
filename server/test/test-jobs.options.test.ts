@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = join(ROOT, 'scripts/test-jobs.sh');
 const directories: string[] = [];
+// A hang guard, not a speed bound: the script settles in about a second of CPU and in 4-7s under
+// heavy host load, so a tight kill reads as a failure (status null) in a loaded `npm test`.
+const HANG_GUARD_MS = 120_000;
 
 const COMMANDS = {
     docker: `printf '%s\n' "$*" >>"$HARNESS_TRACE"
@@ -29,7 +32,7 @@ case "$1 $2" in
             attempts=0
             while ! { [ -f "$HARNESS_GATE/claude-executor.started" ] && [ -f "$HARNESS_GATE/opencode-executor.started" ]; }; do
                 attempts=$((attempts + 1))
-                [ "$attempts" -lt 200 ] || exit 99
+                [ "$attempts" -lt 6000 ] || exit 99
                 sleep 0.01
             done
         fi
@@ -72,25 +75,33 @@ function fixture() {
         writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     }
     return {
+        // Async on purpose: a blocking spawn stops the vitest worker answering its RPC channel, and
+        // under load the runner reports `Timeout calling "onTaskUpdate"` for a test that passed.
         run: (args: string[], env: NodeJS.ProcessEnv = {}) =>
-            spawnSync('/bin/bash', [SCRIPT, ...args], {
-                cwd: ROOT,
-                env: {
-                    ...process.env,
-                    PATH: `${dir}:${process.env.PATH}`,
-                    HARNESS_TRACE: trace,
-                    HARNESS_GATE: dir,
-                    TIMINGS_FILE: timings,
-                    AGENT_TIMEOUT: '',
-                    POSTGRES_START_FAIL: '',
-                    SUPERVISOR_WAIT_STATUS: '',
-                    SUPERVISOR_EXIT: '0',
-                    EXPECT_PAIR: '',
-                    ABORT_WORKER: '',
-                    ...env,
-                },
-                encoding: 'utf8',
-                timeout: 10_000,
+            new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+                const child = spawn('/bin/bash', [SCRIPT, ...args], {
+                    cwd: ROOT,
+                    env: {
+                        ...process.env,
+                        PATH: `${dir}:${process.env.PATH}`,
+                        HARNESS_TRACE: trace,
+                        HARNESS_GATE: dir,
+                        TIMINGS_FILE: timings,
+                        AGENT_TIMEOUT: '',
+                        POSTGRES_START_FAIL: '',
+                        SUPERVISOR_WAIT_STATUS: '',
+                        SUPERVISOR_EXIT: '0',
+                        EXPECT_PAIR: '',
+                        ABORT_WORKER: '',
+                        ...env,
+                    },
+                    timeout: HANG_GUARD_MS,
+                });
+                let stdout = '';
+                let stderr = '';
+                child.stdout.setEncoding('utf8').on('data', (chunk: string) => (stdout += chunk));
+                child.stderr.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+                child.on('close', (status) => resolve({ status, stdout, stderr }));
             }),
         trace: () => readFileSync(trace, 'utf8'),
         timings: () => readFileSync(timings, 'utf8'),
@@ -105,9 +116,9 @@ afterEach(() => {
 });
 
 describe('test-jobs phase options', () => {
-    it('offers help without accessing Docker or creating lane resources', () => {
+    it('offers help without accessing Docker or creating lane resources', async () => {
         const lane = fixture();
-        const result = lane.run(['--help']);
+        const result = await lane.run(['--help']);
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('all (default)');
         expect(result.stdout).toContain('question-round-trip');
@@ -123,15 +134,15 @@ describe('test-jobs phase options', () => {
         ['--cli-workers'],
         ['--cli-workers', '0'],
         ['--cli-workers', '3'],
-    ])('rejects invalid arguments %j', (...args) => {
+    ])('rejects invalid arguments %j', async (...args) => {
         const lane = fixture();
-        expect(lane.run(args).status).toBe(2);
+        expect((await lane.run(args)).status).toBe(2);
         expect(lane.trace()).toBe('');
     });
 
-    it('checks both real executor images before any full-run setup or cleanup', () => {
+    it('checks both real executor images before any full-run setup or cleanup', async () => {
         const lane = fixture();
-        const result = lane.run([], { MISSING_IMAGE: 'opencode-executor' });
+        const result = await lane.run([], { MISSING_IMAGE: 'opencode-executor' });
         expect(result.status).toBe(1);
         expect(result.stdout).toContain('opencode-executor is missing');
         expect(lane.trace().trim().split('\n')).toEqual([
@@ -141,24 +152,24 @@ describe('test-jobs phase options', () => {
         ]);
     });
 
-    it('requires only Claude for the question round trip and stops before board setup if absent', () => {
+    it('requires only Claude for the question round trip and stops before board setup if absent', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'question-round-trip'], { MISSING_IMAGE: 'claude-executor' });
+        const result = await lane.run(['--phase', 'question-round-trip'], { MISSING_IMAGE: 'claude-executor' });
         expect(result.status).toBe(1);
         expect(lane.trace().trim().split('\n')).toEqual(['info', 'image inspect claude-executor']);
     });
 
-    it('refuses an unsafe database before touching Postgres, without requiring real executor images', () => {
+    it('refuses an unsafe database before touching Postgres, without requiring real executor images', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'board'], { JOBS_TEST_DB: 'factory_dev' });
+        const result = await lane.run(['--phase', 'board'], { JOBS_TEST_DB: 'factory_dev' });
         expect(result.status).toBe(2);
         expect(result.stdout).toContain('ending _test');
         expect(lane.trace().trim().split('\n')).toEqual(['info', 'compose version']);
     });
 
-    it.each(['1', '2'])('runs every standalone CLI check with %s workers and no board setup', (workers) => {
+    it.each(['1', '2'])('runs every standalone CLI check with %s workers and no board setup', async (workers) => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'cooperative-stop', '--cli-workers', workers]);
+        const result = await lane.run(['--phase', 'cooperative-stop', '--cli-workers', workers]);
         expect(result.stderr).toBe('');
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('8 passed, 0 failed');
@@ -173,16 +184,16 @@ describe('test-jobs phase options', () => {
         expect(lane.log('stop-claude')).toBe('');
     });
 
-    it('starts both CLI workers before either agent is allowed to finish', () => {
+    it('starts both CLI workers before either agent is allowed to finish', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'cooperative-stop'], { EXPECT_PAIR: '1' });
+        const result = await lane.run(['--phase', 'cooperative-stop'], { EXPECT_PAIR: '1' });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('8 passed, 0 failed');
     });
 
-    it('fails an abruptly lost worker and cleans its resources without losing the other worker results', () => {
+    it('fails an abruptly lost worker and cleans its resources without losing the other worker results', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'cooperative-stop'], { ABORT_WORKER: 'claude-executor' });
+        const result = await lane.run(['--phase', 'cooperative-stop'], { ABORT_WORKER: 'claude-executor' });
         expect(result.status).toBe(1);
         expect(result.stdout).toContain('claude_stop_lane reports its checks');
         expect(result.stdout).toContain('opencode exits on its own after the stop');
@@ -190,9 +201,9 @@ describe('test-jobs phase options', () => {
         expect(lane.checks()).toContain('\tFAIL\t');
     });
 
-    it('does not recreate shared Postgres and preserves startup errors before any build', () => {
+    it('does not recreate shared Postgres and preserves startup errors before any build', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'board'], { POSTGRES_START_FAIL: '1' });
+        const result = await lane.run(['--phase', 'board'], { POSTGRES_START_FAIL: '1' });
         expect(result.status).toBe(1);
         expect(result.stdout).toContain('could not start postgres');
         expect(lane.trace()).toContain('compose up -d --no-recreate postgres');
@@ -202,11 +213,12 @@ describe('test-jobs phase options', () => {
         expect(lane.timings()).toMatch(/^cleanup\t\d+$/m);
     });
 
-    it('gives separate runs distinct disposable databases and image cleanup targets', () => {
-        const traces = [fixture(), fixture()].map((lane) => {
-            expect(lane.run(['--phase', 'board'], { JOBS_TEST_DB: '' }).status).toBe(1);
-            return lane.trace();
-        });
+    it('gives separate runs distinct disposable databases and image cleanup targets', async () => {
+        const traces: string[] = [];
+        for (const lane of [fixture(), fixture()]) {
+            expect((await lane.run(['--phase', 'board'], { JOBS_TEST_DB: '' })).status).toBe(1);
+            traces.push(lane.trace());
+        }
         const databases = traces.map((trace) => /create database (factory_jobs_\w+_test)/.exec(trace)?.[1]);
         expect(databases[0]).toBeTruthy();
         expect(databases[1]).toBeTruthy();
@@ -220,9 +232,9 @@ describe('test-jobs phase options', () => {
         expect(images[0]).not.toBe(images[1]);
     });
 
-    it('retains failure status, check results, timings and logs through cleanup', () => {
+    it('retains failure status, check results, timings and logs through cleanup', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'cooperative-stop'], { AGENT_TIMEOUT: '1' });
+        const result = await lane.run(['--phase', 'cooperative-stop'], { AGENT_TIMEOUT: '1' });
         expect(result.status).toBe(1);
         expect(result.stdout).toContain('exit 124');
         expect(result.stdout).toContain('exit: 1');
@@ -234,9 +246,9 @@ describe('test-jobs phase options', () => {
 
     it.each(['124', '125'])(
         'fails a supervisor wait with status %s after collecting diagnostics and cleaning up',
-        (status) => {
+        async (status) => {
             const lane = fixture();
-            const result = lane.run(['--phase', 'cooperative-stop'], { SUPERVISOR_WAIT_STATUS: status });
+            const result = await lane.run(['--phase', 'cooperative-stop'], { SUPERVISOR_WAIT_STATUS: status });
             expect(result.status).toBe(1);
             expect(result.stdout).toContain(`wait exit ${status}`);
             expect(lane.log('stop-opencode.supervisor')).toContain('supervisor diagnostics');
@@ -246,9 +258,9 @@ describe('test-jobs phase options', () => {
         }
     );
 
-    it('fails a nonzero supervisor verdict even when docker wait itself succeeds', () => {
+    it('fails a nonzero supervisor verdict even when docker wait itself succeeds', async () => {
         const lane = fixture();
-        const result = lane.run(['--phase', 'cooperative-stop'], { SUPERVISOR_EXIT: '70' });
+        const result = await lane.run(['--phase', 'cooperative-stop'], { SUPERVISOR_EXIT: '70' });
         expect(result.status).toBe(1);
         expect(result.stdout).toContain("supervisor exit '70'");
         expect(lane.log('stop-opencode.supervisor-wait')).toBe('70\n');
