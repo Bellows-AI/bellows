@@ -42,6 +42,7 @@ import {
     pollRunnerJobUntilTerminal,
     readJobStatus,
     readRunnerVerdict,
+    readTyped,
     readVerdict,
 } from './k8s-poll.js';
 import {
@@ -57,10 +58,9 @@ import {
     answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
-    HTTP_NOT_FOUND,
+    isRecord,
     livePodOfItems,
     MS_PER_SECOND,
-    parse,
     parsePodMetrics,
     POLL_MS,
     refusal,
@@ -283,22 +283,42 @@ function pauseRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Pro
     return next;
 }
 
+interface DeadlineJob {
+    spec?: { activeDeadlineSeconds?: number };
+    metadata?: { uid?: string; annotations?: Record<string, string> };
+}
+
+const asDeadlineJob = (value: unknown): DeadlineJob | null => (isRecord(value) ? (value as DeadlineJob) : null);
+
+/** The saved `{deadline, at}` annotation, or null unless both are finite numbers. */
+function asSavedDeadline(saved: string): { deadline: number; at: number } | null {
+    try {
+        const value: unknown = JSON.parse(saved);
+        return isRecord(value) && Number.isFinite(value.deadline) && Number.isFinite(value.at)
+            ? (value as { deadline: number; at: number })
+            : null;
+    } catch {
+        return null;
+    }
+}
+
 /** Save and remove a paused deadline, or restore its budget including the elapsed wait. */
 async function patchRunnerDeadline(deps: K8sDeps, job: BoardJob, paused: boolean): Promise<void> {
     const path = jobPath(deps.config.k8sNamespace, runnerName(job));
-    const read = await deps.request('GET', path);
-    if (read.status === HTTP_NOT_FOUND) return;
-    expectOk(read, 'reading the runner job for its deadline');
-    const current = parse<{
-        spec?: { activeDeadlineSeconds?: number };
-        metadata?: { uid?: string; annotations?: Record<string, string> };
-    }>(read.body);
+    const read = await readTyped(deps, path, 'reading the runner job for its deadline', {
+        shape: asDeadlineJob,
+        once: true,
+    });
+    if (read.kind === 'absent') return;
+    if (read.kind === 'inconclusive') throw new Error(read.reason);
+    const current = read.value;
     const saved = current.metadata?.annotations?.[PAUSED_DEADLINE];
     if (paused && saved) return;
     if (!paused && !saved) return;
     const deadline = current.spec?.activeDeadlineSeconds;
     if (paused && typeof deadline !== 'number') return;
-    const prior = saved ? parse<{ deadline: number; at: number }>(saved) : null;
+    const prior = saved ? asSavedDeadline(saved) : null;
+    if (saved && !prior) throw new Error(`the runner job's saved deadline is not a deadline and a time: ${saved}`);
     const patched = await deps.request('PATCH', path, {
         metadata: {
             // The incarnation just read, by uid: never one created under the name since.

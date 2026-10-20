@@ -46,12 +46,12 @@ import {
     is2xx,
     isRecord,
     JOB_ID,
-    parse,
+    readAnswer,
     POLL_MS,
     refusal,
     REPLACE_MAX_POLLS,
 } from './k8s-transport.js';
-import type { K8sClaim, K8sDeps } from './k8s-transport.js';
+import type { K8sClaim, K8sDeps, K8sResponse } from './k8s-transport.js';
 
 /**
  * The re-claim fence: taking the checkout claim, sweeping a superseded attempt's leftovers, and
@@ -599,6 +599,15 @@ export async function prepare(deps: K8sDeps, job: BoardJob): Promise<void> {
     }
 }
 
+/** The `metadata.uid` a create answered, typed: no body, a non-JSON one or one with no uid throws. */
+function uidOf(response: K8sResponse, what: string): string {
+    const read = readAnswer(response, what, (value) =>
+        isRecord(value) && isRecord(value.metadata) && nonEmpty(value.metadata.uid) ? value.metadata.uid : null
+    );
+    if (read.kind !== 'value') throw new Error(`${what} answered no uid`);
+    return read.value;
+}
+
 /**
  * Creates a runner Job suspended (no pod yet), then its env Secret under `secretName`. Any failure
  * on the way — a create whose answer was lost included — ends the Job the acknowledged way
@@ -618,8 +627,7 @@ export async function createSuspendedWithSecret(
         expectOk(created, what.job);
         // The Secret is owned by the Job's uid: collected with it, even if this driver never ends it.
         // Recorded the moment it answers: every teardown after this names that incarnation.
-        const uid = parse<{ metadata?: { uid?: string } }>(created.body).metadata?.uid;
-        if (!uid) throw new Error(`${what.job} answered no uid for the Job`);
+        const uid = uidOf(created, what.job);
         identity.uids = { job: uid };
         const stored = await deps.request(
             'POST',
@@ -627,8 +635,7 @@ export async function createSuspendedWithSecret(
             what.secretBody({ name: spec.metadata.name, uid })
         );
         expectOk(stored, what.secret);
-        const secret = parse<{ metadata?: { uid?: string } }>(stored.body).metadata?.uid;
-        if (secret) identity.uids = { job: uid, secret };
+        identity.uids = { job: uid, secret: uidOf(stored, what.secret) };
     } catch (e) {
         await standDown();
         throw e;

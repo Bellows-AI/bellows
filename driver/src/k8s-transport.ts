@@ -506,15 +506,6 @@ export function readAnswer<T>(response: K8sResponse, what: string, shape: (value
         : { kind: 'value', value };
 }
 
-/** Parses what the API server answers; a body that is not JSON reads as an empty object. */
-export function parse<T>(body: string): T {
-    try {
-        return JSON.parse(body) as T;
-    } catch {
-        return {} as T;
-    }
-}
-
 /*
  * The runner vitals under kubernetes. `docker stats` has no direct twin here; the metrics API
  * (`metrics.k8s.io`, served by the metrics-server a cluster may not run) is the closest one, and

@@ -5713,7 +5713,7 @@ describe('the kubernetes runner under opencode', () => {
             // The per-attempt Secret (the runner's attempt pair), created and reaped per attempt.
             if (path === `${ns}/secrets`) {
                 if (method === 'DELETE') return Promise.resolve({ status: 200, body: '{}' });
-                return Promise.resolve({ status: 201, body: '{}' });
+                return Promise.resolve({ status: 201, body: JSON.stringify({ metadata: { uid: 'secret-uid' } }) });
             }
             return Promise.reject(new Error(`the fake has no answer for ${method} ${path}`));
         };
@@ -6138,6 +6138,32 @@ describe('the paused deadline for an agent question', () => {
         await runner(request).pauseDeadline(job, true);
         expect(request).toHaveBeenCalledTimes(1);
     });
+
+    it('rejects, sending no PATCH, when the Job GET answers null', async () => {
+        const methods: string[] = [];
+        const request: K8sRequest = async (method) => {
+            methods.push(method);
+            return { status: 200, body: 'null' };
+        };
+        await expect(runner(request).pauseDeadline(job, true)).rejects.toThrow(/reading the runner job/);
+        expect(methods).toEqual(['GET']);
+    });
+
+    it.each(['not json', '{"deadline":"60","at":1}', '{"deadline":60}', 'null'])(
+        'rejects, sending no PATCH, when a resume finds the saved annotation %s',
+        async (saved) => {
+            const methods: string[] = [];
+            const request: K8sRequest = async (method) => {
+                methods.push(method);
+                return {
+                    status: 200,
+                    body: JSON.stringify({ metadata: { annotations: { 'bellows.ai/paused-deadline': saved } } }),
+                };
+            };
+            await expect(runner(request).pauseDeadline(job, false)).rejects.toThrow(/saved deadline/);
+            expect(methods).toEqual(['GET']);
+        }
+    );
 
     it('rejects a refused pause so it can be retried', async () => {
         const request: K8sRequest = async (method) =>
@@ -8520,6 +8546,17 @@ describe('Secrets owned by their Job, and only agent runs adopted (#821)', () =>
                 (call) => call.method === 'DELETE' && call.path.startsWith(`${jobPath(namespace, runnerJobName(job))}?`)
             )
         ).toBe(true);
+    });
+
+    it('stands down on a Job create answered 201 null, with no TypeError and both deletes acknowledged', async () => {
+        const { request, calls } = routed((method, path) =>
+            method === 'POST' && path === jobsPath(namespace) ? { status: 201, body: 'null' } : undefined
+        );
+        await expect(build(request).run(job, { id: SESSION, resume: false })).rejects.toThrow(/answered no uid/);
+        expect(secretPostOf(calls)).toBeUndefined();
+        const deletes = calls.filter((call) => call.method === 'DELETE').map((call) => call.path);
+        expect(deletes.some((path) => path.startsWith(`${jobPath(namespace, runnerJobName(job))}?`))).toBe(true);
+        expect(deletes.some((path) => path.startsWith(secretsBase))).toBe(true);
     });
 
     const runnerItem = (lease: string, seq: string, containers: string[]) => ({
