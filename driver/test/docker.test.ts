@@ -102,6 +102,7 @@ import {
 } from '../src/publish.js';
 
 const MISMATCH_ROW = 'a run specced for another session than its group' as const;
+const SILENT_ROW = 'a supervisor that started and never answered' as const;
 const OTHER_SESSION = '44444444-4444-4444-8444-444444444444';
 
 const USER = '44444444-4444-4444-8444-444444444444';
@@ -2485,7 +2486,7 @@ describe('the docker runner', () => {
         await runner.kill(job); // the lease dies while the write is pending
         releaseWrite!(); // the write lands; the run now learns its lease is gone
 
-        await expect(pending).rejects.toThrow(/killed while setting up services/);
+        await expect(pending).rejects.toThrow(/killed while (setting up services|its task group came up)/);
         expect(spawnSpy).not.toHaveBeenCalled();
         // No leak: the file the write just created is removed on the abort path.
         expect(writtenTo).toBeTruthy();
@@ -5098,14 +5099,25 @@ describe('a group whose supervisor is gone releases its step channel', () => {
     it('fails a step in flight at once when a kill takes the group away, and serves a group made again', async () => {
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
-        const runner = dockerRunner(emptyDaemon, { steps: broker });
+        // The supervisor is stood in by this test's own pulls, repeated as a real one's are: a pull
+        // before the group is made again is lost with the old slot, and the group's wait has to see one.
+        const pull = async () => {
+            for (;;) {
+                const next = await broker.next(CONTROL_TOKEN, 20, new AbortController().signal);
+                if (next) return next;
+            }
+        };
+        const runner = dockerRunner(emptyDaemon, {
+            steps: broker,
+            sleep: () => new Promise((resolve) => setTimeout(resolve, 5)),
+        });
         const probing = runner.probeTree(repoJob);
-        expect(await broker.next(CONTROL_TOKEN, 5_000, new AbortController().signal)).toMatchObject({ kind: 'probe' });
+        expect(await pull()).toMatchObject({ kind: 'probe' });
         await runner.kill(repoJob);
         expect(await probing).toBeNull();
         // A later step makes the group again under the same token, and that group's supervisor serves it.
         const again = runner.probeTree(repoJob);
-        const pulled = await broker.next(CONTROL_TOKEN, 5_000, new AbortController().signal);
+        const pulled = await pull();
         expect(pulled).toMatchObject({ kind: 'probe' });
         if (pulled && pulled !== 'closed') broker.settle(CONTROL_TOKEN, pulled.id, pulled.invocation, ok('{}'));
         await again;
@@ -5973,7 +5985,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
 describe('how a refused group start ends, on docker (the startup conformance table, #824 D11)', () => {
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
     /** The daemon's own words for each refusal, as the CLI prints them on its stderr. */
-    const refusals: Record<Exclude<StartupRow, typeof MISMATCH_ROW>, string> = {
+    const refusals: Record<Exclude<StartupRow, typeof MISMATCH_ROW | typeof SILENT_ROW>, string> = {
         'the platform never brought the group up':
             'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?',
         'a registry that timed out':
@@ -6020,8 +6032,16 @@ describe('how a refused group start ends, on docker (the startup conformance tab
     const startups: Record<StartupRow, () => Promise<unknown>> = {
         ...(Object.fromEntries(
             Object.entries(refusals).map(([row, stderr]) => [row, () => refusedSync(stderr)])
-        ) as Record<Exclude<StartupRow, typeof MISMATCH_ROW>, () => Promise<unknown>>),
+        ) as Record<Exclude<StartupRow, typeof MISMATCH_ROW | typeof SILENT_ROW>, () => Promise<unknown>>),
         [MISMATCH_ROW]: async () => (await mismatchedRun({ id: OTHER_SESSION, resume: false })).thrown,
+        // The supervisor started and never pulled: the bound is reached on elapsed time, and nothing proves why.
+        [SILENT_ROW]: async () =>
+            dockerRunner(labelDaemon().exec, { steps: { ...syncSteps().sink, contacted: () => false } })
+                .syncCheckout(repoJob)
+                .then(
+                    () => null,
+                    (e: unknown) => e
+                ),
     };
 
     it.each(STARTUP_ROWS)('%s: %s', async (row, expected) => {
@@ -6060,6 +6080,103 @@ describe('how a refused group start ends, on docker (the startup conformance tab
             );
         expect((thrown as Error).message).toContain('EACCES');
         expect(startupDecisionOf(thrown)).toBe('unclassified');
+    });
+});
+
+describe('docker waits for the supervisor of a started group to make contact (#828)', () => {
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    /** A sink whose `contacted` answers `answers` in turn, then the last one for ever. */
+    const contactAfter = (supervised: ReturnType<typeof fakeSteps>, answers: boolean[]) => {
+        let reads = 0;
+        return { ...supervised.sink, contacted: () => answers[Math.min(reads++, answers.length - 1)]! };
+    };
+    const settled = (p: Promise<unknown>) =>
+        p.then(
+            () => null,
+            (e: unknown) => e as Error
+        );
+
+    it('submits nothing to a group before its supervisor has pulled', async () => {
+        const supervised = syncSteps();
+        const submittedAtSleep: number[] = [];
+        const runner = dockerRunner(labelDaemon().exec, {
+            steps: contactAfter(supervised, [false, false, true]),
+            sleep: async () => void submittedAtSleep.push(supervised.submitted.length),
+        });
+        await runner.syncCheckout(repoJob);
+        expect(submittedAtSleep).toEqual([0, 0]);
+        expect(supervised.ofKind('sync')).toHaveLength(1);
+    });
+
+    it('ends the wait on elapsed time with a plain error naming the supervisor, then removes the group', async () => {
+        let now = 0;
+        const spy = vitest.spyOn(Date, 'now').mockImplementation(() => (now += 120_000));
+        const slept: number[] = [];
+        const d = labelDaemon();
+        const supervised = syncSteps();
+        try {
+            const thrown = await settled(
+                dockerRunner(d.exec, {
+                    steps: contactAfter(supervised, [false]),
+                    sleep: async (ms) => void slept.push(ms),
+                }).syncCheckout(repoJob)
+            );
+            expect(thrown).toBeInstanceOf(Error);
+            expect(startupDecisionOf(thrown)).toBe('unclassified');
+            expect(thrown!.message).toContain(supervisorName(repoJob));
+            expect(thrown!.message).toContain('600000');
+        } finally {
+            spy.mockRestore();
+        }
+        expect(slept.length).toBeLessThan(20);
+        expect(supervised.submitted).toEqual([]);
+        expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
+    });
+
+    it('stops waiting for a group whose job was killed while it came up', async () => {
+        const slept: number[] = [];
+        const d = labelDaemon();
+        let runner: ReturnType<typeof dockerRunner> | undefined;
+        runner = dockerRunner(d.exec, {
+            steps: contactAfter(syncSteps(), [false]),
+            sleep: async (ms) => {
+                slept.push(ms);
+                await runner!.kill(repoJob);
+            },
+        });
+        const thrown = await settled(runner.syncCheckout(repoJob));
+        expect(thrown?.message).toMatch(/killed while its task group came up/);
+        expect(slept.length).toBeLessThanOrEqual(2);
+        expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
+    });
+
+    it('runs a reclaim only once its supervisor has pulled', async () => {
+        const supervised = fakeSteps((step) =>
+            ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
+        );
+        const { endpoint } = reclaimEndpoint();
+        const submittedAtSleep: number[] = [];
+        const runner = dockerRunner(labelDaemon().exec, {
+            steps: contactAfter(supervised, [false, false, true]),
+            endpoint,
+            sleep: async () => void submittedAtSleep.push(supervised.submitted.length),
+        });
+        expect(await runner.reclaimWorktree(repoJob)).toEqual({ ok: true, removed: true, reason: null });
+        expect(submittedAtSleep).toEqual([0, 0]);
+    });
+
+    it('fails a reclaim whose supervisor never pulled, and removes its group', async () => {
+        const supervised = fakeSteps();
+        const { endpoint } = reclaimEndpoint();
+        const d = labelDaemon();
+        const result = await dockerRunner(d.exec, {
+            steps: contactAfter(supervised, [false]),
+            endpoint,
+        }).reclaimWorktree(repoJob);
+        expect(result.ok).toBe(false);
+        expect(result.reason).toContain('never came up');
+        expect(supervised.ofKind('reclaim')).toEqual([]);
+        expect(d.containers.size).toBe(0);
     });
 });
 
