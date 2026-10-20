@@ -47,7 +47,13 @@ import {
     parseOpencodeRunOutcome,
     readsAgentTurns,
 } from '../src/close-read.js';
-import { ARTIFACT_LIMIT, commandMark, OPENCODE_EXPORT_LIMIT, SERVICE_LOG_TAIL_LINES } from '../src/runner.js';
+import {
+    ARTIFACT_LIMIT,
+    commandMark,
+    Inconclusive,
+    OPENCODE_EXPORT_LIMIT,
+    SERVICE_LOG_TAIL_LINES,
+} from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import {
@@ -2323,6 +2329,15 @@ describe('the docker runner', () => {
         );
     });
 
+    it('rejects Inconclusive when the fleet listing has a malformed row', async () => {
+        const garbage = vitest.fn(() => Promise.resolve({ stdout: '<html>\n' })) as unknown as (
+            args: string[]
+        ) => Promise<{ stdout: string }>;
+        await expect(
+            dockerRunner(garbage, { spawn: spawnChild('done\n', '', 0) }).deadServices(job)
+        ).rejects.toBeInstanceOf(Inconclusive);
+    });
+
     it('answers no dead services without asking the daemon when services are off', async () => {
         const exec = vitest.fn(() => Promise.resolve({ stdout: '' }));
         const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
@@ -2386,16 +2401,15 @@ describe('the docker runner', () => {
             ]);
         });
 
-        it('skips rows without the service label, an image or a state, and garbage lines', () => {
-            const unlabeled = psLine({ name: 'db', image: 'postgres:16', state: 'running' }).replace(
-                /factory\.service=db,?/,
-                ''
-            );
-            expect(
-                parseDockerServicePs(
-                    `${unlabeled}not json\n${psLine({ name: 'ok', image: '', state: 'running' })}${psLine({ name: 'ok2', image: 'redis:7', state: '' })}`
-                )
-            ).toEqual([]);
+        it('answers null when any row lacks the service label, an image or a state, or is not a record', () => {
+            const good = psLine({ name: 'db', image: 'postgres:16', state: 'running' });
+            const unlabeled = good.replace(/factory\.service=db,?/, '');
+            expect(parseDockerServicePs(unlabeled)).toBeNull();
+            expect(parseDockerServicePs(`${good}<html>\n`)).toBeNull();
+            expect(parseDockerServicePs(`${good}not json\n`)).toBeNull();
+            expect(parseDockerServicePs(`${good}[]\n`)).toBeNull();
+            expect(parseDockerServicePs(`${good}${psLine({ name: 'ok', image: '', state: 'running' })}`)).toBeNull();
+            expect(parseDockerServicePs(`${good}${psLine({ name: 'ok2', image: 'redis:7', state: '' })}`)).toBeNull();
         });
 
         it('answers empty for empty output', () => {

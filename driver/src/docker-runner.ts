@@ -50,6 +50,7 @@ import {
     reportTail,
     SERVICE_LOG_TAIL_LINES,
     type DeadService,
+    Inconclusive,
     type RunOutcome,
     type Runner,
     type RunSession,
@@ -67,6 +68,7 @@ import {
     DOCKER_NAME,
     LEASE_FORMAT,
     listOtherAttemptsOrThrow,
+    readDocker,
     type ClosedState,
     removeEachTolerantly,
     run,
@@ -398,9 +400,12 @@ async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omi
 async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<DeadService[]> {
     const { config, execDocker } = deps;
     if (!config.servicesEnabled) return [];
-    const found = await execDocker(servicePsArgs(job));
+    const found = await readDocker(execDocker, servicePsArgs(job), 'listing the attempt services', {
+        parse: parseDockerServicePs,
+    });
+    if (found.kind !== 'value') throw new Inconclusive(found.kind === 'inconclusive' ? found.reason : 'absent');
+    const listed = found.value;
     const out: DeadService[] = [];
-    const listed = parseDockerServicePs(found.stdout);
     // A declared service with no container at all — removed by hand — is dead too: no exit or log to read.
     for (const gone of missingDeclaredServices(job, listed)) {
         out.push({ ...gone, exitCode: null, reason: 'container removed', logTail: '' });

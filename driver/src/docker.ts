@@ -143,33 +143,40 @@ export function parseDockerStats(stdout: string): Omit<RuntimeSample, 'sampledAt
 
 /**
  * Pulls the service fleet out of `docker ps -a --format '{{json .}}'` over this attempt's label
- * pair. Pure and exported for the pinning. Rows without the `factory.service` label, an image or
- * a state are skipped — never a row the panel could not name — and garbage lines are skipped for
- * the same reason a stats parse skips them. `-a` is what lets an exited service answer honestly:
- * "came up and died" is a state, not an absence.
+ * pair. Pure and exported for the pinning. Null when any non-blank row is not a JSON record or
+ * lacks the `factory.service` label, an image or a state: one row the panel could not name makes
+ * the whole answer inconclusive, never a smaller fleet. `-a` is what lets an exited service answer
+ * honestly: "came up and died" is a state, not an absence.
  */
-export function parseDockerServicePs(stdout: string): ServiceStatus[] {
+export function parseDockerServicePs(stdout: string): ServiceStatus[] | null {
     const out: ServiceStatus[] = [];
     for (const line of stdout.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed) continue;
-        let fields: { Labels?: unknown; Image?: unknown; State?: unknown };
-        try {
-            fields = JSON.parse(trimmed) as { Labels?: unknown; Image?: unknown; State?: unknown };
-        } catch {
-            continue;
-        }
-        const labels = typeof fields.Labels === 'string' ? fields.Labels : '';
-        const name = labels
-            .split(',')
-            .find((pair) => pair.startsWith(`${SERVICE_LABEL}=`))
-            ?.slice(`${SERVICE_LABEL}=`.length);
-        const image = typeof fields.Image === 'string' ? fields.Image : null;
-        const state = typeof fields.State === 'string' ? fields.State.toLowerCase() : null;
-        if (!name || !image || !state) continue;
-        out.push({ name, image, state });
+        const row = serviceRow(trimmed);
+        if (!row) return null;
+        out.push(row);
     }
     return out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
+
+/** One `ps` line as a named service, or null when it is no JSON record or lacks the label, image or state. */
+function serviceRow(line: string): ServiceStatus | null {
+    let fields: { Labels?: unknown; Image?: unknown; State?: unknown } | null;
+    try {
+        fields = JSON.parse(line) as typeof fields;
+    } catch {
+        return null;
+    }
+    if (typeof fields !== 'object' || fields === null || Array.isArray(fields)) return null;
+    const labels = typeof fields.Labels === 'string' ? fields.Labels : '';
+    const name = labels
+        .split(',')
+        .find((pair) => pair.startsWith(`${SERVICE_LABEL}=`))
+        ?.slice(`${SERVICE_LABEL}=`.length);
+    const image = typeof fields.Image === 'string' ? fields.Image : null;
+    const state = typeof fields.State === 'string' ? fields.State.toLowerCase() : null;
+    return name && image && state ? { name, image, state } : null;
 }
 
 /**

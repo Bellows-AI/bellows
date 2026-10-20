@@ -513,8 +513,11 @@ export async function startJobServices(
 }
 
 /** The attempt's service fleet as the readiness wait reads it. */
-const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async () =>
-    parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
+const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async () => {
+    const listed = parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
+    if (listed === null) throw new Error('listing the attempt services: the daemon answered what is not the listing');
+    return listed;
+};
 
 /** The attempt's service fleet, exited ones included: the job and lease label pair, service key required. */
 export const servicePsArgs = (job: BoardJob): string[] => [
