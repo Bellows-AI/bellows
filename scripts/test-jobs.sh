@@ -21,7 +21,7 @@ while [ "$#" -gt 0 ]; do
         shift
         PHASE="${1:-}"
         case "$PHASE" in
-        all|board|driver|github-credential|services|orphan-reaper|node-disruption|run-deadline|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
+        all|board|driver|github-credential|services|orphan-reaper|node-disruption|run-deadline|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
         *) echo 'test-jobs: invalid --phase (see --help)'; exit 2 ;;
         esac
         ;;
@@ -33,7 +33,7 @@ while [ "$#" -gt 0 ]; do
     --help)
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
-        echo '        node-disruption, run-deadline, workflows, compose-driver, auth, cooperative-stop,'
+        echo '        node-disruption, run-deadline, review, workflows, compose-driver, auth, cooperative-stop,'
         echo '        tool-isolation, ask-user-question, question-round-trip'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
@@ -60,6 +60,7 @@ IMAGE_OK="factory-jobs-$RUN_ID-ok"
 IMAGE_FAIL="factory-jobs-$RUN_ID-fail"
 IMAGE_SVC="factory-jobs-$RUN_ID-svc"
 IMAGE_RUN="factory-jobs-$RUN_ID-run"
+IMAGE_REVIEW="factory-jobs-$RUN_ID-review"
 IMAGE_GH="factory-jobs-$RUN_ID-github"
 IMAGE_KILL="factory-jobs-$RUN_ID-kill"
 VOLUME="factory-jobs-$RUN_ID-workspaces"
@@ -186,7 +187,7 @@ cleanup() {
                 -c "drop database if exists $DB" >/dev/null 2>&1
         fi
         docker volume rm "$VOLUME" >/dev/null 2>&1
-        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
+        docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     fi
     for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
@@ -296,7 +297,7 @@ await_settled() { # await_settled <id> [seconds] -> final status, or empty on ti
     printf ''
 }
 
-start_driver() { # start_driver <image> [RUNNER_SERVICES]
+start_driver() { # start_driver <image> [RUNNER_SERVICES] [DRIVER_CONCURRENCY]
     # No ORG_ID. The board sends `workspacePath` on the claim now — it owns the layout, because it
     # is the thing that created the directory — so the driver builds no path of its own.
     # RUNNER_SERVICES defaults to on now; every phase but the services one passes 0 explicitly, so
@@ -304,7 +305,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES]
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
         RUNNER_SERVICES="${2:-0}" \
         WORKSPACE_VOLUME="$VOLUME" \
-        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
+        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY="${3:-2}" DRIVER_LEASE_SECONDS=60 \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -1521,6 +1522,115 @@ docker ps -aq --filter "label=factory.job=$overdue" |
         [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
     done
 
+fi
+
+if selected_phase review; then
+begin_phase review
+# --- The in-band reviewer (issue #774) ---------------------------------------------------------
+#
+# A task asks for a named review and waits on it, with ONE driver slot: the review is a step of the
+# caller's own task group, run in the group's `reviewer` container (uid 1002, the shared clone
+# read-only), never a queued job, never a container of its own. The stub image answers the reviewer
+# as a scripted reviewer (scripts/stub-agent.sh, review mode): it names its executor and uid, tries
+# a write into the clone and reports whether it failed, and ends on the verdict line. The first
+# review holds for a while (a marker in the profile's instructions), long enough for a second key
+# to meet it and for the containers to be counted.
+
+echo
+echo '# review'
+
+mkdir -p "$work/review"
+cat >"$work/review/review-caller.cjs" <<'CALLER'
+const base = (process.env.BELLOWS_CONTROL_URL || '').replace(/\/$/, '');
+const headers = { authorization: `Bearer ${process.env.BELLOWS_CONTROL_TOKEN}`, 'content-type': 'application/json' };
+const call = async (method, path, body) => {
+    const r = await fetch(base + path, { method, headers, body });
+    return { status: r.status, text: await r.text() };
+};
+const ask = (key) => call('POST', '/review', JSON.stringify({ key, profile: 'audit' }));
+(async () => {
+    console.log('first=' + (await ask('rv-a')).status);
+    if (process.argv.slice(2).join(' ').includes('REVIEW-SECOND')) {
+        const second = await ask('rv-b');
+        console.log('second=' + second.status + ' ' + second.text);
+    }
+    let last;
+    for (let i = 0; i < 150; i++) {
+        last = await call('GET', '/review/rv-a');
+        if (JSON.parse(last.text).done) break;
+        await new Promise((r) => setTimeout(r, 1000));
+    }
+    console.log('final=' + last.text);
+    const reread = await call('GET', '/review/rv-a');
+    console.log('reread=' + reread.status + ' ' + reread.text);
+})().catch((e) => {
+    console.error(e);
+    process.exit(1);
+});
+CALLER
+printf 'FROM %s\nCOPY review-caller.cjs /review-caller.cjs\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","node","/review-caller.cjs"]\n' "$IMAGE_BASE" >"$work/review/Dockerfile"
+docker build -q -t "$IMAGE_REVIEW" "$work/review" >/dev/null || {
+    echo 'test-jobs: could not build the review caller image'
+    exit 1
+}
+
+write_bellows 'reviewers:
+  - name: audit
+    instructions: "Audit the tree. STUB-REVIEW-HOLD-20"
+    timeout: 5'
+# The reviewer's home on the member's tree (REVIEWER_TREE_DIR). A deployment's dashboard makes it on
+# the shared volume (provision.ts, the claim handler); this lane's board keeps its workspaces on the
+# host, so the volume gets it here, group-writable for the reviewer's gid (GATE_GID, 1000).
+docker run --rm -u 0 -v "$VOLUME:/workspaces" "$IMAGE_BASE" sh -c \
+    'mkdir -p "/workspaces/$1/.factory/reviewer" && chgrp 1000 "/workspaces/$1/.factory/reviewer" && chmod 2775 "/workspaces/$1/.factory/reviewer"' \
+    sh "$member_path" || {
+    echo 'test-jobs: could not make the reviewer home'
+    exit 1
+}
+start_driver "$IMAGE_REVIEW" 0 1
+
+jobs_seen() { docker ps -a --filter 'label=factory.job' --format '{{.ID}} {{.Label "factory.job"}} {{.Label "factory.role"}}'; }
+jobs_seen | cut -d' ' -f1 | sort -u >"$work/review-before"
+
+rv="$(create_job 'review REVIEW-SECOND')"
+: >"$work/review-seen"
+: >"$work/review-user"
+rv_until=$(($(date +%s) + 180))
+while [ -z "$(settled "$rv")" ] && [ "$(date +%s)" -lt "$rv_until" ]; do
+    jobs_seen | grep -v -F -f "$work/review-before" >>"$work/review-seen"
+    for c in $(grep ' reviewer$' "$work/review-seen" | cut -d' ' -f1 | sort -u); do
+        [ -s "$work/review-user" ] || docker inspect -f '{{.Config.User}}' "$c" >"$work/review-user" 2>/dev/null
+    done
+    sleep 1
+done
+expect_contains 'a caller that requests a review and waits on it completes with one driver slot' "$(await_settled "$rv" 120)" succeeded
+rv_out="$(field "$(body "$(api GET "/api/jobs/$rv")")" output)"
+expect_contains 'the first request starts the review'            "$rv_out" 'first=201'
+expect_contains 'a second concurrent key is refused 409'          "$rv_out" 'second=409'
+expect_contains 'the refusal says the first review is running'    "$rv_out" 'is running'
+expect_contains 'the review ends clean'                           "$rv_out" 'verdict":"clean'
+expect_contains 'the review ran as uid 1002'                      "$rv_out" 'uid=1002'
+expect_contains 'the review could not write the shared tree'      "$rv_out" 'tree-write=denied'
+expect_contains 'the stored key reads back after the review'      "$rv_out" 'reread=200'
+rv_reviewers="$(grep -c ' reviewer$' <(sort -u "$work/review-seen"))"
+rv_foreign="$(sort -u "$work/review-seen" | awk -v job="$rv" '$2 != job' | wc -l | tr -d ' ')"
+[ "$rv_reviewers" = 1 ] && ok 'the group has exactly one reviewer container' ||
+    bad 'the group has exactly one reviewer container' "$rv_reviewers seen: $(sort -u "$work/review-seen" | tr '\n' ';')"
+[ "$rv_foreign" = 0 ] && ok 'no container besides the group'"'"'s was created for the review' ||
+    bad 'no container besides the group'"'"'s was created for the review' "$(sort -u "$work/review-seen" | tr '\n' ';')"
+case "$(cat "$work/review-user")" in
+1002:*) ok 'the reviewer container is created as uid 1002' ;;
+*) bad 'the reviewer container is created as uid 1002' "user: '$(cat "$work/review-user")'" ;;
+esac
+
+# The opencode executor reaches the same reviewer container through its own entrypoint.
+rvo="$(create_job 'review' opencode)"
+expect_contains 'an opencode caller completes its review' "$(await_settled "$rvo" 180)" succeeded
+rvo_out="$(field "$(body "$(api GET "/api/jobs/$rvo")")" output)"
+expect_contains 'the opencode review ran through opencode-executor' "$rvo_out" 'executor=opencode-executor'
+expect_contains 'the opencode review ends clean'                   "$rvo_out" 'verdict":"clean'
+
+stop_driver
 fi
 
 if selected_phase workflows; then

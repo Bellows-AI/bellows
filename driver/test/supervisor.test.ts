@@ -1382,6 +1382,27 @@ describe('the supervisor run: review steps through the review mailbox (issue #77
         await supervised.done;
     });
 
+    it('opens the review mailbox to the reviewer\u2019s group: its directories and the request it claims', async () => {
+        // The reviewer is another uid of the supervisor's group (REVIEWER_UID, GATE_GID): it must
+        // create the loop's heartbeat, claim a request by rename and write its answer beside it
+        // (test:jobs: "can't create /factory/review/alive: Permission denied").
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        const loop = fakeGateLoop(supervised.box.review, () => ({ exitCode: 0, output: '', holdMs: 60_000 }));
+        driver.order(reviewStep('review-1', ['sleep', '60'], { env: { KEY: 'v' }, timeoutMs: 60_000 }));
+        await until('the review to be taken', () => loop.seen.length === 1);
+        const mode = (...parts: string[]) => statSync(join(supervised.box.review, ...parts)).mode & 0o777;
+        const groupWritable = (m: number) => (m & 0o070) === 0o070;
+        for (const dir of ['', GATE_FILES.requests, GATE_FILES.running, GATE_FILES.done]) {
+            expect(groupWritable(mode(dir)), `the review mailbox ${dir || 'root'}`).toBe(true);
+        }
+        expect(groupWritable(mode(GATE_FILES.running, 'review-1')), 'the claimed request').toBe(true);
+        driver.cancel.push('review-1');
+        await until('the review answer', () => driver.answers.has('review-1'));
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
     it('cancels a review off the control poll, answering the 130 the driver discards', async () => {
         const driver = await startDriver();
         const supervised = run(driver, REVIEWING);

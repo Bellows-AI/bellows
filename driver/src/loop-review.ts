@@ -127,6 +127,7 @@ async function superviseOne(
     });
     const beating = beatReview(rt, review, stop, ended);
     let result: StepResult | null = null;
+    let lost = false;
     const exporting = openReviewExport(rt, caller, review);
     try {
         await runner.resizeReviewer(caller, 'run').catch(() => false);
@@ -143,7 +144,8 @@ async function superviseOne(
         });
     } catch (e) {
         // A lost supervisor is no verdict on the review; anything else that stopped it ends the row.
-        if (!stepLost(e) && !stop.signal.aborted) result = failedStep((e as Error).message);
+        lost = stepLost(e);
+        if (!lost && !stop.signal.aborted) result = failedStep((e as Error).message);
         else log(`review ${review.id}: the review step ended without an answer: ${(e as Error).message}`);
     } finally {
         exporting?.close();
@@ -151,7 +153,8 @@ async function superviseOne(
         await beating;
         await runner.resizeReviewer(caller, 'idle').catch(() => false);
     }
-    await settleReview(rt, review, result, stop.signal.aborted);
+    // A lost supervisor ended the step, not the caller's cancel: no verdict, the lease re-leases the row.
+    await settleReview(rt, review, result, stop.signal.aborted && !lost);
 }
 
 const failedStep = (reason: string): StepResult => ({ exitCode: 1, stdout: '', stderr: reason, timedOut: false });

@@ -261,6 +261,19 @@ describe('a review the board leased in-band (issue #774)', () => {
         expect(t.runner.reviewerResized).toEqual(['run', 'idle']);
     });
 
+    it('leaves the row to its lease when the supervisor was lost and the lost attempt then cancels the review', async () => {
+        const t = supervising({
+            runReview: (_c, _r, _s, { signal }) =>
+                new Promise((_resolve, reject) => {
+                    signal?.addEventListener('abort', () => reject(new StepChannelClosed('the task group ended')));
+                }),
+        });
+        t.start();
+        await until(() => t.runner.reviewed.length === 1);
+        await cancelReviews(t.state);
+        expect(t.board.completed).toEqual([]);
+    });
+
     it('ends the row failed when the step cannot be run at all', async () => {
         const t = supervising({ runReview: async () => STEP({ exitCode: 1, stdout: '', stderr: 'no repository' }) });
         t.start();

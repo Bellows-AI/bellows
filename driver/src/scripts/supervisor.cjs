@@ -91,6 +91,12 @@ const OUTCOMES = ['completed', 'failed', 'cancelled', 'timed_out', 'lost'];
  */
 const AGENT_DIR = 'agent';
 const AGENT_DIR_MODE = 0o700;
+/** The review mailbox is served by another uid of this group (REVIEWER_UID, issue #774): its directories and requests are group-writable. */
+const REVIEW_DIR_MODE = 0o775;
+/** A review's env file is its credential: readable by that group, never written. */
+const REVIEW_ENV_MODE = 0o640;
+/** A gate request's env file: its owner alone. */
+const GATE_ENV_MODE = 0o600;
 
 const FILES = {
     stop: 'stop',
@@ -626,10 +632,14 @@ function postGateRequest(run, step, name) {
     const staged = path.join(run.file[lane].staging, name);
     fs.rmSync(staged, { recursive: true, force: true });
     fs.mkdirSync(staged, { recursive: true });
+    const reviewing = lane === 'review';
+    if (reviewing) fs.chmodSync(staged, REVIEW_DIR_MODE);
     fs.writeFileSync(path.join(staged, GATE_FILES.command), laneCommand(step));
     fs.writeFileSync(path.join(staged, GATE_FILES.cwd), step.cwd);
     const env = Object.entries(step.env ?? {}).map(([n, v]) => `${n}=${v}\n`);
-    fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), { mode: 0o600 });
+    fs.writeFileSync(path.join(staged, GATE_FILES.env), env.join(''), {
+        mode: reviewing ? REVIEW_ENV_MODE : GATE_ENV_MODE,
+    });
     fs.renameSync(staged, path.join(run.file[lane].requests, name));
 }
 
@@ -1244,6 +1254,16 @@ async function drainExporter(run) {
     return false;
 }
 
+/** The review mailbox is served by another uid of this group: its directories are group-writable. */
+function openReviewMailbox(run) {
+    if (!run.settings.review) return;
+    const { requests, running, done } = run.file.review;
+    for (const dir of [run.settings.dirs.review, requests, running, done]) {
+        // A kubernetes emptyDir root belongs to root and is already 0777: only its owner may chmod it.
+        if ((fs.statSync(dir).mode & 0o020) === 0) fs.chmodSync(dir, REVIEW_DIR_MODE);
+    }
+}
+
 /**
  * Runs the supervisor to its report. Returns the exit status; `now` and `log` are test seams.
  * Never throws for the attempt's own failures: those are the outcome. A bug throws, and the
@@ -1260,6 +1280,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     // directory already exists.
     for (const dir of [run.file.agentIn, run.file.agentOut]) fs.chmodSync(dir, AGENT_DIR_MODE);
     for (const dir of [run.file.answers, run.file.questions, ...gateDirs(run)]) fs.mkdirSync(dir, { recursive: true });
+    openReviewMailbox(run);
     beat(run);
     run.machine.enter('setup'); // delegated: the gate environment's setup is the driver's
     persist(run);
