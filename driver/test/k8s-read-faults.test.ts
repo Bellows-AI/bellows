@@ -407,13 +407,13 @@ scenario(
 const ADOPT_PODS = `GET ${API}/pods?labelSelector=job-name=factory-runner-<prior-hash>`;
 /**
  * The claim an adoption took, given back when it stands down: no group of the adopter exists, and
- * the release reads the claim fresh and deletes it under its uid (`k8s-adopt.ts:384` →
+ * the release reads the claim fresh and deletes it under its uid (`k8s-adopt.ts:356` →
  * `k8s-fence.ts:230-251`).
  */
 const ADOPTER_CLAIM: AllowedWrite = {
     write: `DELETE ${CLAIM}`,
     at: [ADOPT_PODS, CLAIM_READ],
-    why: 'the stand-down returns the claim the adoption acquired, uid-checked and fresh-read (`k8s-adopt.ts:384` → `k8s-fence.ts:230-251`)',
+    why: 'the stand-down returns the claim the adoption acquired, uid-checked and fresh-read (`k8s-adopt.ts:356` → `k8s-fence.ts:230-251`)',
 };
 
 scenario(

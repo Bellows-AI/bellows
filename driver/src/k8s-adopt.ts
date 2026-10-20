@@ -31,14 +31,7 @@ import {
 import { containerStatusOf, HTTP_BAD_REQUEST, HTTP_ERROR_STATUS, HTTP_NOT_FOUND, POLL_MS } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
-import {
-    AdoptionBlocked,
-    type AdoptedRun,
-    adoptionAbandoned,
-    commandMark,
-    Inconclusive,
-    type RunOutcome,
-} from './runner.js';
+import { AdoptionBlocked, type AdoptedRun, adoptionAbandoned, Inconclusive, type RunOutcome } from './runner.js';
 import {
     AGENT_CONTAINER,
     type FinalReport,
@@ -46,7 +39,8 @@ import {
     SUPERVISOR_CONTAINER,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
-import { type KillRecord, killRecordsOf, settleEnd } from './termination.js';
+import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
+import { type KillRecord, killRecordsOf } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
 interface ListedRunner extends ListedRunnerJob {
@@ -55,10 +49,7 @@ interface ListedRunner extends ListedRunnerJob {
 }
 
 /** An agent runner of an earlier claim: the attempt it ran as, its claim sequence and session. */
-interface EarlierRunner {
-    prior: BoardJob;
-    claimSeq: number;
-    session: string | null;
+interface EarlierRunner extends EarlierRun {
     status: NonNullable<ListedRunner['status']>;
     /** The Job is over; otherwise its agent may have exited while its supervisor finalizes (#824). */
     finished: boolean;
@@ -73,9 +64,9 @@ export interface CloseReads {
 }
 
 /**
- * One listed Job as an agent runner of a claim before `job`'s, or null when it is not one. The
- * markers an adoption orders and recognizes by are valid when the Job is a runner's
- * (`asListedRunner`): a Job whose command mark is another valid mark is another command's run.
+ * One listed Job as an agent runner of this job, or null when it is not one. The markers an adoption
+ * orders and recognizes by are valid when the Job is a runner's (`asListedRunner`); the skeleton
+ * drops a Job of a later claim or whose command mark is another valid mark (another command's run).
  */
 function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | null {
     const prior = { ...job, leaseToken: item.metadata?.labels?.[LEASE_LABEL] ?? '' };
@@ -83,13 +74,10 @@ function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | nul
     // Only an agent run of the runner itself (its name is the (job, lease) hash, which no aux Job
     // shares): never a supervisor-only group, never a Job its driver suspended (issue #821).
     if (!agentRunJob(item, prior)) return null;
-    // A queued task's command edited since the run (after a handover) makes that run not its own.
-    if (annotations?.[COMMAND_MARK] !== commandMark(job.command)) return null;
-    const claimSeq = Number(annotations?.[CLAIM_SEQ_MARK]);
-    if (claimSeq >= job.claimSeq) return null;
     return {
         prior,
-        claimSeq,
+        claimSeq: Number(annotations?.[CLAIM_SEQ_MARK]),
+        commandMark: annotations?.[COMMAND_MARK],
         session: annotations?.[SESSION_MARK] ?? null,
         status: item.status ?? {},
         finished: finishedAgentRun(item, prior),
@@ -136,47 +124,29 @@ const asListedRunner =
         return marked && validRunnerSpec(item.spec) ? item : null;
     };
 
-/** A typed read whose `Inconclusive` stands the adoption down: nothing unconfirmed decides a run (#824). */
-async function confirmed<T>(read: Promise<T>): Promise<T> {
-    try {
-        return await read;
-    } catch (e) {
-        if (e instanceof Inconclusive) throw new AdoptionBlocked(e.message);
-        throw e;
-    }
-}
-
 /** The runner pods of `prior`, read with the verdict reads' patience; none for a list the apiserver has not. */
 async function runnerPodsOf(deps: K8sDeps, prior: BoardJob): Promise<K8sPod[]> {
     const path = jobPodsPath(deps.config.k8sNamespace, runnerName(prior));
-    const pods = await confirmed(readList(deps, path, 'listing the earlier runner pods', { entry: asPod }));
+    const pods = await readList(deps, path, 'listing the earlier runner pods', { entry: asPod });
     return pods === ABSENT ? [] : pods;
 }
 
 /** The earlier runners of this job, listed with the verdict reads' patience. */
 async function listEarlierRunners(deps: K8sDeps, job: BoardJob): Promise<ListedRunner[]> {
     const path = jobsSelectorPath(deps.config.k8sNamespace, job);
-    const runners = await confirmed(
-        readList(deps, path, 'listing the earlier runner jobs', { entry: asListedRunner(job) })
-    );
+    const runners = await readList(deps, path, 'listing the earlier runner jobs', { entry: asListedRunner(job) });
     return runners === ABSENT ? [] : runners;
 }
 
 /**
- * The newest earlier runner a claim may adopt, by claim sequence: a finished one, or one whose
+ * Whether an earlier runner (newest first) is one a claim may adopt: a finished one, or one whose
  * agent exited while its supervisor finalizes (#824) — a Job listed over whose supervisor still
  * runs is that too. A runner whose agent still runs is skipped, as ever.
  */
-async function adoptableEarlierRunner(deps: K8sDeps, job: BoardJob): Promise<EarlierRunner | null> {
-    const runners = (await listEarlierRunners(deps, job))
-        .map((item) => earlierRunnerOf(job, item))
-        .filter((found): found is EarlierRunner => found !== null)
-        .sort((a, b) => b.claimSeq - a.claimSeq);
-    for (const found of runners) {
-        const pods = await runnerPodsOf(deps, found.prior);
-        if (found.finished) return { ...found, finished: groupStateOf(pods) === 'over' };
-        if (containerStatusOf(runnerPodOf(pods), AGENT_CONTAINER)?.state?.terminated) return found;
-    }
+async function admitted(deps: K8sDeps, found: EarlierRunner): Promise<EarlierRunner | null> {
+    const pods = await runnerPodsOf(deps, found.prior);
+    if (found.finished) return { ...found, finished: groupStateOf(pods) === 'over' };
+    if (containerStatusOf(runnerPodOf(pods), AGENT_CONTAINER)?.state?.terminated) return found;
     return null;
 }
 
@@ -303,52 +273,6 @@ async function readFinalReport(
     return { report: finalReportOf(log.body), neverRan: null };
 }
 
-/** The earlier run's outcome, read the way `run` reads its own; null for a runner the platform took away. */
-async function readEarlierRun(deps: K8sDeps, job: BoardJob, found: EarlierRunner, reads: CloseReads) {
-    const { prior, session, status, kills } = found;
-    const { report, neverRan } = await readFinalReport(deps, prior);
-    const verdict = await confirmed(
-        readRunnerVerdict(deps, prior, (status.succeeded ?? 0) >= 1, { report, strict: true })
-    );
-    // A supervisor that reported finalized the run: the pod's deletion after it is no loss.
-    const { timedOut, infraLoss, fields } = settleEnd({
-        kills,
-        driverKilledHard: false,
-        report,
-        budgetEnded: timedOutOf(status) || verdict.supervisorDeadline,
-        vanished: verdict.vanished,
-        unfinalized: verdict.unfinalized ?? neverRan,
-    });
-    if (infraLoss) return null;
-    const { exitCode, output, fullLog, logTruncated } = verdict;
-    const outcome: RunOutcome = {
-        exitCode,
-        output,
-        timedOut,
-        started: true,
-        fullLog,
-        logTruncated,
-        ...fields,
-    };
-    const startedAt = status.startTime ?? new Date(0).toISOString();
-    if (job.executorType === OPENCODE) await reads.attachOpencodeOutcome(deps, prior, startedAt, outcome);
-    if (job.executorType === CLAUDE_CODE && session) {
-        mergeClaudeCloseRead(outcome, await reads.scrapeClaudeCloseRead(deps, prior, session, startedAt));
-    }
-    if (session && !outcome.sessionId) outcome.sessionId = session;
-    return outcome;
-}
-
-/** `adoptableEarlierRunner`, contained: whatever it meets in what it reads stands the attempt down, never a fresh run. */
-async function discovered(deps: K8sDeps, job: BoardJob): Promise<EarlierRunner | null> {
-    try {
-        return await adoptableEarlierRunner(deps, job);
-    } catch (e) {
-        if (e instanceof AdoptionBlocked) throw e;
-        throw new AdoptionBlocked(`the earlier runners could not be read: ${(e as Error).message}`);
-    }
-}
-
 /** Before anything is deleted after a wait: the checkout claim is still this attempt's. */
 async function assertClaimStillHeld(deps: K8sDeps, job: BoardJob): Promise<void> {
     if ((await readClaim(deps, job))?.holder !== job.leaseToken) {
@@ -364,58 +288,74 @@ async function assertClaimStillHeld(deps: K8sDeps, job: BoardJob): Promise<void>
  * platform took away is no run to adopt: the claim goes back, and the sync's re-claim fence takes
  * it as ever. `signal` is the attempt's stand-down: an abandoned adoption deletes nothing.
  */
-export async function adoptFinishedRunner(
+export function adoptFinishedRunner(
     deps: K8sDeps,
     job: BoardJob,
     reads: CloseReads,
     signal?: AbortSignal
 ): Promise<AdoptedRun | null> {
-    const found = await discovered(deps, job);
-    if (!found) return null;
-    try {
-        return await adoptFound(deps, job, found, { reads, signal });
-    } catch (e) {
-        deps.adopted?.delete(job.leaseToken);
-        await releaseClaimAfterGroupEnd(deps, job);
-        // An earlier run exists: no throw may fall through to a fresh run, whose sync's fence would
-        // sweep it unread — the attempt stands down to its lease instead.
-        if (e instanceof AdoptionBlocked || signal?.aborted) throw e;
-        throw new AdoptionBlocked(`the earlier run could not be adopted: ${(e as Error).message}`);
-    }
+    // This attempt continues the run it reads: its sweeps keep it (issue #821).
+    deps.adopted ??= new Map();
+    return adoptEarlierRun(k8sAdoption(deps, reads), deps.adopted, job, signal);
 }
 
-/** `adoptFinishedRunner` over the earlier runner it found; its caller gives the claim back on any throw. */
-async function adoptFound(
-    deps: K8sDeps,
-    job: BoardJob,
-    found: EarlierRunner,
-    { reads, signal }: { reads: CloseReads; signal: AbortSignal | undefined }
-): Promise<AdoptedRun | null> {
-    // A takeover of a stale claim deletes it: never once the attempt stood down.
-    if (signal?.aborted) throw adoptionAbandoned();
-    await acquireClaim(deps, job);
-    if (!found.finished) {
-        const ended = await awaitFinalized(deps, found.prior, signal);
-        if (!ended) {
+/** What differs in kubernetes' adoption: the Job listing, the checkout claim, the pod reads, the sweep. */
+function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierRunner> {
+    return {
+        list: async (job) =>
+            (await listEarlierRunners(deps, job))
+                .map((item) => earlierRunnerOf(job, item))
+                .filter((found): found is EarlierRunner => found !== null),
+        admit: (found) => admitted(deps, found),
+        begin: (job) => acquireClaim(deps, job),
+        awaitEnd: async (found, _job, signal) => {
+            if (found.finished) return found;
+            const ended = await awaitFinalized(deps, found.prior, signal);
+            return ended && { ...found, status: { ...found.status, ...ended.status }, kills: ended.kills };
+        },
+        read: async (found) => {
+            const { prior, status, kills } = found;
+            const { report, neverRan } = await readFinalReport(deps, prior);
+            const verdict = await readRunnerVerdict(deps, prior, (status.succeeded ?? 0) >= 1, {
+                report,
+                strict: true,
+            });
+            const { exitCode, output, fullLog, logTruncated } = verdict;
+            return {
+                // A supervisor that reported finalized the run: the pod's deletion after it is no loss.
+                end: {
+                    kills,
+                    driverKilledHard: false,
+                    report,
+                    budgetEnded: timedOutOf(status) || verdict.supervisorDeadline,
+                    vanished: verdict.vanished,
+                    unfinalized: verdict.unfinalized ?? neverRan,
+                },
+                body: async () => ({
+                    exitCode,
+                    output,
+                    fullLog,
+                    logTruncated,
+                    startedAt: status.startTime ?? new Date(0).toISOString(),
+                }),
+            };
+        },
+        // Before anything is deleted after a wait: the checkout claim is still this attempt's.
+        confirmOwnership: async (found, job) => {
+            if (!found.finished) await assertClaimStillHeld(deps, job);
+        },
+        closeReadout: async (outcome, { prior, session }, job, startedAt) => {
+            if (job.executorType === OPENCODE) await reads.attachOpencodeOutcome(deps, prior, startedAt, outcome);
+            if (job.executorType === CLAUDE_CODE && session) {
+                mergeClaudeCloseRead(outcome, await reads.scrapeClaudeCloseRead(deps, prior, session, startedAt));
+            }
+        },
+        recordKey: ({ prior }) => runnerName(prior),
+        sweep: ({ prior }, job, signal) => sweepAfterAdoption(deps, job, prior, signal),
+        rollback: async (job) => {
             await releaseClaimAfterGroupEnd(deps, job);
-            return null;
-        }
-        found.status = { ...found.status, ...ended.status };
-        found.kills = ended.kills;
-    }
-    const outcome = await readEarlierRun(deps, job, found, reads);
-    if (!outcome) {
-        await releaseClaimAfterGroupEnd(deps, job);
-        return null;
-    }
-    // This attempt continues that outcome: its sweeps keep the run it read (issue #821).
-    deps.adopted ??= new Map();
-    deps.adopted.set(job.leaseToken, runnerName(found.prior));
-    // Nothing is deleted once the attempt stood down, whatever the run it read.
-    if (signal?.aborted) throw adoptionAbandoned();
-    if (!found.finished) await assertClaimStillHeld(deps, job);
-    await sweepAfterAdoption(deps, job, found.prior, signal);
-    return { outcome, claimSeq: found.claimSeq };
+        },
+    };
 }
 
 /**
