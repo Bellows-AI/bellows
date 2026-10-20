@@ -61,10 +61,11 @@ export function infraLossOf(e: TerminationEvidence): string | null {
 
 /**
  * Whether a supervisor's logged final report says it finalized a run. A group whose driver was lost
- * before the agent was released reports too (`unlaunched`), and exits 75: nothing ran to finalize.
+ * before the agent was released reports too (`unlaunched`), and exits 75: nothing ran to finalize. An
+ * agent the supervisor lost (`lost`, no exit code) is no finished run either: infrastructure took it.
  */
 export const reportFinalized = (report: FinalReport | null): boolean =>
-    report !== null && report.agentEnd !== 'unlaunched';
+    report !== null && report.agentEnd !== 'unlaunched' && report.agentEnd !== 'lost';
 
 /** The outcome fields a supervisor's final report stands for: the budget, or a full spool it raised itself. */
 export function reportVerdictOf(
@@ -90,4 +91,52 @@ export function adoptedVerdictOf(
         if (reason === 'artifact_spool_full') fields.artifactSpoolFull = detail || 'the spool cap was reached';
     }
     return fields;
+}
+
+/** Everything a started run's end is classified from: the executor's reads and the driver's own record. */
+export interface EndEvidence {
+    /** The reasons the driver recorded before it ended the run itself (adopted runs; empty when attached). */
+    kills: readonly KillRecord[];
+    /** This driver hard-killed the group (the kill ledger's `hard`). */
+    driverKilledHard: boolean;
+    /** The supervisor's final report, null when none was taken. */
+    report: FinalReport | null;
+    /** The budget ended the agent by a read the report and the kill records do not carry: the exit 124, the kubelet deadline. */
+    budgetEnded: boolean;
+    /** The runner was taken away under the run (`TerminationEvidence.vanished`). */
+    vanished: string | null;
+    /** The supervisor ended any way but finalizing (`supervisorLossOf`). */
+    unfinalized: string | null;
+}
+
+/** How a started run ended: the budget's verdict, the infrastructure loss it amounts to, and the verdict fields recorded for it. */
+export interface SettledEnd {
+    timedOut: boolean;
+    infraLoss: string | null;
+    fields: Partial<Pick<RunOutcome, 'timedOut' | 'cacheLost' | 'artifactSpoolFull'>>;
+}
+
+/** A report of a lost agent is a loss by itself: the supervisor may log it and still exit 0. */
+const LOST_AGENT = 'the supervisor lost the agent before it exited';
+
+/**
+ * The one close-time classification, over all five ends of a started run (attached and adopted, on
+ * both executors, and a vanished runner): a supervisor that finalized the run (`reportFinalized`)
+ * counts as reported. A runner taken away under an attached run is a loss whatever its supervisor
+ * logged on the way down; an adoption drops a deletion after the report before it gets here.
+ */
+export function settleEnd(e: EndEvidence): SettledEnd {
+    const timedOut = e.budgetEnded || e.report?.outcome === 'timed_out' || e.kills.some((k) => k.reason === 'timeout');
+    const finalized = reportFinalized(e.report);
+    return {
+        timedOut,
+        infraLoss: infraLossOf({
+            killedByDriver: e.driverKilledHard || e.kills.some((k) => killEndsGroup(k.reason)),
+            timedOut,
+            reported: finalized,
+            vanished: e.vanished,
+            unfinalized: e.unfinalized ?? (e.report?.agentEnd === 'lost' ? LOST_AGENT : null),
+        }),
+        fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
+    };
 }

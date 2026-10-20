@@ -18,6 +18,7 @@ import { type SyncQueue, type SyncTurn, syncQueue } from '../src/sync-queue.js';
 import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
 import type { GateStack, LoopRuntime } from '../src/loop-types.js';
 import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
+import { transition } from '../src/loop-phase.js';
 import {
     type BoardStub,
     config,
@@ -2460,8 +2461,164 @@ describe('the poll loop', () => {
 
         expect(board.board.interrupted).toEqual([{ id: claimed.id, reason: 'the driver was drained', release: true }]);
         expect(runner.killed).toEqual([]);
+        expect(runner.finished).toEqual([]);
         expect(board.board.completed).toEqual([]);
         expect(board.board.suspended).toEqual([]);
+    });
+
+    // Issue #828: a run that resolves after the handover is abandoned — its outcome is never
+    // reported, and the one conclusion stays the interruption.
+    it('ignores the outcome of a run that resolves after the handover', async () => {
+        const claimed = job(1);
+        const board = stubBoard([claimed]);
+        let running: () => void = () => {};
+        const inFlight = new Promise<void>((resolve) => {
+            running = resolve;
+        });
+        let resolveRun: (outcome: RunOutcome) => void = () => {};
+        const runner = stubRunner(async () => {
+            running();
+            return new Promise<RunOutcome>((resolve) => {
+                resolveRun = resolve;
+            });
+        });
+        const loop = createLoop({ board: board.board, runner, config: config(), sleep });
+        board.attach(loop);
+        const started = loop.start();
+
+        await inFlight;
+        const handed = loop.handover('the driver was drained');
+        resolveRun(ok());
+        await handed;
+        await started;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(board.board.interrupted).toEqual([{ id: claimed.id, reason: 'the driver was drained', release: true }]);
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(runner.finished).toEqual([]);
+    });
+
+    // Issue #828: start() never returns while an interruption is in flight.
+    it('holds start() and the handover until the interruption is answered', async () => {
+        const claimed = job(1);
+        const board = stubBoard([claimed]);
+        let answerInterrupt: () => void = () => {};
+        const asked = new Promise<void>((resolve) => {
+            board.board.interrupt = (_job, interruption) =>
+                new Promise((answer) => {
+                    board.board.interrupted.push({ id: claimed.id, ...interruption });
+                    answerInterrupt = () => answer('held');
+                    resolve();
+                });
+        });
+        let running: () => void = () => {};
+        const inFlight = new Promise<void>((resolve) => {
+            running = resolve;
+        });
+        const runner = stubRunner(async () => {
+            running();
+            return new Promise<RunOutcome>(() => {});
+        });
+        const logs: string[] = [];
+        const loop = createLoop({ board: board.board, runner, config: config(), sleep, log: (m) => logs.push(m) });
+        board.attach(loop);
+        let startReturned = false;
+        const started = loop.start().then(() => {
+            startReturned = true;
+        });
+
+        await inFlight;
+        let handoverReturned = false;
+        const handed = loop.handover('the driver was drained').then(() => {
+            handoverReturned = true;
+        });
+        await asked;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(handoverReturned).toBe(false);
+        expect(startReturned).toBe(false);
+        // The interruption is the attempt's ending: it is not over until the board has answered.
+        expect(logs.some((m) => m.includes('"to":"ended"'))).toBe(false);
+
+        answerInterrupt();
+        await handed;
+        await started;
+        // The abandoned run does not hold the attempt: it ended through the one end().
+        expect(logs.some((m) => m.includes('"to":"ended"'))).toBe(true);
+        expect(runner.finished).toEqual([]);
+        expect(runner.killed).toEqual([]);
+    });
+
+    // Issue #828: a lease lost while the agent runs kills it from the heartbeat; the board is told
+    // nothing, and the runner is retained for the new holder, never finished.
+    it('tells the board nothing when the heartbeat reports the lease lost mid-run, and retains the runner', async () => {
+        const board = stubBoard([job(1)]);
+        let launched = false;
+        const heldBeat = board.board.heartbeat.bind(board.board);
+        board.board.heartbeat = async (...args) => (launched ? 'lost' : heldBeat(...args));
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    launched = true;
+                    finish = () => resolve(ok());
+                })
+        );
+        const started = drive({ ...board, runner });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(launched).toBe(true);
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        finish();
+        await started;
+
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(runner.finished).toEqual([]);
+    });
+
+    // Issue #828: a lease already lost before the agent launches kills the runner and finishes it
+    // from the one ending; the board is told nothing.
+    it('tells the board nothing when the lease is lost before the agent launches, and finishes the runner once', async () => {
+        const board = stubBoard([job(1)], { lease: 'lost' });
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    finish = () => resolve(ok());
+                })
+        );
+        const started = drive({ ...board, runner });
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        finish();
+        await started;
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.completed).toEqual([]);
+        expect(runner.finished).toEqual([job(1).id]);
+    });
+
+    // Issue #828: a full spool is failure evidence on the run's outcome, not an ending — the attempt
+    // still reports a failed verdict, never a park or an interruption.
+    it('fails a run whose transcript spool filled, with its cause, and neither parks nor interrupts it', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok({ artifactSpoolFull: '2000000000 bytes' }));
+
+        await drive({ ...board, runner });
+
+        expect(board.board.completed).toHaveLength(1);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+        expect(board.board.completed[0]?.output).toContain('artifact_spool_full');
+        expect(board.board.suspended).toEqual([]);
+        expect(board.board.interrupted).toEqual([]);
     });
 
     // A beat in flight at the handover answers 409 once the board released the lease: it must not
@@ -2493,8 +2650,10 @@ describe('the poll loop', () => {
                 beatAsked();
             });
         await asked;
-        await loop.handover('the driver was drained');
+        // The attempt's end waits for its beat, so the board answers it while the handover is in flight.
+        const handed = loop.handover('the driver was drained');
         answerBeat('lost');
+        await handed;
         await started;
         await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -2723,6 +2882,22 @@ describe('the poll loop', () => {
             });
             expect(transientRun.board.completed).toEqual([]);
             expect(transientRun.board.interrupted).toHaveLength(1);
+        });
+
+        // The runner only throws or returns the fact (both executors' `run()` finish nothing, #828):
+        // the loop's `end()` is what gives the refused group back, on every refusal it decides.
+        it.each([
+            ['a run that throws a transient refusal', () => Promise.reject(transient())],
+            ['a run that throws a permanent refusal', () => Promise.reject(permanent())],
+            [
+                'a container that never started',
+                () => Promise.resolve(ok({ exitCode: 125, output: 'x', started: false, startupCause: 'image' })),
+            ],
+        ])('finishes the group of %s through end()', async (_name, run) => {
+            const board = stubBoard([job(1)]);
+            const runner = stubRunner(run);
+            await drive({ ...board, runner });
+            expect(runner.finished).toEqual([job(1).id]);
         });
 
         it('fails a container that never started for a permanent cause, and hands a transient one back', async () => {
@@ -3989,7 +4164,7 @@ describe('verification gates', () => {
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
     });
 
-    it('releases the services on every way a run can end', async () => {
+    it('releases the services on every way a run can end that does not retain its runner', async () => {
         const plain = stubRunner(async () => ok());
         await drive({ ...stubBoard([job(1)]), runner: plain });
         expect(plain.servicesReleased).toEqual([job(1).id]);
@@ -4002,7 +4177,8 @@ describe('verification gates', () => {
             throw new Error('the daemon refused');
         });
         await drive({ ...stubBoard([job(3)]), runner: thrown });
-        expect(thrown.servicesReleased).toEqual([job(3).id]);
+        // A run that threw past its launch is left to the next claim to adopt, and its services with it.
+        expect(thrown.servicesReleased).toEqual([]);
     });
 
     it('runs no gates for a never-started or a lost run', async () => {
@@ -4672,7 +4848,7 @@ describe('the output pump snapshot', () => {
             expect(pump.snapshot().activity).toBe('$ npm run lint');
         } finally {
             vi.useRealTimers();
-            state.finished = true;
+            transition(state, 'ended');
             state.wake();
         }
     });
@@ -6672,7 +6848,8 @@ describe('final envelope (issue #821 D1)', () => {
 
         await drive({ ...board, runner });
 
-        expect(order).toEqual(['stage', 'finish']);
+        // The lease is the new holder's: its adoption owns the finished runner, so this end finishes nothing (#828).
+        expect(order).toEqual(['stage']);
         expect(board.board.completed).toEqual([]);
     });
 });

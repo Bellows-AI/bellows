@@ -21,7 +21,7 @@ import {
     publishEligible,
     statusOf,
 } from './loop-ledger.js';
-import { concludeAttempt } from './loop-fence.js';
+import { end } from './loop-conclusion.js';
 import type { AttemptCtx, LoopRuntime, VerdictBody } from './loop-types.js';
 import { type PublishOptions, type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
@@ -168,11 +168,11 @@ const setupMsOf = (job: BoardJob): { setupMs?: number } =>
 
 /**
  * Lands the run's final verdict after any publish attempt: staged, completed, then the attempt torn
- * down (`concludeAttempt`, issue #821). A verdict is decided once and never rewritten (issue #820).
+ * down (`end`, issue #821). A verdict is decided once and never rewritten (issue #820).
  */
 export async function reportFinish(ctx: AttemptCtx, finish: FinishCtx): Promise<void> {
     const body = verdictOf(ctx.rt, finish);
-    const verdict = await concludeAttempt(ctx, body);
+    const verdict = await end(ctx, { kind: 'verdict', verdict: body });
     if (verdict !== null) ctx.rt.log(finishLine(finish, verdict, body.status, body.exitCode));
 }
 

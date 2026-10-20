@@ -6,12 +6,6 @@ import { type DeadService, Inconclusive, type RunOutcome } from './runner.js';
 import { ServicesNotRunning } from './service-restart.js';
 import { stepLost } from './step-control.js';
 
-/** Tears the attempt's services down, saying so when it cannot. */
-const release = (rt: LoopRuntime, job: BoardJob): Promise<void> =>
-    rt.runner
-        .releaseServices(job)
-        .catch((e: Error) => rt.log(`job ${job.id}: could not tear down the services: ${e.message}`));
-
 /**
  * The setup step that starts the attempt's `.bellows.yaml` services, on both executors, before the
  * gate environment and its `environment.setup` (which may migrate or seed one), and so before the
@@ -46,7 +40,11 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
         return { halt: 'interrupt', reason: `could not start the services: ${(e as Error).message}` };
     }
     if (raced === null) {
-        void starting.catch(() => null).then(() => release(rt, job));
+        // The late fleet is the lifecycle owner's to release, under its retention (`loop-conclusion.ts`).
+        ctx.abandonedServices = starting.then(
+            () => undefined,
+            () => undefined
+        );
         return STOOD_DOWN;
     }
     ctx.servicesStarted = true;
@@ -57,22 +55,6 @@ export async function startServicesStep(ctx: AttemptCtx): Promise<SetupConclusio
         log: 'its services could not be started, failing',
         verdict: { status: 'failed', exitCode: refused.exitCode, output: refused.output, failureKind: 'runner_error' },
     };
-}
-
-/** A setup that ended after the services step: they go with it. Answers `STOOD_DOWN` for `runPhases`. */
-export async function releaseStartedServices(ctx: AttemptCtx): Promise<typeof STOOD_DOWN> {
-    if (ctx.servicesStarted) await release(ctx.rt, ctx.job);
-    return STOOD_DOWN;
-}
-
-/** Runs the setup phase, releasing services it started even when a conclusion itself throws. */
-export async function releasingOnThrow<T>(ctx: AttemptCtx, phases: (ctx: AttemptCtx) => Promise<T>): Promise<T> {
-    try {
-        return await phases(ctx);
-    } catch (e) {
-        await releaseStartedServices(ctx);
-        throw e;
-    }
 }
 
 /**

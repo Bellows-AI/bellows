@@ -17,12 +17,15 @@ export const TERMINATION_TABLE = {
     'a runner the platform took away after the budget ended its agent': 'timeout',
     'a supervisor that ended without finalizing, nothing initiating it': 'interruption',
     'a supervisor that reported, then crashed before the verdict read': 'succeeded',
+    'a supervisor that reported an unlaunched group, then crashed': 'interruption',
+    'a supervisor that reported its agent lost, then crashed': 'interruption',
+    'a runner the platform took away after the supervisor reported its agent lost': 'interruption',
 } as const;
 
 export type TerminationRow = keyof typeof TERMINATION_TABLE;
 
 /**
- * The loop's decision on a run's outcome, in its own order (`concludeUnreported`, then the ledger):
+ * The loop's decision on a run's outcome, in its own order (`unreportedDecision`, then the ledger):
  * an infrastructure loss and a container that never started are both handed back as an interruption.
  */
 export function decisionOf(outcome: RunOutcome): string {

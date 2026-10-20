@@ -3,6 +3,8 @@ import { deadServiceNote } from './loop-ledger.js';
 import { currentActivity, DEAD_SERVICE_STATES, serviceHint } from './runner.js';
 import type { DeadService } from './runner.js';
 import type { RuntimeSample } from './runner.js';
+import { lostOf, recordEnding } from './loop-phase.js';
+import type { AttemptPhase, AttemptTransition, Ending } from './loop-phase.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { ExportRun } from './loop-export.js';
 import type { PublishResult } from './publish.js';
@@ -56,36 +58,31 @@ export interface JobState {
      * lands the row terminal, and a write it overtook would be refused and its tail lost.
      */
     drainOutput: () => Promise<void>;
-    finished: boolean;
-    lost: boolean;
     /**
-     * True once the board answered a Stop while this attempt ran: the container is killed and the
-     * run is settled on the board — the turn ends, and the session it kept is what the follow-up
-     * continues (docs/jobs.md).
+     * Where the attempt is, moved only through `transition` (`loop-phase.ts`). `concluding` is from
+     * the moment it stages its verdict until it is torn down (issue #821): the heartbeat keeps
+     * renewing the lease the verdict needs, and an ending recorded meanwhile acts on nothing — the
+     * staged conclusion is the attempt's outcome, and the board commits it.
      */
-    stopped: boolean;
+    phase: AttemptPhase;
+    /** Set the moment `end` starts concluding: a drain's handover leaves such an attempt to its own ending. */
+    endStarted: boolean;
     /**
-     * True once the board answered that the thread was removed while this attempt ran. The
-     * container is killed and nothing is parked or reported: the rows are gone and the tree now
-     * belongs to the queue's reclaim.
+     * How the attempt ended where it stands, recorded once through `recordEnding`: a Stop (the
+     * container is killed and the run settled on the board — the turn ends, and the session it kept
+     * is what the follow-up continues, docs/jobs.md), a lost lease, a removed thread (nothing is
+     * parked or reported: the tree belongs to the queue's reclaim) or a drain's handover (issue
+     * #792: the board took the lease back as an interruption, so the attempt reads as lost, and the
+     * runner is NEVER killed — the next claim adopts it). Null while none did.
      */
-    removed: boolean;
+    ending: Ending | null;
+    /** Writes the line of each `phase`/`ending` change; the loop points it at its log. */
+    trace: (transition: AttemptTransition) => void;
     /**
-     * True once a draining driver handed this attempt over (issue #792): the board took the lease
-     * back as an interruption, so the attempt reads as lost — nothing parked, nothing reported —
-     * and the runner is NEVER killed, even by a beat in flight that answers 409 afterwards: the
-     * next claim adopts it.
-     */
-    handedOver: boolean;
-    /**
-     * True from the moment the attempt stages its verdict until it is torn down (issue #821): the
-     * heartbeat keeps renewing the lease the verdict needs, and a lost or stop beat meanwhile acts
-     * on nothing — the staged conclusion is the attempt's outcome, and the board commits it.
-     */
-    concluding: boolean;
-    /**
-     * True when neither the staged verdict nor the complete reached the board (issue #821): the
-     * teardown leaves the group and the checkout claim for the next claim to adopt.
+     * True when the runner must outlive the attempt (issues #821, #828): neither the staged verdict
+     * nor the complete, nor the park, interruption or requeue, reached the board, or the attempt is
+     * left to its lease after its launch. `end`'s teardown then leaves the group and the checkout
+     * claim for the next claim to adopt.
      */
     keepGroup: boolean;
     /**
@@ -154,6 +151,11 @@ export interface JobState {
      */
     signal: AbortSignal;
     abortNow: () => void;
+    /** Why the drain handed the attempt over; set with the `handover` ending, null otherwise. */
+    handoverReason: string | null;
+    /** Resolves when a `handover` ending wins (`handOver`, `loop.ts`): the run in flight is abandoned there. */
+    handedOver: Promise<void>;
+    signalHandover: () => void;
 }
 
 /**
@@ -175,14 +177,16 @@ export function newJobState(): JobState {
         wake = resolve;
     });
     const controller = new AbortController();
+    let signalHandover = () => {};
+    const handedOver = new Promise<void>((resolve) => {
+        signalHandover = resolve;
+    });
     return {
         drainOutput: async () => {},
-        finished: false,
-        lost: false,
-        stopped: false,
-        removed: false,
-        handedOver: false,
-        concluding: false,
+        phase: 'setup',
+        endStarted: false,
+        ending: null,
+        trace: () => {},
         keepGroup: false,
         launched: false,
         gateToken: null,
@@ -203,7 +207,23 @@ export function newJobState(): JobState {
         wake,
         signal: controller.signal,
         abortNow: () => controller.abort(),
+        handoverReason: null,
+        handedOver,
+        signalHandover,
     };
+}
+
+/** Registers the attempt as in flight for a drain's handover; answers what to call once `runJob` is over. */
+export function registerLive(rt: LoopRuntime, job: BoardJob, state: JobState): () => void {
+    let over: () => void = () => {};
+    rt.live?.set(job.id, {
+        job,
+        state,
+        over: new Promise<void>((resolve) => {
+            over = resolve;
+        }),
+    });
+    return over;
 }
 
 /**
@@ -230,7 +250,7 @@ export async function killAgent(
 }
 
 /** The verdicts that end an attempt where it stands: a stop, a lost lease, a removed thread. */
-export const down = (state: JobState): boolean => state.stopped || state.lost || state.removed;
+export const down = (state: JobState): boolean => state.ending !== null;
 
 /** Forget pending questions when the attempt ends or Stop cancels them. */
 export function clearPendingQuestions(state: JobState): void {
@@ -243,7 +263,7 @@ export function updateQuestionDeadline(rt: LoopRuntime, job: BoardJob, state: Jo
         .catch(() => {})
         .then(async () => {
             const paused = state.pendingQuestions.size > 0;
-            if (state.finished || down(state) || (state.draining && paused)) return;
+            if (state.phase === 'ended' || down(state) || (state.draining && paused)) return;
             if (paused === (state.questionPausedAt !== null)) return;
             await rt.runner.pauseDeadline(job, paused);
             if (paused) {
@@ -273,7 +293,7 @@ async function deliverAnswers(
 
 /** A draining attempt whose run threw was being stopped all along: it stands down as stopped. */
 export function stopIfDraining(state: JobState): void {
-    if (state.draining) state.stopped = true;
+    if (state.draining) recordEnding(state, 'stop');
 }
 
 /** The loser side of every setup race: the stand-down resolved, the step did not. */
@@ -330,8 +350,8 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
         const graceMs = rt.stopGraceMs ?? STOP_GRACE_MS;
         rt.log(`job ${job.id}: stop requested, letting the agent finish its current step (${graceMs}ms grace)`);
         state.graceTimer = setTimeout(() => {
-            if (state.finished || state.concluding || down(state)) return;
-            state.stopped = true;
+            if (state.phase === 'ended' || state.phase === 'concluding' || down(state)) return;
+            recordEnding(state, 'stop');
             rt.log(`job ${job.id}: the agent did not stop within ${graceMs}ms, killing the runner`);
             state.abortNow();
             void killAgent(rt, job, control).catch(() => {});
@@ -349,7 +369,26 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
  * belongs to the next claim (issue #792), and a concluding one's outcome is staged — only the
  * teardown that follows its verdict ends it (issue #821).
  */
-const beyondVerdicts = (state: JobState): boolean => state.handedOver || state.concluding;
+const beyondVerdicts = (state: JobState): boolean => state.ending?.kind === 'handover' || state.phase === 'concluding';
+
+/** Delivers the answers a heartbeat carries to the questions still pending, and settles the paused budget. */
+async function deliverVerdictAnswers(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    verdict: HeartbeatVerdict
+): Promise<void> {
+    if (
+        typeof verdict === 'object' &&
+        !verdict.cancelRequested &&
+        !state.draining &&
+        (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
+    ) {
+        await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
+            rt.log(`job ${job.id}: could not update the question runtime budget: ${error.message}`);
+        });
+    }
+}
 
 /** Folds one heartbeat verdict into the attempt's state, and kills the runner when it stands down. */
 export async function applyHeartbeatVerdict(
@@ -360,21 +399,14 @@ export async function applyHeartbeatVerdict(
 ) {
     const { runner, log } = rt;
     if (beyondVerdicts(state)) return;
-    if (
-        typeof verdict === 'object' &&
-        !verdict.cancelRequested &&
-        !state.draining &&
-        (state.pendingQuestions.size > 0 || state.questionPausedAt !== null || verdict.answeredQuestions?.length)
-    ) {
-        await deliverAnswers(rt, job, state, verdict.answeredQuestions ?? []).catch((error: Error) => {
-            log(`job ${job.id}: could not update the question runtime budget: ${error.message}`);
-        });
-    }
+    await deliverVerdictAnswers(rt, job, state, verdict);
+    // The answer delivery above awaited: a handover that landed meanwhile retained the runner.
+    if (beyondVerdicts(state)) return;
     if (verdict === 'lost') {
-        state.lost = true;
+        recordEnding(state, 'lost');
         log(`job ${job.id}: lease lost, killing the runner`);
     } else if (verdict === 'removed') {
-        state.removed = true;
+        recordEnding(state, 'removed');
         log(`job ${job.id}: removed while it ran, killing the runner`);
     } else if (verdict.cancelRequested) {
         // While the agent runs, with a control endpoint to raise the stop on: cooperative.
@@ -390,7 +422,7 @@ export async function applyHeartbeatVerdict(
         ) {
             return startDraining(rt, job, state, state.control);
         }
-        state.stopped = true;
+        recordEnding(state, 'stop');
         log(`job ${job.id}: stop requested, killing the runner`);
     }
     if (!down(state)) return;
@@ -408,6 +440,16 @@ export async function applyHeartbeatVerdict(
         void runner.kill(job).catch(() => {});
     }
 }
+
+/**
+ * Whether the heartbeat still beats: until the attempt ends or stands down — except while it concludes,
+ * when it renews the lease the verdict needs until the quiesce, whatever ending was recorded (issue #828).
+ */
+const renewing = (state: JobState): boolean =>
+    state.phase !== 'ended' && (state.phase === 'concluding' || !down(state));
+
+/** Whether the output pump still writes: until the attempt ends or loses its lease. */
+const pumping = (state: JobState): boolean => state.phase !== 'ended' && !lostOf(state);
 
 /** One heartbeat poll: reads the board's verdict (rate-limiting its own failure log), and folds it in. */
 async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained: boolean): Promise<boolean> {
@@ -458,9 +500,9 @@ export function heartbeat(rt: LoopRuntime, job: BoardJob, state: JobState): Prom
     );
     return (async () => {
         let complained = false;
-        while (!state.finished && !down(state)) {
+        while (renewing(state)) {
             complained = await beat(rt, job, state, complained);
-            if (state.finished || down(state)) return;
+            if (!renewing(state)) return;
             // Raced against the run finishing, not simply awaited. A plain sleep would hold
             // every finished job for the remainder of the period before its result could be
             // reported; a settled stop, lease or Remove resolves `abort` for the setup races
@@ -659,9 +701,9 @@ export function watchOutput(
         while (!settled && Date.now() < deadline) await sleep(OUTPUT_DRAIN_TICK_MS);
     };
     void (async () => {
-        while (!state.finished && !state.lost) {
+        while (pumping(state)) {
             await Promise.race([sleep(PROGRESS_MS), state.woken]);
-            if (state.finished || state.lost) return;
+            if (!pumping(state)) return;
             // The pump starts with the attempt now, but the runner does not exist until
             // launch — sampling before that is a daemon lookup per period that can answer
             // nothing (issue #126 moved the start earlier to cover the setup phase).

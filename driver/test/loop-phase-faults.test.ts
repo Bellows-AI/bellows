@@ -12,7 +12,7 @@
  * - I4, outcome before teardown: the first durable acknowledgement precedes the first teardown.
  * - I5, finish while control is open: `runner.finish` precedes the control close.
  * - I6, retention: an attempt left to the lease after its agent ran never finishes its runner —
- *   the run is the next claim's to adopt (`concludeThrownRun`, `loop-fence.ts`).
+ *   the run is the next claim's to adopt (`thrownRunDecision`, `loop-fence.ts`).
  *
  * Judgement calls the checker encodes:
  * - The interrupt `adoptStep` records for an EARLIER claim (`release: false`) is no conclusion.
@@ -25,9 +25,7 @@
  *   it: `Runner.adopt` takes only a FINISHED run (`runner.ts`), so there is nothing to retain and
  *   I6 does not apply.
  *
- * Expectations are read from the code. Today's inversions are pinned `it.fails` with their exact
- * violation set: a fix, a different set or a setup error each turns the pin red. Slice 6 of #828
- * rewrites the pins on purpose.
+ * Expectations are read from the code; every cell holds.
  */
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
@@ -37,7 +35,6 @@ import type { Loop } from '../src/loop.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
-import { exactly } from './fixtures/read-faults.js';
 
 /** The wall-clock cap on every wait the harness makes: a delivery, the settle-wait, the drive. */
 const CAP_MS = 5_000;
@@ -78,6 +75,9 @@ type Conclusion = 'verdict' | 'suspend' | 'interrupt:release' | 'requeue' | 'non
 
 /** The boundaries whose verdict is already decided: a later stop, loss or handover acts on nothing. */
 const CONCLUDING: readonly Boundary[] = ['conclusion', 'settle'];
+
+/** The boundaries at or after the agent's launch, where the runner is the next claim's to adopt. */
+const LAUNCHED: readonly Boundary[] = ['run', 'run tail', 'probe', 'gates', 'post-helpers', 'publish'];
 
 interface Expected {
     conclusion: Conclusion;
@@ -292,9 +292,13 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
             return answer;
         };
 
+        // Not awaited here: the handover settles only once the attempt has ended, and this runs
+        // inside a step the attempt is still waiting on. The ending is recorded before it returns.
+        const handed: Promise<void>[] = [];
         const handover = async () => {
             loop?.stop();
-            await loop?.handover('injected');
+            const handing = loop?.handover('injected');
+            if (handing) handed.push(handing);
             delivered.done = true;
         };
 
@@ -485,6 +489,7 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
             observed.setup.push('the loop never stopped');
         }
 
+        await Promise.all(handed);
         // After a handover `start()` resolves before the attempt ends: wait until nothing moves.
         let quiet = 0;
         let seen = timeline.length;
@@ -508,6 +513,8 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
 function expectedOf(boundary: Boundary, fault: Fault): Expected {
     if (CONCLUDING.includes(boundary)) return { conclusion: 'verdict', finishes: 1 };
     if (fault === 'stop') return { conclusion: 'suspend', finishes: 1 };
+    // A lost lease past the launch leaves the runner to the new holder's adoption (#828); a removal finishes it.
+    if (fault === 'lost' && LAUNCHED.includes(boundary)) return { conclusion: 'none', finishes: 0, retain: true };
     if (fault === 'lost' || fault === 'removed') return { conclusion: 'none', finishes: 1 };
     if (fault === 'handover') return { conclusion: 'interrupt:release', finishes: 0 };
     switch (boundary) {
@@ -524,38 +531,10 @@ function expectedOf(boundary: Boundary, fault: Fault): Expected {
     }
 }
 
-const FINISH_BEFORE_SUSPEND = /^I4: runner\.finish before board\.suspend$/;
-const FINISH_BEFORE_INTERRUPT = /^I4: runner\.finish before board\.interrupt\(release\)$/;
-const FINISH_AFTER_CLOSE = /^I5: runner\.finish after control\.close$/;
-const FINISHED_ON_LEAVE = /^I6: runner\.finish on a leave/;
-
-/** Today's documented violations of a cell; empty when it holds. */
-function pinsOf(boundary: Boundary, fault: Fault): RegExp[] {
-    // P1: `standDown` settles (`loop-fence.ts:129` → `runner.finish`, `loop-conclusion.ts:37`), then parks (:140).
-    if (fault === 'stop' && !CONCLUDING.includes(boundary)) return [FINISH_BEFORE_SUSPEND];
-    if (fault !== 'exception') return [];
-    // P3: `interrupt` halt (`loop-services.ts:45`) → `interruptAttempt` settles (`loop-fence.ts:289`) before :293.
-    if (boundary === 'services') return [FINISH_BEFORE_INTERRUPT];
-    // P6, P8: the run's finally closes control (`loop-run.ts:699`) before its catch (:717) leaves to the
-    // lease, whose `concludeSetup` settles (`loop-fence.ts:245`) — finishing the runner it should retain.
-    if (boundary === 'run' || boundary === 'post-helpers') return [FINISH_AFTER_CLOSE, FINISHED_ON_LEAVE];
-    return [];
-}
-
-/** One cell as a test: plain when it holds today, `it.fails` on its exact documented violation set. */
-function cell(name: string, script: Script, expected: Expected, pins: RegExp[]): void {
-    if (pins.length === 0) {
-        it(name, async () => {
-            expect(violationsOf(await attempt(script), expected)).toEqual([]);
-        });
-        return;
-    }
-    it.fails(`${name} [pinned: ${pins.map((pin) => pin.source.slice(1, 3)).join(', ')}]`, async () => {
-        const v = violationsOf(await attempt(script), expected);
-        // Anything but the documented set — a setup error, another violation, a fixed inversion —
-        // passes here, which `it.fails` reports as a failure.
-        if (!exactly(v, pins)) return;
-        expect(v).toEqual([]);
+/** One cell as a test. */
+function cell(name: string, script: Script, expected: Expected): void {
+    it(name, async () => {
+        expect(violationsOf(await attempt(script), expected)).toEqual([]);
     });
 }
 
@@ -589,7 +568,7 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
                 // Settlement quiesces the heartbeat before `runner.finish` (`loop-conclusion.ts:23-37`):
                 // no beat is left to carry a stop, a loss or a removal there.
                 if (boundary === 'settle' && fault !== 'handover' && fault !== 'exception') continue;
-                cell(fault, { at: { boundary, fault } }, expectedOf(boundary, fault), pinsOf(boundary, fault));
+                cell(fault, { at: { boundary, fault } }, expectedOf(boundary, fault));
             }
         });
     }
@@ -602,41 +581,31 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
     });
 
     describe('scripted endings', () => {
-        // P5: the requeue settles (`loop-fence.ts:245`) before the board call (:251).
         cell(
             'a lock-blocked sync requeues',
             { at: null, sync: { ok: false, reason: 'transient worktree sync: the checkout lock is held' } },
-            { conclusion: 'requeue', finishes: 1 },
-            [/^I4: runner\.finish before board\.requeue$/]
+            { conclusion: 'requeue', finishes: 1 }
         );
-        // P2: `runPlanFenced` interrupts (`loop-helpers.ts:167`), settling (`loop-fence.ts:289`) before :293.
         cell(
             'a pre-helper whose supervisor was lost is interrupted',
             { at: null, helperLost: 'pre' },
-            { conclusion: 'interrupt:release', finishes: 1 },
-            [FINISH_BEFORE_INTERRUPT]
+            { conclusion: 'interrupt:release', finishes: 1 }
         );
         cell(
             'a post-helper whose supervisor was lost is interrupted',
             { at: null, helperLost: 'post' },
-            { conclusion: 'interrupt:release', finishes: 1 },
-            [FINISH_BEFORE_INTERRUPT]
+            { conclusion: 'interrupt:release', finishes: 1 }
         );
-        // P4: `concludeUnreported` (`loop-fence.ts:322-327`) → `interruptAttempt`, settled before reported.
         cell(
             'a run the platform took away is interrupted',
             { at: null, run: async (scraped) => ok({ sessionId: scraped, infraLoss: 'the runner pod was evicted' }) },
-            { conclusion: 'interrupt:release', finishes: 1 },
-            [FINISH_BEFORE_INTERRUPT]
+            { conclusion: 'interrupt:release', finishes: 1 }
         );
         cell(
             'a run that never started is interrupted',
             { at: null, run: async () => ok({ started: false, exitCode: null, output: 'no container' }) },
-            { conclusion: 'interrupt:release', finishes: 1 },
-            [FINISH_BEFORE_INTERRUPT]
+            { conclusion: 'interrupt:release', finishes: 1 }
         );
-        // P7: the run's finally (`loop-run.ts:699-705`) tears down before its catch (:717) reports the
-        // last attempt's failure, and the settle that follows finishes with control closed.
         cell(
             'a last attempt whose run threw reports a failed verdict',
             {
@@ -646,22 +615,35 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
                     throw new Error('the daemon refused');
                 },
             },
-            { conclusion: 'verdict', finishes: 1 },
-            [/^I4: control\.close before board\.stageConclusion$/, FINISH_AFTER_CLOSE]
+            { conclusion: 'verdict', finishes: 1 }
         );
     });
 
-    // P9, a hypothesis: `interruptAttempt` never sets `ctx.stoodDown` (`loop-fence.ts:286-308`), so a
-    // stop beat in flight while its settle awaits the heartbeat leaves the attempt down, and the
-    // stand-down that follows (`loop-run.ts:257`, `:517`) parks an attempt already interrupted.
-    describe('a helper lost with a stop beat in flight (hypothesis)', () => {
+    // A stop beat still in flight when a helper's loss is interrupted: `end` memoises the first ending,
+    // so the beat the quiesce awaits cannot park an attempt already interrupted.
+    describe('a helper lost with a stop beat in flight', () => {
         for (const phase of ['pre', 'post'] as const) {
             cell(
                 `${phase}-run`,
                 { at: null, helperLost: phase, stopInFlight: true },
-                { conclusion: 'interrupt:release', finishes: 1 },
-                [FINISH_BEFORE_INTERRUPT, /^I1: interrupt:release, suspend /]
+                { conclusion: 'interrupt:release', finishes: 1 }
             );
         }
+    });
+});
+
+describe('a drain never hands over an attempt whose end already started (#828)', () => {
+    it('records no handover on it and leaves it to its own ending', async () => {
+        const { handoverOf } = await import('../src/loop.js');
+        const { newJobState } = await import('../src/loop-attempt.js');
+        const rt = {} as never;
+        const handoff = handoverOf(rt);
+        const state = newJobState();
+        state.endStarted = true;
+        // Its end never settles here: the drain must neither touch it nor wait for it.
+        const over = new Promise<void>(() => {});
+        (rt as { live: Map<string, unknown> }).live.set('job-1', { job: { id: 'job-1' }, state, over });
+        await handoff.run('drain');
+        expect(state.ending).toBeNull();
     });
 });

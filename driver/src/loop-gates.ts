@@ -240,8 +240,7 @@ export function closeRunControl(rt: LoopRuntime, state: JobState): void {
     clearPendingQuestions(state);
     if (state.control === null) return;
     rt.gates?.server.closeControl(state.control);
-    // Closed once: the attempt's `settle` closes it after the group's `finish`, and the run's
-    // `finally` closes it again on the paths that never settled.
+    // Closed once: `end` (`loop-conclusion.ts`) closes it after the group's `finish`.
     state.control = null;
 }
 

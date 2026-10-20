@@ -32,7 +32,7 @@ import type { StepResult } from './supervisor-contract.js';
  * only draining refuses too — a review is new work, and the agent was told to finish.
  */
 export function createReviewRelay(rt: LoopRuntime, job: BoardJob, state: JobState): ReviewRelay {
-    const gone = (): boolean => state.finished || state.draining || down(state);
+    const gone = (): boolean => state.phase === 'ended' || state.draining || down(state);
     return {
         async request(key, profile) {
             if (gone()) return 'gone';
@@ -177,7 +177,7 @@ async function superviseOne(
  */
 function stoppedExplicitly(state: JobState, stop: AbortController, cause: StopCause): boolean {
     if (!stop.signal.aborted) return false;
-    return cause.boardCancel || (state.stopped && !state.handedOver && !state.lost);
+    return cause.boardCancel || state.ending?.kind === 'stop';
 }
 
 /**

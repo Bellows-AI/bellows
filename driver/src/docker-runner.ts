@@ -8,6 +8,7 @@ import {
     dockerStopAgent,
     recordDockerKill,
 } from './docker-teardown.js';
+import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
@@ -80,7 +81,7 @@ import {
 } from './docker-runner-support.js';
 import { OPENCODE } from './executors.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
-import { infraLossOf } from './termination.js';
+import { settleEnd } from './termination.js';
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
@@ -111,8 +112,10 @@ interface RunnerDeps {
     /** The attempt groups this runner created, by lease token: one per attempt, never shared. */
     groups: Map<string, GroupState>;
     /**
-     * Lease tokens whose kill() fired while that attempt may still be awaiting the daemon in its
-     * services setup. Keyed by LEASE TOKEN, not job id: the token is the per-attempt identity —
+     * What this driver did to each attempt, by lease token: a kill() may have fired while that
+     * attempt may still be awaiting the daemon in its services setup (`was(job).stopped`), or taken
+     * its whole group down (`hard`, so the supervisor's exit is the kill's). Keyed by LEASE TOKEN,
+     * not job id: the token is the per-attempt identity —
      * one driver process can hold two attempts of the same id at once (the poll loop re-claims an
      * expired-lease job while the first attempt's setup is still in flight), and the loop's kill
      * names the one attempt it killed. Keyed by id, the two attempts would share one marker: the
@@ -127,9 +130,7 @@ interface RunnerDeps {
      * go on building a network, starting services and spawning a runner over a lease that is
      * already gone.
      */
-    killed: Set<BoardJob['leaseToken']>;
-    /** The attempts whose whole group `dockerKill` took down (`TeardownDeps.hardKilled`). */
-    hardKilled: Set<BoardJob['leaseToken']>;
+    ledger: KillLedger;
     deadlines: DeadlineRegistry;
     /** Each adopting lease's adopted earlier lease (`dockerAdopt`): its fences keep that group (issue #821). */
     adopted: Map<BoardJob['leaseToken'], BoardJob['leaseToken']>;
@@ -231,6 +232,8 @@ async function finishGroup(deps: RunnerDeps, job: BoardJob): Promise<void> {
             await dockerKill(deps, job);
         }
     }
+    // The exited runner container a run left, read for its verdict but kept as the adoption evidence.
+    await deps.execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
     await removeGroup(deps.execDocker, job);
 }
 
@@ -396,7 +399,7 @@ async function dockerRun(
     session: RunSession | null,
     onOutput?: (tail: string) => void
 ): Promise<RunOutcome> {
-    const { config, execDocker, files, spawnFn, killed } = deps;
+    const { config, execDocker, files, spawnFn, ledger } = deps;
     // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
     // token that was never recorded, so nothing recorded for an earlier attempt can
     // reach this one — and clearing by id would revive exactly the dead attempt the
@@ -423,7 +426,7 @@ async function dockerRun(
     // The runner container is the last resource this attempt creates, and the spawn is
     // what a killed setup must never reach — see assertJobNotKilled for why a throw is
     // the right verdict here.
-    assertJobNotKilled(killed, job);
+    assertJobNotKilled(ledger, job);
 
     /*
      * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
@@ -439,7 +442,7 @@ async function dockerRun(
     // The write above is an await, so the kill-check must run once more: see
     // assertNotKilledAfterEnvWrite for why a lease lost while it was pending must not
     // reach spawnFn.
-    await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
+    await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
 
     // The run's start instant (the group's, which the exporter and both close-time turn reads key
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
@@ -447,16 +450,15 @@ async function dockerRun(
     const refused = await createRunnerContainer(deps, job, session, file ? { envFile: file } : {});
     if (refused) {
         if (file) await files.rm(file).catch(() => undefined);
-        await finishGroup(deps, job);
         return refused;
     }
     // The create and the copy are awaits too: a lease lost behind them must not reach the start.
     // The created container is this attempt's leftover to remove, the group and the env file with it.
-    if (killed.has(job.leaseToken)) {
+    if (ledger.was(job).stopped) {
         await execDocker(['rm', '-f', containerName(job)]).catch(() => undefined);
         await removeGroup(execDocker, job);
         deps.groups.delete(job.leaseToken);
-        await assertNotKilledAfterEnvWrite({ killed, job, files }, file);
+        await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
     }
 
     // The supervisor and the exporter were started with the group and outlive the agent: the agent
@@ -556,24 +558,15 @@ async function dockerRun(
         child.on('error', (error) => {
             spawnFailed = true;
             done();
-            // The spawn itself failed (docker missing, exec blew up). Whatever services
-            // were started before it are torn down BEFORE the rejection lands — teardown
-            // tolerates absence, so either way a rejection means cleanup is as done as
-            // it gets, and the rejection waits for the teardown's verdict. The teardown
-            // is attempt-scoped, so no supersession check is needed: even if a
-            // replacement claim landed while this attempt was failing, the filters carry
-            // this attempt's lease and the network is named after it — the teardown
-            // cannot reach the replacement's fleet.
-            Promise.all([dockerServiceTeardown(deps, job), removeGroup(execDocker, job)]).then(
-                () => reject(error),
-                () => reject(error)
-            );
+            // The spawn itself failed (docker missing, exec blew up): a fact, not a teardown. The
+            // services and the group are the loop's end() to release or retain.
+            reject(error);
         });
         child.on('close', (code) => {
-            // The error handler owns this failure and its rejection is already deferred
-            // behind the service teardown; a close here carries only the null code of a
-            // process that never ran, and settling verdict(null) over the pending
-            // rejection would turn infrastructure into a terminal verdict.
+            // The error handler owns this failure and rejects immediately; a close
+            // here carries only the null code of a process that never ran, and settling
+            // verdict(null) over the pending rejection would turn infrastructure into a
+            // terminal verdict.
             if (spawnFailed) return;
             done();
             // Every close-time read this runner performs — opencode's session scrape,
@@ -584,7 +577,7 @@ async function dockerRun(
             // reports — the budget it enforced says `timed_out` — and then serves the attempt's
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, the driver's own hard kill explains its exit, and anything else is a
-            // supervisor lost, an infrastructure loss (`infraLossOf`).
+            // supervisor lost, an infrastructure loss (`settleEnd`).
             void closeEndOf(execDocker, job, { code, output, reported })
                 .then((ended) => {
                     proven = ended.proven;
@@ -593,18 +586,20 @@ async function dockerRun(
                     return ended;
                 })
                 .then(async ({ report, supervisorExit }) => {
+                    // The verdict read below reports the budget, so it is settled first.
                     if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
                         timedOut = true;
                     }
                     const { infraLoss: vanished = null, ...settled } = await verdict(code);
-                    const infraLoss = infraLossOf({
-                        killedByDriver: deps.hardKilled.has(job.leaseToken),
-                        timedOut,
-                        reported: report !== null,
+                    const end = settleEnd({
+                        kills: [],
+                        driverKilledHard: deps.ledger.was(job).hard,
+                        report,
+                        budgetEnded: timedOut,
                         vanished,
-                        unfinalized: supervisorLossOf(supervisorExit, timedOut),
+                        unfinalized: supervisorLossOf(supervisorExit, false),
                     });
-                    return infraLoss ? { ...settled, infraLoss } : settled;
+                    return end.infraLoss ? { ...settled, infraLoss: end.infraLoss } : settled;
                 })
                 .then((outcome) => applyCloseTimeReadout(outcome, { execDocker, config, job, startedAt }, session))
                 .then(resolve, reject);
@@ -615,10 +610,7 @@ async function dockerRun(
     // long since read it; the daemon has the values in the container's config.
     try {
         return await outcome;
-    } catch (e) {
-        // The run threw: nothing more will be asked of the group, and no loop step is owed it.
-        await finishGroup(deps, job);
-        throw e;
+        // A throw is a fact: the loop's end() finishes the group or retains it for the next claim.
     } finally {
         if (file) await files.rm(file).catch(() => undefined);
         // A run that resolved leaves the group up — the gates, the helpers and the publish are its
@@ -647,6 +639,9 @@ export function createDockerRunner(
     extras: { files?: RunnerFiles; steps?: StepSink; endpoint?: SupervisorEndpoint; sleep?: Sleep } = {}
 ): Runner {
     const deadlines = createDeadlineRegistry();
+    const ledger = createKillLedger({
+        write: (job, kill) => recordDockerKill(execDocker, job, kill),
+    });
     const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep } = extras;
     const deps: RunnerDeps = {
         config,
@@ -654,8 +649,7 @@ export function createDockerRunner(
         files,
         spawnFn,
         sleep,
-        killed: new Set(),
-        hardKilled: new Set(),
+        ledger,
         deadlines,
         groups: new Map(),
         adopted: new Map(),
@@ -690,6 +684,6 @@ export function createDockerRunner(
         adopt: (job, signal) =>
             dockerAdopt({ ...deps, fence: (fenced) => dockerReclaimFence(deps, fenced, signal) }, job, signal),
         stopAgent: (job) => dockerStopAgent(deps, job),
-        recordKill: (job, kill) => recordDockerKill(execDocker, job, kill),
+        recordKill: (job, kill) => ledger.record(job, kill),
     };
 }

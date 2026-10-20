@@ -1,4 +1,5 @@
 import type { BoardJob } from './board.js';
+import type { KillLedger } from './kill-ledger.js';
 import type { DriverConfig } from './config.js';
 import { awaitSupervisor } from './docker-group.js';
 import { killMarkName } from './docker-mailbox.js';
@@ -25,12 +26,11 @@ const RECORD_KILL_TIMEOUT_MS = 5_000;
 export interface TeardownDeps {
     config: DriverConfig;
     execDocker: ExecDocker;
-    killed: Set<BoardJob['leaseToken']>;
     /**
-     * The attempts whose whole group this driver hard-killed (`dockerKill`), so their supervisor's
-     * exit is the kill's, never a loss. A supervised stop (`dockerStopAgent`) is not one.
+     * What this driver did to each attempt: a hard kill (`dockerKill`) makes their supervisor's exit
+     * the kill's, never a loss; a supervised stop (`dockerStopAgent`) is not one.
      */
-    hardKilled?: Set<BoardJob['leaseToken']>;
+    ledger: KillLedger;
     /** The attempt groups the runner remembers (`docker-runner.ts`): a killed group is gone from it. */
     groups?: Map<BoardJob['leaseToken'], unknown>;
     /** The step channel the groups serve: a group gone leaves no step waiting on it. */
@@ -102,7 +102,7 @@ function labelsOf(read: string): Record<string, string> | null {
 
 /** Records the reason, then hard-kills the group: a record that fails never holds the kill back. */
 export async function dockerKillFor(deps: TeardownDeps, job: BoardJob, kill: KillRecord): Promise<void> {
-    await recordDockerKill(deps.execDocker, job, kill).catch(() => undefined);
+    await deps.ledger.record(job, kill).catch(() => undefined);
     await dockerKill(deps, job);
 }
 
@@ -151,8 +151,7 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
     // spawning the runner over a lease that is already gone. The token, not the id, is what
     // is recorded — a sibling attempt of the same job carries a different token and must
     // not read this one's cancellation.
-    deps.killed.add(job.leaseToken);
-    deps.hardKilled?.add(job.leaseToken);
+    deps.ledger.note(job, 'hard');
     deps.groups?.delete(job.leaseToken);
     if (deps.steps) releaseSteps({ sink: deps.steps }, job);
     // Killing the attached `docker start` process would only detach the CLI; the container keeps running
@@ -174,12 +173,8 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
     for (const id of found.kind === 'value' ? found.value : []) {
         await deps.execDocker(['kill', id]).catch(() => undefined);
     }
-    // The declared services go with the runner: a killed job's database has no reason to
-    // outlive the job, and the close handler's teardown would catch them anyway — this is so
-    // a kill while nothing is reading the outcome (lost lease, shutdown) still reclaims them.
-    // Attempt-scoped, like every teardown: whatever a replacement attempt is running is
-    // invisible to these filters.
-    await dockerServiceTeardown(deps, job);
+    // The declared services stay: the kill is the immediate safety stop, and reclamation is
+    // `end()`'s `releaseServices`, once the board holds the outcome and unless the runner is retained.
 }
 
 /**
@@ -197,7 +192,7 @@ export async function dockerKill(deps: TeardownDeps, job: BoardJob): Promise<voi
  * refused kill to force-removing the agent.
  */
 export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promise<void> {
-    deps.killed.add(job.leaseToken);
+    deps.ledger.note(job, 'stopped');
     const exit = await awaitSupervisor(deps.execDocker, job, KILL_WINDDOWN_MS);
     if (exit === null) return dockerKill(deps, job);
     // The supervisor ended the group: nobody is left to answer its steps.
@@ -221,8 +216,9 @@ export async function dockerStopAgent(deps: TeardownDeps, job: BoardJob): Promis
     for (const id of running.value) {
         await deps
             .execDocker(['kill', id])
-            .catch(() => deps.execDocker(['rm', '-f', id]))
+            // Tried again, never removed: an agent that exited meanwhile is the run the next claim
+            // adopts, and only end() removes it (#828).
+            .catch(() => deps.execDocker(['kill', id]))
             .catch(() => undefined);
     }
-    await dockerServiceTeardown(deps, job);
 }

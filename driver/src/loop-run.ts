@@ -4,35 +4,27 @@ import { claimContinuesSession, repoCacheProblem } from './claim.js';
 import { pickSession } from './runner-plan.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
-import { adoptStep } from './loop-adopt.js';
+import { adoptStep, recordAdopted } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
-import {
-    beginGates,
-    closeRunControl,
-    openRunControl,
-    probeDeadServices,
-    releaseGateSession,
-    runDeclaredGates,
-    sizeGateForVerify,
-} from './loop-gates.js';
+import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
-import { heartbeat, newJobState, raceStep, stopIfDraining, watchOutput } from './loop-attempt.js';
-import { attemptSettlement } from './loop-conclusion.js';
+import { lostOf, transition } from './loop-phase.js';
+import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
+import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from './timeout-note.js';
 import {
-    concludeSetup,
-    concludeThrownRun,
-    concludeUnreported,
     handBackFence,
     handOverConflict,
-    interruptAttempt,
+    interruptDecision,
     releaseAbandonedSync,
-    standDown,
+    setupDecision,
     syncThrewHalt,
+    thrownRunDecision,
+    unreportedDecision,
 } from './loop-fence.js';
-import type { AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
+import type { AdoptedRecord, AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import type { HelperFailureReport } from './helpers.js';
 import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, type PublishResult, type SyncResult } from './publish.js';
@@ -43,13 +35,7 @@ import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
 import { awaitSyncTurn } from './sync-queue.js';
 import { stepLost } from './step-control.js';
-import {
-    releaseStartedServices,
-    releasingOnThrow,
-    restartDeadServices,
-    servicesLost,
-    startServicesStep,
-} from './loop-services.js';
+import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from './services.js';
 
 /** The refusal reason for an executor selection this loop cannot run, or null when it can. */
@@ -236,7 +222,7 @@ const gateLossReason = (e: unknown): string =>
     `infrastructure loss: the task supervisor running the gates was lost (${(e as Error).message})`;
 
 /** One setup step: `null` to continue, or the conclusion that ends the attempt here. */
-type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | null>;
+type SetupStep = (ctx: AttemptCtx) => Promise<SetupConclusion | AdoptedRecord | null>;
 
 /** The steps of the setup phase, in order — the reclaim barrier and the sync before anything reads the tree. */
 const setupSteps: readonly SetupStep[] = [
@@ -249,21 +235,24 @@ const setupSteps: readonly SetupStep[] = [
     startServicesStep,
 ];
 
+const isRecord = (answer: SetupConclusion | AdoptedRecord | null): answer is AdoptedRecord =>
+    typeof answer === 'object' && answer !== null && 'record' in answer;
+
 /** Whether a step's answer ends the attempt, rather than answering the gate session to run with. */
 const isConclusion = (answer: GateSession | null | SetupConclusion): answer is SetupConclusion =>
     answer === STOOD_DOWN || (answer !== null && 'halt' in answer);
 
 /**
- * Acts on the one conclusion an attempt reached. Every exit from setup goes through here, which is
- * what makes a new refusal safe (issue #472): a stand-down settles the attempt and parks it, and
- * wins over whatever the step concluded — the attempt is down whatever the step found — while a
- * `SetupHalt` hands the claim back, settles, says why and reports it. Answers whether the attempt
- * is finished here; a step that answers `null` with the attempt still up is not.
+ * Ends the attempt on the one conclusion it reached. Every exit from setup goes through here, which is
+ * what makes a new refusal safe (issue #472): a stand-down parks the attempt, and wins over whatever
+ * the step concluded — the attempt is down whatever the step found — while a `SetupHalt` is decided
+ * by `setupDecision` and landed by `end`. Answers whether the attempt is finished here; a step that
+ * answers `null` with the attempt still up is not.
  */
 async function conclude(ctx: AttemptCtx, conclusion: SetupConclusion | null): Promise<boolean> {
-    if (await standDown(ctx, 'setup')) return true;
+    if (await endIfDown(ctx, 'setup')) return true;
     if (conclusion === null) return false;
-    if (conclusion !== STOOD_DOWN) await concludeSetup(ctx, conclusion);
+    if (conclusion !== STOOD_DOWN) await end(ctx, setupDecision(conclusion));
     return true;
 }
 
@@ -280,16 +269,17 @@ async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof S
     // for the sync, the first step it serves (issue #771): agent-less and adopted attempts included.
     await openRunControl(ctx.rt, ctx.job, ctx.state);
     for (const step of setupSteps) {
-        if (await conclude(ctx, await step(ctx))) return releaseStartedServices(ctx);
+        const answer = await step(ctx);
+        // A record is performed, not an ending: the stand-down read still follows it.
+        if (isRecord(answer)) await recordAdopted(ctx, answer);
+        if (await conclude(ctx, isRecord(answer) ? null : answer)) return STOOD_DOWN;
     }
     const booted = await acquireGateSession(ctx);
     const session = isConclusion(booted) ? null : booted;
-    if (await conclude(ctx, isConclusion(booted) ? booted : null)) {
-        // A session the boot handed back is released HERE when the attempt ended meanwhile: the
-        // caller never runs, so the cleanup that would have released it never comes.
-        if (session) releaseGateSession(ctx.rt, session, ctx.job);
-        return releaseStartedServices(ctx);
-    }
+    // A session the boot handed back is released by `end` if the attempt ended meanwhile.
+    if (session) ctx.gateSession = session;
+    if (await conclude(ctx, isConclusion(booted) ? booted : null)) return STOOD_DOWN;
+    ctx.setupDone = true;
     return session;
 }
 
@@ -359,7 +349,7 @@ async function launchRun(
     const agentless = isAgentless(job);
     // A Stop, lost lease or Remove that landed during setup, before the spawn: nothing runs, and
     // the stand-down fence releases a claim the runner never took.
-    if (await standDown(ctx, 'setup')) return null;
+    if (await endIfDown(ctx, 'setup')) return null;
     if (agentless) {
         // The services the gates test against were started by the setup phase.
         await handBackFence(ctx);
@@ -370,19 +360,24 @@ async function launchRun(
         await handBackFence(ctx);
         // Paced like a launched attempt for the gates and publish that follow.
         state.launched = true;
+        transition(state, 'launched');
         return ctx.adopted.outcome;
     }
     // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
     // session id reported for one would name a conversation that never existed.
     await reportNewSession(rt, job, session);
     state.launched = true;
+    transition(state, 'launched');
     // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.
     ctx.fenced = false;
 
     state.running = true;
-    return rt.runner.run(job, session, onOutput).finally(() => {
+    const run = rt.runner.run(job, session, onOutput).finally(() => {
         state.running = false;
     });
+    const outcome = await abandonOnHandover(state, run);
+    if (outcome === null) await endIfDown(ctx, 'its run');
+    return outcome;
 }
 
 /** The run itself: spawn, and resolve to what to report (or nothing). */
@@ -402,7 +397,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // the run still reports the session and uploads the artifacts BEFORE the park.
     stopIfDraining(state);
     const lastWords = () => pump.flush(outcome.output).then(() => reportRunTail(ctx, executorType, outcome));
-    if (await standDown(ctx, 'its run', lastWords)) return { done: true };
+    if (await endIfDown(ctx, 'its run', lastWords)) return { done: true };
 
     /*
      * The runner, not this loop, knows what a refused start looks like on its platform, and
@@ -432,18 +427,18 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      * A session whose gates are all on demand has no pass: its evidence reads `none`, never `passed`.
      */
-    const gating = gateSession?.endPass && !outcome.refused && !state.lost ? gateSession : null;
+    const gating = gateSession?.endPass && !outcome.refused && !lostOf(state) ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
-    if (await standDown(ctx, 'its gates')) return { done: true };
+    if (await endIfDown(ctx, 'its gates')) return { done: true };
     const gated = await gatesOrLoss(ctx, gating, outcome);
     if (gated === STOOD_DOWN) return { done: true };
     // A cancelled gate answers no failure, so a stand-down during the gates lands here too.
     const treeChanged =
         gated.failure && ctx.treeBefore !== null && treeAfter !== null ? treeAfter !== ctx.treeBefore : null;
-    if (await standDown(ctx, 'its gates')) return { done: true };
+    if (await endIfDown(ctx, 'its gates')) return { done: true };
 
     const evidence = evidencePolicyActive(job)
         ? { treeBefore: ctx.treeBefore, treeAfter, gates: gatesOutcomeOf(Boolean(gating?.declared.length), gated) }
@@ -470,11 +465,16 @@ interface GatesPhase {
 /**
  * The run's end with no verdict of its own, answering whether the attempt was concluded here: an
  * ad-hoc gate that found the supervisor lost while the agent ran (issue #773) interrupts it, and a
- * run the platform refused or took away is concluded by `concludeUnreported`.
+ * run the platform refused or took away is concluded by `unreportedDecision`.
  */
 async function concludeRunEnd(ctx: AttemptCtx, outcome: RunOutcome): Promise<boolean> {
-    if (ctx.state.gateLoss === null) return concludeUnreported(ctx, outcome);
-    await interruptAttempt(ctx, `infrastructure loss: ${ctx.state.gateLoss}`, outcome.exitCode);
+    const { gateLoss } = ctx.state;
+    const decision =
+        gateLoss === null
+            ? unreportedDecision(outcome)
+            : interruptDecision(`infrastructure loss: ${gateLoss}`, outcome.exitCode);
+    if (decision === null) return false;
+    await end(ctx, decision);
     return true;
 }
 
@@ -494,7 +494,7 @@ async function gatesOrLoss(
     } catch (e) {
         if (!servicesLost(e)) throw e;
         const reason = stepLost(e) ? gateLossReason(e) : `infrastructure loss: ${(e as Error).message}`;
-        await interruptAttempt(ctx, reason, null);
+        await end(ctx, interruptDecision(reason, null));
         return STOOD_DOWN;
     }
 }
@@ -539,6 +539,18 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     return { failure, deadServices: deadAfter, gatesSkipped: null, recoveredServices };
 }
 
+/** The post-helpers' failure, or `STOOD_DOWN` once they ended the attempt: it is down, or a lost supervisor interrupted it. */
+async function endingPostHelpers(
+    ctx: AttemptCtx,
+    skipReason: string | null
+): Promise<HelperFailureReport | null | typeof STOOD_DOWN> {
+    const found = await runPostHelperPhase(ctx, skipReason);
+    if (await endIfDown(ctx, 'its post-helpers')) return STOOD_DOWN;
+    if (found === null || found === STOOD_DOWN || !('halt' in found)) return found;
+    await end(ctx, setupDecision(found));
+    return STOOD_DOWN;
+}
+
 /**
  * The post-helpers, then the publish, each fenced on a stand-down: a Stop, lost lease or Remove
  * that lands during either must not push to a tree another attempt owns or open a PR for a
@@ -553,8 +565,8 @@ async function runPostHelpersAndPublish(
     policyRefusal: string | null;
 } | null> {
     const { rt, job, state } = ctx;
-    const helperFailure = await runPostHelperPhase(ctx, postHelperSkipWhy(outcome.outcome));
-    if ((await standDown(ctx, 'its post-helpers')) || helperFailure === STOOD_DOWN) return null;
+    const helperFailure = await endingPostHelpers(ctx, postHelperSkipWhy(outcome.outcome));
+    if (helperFailure === STOOD_DOWN) return null;
     const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
     let published: PublishResult | null = null;
     const policyRefusal: string | null = null;
@@ -569,11 +581,11 @@ async function runPostHelpersAndPublish(
         // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
         // and pushing now would outlive it. The push itself is never fenced — it cannot be
         // recalled (issue #472).
-        if (await standDown(ctx, 'its publish')) return null;
+        if (await endIfDown(ctx, 'its publish')) return null;
         published = await publishBranch(rt, job, githubToken, publishOptionsOf(mode, decision.revision));
         // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
         // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
-        if (await standDown(ctx, 'its publish')) return null;
+        if (await endIfDown(ctx, 'its publish')) return null;
         // The agent already shipped its work as a draft: a clean tree leaves nothing to push, and
         // the verdict still carries the publication the agent made.
         if (published?.ok && !published.published && state.draftPublication) published = state.draftPublication;
@@ -672,24 +684,25 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
     }
 
     const state = newJobState();
+    state.trace = (t) =>
+        log(JSON.stringify({ event: 'attempt-transition', job: job.id, claimSeq: job.claimSeq, ...t }));
     // In flight for a drain's handover (`loop.ts`) until it settles.
-    rt.live?.set(job.id, { job, state });
+    const over = registerLive(rt, job, state);
     const beating = heartbeat(rt, job, state);
     // Armed before the run so the runner can hand over tails from its first chunk; the pump's
     // snapshot is the liveness read the timeout note is built from (issue #339).
     const outputPump = watchOutput(rt, job, state);
     const session = pickSession(job, executorType);
 
-    // Once per attempt, however many conclusions ask (issue #820): a second call awaits the first.
-    const { quiesce, settle } = attemptSettlement(rt, job, state, beating);
-
     /*
      * Lands a verdict the heartbeat observed before the runner spawned — a Stop, a lost lease
      * or a Remove that arrived while this attempt was still syncing its checkout or booting
-     * its gate environment (issue #126). `standDown` (`loop-fence.ts`) is the only thing that
-     * acts on one: it releases a claim the runner never took, settles and parks the attempt.
+     * its gate environment (issue #126). `standDown` (`loop-fence.ts`) reads it as a decision and
+     * `end` (`loop-conclusion.ts`) is the only thing that acts on one — once per attempt, however
+     * many exits ask (issue #820): it parks the attempt, then tears it down.
      */
-    const ctx: AttemptCtx = { rt, job, state, settle, quiesce, fenced: false, treeBefore: null, session };
+    const quiesce = attemptQuiesce(rt, job, state, beating);
+    const ctx: AttemptCtx = { rt, job, state, quiesce, fenced: false, treeBefore: null, session };
     try {
         log(
             `job ${job.id}: attempt ${job.attempts} ` +
@@ -698,7 +711,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                     : 'starting (headless opencode run: no session id)')
         );
 
-        const gateSession = await releasingOnThrow(ctx, runPhases);
+        const gateSession = await runPhases(ctx);
         if (gateSession === STOOD_DOWN) return;
         state.gateToken = gateSession?.token ?? null;
         // A stand-down kills the runner, but not a gate its agent asked for: the token dies and
@@ -708,41 +721,31 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 once: true,
             });
 
-        try {
-            const outcome = await runAttempt(ctx, { session, gateSession, executorType, pump: outputPump });
-            if (outcome.done) return;
-            const closing = await runPostHelpersAndPublish(ctx, outcome);
-            if (closing === null) return;
-            const { helperFailure, published, policyRefusal } = closing;
-            // Staged, completed, then torn down (issue #821). The liveness read and the gate
-            // verdicts are read BEFORE the finally below releases the gate session — unregistering
-            // clears the recorded runs.
-            await reportFinish(ctx, {
-                job,
-                outcome: outcome.outcome,
-                failure: outcome.failure,
-                deadServices: outcome.deadServices,
-                recoveredServices: outcome.recoveredServices,
-                helperFailure,
-                published,
-                endedAt: outcome.endedAt,
-                deadlineExtensionMs: state.deadlineExtensionMs,
-                activity: outputPump.snapshot(),
-                gateRuns: gateHistory(rt, gateSession),
-                gatesSkipped: outcome.gatesSkipped,
-                treeChanged: outcome.treeChanged,
-                evidence: outcome.evidence,
-                policyRefusal,
-            });
-        } finally {
-            closeRunControl(rt, state);
-            if (gateSession) releaseGateSession(rt, gateSession, job);
-            // The services outlived run() for the declared gates' sake; they go now, on every
-            // exit path — a thrown run included, whose own cleanup no longer takes them.
-            await rt.runner
-                .releaseServices(job)
-                .catch((e: Error) => log(`job ${job.id}: could not tear down the services: ${e.message}`));
-        }
+        const outcome = await runAttempt(ctx, { session, gateSession, executorType, pump: outputPump });
+        if (outcome.done) return;
+        const closing = await runPostHelpersAndPublish(ctx, outcome);
+        if (closing === null) return;
+        const { helperFailure, published, policyRefusal } = closing;
+        // Staged, completed, then torn down (issue #821). The liveness read and the gate verdicts
+        // are read BEFORE the teardown releases the gate session — unregistering clears the
+        // recorded runs.
+        await reportFinish(ctx, {
+            job,
+            outcome: outcome.outcome,
+            failure: outcome.failure,
+            deadServices: outcome.deadServices,
+            recoveredServices: outcome.recoveredServices,
+            helperFailure,
+            published,
+            endedAt: outcome.endedAt,
+            deadlineExtensionMs: state.deadlineExtensionMs,
+            activity: outputPump.snapshot(),
+            gateRuns: gateHistory(rt, gateSession),
+            gatesSkipped: outcome.gatesSkipped,
+            treeChanged: outcome.treeChanged,
+            evidence: outcome.evidence,
+            policyRefusal,
+        });
     } catch (e) {
         // The run threw — docker is missing, the daemon or apiserver refused, or this driver lost
         // its own credentials mid-run. Deliberately NOT reported as a failed job: that would blame
@@ -752,7 +755,9 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
         // A killed run can reject (the runner's own Job vanished under it): the stand-down
         // that killed it owns the settlement, not the lease.
         stopIfDraining(state);
-        if (await standDown(ctx, 'its run')) return;
-        await concludeThrownRun(ctx, e);
+        if (await endIfDown(ctx, 'its run')) return;
+        await end(ctx, thrownRunDecision(job, e));
+    } finally {
+        over();
     }
 }

@@ -3,6 +3,7 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { createSupervisedGateManager, type GateManager } from '../src/gates.js';
 import { newJobState } from '../src/loop-attempt.js';
+import { recordEnding } from '../src/loop-phase.js';
 import { runDeclaredGates, type GateSession } from '../src/loop-gates.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 import type { StepResult } from '../src/supervisor-contract.js';
@@ -45,7 +46,7 @@ describe('Stop during the declared gates', () => {
         const state = newJobState();
         const gates = runDeclaredGates(rtWith(manager), JOB, session, state);
         await delay(5);
-        state.stopped = true;
+        recordEnding(state, 'stop');
         state.abortNow();
 
         expect(await settledWithin(gates, 200)).toBe('settled');
@@ -67,7 +68,7 @@ describe('Stop during the declared gates', () => {
         const state = newJobState();
         const gates = runDeclaredGates(rtWith(manager), JOB, session, state);
         await delay(5);
-        state.stopped = true;
+        recordEnding(state, 'stop');
         state.abortNow();
 
         expect(await settledWithin(gates, 200)).toBe('settled');

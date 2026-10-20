@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { BoardJob } from './board.js';
 import { executorImage, type DriverConfig } from './config.js';
 import { jobPath } from './k8s-auxspec.js';
-import { clearKilled } from './k8s-kill.js';
+import { ledgerOf } from './k8s-kill.js';
 import {
     createSuspendedWithSecret,
     launch,
@@ -254,7 +254,7 @@ export async function ensureGroup(deps: K8sDeps, job: BoardJob, session: RunSess
         }
         return known;
     }
-    clearKilled(runnerName(job));
+    ledgerOf(deps).forget(job);
     await prepare(deps, job);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);

@@ -4,9 +4,8 @@ import type { HelperFailureReport, HelperPlan, HelperResult, InvokeChild } from 
 import { formatConcludeOutput, runHelperPlan } from './helpers.js';
 import { askGithubToken } from './loop-github.js';
 import { down, raceStep } from './loop-attempt.js';
-import { interruptAttempt } from './loop-fence.js';
 import { helperCauseOf } from './loop-ledger.js';
-import type { AttemptCtx, SetupConclusion } from './loop-types.js';
+import type { AttemptCtx, SetupConclusion, SetupHalt } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
 import { stepLost } from './step-control.js';
 
@@ -29,7 +28,7 @@ import { stepLost } from './step-control.js';
  * declared pre-helpers pays no extra work at all — the ordinary case for every workflow-less and
  * `agent`-node task today (docs/workflows.md: no producer wires a real plan onto a claim yet).
  *
- * It only answers: `runPhases` (`loop-run.ts`) acts on a conclusion through `concludeSetup`, so a
+ * It only answers: `runPhases` (`loop-run.ts`) ends the attempt on a conclusion through `setupDecision`, so a
  * helper refusal cannot release the kubernetes checkout fence and forget to settle — the fence has
  * no runner coming to release it.
  */
@@ -60,6 +59,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
     for (const [planIndex, plan] of plans.entries()) {
         const result = await runPlanFenced(ctx, plan, invokeChild(planIndex));
         if (result === STOOD_DOWN) return STOOD_DOWN;
+        if ('halt' in result) return result;
         if (!result.ok) {
             return {
                 halt: 'fault',
@@ -100,7 +100,7 @@ export async function preHelperStep(ctx: AttemptCtx): Promise<SetupConclusion | 
 export async function runPostHelperPhase(
     ctx: AttemptCtx,
     skipReason: string | null
-): Promise<HelperFailureReport | null | typeof STOOD_DOWN> {
+): Promise<HelperFailureReport | InterruptHalt | null | typeof STOOD_DOWN> {
     const { rt, job, state } = ctx;
     const { runner, log } = rt;
     const plans = (job.helperPlans ?? []).filter((plan) => plan.phase === 'post');
@@ -125,6 +125,7 @@ export async function runPostHelperPhase(
     for (const [planIndex, plan] of plans.entries()) {
         const result = await runPlanFenced(ctx, plan, invokeChild(planIndex));
         if (result === STOOD_DOWN) return STOOD_DOWN;
+        if ('halt' in result) return result;
         if (!result.ok) {
             log(`job ${job.id}: post-run helper "${plan.helperId}" failed: ${result.reason} — ${result.message}`);
             return { helperId: plan.helperId, result };
@@ -147,24 +148,27 @@ export async function runPostHelperPhase(
     return null;
 }
 
+/** A helper whose supervisor was lost: the attempt is interrupted, and the caller ends it. */
+type InterruptHalt = Extract<SetupHalt, { halt: 'interrupt' }>;
+
 /**
- * One declared plan run to its result, or STOOD_DOWN when the attempt is down — or when its
- * supervisor was lost mid-step (`stepLost`, issue #826). That is an infrastructure interruption,
- * never a helper failure: it settles the attempt here, and the receipt and the task's checkout stay
- * on the task volume for the claim that takes the job over. Any other throw is rethrown.
+ * One declared plan run to its result, or STOOD_DOWN when the attempt is down — or an interrupt halt
+ * when its supervisor was lost mid-step (`stepLost`, issue #826). That is an infrastructure
+ * interruption, never a helper failure: the caller ends the attempt on it, and the receipt and the
+ * task's checkout stay on the task volume for the claim that takes the job over. Any other throw is
+ * rethrown.
  */
 async function runPlanFenced(
     ctx: AttemptCtx,
     plan: HelperPlan,
     invokeChild: InvokeChild
-): Promise<HelperResult | typeof STOOD_DOWN> {
+): Promise<HelperResult | InterruptHalt | typeof STOOD_DOWN> {
     try {
         return (await runHelperPlan(plan, invokeChild)) ?? STOOD_DOWN;
     } catch (e) {
         if (down(ctx.state)) return STOOD_DOWN;
         if (!stepLost(e)) throw e;
         const reason = `infrastructure loss: a ${plan.phase}-run helper's supervisor was lost (${(e as Error).message})`;
-        await interruptAttempt(ctx, reason, null);
-        return STOOD_DOWN;
+        return { halt: 'interrupt', reason };
     }
 }

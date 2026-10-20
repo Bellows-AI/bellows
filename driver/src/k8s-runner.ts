@@ -14,15 +14,7 @@ import {
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
-import {
-    killedOutcome,
-    markKilled,
-    RunnerKilled,
-    RunnerVanished,
-    recordRunnerKill,
-    vanishedOutcome,
-    wasKilled,
-} from './k8s-kill.js';
+import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
 import { claimName, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import {
     acquireClaim,
@@ -78,7 +70,7 @@ import { reviewRunOf } from './review-step.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
-import { infraLossOf, type KillRecord } from './termination.js';
+import { type KillRecord, settleEnd } from './termination.js';
 import {
     controlTokenOf,
     orderGo,
@@ -237,7 +229,7 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
 // Secrets, then its Job, confirmed gone — and the checkout claim goes back only on that
 // confirmation; a kill whose end cannot be confirmed leaves the Job suspended and keeps the claim.
 async function killRunner(deps: K8sDeps, job: BoardJob): Promise<void> {
-    markKilled(runnerName(job));
+    ledgerOf(deps).note(job, 'hard');
     // The group is gone with its pod: a step still running in its supervisor (a pre-helper writing
     // to GitHub, a publish) dies with it, and its waiters see the channel close. Its end is pending
     // from here, before anything is awaited.
@@ -390,10 +382,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // kubelet's deadline only a supervisor that stopped doing so: either is the timeout's verdict.
     // A deadline kill deletes the pod too: that is the timeout's verdict, never a loss.
     const timedOut = polled.timedOut || supervisorDeadline;
-    const infraLoss = infraLossOf({
-        killedByDriver: wasKilled(runnerName(job)),
-        timedOut,
-        reported: watch.report !== null,
+    const { infraLoss } = settleEnd({
+        kills: [],
+        driverKilledHard: ledgerOf(deps).was(job).hard,
+        report: watch.report,
+        budgetEnded: timedOut,
         vanished,
         unfinalized,
     });
@@ -585,7 +578,7 @@ export function createKubernetesRunner(
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
-        recordKill: (job: BoardJob, kill: KillRecord) => recordRunnerKill(deps, job, kill),
+        recordKill: (job: BoardJob, kill: KillRecord) => ledgerOf(deps).record(job, kill),
         pauseDeadline: (job: BoardJob, paused: boolean) => pauseRunnerDeadline(deps, job, paused),
         // The sidecars end with the group; what is released is the driver's memory of them.
         releaseServices: async (job: BoardJob) => forgetServices(deps, job),

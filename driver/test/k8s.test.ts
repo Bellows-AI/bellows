@@ -3234,7 +3234,9 @@ describe('the kubernetes runner', () => {
             },
         });
         let polls = 0;
+        const deletes: string[] = [];
         const request: K8sRequest = async (method, path, body) => {
+            if (method === 'DELETE') deletes.push(path);
             if (method === 'GET' && path === jobPath(namespace, runnerJobName(job))) {
                 polls += 1;
                 return polls === 1
@@ -3256,6 +3258,9 @@ describe('the kubernetes runner', () => {
         await expect(running).rejects.toMatchObject({ name: 'StartupRefused', startupCause: 'auth' });
         // Named on the first poll — the image question never waits out the deadline.
         expect(polls).toBe(1);
+        // A thrown fact: run() deletes the group's Job itself no more than docker's removes its
+        // containers (#828) — the loop's end() finishes it.
+        expect(deletes.filter((path) => path === jobPath(namespace, runnerJobName(job)))).toEqual([]);
     });
 
     // A container config the kubelet refuses holds the pod as surely as an image: named at once,
@@ -7674,14 +7679,14 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
         return r.run(job, session);
     };
 
-    const reportedThenCrashed = () => {
+    const reportedThenCrashed = (agentEnd = 'exited') => {
         const steps = fakeSteps();
         steps.report({
             id: 'report-1',
             outcome: null,
             cause: null,
             agentExit: 0,
-            agentEnd: 'exited',
+            agentEnd,
             drained: true,
             serving: true,
         });
@@ -7698,6 +7703,20 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
             cause: 'timeout',
             agentExit: 137,
             agentEnd: 'killed',
+            drained: true,
+            serving: true,
+        });
+        return runner(fakeRequest({ job: GONE }).request, {}, undefined, steps.sink).run(job, session);
+    };
+
+    const vanishedAfterLost = () => {
+        const steps = fakeSteps();
+        steps.report({
+            id: 'report-1',
+            outcome: 'lost',
+            cause: 'lost',
+            agentExit: null,
+            agentEnd: 'lost',
             drained: true,
             serving: true,
         });
@@ -7723,7 +7742,12 @@ describe('how a started run ends, on kubernetes (the conformance table)', () => 
                     }
                 ).request
             ).run(job, session),
-        'a supervisor that reported, then crashed before the verdict read': reportedThenCrashed,
+        'a supervisor that reported, then crashed before the verdict read': () => reportedThenCrashed(),
+        // A report that finalized nothing is no finalization (`reportFinalized`), attached or adopted.
+        'a supervisor that reported an unlaunched group, then crashed': () => reportedThenCrashed('unlaunched'),
+        // A lost agent is no finalized run either, attached or vanished under the poll.
+        'a supervisor that reported its agent lost, then crashed': () => reportedThenCrashed('lost'),
+        'a runner the platform took away after the supervisor reported its agent lost': () => vanishedAfterLost(),
     };
 
     it.each(TERMINATION_ROWS)('%s: %s', async (row, expected) => {

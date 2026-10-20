@@ -1701,6 +1701,23 @@ describe('the docker runner', () => {
         );
     });
 
+    // The exited runner container is the evidence a replacement claim adopts a finished run from
+    // (`exitedRunners`): the close reads its verdict and leaves it; only the attempt's end removes it.
+    it('leaves the exited runner container for the attempt end, not the verdict read (#828)', async () => {
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            return noContainer(args);
+        };
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('done\n', '', 0) });
+
+        expect(await runner.run(job, { id: SESSION, resume: false })).toMatchObject({ exitCode: 0, started: true });
+        expect(calls).not.toContainEqual(['rm', '-f', containerName(job)]);
+
+        await runner.finish(job);
+        expect(calls).toContainEqual(['rm', '-f', containerName(job)]);
+    });
+
     // The daemon refusing the create (a name conflict, a missing image) or the copy is what a
     // refused `docker run` was: a container that never started, nothing spawned, the leftover
     // removed, and the daemon's own words in the output.
@@ -1893,7 +1910,12 @@ describe('the docker runner', () => {
                       })
                   )
                 : Promise.resolve({ stdout: '' });
-        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, spawn: spawnChild('', '', 137) });
+        // The supervisor never finalized: a finalizing report would leave nothing for the removal to explain.
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', '', 137),
+            steps: fakeSteps(undefined, new Promise<never>(() => undefined)).sink,
+        });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({
             exitCode: 137,
@@ -2747,7 +2769,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
     const startWith = (exec: ReturnType<typeof readinessDaemon>['exec']) =>
         startJobServices(job, loadDriverConfig({ RUNNER_SERVICES: '1' }), {
             execDocker: exec as unknown as (args: string[]) => Promise<{ stdout: string; stderr: string }>,
-            killed: new Set(),
+            ledger: { was: () => ({ stopped: false, hard: false }) },
             serviceTeardown: async () => {},
             sleep: async () => {},
         });
@@ -2826,7 +2848,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
     });
 
-    it('kill() takes the services down with the runner', async () => {
+    it('kill() stops the runner at once and leaves the services to end(): releaseServices reclaims them', async () => {
         const exec = daemon();
         await servicesRunner(exec, spawnRecording('', 0).fn).kill(job);
         const calls = exec.mock.calls.map((call) => call[0]);
@@ -2842,8 +2864,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             `label=factory.lease=${job.leaseToken}`,
         ]);
         expect(calls).toContainEqual(['kill', 'c0ffee000001']);
-        expect(calls).toContainEqual(['rm', '-f', 'c0ffee000001']);
-        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        // The recovery evidence outlives the safety kill: the services go with end()'s retention-gated release.
+        expect(calls).not.toContainEqual(['rm', '-f', 'c0ffee000001']);
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        await runner.releaseServices(job);
+        expect(exec.mock.calls.map((call) => call[0])).toContainEqual(['rm', '-f', 'c0ffee000001']);
+        expect(exec.mock.calls.map((call) => call[0]).some((a) => a[0] === 'network')).toBe(false);
     });
 
     // A lost lease fires kill() while the setup may still be awaiting the daemon. Throwing is the
@@ -3100,7 +3126,12 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // name — and the teardown behind it is A-scoped too. Nothing names B.
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
         expect(late).toContainEqual(['kill', idFor(ATTEMPT_A)]);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        // The safety kill leaves the services to end(); its release is scoped to A's lease the same way.
+        expect(late).not.toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        await runner.releaseServices(attemptA);
+        const released = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        expect(released).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(released.every((a) => !touchesB(a))).toBe(true);
         expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
@@ -3112,24 +3143,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
     });
 
-    // Ordering, not just outcome: the rejection must not be observable while the teardown is
-    // still in flight, or the caller sees shutdown and the next lifecycle step race the
-    // removals. The service teardown's removal is held in flight on a gate the test controls —
-    // armed only once the service ran, so the start's own clearing passes — and a rejection
-    // observable while the gate is closed is one that did not wait for cleanup.
-    it('tears the services down before a spawn error rejects', async () => {
-        let releaseRm: (() => void) | null = null;
-        const rmGate = new Promise<void>((resolve) => {
-            releaseRm = resolve;
-        });
-        let armed = false;
+    // A spawn failure is a fact the run throws, at once: it tears nothing down (#828) — the services
+    // it started are the loop's `releaseServices` to take down, which still finds and removes them.
+    it('rejects a spawn error at once, leaving the services for the loop to release', async () => {
         const exec = vitest.fn(async (args: string[]) => {
-            if (isServiceRun(args)) {
-                armed = true;
-                return { stdout: '' };
-            }
             if (args[0] === 'ps') return { stdout: psListing(args, 'c0ffee000001') };
-            if (args.join(' ') === 'rm -f c0ffee000001' && armed) await rmGate;
             return { stdout: '' };
         });
         // A child that never closes: the CLI could not even be spawned, which is the 'error'
@@ -3139,44 +3157,22 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             process.nextTick(() => c.emit('error', new Error('spawn docker ENOENT')));
             return c;
         }) as unknown as typeof spawn;
-        const pending = servicesRunner(exec, erroring).run(job, { id: SESSION, resume: false });
-        let rejected = false;
-        pending.catch(() => {
-            rejected = true;
-        });
-        // A macrotask, so every microtask — the rejection among them — gets its turn while the
-        // gate is still closed.
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        expect(rejected).toBe(false);
-
-        releaseRm!();
-        await expect(pending).rejects.toThrow(/ENOENT/);
-        const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls.filter((a) => a.join(' ') === 'rm -f c0ffee000001').length).toBeGreaterThanOrEqual(2);
-        expect(calls.some((a) => a[0] === 'network')).toBe(false);
+        const runner = servicesRunner(exec, erroring);
+        await expect(runner.run(job, { id: SESSION, resume: false })).rejects.toThrow(/ENOENT/);
+        const removals = () => exec.mock.calls.filter((c) => c[0].join(' ') === 'rm -f c0ffee000001').length;
+        const beforeRelease = removals();
+        await runner.releaseServices(job);
+        expect(removals()).toBeGreaterThan(beforeRelease);
     });
 
     // A spawn failure makes Node deliver 'error' and then 'close' with a null code. The close
     // must not settle the promise once the error has been seen: verdict(null) would read as a
     // started run with no exit code — a terminal failed job — when the truth is infrastructure
-    // the loop should leave to its lease. The daemon holds the error-path teardown's ps on a
-    // gate, so under the bug the close handler's verdict wins the race and RESOLVES the run.
-    it('rejects with the spawn error even when close follows it while teardown is pending', async () => {
-        let releaseTeardownPs: (() => void) | null = null;
-        const teardownPsGate = new Promise<void>((resolve) => {
-            releaseTeardownPs = resolve;
-        });
-        let psCount = 0;
+    // the loop should leave to its lease.
+    it('rejects with the spawn error even when close follows it', async () => {
         const exec = vitest.fn(async (args: string[]) => {
             if (isServiceRun(args)) return { stdout: '' };
-            if (args[0] === 'ps') {
-                psCount++;
-                // ps #1 is the entry fence; ps #2 is the fence's own service half; ps #3 is the
-                // error-path teardown, held so the close handler gets its turn while the
-                // teardown is still in flight.
-                if (psCount === 3) await teardownPsGate;
-                return { stdout: psListing(args, 'c0ffee000001') };
-            }
+            if (args[0] === 'ps') return { stdout: psListing(args, 'c0ffee000001') };
             return { stdout: '' };
         });
         // Node's failed-spawn order: 'error' first, then 'close' with code null.
@@ -3189,11 +3185,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return c;
         }) as unknown as typeof spawn;
         const pending = servicesRunner(exec, errorThenClose).run(job, { id: SESSION, resume: false });
-        // A macrotask, so the error, the close and the close handler's verdict all get their
-        // turn while the gate is still closed.
+        // Handled from the start: the run rejects on the error itself, before the close's turn.
+        const rejected = expect(pending).rejects.toThrow(/ENOENT/);
+        // A macrotask, so the close and the close handler's verdict get their turn too.
         await new Promise((resolve) => setTimeout(resolve, 20));
-        releaseTeardownPs!();
-        await expect(pending).rejects.toThrow(/ENOENT/);
+        await rejected;
     });
 
     /** The group-removal calls the daemon saw from the spawn on: the supervisor's and the exporter's. */
@@ -3203,10 +3199,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             .map((call) => call[0])
             .filter((args) => args[0] === 'rm' && [supervisorName(job), exporterName(job)].includes(args[2] ?? ''));
 
-    // As it is today, a second teardown owner beside the loop's `finish` (#828): the spawn-error path
-    // removes the group before it rejects (`docker-runner.ts:629`), and the run's own catch removes
-    // it again (:682). A spawn that failed ran no agent, so nothing adoptable is lost.
-    it('removes the group of a spawn that errored before rejecting, then again in the run’s catch (today)', async () => {
+    // The run is no teardown owner beside the loop's `end()` (#828): a spawn that errored rejects
+    // with the group untouched, and the loop's `finish` or its retention decides.
+    it('removes nothing of the group when a spawn errors before rejecting', async () => {
         const exec = daemon();
         let spawnedAt = -1;
         const errored = (() => {
@@ -3216,47 +3211,50 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             return c;
         }) as unknown as typeof spawn;
         await expect(servicesRunner(exec, errored).run(job, { id: SESSION, resume: false })).rejects.toThrow(/ENOENT/);
-        expect(groupRemovals(exec, spawnedAt)).toEqual([
-            ['rm', '-f', exporterName(job)],
-            ['rm', '-f', supervisorName(job)],
-            ['rm', '-f', exporterName(job)],
-            ['rm', '-f', supervisorName(job)],
-        ]);
+        expect(spawnedAt).toBeGreaterThan(0);
+        expect(groupRemovals(exec, spawnedAt)).toEqual([]);
     });
 
-    // Pinned (#828, slice 1): a run whose outcome rejects once its group exists finishes that group
-    // itself (`docker-runner.ts:680-683`), before the loop decides — though the loop leaves such a
-    // run to its lease so the next claim can adopt it (`concludeThrownRun`, `loop-fence.ts`).
-    // Slice 6 removes the finish-on-throw; this pin flips then. Like the harness's pins, it fails
-    // only on today's exact removals: any other rejection or removal set returns early and turns
-    // the `it.fails` red.
-    it.fails('a run that rejects leaves its group for the loop to decide', async () => {
+    // A refused create is a returned fact too: no group removal from run(), the loop's `end()` finishes.
+    it('removes nothing of the group when the runner container is refused', async () => {
+        const exec = vitest.fn(async (args: string[]) => {
+            if (args[0] === 'create' && args.includes(containerName(job))) {
+                throw Object.assign(new Error('Command failed'), { stderr: 'Error response from daemon: Conflict\n' });
+            }
+            return { stdout: '' };
+        });
+        const never = (() => {
+            throw new Error('the refused create must not reach the spawn');
+        }) as unknown as typeof spawn;
+        const asDaemon = exec as unknown as ReturnType<typeof daemon>;
+        const outcome = await servicesRunner(asDaemon, never).run(job, { id: SESSION, resume: false });
+        expect(outcome).toMatchObject({ exitCode: 125, started: false });
+        const calls = exec.mock.calls.map((call) => call[0]);
+        const refusedAt = calls.findIndex((args) => args[0] === 'create' && args.includes(containerName(job)));
+        expect(refusedAt).toBeGreaterThan(0);
+        expect(groupRemovals(asDaemon, refusedAt)).toEqual([]);
+    });
+
+    // A run whose outcome rejects once its group exists leaves that group alone: the loop leaves such a
+    // run to its lease so the next claim can adopt it (`thrownRunDecision`, `loop-fence.ts`).
+    it('a run that rejects leaves its group for the loop to decide', async () => {
         const exec = daemon();
         let spawnedAt = -1;
         const throwing = (() => {
             spawnedAt = exec.mock.calls.length;
             throw new Error('the attach could not be spawned');
         }) as unknown as typeof spawn;
-        const rejected = await servicesRunner(exec, throwing)
-            .run(job, { id: SESSION, resume: false })
-            .then(
-                () => null,
-                (e: Error) => e.message
-            );
-        const removals = groupRemovals(exec, spawnedAt);
-        const today = [
-            ['rm', '-f', exporterName(job)],
-            ['rm', '-f', supervisorName(job)],
-        ];
-        if (!/could not be spawned/.test(rejected ?? '') || spawnedAt <= 0) return;
-        if (JSON.stringify(removals) !== JSON.stringify(today)) return;
-        expect(removals).toEqual([]);
+        await expect(servicesRunner(exec, throwing).run(job, { id: SESSION, resume: false })).rejects.toThrow(
+            /could not be spawned/
+        );
+        expect(spawnedAt).toBeGreaterThan(0);
+        expect(groupRemovals(exec, spawnedAt)).toEqual([]);
     });
 
     // The spawn-error twin: A's runner spawn fails, but the failure is delivered only after B
-    // claimed the same job id and stood its fleet up. The error path tears the attempt's
-    // services down before rejecting — unconditionally now, and safe unconditionally: the
-    // teardown's filters carry A's lease, so the only fleet it can find and remove is A's own.
+    // claimed the same job id and stood its fleet up. The loop's release of the attempt's
+    // services is unconditional, and safe so: the teardown's filters carry A's lease, so the
+    // only fleet it can find and remove is A's own.
     it("scopes a superseded spawn error's teardown to the failing attempt's own lease", async () => {
         const { fn, fires, childAt } = gatedSpawns();
         const exec = vitest.fn(async (args: string[]) => {
@@ -3275,11 +3273,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const afterBCreation = exec.mock.calls.length;
 
         fires[0]!('error', new Error('spawn docker ENOENT'));
-        // The rejection still surfaces — and the teardown it waited for addressed only A's own
-        // resources. Marked handled at once: the rejection lands while the teardown is still in
-        // flight, before the await below observes it.
         runA.catch(() => undefined);
         await expect(runA).rejects.toThrow(/ENOENT/);
+        // The loop's release for A addresses only A's own resources.
+        await runner.releaseServices(attemptA);
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
@@ -3292,8 +3289,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await expect(runB).resolves.toMatchObject({ exitCode: 0, started: true });
     });
 
-    // The mid-flight twin: the spawn error lands while A is STILL current, the teardown starts,
-    // and B claims the job id only while that teardown sits mid-flight, between its ps and its
+    // The mid-flight twin: A's release starts after its spawn error, and B claims the job id only while that teardown sits mid-flight, between its ps and its
     // removals. In the gated world this interleaving needed a live ownership predicate
     // re-armed at every step; in the scoped world it needs nothing: the removals were chosen by
     // a ps that filtered on A's lease, and releasing them late removes exactly what that ps
@@ -3328,7 +3324,10 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         const runA = runner.run(attemptA, { id: SESSION, resume: false });
         await childAt(0); // A spawned; its CLI client is alive
-        fires[0]!('error', new Error('spawn docker ENOENT')); // A is still current: its teardown starts
+        fires[0]!('error', new Error('spawn docker ENOENT')); // A is still current
+        runA.catch(() => undefined);
+        await expect(runA).rejects.toThrow(/ENOENT/); // the run only throws; it tears nothing down
+        const releaseA = runner.releaseServices(attemptA); // the loop's release for A starts
         await teardownPsParked; // the teardown is parked between its ps and its removals
 
         // B re-claims the same job id and stands a fresh fleet up while A's teardown is in flight.
@@ -3337,10 +3336,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const afterBCreation = exec.mock.calls.length;
 
         releaseTeardownPs!(); // the teardown resumes — and names only what its own ps found
-        // Marked handled at once: the rejection lands as soon as the teardown settles, before
-        // the await below observes it.
-        runA.catch(() => undefined);
-        await expect(runA).rejects.toThrow(/ENOENT/); // the rejection still surfaces
+        await releaseA;
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
         expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
@@ -3400,8 +3396,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await pending;
 
         const late = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
-        expect(late.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
-        expect(late).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(late.some((a) => a[0] === 'ps')).toBe(false); // the kill's own lookup came before B stood up
+        // The safety kill leaves the services to end(); its release is scoped to A's lease the same way.
+        expect(late).not.toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        await runner.releaseServices(attemptA);
+        const released = exec.mock.calls.slice(afterBCreation).map((call) => call[0]);
+        expect(released).toContainEqual(['rm', '-f', idFor(ATTEMPT_A)]);
+        expect(released.some((a) => a[0] === 'ps' && a.includes(`label=factory.lease=${ATTEMPT_A}`))).toBe(true);
+        expect(released.every((a) => !touchesB(a))).toBe(true);
         expect(late.some((a) => a[0] === 'network')).toBe(false);
         expect(late.every((a) => !touchesB(a))).toBe(true);
 
@@ -5165,12 +5167,19 @@ describe('stopping an agent whose supervisor already exited (#805)', () => {
         ]);
     });
 
-    it('force-removes the agent when its kill fails', async () => {
+    // #828: a kill that fails (the agent exited between the listing and the kill, or the daemon
+    // refused once) is tried again, never answered with a removal: the exited container is the run
+    // the next claim adopts, and only end() removes it.
+    it('tries a failed kill again and never removes the agent', async () => {
         const { exec, calls } = daemon('70', 'a1a1a1a1a1a1\n', (args) => args[0] === 'kill');
 
         await dockerRunner(exec).stopAgent(job);
 
-        expect(calls).toContainEqual(['rm', '-f', 'a1a1a1a1a1a1']);
+        expect(kills(calls)).toEqual([
+            ['kill', 'a1a1a1a1a1a1'],
+            ['kill', 'a1a1a1a1a1a1'],
+        ]);
+        expect(calls.filter((args) => args[0] === 'rm')).toEqual([]);
     });
 });
 
@@ -5872,6 +5881,7 @@ describe('how a started run ends, on docker (the conformance table)', () => {
         return pending;
     };
 
+    const LOST_AGENT = { ...FINALIZED, outcome: 'lost', cause: 'lost', agentExit: null, agentEnd: 'lost' };
     const ends: Record<TerminationRow, End> = {
         'an agent that exits 0 under a finalizing supervisor': { code: 0, supervisorExit: '0', report: FINALIZED },
         'an agent its run budget ended': {
@@ -5892,6 +5902,25 @@ describe('how a started run ends, on docker (the conformance table)', () => {
             code: 0,
             supervisorExit: '70',
             report: FINALIZED,
+        },
+        // A report that finalized nothing (the driver was lost before the agent was released) is no
+        // finalization: the attached run takes it as `reportFinalized` does, an interruption.
+        'a supervisor that reported an unlaunched group, then crashed': {
+            code: 0,
+            supervisorExit: '70',
+            report: { ...FINALIZED, agentEnd: 'unlaunched' },
+        },
+        // A lost agent is no finalized run either: the runner went, the work did not end.
+        'a supervisor that reported its agent lost, then crashed': {
+            code: 0,
+            supervisorExit: '70',
+            report: LOST_AGENT,
+        },
+        'a runner the platform took away after the supervisor reported its agent lost': {
+            code: 137,
+            supervisorExit: '137',
+            removed: true,
+            report: LOST_AGENT,
         },
     };
 

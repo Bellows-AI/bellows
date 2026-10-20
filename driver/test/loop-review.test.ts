@@ -3,6 +3,7 @@ import type { BoardJob, HeartbeatVerdict, ReviewClaim, ReviewReport } from '../s
 import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV } from '../src/claim.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { createLoop } from '../src/loop.js';
+import { recordEnding } from '../src/loop-phase.js';
 import { cancelReviews, createReviewRelay, superviseReview } from '../src/loop-review.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import type { StepResult } from '../src/supervisor-contract.js';
@@ -245,8 +246,7 @@ describe('a review the board leased in-band (issue #774)', () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
-        t.state.handedOver = true;
-        t.state.lost = true;
+        recordEnding(t.state, 'handover');
         t.state.abortNow();
         await t.settled();
         expect(t.board.completed).toEqual([]);
@@ -257,7 +257,7 @@ describe('a review the board leased in-band (issue #774)', () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
-        t.state.lost = true;
+        recordEnding(t.state, 'lost');
         await cancelReviews(t.state);
         expect(t.board.completed).toEqual([]);
     });
@@ -266,7 +266,7 @@ describe('a review the board leased in-band (issue #774)', () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
-        t.state.handedOver = true;
+        recordEnding(t.state, 'handover');
         await cancelReviews(t.state);
         expect(t.board.completed).toEqual([]);
     });
@@ -308,7 +308,7 @@ describe('a review the board leased in-band (issue #774)', () => {
             { id: REVIEW.id, status: 'failed', exitCode: 124, output: 'budget', failureKind: 'timeout' },
         ]);
         expect(t.board.completed.map((c) => c.id)).not.toContain(job(1).id);
-        expect(t.state).toMatchObject({ finished: false, lost: false, stopped: false, removed: false });
+        expect(t.state.ending).toBeNull();
         expect(t.state.signal.aborted).toBe(false);
     });
 
@@ -362,7 +362,7 @@ describe('a review the board leased in-band (issue #774)', () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
-        t.state.stopped = true;
+        recordEnding(t.state, 'stop');
         await cancelReviews(t.state);
         expect(t.board.completed).toEqual([
             {
@@ -379,7 +379,7 @@ describe('a review the board leased in-band (issue #774)', () => {
         const t = supervising({ runReview: (_c, _r, _s, { signal }) => untilAborted(signal, STEP({ exitCode: 130 })) });
         t.start();
         await until(() => t.runner.reviewed.length === 1);
-        t.state.stopped = true;
+        recordEnding(t.state, 'stop');
         t.state.abortNow();
         await t.settled();
         expect(t.board.completed[0]).toMatchObject({ id: REVIEW.id, status: 'failed' });
