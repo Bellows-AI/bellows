@@ -187,6 +187,14 @@ export const SERVICE_RESTART_TIMEOUT_MS = SERVICE_RESTART_TIMEOUT_S * MS_PER_SEC
 /** How often a restarting fleet is re-listed while it comes up. */
 export const SERVICE_READY_POLL_MS = 2000;
 
+/**
+ * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
+ * `activeDeadlineSeconds`. The runner's timeout is long gone by the time this read runs, so
+ * without a bound of its own a stalled daemon would hold the verdict — and the worker slot —
+ * open forever. On expiry the read answers null: unmeasured, never a wrong number.
+ */
+export const CLOSE_READ_DEADLINE_MS = 120_000;
+
 /** The states a platform reports for a declared service that is gone: docker's, then the pod phases. */
 export const DEAD_SERVICE_STATES: ReadonlySet<string> = new Set(['exited', 'dead', 'failed', 'succeeded']);
 

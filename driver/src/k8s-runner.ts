@@ -65,9 +65,8 @@ import {
     boundedBy,
     POLL_MS,
     refusal,
-    wait,
 } from './k8s-transport.js';
-import { pollFor } from './poll.js';
+import { abortableSleep, pollFor, type Sleep } from './poll.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { repoPath, worktreeDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
@@ -100,7 +99,13 @@ import { parseRfc3339 } from './timestamps.js';
  * PVC. NEVER throws — the scrape is the run's follow-up-ability, finish reason and context vitals,
  * and a failed read is not a failed run.
  */
-async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: string): Promise<OpencodeRunOutcome> {
+async function scrapeOpencodeSession(
+    deps: K8sDeps,
+    job: BoardJob,
+    startedAt: string,
+    deadline: number
+): Promise<OpencodeRunOutcome> {
+    const bounded = boundedBy(deps, deadline);
     const fail = opencodeReadFailed;
     let spec: ReturnType<typeof opencodeReadoutJobSpec>;
     try {
@@ -110,7 +115,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
     }
     const jobName = spec.metadata.name;
     try {
-        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
+        const created = await bounded.request('POST', jobsPath(deps.config.k8sNamespace), spec);
         const refused = refusal(created, 'creating the session readout');
         if (refused) return fail(refused);
         // pollJobToTerminal re-throws a read whose patience ran out (issue #308) — infrastructure,
@@ -118,7 +123,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         // the Job POST included — lands in the catch below: the scrape is the run's
         // follow-up-ability, and a completed run's verdict must never burn over its close-time
         // read.
-        const pollFailure = await pollJobToTerminal(deps, jobName, {
+        const pollFailure = await pollJobToTerminal(bounded, jobName, {
             what: 'the session readout',
             notFound: (n) => `the session readout ${n} no longer exists`,
             errorStatus: (s, b) => `reading the session readout ${answerPreview(s, b)}`,
@@ -126,7 +131,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         });
         if (pollFailure !== null) return fail(pollFailure);
         const pods = await readVerdict(
-            deps,
+            bounded,
             jobPodsPath(deps.config.k8sNamespace, jobName),
             'listing the session readout pods'
         );
@@ -136,7 +141,7 @@ async function scrapeOpencodeSession(deps: K8sDeps, job: BoardJob, startedAt: st
         const pod = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
         if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
         const log = await readVerdict(
-            deps,
+            bounded,
             podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
             'reading the session readout log'
         );
@@ -187,7 +192,7 @@ async function attachOpencodeOutcome(
     outcome: RunOutcome
 ): Promise<void> {
     const { scraped, reason } = await readOpencodeWithRetries(
-        () => scrapeOpencodeSession(deps, job, startedAt),
+        (deadline) => scrapeOpencodeSession(deps, job, startedAt, deadline),
         deps.sleep
     );
     mergeOpencodeOutcome(outcome, scraped, reason);
@@ -590,7 +595,7 @@ async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimRes
 export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
-    sleep: (ms: number) => Promise<void> = wait,
+    sleep: Sleep = abortableSleep,
     wiring: { leases?: Board['leases']; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
 ): Runner {
     const { leases, steps, endpoint } = wiring;

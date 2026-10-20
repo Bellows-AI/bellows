@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Board, BoardJob } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
@@ -42,8 +42,11 @@ import type { HelperPlan } from '../src/helpers.js';
 import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
+import { ledgerOf, RunnerKilled } from '../src/k8s-kill.js';
+import { CLOSE_READ_DEADLINE_MS } from '../src/runner.js';
 import {
     auxVerdict,
+    pollJobToTerminal,
     pollRunnerJobUntilTerminal,
     readImagePullStatus,
     readVerdict,
@@ -5262,6 +5265,35 @@ describe('the kubernetes services flow (issue #773)', () => {
         expect((thrown as Error).message).toBe('service "cache" never acknowledged its generation 300s on');
     });
 
+    it('gives the pod read of a bump the time its budget has left, however slow the steps before it', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const api = podFake({ cache: running() });
+            const timeouts: (number | undefined)[] = [];
+            const request: K8sRequest = (method, path, body, options) => {
+                if (method === 'GET' && decodeURIComponent(path).includes('job-name='))
+                    timeouts.push(options?.timeoutMs);
+                return api.request(method, path, body, options);
+            };
+            let bumps = 0;
+            const steps = restartSteps({
+                bump: () => {
+                    bumps += 1;
+                    vi.setSystemTime(Date.now() + (bumps === 1 ? 299_000 : 2_000));
+                    return notAcked('cache');
+                },
+            });
+            const k8s = runner(request, servicesOn, undefined, steps.sink);
+            await k8s.syncCheckout(job, undefined, SESSION_RUN);
+            timeouts.length = 0;
+            await expect(k8s.restartServices(job, live)).rejects.toBeInstanceOf(ServicesNotRunning);
+            expect(timeouts[0]).toBeGreaterThan(0);
+            expect(timeouts[1]).toBeLessThanOrEqual(1_000);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('fails naming a service that never restarts within the budget', async () => {
         const api = podFake({ cache: running() });
         const k8s = runner(api.request, servicesOn, undefined, restartSteps().sink);
@@ -6257,6 +6289,59 @@ describe('a Job status read as a typed answer (#869)', () => {
 
     it('reads malformed counters as Inconclusive on the runner poll, never a TypeError or pending', async () => {
         await expect(pollRunnerJobUntilTerminal(depsOf(), job)).rejects.toBeInstanceOf(Inconclusive);
+    });
+});
+
+describe('the close-read and run waits end on the clock (#869)', () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+    const pendingBody = JSON.stringify({ status: { active: 1 } });
+    const MAX_POLLS = 500;
+    /** A pending Job forever; each pause moves the clock a poll on, and a runaway wait is cut loose. */
+    const pendingDeps = (): K8sDeps => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        let pauses = 0;
+        return {
+            request: async () => ({ status: 200, body: pendingBody }),
+            sleep: async (ms) => {
+                pauses += 1;
+                if (pauses > MAX_POLLS) throw new Error('the wait never ended');
+                vi.setSystemTime(Date.now() + ms);
+            },
+            config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+        };
+    };
+    const messages = {
+        what: 'the readout',
+        notFound: (n: string) => `${n} gone`,
+        errorStatus: () => 'error',
+        failed: 'failed',
+    };
+
+    it('answers Inconclusive when an aux Job is still pending at the close-read bound', async () => {
+        const started = Date.now();
+        await expect(pollJobToTerminal(pendingDeps(), 'aux-job', messages)).rejects.toBeInstanceOf(Inconclusive);
+        expect(Date.now() - started).toBeLessThan(CLOSE_READ_DEADLINE_MS + POLL_MS);
+    });
+
+    it('answers Inconclusive when an aux verdict is still pending at the close-read bound', async () => {
+        const deps = pendingDeps();
+        await expect(auxVerdict(deps, 'aux-job')).rejects.toBeInstanceOf(Inconclusive);
+    });
+
+    it('ends the runner poll promptly when the attempt is killed during its pause', async () => {
+        const deps: K8sDeps = {
+            request: async () => ({ status: 200, body: pendingBody }),
+            sleep: (_ms, signal) =>
+                new Promise((_resolve, reject) => {
+                    signal?.addEventListener('abort', () => reject(new Error('woken by the abort')), { once: true });
+                }),
+            config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+        };
+        const polling = pollRunnerJobUntilTerminal(deps, job);
+        setTimeout(() => ledgerOf(deps).note(job, 'hard'), 10);
+        await expect(polling).rejects.toBeInstanceOf(RunnerKilled);
     });
 });
 

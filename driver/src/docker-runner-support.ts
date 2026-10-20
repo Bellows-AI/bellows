@@ -26,6 +26,7 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { supervisorName } from './docker-mailbox.js';
+import { abortableSleep, type Sleep, timeLeft } from './poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
 
@@ -494,7 +495,7 @@ export async function startJobServices(
         execDocker: ExecDocker;
         ledger: Pick<KillLedger, 'was'>;
         serviceTeardown: (job: BoardJob) => Promise<void>;
-        sleep?: (ms: number) => Promise<void>;
+        sleep?: Sleep;
     },
     signal?: AbortSignal
 ): Promise<RunOutcome | null> {
@@ -502,7 +503,7 @@ export async function startJobServices(
     await awaitServicesRunning(
         declaredServiceSpecs(job),
         listJobServices(job, deps.execDocker),
-        deps.sleep ?? serviceWait,
+        deps.sleep ?? abortableSleep,
         {
             signal,
             after: 'the start',
@@ -512,8 +513,10 @@ export async function startJobServices(
 }
 
 /** The attempt's service fleet as the readiness wait reads it. */
-const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async () => {
-    const listed = parseDockerServicePs((await execDocker(servicePsArgs(job))).stdout);
+const listJobServices = (job: BoardJob, execDocker: ExecDocker) => async (deadline: number) => {
+    const timeout = timeLeft(deadline);
+    if (timeout === 0) throw new Error('listing the attempt services: out of time');
+    const listed = parseDockerServicePs((await execDocker(servicePsArgs(job), { timeout })).stdout);
     if (listed === null) throw new Error('listing the attempt services: the daemon answered what is not the listing');
     return listed;
 };
@@ -532,9 +535,6 @@ export const servicePsArgs = (job: BoardJob): string[] => [
     '{{json .}}',
 ];
 
-/** The wait between re-listings of a restarting fleet. */
-const serviceWait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 /**
  * The pre-gate restart (issues #560, #773): EVERY recorded service's container removed and run
  * again into the same network namespace — its group supervisor's, whose hosts file still names it —
@@ -545,7 +545,7 @@ export async function restartJobServices(
     job: BoardJob,
     execDocker: ExecDocker,
     signal: AbortSignal,
-    sleep: (ms: number) => Promise<void> = serviceWait
+    sleep: Sleep = abortableSleep
 ): Promise<void> {
     const specs = declaredServiceSpecs(job);
     const remove = (name: string) => execDocker(['rm', '-f', serviceContainerName(job, name)]).catch(() => undefined);

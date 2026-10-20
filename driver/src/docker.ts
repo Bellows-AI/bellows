@@ -30,14 +30,6 @@ import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 import { agentMailboxArgs, agentRoleArgs, groupNetworkArgs } from './docker-mailbox.js';
 
 /**
- * The close-time claude-code turn read's whole budget, matching the kubernetes twin's
- * `activeDeadlineSeconds`. The runner's timeout is long gone by the time this read runs, so
- * without a bound of its own a stalled daemon would hold the verdict — and the worker slot —
- * open forever. On expiry the read answers null: unmeasured, never a wrong number.
- */
-export const CLOSE_READ_DEADLINE_MS = 120_000;
-
-/**
  * The `--mount` argv that scopes the workspaces volume to one member's `<orgId>/<userId>` subtree
  * — the kernel-enforced boundary every container this runner starts works behind (docker ≥ 26.1,
  * where `volume-subpath` landed). One shape for the runner and every aux container, so the

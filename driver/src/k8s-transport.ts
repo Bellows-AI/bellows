@@ -13,7 +13,7 @@ import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
 import type { TeardownIdentity } from './k8s-teardown.js';
 import { parseJsonObject } from './json-parse.js';
-import { timeLeft } from './poll.js';
+import { type Sleep, timeLeft } from './poll.js';
 
 /**
  * The kubernetes executor's shared low-level vocabulary: the wire types (`K8sResponse`,
@@ -288,7 +288,7 @@ export function boundedBy(deps: K8sDeps, deadline: number): K8sDeps {
  */
 export interface K8sDeps {
     request: K8sRequest;
-    sleep: (ms: number) => Promise<void>;
+    sleep: Sleep;
     config: DriverConfig;
     /**
      * The board's lease lookup (`Board.leases`): what lets the fence take over a checkout claim
@@ -485,9 +485,6 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
             req.end();
         });
 }
-
-/** The default `sleep` every k8s-executor factory takes, so the poll loops can be tested without it. */
-export const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface K8sJobStatus {
     succeeded?: number;

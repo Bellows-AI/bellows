@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
-import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
+import { ARTIFACT_LIMIT, CLOSE_READ_DEADLINE_MS, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { pollFor } from './poll.js';
@@ -363,23 +363,23 @@ export async function pollJobToTerminal(
     image: string | null = null
 ): Promise<string | null> {
     const seen = { container: false };
-    const pollPending = async (): Promise<string | null> => {
-        if (!seen.container && image !== null) {
-            const failure = await executorImageWatch(deps, jobName, image, seen);
-            if (failure) return failure;
+    const verdict = await pollFor<{ answer: string | null }>(
+        { ms: CLOSE_READ_DEADLINE_MS, everyMs: POLL_MS, sleep: (ms) => deps.sleep(ms) },
+        async (deadline) => {
+            const bounded = boundedBy(deps, deadline);
+            const result = await readJobStatus(bounded, jobName, messages.what);
+            if (result.kind === 'notFound') return { answer: messages.notFound(jobName) };
+            if (result.kind === 'error') return { answer: messages.errorStatus(result.status, result.body) };
+            if (result.kind === 'pending') {
+                if (seen.container || image === null) return;
+                const failure = await executorImageWatch(bounded, jobName, image, seen);
+                return failure ? { answer: failure } : undefined;
+            }
+            return { answer: result.outcome === 'failed' ? messages.failed : null };
         }
-        await deps.sleep(POLL_MS);
-        return poll();
-    };
-    const poll = async (): Promise<string | null> => {
-        const result = await readJobStatus(deps, jobName, messages.what);
-        if (result.kind === 'notFound') return messages.notFound(jobName);
-        if (result.kind === 'error') return messages.errorStatus(result.status, result.body);
-        if (result.kind === 'pending') return pollPending();
-        if (result.outcome === 'failed') return messages.failed;
-        return null;
-    };
-    return poll();
+    );
+    if (!verdict) throw new Inconclusive(`${messages.what} reached no verdict in ${CLOSE_READ_DEADLINE_MS}ms`);
+    return verdict.answer;
 }
 
 /**
@@ -502,22 +502,30 @@ export async function auxVerdict(
     jobName: string,
     signal?: AbortSignal
 ): Promise<{ exitCode: number | null; output: string }> {
-    if (signal?.aborted) throw new Error(`the job ${jobName} was cancelled`);
-    const result = await readJobStatus(deps, jobName, `reading the job ${jobName}`);
-    if (result.kind === 'notFound') {
-        throw new Error(`the job ${jobName} no longer exists`);
-    }
-    if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
-    if (result.kind === 'pending') {
-        await deps.sleep(POLL_MS);
-        return auxVerdict(deps, jobName, signal);
-    }
-    return readJobPodVerdict(
-        deps,
-        jobName,
-        { succeeded: result.outcome === 'succeeded' },
-        `listing the pods of ${jobName}`
+    const verdict = await pollFor<{ exitCode: number | null; output: string }>(
+        {
+            ms: CLOSE_READ_DEADLINE_MS,
+            everyMs: POLL_MS,
+            sleep: deps.sleep,
+            ...(signal ? { signal } : {}),
+            abandoned: () => new Error(`the job ${jobName} was cancelled`),
+        },
+        async (deadline) => {
+            const bounded = boundedBy(deps, deadline);
+            const result = await readJobStatus(bounded, jobName, `reading the job ${jobName}`);
+            if (result.kind === 'notFound') throw new Error(`the job ${jobName} no longer exists`);
+            if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
+            if (result.kind === 'pending') return;
+            return readJobPodVerdict(
+                bounded,
+                jobName,
+                { succeeded: result.outcome === 'succeeded' },
+                `listing the pods of ${jobName}`
+            );
+        }
     );
+    if (!verdict) throw new Inconclusive(`the job ${jobName} reached no verdict in ${CLOSE_READ_DEADLINE_MS}ms`);
+    return verdict;
 }
 
 /**
@@ -601,26 +609,37 @@ export async function pollRunnerJobUntilTerminal(
     const podName = watch.podName ?? null;
     const image = executorImage(deps.config, job.executorType);
     const seen = { container: false };
-    const poll = async (pod: string | null): Promise<{ timedOut: boolean; jobSucceeded: boolean }> => {
-        const result = await readUnlessKilled(deps, job);
-        if (result.kind === 'notFound') {
-            // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
-            // never arrive, so waiting longer is holding a slot for nothing.
-            throw vanishedRunner(deps, job);
+    let pod = podName;
+    const terminal = { timedOut: false, jobSucceeded: false };
+    // No bound of its own, on purpose: the kubelet's activeDeadlineSeconds and the run deadline
+    // (run-deadline.ts, whose kill aborts the ledger signal) bound it.
+    const polled = await pollFor<{ timedOut: boolean; jobSucceeded: boolean }>(
+        {
+            ms: Infinity,
+            everyMs: POLL_MS,
+            sleep: deps.sleep,
+            signal: ledgerOf(deps).signal(job),
+            abandoned: () => new RunnerKilled(runnerName(job)),
+        },
+        async () => {
+            const result = await readUnlessKilled(deps, job);
+            if (result.kind === 'notFound') {
+                // Gone without this driver deleting it — fenced away or removed by hand. Its verdict can
+                // never arrive, so waiting longer is holding a slot for nothing.
+                throw vanishedRunner(deps, job);
+            }
+            if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
+            if (result.kind === 'terminal') {
+                return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
+            }
+            // The task group outlives the agent: its supervisor's report — the agent is over and the
+            // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
+            if (over?.()) return terminal;
+            if (!seen.container) seen.container = await runStartSeen(deps, job, image);
+            if (onOutput) pod = await tailRunnerOutput(deps, job, pod, onOutput);
         }
-        if (result.kind === 'error') throw new Error(refusal(result, 'reading the runner job')!);
-        if (result.kind === 'terminal') {
-            return { timedOut: timedOutOf(result.status), jobSucceeded: result.outcome === 'succeeded' };
-        }
-        // The task group outlives the agent: its supervisor's report — the agent is over and the
-        // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
-        if (over?.()) return { timedOut: false, jobSucceeded: false };
-        if (!seen.container) seen.container = await runStartSeen(deps, job, image);
-        const nextPodName = onOutput ? await tailRunnerOutput(deps, job, pod, onOutput) : pod;
-        await deps.sleep(POLL_MS);
-        return poll(nextPodName);
-    };
-    return poll(podName);
+    );
+    return polled!;
 }
 
 /**
