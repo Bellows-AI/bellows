@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Board, BoardJob } from '../src/board.js';
+import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
     AGENT_CONTAINER,
@@ -20,6 +20,9 @@ import {
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
+import { newJobState } from '../src/loop-attempt.js';
+import { createReviewRelay } from '../src/loop-review.js';
+import type { LoopRuntime } from '../src/loop-types.js';
 import {
     claudeTurnsScript,
     claudeExportScript,
@@ -1134,13 +1137,129 @@ describe('the worktree sync', () => {
         expect(steps.tokens).toEqual(new Set([CONTROL_TOKEN]));
     });
 
-    it('creates no Job of its own: the sync rides the attempt’s one group', async () => {
-        const { request, calls } = fakeRequest();
-        await sync(repoJob, fakeSteps(), request);
-        const jobs = calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace));
-        expect(jobs.map((call) => (call.body as { metadata: { name: string } }).metadata.name)).toEqual([
-            runnerJobName(repoJob),
+    // The whole attempt in one pod (issues #771-#774): the sync, the setup, a gate, a declared
+    // service, a review (snapshot, restore, run, export) and the caller's finish are steps of the
+    // task Job's supervisor, so the cluster is asked for the task Job, its Secret and the claim
+    // ConfigMap and for nothing else. A new object here is a regression, not an allowance.
+    it('creates only the task Job, its Secret and the claim ConfigMap for a full attempt, review included', async () => {
+        const reviewing: BoardJob = {
+            ...gatedOf(repoJob),
+            ...SUPERVISED,
+            services: [{ name: 'cache', image: 'redis', environment: [] }],
+            reviewerProfiles: ['security'],
+        };
+        const api = routed((method, path) => {
+            if (method !== 'GET' || !decodeURIComponent(path).includes('job-name=')) return;
+            return {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: {
+                                phase: 'Running',
+                                initContainerStatuses: [
+                                    {
+                                        name: 'svc-cache',
+                                        image: 'redis',
+                                        state: { running: { startedAt: '2026-10-19T00:00:00Z' } },
+                                        restartCount: 0,
+                                    },
+                                ],
+                                containerStatuses: [{ state: { running: {} } }],
+                            },
+                        },
+                    ],
+                }),
+            };
+        });
+        const steps = fakeSteps((step) => {
+            if (step.kind === 'sync') return stepOk('{"ok":true,"reason":null}\n');
+            if (step.kind === 'probe') return stepOk(`${JSON.stringify({ cloned: true, fingerprint: 'h:1' })}\n`);
+            if (step.kind === 'snapshot') return stepOk('{"ok":true}');
+            return stepOk('done');
+        });
+        const k8s = runner(api.request, { RUNNER_SERVICES: '1' }, undefined, steps.sink);
+
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
+        const reviewRow = {
+            ...reviewing,
+            id: '77777777-7777-4777-8777-777777777777',
+            rootJobId: reviewing.id,
+            leaseToken: NEW_TOKEN,
+            executorType: 'claude-code',
+            reviewRun: { profile: 'security', ref: 'refs/factory/review/root/sec-1', timeoutMinutes: 5 },
+        } as unknown as ReviewClaim;
+        const completed: unknown[] = [];
+        // The board's real answers: a review is leased in-band with its claim, and completing it
+        // answers no reclaim (the caller's thread owns the tree: amendment B6).
+        const board = {
+            requestReview: async () => ({
+                result: 'ok',
+                created: true,
+                claim: reviewRow,
+                review: { key: 'sec-1', evidence: { state: 'none' } },
+            }),
+            heartbeat: async () => ({ cancelRequested: false }),
+            session: async () => undefined,
+            complete: async (_row: unknown, body: unknown) => {
+                completed.push(body);
+                return { state: 'ok', reclaimId: null };
+            },
+        };
+        const rt = {
+            runner: k8s,
+            board,
+            config,
+            log: () => undefined,
+            sleep: () => new Promise<void>(() => undefined),
+            gates: {
+                server: { grantExporter: () => undefined, revokeExporter: () => undefined },
+            },
+        } as unknown as LoopRuntime;
+
+        const state = newJobState();
+        expect(await k8s.syncCheckout(reviewing, undefined, SESSION_OF)).toEqual({ ok: true, reason: null });
+        const gateAt = { cwd: WORKTREE, env: {}, timeoutMs: 1000 };
+        await k8s.runGate(reviewing, { command: 'npm ci', ...gateAt });
+        await k8s.runGate(reviewing, { command: 'npm test', ...gateAt });
+        expect(await k8s.startServices(reviewing)).toBeNull();
+        const verdict = await createReviewRelay(rt, reviewing, state).request('sec-1', 'security');
+        expect(verdict).toMatchObject({ created: true });
+        await Promise.all([...state.reviews.values()].map((review) => review.settled));
+        await k8s.finish(reviewing);
+
+        expect(completed).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+        // setup and gate, the services' start, the review (home, restore, run, export), the finish.
+        expect(kindsOf(steps)).toEqual([
+            'sync',
+            'gate',
+            'gate',
+            'restart',
+            'probe',
+            'snapshot',
+            'sync',
+            'sync',
+            'review',
+            'sync',
+            'finish',
         ]);
+        // The session readout Jobs of the close are split to issue #882 and are the only exception.
+        const readouts = new Set([opencodeReadoutJobName(reviewing), claudeTurnsJobName(reviewing)]);
+        const created = api.calls
+            .filter((call) => call.method === 'POST')
+            .map((call) => ({ path: call.path, name: (call.body as { metadata: { name: string } }).metadata.name }))
+            .filter((call) => !readouts.has(call.name));
+        // The claim is taken by the sync and again by the group's creation: one name, one object.
+        const objects = [...new Map(created.map((call) => [`${call.path} ${call.name}`, call])).values()];
+        expect(objects).toHaveLength(3);
+        expect(objects).toEqual(
+            expect.arrayContaining([
+                { path: configmapsPath, name: expect.any(String) },
+                { path: `/api/v1/namespaces/${namespace}/secrets`, name: secretName(reviewing) },
+                { path: jobsPath(namespace), name: runnerJobName(reviewing) },
+            ])
+        );
     });
 
     // The sync's fetch needs a credential helper to read the token git never reads from the
