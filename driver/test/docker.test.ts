@@ -58,6 +58,7 @@ import {
 } from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { createDockerRunner } from '../src/docker-runner.js';
+import { ATTEMPT_COMMAND_TIMEOUT_MS } from '../src/docker-runner-support.js';
 import { untilStandDown } from '../src/docker-runner-support.js';
 import {
     exporterCreateArgs,
@@ -3850,6 +3851,86 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         await runner.releaseServices(job);
     });
 
+    // #869: the first call of each kind an attempt makes stalls; none holds the attempt past its command deadline.
+    it.each([
+        ['the re-claim fence listing', (args: string[]) => args[0] === 'ps' && args.includes('--format')],
+        ['the group create', (args: string[]) => args[0] === 'create'],
+        ['the group start', (args: string[]) => args[0] === 'start'],
+        ['the service creation', (args: string[]) => isServiceRun(args)],
+    ])('ends a stalled %s by the attempt’s command deadline (#869)', async (_name, hang) => {
+        const base = daemon();
+        let stalled = false;
+        const exec = vitest.fn(async (args: string[], options?: { timeout?: number }) => {
+            if (!stalled && hang(args)) {
+                stalled = true;
+                return hangsUntilTimeout(options);
+            }
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+        vitest.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+        try {
+            let ended = false;
+            const running = runner.run(job, { id: SESSION, resume: false });
+            running.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+            // The calls before the stalled one touch the disk: let the run reach it.
+            while (!stalled) await new Promise((resolve) => setImmediate(resolve));
+
+            await vitest.advanceTimersByTimeAsync(ATTEMPT_COMMAND_TIMEOUT_MS + 1_000);
+            // What follows the refusal touches the disk.
+            for (let polls = 0; polls < 200 && !ended; polls += 1)
+                await new Promise((resolve) => setImmediate(resolve));
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('ends a stalled vitals sample by the attempt’s command deadline (#869)', async () => {
+        const exec = vitest.fn((_args: string[], options?: { timeout?: number }) =>
+            hangsUntilTimeout(options)
+        ) as unknown as ReturnType<typeof daemon>;
+        vitest.useFakeTimers();
+        try {
+            let ended = false;
+            const sampling = servicesRunner(exec, spawnRecording('', 0).fn).sampleRuntime(job);
+            sampling.then(
+                () => (ended = true),
+                () => (ended = true)
+            );
+
+            // The stats read, then the fleet read: each ends by its own deadline.
+            await vitest.advanceTimersByTimeAsync(2 * ATTEMPT_COMMAND_TIMEOUT_MS + 1_000);
+
+            expect(ended).toBe(true);
+        } finally {
+            vitest.useRealTimers();
+        }
+    });
+
+    it('ends a stalled group create when the attempt is killed (#869)', async () => {
+        const base = daemon();
+        let stalled = false;
+        const exec = vitest.fn(async (args: string[], options?: { signal?: AbortSignal }) => {
+            if (!stalled && args[0] === 'create') {
+                stalled = true;
+                return hangsUntilAborted(options);
+            }
+            return base(args);
+        }) as unknown as ReturnType<typeof daemon>;
+        const runner = servicesRunner(exec, spawnRecording('', 0).fn);
+
+        const running = runner.run(job, { id: SESSION, resume: false });
+        await vitest.waitFor(() => expect(stalled).toBe(true));
+        await runner.kill(job);
+
+        expect(await endsSoon(running)).toBe(true);
+    });
+
     it('restartServices throws when the daemon refuses the service again (issue #560)', async () => {
         const base = daemon();
         let refuse = false;
@@ -5278,7 +5359,7 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         await runner.kill(repoJob);
         const sleptBeforeRelease = sleeps;
         release();
-        await expect(probing).rejects.toThrow(/killed while its task group came up/);
+        await expect(probing).rejects.toThrow(/killed while (setting up services|its task group came up)/);
         expect(sleeps - sleptBeforeRelease).toBeLessThanOrEqual(2);
     });
 

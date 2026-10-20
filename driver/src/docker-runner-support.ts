@@ -92,6 +92,22 @@ export function untilStandDown(execDocker: ExecDocker, signal?: AbortSignal): Ex
 }
 
 /**
+ * How long one command of an attempt may run before its process is killed: the ceiling of a stalled
+ * daemon, not a tuned budget — a service creation may pull its image. Long-running children (the
+ * attached run, a log stream) end on the kill signal and their own deadline instead.
+ */
+export const ATTEMPT_COMMAND_TIMEOUT_MS = 600_000;
+
+/**
+ * `execDocker` for an attempt's own commands (#869): each ends by `ATTEMPT_COMMAND_TIMEOUT_MS`
+ * unless it names its own bound, and by `signal`, the attempt's kill. Teardown is not made with it.
+ */
+export function attemptExec(execDocker: ExecDocker, signal: AbortSignal): ExecDocker {
+    const standing = untilStandDown(execDocker, signal);
+    return (args, options) => standing(args, { ...options, timeout: options?.timeout ?? ATTEMPT_COMMAND_TIMEOUT_MS });
+}
+
+/**
  * `execDocker` held to a wait (#869): refusing every call once the absolute `bound.deadline` has
  * passed, ending each by it, and killing the one in flight when `bound.signal` aborts. The docker
  * twin of `withSignal(boundedBy(deps, deadline), signal)`.
@@ -368,6 +384,8 @@ export async function dockerRunVerdict(
     code: number | null,
     ctx: {
         execDocker: ExecDocker;
+        /** Removes the container of a start that never ran; uncancelled, where `execDocker` ends with the attempt. */
+        teardown?: ExecDocker;
         job: BoardJob;
         output: string;
         timedOut: boolean;
@@ -391,7 +409,7 @@ export async function dockerRunVerdict(
             : { started: true, neverRan: false, infraLoss: null };
     // A container that never ran is litter to remove now; one that ran is the evidence a replacement
     // claim adopts the run from, so it stays until the attempt's end (`finishGroup`).
-    if (!started) await ctx.execDocker(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
+    if (!started) await (ctx.teardown ?? ctx.execDocker)(['rm', '-f', containerName(ctx.job)]).catch(() => undefined);
     // A startup cause only on proof the container never ran — the refused create's own stderr, or the
     // daemon's answer — when what printed is the daemon's, never the agent's own words (#824 D11).
     const startupCause = started
@@ -453,12 +471,12 @@ export interface RunnerFiles {
  * the container is ready to start.
  */
 export async function createRunnerContainer(
-    deps: { config: DriverConfig; execDocker: ExecDocker },
+    deps: { config: DriverConfig; execDocker: ExecDocker; teardown?: ExecDocker },
     job: BoardJob,
     session: RunSession | null,
     options: { envFile?: string }
 ): Promise<RunOutcome | null> {
-    const { config, execDocker } = deps;
+    const { config, execDocker, teardown } = deps;
     try {
         await execDocker(dockerArgs(config, job, session, options));
         const telemetry = telemetryConfig(job.executorType, config.otelEndpoint);
@@ -470,6 +488,7 @@ export async function createRunnerContainer(
         const refused = startupRefusalOf(error);
         return dockerRunVerdict(CONTAINER_GONE, {
             execDocker,
+            ...(teardown ? { teardown } : {}),
             job,
             output: dockerErrorDetail(error),
             timedOut: false,
