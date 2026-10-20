@@ -27,7 +27,6 @@ import {
     reopenJob,
     stopJob,
     suspendJob,
-    requeueJob,
     interruptJob,
     removeJobThread,
     cancelThreadWait,
@@ -247,10 +246,6 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return stopJob(ctx, id, stoppedBy);
         },
 
-        async requeue(id, leaseToken) {
-            await gate();
-            return requeueJob(ctx, id, leaseToken);
-        },
         async interrupt(id, leaseToken, interruption) {
             await gate();
             return interruptJob(ctx, id, leaseToken, interruption);

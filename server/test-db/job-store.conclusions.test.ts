@@ -407,7 +407,6 @@ describe.skipIf(!enabled)('a staged conclusion binds the attempt — database', 
 
     it.each([
         ['a suspend', (s: JobStore, id: string, token: string) => s.suspend(id, token)],
-        ['a requeue', (s: JobStore, id: string, token: string) => s.requeue(id, token)],
         [
             'a released interrupt',
             (s: JobStore, id: string, token: string) => s.interrupt(id, token, { reason: 'drained', release: true }),
@@ -449,7 +448,6 @@ describe.skipIf(!enabled)('a staged conclusion against concurrent settles — da
     it.each([
         ['a different complete', (id: string, token: string) => store.complete(id, token, failed)],
         ['a suspend', (id: string, token: string) => store.suspend(id, token)],
-        ['a requeue', (id: string, token: string) => store.requeue(id, token)],
         [
             'a released interrupt',
             (id: string, token: string) => store.interrupt(id, token, { reason: 'drained', release: true }),

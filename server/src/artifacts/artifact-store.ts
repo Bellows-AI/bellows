@@ -29,6 +29,10 @@ export const ARTIFACT_CAUSE = {
     streamCap: 'stream_cap',
     orgQuota: 'org_quota',
 } as const;
+/** The stream the driver's finalize stage uploads the task's git state and session on (#775). */
+export const CHECKPOINT_STREAM = 'checkpoint';
+/** A checkpoint manifest's cause when the producer hit its cap and uploaded the header only. */
+export const CHECKPOINT_CAP_CAUSE = 'checkpoint_cap';
 export type ChunkRefusal = (typeof ARTIFACT_CAUSE)[keyof typeof ARTIFACT_CAUSE];
 
 export const MANIFEST_STATES = ['complete', 'partial', 'truncated'] as const;
@@ -232,17 +236,35 @@ function createManifestOps({
             const manifest = checkManifest(input);
             await ready;
             const c = columnsOf(orgId, ref);
-            const inserted = await sql`
-                insert into artifact_manifest
-                    (org_id, member_id, root_job_id, job_id, claim_seq, executor, session_id, stream,
-                     producer, schema_version, started_at, finished_at, state, terminal_cause)
-                values
-                    (${c.org_id}, ${c.member_id}, ${c.root_job_id}, ${c.job_id}, ${c.claim_seq}, ${c.executor},
-                     ${c.session_id}, ${c.stream}, ${manifest.producer}, ${manifest.schemaVersion},
-                     ${manifest.startedAt}, ${manifest.finishedAt}, ${manifest.state}, ${manifest.terminalCause})
-                on conflict do nothing
-                returning stream
-            `;
+            const inserted = await sql.begin(async (tx) => {
+                const rows = await tx`
+                    insert into artifact_manifest
+                        (org_id, member_id, root_job_id, job_id, claim_seq, executor, session_id, stream,
+                         producer, schema_version, started_at, finished_at, state, terminal_cause)
+                    values
+                        (${c.org_id}, ${c.member_id}, ${c.root_job_id}, ${c.job_id}, ${c.claim_seq}, ${c.executor},
+                         ${c.session_id}, ${c.stream}, ${manifest.producer}, ${manifest.schemaVersion},
+                         ${manifest.startedAt}, ${manifest.finishedAt}, ${manifest.state}, ${manifest.terminalCause})
+                    on conflict do nothing
+                    returning stream
+                `;
+                if (rows.length > 0 && c.stream === CHECKPOINT_STREAM && manifest.state !== 'partial') {
+                    // The claim sequence is read from the job row here, never taken from the request.
+                    await tx`
+                        update job set
+                            checkpoint_job_id = ${c.job_id}, checkpoint_claim_seq = ${c.claim_seq},
+                            checkpoint_executor = ${c.executor}, checkpoint_session = ${c.session_id},
+                            checkpoint_truncated = ${manifest.state === 'truncated'}, checkpoint_finalized_at = now()
+                        where org_id = ${c.org_id} and id = ${c.root_job_id}::uuid
+                          and exists (
+                              select 1 from job holder
+                              where holder.org_id = ${c.org_id} and holder.id = ${c.job_id}::uuid
+                                and holder.claim_seq = ${c.claim_seq}
+                          )
+                    `;
+                }
+                return rows;
+            });
             if (inserted.length > 0) return { result: 'stored' };
             const recorded = (await readManifest(ref))!;
             return sameManifest(recorded, manifest) ? { result: 'duplicate' } : { result: 'conflict', recorded };

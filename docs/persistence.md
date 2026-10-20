@@ -12,9 +12,10 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
 | Agent questions, stamped with the asking claim's `claim_seq` (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
 | Named-profile reviews (056) | `server/migrations/056_job_review.sql`, `server/src/db/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
-| Claim sequence, never refunded (057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.requeue.test.ts` |
+| Claim sequence, never refunded (057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.artifact-scope.test.ts` |
 | Idempotency keys on the `job` row (058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
 | Batch plans and runtime (059, 060, 062–065; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/migrations/06[0-5]_*.sql`, `server/src/db/batch-store*.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts`, `server/test-db/batch-merge.test.ts` |
+| Checkpoint pointer on the root `job` row, advanced in the `checkpoint` manifest's finalize transaction only under the uploading row's current `claim_seq` (078) | `server/migrations/078_checkpoint_pointer.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/job-store.checkpoint-pointer.test.ts` |
 | Artifact index and manifests (070; [configuration.md](configuration.md)) | `server/migrations/070_artifact_index.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/artifact-store.test.ts` |
 | Settle receipts per attempt (072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
 | Reclaim ownership and ack receipts (075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |

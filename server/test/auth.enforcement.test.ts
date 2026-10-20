@@ -67,9 +67,6 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         async suspend() {
             return { result: 'ok', status: 'stopped' };
         },
-        async requeue() {
-            return { result: 'ok', status: 'queued' };
-        },
         async complete() {
             return 'ok';
         },
@@ -213,7 +210,6 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
     [`/api/jobs/${JOB_ID}/session`, 'worker'],
     [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
-    [`/api/jobs/${JOB_ID}/requeue`, 'worker'],
     [`/api/jobs/${JOB_ID}/interrupt`, 'worker'],
     [`/api/jobs/${JOB_ID}/complete`, 'worker'],
     // The staged final envelope (issue #821): the same body as complete, under the same lease.

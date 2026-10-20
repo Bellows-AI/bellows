@@ -38,8 +38,9 @@ and by the `lint/no-shared-literals.grit` plugin.
 ## Invariants
 
 - Artifact upload (`PUT /api/jobs/:id/artifact/chunk`, `/manifest`) is authorized by the claim sequence the
-  request names, never by the lease, and writes nothing on `job`. `server/src/routes/job-handlers-artifacts.ts`,
-  `server/test/routes.artifacts.test.ts`.
+  request names, never by the lease, and writes nothing on `job` except a `checkpoint` manifest's pointer on the
+  root row ([persistence.md](persistence.md)); chunks are raw bytes. `server/src/routes/job-handlers-artifacts.ts`,
+  `server/test/routes.artifacts.test.ts`, `server/test-db/job-store.checkpoint-pointer.test.ts`.
 - Artifact reads resolve through the caller's org, so another org's job is `404`; a removed job answers its
   indexed streams as `deleted`. `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts`.
 - Transcript exports never reach token metrics; where a session has both, the `session_source` view keeps OTEL.

@@ -109,7 +109,6 @@ interface StoreStub extends JobStore {
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
-    requeued: string[];
     interrupted: { id: string; interruption: { reason: string; release: boolean; claimSeq?: number | null } }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
@@ -232,7 +231,6 @@ function stubStore(
         sessions: [],
         progressed: [],
         suspended: [],
-        requeued: [],
         interrupted: [],
         followUps: [],
         retries: [],
@@ -259,12 +257,6 @@ function stubStore(
             stub.suspended.push(id);
             const result = options.verdict ?? 'ok';
             return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'stopped' } : { result };
-        },
-        async requeue(id) {
-            boom();
-            stub.requeued.push(id);
-            const result = options.verdict ?? 'ok';
-            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'queued' } : { result };
         },
         async interrupt(id, _leaseToken, interruption) {
             boom();
@@ -1673,23 +1665,6 @@ describe('POST /api/jobs/:id/suspend', () => {
         expect(response.json()).toEqual({ id: ID, status: 'stopped' });
         expect(store.suspended).toEqual([ID]);
     });
-});
-
-// Issue #559: a pre-run claim handed back after checkout contention, lease-guarded like suspend.
-describe('POST /api/jobs/:id/requeue', () => {
-    it.each(['queued', 'stopped'] as const)(
-        'hands the claim back, echoing that the board landed it %s',
-        async (status) => {
-            const store = stubStore({ verdict: 'ok', suspendStatus: status });
-            const instance = await harnessWith(store);
-
-            const response = await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: TOKEN });
-
-            expect(response.statusCode).toBe(200);
-            expect(response.json()).toEqual({ id: ID, status });
-            expect(store.requeued).toEqual([ID]);
-        }
-    );
 });
 
 // Issue #792: an attempt the infrastructure interrupted, handed back or adopted, lease-guarded.
@@ -3552,7 +3527,6 @@ describe('error-path mapping', () => {
             [404, null],
         ],
         ['a park on a lost lease', POST(`${JOB}/suspend`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
-        ['a requeue on a lost lease', POST(`${JOB}/requeue`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
         [
             'an interruption on a lost lease',
             POST(`${JOB}/interrupt`, { leaseToken: TOKEN, reason: 'evicted', release: true }),
@@ -3562,12 +3536,6 @@ describe('error-path mapping', () => {
         [
             'an interruption for a missing job',
             POST(`${JOB}/interrupt`, { leaseToken: TOKEN, reason: 'evicted', release: true }),
-            { verdict: 'missing' },
-            [404, null],
-        ],
-        [
-            'a requeue for a missing job',
-            POST(`${JOB}/requeue`, { leaseToken: TOKEN }),
             { verdict: 'missing' },
             [404, null],
         ],
@@ -3680,7 +3648,6 @@ describe('error-path mapping', () => {
         ['id on thread', GET('/api/jobs/nope/thread'), 'BAD_ID', null],
         ['id on activity', GET('/api/jobs/nope/activity'), 'BAD_ID', null],
         ['lease token on heartbeat', POST(`${JOB}/heartbeat`, { leaseToken: 'nope' }), 'BAD_TOKEN', null],
-        ['lease token on requeue', POST(`${JOB}/requeue`, { leaseToken: 'nope' }), null, 'requeued'],
         [
             'lease token on interrupt',
             POST(`${JOB}/interrupt`, { leaseToken: 'nope', reason: 'evicted', release: true }),

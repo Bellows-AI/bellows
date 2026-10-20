@@ -596,55 +596,6 @@ export async function suspendJob(
 }
 
 /**
- * How long a pre-run claim handed back for checkout contention waits before it is claimable again
- * (issue #559): long enough that a contended clone is not hammered, short enough that the job
- * starts well before the lease it would otherwise have waited out.
- */
-export const REQUEUE_DELAY_SECONDS = 15;
-
-export async function requeueJob(
-    ctx: JobStoreContext,
-    id: string,
-    leaseToken: string
-): ReturnType<JobStore['requeue']> {
-    const { sql, orgId } = ctx;
-    // One lease-guarded update, so a replacement claim (a new token) and a removal (no row) both
-    // win by construction. A queued row's lease_expires_at is its claimability (006), so the
-    // deferral is that column set into the future. A Stop already stamped on the row wins over
-    // the requeue: the row settles stopped, never queued again. Either way no agent ran: the
-    // attempt is handed back, nothing banks to the wall clock, and the command stays undelivered.
-    // The settle receipt (issue #821) commits with it.
-    const key: SettleKey = { orgId, jobId: id, leaseToken, operation: 'requeue', fingerprint: fingerprintOf(null) };
-    return sql.begin(async (tx) => {
-        if ((await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
-        const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
-            update job set
-                status           = case when cancel_requested_at is null then 'queued' else 'stopped' end,
-                finished_at      = case when cancel_requested_at is null then finished_at else now() end,
-                started_at       = null,
-                lease_token      = null,
-                lease_expires_at = case
-                    when cancel_requested_at is null then now() + make_interval(secs => ${REQUEUE_DELAY_SECONDS}::int)
-                    else now()
-                end,
-                cancel_requested_at = null,
-                attempts         = greatest(attempts - 1, 0)
-            where org_id = ${orgId} and id = ${id}
-              and status = 'running' and lease_token = ${leaseToken}
-            returning status, root_job_id
-        `;
-        const row = rows[0];
-        if (row) {
-            if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id, tx);
-            const answer = { result: 'ok', status: row.status } as const;
-            await recordReceipt(tx, key, answer);
-            return answer;
-        }
-        return missedSettle<SuspendResult>(tx, key);
-    });
-}
-
-/**
  * How many attempts the infrastructure may interrupt before an interruption is refused (issue
  * #792): an interrupted attempt is refunded, so this — not `max_attempts` — bounds a job the
  * platform keeps taking away.
@@ -661,10 +612,10 @@ export async function interruptJob(
     { reason, release, claimSeq = null }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
-    // One lease-guarded update, like the requeue. Unlike it an agent ran: the segment banks to the
+    // One lease-guarded update, an agent ran: the segment banks to the
     // wall clock and `started_at` clears, so the next claim banks nothing twice. `release` false is
     // an adoption: an attempt this claim superseded was the one interrupted (`claimSeq` names it),
-    // and this one keeps its lease. A Stop already stamped wins over a release, as over the requeue.
+    // and this one keeps its lease. A Stop already stamped wins over a release, as over a suspend.
     // An attempt already recorded (handed over, or expired and recorded by the claim that took it
     // over, then adopted) is one disruption: refunded once.
     const entry = sql.json({ reason, at: new Date().toISOString() });
