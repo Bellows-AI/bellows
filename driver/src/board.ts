@@ -289,7 +289,42 @@ export interface BoardLease {
     id: string;
     status: BoardJobStatus;
     leaseToken: string | null;
+    /** On a thread's ROOT row only (issue #775): what its task volume is decided on. */
+    thread?: BoardThreadFacts;
 }
+
+/**
+ * The facts the orphan reaper decides a task volume on (issue #775), copied from the server's
+ * `JobThreadFacts` rather than imported. `lastFinalizedAt` is when the thread's newest attempt
+ * finalized (null while it has not); `artifactsComplete` is false while that attempt has an artifact
+ * stream still pending; `checkpoint` is `complete` only when the root's pointer names that attempt whole.
+ */
+export interface BoardThreadFacts {
+    live: boolean;
+    lastFinalizedAt: string | null;
+    artifactsComplete: boolean;
+    checkpoint: 'complete' | 'truncated' | 'none';
+    checkpointFinalizedAt: string | null;
+}
+
+const CHECKPOINT_STATES: readonly string[] = ['complete', 'truncated', 'none'];
+
+const isTimeOrNull = (value: unknown): boolean =>
+    value === null || (typeof value === 'string' && !Number.isNaN(Date.parse(value)));
+
+/** Whether a row's `thread` is fully readable: every field present and well-shaped. */
+const isThreadFacts = (value: unknown): value is BoardThreadFacts => {
+    const thread = value as Partial<BoardThreadFacts> | null;
+    return (
+        typeof thread === 'object' &&
+        thread !== null &&
+        typeof thread.live === 'boolean' &&
+        typeof thread.artifactsComplete === 'boolean' &&
+        CHECKPOINT_STATES.includes(thread.checkpoint as string) &&
+        isTimeOrNull(thread.lastFinalizedAt) &&
+        isTimeOrNull(thread.checkpointFinalizedAt)
+    );
+};
 
 /**
  * How many job ids one `POST /api/jobs/leases` may carry — the same bound the server's route
@@ -683,7 +718,8 @@ const isLeaseRow = (row: unknown): row is BoardLease => {
         typeof lease?.id === 'string' &&
         UUID_SHAPE.test(lease.id) &&
         BOARD_JOB_STATUSES.includes(lease.status as BoardJobStatus) &&
-        (lease.leaseToken === null || (typeof lease.leaseToken === 'string' && UUID_SHAPE.test(lease.leaseToken)))
+        (lease.leaseToken === null || (typeof lease.leaseToken === 'string' && UUID_SHAPE.test(lease.leaseToken))) &&
+        (!('thread' in lease) || isThreadFacts(lease.thread))
     );
 };
 

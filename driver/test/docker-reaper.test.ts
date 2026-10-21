@@ -595,3 +595,130 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
         expect(await sweep({ leaseToken: null, status: 'succeeded' })).toEqual([hexId('agent-old')]);
     });
 });
+
+describe('the docker reaper arm: task volumes (issue #775)', () => {
+    const ROOT = '11111111-1111-4111-8111-111111111111';
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    const LS = ['volume', 'ls', '--filter', 'label=factory.task-root', '--format', '{{json .}}'];
+    const row = (root: string, generation: number, over: Record<string, unknown> = {}) =>
+        JSON.stringify({
+            Name: `factory-task-${root}-${generation}`,
+            Labels: `factory.task-root=${root},factory.task-generation=${generation}`,
+            ...over,
+        });
+
+    /** A daemon answering by argv: the listing from `listing`, every other call recorded and answered `rm`. */
+    const daemon = (listing: string | Error, rm: (name: string) => Error | null = () => null) => {
+        const calls: string[][] = [];
+        const execDocker: ExecDocker = async (args) => {
+            calls.push([...args]);
+            if (args.join(' ') === LS.join(' ')) {
+                if (listing instanceof Error) throw listing;
+                return { stdout: listing };
+            }
+            if (args[0] === 'volume' && args[1] === 'rm') {
+                const failure = rm(args[2]!);
+                if (failure) throw failure;
+            }
+            return { stdout: '' };
+        };
+        return { calls, arm: createDockerReaper(execDocker) };
+    };
+    const removals = (calls: string[][]) => calls.filter((c) => c[1] === 'rm').map((c) => c[2]);
+
+    it('lists every generation by the root label and groups them by root', async () => {
+        const { arm } = daemon([row(ROOT, 1), row(ROOT, 2), row(OTHER, 1)].join('\n'));
+        expect(await arm.scanVolumes!()).toEqual([
+            { root: ROOT, volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }] },
+            { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1` }] },
+        ]);
+    });
+
+    it('answers an empty daemon as no threads', async () => {
+        expect(await daemon('').arm.scanVolumes!()).toEqual([]);
+    });
+
+    it.each([
+        ['a refused list', new Error('daemon down')],
+        ['a line that is no record', 'garbage'],
+        ['a root label that is no uuid', row('not-a-uuid', 1, { Labels: 'factory.task-root=not-a-uuid' })],
+        ['a name that is no generation of its root', row(ROOT, 1, { Name: 'factory-task-x' })],
+        ['a volume without labels', JSON.stringify({ Name: `factory-task-${ROOT}-1` })],
+    ])('answers null — delete nothing — on %s', async (_name, listing) => {
+        expect(await daemon(listing).arm.scanVolumes!()).toBeNull();
+    });
+
+    it('removes every generation of a thread, without force', async () => {
+        const { arm, calls } = daemon('');
+        const removed = await arm.reapVolumes!({
+            root: ROOT,
+            volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }],
+        });
+        expect(removed).toEqual([`volume factory-task-${ROOT}-1`, `volume factory-task-${ROOT}-2`]);
+        expect(calls).toEqual([
+            ['volume', 'rm', `factory-task-${ROOT}-1`],
+            ['volume', 'rm', `factory-task-${ROOT}-2`],
+        ]);
+    });
+
+    it('does not report a volume the daemon refused to remove (in use), and goes on', async () => {
+        const { arm } = daemon('', (name) => (name.endsWith('-1') ? new Error('volume is in use') : null));
+        const removed = await arm.reapVolumes!({
+            root: ROOT,
+            volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }],
+        });
+        expect(removed).toEqual([`volume factory-task-${ROOT}-2`]);
+    });
+
+    describe('swept with the board', () => {
+        const FINAL = Date.parse('2026-10-01T00:00:00Z');
+        const HOUR = 3_600_000;
+        const factsOf = (over: Record<string, unknown> = {}) => ({
+            live: false,
+            lastFinalizedAt: new Date(FINAL).toISOString(),
+            artifactsComplete: true,
+            checkpoint: 'complete' as const,
+            checkpointFinalizedAt: new Date(FINAL).toISOString(),
+            ...over,
+        });
+        const sweep = async (
+            facts: ReturnType<typeof factsOf>,
+            ageH: number,
+            listing: string | Error = [row(ROOT, 1), row(ROOT, 2)].join('\n')
+        ) => {
+            const { arm, calls } = daemon(listing);
+            await createReaper({
+                board: { leases: async () => [{ id: ROOT, status: 'succeeded', leaseToken: null, thread: facts }] },
+                arm,
+                intervalMs: 0,
+                graceMs: 0,
+                volumePolicy: { ttlMs: 24 * HOUR, boundMs: 168 * HOUR },
+                now: () => FINAL + ageH * HOUR,
+                log: () => undefined,
+            }).sweep();
+            return removals(calls);
+        };
+
+        it('removes all generations after the ttl, together', async () => {
+            expect(await sweep(factsOf(), 25)).toEqual([`factory-task-${ROOT}-1`, `factory-task-${ROOT}-2`]);
+        });
+
+        it.each([
+            ['inside the ttl', factsOf(), 23],
+            ['while a job is live', factsOf({ live: true }), 500],
+            ['while artifacts are pending', factsOf({ artifactsComplete: false }), 100],
+            ['while the checkpoint is truncated', factsOf({ checkpoint: 'truncated' }), 100],
+            ['when the last attempt never finalized', factsOf({ lastFinalizedAt: null }), 500],
+        ])('keeps the volumes %s', async (_name, facts, ageH) => {
+            expect(await sweep(facts, ageH)).toEqual([]);
+        });
+
+        it('removes a truncated thread only at the bound', async () => {
+            expect(await sweep(factsOf({ checkpoint: 'truncated' }), 169)).toHaveLength(2);
+        });
+
+        it('removes nothing when the volume list is refused', async () => {
+            expect(await sweep(factsOf(), 500, new Error('daemon down'))).toEqual([]);
+        });
+    });
+});

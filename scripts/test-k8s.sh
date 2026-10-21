@@ -356,6 +356,12 @@ expect_contains 'the dashboard mounts the workspaces claim' "$(cat "$work/render
 expect_not_contains 'the driver is told no workspaces claim' "$(cat "$work/rendered.yaml")" 'name: WORKSPACE_VOLUME'
 expect_contains 'the driver is told the task volume access mode' "$(cat "$work/rendered.yaml")" \
     'name: TASK_VOLUME_ACCESS_MODE'
+expect_contains 'the driver is told the task volume ttl' "$(cat "$work/rendered.yaml")" \
+    "name: TASK_VOLUME_TTL_MS
+                        value: \"86400000\""
+expect_contains 'the driver is told the task volume bound' "$(cat "$work/rendered.yaml")" \
+    "name: TASK_VOLUME_BOUND_MS
+                        value: \"604800000\""
 expect_not_contains 'the app release creates no claim' "$(cat "$work/rendered.yaml")" \
     'kind: PersistentVolumeClaim'
 

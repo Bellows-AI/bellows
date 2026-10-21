@@ -866,15 +866,15 @@ describe.skipIf(!enabled)('job store', () => {
 
         const answer = await store.leases([claimedId, terminalId, ABSENT]);
 
-        expect(answer).toContainEqual({ id: claimedId, status: 'running', leaseToken: claim?.leaseToken });
+        expect(answer).toContainEqual(
+            expect.objectContaining({ id: claimedId, status: 'running', leaseToken: claim?.leaseToken })
+        );
         // A terminal row RETAINS its lease token by design — the branch reporter's final sample
         // still resolves against it. The reaper's decision needs only the status: terminal means
         // the fleet is orphaned whatever token the row keeps.
-        expect(answer).toContainEqual({
-            id: terminalId,
-            status: 'failed',
-            leaseToken: terminalClaim!.leaseToken,
-        });
+        expect(answer).toContainEqual(
+            expect.objectContaining({ id: terminalId, status: 'failed', leaseToken: terminalClaim!.leaseToken })
+        );
         // The absent id is the reaper's whole question: its omission is the verdict.
         expect(answer.map((leaseInfo) => leaseInfo.id)).not.toContain(ABSENT);
         // And the org guard holds, as it does on every read: another org's board answers nothing.

@@ -402,6 +402,45 @@ describe('asking the board for the orphan reaper lease lookups', () => {
         // and a malformed row must not be silently converted into it.
         expect(await board.leases([ID_A])).toBeNull();
     });
+
+    describe('the thread facts of a root row (issue #775)', () => {
+        const THREAD = {
+            live: false,
+            lastFinalizedAt: '2026-10-01T00:00:00.000Z',
+            artifactsComplete: true,
+            checkpoint: 'complete',
+            checkpointFinalizedAt: '2026-10-01T00:00:00.000Z',
+        };
+        const answerWith = (thread: unknown) =>
+            boardOn(
+                recorder(() => Response.json({ jobs: [{ id: ID_A, status: 'succeeded', leaseToken: null, thread }] }))
+                    .fetch
+            ).leases([ID_A]);
+
+        it('carries a well-formed thread beside the lease, and a null time as null', async () => {
+            expect(await answerWith(THREAD)).toEqual([
+                { id: ID_A, status: 'succeeded', leaseToken: null, thread: THREAD },
+            ]);
+            const open = { ...THREAD, lastFinalizedAt: null, checkpoint: 'none', checkpointFinalizedAt: null };
+            expect(await answerWith(open)).toEqual([{ id: ID_A, status: 'succeeded', leaseToken: null, thread: open }]);
+        });
+
+        it.each([
+            ['a thread that is null', null],
+            ['a thread that is a string', 'complete'],
+            ['a missing live', { ...THREAD, live: undefined }],
+            ['a live that is no boolean', { ...THREAD, live: 'no' }],
+            ['a missing artifactsComplete', { ...THREAD, artifactsComplete: undefined }],
+            ['an unknown checkpoint', { ...THREAD, checkpoint: 'partial' }],
+            ['a missing checkpoint', { ...THREAD, checkpoint: undefined }],
+            ['a lastFinalizedAt that is no date', { ...THREAD, lastFinalizedAt: 'soon' }],
+            ['a missing lastFinalizedAt', { ...THREAD, lastFinalizedAt: undefined }],
+            ['a checkpointFinalizedAt that is a number', { ...THREAD, checkpointFinalizedAt: 5 }],
+            ['a missing checkpointFinalizedAt', { ...THREAD, checkpointFinalizedAt: undefined }],
+        ])('answers null — the whole round aborts — on %s', async (_name, thread) => {
+            expect(await answerWith(thread)).toBeNull();
+        });
+    });
 });
 
 describe('the heartbeat verdict', () => {

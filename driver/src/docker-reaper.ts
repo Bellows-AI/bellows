@@ -3,7 +3,8 @@ import { containerName } from './docker.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { alreadyGone, CONTAINER_ID, DOCKER_NAME, type ExecDocker, readDocker } from './docker-runner-support.js';
 import { Inconclusive } from './runner.js';
-import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
+import type { OrphanGroup, OrphanObject, ReaperArm, VolumeThread } from './reaper.js';
+import { TASK_ROOT_LABEL, generationOfName } from './task-volume.js';
 import { parseDockerTimestamp, parseRfc3339 } from './timestamps.js';
 
 /**
@@ -252,10 +253,63 @@ const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonl
     return removed;
 };
 
+/** One `volume ls` row of the task volume listing: the root its label names and the volume's name, or null for junk. */
+const taskVolumeRow = (line: string): { root: string; name: string } | null => {
+    const fields = fieldsOf(line);
+    if (!fields || typeof fields.Name !== 'string' || !DOCKER_NAME.test(fields.Name)) return null;
+    const root = typeof fields.Labels === 'string' ? labelOf(fields.Labels, TASK_ROOT_LABEL) : undefined;
+    if (root === undefined || !UUID_SHAPE.test(root) || generationOfName(root, fields.Name) === null) return null;
+    return { root: root.toLowerCase(), name: fields.Name };
+};
+
+/** The task volume listing, or null when any line of it is not a volume of a labelled root. */
+const taskVolumeRows = (stdout: string): VolumeThread[] | null => {
+    const threads = new Map<string, VolumeThread>();
+    for (const line of stdout.split('\n')) {
+        if (!line.trim()) continue;
+        const row = taskVolumeRow(line.trim());
+        if (row === null) return null;
+        const thread = threads.get(row.root) ?? { root: row.root, volumes: [] };
+        thread.volumes.push({ name: row.name });
+        threads.set(row.root, thread);
+    }
+    return [...threads.values()];
+};
+
+/**
+ * Every task volume (issue #775), all generations, by its root label, grouped by thread. Null when the
+ * daemon refused the list or a line of it is not a volume of a labelled root.
+ */
+const scanTaskVolumes = async (execDocker: ExecDocker): Promise<VolumeThread[] | null> => {
+    const read = await readDocker(
+        execDocker,
+        ['volume', 'ls', '--filter', `label=${TASK_ROOT_LABEL}`, '--format', '{{json .}}'],
+        'listing the task volumes',
+        { parse: taskVolumeRows }
+    );
+    return read.kind === 'value' ? read.value : null;
+};
+
+/** Removes every generation, without force: a volume a container still mounts is refused, and the next round's. */
+const reapTaskVolumes = async (execDocker: ExecDocker, thread: VolumeThread): Promise<readonly string[]> => {
+    const removed: string[] = [];
+    for (const volume of thread.volumes) {
+        try {
+            await execDocker(['volume', 'rm', volume.name]);
+            removed.push(`volume ${volume.name}`);
+        } catch {
+            // In use, or already gone: either way the next round looks again.
+        }
+    }
+    return removed;
+};
+
 /** The docker arm of the orphan reaper: every group piece it finds by label, reaped on the lease lookup. */
 export function createDockerReaper(execDocker: ExecDocker): ReaperArm {
     return {
         scan: () => scan(execDocker),
         reap: (group) => reap(execDocker, group),
+        scanVolumes: () => scanTaskVolumes(execDocker),
+        reapVolumes: (thread) => reapTaskVolumes(execDocker, thread),
     };
 }

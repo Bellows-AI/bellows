@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardLease } from '../src/board.js';
+import type { BoardLease, BoardThreadFacts } from '../src/board.js';
 import { LEASE_BATCH_MAX } from '../src/board.js';
-import { createReaper, reapDecision, type OrphanGroup, type ReaperArm, type ReapVerdict } from '../src/reaper.js';
+import {
+    createReaper,
+    reapDecision,
+    volumeDecision,
+    type OrphanGroup,
+    type ReaperArm,
+    type ReapVerdict,
+    type VolumeThread,
+} from '../src/reaper.js';
 
 /**
  * The reaper's decision core, offline: the board is a stub answering from a map, the arm records
@@ -307,5 +315,166 @@ describe('the reaper timer', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+const HOUR = 3_600_000;
+const POLICY = { ttlMs: 24 * HOUR, boundMs: 7 * 24 * HOUR };
+const FINALIZED = 1_000 * HOUR;
+
+const thread = (overrides: Partial<BoardThreadFacts> = {}): BoardThreadFacts => ({
+    live: false,
+    lastFinalizedAt: new Date(FINALIZED).toISOString(),
+    artifactsComplete: true,
+    checkpoint: 'complete',
+    checkpointFinalizedAt: new Date(FINALIZED).toISOString(),
+    ...overrides,
+});
+
+describe('volumeDecision: a task volume goes only on a whole, idle thread (issue #775)', () => {
+    it('keeps the volume while any job of the thread is live', () => {
+        expect(volumeDecision(thread({ live: true }), FINALIZED + 100 * 24 * HOUR, POLICY)).toBe('keep');
+    });
+
+    it('keeps it while the last attempt has artifacts pending, until the bound', () => {
+        const facts = thread({ artifactsComplete: false });
+        expect(volumeDecision(facts, FINALIZED + 48 * HOUR, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR - 1, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR, POLICY)).toBe('delete');
+    });
+
+    it.each(['truncated', 'none'] as const)('keeps a %s checkpoint until the bound, not the ttl', (checkpoint) => {
+        const facts = thread({ checkpoint });
+        expect(volumeDecision(facts, FINALIZED + 24 * HOUR, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR - 1, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR, POLICY)).toBe('delete');
+    });
+
+    it('keeps a whole thread inside the idle ttl and deletes it at the ttl', () => {
+        expect(volumeDecision(thread(), FINALIZED + 24 * HOUR - 1, POLICY)).toBe('keep');
+        expect(volumeDecision(thread(), FINALIZED + 24 * HOUR, POLICY)).toBe('delete');
+    });
+
+    it('never deletes sooner than the ttl when the bound is configured below it', () => {
+        const facts = thread({ checkpoint: 'truncated' });
+        expect(volumeDecision(facts, FINALIZED + 2 * HOUR, { ttlMs: 24 * HOUR, boundMs: HOUR })).toBe('keep');
+    });
+
+    it.each([
+        ['no thread facts', undefined],
+        ['an attempt that never finalized', thread({ lastFinalizedAt: null })],
+        ['a finalize time that is no date', thread({ lastFinalizedAt: 'soon' })],
+        [
+            'a finalize time in the future',
+            thread({ lastFinalizedAt: new Date(FINALIZED + 200 * 24 * HOUR).toISOString() }),
+        ],
+    ])('keeps the volume on %s', (_name, facts) => {
+        expect(volumeDecision(facts, FINALIZED + 100 * 24 * HOUR, POLICY)).toBe('keep');
+    });
+});
+
+const ROOT_A = '11111111-1111-4111-8111-111111111111';
+const ROOT_B = '44444444-4444-4444-8444-444444444444';
+
+describe('the volume sweep: the board decides each thread, the arm deletes every generation', () => {
+    const volumes = (root: string): VolumeThread => ({
+        root,
+        volumes: [{ name: `factory-task-${root}-1` }, { name: `factory-task-${root}-2`, uid: 'uid-2' }],
+    });
+
+    const run = async (opts: {
+        listed: VolumeThread[] | null;
+        answer: BoardLease[] | null;
+        now?: number;
+    }): Promise<{ reaped: VolumeThread[]; asked: string[][]; logs: string[] }> => {
+        const reaped: VolumeThread[] = [];
+        const asked: string[][] = [];
+        const logs: string[] = [];
+        const arm: ReaperArm = {
+            scan: async () => [],
+            reap: async () => [],
+            scanVolumes: async () => opts.listed,
+            reapVolumes: async (t) => {
+                reaped.push(t);
+                return t.volumes.map((v) => v.name);
+            },
+        };
+        const reaper = createReaper({
+            board: {
+                leases: async (ids) => {
+                    asked.push([...ids]);
+                    return opts.answer;
+                },
+            },
+            arm,
+            intervalMs: 0,
+            graceMs: 0,
+            volumePolicy: POLICY,
+            now: () => opts.now ?? FINALIZED + 25 * HOUR,
+            log: (m) => logs.push(m),
+        });
+        await reaper.sweep();
+        return { reaped, asked, logs };
+    };
+    const root = (id: string, facts: BoardThreadFacts | undefined, status: BoardLease['status'] = 'succeeded') =>
+        ({ id, status, leaseToken: null, ...(facts ? { thread: facts } : {}) }) as BoardLease;
+
+    it('deletes every generation of a whole idle thread, once, asking the board by root id', async () => {
+        const out = await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, thread())] });
+        expect(out.asked).toEqual([[ROOT_A]]);
+        expect(out.reaped).toEqual([volumes(ROOT_A)]);
+        expect(out.logs.join('\n')).toContain(`factory-task-${ROOT_A}-1`);
+    });
+
+    it('decides each thread on its own facts', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A), volumes(ROOT_B)],
+            answer: [root(ROOT_A, thread({ live: true })), root(ROOT_B, thread())],
+        });
+        expect(out.reaped.map((t) => t.root)).toEqual([ROOT_B]);
+    });
+
+    it('keeps a thread the board does not answer for, and one whose answer carries no thread facts', async () => {
+        const out = await run({ listed: [volumes(ROOT_A), volumes(ROOT_B)], answer: [root(ROOT_B, undefined)] });
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('deletes nothing when the volume list is inconclusive, and never asks the board', async () => {
+        const out = await run({ listed: null, answer: [root(ROOT_A, thread())] });
+        expect(out.reaped).toEqual([]);
+        expect(out.asked).toEqual([]);
+    });
+
+    it('deletes nothing when the board cannot answer', async () => {
+        const out = await run({ listed: [volumes(ROOT_A)], answer: null });
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('skips a root that is no uuid, without asking the board about it', async () => {
+        const out = await run({ listed: [volumes('not-a-uuid')], answer: [] });
+        expect(out.asked).toEqual([]);
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('does not sweep volumes without a policy', async () => {
+        const reaped: VolumeThread[] = [];
+        const reaper = createReaper({
+            board: { leases: async () => [root(ROOT_A, thread())] },
+            arm: {
+                scan: async () => [],
+                reap: async () => [],
+                scanVolumes: async () => [volumes(ROOT_A)],
+                reapVolumes: async (t) => {
+                    reaped.push(t);
+                    return [];
+                },
+            },
+            intervalMs: 0,
+            graceMs: 0,
+            now: () => FINALIZED + 100 * 24 * HOUR,
+            log: () => undefined,
+        });
+        await reaper.sweep();
+        expect(reaped).toEqual([]);
     });
 });

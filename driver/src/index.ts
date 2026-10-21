@@ -98,6 +98,7 @@ const reaper = createReaper({
             : createDockerReaper((args, options) => run('docker', args, { ...options, encoding: 'utf8' })),
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,
+    volumePolicy: { ttlMs: config.taskVolumeTtlMs, boundMs: config.taskVolumeBoundMs },
     log: (m) => console.log(`[driver] ${m}`),
 });
 if (config.reapIntervalMs > 0) reaper.start();

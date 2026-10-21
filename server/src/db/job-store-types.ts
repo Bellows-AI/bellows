@@ -6,6 +6,7 @@
  */
 
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
+import type { JobLeaseInfo } from './lease-types.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -810,18 +811,6 @@ export interface ReclaimClaim {
 
 /** A reclaim renew's answer: extended, held by another acquisition, or gone (acked or never queued). */
 export type ReclaimRenewal = { result: 'ok'; leaseExpiresAt: string } | { result: 'lost' } | { result: 'missing' };
-
-/**
- * One row of the batched lease lookup the orphan reaper sweeps with (issue #301): the job's
- * status and its CURRENT lease token — null when the row holds none, which is what marks every
- * labelled object of the job as a dead attempt's. An id the board does not know is absent from
- * the answer, never a row with a made-up status: absence IS the verdict the reaper acts on.
- */
-export interface JobLeaseInfo {
-    id: string;
-    status: JobStatus;
-    leaseToken: string | null;
-}
 
 /** `JobStore.artifactScope`: where a job's artifacts are filed and how far its claim sequence has advanced. */
 export interface JobArtifactScope {

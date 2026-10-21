@@ -1,4 +1,4 @@
-import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './board.js';
+import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board.js';
 
 /**
  * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
@@ -64,6 +64,26 @@ export type ReapVerdict = 'gone' | 'superseded';
 export interface ReaperArm {
     scan(): Promise<OrphanGroup[]>;
     reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]>;
+    /**
+     * Every task volume of the platform (issue #775), all generations, grouped by thread root; null when
+     * the listing proved nothing — a refused call or a row it could not read — and the round deletes none.
+     */
+    scanVolumes?(): Promise<VolumeThread[] | null>;
+    /** Deletes every generation of one thread, answering a line per volume actually removed. */
+    reapVolumes?(thread: VolumeThread): Promise<readonly string[]>;
+}
+
+/** One thread's task volumes, named the way their platform's delete call names them. */
+export interface VolumeThread {
+    /** The thread's root job id: what the board is asked about. */
+    root: string;
+    volumes: { name: string; uid?: string }[];
+}
+
+/** How long a task volume outlives its thread's last finalize: `ttlMs` when it is whole, `boundMs` when it is not. */
+export interface VolumePolicy {
+    ttlMs: number;
+    boundMs: number;
 }
 
 /**
@@ -101,6 +121,25 @@ export function reapDecision(
     if (verdict === null) return null;
     if (nowMs - group.createdAtMs < graceMs) return null;
     return verdict;
+}
+
+/**
+ * Whether a thread's task volumes may go (issue #775), pure. Deleted only when no job of the thread is
+ * live and its last attempt finalized, and then only once idle for the ttl when everything it left is
+ * whole — its artifacts all terminal and a complete checkpoint of that attempt — or for the (longer)
+ * bound when it is not: a truncated checkpoint or a pending artifact keeps the tree up to the bound,
+ * never forever. Anything unknown — no facts, no date, a date in the future — keeps it.
+ */
+export function volumeDecision(
+    facts: BoardThreadFacts | undefined,
+    nowMs: number,
+    policy: VolumePolicy
+): 'delete' | 'keep' {
+    if (facts === undefined || facts.live || facts.lastFinalizedAt === null) return 'keep';
+    const idleMs = nowMs - Date.parse(facts.lastFinalizedAt);
+    if (Number.isNaN(idleMs) || idleMs < 0) return 'keep';
+    const whole = facts.artifactsComplete && facts.checkpoint === 'complete';
+    return idleMs >= (whole ? policy.ttlMs : Math.max(policy.ttlMs, policy.boundMs)) ? 'delete' : 'keep';
 }
 
 /**
@@ -151,6 +190,8 @@ export function createReaper(deps: {
     graceMs: number;
     log?: (message: string) => void;
     now?: () => number;
+    /** Sweeps task volumes (issue #775) when set and the arm lists them. */
+    volumePolicy?: VolumePolicy;
 }): {
     sweep(): Promise<void>;
     start(): void;
@@ -161,31 +202,67 @@ export function createReaper(deps: {
     let sweeping = false;
     let timer: ReturnType<typeof setInterval> | null = null;
 
+    /** The orphan groups: scan → ask the board in batches → decide → reap. */
+    const sweepGroups = async (): Promise<void> => {
+        const groups = await deps.arm.scan();
+        // A labelled object whose factory.job is not a uuid can never be a board job — a
+        // foreign object, another tool's pod, a manual leftover. Asking the board about it
+        // would 400 the WHOLE batch and disable the reaper for as long as the object lives,
+        // so it is skipped at the source instead.
+        const reapable: OrphanGroup[] = [];
+        for (const group of groups) {
+            if (UUID_SHAPE.test(group.jobId)) reapable.push(group);
+            else log(`reaper: skipping a group whose factory.job label is not a uuid: ${group.jobId}`);
+        }
+        const ids = [...new Set(reapable.map((group) => group.jobId))];
+        const leases = await lookupAll(deps.board, ids, log);
+        if (leases === null) return;
+        for (const group of reapable) {
+            await reapOne(deps.arm, group, {
+                lease: leases.get(group.jobId),
+                graceMs: deps.graceMs,
+                nowMs: now(),
+                log,
+            });
+        }
+    };
+
+    /** The listed task volume threads that name a board job, the rest logged and skipped. */
+    const threadsOfVolumes = (listed: readonly VolumeThread[]): VolumeThread[] => {
+        const threads: VolumeThread[] = [];
+        for (const thread of listed) {
+            if (UUID_SHAPE.test(thread.root)) threads.push(thread);
+            else log(`reaper: skipping task volumes whose root label is not a uuid: ${thread.root}`);
+        }
+        return threads;
+    };
+
+    /** The task volumes: list → ask the board about each root → decide → delete every generation of the deletable. */
+    const sweepVolumes = async (): Promise<void> => {
+        const { arm, volumePolicy } = deps;
+        if (volumePolicy === undefined || !arm.scanVolumes || !arm.reapVolumes) return;
+        const listed = await arm.scanVolumes();
+        if (listed === null) {
+            log('reaper: the task volumes could not be listed — deleting none this round');
+            return;
+        }
+        const threads = threadsOfVolumes(listed);
+        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log);
+        if (leases === null) return;
+        const nowMs = now();
+        for (const thread of threads) {
+            if (volumeDecision(leases.get(thread.root)?.thread, nowMs, volumePolicy) === 'keep') continue;
+            for (const removed of await arm.reapVolumes(thread))
+                log(`reaper: thread ${thread.root} — removed ${removed}`);
+        }
+    };
+
     const sweep = async (): Promise<void> => {
         if (sweeping) return;
         sweeping = true;
         try {
-            const groups = await deps.arm.scan();
-            // A labelled object whose factory.job is not a uuid can never be a board job — a
-            // foreign object, another tool's pod, a manual leftover. Asking the board about it
-            // would 400 the WHOLE batch and disable the reaper for as long as the object lives,
-            // so it is skipped at the source instead.
-            const reapable: OrphanGroup[] = [];
-            for (const group of groups) {
-                if (UUID_SHAPE.test(group.jobId)) reapable.push(group);
-                else log(`reaper: skipping a group whose factory.job label is not a uuid: ${group.jobId}`);
-            }
-            const ids = [...new Set(reapable.map((group) => group.jobId))];
-            const leases = await lookupAll(deps.board, ids, log);
-            if (leases === null) return;
-            for (const group of reapable) {
-                await reapOne(deps.arm, group, {
-                    lease: leases.get(group.jobId),
-                    graceMs: deps.graceMs,
-                    nowMs: now(),
-                    log,
-                });
-            }
+            await sweepGroups();
+            await sweepVolumes();
         } catch (e) {
             log(`reaper: sweep failed, the next round retries: ${(e as Error).message}`);
         } finally {

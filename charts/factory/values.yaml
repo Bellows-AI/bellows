@@ -145,6 +145,11 @@ taskVolume:
     storageClass: ''
     accessMode: ReadWriteOncePod
     size: 20Gi
+    # The reaper deletes a thread's volumes (every generation) once its last attempt finalized and
+    # nothing is live: after ttlMs when its artifacts and checkpoint are whole, after boundMs (the
+    # longer) when a checkpoint is truncated or an artifact is still pending. Milliseconds, quoted.
+    ttlMs: '86400000'
+    boundMs: '604800000'
 
 # A namespace LimitRange (issue #454): a pod created WITHOUT limits — by anything, not only the
 # driver — inherits these instead of running unbounded. A container's own limits win. It applies
