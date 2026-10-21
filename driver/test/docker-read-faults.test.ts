@@ -38,9 +38,9 @@ import {
     replayDocker,
 } from './fixtures/read-faults.js';
 
-/** Names `pair`'s job and lease by role; every docker name of an attempt spells the two out. */
 const BOARD = 'b0a4d00000000001';
 
+/** Names `pair`'s job and lease by role; every docker name of an attempt spells the two out. */
 const aliasPair = (alias: Alias, pair: BoardJob, label: string): void => {
     alias(pair.id, 'job');
     alias(pair.leaseToken, label);
