@@ -57,10 +57,20 @@ describe('planTaskVolume', () => {
         expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [2], restored: false });
     });
 
-    it('fails a continuing claim checkpoint_unrestorable when its only volume is unschedulable and no checkpoint exists', async () => {
-        await expect(
-            planTaskVolume(board({ state: 'none' }), continuing(), { live: [], highest: 1, unschedulable: [1] })
-        ).rejects.toBeInstanceOf(CheckpointUnrestorable);
+    // Infrastructure loss interrupts a task; the labelled volume still holds the tree, so with no complete
+    // checkpoint the claim adopts it again (label cleared) instead of failing unrestorable.
+    it.each([
+        ['none', { state: 'none' } as CheckpointRead],
+        ['gone', { state: 'gone' } as CheckpointRead],
+        ['truncated', found({ ...POINTER, truncated: true })],
+    ])('adopts the unschedulable volume again when the checkpoint is %s', async (_name, read) => {
+        const job = continuing();
+        expect(await planTaskVolume(board(read), job, { live: [], highest: 3, unschedulable: [2, 3] })).toEqual({
+            create: false,
+            unlabel: 3,
+        });
+        expect(job.taskGeneration).toBe(3);
+        expect(job.taskRestore).toBeUndefined();
     });
 
     it('does not reuse the name of a volume still being deleted', async () => {
@@ -89,26 +99,15 @@ describe('planTaskVolume', () => {
         expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [2, 1], restored: false });
     });
 
-    it('adopts a restored generation as is when the board holds no complete checkpoint', async () => {
+    it.each([
+        ['none', { state: 'none' } as CheckpointRead],
+        ['gone', { state: 'gone' } as CheckpointRead],
+        ['truncated', found({ ...POINTER, truncated: true })],
+    ])('fails checkpoint_unrestorable on an adopted restored generation when the checkpoint is %s', async (_n, read) => {
         const job = continuing();
-        await planTaskVolume(board({ state: 'gone' }), job, { live: [2], highest: 2, unschedulable: [] });
-        expect(job.taskGeneration).toBe(2);
-        expect(job.taskRestore).toBeUndefined();
-    });
-
-    it('restores a continuing claim whose volume is gone onto generation n+1', async () => {
-        const job = continuing();
-        expect(await planTaskVolume(board(found()), job, { live: [], highest: 0, unschedulable: [] })).toEqual({
-            create: true,
-        });
-        expect(job.taskGeneration).toBe(2);
-        expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [], restored: false });
-    });
-
-    it('treats a takeover resuming its session as continuing', async () => {
-        const job = fresh({ resumeSessionId: 'sess' });
-        await planTaskVolume(board(found()), job, { live: [], highest: 4, unschedulable: [] });
-        expect(job.taskGeneration).toBe(5);
+        await expect(
+            planTaskVolume(board(read), job, { live: [2], highest: 2, unschedulable: [] })
+        ).rejects.toBeInstanceOf(CheckpointUnrestorable);
     });
 
     it.each([

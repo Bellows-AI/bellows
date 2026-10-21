@@ -59,10 +59,15 @@ export async function listTaskVolumes(deps: K8sDeps, job: BoardJob): Promise<Vol
  * lookup skips it from now on, so the next claim restores into a new generation in a schedulable zone.
  */
 export async function markTaskVolumeUnschedulable(deps: K8sDeps, job: BoardJob): Promise<void> {
-    const answer = await deps.request('PATCH', `${taskVolumesPath(deps.config.k8sNamespace)}/${taskVolumeName(job)}`, {
-        metadata: { labels: { [TASK_UNSCHEDULABLE_LABEL]: 'true' } },
+    await labelTaskVolume(deps, taskVolumeName(job), 'true', `marking the task volume of job ${job.id} unschedulable`);
+}
+
+/** One merge patch of the unschedulable label on a claim: set (`'true'`) or cleared (null). */
+async function labelTaskVolume(deps: K8sDeps, claim: string, value: 'true' | null, what: string): Promise<void> {
+    const answer = await deps.request('PATCH', `${taskVolumesPath(deps.config.k8sNamespace)}/${claim}`, {
+        metadata: { labels: { [TASK_UNSCHEDULABLE_LABEL]: value } },
     });
-    expectOk(answer, `marking the task volume of job ${job.id} unschedulable`);
+    expectOk(answer, what);
 }
 
 /**
@@ -73,7 +78,17 @@ export async function markTaskVolumeUnschedulable(deps: K8sDeps, job: BoardJob):
  */
 export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
-    const { create } = await planTaskVolume(deps.checkpoints, job, await listTaskVolumes(deps, job));
+    const { create, unlabel } = await planTaskVolume(deps.checkpoints, job, await listTaskVolumes(deps, job));
+    if (unlabel !== undefined) {
+        // Adopted again, with nothing to restore it from: the next scheduling attempt decides if it still conflicts.
+        await labelTaskVolume(
+            deps,
+            taskVolumeName(job, unlabel),
+            null,
+            `clearing the unschedulable mark of the task volume of job ${job.id}`
+        );
+        return;
+    }
     if (!create) return;
     // An attempt aborted while the listing was out creates nothing.
     signal?.throwIfAborted();

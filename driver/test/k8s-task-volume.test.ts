@@ -113,6 +113,26 @@ describe('a volume no pod can be scheduled onto', () => {
     });
 });
 
+describe('a volume no pod can be scheduled onto, with no checkpoint to restore from', () => {
+    it.each([{ state: 'none' }, { state: 'gone' }] as CheckpointRead[])(
+        'is adopted again with its label cleared, never failed unrestorable (%o)',
+        async (checkpoint) => {
+            const { deps, calls } = server({ listing: { items: [stuck(2)] }, checkpoint });
+            const next = continuing();
+            await ensureTaskVolume(deps, next);
+            expect(next.taskGeneration).toBe(2);
+            expect(next.taskRestore).toBeUndefined();
+            expect(calls.filter((c) => c.method !== 'GET')).toEqual([
+                {
+                    method: 'PATCH',
+                    path: `${PATH}/${name(2)}`,
+                    body: { metadata: { labels: { [TASK_UNSCHEDULABLE_LABEL]: null } } },
+                },
+            ]);
+        }
+    );
+});
+
 describe('listTaskVolumes', () => {
     it('lists by the thread root label and reports live generations and the highest, terminating included', async () => {
         const { deps, calls } = server({ listing: { items: [claim(1), claim(2), claim(3, true)] } });

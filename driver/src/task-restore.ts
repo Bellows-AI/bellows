@@ -1,5 +1,5 @@
 import type { Board, BoardJob } from './board.js';
-import type { CheckpointPointer } from './board-checkpoint.js';
+import type { CheckpointPointer, CheckpointRead } from './board-checkpoint.js';
 import { claimContinuesSession, opencodeDbPath, runWorkingDir, transcriptDir } from './claim.js';
 import { checkpointRestoreScript } from './container-scripts.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
@@ -38,6 +38,17 @@ export interface VolumeListing {
 /** The thread cannot be rebuilt: the failure kind `checkpoint_unrestorable`, a person's to act on. */
 export class CheckpointUnrestorable extends Error {}
 
+/** The failure for a thread with no complete checkpoint to restore from. */
+function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
+    if (read.state === 'none') {
+        return new CheckpointUnrestorable('the thread has no task volume and no checkpoint to restore it from');
+    }
+    if (read.state === 'gone') {
+        return new CheckpointUnrestorable("the thread's checkpoint is no longer stored on the board");
+    }
+    return new CheckpointUnrestorable("the thread's checkpoint was cut at its size cap and carries no tree");
+}
+
 /**
  * Decides which volume the attempt runs on and what it owes it, setting `job.taskGeneration` and
  * `job.taskRestore`. Answers whether the volume must be created.
@@ -52,7 +63,7 @@ export async function planTaskVolume(
     source: Pick<Board, 'checkpoint'> | undefined,
     job: BoardJob,
     listing: VolumeListing
-): Promise<{ create: boolean }> {
+): Promise<{ create: boolean; unlabel?: number }> {
     const live = [...listing.live].sort((a, b) => b - a);
     const [current, ...older] = live;
     if (current !== undefined) {
@@ -67,6 +78,10 @@ export async function planTaskVolume(
                     older: [...older, ...listing.unschedulable],
                     restored: false,
                 };
+            } else if (listing.unschedulable.length === 0) {
+                // Whether this generation was ever filled is unknowable without the checkpoint it was made
+                // from: running a fresh sync on it would treat a continuing task as a new one.
+                throw unrestorable(read);
             }
         }
         return { create: false };
@@ -77,14 +92,14 @@ export async function planTaskVolume(
     }
     if (!source) throw new Error(`job ${job.id}: no checkpoint source to restore the thread's task volume from`);
     const read = await source.checkpoint(job);
-    if (read.state === 'none') {
-        throw new CheckpointUnrestorable('the thread has no task volume and no checkpoint to restore it from');
-    }
-    if (read.state === 'gone') {
-        throw new CheckpointUnrestorable("the thread's checkpoint is no longer stored on the board");
-    }
-    if (read.checkpoint.truncated) {
-        throw new CheckpointUnrestorable("the thread's checkpoint was cut at its size cap and carries no tree");
+    if (read.state !== 'found' || read.checkpoint.truncated) {
+        // A volume no pod could be scheduled onto still holds the tree: label cleared, it is adopted again.
+        const [held] = [...listing.unschedulable].sort((x, y) => y - x);
+        if (held !== undefined) {
+            job.taskGeneration = held;
+            return { create: false, unlabel: held };
+        }
+        throw unrestorable(read);
     }
     job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
     job.taskRestore = { checkpoint: read.checkpoint, older: [...listing.unschedulable], restored: false };
