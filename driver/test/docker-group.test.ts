@@ -28,6 +28,7 @@ import {
 import { ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { TASK_MOUNT, taskVolumeName } from '../src/task-volume.js';
 import { gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
@@ -88,7 +89,7 @@ describe('the supervisor container', () => {
 
     // The supervisor runs the attempt's steps (sync, probe, publish, helpers, reclaim) as children
     // of its own container, so it mounts the member's workspace — only the member's own subtree.
-    it('mounts every mailbox and the member’s own workspace subtree, nothing broader', () => {
+    it('mounts every mailbox and the thread’s own task volume, nothing broader', () => {
         const mounted = mounts(argv);
         expect(mounted).toHaveLength(6);
         for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
@@ -96,9 +97,8 @@ describe('the supervisor container', () => {
         }
         // The review mailbox is the reviewer container's and the supervisor's alone (issue #774).
         expect(mounted.some((mount) => mount.includes(volumeOf('review')))).toBe(false);
-        const workspace = mounted.filter((mount) => mount.includes('workspaces'));
-        expect(workspace).toHaveLength(1);
-        expect(workspace[0]).toContain(`volume-subpath=bellows/${USER}`);
+        const task = mounted.filter((mount) => mount.includes(taskVolumeName(reviewing)));
+        expect(task).toEqual([`type=volume,src=${taskVolumeName(reviewing)},target=${TASK_MOUNT}`]);
     });
 
     it('mounts the review mailbox too, and is told of the reviewer, when the claim lists reviewer profiles', () => {
@@ -191,11 +191,11 @@ describe('the reviewer container', () => {
     it('mounts the member tree read-only, its home read-write and the review mailbox, no other mailbox', () => {
         const mounted = mounts(argv);
         expect(mounted).toHaveLength(3);
-        const tree = mounted.find((mount) => mount.includes(`target=${config.workspaceMount}/bellows/${USER}`));
-        expect(tree).toContain(`volume-subpath=bellows/${USER},`);
+        const tree = mounted.find((mount) => mount.includes(`target=${TASK_MOUNT},`));
+        expect(tree).toContain(`src=${taskVolumeName(reviewing)},`);
         expect(tree).toMatch(/,readonly$/);
         const home = mounted.find((mount) => mount.endsWith(`target=${REVIEWER_HOME}`));
-        expect(home).toContain(`volume-subpath=bellows/${USER}/${REVIEWER_TREE_DIR},`);
+        expect(home).toContain(`volume-subpath=${REVIEWER_TREE_DIR},`);
         expect(home).not.toMatch(/readonly/);
         const review = mounted.find((mount) => mount.includes(volumeOf('review')));
         expect(review).toBeDefined();
@@ -252,10 +252,10 @@ describe('the claim env and the supervisor’s credential names', () => {
 });
 
 describe('the exporter container', () => {
-    it('mounts the member’s subtree and only the mailbox it shares with the supervisor', () => {
+    it('mounts the thread’s task volume and only the mailbox it shares with the supervisor', () => {
         const mounted = mounts(exporterCreateArgs(config, job, START, '/tmp/export.env'));
         expect(mounted).toHaveLength(2);
-        expect(mounted.some((mount) => mount.includes('volume-subpath=bellows/'))).toBe(true);
+        expect(mounted.some((mount) => mount.includes(`src=${taskVolumeName(job)},target=${TASK_MOUNT}`))).toBe(true);
         expect(mounted.some((mount) => mount.includes(volumeOf('export')))).toBe(true);
     });
 });
@@ -508,10 +508,10 @@ describe('the gate container (issue #773)', () => {
         expect(argv).not.toContain('-w');
     });
 
-    it('mounts the member’s own subtree and the gate mailbox, and no other mailbox', () => {
+    it('mounts the thread’s task volume and the gate mailbox, and no other mailbox', () => {
         const mounted = mounts(argv);
         expect(mounted).toHaveLength(2);
-        expect(mounted.some((mount) => mount.includes(`volume-subpath=bellows/${USER}`))).toBe(true);
+        expect(mounted.some((mount) => mount.includes(`src=${taskVolumeName(gated)},target=${TASK_MOUNT}`))).toBe(true);
         expect(mounted.some((mount) => mount.includes(volumeOf('gate')))).toBe(true);
     });
 
@@ -530,7 +530,7 @@ describe('the gate container (issue #773)', () => {
         expect(literals(named)).toEqual(['HOME=/tmp']);
         const cacheJob = { ...gated, repo: 'acme/widgets', gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] } };
         expect(literals(gateCreateArgs(config, cacheJob, 'node:24'))).toContain(
-            `NPM_CONFIG_CACHE=/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`
+            `NPM_CONFIG_CACHE=${TASK_MOUNT}/.cache/acme/widgets/NPM_CONFIG_CACHE`
         );
     });
 

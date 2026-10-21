@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob, ReviewClaim } from '../src/board.js';
 import { RESERVED_ENV_NAMES } from '../src/claim.js';
 import { reviewBudgetMs } from '../src/review-step.js';
-import { loadDriverConfig } from '../src/config.js';
 import type { PublishStep } from '../src/publish.js';
+import { TASK_MOUNT } from '../src/task-volume.js';
 import { gitReviewSnapshotScript, reviewRefOf, snapshotTree } from '../src/review-snapshot.js';
 
 /** The review snapshot step and the claim rules a named reviewer's run follows (issue #549). */
@@ -21,11 +21,9 @@ const job = {
     resumeSessionId: null,
 } as unknown as BoardJob;
 
-const config = loadDriverConfig({});
-
 describe('snapshotTree', () => {
     const run = (stdout: string, seen: PublishStep[] = []) =>
-        snapshotTree(config, job, 'sec-1', async (step) => {
+        snapshotTree(job, 'sec-1', async (step) => {
             seen.push(step);
             return { stdout };
         });
@@ -40,7 +38,7 @@ describe('snapshotTree', () => {
                 entrypoint: 'node',
                 args: ['-e', gitReviewSnapshotScript],
                 env: false,
-                envLiterals: { REPO: `${config.workspaceMount}/bellows/${USER}/.worktrees/${ROOT}`, REVIEW_REF: ref },
+                envLiterals: { REPO: `${TASK_MOUNT}/factory`, REVIEW_REF: ref },
                 inRepo: false,
             },
         ]);
@@ -61,7 +59,7 @@ describe('snapshotTree', () => {
         });
         await expect(run('not json at all')).resolves.toMatchObject({ ok: false });
         await expect(
-            snapshotTree(config, job, 'sec-1', async () => {
+            snapshotTree(job, 'sec-1', async () => {
                 throw new Error('daemon gone');
             })
         ).resolves.toEqual({ ok: false, reason: 'the review snapshot could not run: daemon gone' });
@@ -69,7 +67,7 @@ describe('snapshotTree', () => {
 
     it('refuses a job with no worktree without running anything', async () => {
         const seen: PublishStep[] = [];
-        const result = await snapshotTree(config, { ...job, repo: null } as unknown as BoardJob, 'k', async (step) => {
+        const result = await snapshotTree({ ...job, repo: null } as unknown as BoardJob, 'k', async (step) => {
             seen.push(step);
             return { stdout: '' };
         });

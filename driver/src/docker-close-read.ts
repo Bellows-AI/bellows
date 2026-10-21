@@ -21,7 +21,7 @@ import {
 } from './close-read.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { claudeTurnsScript, opencodeCacheProbeScript } from './container-scripts.js';
-import { UUID, workspacePath, transcriptDir, opencodeDbPath } from './claim.js';
+import { UUID, transcriptDir, opencodeDbPath } from './claim.js';
 import {
     boundedExec,
     type ExecDocker,
@@ -38,7 +38,9 @@ import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
 import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
-import { containerName, workspacesMountArgs, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
+import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
+import { taskVolumeIsOurs } from './docker-task-volume.js';
+import { taskMountArgs } from './task-volume.js';
 import {
     AdoptionBlocked,
     type AdoptedRun,
@@ -57,7 +59,7 @@ import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, JOB_LABEL, LEASE_LA
 /**
  * The full `docker run` argv that counts the agent turns a finished claude-code run banked —
  * pure, and exported, because it is the part worth pinning. The same throwaway shape the
- * opencode readout runs: a container over the workspaces volume, entrypoint swapped for node,
+ * opencode readout runs: a container over the task volume, entrypoint swapped for node,
  * reading the transcript the CLI wrote onto the volume under FACTORY_TRANSCRIPT_DIR (its
  * CLAUDE_CONFIG_DIR). It runs AFTER the job container exits; the volume outlives the container,
  * so there is no teardown to race and a killed run's transcript is still readable.
@@ -70,11 +72,11 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
         'run',
         ...containerHardeningArgs(),
         '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...taskMountArgs(job),
         // Both travel as env VALUES — the script (claude-turns.cjs) is static, so nothing
         // board-derived is ever part of its text.
         '-e',
-        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(config, job)}`,
+        `CLAUDE_TRANSCRIPT_DIR=${transcriptDir(job)}`,
         '-e',
         `CLAUDE_SESSION_ID=${sessionId}`,
         // The run's start as an ISO instant: the transcript carries every cycle the resumed
@@ -92,19 +94,19 @@ export function claudeTurnsArgs(config: DriverConfig, job: BoardJob, sessionId: 
 
 /**
  * The full `docker run` argv that reads the cache health of a LIVE run — pure, and exported,
- * because it is the part worth pinning: one throwaway container over the workspaces volume,
+ * because it is the part worth pinning: one throwaway container over the task volume,
  * entrypoint swapped for node, read-only query for the newest root session's newest completed
  * assistant turns. Runs every CACHE_WATCH_POLL_MS of the run's life; the same
  * concurrent-reader-with-a-live-writer property the close-time readout relies on, and the same
  * one-error-line rule — an answer that parses to no session is "not yet", not a verdict.
  */
 export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): string[] {
-    const db = opencodeDbPath(config, job);
+    const db = opencodeDbPath(job);
     return [
         'run',
         ...containerHardeningArgs(),
         '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...taskMountArgs(job),
         // The database path and the turn count travel as env VALUES — the script
         // (opencode-cache-probe.cjs) is static, and the count comes from this module's constant,
         // so the trigger cannot drift between the probe and the code that judges the turns.
@@ -119,6 +121,12 @@ export function opencodeCacheProbeArgs(config: DriverConfig, job: BoardJob): str
         opencodeCacheProbeScript,
     ];
 }
+
+/**
+ * Why a readout does not run: it mounts the task volume by name, and `--mount type=volume` would
+ * create a missing one unlabeled, where the reaper never sees it.
+ */
+const NO_TASK_VOLUME = 'the thread task volume is absent or not labelled as ours, so no readout container mounts it';
 
 /** What every close-time read needs: how to reach the daemon, and which run it is reading. */
 export interface CloseReadContext {
@@ -139,22 +147,24 @@ export interface CloseReadContext {
  * normalized stream) rides the same read, so it is one consistent snapshot with the figures.
  */
 async function applyOpencodeCloseRead(outcome: RunOutcome, ctx: CloseReadContext): Promise<void> {
-    const readOnce = (deadline: number) =>
-        ctx
-            .execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt), {
-                timeout: timeLeft(deadline),
-                ...(ctx.signal ? { signal: ctx.signal } : {}),
-            })
-            .then(
-                (read) => parseOpencodeRunOutcome(read.stdout),
-                (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
-            );
+    const readOnce = async (deadline: number) =>
+        (await taskVolumeIsOurs(ctx.execDocker, ctx.job, ctx.signal))
+            ? ctx
+                  .execDocker(opencodeSessionReadoutArgs(ctx.config, ctx.job, ctx.startedAt), {
+                      timeout: timeLeft(deadline),
+                      ...(ctx.signal ? { signal: ctx.signal } : {}),
+                  })
+                  .then(
+                      (read) => parseOpencodeRunOutcome(read.stdout),
+                      (err: Error) => opencodeReadFailed(`the readout container failed: ${err.message}`)
+                  )
+            : opencodeReadFailed(NO_TASK_VOLUME);
     const { scraped, reason } = await readOpencodeWithRetries(readOnce, abortableSleep, ctx.signal);
     mergeOpencodeOutcome(outcome, scraped, reason);
 }
 
 /**
- * The claude-code turn count: one throwaway container over the workspaces volume, reading the
+ * The claude-code turn count: one throwaway container over the task volume, reading the
  * transcript the CLI wrote onto it while it lived. Best-effort like every close-time read — a
  * failed read costs the task its agent-turn figure, never its verdict, and a missing transcript
  * answers null rather than zero.
@@ -165,6 +175,8 @@ async function applyClaudeCloseRead(
     session: RunSession | null
 ): Promise<void> {
     if (!readsAgentTurns(ctx.job, session)) return;
+    if (!(await taskVolumeIsOurs(ctx.execDocker, ctx.job, ctx.signal)))
+        return mergeClaudeCloseRead(outcome, CLAUDE_READ_NONE);
     const read = await ctx
         .execDocker(claudeTurnsArgs(ctx.config, ctx.job, (session as RunSession).id, ctx.startedAt), {
             timeout: CLOSE_READ_DEADLINE_MS,
@@ -205,6 +217,7 @@ export async function tickCacheWatch(
     ctx: { execDocker: ExecDocker; config: DriverConfig; job: BoardJob; kill: (job: BoardJob) => Promise<void> },
     state: { cacheLost: string | null }
 ): Promise<void> {
+    if (!(await taskVolumeIsOurs(ctx.execDocker, ctx.job))) return;
     const probe = await ctx
         .execDocker(opencodeCacheProbeArgs(ctx.config, ctx.job))
         .then((read) => parseOpencodeCacheProbe(read.stdout))

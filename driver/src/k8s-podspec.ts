@@ -8,6 +8,7 @@ import {
     GATE_UID,
     REVIEWER_HOME,
     REVIEWER_TREE_DIR,
+    REVIEWER_TREE_PATH,
     REVIEWER_UID,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
@@ -15,8 +16,9 @@ import {
     runnerClaimEnv,
     runWorkingDir,
     transcriptDir,
-    workspacePath,
+    workspacePathOf,
 } from './claim.js';
+import { TASK_MOUNT, TASK_VOLUME, taskInitScript, taskPodVolume } from './task-volume.js';
 import {
     claudeTurnsScript,
     claudeExportScript,
@@ -229,7 +231,7 @@ function runnerCredentialEnv(config: DriverConfig, job: BoardJob): EnvVar[] {
 
 /**
  * The task supervisor's container: the trusted half of the pod. It runs `scripts/supervisor.cjs` by
- * content in the executor image and mounts all four mailboxes and the member's workspace subtree —
+ * content in the executor image and mounts all four mailboxes and the thread's task volume —
  * the steps it runs for the driver (the sync, the probe, the publish, the helpers, the reclaim) work
  * on the task worktree — and nothing else of the member's: no telemetry config and no claim env. A
  * step's credentials arrive with the step over its authenticated channel (`supervised-steps.ts`),
@@ -262,7 +264,7 @@ function supervisorContainer(
             })),
         ],
         volumeMounts: [
-            workspaceMount(config, workspacePath(job)),
+            taskMount(),
             ...mailboxesOf(group.reviewing).map((box) => mailboxMount(box, 'rw')),
             ...serviceRestartMounts(group.services),
         ],
@@ -356,8 +358,8 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
         securityContext: { ...hardened, runAsUser: GATE_UID, runAsGroup: GATE_GID },
         command: gateLoopArgv(),
         workingDir: MAILBOXES.gate.path,
-        env: gateEnv(config, job).map(([name, value]) => ({ name, value })),
-        volumeMounts: [workspaceMount(config, workspacePath(job)), mailboxMount(MAILBOXES.gate, 'rw')],
+        env: gateEnv(job).map(([name, value]) => ({ name, value })),
+        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.gate, 'rw')],
     };
 }
 
@@ -367,7 +369,7 @@ function gateSidecar(config: DriverConfig, job: BoardJob, image: string): Runner
  * them mount (`scripts/review-loop.sh`). It runs as REVIEWER_UID — not the CLI's, the tool's or the
  * gate's — so none of them can signal a review, and it holds nothing a publication needs: no
  * publish token, no credential helper, no claim env and no Secret reference but the model credentials Secret the agent also reads. Each request carries the
- * review's own environment and is gone before the review starts. Its tree is the member's subtree,
+ * review's own environment and is gone before the review starts. Its tree is the task volume,
  * read-only (the shared clone and the review's worktree are in it), but for its HOME, a fixed
  * directory of that tree it mounts read-write (`REVIEWER_TREE_DIR`). Sized idle (`reviewerResourcesField`) and resized in place for a review.
  */
@@ -384,12 +386,30 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
         workingDir: MAILBOXES.review.path,
         env: [{ name: 'HOME', value: REVIEWER_HOME }, ...credentialsSecretEnv(config)],
         volumeMounts: [
-            { ...workspaceMount(config, workspacePath(job)), readOnly: true },
+            taskMount({ readOnly: true }),
             mailboxMount(MAILBOXES.review, 'rw'),
             // The one place it writes: its HOME, a fixed directory of the member tree (the session
             // state a lost pod's replacement resumes from), mounted over the read-only tree above.
-            { ...workspaceMount(config, `${workspacePath(job)}/${REVIEWER_TREE_DIR}`), mountPath: REVIEWER_HOME },
+            taskMount({ subPath: REVIEWER_TREE_DIR, mountPath: REVIEWER_HOME }),
         ],
+    };
+}
+
+/**
+ * The init container that makes the reviewer's home on a fresh task volume (`scripts/task-init.sh`)
+ * before the reviewer's subPath mount names it: the kubelet would create it root-owned, which the
+ * reviewer's uid cannot write. It runs as the supervisor's uid in the task group, so the directory
+ * is group-writable for the reviewer.
+ */
+function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContainer {
+    return {
+        name: 'task-init',
+        image: executorImage(config, job.executorType),
+        imagePullPolicy: config.imagePullPolicy,
+        ...containerHardeningField(),
+        env: [],
+        command: ['sh', '-c', taskInitScript, 'init', REVIEWER_TREE_PATH],
+        volumeMounts: [taskMount()],
     };
 }
 
@@ -402,7 +422,7 @@ function reviewerSidecar(config: DriverConfig, job: BoardJob): RunnerPodContaine
  * mounts the member's workspace (the transcripts, its own cursor files) and the one mailbox it
  * shares with the supervisor.
  */
-function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string, path: string): RunnerPodContainer {
+function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string): RunnerPodContainer {
     const { literals, control } = exportEnv(config, job, startedAt);
     return {
         name: EXPORTER_CONTAINER,
@@ -417,15 +437,12 @@ function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: strin
                 valueFrom: { secretKeyRef: { name: secretName(job), key: source } },
             })),
         ],
-        volumeMounts: [
-            { name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path },
-            mailboxMount(MAILBOXES.export, 'rw'),
-        ],
+        volumeMounts: [taskMount(), mailboxMount(MAILBOXES.export, 'rw')],
     };
 }
 
 /**
- * The agent's container and the volumes it needs: the member's workspace subtree and telemetry
+ * The agent's container and the volumes it needs: the thread's task volume and telemetry
  * config, and of the supervisor's mailboxes only the two the agent may touch.
  *
  * WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
@@ -442,8 +459,8 @@ function agentPart(
     job: BoardJob,
     session: RunSession | null
 ): { container: RunnerPodContainer; volumes: RunnerVolume[] } {
-    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(config, job) }, ...runnerCredentialEnv(config, job)];
-    const { mounts, volumes } = runnerVolumesField(config, job.executorType, workspacePath(job), secretName(job));
+    const env: EnvVar[] = [{ name: 'WORKDIR', value: runWorkingDir(job) }, ...runnerCredentialEnv(config, job)];
+    const { mounts, volumes } = runnerVolumesField(config, job, secretName(job));
 
     // The argv each CLI speaks, and the executor-specific env beside it (opencode's session
     // database path, or claude-code's transcript store and session id) — decided once, for both
@@ -514,15 +531,6 @@ export function runnerJobSpec(
     if (!JOB_ID.test(job.id)) {
         throw new Error(`refusing to run job ${job.id}: a job id must be a uuid`);
     }
-    // The volumeMount's `subPath`: the claim's `<orgId>/<userId>` subtree, asserted before it
-    // becomes part of any pod spec — by the same function, so the same refusal the docker runner
-    // makes before the same value joins its `volume-subpath` (D4 of the mount-scoping design: a
-    // malformed `workspacePath` is refused before any container exists, never mounted somewhere
-    // unintended). Every workspaces mount this file emits carries it, which is what makes
-    // "mounted broader" a shape the spec cannot express: the kubelet fails a pod whose subPath is
-    // missing, loudly, rather than falling back to the whole volume.
-    const path = workspacePath(job);
-
     // WORKDIR is the one literal value: a path, not a credential. Every forwarded credential is a
     // NAME only — the value lives in a Secret the cluster already holds, and `valueFrom` is what
     // keeps it out of the pod spec, which anyone who can `get pods` can read.
@@ -532,7 +540,7 @@ export function runnerJobSpec(
     // expression with docker's (runWorkingDir), because the close-time readout scopes the session
     // scrape by this exact string — a scope key that drifted from the runner's would answer
     // nothing. Asserted from the same line dockerArgs asserts it from.
-    assertWorktreeResolvable(config, job);
+    assertWorktreeResolvable(job);
     // A node that launches no agent (issue #503) still gets its group — the sync, the gates' tree
     // probe and the publish are the supervisor's — but no agent container, and so no member env.
     const agentless = job.agent === false;
@@ -548,12 +556,10 @@ export function runnerJobSpec(
     // supervisor a sidecar that never starts: the gate leads, the services follow as declared.
     const sidecars = [
         ...(gateImage ? [gateSidecar(config, job, gateImage)] : []),
-        ...(reviewing ? [reviewerSidecar(config, job)] : []),
+        ...(reviewing ? [taskInitContainer(config, job), reviewerSidecar(config, job)] : []),
         ...services.map((service) => serviceSidecar(config, job, service)),
     ];
-    const volumes: RunnerVolume[] = agent?.volumes ?? [
-        { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-    ];
+    const volumes: RunnerVolume[] = agent?.volumes ?? [taskPodVolume(job)];
 
     return {
         apiVersion: 'batch/v1',
@@ -608,7 +614,11 @@ export function runnerJobSpec(
                     // The agent's own commands run in this container (issue #382): the runtime's
                     // seccomp profile over the whole pod, every capability dropped and no
                     // escalation back out of the drop on the container below.
-                    securityContext: { ...podHardeningField() },
+                    securityContext: {
+                        ...podHardeningField(),
+                        fsGroup: GATE_GID,
+                        fsGroupChangePolicy: 'OnRootMismatch',
+                    },
                     ...pullSecretsField(config),
                     ...schedulingField(config),
                     ...(servicesFields.hostAliases ? { hostAliases: servicesFields.hostAliases } : {}),
@@ -622,9 +632,67 @@ export function runnerJobSpec(
                             reviewing,
                             services,
                         }),
-                        ...(exporting ? [exporterContainer(config, job, startedAt, path)] : []),
+                        ...(exporting ? [exporterContainer(config, job, startedAt)] : []),
                     ],
                     volumes: [...volumes, ...mailboxVolumes(reviewing), ...servicesFields.volumes],
+                },
+            },
+        },
+    };
+}
+
+/**
+ * The one-shot reader Job of a close-time readout whose group has ended (`k8s-reader.ts`): the only pod
+ * but the task pod that mounts the task volume, and only after the group's pod is terminal. Hardened like
+ * every driver-specced pod; the script and its argv are the supervised readout's own, the env its values.
+ */
+export function readerJobSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    name: string,
+    readout: { argv: string[]; env: Record<string, string>; timeoutMs: number }
+) {
+    const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: Math.max(1, Math.ceil(readout.timeoutMs / MS_PER_SECOND)),
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels, ...doNotDisruptField(config) },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    securityContext: {
+                        ...podHardeningField(),
+                        fsGroup: GATE_GID,
+                        fsGroupChangePolicy: 'OnRootMismatch',
+                    },
+                    ...pullSecretsField(config),
+                    ...schedulingField(config),
+                    containers: [
+                        {
+                            name: 'readout',
+                            image: executorImage(config, job.executorType),
+                            imagePullPolicy: config.imagePullPolicy,
+                            ...containerHardeningField(),
+                            command: readout.argv,
+                            // The pod log interleaves stderr with stdout, and `node:sqlite` warns on stderr: the
+                            // answer's first line must be the readout's own JSON.
+                            env: [
+                                { name: 'NODE_OPTIONS', value: '--disable-warning=ExperimentalWarning' },
+                                ...Object.entries(readout.env).map(([key, value]) => ({ name: key, value })),
+                            ],
+                            volumeMounts: [taskMount()],
+                            ...resourcesField(config),
+                        },
+                    ],
+                    volumes: [taskPodVolume(job)],
                 },
             },
         },
@@ -707,71 +775,6 @@ export const finishedAgentRun = (item: ListedRunnerJob, pair: BoardJob): boolean
     agentRunJob(item, pair) && ((item.status?.succeeded ?? 0) >= 1 || (item.status?.failed ?? 0) >= 1);
 
 /**
- * A batch Job this driver creates for its own auxiliary work — a close-time readout — as opposed
- * to a runner. Structural like `RunnerJobSpec`, and
- * deliberately a second interface rather than a widening of it: the runner's shape is pinned
- * field by field (claude argv, WORKDIR, per-name secretKeyRef), and an aux Job decides different
- * things. Sharing a type would make "the runner has no envFrom" unreadable.
- */
-export interface AuxJobSpec {
-    apiVersion: 'batch/v1';
-    kind: 'Job';
-    metadata: { name: string; labels: Record<string, string> };
-    spec: {
-        backoffLimit: 0;
-        completions: 1;
-        parallelism: 1;
-        activeDeadlineSeconds: number;
-        ttlSecondsAfterFinished: number;
-        template: {
-            metadata: {
-                labels: Record<string, string>;
-                /** The disruption opt-out (doNotDisruptField) — the POD's metadata, never the Job's. */
-                annotations?: Record<string, string>;
-            };
-            spec: {
-                restartPolicy: 'Never';
-                automountServiceAccountToken: false;
-                /** The executor hardening's pod half (#382, always present). */
-                securityContext: PodSecurityContext;
-                /** The runner group's scheduling knobs — `schedulingField`, absent when unset. */
-                nodeSelector?: Record<string, string>;
-                tolerations?: Record<string, unknown>[];
-                affinity?: Record<string, unknown>;
-                containers: {
-                    name: string;
-                    image: string;
-                    imagePullPolicy: string;
-                    resources?: PodResources;
-                    /** The executor hardening (#382) — `containerHardeningField`, always present. */
-                    securityContext: ContainerSecurityContext;
-                    /** The readout script, by content. */
-                    command?: string[];
-                    /** A handful of literal entries (paths and bounds), never a credential. */
-                    env?: EnvVar[];
-                    volumeMounts: { name: string; mountPath: string; subPath: string; readOnly?: boolean }[];
-                }[];
-                volumes: { name: string; persistentVolumeClaim: { claimName: string } }[];
-            };
-        };
-    };
-}
-
-/**
- * One aux Job's container — the part every builder below decides for itself. The hardening
- * (#382) is NOT part of it: `auxJobSpec` adds that to every container it builds, so a new aux Job
- * cannot be written without it the way it could if each builder had to remember.
- */
-type AuxContainer = Omit<AuxJobSpec['spec']['template']['spec']['containers'][number], 'securityContext'>;
-
-/** What one aux Job builder supplies beyond the skeleton every one of them shares. */
-interface AuxJobSpecInput {
-    name: string;
-    deadlineSeconds: number;
-    container: AuxContainer;
-}
-
-/**
  * `app.kubernetes.io/instance: <K8S_RELEASE>` on every object and pod template the driver specs.
  * On the Job it scopes bulk cleanup to THIS release (`make stop`, a shared-namespace neighbor); on
  * the pod it is what the chart's runner NetworkPolicy selects by, so one release's policy never
@@ -792,58 +795,15 @@ export function pullSecretsField(config: DriverConfig): { imagePullSecrets?: { n
 }
 
 /**
- * The skeleton every aux Job builder shares: `factory.job`/`factory.lease` labels (twice — Job
- * and pod template), no ServiceAccount token, `backoffLimit: 0` (the board owns retries, never
- * the kubelet), the finished-Job TTL, and the workspaces PVC as the one named volume. Each
- * builder supplies its own name, deadline and container body — command, env, envFrom,
- * workingDir, volume mounts — which is the part that actually differs and that the spec tests
- * read. `runnerJobSpec` stays separate: its shape is pinned field by field, and sharing a type
- * with the aux Jobs would make "the runner has no envFrom" unreadable.
+ * The task volume's volumeMount (issue #775), read-write unless the caller marks it read-only; a
+ * `subPath` narrows it to one directory of the volume (the reviewer's home).
  */
-export function auxJobSpec(config: DriverConfig, job: BoardJob, input: AuxJobSpecInput): AuxJobSpec {
-    const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) };
+export function taskMount(options: { readOnly?: boolean; subPath?: string; mountPath?: string } = {}): RunnerMount {
     return {
-        apiVersion: 'batch/v1',
-        kind: 'Job',
-        metadata: { name: input.name, labels },
-        spec: {
-            backoffLimit: 0,
-            completions: 1,
-            parallelism: 1,
-            activeDeadlineSeconds: input.deadlineSeconds,
-            ttlSecondsAfterFinished: TTL_SECONDS,
-            template: {
-                metadata: { labels, ...doNotDisruptField(config) },
-                spec: {
-                    restartPolicy: 'Never',
-                    automountServiceAccountToken: false,
-                    ...pullSecretsField(config),
-                    ...schedulingField(config),
-                    securityContext: { ...podHardeningField() },
-                    // One spread covers every aux Job, the same way pullSecretsField above covers
-                    // their image pulls.
-                    containers: [{ ...resourcesField(config), ...input.container, ...containerHardeningField() }],
-                    volumes: [{ name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } }],
-                },
-            },
-        },
-    };
-}
-
-/**
- * One `workspaces` volumeMount, scoped to `subPath` — the subtree every aux Job's container
- * mounts, read-write unless the caller marks it read-only.
- */
-export function workspaceMount(
-    config: DriverConfig,
-    subPath: string,
-    readOnly?: boolean
-): { name: 'workspaces'; mountPath: string; subPath: string; readOnly?: boolean } {
-    return {
-        name: 'workspaces',
-        mountPath: `${config.workspaceMount}/${subPath}`,
-        subPath,
-        ...(readOnly ? { readOnly } : {}),
+        name: TASK_VOLUME,
+        mountPath: options.mountPath ?? TASK_MOUNT,
+        ...(options.subPath ? { subPath: options.subPath } : {}),
+        ...(options.readOnly ? { readOnly: true } : {}),
     };
 }
 
@@ -878,95 +838,46 @@ export const runnerName = (job: BoardJob): string => {
 };
 
 /**
- * `<org>/<user id>` — COPIED from services.ts (which copied it from docker.ts): the path becomes
- * an env value the readout script globs under, and the board is not something this process trusts
- * with a fragment of a shell command.
+ * The close-time readouts of a live group (`runReadoutStep`) run as supervised steps of the task pod (the supervisor
+ * mounts the task volume), never as Jobs of their own (an adopted ended group has no supervisor: `readerJobSpec`): a second pod mounting a ReadWriteOncePod
+ * volume the task pod holds would sit Pending. The scripts are the ones docker runs in a throwaway
+ * container (opencode-readout.cjs, claude-turns.cjs), passed by content; everything board-derived
+ * travels as an env VALUE. The step runs read-write over the volume on purpose: opening a sqlite
+ * database whose WAL needs recovery has to write the recovery, and the run that died mid-checkpoint
+ * is exactly the readout this exists for.
  */
-const WORKSPACE_PATH = /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * The close-time opencode session readout under kubernetes: the same script docker runs in a
- * throwaway container (opencode-readout.cjs, passed by content), as one aux Job over the PVC.
- * The database path travels as an env VALUE — the script is static, so nothing board-derived is
- * ever part of its text. The mount is READ-WRITE on purpose, unlike a plain readout:
- * opening a sqlite database whose WAL needs recovery has to write the recovery, and the run
- * that died mid-checkpoint is exactly the readout this exists for. The docker readout mounts
- * the same volume read-write for the same reason.
- */
-const OPENCODE_READOUT_DEADLINE_SECONDS = 120;
-
-export const opencodeReadoutJobName = (job: BoardJob): string =>
-    `factory-ocread-${hash16(`${job.id}|${job.leaseToken}`)}`;
-
-/**
- * The close-time claude-code turn count under kubernetes: the same script docker runs
- * (claude-turns.cjs, passed by content), as one aux Job over the PVC — the twin of the
- * opencode readout above, reading the transcript the CLI wrote onto the volume under
- * FACTORY_TRANSCRIPT_DIR while the runner lived. The mount needs no WAL recovery, but it rides
- * the same read-write shape for one reason: there is exactly one close-time readout shape per
- * executor, and two variants of it would be two shapes to keep coherent. A Job that fails or
- * overspends its deadline answers through the caller's null contract — unmeasured, never zero.
- */
-export const claudeTurnsJobName = (job: BoardJob): string => `factory-cturns-${hash16(`${job.id}|${job.leaseToken}`)}`;
-
-export function claudeTurnsJobSpec(
-    config: DriverConfig,
-    job: BoardJob,
-    sessionId: string,
-    startedAt: string
-): AuxJobSpec {
-    if (!JOB_ID.test(sessionId)) {
-        throw new Error(`refusing to count turns for job ${job.id}: not a session id: ${sessionId}`);
-    }
-    return auxJobSpec(config, job, {
-        name: claudeTurnsJobName(job),
-        deadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
-        container: {
-            name: 'claude-turns',
-            image: executorImage(config, job.executorType),
-            imagePullPolicy: config.imagePullPolicy,
-            command: ['node', '-e', claudeTurnsScript],
-            // Both travel as env VALUES — the script is static, so nothing board-derived is
-            // ever part of its text.
-            env: [
-                { name: 'CLAUDE_TRANSCRIPT_DIR', value: transcriptDir(config, job) },
-                { name: 'CLAUDE_SESSION_ID', value: sessionId },
-                // The per-run delta bound, exactly as docker passes it.
-                { name: 'RUN_STARTED_AT', value: startedAt },
-            ],
-            volumeMounts: [workspaceMount(config, workspacePath(job))],
-        },
-    });
+export interface ReadoutStep {
+    argv: string[];
+    env: Record<string, string>;
 }
 
-export function opencodeReadoutJobSpec(config: DriverConfig, job: BoardJob, startedAt: string): AuxJobSpec {
-    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) {
+export function opencodeReadoutStep(job: BoardJob, startedAt: string): ReadoutStep {
+    if (!workspacePathOf(job)) {
         throw new Error(
             `refusing to read the opencode session database for job ${job.id}: ` +
                 `the board reported no usable workspace path (${job.workspacePath ?? 'null'})`
         );
     }
-    return auxJobSpec(config, job, {
-        name: opencodeReadoutJobName(job),
-        deadlineSeconds: OPENCODE_READOUT_DEADLINE_SECONDS,
-        container: {
-            name: 'opencode-readout',
-            image: executorImage(config, job.executorType),
-            imagePullPolicy: config.imagePullPolicy,
-            command: ['node', '-e', opencodeReadoutScript],
-            // Both travel as env VALUES — the script is static, so nothing board-derived is
-            // ever part of its text. The directory scope is the run's own working directory
-            // (the same string opencode records on the session); the database is the task's own.
-            env: [
-                { name: 'OPENCODE_DB', value: opencodeDbPath(config, job) },
-                { name: 'OPENCODE_DIR', value: runWorkingDir(config, job) },
-                // The per-run delta bound, exactly as docker passes it: a follow-up resumes the
-                // root conversation, and only the cycles this run wrote may count as its turns.
-                { name: 'RUN_STARTED_MS', value: String(Date.parse(startedAt)) },
-                // The per-stream cap of the session export the readout prints ahead of its answer.
-                { name: 'EXPORT_LIMIT_BYTES', value: String(OPENCODE_EXPORT_LIMIT) },
-            ],
-            volumeMounts: [workspaceMount(config, workspacePath(job))],
+    return {
+        argv: ['node', '-e', opencodeReadoutScript],
+        env: {
+            OPENCODE_DB: opencodeDbPath(job),
+            OPENCODE_DIR: runWorkingDir(job),
+            // The per-run delta bound: a follow-up resumes the root conversation, and only the
+            // cycles this run wrote may count as its turns.
+            RUN_STARTED_MS: String(Date.parse(startedAt)),
+            // The per-stream cap of the session export the readout prints ahead of its answer.
+            EXPORT_LIMIT_BYTES: String(OPENCODE_EXPORT_LIMIT),
         },
-    });
+    };
+}
+
+export function claudeTurnsStep(job: BoardJob, sessionId: string, startedAt: string): ReadoutStep {
+    if (!JOB_ID.test(sessionId)) {
+        throw new Error(`refusing to count turns for job ${job.id}: not a session id: ${sessionId}`);
+    }
+    return {
+        argv: ['node', '-e', claudeTurnsScript],
+        env: { CLAUDE_TRANSCRIPT_DIR: transcriptDir(job), CLAUDE_SESSION_ID: sessionId, RUN_STARTED_AT: startedAt },
+    };
 }

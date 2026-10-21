@@ -5,8 +5,7 @@ import { join } from 'node:path';
 import { beforeEach } from 'vitest';
 
 /**
- * Shared support for the worktree sync script suites (`worktree.test.ts`, split for its
- * line-count cap into a sync half and a restore half, `worktree-restore.test.ts`) — real git,
+ * Shared support for the task checkout script suites (`scripts-task-checkout.test.ts`) — real git,
  * offline throughout: every remote here is a `file://` bare repository the fixture creates. The
  * script under test is what the driver's sync container (docker) or sync Job (kubernetes) runs.
  *
@@ -51,6 +50,13 @@ export function git(cwd: string, ...args: string[]): string {
  * README commit (`# <name>`), its bare copy `<name>.git`, and the clone. Answers the work and bare paths.
  */
 export function makeOriginClone(dir: string, clone: string, name = 'factory'): { work: string; bare: string } {
+    const origin = makeOrigin(dir, name);
+    execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${origin.bare}`, clone], { stdio: 'ignore' });
+    return origin;
+}
+
+/** The `file://` origin alone: an `origin-work` repo with one README commit and its bare copy `<name>.git`. */
+export function makeOrigin(dir: string, name = 'factory'): { work: string; bare: string } {
     const work = join(dir, 'origin-work');
     mkdirSync(work, { recursive: true });
     git(work, 'init');
@@ -59,7 +65,6 @@ export function makeOriginClone(dir: string, clone: string, name = 'factory'): {
     git(work, 'commit', '-m', 'init');
     const bare = join(dir, `${name}.git`);
     execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', '--bare', work, bare], { stdio: 'ignore' });
-    execFileSync('git', [...GIT_FIXTURE_CONFIG, 'clone', `file://${bare}`, clone], { stdio: 'ignore' });
     return { work, bare };
 }
 
@@ -94,7 +99,7 @@ export interface SyncVerdict {
 export const runScript = (env: Record<string, string>): SyncVerdict => {
     // The script FILE itself, not a -e wrap: the artifact the sync container runs is what is
     // under test.
-    const out = execFileSync('node', [join(import.meta.dirname, '..', '..', 'src', 'scripts', 'git-worktree.cjs')], {
+    const out = execFileSync('node', [join(import.meta.dirname, '..', '..', 'src', 'scripts', 'task-checkout.cjs')], {
         env: { ...process.env, ...SCRIPT_IDENTITY, ...env },
         encoding: 'utf8',
     });
@@ -107,8 +112,8 @@ export const OTHER_ROOT = '66666666-6666-4666-8666-666666666666';
 
 export interface WorktreeFixture {
     dir: () => string;
-    clone: () => string;
-    worktree: () => string;
+    /** The task's own checkout: absent until the first sync clones it from the bare origin. */
+    checkout: () => string;
     branch: () => string;
     work: () => string;
     bare: () => string;
@@ -129,15 +134,14 @@ export interface WorktreeFixture {
  */
 export function setupWorktreeFixture(): WorktreeFixture {
     let dir: string;
-    let clone: string;
-    let worktree: string;
+    let checkout: string;
     let branch: string;
     let work: string;
     let bare: string;
 
     const syncEnv = (root = ROOT): Record<string, string> => ({
-        REPO: clone,
-        WORKTREE: join(dir, 'bellows', USER, '.worktrees', root),
+        CHECKOUT: join(dir, 'task', 'factory'),
+        REMOTE: `file://${bare}`,
         BRANCH: `factory/${root}`,
     });
 
@@ -164,19 +168,18 @@ export function setupWorktreeFixture(): WorktreeFixture {
         // its own `onTaskUpdate` calls and the run loses files' reports. One event-loop turn per test.
         await new Promise((resolve) => setImmediate(resolve));
         dir = realpathSync(mkdtempSync(join(tmpdir(), 'factory-worktree-')));
-        // The real layout: the clone sits at <mount>/<org>/<user>/<repo>, worktrees beside it.
-        clone = join(dir, 'bellows', USER, 'factory');
-        worktree = join(dir, 'bellows', USER, '.worktrees', ROOT);
+        // The real layout: the task's own checkout at <volume>/<repo>, cloned from the remote.
+        mkdirSync(join(dir, 'task'));
+        checkout = join(dir, 'task', 'factory');
         branch = `factory/${ROOT}`;
-        ({ work, bare } = makeOriginClone(dir, clone));
+        ({ work, bare } = makeOrigin(dir));
         // The work copy pushes to the bare the way a real checkout pushes to its forge.
         git(work, 'remote', 'add', 'origin', bare);
     });
 
     return {
         dir: () => dir,
-        clone: () => clone,
-        worktree: () => worktree,
+        checkout: () => checkout,
         branch: () => branch,
         work: () => work,
         bare: () => bare,

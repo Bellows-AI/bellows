@@ -10,13 +10,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { awaitFinalized } from '../src/k8s-adopt.js';
 import { jobPath } from '../src/k8s-auxspec.js';
 import { jobEndsWithin } from '../src/k8s-group.js';
-import {
-    auxVerdict,
-    pollJobToTerminal,
-    pollRunnerJobUntilTerminal,
-    readJobPodVerdict,
-    readVerdict,
-} from '../src/k8s-poll.js';
+import { pollRunnerJobUntilTerminal, readJobPodVerdict, readVerdict } from '../src/k8s-poll.js';
 import { ledgerOf } from '../src/k8s-kill.js';
 import { runnerName } from '../src/k8s-podspec.js';
 import { stopAgent } from '../src/k8s-runner.js';
@@ -170,30 +164,6 @@ describe('a wait nested in a bounded round (#869)', () => {
 
         await expect(readVerdict(round, RUNNER_JOB, 'reading the job')).rejects.toThrow();
 
-        expect(world.elapsed()).toBeLessThanOrEqual(OUTER_MS);
-    });
-
-    it('pollJobToTerminal ends with the round it runs in, though its own wait is longer', async () => {
-        const world = clockWorld(1, running);
-        const round = boundedBy(world.deps, world.now() + OUTER_MS);
-        const messages = { what: 'the job', notFound: () => 'gone', errorStatus: () => 'refused', failed: 'failed' };
-
-        await expect(pollJobToTerminal(round, runnerName(job), messages)).rejects.toThrow();
-
-        expect(world.elapsed()).toBeLessThanOrEqual(OUTER_MS);
-    });
-
-    it('auxVerdict hands the kill to every request and every pause, and retries no longer than its round', async () => {
-        const kill = new AbortController();
-        const world = clockWorld(1, running);
-
-        await expect(
-            auxVerdict(boundedBy(world.deps, world.now() + OUTER_MS), runnerName(job), kill.signal)
-        ).rejects.toThrow();
-
-        expect(world.seen.length).toBeGreaterThan(0);
-        expect(world.seen.every((s) => s.signal !== undefined)).toBe(true);
-        expect(world.slept.every((s) => s.signal !== undefined)).toBe(true);
         expect(world.elapsed()).toBeLessThanOrEqual(OUTER_MS);
     });
 

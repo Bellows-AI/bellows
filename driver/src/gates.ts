@@ -5,6 +5,7 @@ import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
 import { createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
+import { TASK_MOUNT } from './task-volume.js';
 import { reportTail } from './runner.js';
 import { stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
@@ -202,9 +203,7 @@ function assertAcquirable(key: string, image: string, attempt: GateAttempt | und
     if (!attempt?.job)
         throw gateHarness('the gate manager runs gates in their attempt’s task group, and no job was given');
     if (!GATE_KEY.test(key)) {
-        throw gateHarness(
-            `refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`
-        );
+        throw gateHarness(`refusing to run a gate in a checkout key that is not <uuid>/<repo segment>: ${key}`);
     }
     if (!GATE_IMAGE.test(image)) {
         throw gateHarness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
@@ -237,7 +236,7 @@ export function createSupervisedGateManager({
     ): Promise<GateRun> => {
         const gate = {
             command: run.command,
-            cwd: `${config.workspaceMount}/${entry.key}`,
+            cwd: `${TASK_MOUNT}/${entry.key.split('/')[1]}`,
             env: envBodyRecord(entry.envBody),
             timeoutMs: run.deadlineMs,
         };

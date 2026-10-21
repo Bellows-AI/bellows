@@ -9,7 +9,8 @@ import type { DriverConfig } from './config.js';
 import type { BoardJob } from './board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
-import { UUID, WORKSPACE_PATH, worktreeDir } from './publish.js';
+import { WORKSPACE_PATH, checkoutDir } from './publish.js';
+import { TASK_MOUNT, UUID, taskRootOf } from './task-volume.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 export { UUID };
@@ -53,9 +54,8 @@ export const REVIEWER_TREE_DIR = '.factory/reviewer';
 /** Where the reviewer's home keeps its session state: the transcript store and opencode's data directory, each per review root. */
 export const REVIEWER_TRANSCRIPTS = 'transcripts';
 export const REVIEWER_DATA = 'data';
-/** That directory as the supervisor and the other containers of the pod see it. */
-export const reviewerTreeDir = (config: Pick<DriverConfig, 'workspaceMount'>, job: BoardJob): string =>
-    `${config.workspaceMount}/${workspacePath(job)}/${REVIEWER_TREE_DIR}`;
+/** That directory as the supervisor and the other containers of the group see it. */
+export const REVIEWER_TREE_PATH = `${TASK_MOUNT}/${REVIEWER_TREE_DIR}`;
 /** A review's transcript store, in the reviewer's home, named by the thread root. */
 export const reviewerTranscriptName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
     `${REVIEWER_TRANSCRIPTS}/${review.rootJobId ?? review.id}`;
@@ -80,23 +80,18 @@ export function npmQuietEnv(job: Pick<BoardJob, 'env'> | undefined): [string, st
 }
 /**
  * The data directory (XDG_DATA_HOME) an opencode run gets: one directory per TASK — the thread
- * root, like the claude transcript store — inside the member's tree on the workspaces volume, so
+ * root, like the claude transcript store — inside the task volume, so
  * every attempt and follow-up of a task resumes in one session database and two tasks of one
  * member never share a file. The opencode entrypoint derives the member tree from this shape. The
  * root is asserted before it joins the path, as in `transcriptDir`.
  */
-export function opencodeDataDir(config: DriverConfig, job: BoardJob): string {
-    const path = workspacePath(job);
-    const root = job.rootJobId ?? job.id;
-    if (!UUID.test(root)) {
-        throw new Error(`refusing to run job ${job.id}: a thread root id that is not a uuid: ${root}`);
-    }
-    return `${config.workspaceMount}/${path}/.factory/opencode/${root}`;
+export function opencodeDataDir(job: BoardJob): string {
+    return `${TASK_MOUNT}/.factory/opencode/${taskRootOf(job)}`;
 }
 
 /** The session database opencode writes under the task's data directory. */
-export function opencodeDbPath(config: DriverConfig, job: BoardJob): string {
-    return `${opencodeDataDir(config, job)}/opencode/opencode.db`;
+export function opencodeDbPath(job: BoardJob): string {
+    return `${opencodeDataDir(job)}/opencode/opencode.db`;
 }
 
 /**
@@ -106,13 +101,13 @@ export function opencodeDbPath(config: DriverConfig, job: BoardJob): string {
  * too — one expression here because the run's WORKDIR and the readout's OPENCODE_DIR must never
  * drift apart: a scope key that misses is a scrape that answers nothing.
  */
-export function runWorkingDir(config: DriverConfig, job: BoardJob): string {
-    return worktreeDir(config, job) ?? `${config.workspaceMount}/${workspacePath(job)}`;
+export function runWorkingDir(job: BoardJob): string {
+    return checkoutDir(job) ?? TASK_MOUNT;
 }
 
 /**
  * The transcript store a headless claude-code run is pointed at: one directory per THREAD ROOT on
- * the workspaces volume, passed to the runner as `FACTORY_TRANSCRIPT_DIR`. The entrypoint makes it
+ * the task volume, passed to the runner as `FACTORY_TRANSCRIPT_DIR`. The entrypoint makes it
  * `CLAUDE_CONFIG_DIR` (guarded, headless only), so the CLI writes its transcripts onto the volume
  * the moment it writes them — no post-run copy, nothing dies with the container — and a follow-up's
  * `--resume` finds the thread's earlier sessions in the same directory it runs in. The root is the
@@ -124,13 +119,8 @@ export function runWorkingDir(config: DriverConfig, job: BoardJob): string {
  * workspace path nor the root id (which a board predating the field omits, making the job its own
  * root) is something this process trusts unasserted.
  */
-export function transcriptDir(config: DriverConfig, job: BoardJob): string {
-    const path = workspacePath(job);
-    const root = job.rootJobId ?? job.id;
-    if (!UUID.test(root)) {
-        throw new Error(`refusing to run job ${job.id}: a thread root id that is not a uuid: ${root}`);
-    }
-    return `${config.workspaceMount}/${path}/.factory/transcripts/${root}`;
+export function transcriptDir(job: BoardJob): string {
+    return `${TASK_MOUNT}/.factory/transcripts/${taskRootOf(job)}`;
 }
 
 /**
@@ -317,21 +307,18 @@ export function repoCacheProblem(job: CacheJob): string | null {
 
 /**
  * Issue #734: each `environment.cache` name `.bellows.yaml` declares, pointed at
- * `<member>/.cache/<owner>/<repo>/<NAME>` — inside the member mount every runner and gate already
+ * `/task/.cache/<owner>/<repo>/<NAME>` — inside the task volume every runner and gate already
  * carries, so it outlives the container and needs no mount of its own. Runner and gate env, both
  * executors, one path. A default only, like `npmQuietEnv`: a claim that names it wins.
  */
-export function repoCacheEnv(
-    config: Pick<DriverConfig, 'workspaceMount'>,
-    job: CacheJob | undefined
-): [string, string][] {
+export function repoCacheEnv(job: CacheJob | undefined): [string, string][] {
     const names = job?.gates?.cache ?? [];
     if (!job || names.length === 0) return [];
     // Unreachable past the loop's refusal; the assertion stands before any path is composed.
     const problem = repoCacheProblem(job);
     const segments = cacheRepoSegments(job.repo);
     if (problem || !segments) throw new Error(`refusing to run job ${job.id}: ${problem}`);
-    const dir = `${config.workspaceMount}/${workspacePath(job)}/.cache/${segments[0]}/${segments[1]}`;
+    const dir = `${TASK_MOUNT}/.cache/${segments[0]}/${segments[1]}`;
     return names.filter((name) => !Object.hasOwn(job.env ?? {}, name)).map((name) => [name, `${dir}/${name}`]);
 }
 
@@ -339,8 +326,8 @@ export function repoCacheEnv(
  * The gate env's own literals, rendered as `-e` by docker and as container env by kubernetes. HOME
  * for the non-root uid — /tmp is world-writable where the image's own is not.
  */
-export function gateEnv(config: Pick<DriverConfig, 'workspaceMount'>, job: CacheJob | undefined): [string, string][] {
-    return [['HOME', '/tmp'], ...npmQuietEnv(job), ...repoCacheEnv(config, job)];
+export function gateEnv(job: CacheJob | undefined): [string, string][] {
+    return [['HOME', '/tmp'], ...npmQuietEnv(job), ...repoCacheEnv(job)];
 }
 
 /**

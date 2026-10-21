@@ -230,23 +230,22 @@ fi
 # the entrypoint): the baked policy is root-owned, so they ride OPENCODE_CONFIG_CONTENT, whose new
 # keys merge in after the baked deny globs.
 #
-# The task workspace allow: the driver's XDG_DATA_HOME names the member tree on the shared
-# workspaces volume, and the entrypoint opens exactly that subtree — `**`, because the allow must
-# reach the tree's dot-directories. The member tree is mounted writable, as the driver mounts the
-# workspaces volume: the entrypoint creates the data directory in it.
+# The task volume allow: the driver's XDG_DATA_HOME names the volume at /task, and the entrypoint
+# opens exactly that subtree — `**`, because the allow must reach the tree's dot-directories. The
+# volume is mounted writable, as the driver mounts it: the entrypoint creates the data directory in it.
 WS="$(mktemp -d)"
 chmod -R a+rwX "$WS"
-member="$(docker run --rm -e XDG_DATA_HOME=/workspaces/org/uuid/.factory/opencode/task -v "$WS:/workspaces/org/uuid" \
+member="$(docker run --rm -e XDG_DATA_HOME=/task/.factory/opencode/task -v "$WS:/task" \
     "$IMAGE" debug config 2>/dev/null)"
 rm -rf "$WS"
 if node -e '
     const s = process.argv[1]; const o = JSON.parse(s.slice(s.indexOf("{"))).permission.external_directory;
     const keys = Object.keys(o);
-    process.exit(o["/workspaces/org/uuid/**"] === "allow" && o["*"] === "deny" &&
-        keys.indexOf("*") < keys.indexOf("/workspaces/org/uuid/**") ? 0 : 1);' "$member" >/dev/null 2>&1; then
-    ok 'the entrypoint allows the member tree from XDG_DATA_HOME'
+    process.exit(o["/task/**"] === "allow" && o["*"] === "deny" &&
+        keys.indexOf("*") < keys.indexOf("/task/**") ? 0 : 1);' "$member" >/dev/null 2>&1; then
+    ok 'the entrypoint allows the task volume from XDG_DATA_HOME'
 else
-    bad 'the entrypoint allows the member tree from XDG_DATA_HOME' "${member:0:400}"
+    bad 'the entrypoint allows the task volume from XDG_DATA_HOME' "${member:0:400}"
 fi
 
 # The fence is not loosened for a data directory that is not the driver's shape: a standalone run

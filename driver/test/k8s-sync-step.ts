@@ -3,6 +3,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import type { StepSink } from '../src/step-control.js';
+import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 
 /**
@@ -13,6 +14,8 @@ import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js'
  */
 export async function k8sSyncStep(job: BoardJob, githubToken?: string): Promise<StepRequest> {
     const claims = new Map<string, unknown>();
+    // The default namespace of the config below, which names none.
+    const serveVolumes = taskVolumeServer('default');
     const json = (body: unknown, status = 200): K8sResponse => ({ status, body: JSON.stringify(body) });
     const request: K8sRequest = async (method: K8sMethod, path: string, body?: unknown) => {
         if (path.includes('/configmaps')) {
@@ -27,6 +30,8 @@ export async function k8sSyncStep(job: BoardJob, githubToken?: string): Promise<
                 ? json({ metadata: { uid: 'claim-uid' }, data: claims.get(name ?? '') })
                 : { status: 404, body: '{}' };
         }
+        const volume = serveVolumes(method, path, body);
+        if (volume) return volume;
         // Created, as the apiserver answers: the uid a Secret's owner reference names.
         if (method === 'POST') return json({ metadata: { uid: 'object-uid' } }, 201);
         // The sweep's selector lists: nothing of this job is left over.

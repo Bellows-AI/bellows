@@ -1,6 +1,7 @@
 import type { BoardJob, FailureCause } from './board.js';
 import type { DriverConfig } from './config.js';
 import { containerScript as script } from './container-scripts.js';
+import { TASK_MOUNT, UUID } from './task-volume.js';
 import { parseLastJsonLine } from './json-parse.js';
 import { baseBranchOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
@@ -34,20 +35,8 @@ export {
 /** The probe's node script: see scripts/git-probe.cjs. */
 export const gitProbeScript = script('git-probe.cjs');
 
-/** The startup sync's node script: see scripts/git-worktree.cjs. */
-export const gitWorktreeScript = script('git-worktree.cjs');
-
-/** The terminal reclaim's node script: see scripts/git-worktree-remove.cjs. */
-export const gitWorktreeRemoveScript = script('git-worktree-remove.cjs');
-
-/** The tool uid's release of the tree before that reclaim (issue #814): see scripts/tool-tree-release.cjs. */
-export const toolTreeReleaseScript = script('tool-tree-release.cjs');
-
-/** Its kubernetes wrapper, bounded and always 0: see scripts/tool-tree-release-bounded.sh. */
-export const toolTreeReleaseBoundedScript = script('tool-tree-release-bounded.sh');
-
-/** How long the tool uid's release of a tree may walk it before the reclaim goes on without it. */
-export const RELEASE_DEADLINE_MS = 300_000;
+/** The startup sync's node script: see scripts/task-checkout.cjs. */
+export const taskCheckoutScript = script('task-checkout.cjs');
 
 /** What the board intends to publish for one job. */
 export interface PublishPlan {
@@ -169,16 +158,11 @@ export interface PublishOptions {
 }
 
 /**
- * The failure kinds the sync script (scripts/git-worktree.cjs) names for a refusal no retry can
+ * The failure kinds the sync script (scripts/task-checkout.cjs) names for a refusal no retry can
  * fix; the loop reports each as `config` (loop-run.ts, `syncCheckoutStep`). The literals live in
  * the script too, which docker.test.ts pins.
  */
-export const SYNC_FAILURE_KINDS = [
-    'missing_workspace',
-    'missing_clone',
-    'branch_unrestorable',
-    'missing_base_branch',
-] as const;
+export const SYNC_FAILURE_KINDS = ['branch_unrestorable', 'missing_base_branch'] as const;
 export type SyncFailureKind = (typeof SYNC_FAILURE_KINDS)[number];
 
 /**
@@ -205,37 +189,14 @@ export interface SyncResult {
     /** Set by the script on a deterministic refusal; absent for anything unrecognised. */
     kind?: SyncFailureKind;
     /**
-     * The task tree's fingerprint after the sync (scripts/git-worktree.cjs), compared with the
+     * The task tree's fingerprint after the sync (scripts/task-checkout.cjs), compared with the
      * post-gate probe's to tell a round that changed nothing. Absent or null is unknown.
      */
     fingerprint?: string | null;
-    /**
-     * Settles once nothing of this sync can still write the checkout, when that is later than the
-     * answer: a docker sync killed at its deadline answers at once, while its container is proven
-     * gone only after (issue #559). The clone's sync queue holds the turn until then. Absent: the
-     * answer itself is that proof.
-     */
-    settled?: Promise<void>;
 }
 
 /**
- * The marker the worktree sync script (scripts/git-worktree.cjs) puts on a refusal that is lock
- * contention on the shared checkout (issue #307): a wait-out on the checkout's `factory-sync.lock`
- * until its wait bound, or a fetch that kept losing the refs' locks to a concurrent git past its
- * retries. Both are transient by nature — a re-claim starts the same sync over, usually against
- * refs that are current by then — so the loop reads this as infrastructure and hands the claim
- * back to the board, its attempt refunded (issue #559), never as a verdict on the command. Anchored
- * at the head ON PURPOSE: ordinary refusal reasons splice raw git stderr, whose conflicting file
- * paths are member-controlled content, and an unanchored match would misroute a terminal
- * conflict into the retry path. The literal lives in the script too (a .cjs cannot import it),
- * which is why docker.test.ts pins the marker's presence in the shipped bytes.
- */
-export const TRANSIENT_SYNC_REASON = /^transient worktree sync:/;
-
-/**
- * The startup sync's own bound, on both executors: the kubernetes sync Job's
- * `activeDeadlineSeconds` and the docker sync container's timeout. The script's stale-lock bound
- * (scripts/git-worktree.cjs, `DEFAULT_SYNC_LOCK_STALE_MS`) is this same 600s.
+ * The startup sync's own bound, on both executors: the timeout of the supervised sync step.
  */
 export const SYNC_DEADLINE_MS = 600_000;
 
@@ -249,27 +210,10 @@ export interface ReclaimResult {
      */
     removed: boolean;
     reason: string | null;
-    /**
-     * The checkout claim that held the reclaim off, when the refusal was the claim's own — the
-     * kubernetes acquire answered 409 against a holder it could not take over (issue #344).
-     * Executor-neutral home, kubernetes-only population: docker's fence leaves no claim object
-     * behind, so its refusals never carry this. The loop reads it to name the claim — and, when
-     * the board proves the holder job gone or terminal, to have the runner reap it instead of
-     * retrying the same refusal forever. `uid` and `holder` are the incarnation read (issue #821):
-     * the reap acts on that one only, never on a claim that replaced it since.
-     */
-    heldClaim?: { name: string; claimSeq: string | null; createdMs: number | null; uid: string; holder: string };
 }
 
 /** What an unparseable worktree sync verdict means — both executors' fallback for the same shape. */
 export const syncUnreadable: SyncResult = { ok: false, reason: 'the worktree sync answered nothing readable' };
-
-/** What an unparseable worktree reclaim verdict means — the sync fallback's twin. */
-export const reclaimUnreadable: ReclaimResult = {
-    ok: false,
-    removed: false,
-    reason: 'the worktree reclaim answered nothing readable',
-};
 
 /** Nothing to publish: no checkout, or a clean tree with nothing unpushed. Not an error. */
 export const publishNothing = (reason: string): PublishResult => ({
@@ -333,26 +277,7 @@ const PUBLISH_CAUSES: readonly [FailureCause, RegExp][] = [
 export const publishCauseOf = (message: string): FailureCause =>
     PUBLISH_CAUSES.find(([, pattern]) => pattern.test(message))?.[0] ?? 'unknown';
 
-/**
- * The repo directory of the job's clone: `<mount>/<workspacePath>/<repo segment>`. Both halves
- * are asserted before they join a path — the same rule every board-supplied value obeys before it
- * becomes part of an argv or a filesystem location, because the board's own shape validation is
- * not this process's to trust.
- */
-export function repoPath(config: DriverConfig, job: BoardJob): string | null {
-    if (!job.workspacePath || !/^[a-zA-Z0-9-]+\/[0-9a-fA-F-]{36}$/.test(job.workspacePath)) return null;
-    const segment = job.repo?.split('/')[1];
-    // '.' and '..' are valid by character but are the traversal themselves.
-    if (!segment || segment === '.' || segment === '..' || !/^[A-Za-z0-9._-]+$/.test(segment)) return null;
-    return `${config.workspaceMount}/${job.workspacePath}/${segment}`;
-}
-
-/**
- * A uuid, asserted before it names a worktree directory or a branch segment. The one home for
- * this pattern (and the workspace and gate shapes below it): every other file that needs one
- * imports from here rather than restating it.
- */
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export { UUID };
 
 /**
  * The workspace half: `<org>/<user id>`, the org-id shape server/src/auth/github.ts documents.
@@ -364,64 +289,70 @@ export const WORKSPACE_PATH =
 
 /**
  * The checkout key a gated run's environment is filed under, and the declared image: the key is
- * the task worktree the agent edits — `<org>/<uuid>/.worktrees/<root id>` (issue #35) — and is
- * interpolated into a working directory every gate command runs in, and the image is repo
- * content naming what executes. Shared by the docker and kubernetes gate managers, which assert
- * the same shapes before the same interpolation.
+ * `<thread root id>/<repo segment>` (`checkoutKey`), and its segment is interpolated into a working
+ * directory every gate command runs in, and the image is repo content naming what executes. Shared
+ * by the docker and kubernetes gate managers, which assert the same shapes before the same
+ * interpolation.
  */
-export const GATE_KEY =
-    /^[a-z0-9][a-z0-9_-]{0,38}\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/\.worktrees\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const GATE_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/(?!\.{1,2}$)[A-Za-z0-9._-]+$/i;
 
 /** Same shape the board's `.bellows.yaml` parser enforces; re-asserted here, before argv. */
 export const GATE_IMAGE = /^[A-Za-z0-9_][A-Za-z0-9_./:-]*$/;
 
 /**
- * The task worktree of the job's clone, RELATIVE to the mount:
- * `<workspacePath>/.worktrees/<thread root id>` — or null when the job names no repository (a
- * command-only job runs at the member root, where it always did) or any half fails its assertion.
- *
- * The key is the thread's ROOT job id — this job's own, unless it is a follow-up, and then the
- * chain's first job. One task thread = one workspace (issue #35): every attempt of the job, and
- * every follow-up resuming its session, lands in the same tree, branched off the remote default.
- * Per-JOB keying was rejected because a follow-up would then start a fresh tree off main,
- * orphaning the conversation and the parent's unmerged work.
- *
- * The `.worktrees/` segment is the driver's own namespace beside the checkouts, which the
- * workspace reconcile never creates, reads, or prunes (its naming rules refuse a leading dot, the
- * same protection `.opencode` relies on).
+ * The repo segment of the job's `owner/name`, asserted: a segment starting with '.' is refused —
+ * '.' and '..' are the traversal itself, and any other dot-name is the task volume's own (`.factory`,
+ * the `.<name>.sync` the checkout is built in).
  */
-export function worktreeRelDir(job: BoardJob): string | null {
-    if (!job.workspacePath || !WORKSPACE_PATH.test(job.workspacePath)) return null;
+const repoSegmentOf = (job: Pick<BoardJob, 'repo'>): string | null => {
     const segment = job.repo?.split('/')[1];
-    if (!segment || segment === '.' || segment === '..' || !/^[A-Za-z0-9._-]+$/.test(segment)) return null;
-    const root = job.rootJobId ?? job.id;
-    if (!UUID.test(root)) return null;
-    return `${job.workspacePath}/.worktrees/${root}`;
-}
-
-/** The absolute worktree path inside the mounted volume, or null when the job has none. */
-export function worktreeDir(config: DriverConfig, job: BoardJob): string | null {
-    const rel = worktreeRelDir(job);
-    return rel ? `${config.workspaceMount}/${rel}` : null;
-}
-
-/** The suffix of a thread's review roots directory, a sibling of the thread's worktree (issue #774). */
-const REVIEW_ROOTS_SUFFIX = '.reviews';
+    return segment && /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(segment) ? segment : null;
+};
 
 /**
- * The directory that holds every review root of one caller thread: `<worktree>.reviews`, beside the
- * caller's tree and never inside it, so the caller's terminal reclaim removes them with it.
+ * The key the task's checkout is filed under (its gate environment's): `<thread root id>/<repo
+ * segment>` — or null when the job names no repository (a command-only job runs at the task
+ * volume's root) or either half fails its assertion. One task thread = one volume = one checkout
+ * (issue #775): every attempt of the job, and every follow-up resuming its session, lands in the
+ * same tree.
  */
-export function reviewRootsDir(config: DriverConfig, caller: BoardJob): string | null {
-    const base = worktreeDir(config, caller);
-    return base ? `${base}${REVIEW_ROOTS_SUFFIX}` : null;
+export function checkoutKey(job: BoardJob): string | null {
+    const segment = repoSegmentOf(job);
+    const root = job.rootJobId ?? job.id;
+    return segment && UUID.test(root) ? `${root}/${segment}` : null;
 }
 
-/** One review's worktree: `<caller worktree>.reviews/<review root id>`, or null when it has no place on the volume. */
-export function reviewWorktreeDir(config: DriverConfig, caller: BoardJob, review: BoardJob): string | null {
-    const roots = reviewRootsDir(config, caller);
+/** The checkout's directory inside the task volume — `/task/<repo segment>` — or null when the job has none. */
+export function checkoutDir(job: BoardJob): string | null {
+    const segment = repoSegmentOf(job);
+    return segment && UUID.test(job.rootJobId ?? job.id) ? `${TASK_MOUNT}/${segment}` : null;
+}
+
+/** Where the task's checkout is cloned from (issue #775): `<cloneBase>/<owner>/<name>.git`, or null for a repo label with another shape. */
+export function remoteUrl(config: Pick<DriverConfig, 'cloneBase'>, job: BoardJob): string | null {
+    const [owner, name, ...rest] = job.repo?.split('/') ?? [];
+    const part = /^[A-Za-z0-9._-]+$/;
+    if (
+        !owner ||
+        !name ||
+        rest.length > 0 ||
+        !part.test(owner) ||
+        !part.test(name) ||
+        owner === '.' ||
+        owner === '..'
+    ) {
+        return null;
+    }
+    return repoSegmentOf(job) ? `${config.cloneBase}/${owner}/${name}.git` : null;
+}
+
+/** The directory of the task volume that holds every review root of the thread (issue #774). */
+export const REVIEW_ROOTS_DIR = `${TASK_MOUNT}/.factory/reviews`;
+
+/** One review's worktree: `/task/.factory/reviews/<review root id>`, or null when it has no place on the volume. */
+export function reviewWorktreeDir(review: BoardJob): string | null {
     const root = review.rootJobId ?? review.id;
-    return roots && UUID.test(root) ? `${roots}/${root}` : null;
+    return UUID.test(root) ? `${REVIEW_ROOTS_DIR}/${root}` : null;
 }
 
 /**
@@ -542,12 +473,8 @@ async function probeCheckout(runStep: RunPublishStep, repo: string, base: string
  * no-progress read whose before-half is the sync's `SyncResult.fingerprint`. Null when the job has
  * no worktree, or the probe failed or answered none: unknown, never a guess.
  */
-export async function probeTreeFingerprint(
-    config: DriverConfig,
-    job: BoardJob,
-    runStep: RunPublishStep
-): Promise<string | null> {
-    const repo = worktreeDir(config, job);
+export async function probeTreeFingerprint(job: BoardJob, runStep: RunPublishStep): Promise<string | null> {
+    const repo = checkoutDir(job);
     if (!repo) return null;
     const probe = await runStep(probeStep(repo)).catch(() => null);
     const fingerprint = parseLastJsonLine<{ fingerprint?: unknown }>(probe?.stdout ?? '', () => ({})).fingerprint;
@@ -658,12 +585,11 @@ async function branchAndCommit(
  * publish that fails reads identically wherever it ran.
  */
 export async function publishCheckout(
-    config: DriverConfig,
     job: BoardJob,
     options: PublishOptions | undefined,
     runStep: RunPublishStep
 ): Promise<PublishResult> {
-    const repo = worktreeDir(config, job);
+    const repo = checkoutDir(job);
     // Null here means a COMMAND-ONLY job — the loop refuses a repo job whose worktree cannot
     // resolve before anything runs — and a command-only job has nothing to publish by
     // construction. That is the ordinary no-op, not a failure: reporting it as publishFailed

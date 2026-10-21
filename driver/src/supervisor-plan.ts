@@ -1,7 +1,7 @@
 import type { BoardJob } from './board.js';
 import { runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
-import { GATE_IMAGE, worktreeRelDir } from './publish.js';
+import { GATE_IMAGE, checkoutKey } from './publish.js';
 import {
     AGENT_IN,
     AGENT_OUT,
@@ -40,7 +40,7 @@ export const orphanBoundMs = (config: DriverConfig): number =>
  */
 export function gateImageOf(job: BoardJob): string | null {
     const declared = job.gates;
-    if (!declared || (declared.gates.length === 0 && !declared.setup) || !worktreeRelDir(job)) return null;
+    if (!declared || (declared.gates.length === 0 && !declared.setup) || !checkoutKey(job)) return null;
     if (!GATE_IMAGE.test(declared.image)) {
         throw new Error(`refusing to run a gate in an image that is not a plain image reference: "${declared.image}"`);
     }

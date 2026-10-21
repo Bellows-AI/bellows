@@ -10,10 +10,10 @@ import {
     REVIEWER_TREE_DIR,
     REVIEWER_UID,
     supervisorEnvFileBody,
-    workspacePath,
 } from './claim.js';
 import { claudeExportScript, gateLoopArgv, reviewLoopArgv, supervisorScript } from './container-scripts.js';
-import { containerHardeningArgs, resourceArgs, workspacesMountArgs } from './docker.js';
+import { containerHardeningArgs, resourceArgs } from './docker.js';
+import { taskMountArgs } from './task-volume.js';
 import { ctlVolumeName, groupNetworkArgs, idsOf, mailboxMountArgs, supervisorName } from './docker-mailbox.js';
 import {
     type ClosedState,
@@ -23,7 +23,7 @@ import {
     type RunnerFiles,
     startupRefusalOf,
 } from './docker-runner-support.js';
-import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
+import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
 import { Inconclusive, type RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
@@ -58,24 +58,17 @@ export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(j
 export const gateName = (job: BoardJob): string => `factory-gate-${idsOf(job)}`;
 export const reviewerName = (job: BoardJob): string => `factory-reviewer-${idsOf(job)}`;
 
-/** The reclaim group's mark (`RECLAIM_LABEL`), on each of its objects; nothing on an attempt's. */
-const reclaimLabelArgs = (reclaim: boolean): string[] => (reclaim ? ['--label', `${RECLAIM_LABEL}=true`] : []);
-
-const labelArgs = (job: BoardJob, role: string, reclaim: boolean): string[] => [
+const labelArgs = (job: BoardJob, role: string): string[] => [
     '--label',
     `${JOB_LABEL}=${job.id}`,
     '--label',
     `${LEASE_LABEL}=${job.leaseToken}`,
     '--label',
     `${ROLE_LABEL}=${role}`,
-    ...reclaimLabelArgs(reclaim),
 ];
 
 /** The `docker volume create` argv of each mailbox: labelled with the job and lease, so a fence can find them. */
-export const ctlVolumeArgs = (
-    job: BoardJob,
-    { reclaim = false, reviewing = false }: { reclaim?: boolean; reviewing?: boolean } = {}
-): string[][] =>
+export const ctlVolumeArgs = (job: BoardJob, { reviewing = false }: { reviewing?: boolean } = {}): string[][] =>
     mailboxesOf(reviewing).map((box) => [
         'volume',
         'create',
@@ -83,7 +76,6 @@ export const ctlVolumeArgs = (
         `${JOB_LABEL}=${job.id}`,
         '--label',
         `${LEASE_LABEL}=${job.leaseToken}`,
-        ...reclaimLabelArgs(reclaim),
         ctlVolumeName(job, box),
     ]);
 
@@ -107,7 +99,7 @@ const serviceHostArgs = (config: DriverConfig, job: BoardJob): string[] =>
 export function supervisorCreateArgs(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean; gated?: boolean; reviewing?: boolean; reclaim?: boolean },
+    group: { exporting: boolean; agentless: boolean; gated?: boolean; reviewing?: boolean },
     envFile: string | null
 ): string[] {
     return [
@@ -115,14 +107,14 @@ export function supervisorCreateArgs(
         ...containerHardeningArgs(),
         '--name',
         supervisorName(job),
-        ...labelArgs(job, SUPERVISOR_CONTAINER, group.reclaim === true),
+        ...labelArgs(job, SUPERVISOR_CONTAINER),
         ...reachDriverArgs(config),
         ...serviceHostArgs(config, job),
         ...(envFile ? ['--env-file', envFile] : []),
         ...supervisorLiterals(config, job, group).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
-        // The member's workspace subtree: the steps the supervisor runs (the sync, the probe, the
-        // publish, the helpers, the reclaim) work on the task worktree.
-        ...workspacesMountArgs(config, workspacePath(job)),
+        // The task volume: the steps the supervisor runs (the sync, the probe, the
+        // publish, the helpers) work on the task checkout.
+        ...taskMountArgs(job),
         ...mailboxesOf(group.reviewing === true).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
         '--entrypoint',
         'node',
@@ -140,8 +132,8 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
         ...containerHardeningArgs(),
         '--name',
         exporterName(job),
-        ...labelArgs(job, EXPORTER_CONTAINER, false),
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...labelArgs(job, EXPORTER_CONTAINER),
+        ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
         ...reachDriverArgs(config),
         '--env-file',
@@ -171,11 +163,11 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...containerHardeningArgs(),
         '--name',
         gateName(job),
-        ...labelArgs(job, GATE_CONTAINER, false),
+        ...labelArgs(job, GATE_CONTAINER),
         '--user',
         `${GATE_UID}:${GATE_GID}`,
-        ...gateEnv(config, job).flatMap((pair) => ['-e', pair.join('=')]),
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...gateEnv(job).flatMap((pair) => ['-e', pair.join('=')]),
+        ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.gate, 'rw'),
         ...groupNetworkArgs(job),
         ...resourceArgs(config.gateResources),
@@ -202,15 +194,14 @@ export function reviewerCreateArgs(config: DriverConfig, job: BoardJob): string[
         ...containerHardeningArgs(),
         '--name',
         reviewerName(job),
-        ...labelArgs(job, REVIEWER_CONTAINER, false),
+        ...labelArgs(job, REVIEWER_CONTAINER),
         '--user',
         `${REVIEWER_UID}:${GATE_GID}`,
         '-e',
         `HOME=${REVIEWER_HOME}`,
         ...config.passEnv.flatMap((name) => ['-e', name]),
-        ...workspacesMountArgs(config, workspacePath(job), true),
-        '--mount',
-        `type=volume,src=${config.workspaceVolume},volume-subpath=${workspacePath(job)}/${REVIEWER_TREE_DIR},target=${REVIEWER_HOME}`,
+        ...taskMountArgs(job, { readOnly: true }),
+        ...taskMountArgs(job, { subPath: REVIEWER_TREE_DIR, target: REVIEWER_HOME }),
         ...mailboxMountArgs(job, MAILBOXES.review, 'rw'),
         ...groupNetworkArgs(job),
         ...resourceArgs(config.runnerResources),
@@ -273,15 +264,14 @@ export function groupShape(
  * Creates the group's mailboxes and its supervisor and exporter containers (not started). A
  * failure removes what was created and throws: a run whose supervisor cannot exist is an
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
- * A terminal reclaim's group (`reclaim`) carries `RECLAIM_LABEL` on every object it creates.
  */
 export async function createGroup(
     deps: GroupDeps,
     job: BoardJob,
     session: RunSession | null,
-    { startedAt, reclaim = false }: { startedAt: string; reclaim?: boolean }
+    { startedAt }: { startedAt: string }
 ): Promise<void> {
-    const shape = { ...groupShape(job, session), reclaim };
+    const shape = groupShape(job, session);
     const { exporting } = shape;
     try {
         for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);

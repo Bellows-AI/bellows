@@ -1,6 +1,6 @@
 /**
  * The re-claim fence (`k8s-fence.ts`) called directly, its own functions rather than through a
- * runner: the claim, its revocation and release, the sweep, and the pre/post-create verifies. What
+ * runner: the claim, its release, the sweep, and the pre/post-create verifies. What
  * a runner-level scenario in `k8s.test.ts` already pins (a stale claim taken over by uid, the Secret
  * before the Job, the uid on every delete, the resume by uid) is not repeated here. Assertions are on
  * requests and on what is thrown or answered, never on how many times a read was retried.
@@ -15,7 +15,6 @@ import {
     prepare,
     readClaim,
     releaseClaimAfterGroupEnd,
-    revokeClaim,
     sweepClaimedFleets,
 } from '../src/k8s-fence.js';
 import { jobsPath, runnerJobName, runnerName, type RunnerJobSpec, secretName } from '../src/k8s-podspec.js';
@@ -26,7 +25,6 @@ import {
     type K8sRequestOptions,
     type K8sResponse,
 } from '../src/k8s-transport.js';
-import { REVOKED_MARK } from '../src/labels.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 
@@ -188,49 +186,12 @@ describe('readClaim', () => {
         expect(calls).toHaveLength(1);
     });
 
-    it('names the incarnation and its holder, and whether the claim was revoked', async () => {
-        const plain = world((method, path) =>
+    it('names the incarnation and its holder', async () => {
+        const { deps } = world((method, path) =>
             isClaimGet(method, path) ? answer(200, claimBodyOf({ uid: 'u-1', holder: OLD })) : undefined
         );
-        const revoked = world((method, path) =>
-            isClaimGet(method, path)
-                ? answer(200, claimBodyOf({ uid: 'u-2', holder: OLD, annotations: { [REVOKED_MARK]: job.leaseToken } }))
-                : undefined
-        );
 
-        expect(await readClaim(plain.deps, job)).toEqual({ uid: 'u-1', holder: OLD, revoked: false });
-        expect(await readClaim(revoked.deps, job)).toEqual({ uid: 'u-2', holder: OLD, revoked: true });
-    });
-});
-
-describe('revokeClaim', () => {
-    const observed = { uid: 'uid-seen', holder: OLD };
-
-    it('patches the observed uid with this lease token as the revoked mark', async () => {
-        const { deps, calls } = world((method, path) =>
-            method === 'PATCH' && path === CLAIM ? answer(200) : undefined
-        );
-
-        expect(await revokeClaim(deps, job, observed)).toBe(true);
-
-        expect(calls).toEqual([
-            {
-                method: 'PATCH',
-                path: CLAIM,
-                body: { metadata: { uid: 'uid-seen', annotations: { [REVOKED_MARK]: job.leaseToken } } },
-            },
-        ]);
-    });
-
-    it.each<[string, Special]>([
-        ['a replaced claim (409)', () => answer(409)],
-        ['a gone claim (404)', () => answer(404)],
-        ['an apiserver error (503)', () => answer(503)],
-        ['a transport failure', () => Promise.reject(new Error('socket hang up'))],
-    ])('revokes nothing on %s', async (_label, special) => {
-        const { deps } = world((method, path, body) => (method === 'PATCH' ? special(method, path, body) : undefined));
-
-        expect(await revokeClaim(deps, job, observed)).toBe(false);
+        expect(await readClaim(deps, job)).toEqual({ uid: 'u-1', holder: OLD });
     });
 });
 

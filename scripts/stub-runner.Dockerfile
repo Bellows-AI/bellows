@@ -5,7 +5,7 @@
 # as root, and factory-launch drops it to node behind the tool broker. Each stub adds its own
 # ENTRYPOINT through factory-launch and scripts/stub-agent.sh (driver/test/lane-stubs.test.ts).
 FROM public.ecr.aws/docker/library/node:24-alpine
-RUN apk add --no-cache git bash setpriv && ln -s /bin/setpriv /usr/bin/setpriv
+RUN apk add --no-cache git git-daemon bash setpriv && ln -s /bin/setpriv /usr/bin/setpriv
 RUN addgroup -g 1002 factory-agent && addgroup node factory-agent \
     && adduser -D -u 1001 -G node -h /home/factory-tool -s /bin/bash factory-tool \
     && mkdir -p /run/factory-tool && chown root:factory-agent /run/factory-tool && chmod 2750 /run/factory-tool
@@ -15,7 +15,8 @@ COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
 RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash \
     && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory \
-    && chmod 0700 /factory/in /factory/out
+    && chmod 0700 /factory/in /factory/out \
+    && mkdir -p /task && chown node:node /task
 # The reviewer container runs the executor entrypoint by path; the stub answers as a scripted reviewer.
 RUN for e in claude-executor opencode-executor; do \
         printf '#!/bin/sh\nexec sh /usr/local/bin/stub-agent.sh review %s "$@"\n' "$e" >"/usr/local/bin/$e" \

@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { loadDriverConfig } from '../src/config.js';
 import {
     PUBLISH_MOVED_REASON,
     type PublishResult,
@@ -11,9 +10,8 @@ import {
     probeTreeFingerprint,
     publishCheckout,
     STALE_REVISION_REASON,
-    worktreeDir,
 } from '../src/publish.js';
-import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture, USER } from './fixtures/git-worktree-support.js';
+import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
  * The publish over a real repository whose hooks rewrite content (issue #825): a publish bound to
@@ -28,10 +26,17 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
         id: ROOT,
         command: 'do the work',
         repo: 'example/factory',
-        workspacePath: `bellows/${USER}`,
         env: {},
     } as unknown as BoardJob;
-    const config = () => loadDriverConfig({ WORKSPACE_MOUNT: fx.dir() });
+
+    /** The task volume's `/task` is the fixture directory's `task` on this host. */
+    const onHost = (literals: Record<string, string> = {}): Record<string, string> =>
+        Object.fromEntries(
+            Object.entries(literals).map(([name, value]) => [
+                name,
+                value.startsWith('/task/') ? join(fx.dir(), value) : value,
+            ])
+        );
 
     /** Runs a step the way a runner's transport does, against the fixture; `gh` is a stand-in. */
     const runStep = async (step: PublishStep): Promise<{ stdout: string }> => {
@@ -40,14 +45,14 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
             return { stdout: step.args[1] === 'create' ? `${PR_URL}\n` : '' };
         }
         const stdout = execFileSync(step.entrypoint, step.args, {
-            cwd: step.inRepo ? fx.worktree() : fx.dir(),
+            cwd: step.inRepo ? fx.checkout() : fx.dir(),
             // No global or system config: a member's own core.hooksPath must not hide the hooks under test.
             env: {
                 ...process.env,
                 ...SCRIPT_IDENTITY,
                 GIT_CONFIG_GLOBAL: '/dev/null',
                 GIT_CONFIG_NOSYSTEM: '1',
-                ...step.envLiterals,
+                ...onHost(step.envLiterals),
             },
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -55,9 +60,9 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
         return { stdout };
     };
 
-    /** Installs a POSIX sh hook in the checkout's hooks directory (the clone's, worktrees share it). */
+    /** Installs a POSIX sh hook in the checkout's hooks directory . */
     const hook = (name: string, body: string): void => {
-        const dir = join(git(fx.worktree(), 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'hooks');
+        const dir = join(git(fx.checkout(), 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'hooks');
         mkdirSync(dir, { recursive: true });
         writeFileSync(join(dir, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     };
@@ -66,15 +71,14 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
     /** The synced worktree with the agent's work in it, and the fingerprint its evidence binds. */
     const work = async (): Promise<string> => {
         expect(fx.sync().ok).toBe(true);
-        expect(worktreeDir(config(), job)).toBe(fx.worktree());
-        writeFileSync(join(fx.worktree(), 'WORK.md'), 'verified\n');
-        const revision = await probeTreeFingerprint(config(), job, runStep);
+        writeFileSync(join(fx.checkout(), 'WORK.md'), 'verified\n');
+        const revision = await probeTreeFingerprint(job, runStep);
         expect(revision).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
         return revision!;
     };
 
     const publish = (revision?: string): Promise<PublishResult> =>
-        publishCheckout(config(), job, revision === undefined ? undefined : { revision }, runStep);
+        publishCheckout(job, revision === undefined ? undefined : { revision }, runStep);
 
     /** The branches the bare remote holds beside its default. */
     const pushed = (): string[] =>
@@ -100,9 +104,9 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
 
     it('refuses as stale a bound publish whose post-checkout hook rewrote the tree on the branch switch', async () => {
         expect(fx.sync().ok).toBe(true);
-        git(fx.worktree(), 'switch', '--detach');
-        writeFileSync(join(fx.worktree(), 'WORK.md'), 'verified\n');
-        const revision = (await probeTreeFingerprint(config(), job, runStep))!;
+        git(fx.checkout(), 'switch', '--detach');
+        writeFileSync(join(fx.checkout(), 'WORK.md'), 'verified\n');
+        const revision = (await probeTreeFingerprint(job, runStep))!;
         hook('post-checkout', REWRITE);
 
         expect(await publish(revision)).toMatchObject({ ok: false, stale: true, reason: PUBLISH_MOVED_REASON });
@@ -140,11 +144,11 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
 
     it('publishes over an ignored artifact written after the revision, and never ships it', async () => {
         expect(fx.sync().ok).toBe(true);
-        writeFileSync(join(fx.worktree(), '.gitignore'), 'dist/\n');
-        writeFileSync(join(fx.worktree(), 'WORK.md'), 'verified\n');
-        const revision = (await probeTreeFingerprint(config(), job, runStep))!;
-        mkdirSync(join(fx.worktree(), 'dist'));
-        writeFileSync(join(fx.worktree(), 'dist', 'out.js'), 'generated\n');
+        writeFileSync(join(fx.checkout(), '.gitignore'), 'dist/\n');
+        writeFileSync(join(fx.checkout(), 'WORK.md'), 'verified\n');
+        const revision = (await probeTreeFingerprint(job, runStep))!;
+        mkdirSync(join(fx.checkout(), 'dist'));
+        writeFileSync(join(fx.checkout(), 'dist', 'out.js'), 'generated\n');
 
         expect(await publish(revision)).toMatchObject({ ok: true, published: true });
         expect(git(fx.bare(), 'ls-tree', '--name-only', pushed()[0]!)).not.toContain('dist');
@@ -152,7 +156,7 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
 
     it('refuses a tracked edit made after the revision', async () => {
         const revision = await work();
-        writeFileSync(join(fx.worktree(), 'WORK.md'), 'edited after the gates\n');
+        writeFileSync(join(fx.checkout(), 'WORK.md'), 'edited after the gates\n');
 
         expect(await publish(revision)).toMatchObject({ ok: false, stale: true, reason: STALE_REVISION_REASON });
         expect(pushed()).toEqual([]);

@@ -7,7 +7,8 @@ import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { helperEffectId } from '../src/helper-receipts.js';
 import type { HelperPlan } from '../src/helpers.js';
-import { worktreeDir } from '../src/publish.js';
+import { checkoutDir } from '../src/publish.js';
+import { TASK_MOUNT } from '../src/task-volume.js';
 import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
 import { StepChannelClosed, type StepSink, StepTimedOut } from '../src/step-control.js';
 import { runHelperStep } from '../src/supervised-steps.js';
@@ -36,10 +37,15 @@ const REPLIED = JSON.stringify({
 const EFFECT = 'effect-of-the-reply';
 const plan: HelperPlan = { helperId: REVIEW_REPLY_PROBE_ID, phase: 'pre', input: {}, githubWriting: true };
 
+/** Each test's stand-in for the task volume: a temp directory the `/task` paths of its steps are mapped into. */
+const mounts = new WeakMap<object, string>();
+const onDisk = (config: object, path: string): string => path.replace(TASK_MOUNT, mounts.get(config)!);
+
 function volume() {
     const mount = mkdtempSync(join(tmpdir(), 'receipts-'));
     dirs.push(mount);
-    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', WORKSPACE_MOUNT: mount, JOB_BOARD_TOKEN: 'board-key' });
+    const config = loadDriverConfig({ EXECUTOR: 'kubernetes', JOB_BOARD_TOKEN: 'board-key' });
+    mounts.set(config, mount);
     return { config };
 }
 
@@ -74,7 +80,7 @@ function supervisor(config: ReturnType<typeof volume>['config'], remote: { write
             if (step.env.LEDGER) {
                 if (crash === 'done-write' && step.env.STATE === 'done') throw new StepChannelClosed('the receipt');
                 const run = spawnSync(step.argv[0]!, step.argv.slice(1), {
-                    env: { PATH: process.env.PATH!, ...step.env },
+                    env: { PATH: process.env.PATH!, ...step.env, LEDGER: onDisk(config, step.env.LEDGER) },
                 });
                 return {
                     exitCode: run.status,
@@ -99,7 +105,7 @@ function supervisor(config: ReturnType<typeof volume>['config'], remote: { write
 }
 
 const receiptOf = (config: ReturnType<typeof volume>['config'], job: BoardJob, op = EFFECT) => {
-    const file = `${worktreeDir(config, job)}/.factory/helpers.json`;
+    const file = onDisk(config, `${checkoutDir(job)}/.factory/helpers.json`);
     if (!existsSync(file)) return;
     return (JSON.parse(readFileSync(file, 'utf8')) as { operations: Record<string, { state?: string }> }).operations[
         op
@@ -217,7 +223,7 @@ describe('block-helper receipts across claims', () => {
     it('reads a receipt it cannot verify as never recorded: a forged result is never replayed', async () => {
         const { config } = volume();
         const job = claim(1);
-        const ledger = `${worktreeDir(config, job)}/.factory/helpers.json`;
+        const ledger = onDisk(config, `${checkoutDir(job)}/.factory/helpers.json`);
         mkdirSync(join(ledger, '..'), { recursive: true });
         const forged = { ok: true, output: 'REVIEW-CLEAN', control: 'conclude' };
         writeFileSync(

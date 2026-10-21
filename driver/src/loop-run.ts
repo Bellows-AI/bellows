@@ -1,11 +1,11 @@
 import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
-import { repoCacheProblem } from './claim.js';
+import { claimContinuesSession, repoCacheProblem } from './claim.js';
 import { pickSession } from './runner-plan.js';
 import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
-import { askGithubToken, checkoutToken } from './loop-github.js';
+import { askGithubToken } from './loop-github.js';
 import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
@@ -35,7 +35,6 @@ import { publishBranch, publishModeOf, publishOptionsOf, report, reportFinish } 
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
-import { awaitSyncTurn } from './sync-queue.js';
 import { stepLost } from './step-control.js';
 import { restartDeadServices, servicesLost, startServicesStep } from './loop-services.js';
 import { servicePlanRefusal } from './services.js';
@@ -96,12 +95,10 @@ async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null
     const { runner } = rt;
     // An adopted run's tree is its result: nothing rewrites it.
     if (ctx.adopted) return null;
-    const turn = await awaitSyncTurn(ctx);
-    if (turn === STOOD_DOWN || 'halt' in turn) return turn;
-    const githubToken = await checkoutToken(rt, job, turn);
-    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken);
-    // The turn is held until the sync's writes are over (`settled`), however the sync answered.
-    turn.release(syncing.then((synced) => synced.settled).catch(() => {}));
+    // A starting claim's fetch reaches GitHub; a restore and a repo-less job do not.
+    const fetches = Boolean(job.repo) && !claimContinuesSession(job);
+    const githubToken = fetches ? await askGithubToken(rt, job, 'the checkout sync') : null;
+    const syncing = runner.syncCheckout(job, state.signal, ctx.session, githubToken ?? undefined);
     let syncedOut: { value: SyncResult } | null;
     try {
         syncedOut = await raceStep(state.signal, syncing);

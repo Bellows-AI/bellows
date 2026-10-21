@@ -2,7 +2,8 @@ import type { BoardJob } from './board.js';
 import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
-import { isSeq, LEASE_LABEL, REVOKED_MARK } from './labels.js';
+import { isSeq, LEASE_LABEL } from './labels.js';
+import { TASK_ROOT_LABEL, taskRootOf, taskVolumeName, taskVolumeSpec } from './task-volume.js';
 import {
     claimBody,
     claimPath,
@@ -191,11 +192,6 @@ export interface ObservedClaim {
     holder: string;
 }
 
-/** A claim as read now: its incarnation, and whether an orphaned-claim reap revoked it. */
-export interface ReadClaim extends ObservedClaim {
-    revoked: boolean;
-}
-
 const CLAIM_READ = 'reading the checkout claim';
 
 /**
@@ -241,33 +237,12 @@ function claimVerdict(read: Read<K8sClaim>, job: BoardJob): ClaimVerdict {
 }
 
 /** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
-export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ReadClaim | null> {
+export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedClaim | null> {
     const read = await readClaimObject(deps, job, true);
     if (read.kind !== 'value') return null;
     const uid = read.value.metadata?.uid;
     const holder = read.value.data?.holder;
-    return uid && holder
-        ? { uid, holder, revoked: read.value.metadata?.annotations?.[REVOKED_MARK] !== undefined }
-        : null;
-}
-
-/**
- * Revokes the claim incarnation an orphaned-claim reap observed (issue #821): a merge patch adding
- * `REVOKED_MARK` under the reaping acquisition's token, preconditioned on the observed uid, so it
- * can only ever mark the incarnation read. A reclaim verifies its claim unrevoked before its group
- * starts (`reclaimInGroup`), so once this answers true no group of the holder created after the
- * reaper's list can run. True only on a 2xx; a refusal or a throw revokes nothing, and the reap
- * acts on nothing.
- */
-export async function revokeClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
-    try {
-        const patched = await deps.request('PATCH', claimPath(deps.config.k8sNamespace, job), {
-            metadata: { uid: observed.uid, annotations: { [REVOKED_MARK]: job.leaseToken } },
-        });
-        return is2xx(patched.status);
-    } catch {
-        return false;
-    }
+    return uid && holder ? { uid, holder } : null;
 }
 
 /**
@@ -567,6 +542,48 @@ async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promi
     await endRunnerJob(deps, identity);
 }
 
+/** The task volumes of a namespace (issue #775). */
+export const taskVolumesPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/persistentvolumeclaims`;
+
+/**
+ * Whether the thread's task volume exists. Only a 404 is proof of absence; a refusal, a transport
+ * failure and a claim that is not this thread's throw, and nothing is created on them.
+ */
+async function taskVolumePresent(deps: K8sDeps, job: BoardJob): Promise<boolean> {
+    const name = taskVolumeName(job);
+    const res = await deps.request('GET', `${taskVolumesPath(deps.config.k8sNamespace)}/${name}`);
+    const read = readAnswer(res, `reading the task volume of job ${job.id}`, (value) =>
+        isRecord(value) ? value : null
+    );
+    if (read.kind === 'absent') return false;
+    if (read.kind === 'inconclusive') throw new Error(read.reason);
+    const metadata = isRecord(read.value.metadata) ? read.value.metadata : {};
+    const labels = isRecord(metadata.labels) ? metadata.labels : {};
+    if (metadata.name !== name || labels[TASK_ROOT_LABEL] !== taskRootOf(job)) {
+        throw new Error(`the claim ${name} is not the task volume of job ${job.id}`);
+    }
+    return true;
+}
+
+/**
+ * The thread's task volume: adopted when it exists, created on the thread's first attempt. A create
+ * that answers 409 lost a race to another creation of the same name: the volume is read and adopted.
+ * Nothing here ever deletes one.
+ */
+export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (await taskVolumePresent(deps, job)) return;
+    // An attempt aborted while the presence read was out creates nothing.
+    signal?.throwIfAborted();
+    const created = await deps.request(
+        'POST',
+        taskVolumesPath(deps.config.k8sNamespace),
+        taskVolumeSpec(deps.config, job)
+    );
+    if (created.status === HTTP_CONFLICT && (await taskVolumePresent(deps, job))) return;
+    expectOk(created, `creating the task volume of job ${job.id}`);
+}
+
 /**
  * The runner's arrival: `prepare` takes the checkout claim, sweeps the leftovers of the job's
  * OTHER attempts and runs the pre-create claim
@@ -595,6 +612,9 @@ export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal)
                 `(${pre.unconfirmed})`
         );
     }
+
+    // The thread's task volume, adopted or created: the pod mounts it by name.
+    await ensureTaskVolume(deps, job, signal);
 }
 
 /** The `metadata.uid` a create answered, typed: no body, a non-JSON one or one with no uid throws. */

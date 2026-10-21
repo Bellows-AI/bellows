@@ -230,9 +230,10 @@ const adoptFinalizing: Build<K8sRequest> = async (tap, alias) => {
     aliasPair(alias, adopter, 'lease');
     const item = earlierRunner(prior, prior.leaseToken, { active: 1 });
     const priorPath = jobPath(NS, item.metadata.name);
+    // A Job succeeds only once its pod has: the phase follows the supervisor's exit.
     const pod = (supervisor: Record<string, unknown>) =>
         list([
-            podOf(`${item.metadata.name}-xxxxx`, 'Running', {}, [
+            podOf(`${item.metadata.name}-xxxxx`, 'terminated' in supervisor ? 'Succeeded' : 'Running', {}, [
                 { name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } },
                 { name: SUPERVISOR_CONTAINER, state: supervisor },
             ]),
@@ -314,10 +315,11 @@ const CLAIM = `${API}/configmaps/factory-job-<job>-claim`;
 const OLD_JOBS = `GET ${BATCH}/jobs?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const OLD_PODS = `GET ${API}/pods?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const secretsOf = (label: string): string[] => [`DELETE ${API}/secrets/factory-job-<job>-<${label}>-env`];
+// The close-time readout of the ended group is a reader Job: created, read, deleted (`k8s-reader.ts`).
 const ADOPTED_WRITES = [
     `POST ${API}/configmaps`,
     `POST ${BATCH}/jobs`,
-    `DELETE ${BATCH}/jobs/factory-cturns-<prior-hash>`,
+    `DELETE ${BATCH}/jobs/factory-read-<hash>`,
     ...secretsOf('prior'),
 ];
 
@@ -340,6 +342,7 @@ function scenario(name: string, build: Build<K8sRequest>, { writes, allowed }: E
 }
 
 const CLAIM_READ = `GET ${CLAIM}`;
+const TASK_VOLUME_READ = `GET ${API}/persistentvolumeclaims/factory-task-<job>-1`;
 
 scenario(
     'the sync fence sweeping an earlier lease (K-FS)',
@@ -351,6 +354,7 @@ scenario(
             ...secretsOf('old'),
             `DELETE ${BATCH}/jobs/factory-runner-<old-hash>`,
             `DELETE ${API}/pods/factory-runner-<old-hash>-old`,
+            `POST ${API}/persistentvolumeclaims`,
             `POST ${BATCH}/jobs`,
             `POST ${API}/secrets`,
             `PATCH ${BATCH}/jobs/factory-runner-<lease-hash>`,
@@ -358,9 +362,10 @@ scenario(
         allowed: [
             ...[...secretsOf('lease'), `DELETE ${BATCH}/jobs/factory-runner-<lease-hash>`].map((write) => ({
                 write,
-                at: [CLAIM_READ],
+                at: [CLAIM_READ, TASK_VOLUME_READ],
                 why:
-                    'the sync stands down before its group exists and ends it by its own derived names only ' +
+                    'the sync stands down before its group exists and ends it by its own derived names only, ' +
+                    'on the claim verify or on the task volume read that follows it ' +
                     '(`k8s-runner.ts:440-444` → `k8s-group.ts:244-247` → `k8s-teardown.ts:175-190`)',
             })),
             ...secretsOf('old').map((write) => ({
@@ -428,11 +433,6 @@ scenario(
     {}
 );
 
-scenario(
-    'a run whose agent failed under a live pod (K-V1)',
-    runVerdict,
-    { writes: [`POST ${BATCH}/jobs`, `DELETE ${BATCH}/jobs/factory-cturns-<lease-hash>`] },
-    {}
-);
+scenario('a run whose agent failed under a live pod (K-V1)', runVerdict, { writes: [] }, {});
 
 scenario('the dead-service probe of a running service (K-D1)', deadService, { writes: [] }, {});

@@ -1,6 +1,6 @@
 import { type BoardJob, UUID_SHAPE } from './board.js';
 import { containerName } from './docker.js';
-import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
+import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { alreadyGone, CONTAINER_ID, DOCKER_NAME, type ExecDocker, readDocker } from './docker-runner-support.js';
 import { Inconclusive } from './runner.js';
 import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
@@ -13,8 +13,8 @@ import { parseDockerTimestamp, parseRfc3339 } from './timestamps.js';
  * shares its supervisor's namespace (issue #773). Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
  * #821) — every container carrying the ROLE label (agent, supervisor, exporter) and every volume
  * carrying the job and lease labels (its mailboxes and kill markers). An exited runner container
- * is unread: the next claim adopts it. A terminal reclaim's group (`RECLAIM_LABEL`) is never in
- * scope, and a scan any one list or inspect of which the daemon refused answers nothing.
+ * is unread: the next claim adopts it. A scan any one list or inspect of which the daemon refused
+ * answers nothing.
  */
 
 /**
@@ -62,8 +62,8 @@ const fieldsOf = (
  */
 const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken: string } | 'out-of-scope' | null => {
     // The scope label is checked here as well as in the argv filter, because the argv is the
-    // daemon's instruction and this is the row's proof; a reclaim group is never in scope.
-    if (!labelOf(labels, scopeLabel) || labelOf(labels, RECLAIM_LABEL)) return 'out-of-scope';
+    // daemon's instruction and this is the row's proof.
+    if (!labelOf(labels, scopeLabel)) return 'out-of-scope';
     const jobId = labelOf(labels, JOB_LABEL);
     const leaseToken = labelOf(labels, LEASE_LABEL);
     if ([jobId, leaseToken].some((label) => label !== undefined && !UUID_SHAPE.test(label))) return null;

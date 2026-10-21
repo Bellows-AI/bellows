@@ -11,13 +11,11 @@ import {
 import type { BoardJob } from './board.js';
 import {
     UUID,
-    GATE_GID,
     TOOL_UID,
     AGENT_LAUNCH_CAPS,
     GITHUB_CACHE_DIR,
     GITHUB_CACHE_SIZE,
     opencodeDbPath,
-    workspacePath,
     runWorkingDir,
     runnerClaimEnv,
 } from './claim.js';
@@ -25,37 +23,9 @@ import { opencodeReadoutScript } from './container-scripts.js';
 import { parseLastJsonLine } from './json-parse.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
-import { toolTreeReleaseScript, worktreeDir } from './publish.js';
+import { taskMountArgs } from './task-volume.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
 import { agentMailboxArgs, agentRoleArgs, groupNetworkArgs } from './docker-mailbox.js';
-
-/**
- * The `--mount` argv that scopes the workspaces volume to one member's `<orgId>/<userId>` subtree
- * — the kernel-enforced boundary every container this runner starts works behind (docker ≥ 26.1,
- * where `volume-subpath` landed). One shape for the runner and every aux container, so the
- * executors and the containers cannot drift on what a job may reach: the selected subtree is what
- * the mount serves, and a target that does not exist yet fails the container loudly — never a
- * fallback to the whole volume, which would be the cross-tenant read this exists to close.
- *
- * The target is the subtree's OWN volume path (`${mount}/${subPath}`, review finding on #151):
- * every consumer path this driver composes — WORKDIR, the sync's REPO/WORKTREE, the readouts'
- * database and transcript paths, the gate's working directory — is the string
- * `${config.workspaceMount}/${subPath}/…`, shared verbatim between argv/env and the scripts.
- * Mounting the subtree there keeps every one of those paths resolving inside the container,
- * while the rest of the volume is absent from its filesystem entirely: `/workspaces` holds only
- * the member's own `bellows/<user>` and no sibling or foreign path resolves.
- *
- * `readOnly` is the readout variant (the `.bellows.yaml` read), which the `--mount` form spells
- * as an option rather than a `:ro` suffix. services.ts builds the same string itself — it cannot
- * import this module (one direction only), the same copied-regex rule the workspace path
- * assertions already follow.
- */
-export const workspacesMountArgs = (config: DriverConfig, subPath: string, readOnly = false): string[] => [
-    '--mount',
-    `type=volume,src=${config.workspaceVolume},volume-subpath=${subPath},target=${config.workspaceMount}/${subPath}${
-        readOnly ? ',readonly' : ''
-    }`,
-];
 
 /**
  * The docker twin of the kubernetes pod hardening (issue #382), on EVERY container this driver
@@ -199,35 +169,9 @@ export function parseDockerServiceExit(stdout: string): { exitCode: number | nul
  */
 export const containerName = (job: BoardJob): string => `factory-job-${job.id}-${job.leaseToken}`;
 /**
- * The tool uid's release of a task tree before its terminal reclaim (issue #814): one throwaway
- * container over the member's subtree, as the uid the agent's tools ran as, giving what a tool
- * closed with an explicit mode group rwx so the uid-1000 reclaim can empty it. Hardened, no
- * capability, the tree's path its only input. Null for a job with no tree to release.
- */
-export function toolTreeReleaseArgs(config: DriverConfig, job: BoardJob): string[] | null {
-    const worktree = worktreeDir(config, job);
-    if (!worktree) return null;
-    return [
-        'run',
-        ...containerHardeningArgs(),
-        '--rm',
-        '--user',
-        `${TOOL_UID}:${GATE_GID}`,
-        ...workspacesMountArgs(config, workspacePath(job)),
-        '-e',
-        `WORKTREE=${worktree}`,
-        '--entrypoint',
-        'node',
-        executorImage(config, job.executorType),
-        '-e',
-        toolTreeReleaseScript,
-    ];
-}
-
-/**
  * The full `docker run` argv that reads what a finished opencode run left behind — pure, and
  * exported, because it is the part worth pinning: the readout is a throwaway container over the
- * workspaces volume, entrypoint swapped for node, whose only work is one read-only query pair for
+ * task volume, entrypoint swapped for node, whose only work is one read-only query pair for
  * the newest root session and the finish reason of its last assistant message.
  *
  * It runs AFTER the job container exits (docker exec cannot), and against the volume rather than
@@ -237,12 +181,12 @@ export function toolTreeReleaseArgs(config: DriverConfig, job: BoardJob): string
  * code reads 0 for both, and only one of them is a success.
  */
 export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
-    const db = opencodeDbPath(config, job);
+    const db = opencodeDbPath(job);
     return [
         'run',
         ...containerHardeningArgs(),
         '--rm',
-        ...workspacesMountArgs(config, workspacePath(job)),
+        ...taskMountArgs(job),
         // The database path and the directory scope travel as env VALUES — the script
         // (opencode-readout.cjs) is static, so nothing board-derived is ever part of its text.
         // The scope is the run's own working directory (runWorkingDir — the same string opencode
@@ -251,7 +195,7 @@ export function opencodeSessionReadoutArgs(config: DriverConfig, job: BoardJob, 
         '-e',
         `OPENCODE_DB=${db}`,
         '-e',
-        `OPENCODE_DIR=${runWorkingDir(config, job)}`,
+        `OPENCODE_DIR=${runWorkingDir(job)}`,
         // The run's start, as epoch ms: the readout counts only the turns created at or after
         // it, because a follow-up resumes the SAME root conversation and counting the whole
         // session would book earlier runs' turns again.
@@ -352,7 +296,7 @@ export function dockerArgs(
      * started, and the argv stays byte-identical for it). Asserted from the same line the
      * kubernetes runner asserts it from.
      */
-    assertWorktreeResolvable(config, job);
+    assertWorktreeResolvable(job);
     // `create`, not `run`: the runner is started attached only once its managed settings are in
     // (issue #452, see createRunnerContainer in docker-runner-support.ts).
     const args = [
@@ -381,20 +325,12 @@ export function dockerArgs(
         // of the supervisor and exporter beside it, tells them apart by it.
         ...agentRoleArgs(),
         '-e',
-        // The AUTHOR's checkouts sit one directory down. A command-only job names no repo, so the
-        // agent starts at the root of that person's workspace and can see everything they selected
-        // — and nothing anybody else selected.
-        //
-        // This used to be `<mount>/<orgId>`, one tree shared by every member. Neither `<mount>` nor
-        // `<mount>/<orgId>` is a safe fallback now: both are the PARENT of every member's tree, and
-        // handing that to a container that may be running --dangerously-skip-permissions is a
-        // cross-tenant read. So a job with no workspace fails instead — see loop.ts.
-        `WORKDIR=${runWorkingDir(config, job)}`,
-        // Scoped to the job's own `<orgId>/<userId>` subtree, mounted AT the path WORKDIR names:
-        // every consumer path below it resolves, and the rest of the volume — every other
-        // member's and org's tree — is absent from the container's filesystem. Enforced by the
-        // mount itself; an agent running arbitrary code inside cannot cross it.
-        ...workspacesMountArgs(config, workspacePath(job)),
+        // The thread's checkout on its own task volume: nothing of any other thread is mounted.
+        `WORKDIR=${runWorkingDir(job)}`,
+        // The thread's own task volume, mounted at TASK_MOUNT: the checkout WORKDIR names lives in
+        // it, and no other thread's or member's tree is on the container's filesystem. Enforced by
+        // the mount itself; an agent running arbitrary code inside cannot cross it.
+        ...taskMountArgs(job),
         // The agent's side of the task supervisor's mailbox: `in` read-only (a Stop, an answer, a
         // kill order — it cannot forge them) and `out` (its questions and heartbeat). Nothing of the
         // supervisor's own state, the exporter's mailbox or the control credential is mounted or set.

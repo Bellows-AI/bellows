@@ -37,7 +37,6 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     resizeReviewer: 'both',
     runReview: 'both',
     releaseFence: 'kubernetes',
-    reapOrphanedClaim: 'kubernetes',
 };
 
 const membersFor = (executor: 'docker' | 'kubernetes'): string[] =>
@@ -54,7 +53,7 @@ const kubernetes = createKubernetesRunner(
 
 describe('the Runner contract', () => {
     it('leaves optional only what one executor lacks', () => {
-        expectTypeOf<OptionalKeys<Runner>>().toEqualTypeOf<'releaseFence' | 'reapOrphanedClaim'>();
+        expectTypeOf<OptionalKeys<Runner>>().toEqualTypeOf<'releaseFence'>();
     });
 
     it.each([
