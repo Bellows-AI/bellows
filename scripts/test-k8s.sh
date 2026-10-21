@@ -2998,9 +2998,16 @@ else
     idle_mem="$(reviewer_field "$review_idle_pod" .resources.requests.memory)"
     [ -n "$idle_cpu" ] && [ -n "$idle_mem" ] && ok "the reviewer sidecar idles at a request of $idle_cpu / $idle_mem" ||
         bad 'the pod carries a reviewer sidecar with a request' "pod containers: $(kubectl get pod "$review_idle_pod" -n "$NAMESPACE" -o jsonpath='{.spec.initContainers[*].name}')"
-    # Usage, when the cluster has a metrics API; the request is the number that is always known.
-    sleep 20
-    idle_top="$(kubectl top pod "$review_idle_pod" -n "$NAMESPACE" --containers 2>&1 | awk '$2 == "reviewer" { print $3 " / " $4 }')"
+    # Usage, when the cluster has a metrics API; the request is the number that is always known. A
+    # scrape takes up to 20 s to carry the pod, so poll that long, and not at all without the API.
+    idle_top=''
+    for _ in $(seq 1 20); do
+        top_out="$(kubectl top pod "$review_idle_pod" -n "$NAMESPACE" --containers 2>&1)"
+        idle_top="$(awk '$2 == "reviewer" { print $3 " / " $4 }' <<<"$top_out")"
+        [ -n "$idle_top" ] && break
+        case "$top_out" in *'Metrics API not available'*) break ;; esac
+        sleep 1
+    done
     echo "MEASURED reviewer idle request: ${idle_cpu:-?} cpu / ${idle_mem:-?} memory; usage: ${idle_top:-no metrics API}"
     release_stub "$review_idle_release"
 fi
