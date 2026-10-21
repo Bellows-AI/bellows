@@ -1457,6 +1457,17 @@ function fakeChild(stdout: string, stderr: string, code: number | null): ChildPr
     return child;
 }
 
+/** The adoption's listing of the job's runners (#829): the one `ps` whose format opens with the container name. */
+const isAdoptListing = (args: string[]): boolean =>
+    args[0] === 'ps' && (args[args.indexOf('--format') + 1] ?? '').startsWith('{{.Names}}');
+/** Rows of that listing as the daemon answers them: each ends in the container's state. */
+const withState = (rows: string, state: string): string =>
+    rows
+        .split('\n')
+        .filter((row) => row !== '')
+        .map((row) => `${row}\t${state}\n`)
+        .join('');
+
 /** A child whose stdout arrives as exactly these byte chunks and ends, in one tick, before it exits `code`. */
 function chunkedChild(chunks: Buffer[], code = 0): ChildProcess {
     const child = new EventEmitter() as ChildProcess;
@@ -5523,13 +5534,16 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
-            // The still-running runners: none unless a test lists one (#829).
-            if (args[0] === 'ps' && args.includes('status=running')) {
-                return running instanceof Error ? Promise.reject(running) : Promise.resolve({ stdout: running });
+            // The adoption's ONE listing of the job's runners (#829): the exited ones the test gave as `ps`, the
+            // still-running ones as `running` (none unless a test lists one), each row ending in its state.
+            if (isAdoptListing(args)) {
+                return running instanceof Error
+                    ? Promise.reject(running)
+                    : Promise.resolve({ stdout: `${withState(ps, 'exited')}${withState(running, 'running')}` });
             }
             // The earlier attempt's supervisor: finalized (0) unless a test says how it ended.
             if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
-            if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
+            if (args[0] === 'ps') return Promise.resolve({ stdout: FENCE_PS });
             if (args[0] === 'volume' && args[1] === 'ls') return Promise.resolve({ stdout: FENCE_VOLUMES });
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
             if (args[0] === 'volume' && args[1] === 'inspect') {
@@ -5577,6 +5591,25 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                   })
                 : base(args);
 
+    it('never misses a runner that exits while the earlier runners are listed: one listing, whatever the state', async () => {
+        const { exec: base, calls, logs } = daemon('', '0', 'did the work\n');
+        // The runner runs at the first listing and has exited by the next: a status filter would see it in neither.
+        let listings = 0;
+        const row = `${containerName(job)}\t${job.leaseToken}\t1\t${SESSION}\t${commandMark(job.command)}\n`;
+        const exec = (args: string[]) => {
+            if (!isAdoptListing(args)) return base(args);
+            listings += 1;
+            const filtered = args.find((arg) => arg.startsWith('status='));
+            const state = listings === 1 ? 'running' : 'exited';
+            return Promise.resolve({ stdout: !filtered || filtered === `status=${state}` ? withState(row, state) : '' });
+        };
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(listings).toBe(1);
+        expect(calls.some((args) => args[0] === 'rm')).toBe(false);
+    });
+
     // Issue #821 (D1): the read run is the evidence a later claim adopts again if this one is lost
     // before its verdict lands — kept, like the kubernetes Job the adoption spares, until the
     // reaper takes it once the job is terminal. Every older attempt's leftover goes, read first.
@@ -5590,7 +5623,12 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
         });
         expect((adopted as AdoptedRun).outcome.output).toContain('did the work');
-        expect(calls[0]).toEqual(expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`, 'status=exited']));
+        // ONE listing of the job's runners, whatever state each is in: a runner that exits between two never goes unseen.
+        expect(calls.filter(isAdoptListing)).toEqual([
+            expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`]),
+        ]);
+        expect(calls[0]).toSatisfy(isAdoptListing);
+        expect(calls.some((args) => args.some((arg) => arg.startsWith('status=')))).toBe(false);
         const read = calls.findIndex((args) => args[0] === 'logs');
         const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('a5a5a5a5a5a5'));
         expect(read).toBeGreaterThanOrEqual(0);
@@ -5606,7 +5644,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         calls.length = 0;
         await runner.probeTree(adopter, new AbortController().signal).catch(() => null);
 
-        expect(calls.some((args) => args[0] === 'ps' && !args.includes('status=exited'))).toBe(true);
+        expect(calls.some((args) => args[0] === 'ps' && !isAdoptListing(args))).toBe(true);
         expect(removals(calls)).not.toContain('a4a4a4a4a4a4');
         expect(removals(calls)).not.toContain('a3a3a3a3a3a3');
         expect(removals(calls)).not.toContain('read-mailbox');
@@ -5862,7 +5900,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const { exec: base, calls, logs } = daemon(listing());
         const standDown = new AbortController();
         const exec = (args: string[]) => {
-            if (args[0] === 'ps' && !args.includes('status=exited')) standDown.abort();
+            if (args[0] === 'ps' && !isAdoptListing(args)) standDown.abort();
             return base(args);
         };
 
@@ -5888,7 +5926,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     const refusingDiscovery = (base: (args: string[]) => Promise<{ stdout: string }>, refusals: number) => {
         let left = refusals;
         return (args: string[]) =>
-            args[0] === 'ps' && args.includes('status=exited') && left-- > 0
+            isAdoptListing(args) && left-- > 0
                 ? Promise.reject(new Error('Cannot connect to the Docker daemon'))
                 : base(args);
     };
@@ -5968,7 +6006,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const events: string[] = [];
         const listed = refusingDiscovery(base, 1);
         const exec = (args: string[]) => {
-            if (args[0] === 'ps' && args.includes('status=exited')) events.push('ps');
+            if (isAdoptListing(args)) events.push('ps');
             return listed(args);
         };
         const sleep = async (ms: number) => {
@@ -5985,7 +6023,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         let listings = 0;
         const listed = refusingDiscovery(base, 1);
         const exec = (args: string[]) => {
-            if (args[0] === 'ps' && args.includes('status=exited')) listings += 1;
+            if (isAdoptListing(args)) listings += 1;
             return listed(args);
         };
         const sleep = (_ms: number, signal?: AbortSignal) => {
@@ -6544,7 +6582,7 @@ describe('what a closed run leaves for the next claim, on docker (the retention 
         const exec = (async (args: string[]) => {
             if (args[0] === 'rm') removed = true;
             if (args[0] === 'wait') return { stdout: '0\n' };
-            if (args[0] === 'ps' && args.includes('status=exited')) return { stdout: removed ? '' : listed };
+            if (isAdoptListing(args)) return { stdout: removed ? '' : withState(listed, 'exited') };
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease')))
                 return { stdout: 'a0a0a0a0a001\n' };
             if (args[0] === 'volume' && args[1] === 'inspect') {

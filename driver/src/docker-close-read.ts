@@ -221,7 +221,8 @@ export async function tickCacheWatch(
 
 /** The fields of each listed container the adoption reads, tab-separated. */
 const ADOPT_LABELS = [LEASE_LABEL, CLAIM_SEQ_MARK, SESSION_MARK, COMMAND_MARK];
-const ADOPT_FORMAT = ADOPT_LABELS.reduce((format, label) => `${format}\t{{.Label "${label}"}}`, '{{.Names}}');
+// The state is the last field: one listing branches on it, so a runner that exits between two reads is never in neither.
+const ADOPT_FORMAT = `${ADOPT_LABELS.reduce((format, label) => `${format}\t{{.Label "${label}"}}`, '{{.Names}}')}\t{{.State}}`;
 
 /**
  * A listed container's discovery labels (#869). A label it carries must be well formed — a lease, a
@@ -244,40 +245,30 @@ function isRunnerRow(job: BoardJob, [name, lease, seq, , command]: string[], wha
 }
 
 /**
- * Every runner container of this job's claims in `status` (the skeleton picks the newest earlier one):
- * the EXITED ones are runs to read, the RUNNING ones are released groups to take over (#829) — a runner
- * container exists only after the supervisor's `go` released the agent.
+ * Every runner container of this job's claims, from ONE listing (the skeleton picks the newest earlier
+ * one): the EXITED ones are runs to read, the RUNNING ones are released groups to take over (#829) — a
+ * runner container exists only after the supervisor's `go` released the agent. Two listings by status
+ * would miss a runner that exits between them, and a missed run is a fresh run's fence removing it unread.
  */
-async function earlierRunners(
-    execDocker: ExecDocker,
-    job: BoardJob,
-    status: 'exited' | 'running'
-): Promise<DockerEarlier[]> {
-    // A listing that is refused or is no rows of five fields throws: it is never "no earlier run",
+async function earlierRunners(execDocker: ExecDocker, job: BoardJob): Promise<DockerEarlier[]> {
+    // A listing that is refused or is no rows of six fields throws: it is never "no earlier run",
     // which would hand the earlier run to a fresh run's fence to remove unread (#869).
-    const what = `listing the ${status} earlier runners`;
+    const what = 'listing the earlier runners';
     const listed = await readDocker(
         execDocker,
-        [
-            'ps',
-            '-a',
-            '--filter',
-            `label=${JOB_LABEL}=${job.id}`,
-            '--filter',
-            `status=${status}`,
-            '--format',
-            ADOPT_FORMAT,
-        ],
+        ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', ADOPT_FORMAT],
         what,
-        { parse: tabRows(ADOPT_LABELS.length + 1) }
+        { parse: tabRows(ADOPT_LABELS.length + 2) }
     );
     if (listed.kind !== 'value') {
         throw new Error(listed.kind === 'inconclusive' ? listed.reason : `${what}: absent`);
     }
     const runners: DockerEarlier[] = [];
     for (const row of listed.value) {
-        const [name = '', lease = '', seq = '', session = '', command = ''] = row;
-        if (!isRunnerRow(job, [name, lease, seq, session, command], status)) continue;
+        const [name = '', lease = '', seq = '', session = '', command = '', state = ''] = row;
+        // Only a runner that exited or runs is an earlier run; anything else is not one yet or not any more.
+        if (state !== 'exited' && state !== 'running') continue;
+        if (!isRunnerRow(job, [name, lease, seq, session, command], state)) continue;
         // A queued task's command edited since the run (after a handover) makes that run not its own:
         // another valid mark, unlike an unreadable one (thrown above).
         runners.push({
@@ -286,7 +277,7 @@ async function earlierRunners(
             commandMark: command,
             session: session || null,
             supervisorExit: null,
-            running: status === 'running',
+            running: state === 'running',
         });
     }
     return runners;
@@ -432,13 +423,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // A daemon that could not say is no "nothing to adopt": a fresh run's fence would remove a
         // finalizing group unread once it answers again (#824).
         pacing: { attempts: DISCOVERY_ATTEMPTS, retryMs: DISCOVERY_RETRY_MS, sleep: deps.sleep },
-        list: async (job, bound) => {
-            const bounded = boundedExec(execDocker, bound);
-            return [
-                ...(await earlierRunners(bounded, job, 'exited')),
-                ...(await earlierRunners(bounded, job, 'running')),
-            ];
-        },
+        list: (job, bound) => earlierRunners(boundedExec(execDocker, bound), job),
         admit: (found, _job, signal) =>
             found.running ? liveRunner(execDocker, found, signal) : Promise.resolve(found),
         begin: async () => undefined,

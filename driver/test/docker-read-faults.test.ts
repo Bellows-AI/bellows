@@ -168,9 +168,8 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
     const { exec } = routedDocker(
         either(writes, (args) => {
             if (is(args, 'wait')) return ok('0\n');
-            // No runner still runs (#829): the live-run listing is empty.
-            if (is(args, 'ps') && has(args, 'status=running')) return ok('');
-            if (is(args, 'ps')) return ok(has(args, 'status=exited') ? listing : fencePs);
+            // The adoption's one listing of the job's runners (#829), then the fence's.
+            if (is(args, 'ps')) return ok(args[args.indexOf('--format') + 1]?.startsWith('{{.Names}}') ? `${listing.trimEnd()}\texited\n` : fencePs);
             if (is(args, 'volume', 'ls')) return ok(fenceVolumes);
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
             if (is(args, 'volume', 'inspect')) {
