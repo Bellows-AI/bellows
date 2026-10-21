@@ -61,8 +61,8 @@ import {
     supervisedStepMembers,
 } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
-import { KILL_WINDDOWN_MS, type StepResult, type SupervisorReport } from './supervisor-contract.js';
-import { readViaReaderJob } from './k8s-reader.js';
+import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
+import { readViaReaderJob, type ReaderResult } from './k8s-reader.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -97,7 +97,7 @@ type Readout = (
     deps: K8sDeps,
     job: BoardJob,
     readout: { name: string; argv: string[]; env: Record<string, string>; timeoutMs?: number }
-) => Promise<StepResult>;
+) => Promise<ReaderResult>;
 
 const supervisedReadout: Readout = (deps, job, readout) => runReadoutStep(stepHostOf(deps), job, readout);
 
@@ -133,7 +133,7 @@ function closeReadsOver(readout: Readout) {
                     `the session readout step failed: ${detailOf(answered, READOUT_STEP_TIMEOUT_MS)}`
                 );
             }
-            return parseOpencodeRunOutcome(answered.stdout, headCut(answered.stdout));
+            return parseOpencodeRunOutcome(answered.stdout, answered.truncated === true || headCut(answered.stdout));
         } catch (e) {
             return opencodeReadFailed((e as Error).message);
         }
