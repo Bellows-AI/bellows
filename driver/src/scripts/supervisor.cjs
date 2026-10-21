@@ -196,6 +196,8 @@ const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
 /** Logged once when the agent is released: the evidence a newer claim reads to take a running agent over (#829). */
 const RELEASED_LINE = 'supervisor: released the agent';
+/** Logged once when the group stops serving the driver's steps: a newer claim reads its absence as "still serving" (#829). */
+const SERVED_LINE = 'supervisor: stopped serving the steps';
 const STEP_PATH = '/step';
 const REPORT_PATH = '/report';
 
@@ -1625,6 +1627,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     // The group serves the driver's steps until `finish`, unless the attempt was ended here — before
     // the report or while it serves: then it leaves, saying so.
     if (serving(run)) await serveUntilFinish(run);
+    run.log(SERVED_LINE);
     if (!serving(run)) await depart(run);
     // Whatever ended the serving — the order to finish, the departure, a closed endpoint, a lost
     // driver — nothing more is taken, and a step still running is interrupted rather than waited out:
@@ -1668,6 +1671,7 @@ module.exports = {
     CAUSE,
     REPORT_PREFIX,
     RELEASED_LINE,
+    SERVED_LINE,
     REPORT_MS: DEFAULT_REPORT_MS,
     STEP_KINDS,
     GATE_FILES,

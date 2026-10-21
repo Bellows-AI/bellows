@@ -193,11 +193,11 @@ describe('the executor isolation record (#382)', () => {
         );
     });
 
-    // Issue #824 (D13): a runner whose agent exited is waited out and adopted, never swept; the claim
+    // Issue #824 (D13): a runner whose agent exited and whose supervisor stopped serving is waited out and adopted, never swept; the claim
     // fences the checkout, not the steps a lost driver still alive sends, which the group's bound ends.
     it('states that a finalizing runner is waited out, and what the takeover does not fence', () => {
         expect(prose(kubernetesDocs)).toContain(
-            'one whose agent exited is waited out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report'
+            'one whose agent exited is taken over the same way while its supervisor still serves (no `supervisor: stopped serving the steps`), its report delivered to the new holder; one whose supervisor stopped serving is waited out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report'
         );
         expect(prose(kubernetesDocs)).toContain(
             "a lost driver still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`), the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`."

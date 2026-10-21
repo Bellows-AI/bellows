@@ -268,6 +268,11 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('took over the running agent of claim 1, whose driver was lost');
         expect(phase).toContain('supervisor: rebound to claim 2');
         expect(phase).toContain("resumed gates from claim 1's checkpoint");
+        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        expect(phase).toContain('dk_log "$k4" "$TOOK_OVER"');
+        expect(phase).toContain('dk_log "$k5" "$TOOK_OVER"');
+        expect(phase).toContain('dk_log "$k4" "$ADOPTED" && bad \'k4: the finished runner was not waited out\'');
+        expect(phase).toContain('dk_log "$k5" "$ADOPTED" && bad \'k5: the finished runner was not waited out\'');
         expect(phase).toContain('lane-pushes.log');
         expect(phase).toContain('lane-gh-prs');
         expect(phase).toContain('factory.claim-seq=2');

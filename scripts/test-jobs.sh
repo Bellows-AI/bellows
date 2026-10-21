@@ -1744,8 +1744,10 @@ expect_contains 'k2d: the output names the container of claim 1' "$(field "$(bod
 dk_count 'k2d: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 stop_driver
 
-# K4. The gates: killed while a gate runs. A gate that never finished has no checkpoint, so the
-#     next claim runs it again; the agent is not repeated.
+# K4. The gates: killed while a gate runs. The agent has exited but its supervisor still serves, so
+#     the next claim takes the group over (it does not wait out the finished runner); the gate that
+#     never finished has no checkpoint and is run again under its own step, the old answer fenced;
+#     the agent is not repeated.
 n="$RUN_ID-k4"
 write_bellows "$(dk_plan hold "echo x >>$D/$n.gate.count; $(lane_wait "$D/$n.go")")"
 disruption_driver
@@ -1757,6 +1759,9 @@ lane_touch "$LANE_DIR/$n.go" || bad 'k4: the barrier is released' 'the touch fai
 dk_settled k4 "$k4" "$EXPIRED"
 dk_count 'k4: the gate ran again, once' "$LANE_DIR/$n.gate.count" 2
 dk_count 'k4: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+dk_log "$k4" "$TOOK_OVER" && ok 'k4: the next driver takes over the group whose agent exited' ||
+    bad 'k4: the next driver takes over the group whose agent exited' "$(grep -F "job $k4:" "$work/driver.log" | tail -5)"
+dk_log "$k4" "$ADOPTED" && bad 'k4: the finished runner was not waited out' 'the driver logged an adoption' || ok 'k4: the finished runner was not waited out'
 stop_driver
 
 # K5. The publish: the agent commits, the gh stub holds `pr create`, the driver dies there. The next
@@ -1785,6 +1790,9 @@ case "$k5_prs$k5_prs_now" in *'?'*) k5_opened='?' ;; *) k5_opened=$((k5_prs_now 
 [ "$k5_opened" = 1 ] && ok 'k5: one PR is opened' || bad 'k5: one PR is opened' "PRs added: $k5_opened"
 dk_count 'k5: the gates ran once' "$LANE_DIR/$n.gate.count" 1
 dk_count 'k5: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+dk_log "$k5" "$TOOK_OVER" && ok 'k5: the next driver takes over the group whose agent exited' ||
+    bad 'k5: the next driver takes over the group whose agent exited' "$(grep -F "job $k5:" "$work/driver.log" | tail -5)"
+dk_log "$k5" "$ADOPTED" && bad 'k5: the finished runner was not waited out' 'the driver logged an adoption' || ok 'k5: the finished runner was not waited out'
 dk_log "$k5" "resumed gates from claim 1's checkpoint" && ok 'k5: the gates are resumed from their checkpoint' ||
     bad 'k5: the gates are resumed from their checkpoint' "$(grep -F "job $k5:" "$work/driver.log" | tail -5)"
 expect_contains 'k5: the verdict carries the stub PR' "$(field "$(body "$(api GET "/api/jobs/$k5")")" output)" 'factory-smoke/demo/pull/'

@@ -1987,6 +1987,63 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             expect(supervised.logs).not.toContain('supervisor: released the agent');
         });
 
+        const SERVED = 'supervisor: stopped serving the steps';
+
+        it('logs that it stopped serving the steps once, after the driver orders the end', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            supervised.agentExits(0);
+            await until('the report', () => old.reports.length === 1);
+            await lag(200);
+            expect(supervised.logs).not.toContain(SERVED);
+            old.order(ORDER_FINISH);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === SERVED)).toHaveLength(1);
+        });
+
+        it('logs that it stopped serving when the takeover bound passes with no holder', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, { ...ORPHAN, SUPERVISOR_TAKEOVER_MS: '1200' });
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            await lag(500);
+            expect(supervised.logs).not.toContain(SERVED);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === SERVED)).toHaveLength(1);
+        });
+
+        it('logs that it stopped serving before the departure report of a kill', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.kill = true;
+            await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
+            supervised.agentExits(143);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === SERVED)).toHaveLength(1);
+        });
+
+        it('does not log it while the steps are served after the agent exits, or before the release', async () => {
+            const old = await startDriver({ release: false });
+            old.autoFinish = false;
+            const { supervised } = bound(old, TAKEOVER);
+            await lag(300);
+            expect(supervised.logs).not.toContain(SERVED);
+            old.order(ORDER_GO);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            supervised.agentExits(0);
+            await until('the report', () => old.reports.length === 1);
+            await lag(300);
+            expect(supervised.logs).not.toContain(SERVED);
+            old.order(ORDER_FINISH);
+            await supervised.done;
+        });
+
         it('replays a gate that landed while a second invocation of it waited in the lane: the request is posted once', async () => {
             const driver = await startDriver();
             const supervised = run(driver, GATED);

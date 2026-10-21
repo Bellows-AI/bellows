@@ -270,6 +270,8 @@ export interface SupervisorReport {
 export const SUPERVISOR_REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
 /** Logged once when the agent is released; `RELEASED_LINE` of supervisor.cjs. */
 export const SUPERVISOR_RELEASED_LINE = 'supervisor: released the agent';
+/** Logged once when the group stops serving the driver's steps; `SERVED_LINE` of supervisor.cjs. */
+export const SUPERVISOR_SERVED_LINE = 'supervisor: stopped serving the steps';
 
 /** The final report as the supervisor logged it: what a claim adopting its group reads back (issue #824). */
 export type FinalReport = Pick<SupervisorReport, 'outcome' | 'cause' | 'agentExit' | 'agentEnd' | 'drained'>;

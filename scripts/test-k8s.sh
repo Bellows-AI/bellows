@@ -3184,8 +3184,9 @@ else
     tk_check 't2: the gate ran once' "$(tk_count "$TK_D/$n.gate.count")" 1
 fi
 
-# T4. The gates: killed while a gate runs. A gate that never finished has no checkpoint, so the next
-#     claim runs it again; the agent is not repeated.
+# T4. The gates: killed while a gate runs. The agent has exited but its supervisor still serves, so the
+#     next claim takes the group over (it does not wait out the finished runner); the gate that never
+#     finished has no checkpoint and is run again under its own step; the agent is not repeated.
 begin_phase takeover-gates
 n="$RELEASE-t4"
 tk_touch "$TK_D/$n.agent"
@@ -3202,6 +3203,8 @@ else
     tk_settled t4 "$t4" "$EXPIRED"
     tk_check 't4: the gate ran again, once' "$(tk_count "$TK_D/$n.gate.count")" 2
     tk_check 't4: the agent ran once' "$(tk_ready "$TK_D/$n.agent.ready-")" 1
+    expect_contains 't4: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t4: $TOOK_OVER"
+    expect_not_contains 't4: the finished runner was not waited out' "$(driver_logs)" "job $t4: $ADOPTED"
 fi
 
 # T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next
@@ -3241,6 +3244,8 @@ else
     tk_check 't5: one PR is opened' "$t5_opened" 1
     tk_check 't5: the gate ran once' "$(tk_count "$TK_D/$n.gate.count")" 1
     tk_check 't5: the agent ran once' "$(tk_ready "$TK_D/$n.agent.ready-")" 1
+    expect_contains 't5: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t5: $TOOK_OVER"
+    expect_not_contains 't5: the finished runner was not waited out' "$(driver_logs)" "job $t5: $ADOPTED"
     expect_contains 't5: the gates are resumed from their checkpoint' "$(driver_logs)" "job $t5: resumed gates from claim 1's checkpoint"
     expect_contains 't5: the verdict carries the stub PR' "$(job_output "$t5")" 'factory-smoke/demo/pull/'
 fi

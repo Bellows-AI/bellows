@@ -38,7 +38,13 @@ import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
-import { type FinalReport, finalReportOf, SUPERVISOR_EXIT } from './supervisor-contract.js';
+import {
+    type FinalReport,
+    finalReportOf,
+    SUPERVISOR_EXIT,
+    SUPERVISOR_RELEASED_LINE,
+    SUPERVISOR_SERVED_LINE,
+} from './supervisor-contract.js';
 import { containerName, workspacesMountArgs, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
 import {
     AdoptionBlocked,
@@ -310,6 +316,48 @@ async function liveRunner(
     return { ...found, live: { startedAt: typeof StartedAt === 'string' ? StartedAt : '' } };
 }
 
+const stateOf = (read: string): { Running?: unknown; StartedAt?: unknown } => {
+    const state: unknown = JSON.parse(read);
+    return (state ?? {}) as { Running?: unknown; StartedAt?: unknown };
+};
+
+/**
+ * An exited runner whose supervisor positively still serves the driver's steps — running, the release
+ * logged, `SUPERVISOR_SERVED_LINE` not — is a released group to take over, like a running one (#829).
+ * Any read that does not say so (a stopped supervisor, a refused or garbled inspect, a log the daemon
+ * would not serve) leaves the exited run to the finalize wait: never taken over, never redone. An
+ * attempt stood down meanwhile, or a daemon silent for the whole read deadline, ends the admission.
+ */
+async function exitedServing(
+    execDocker: ExecDocker,
+    found: DockerEarlier,
+    signal: AbortSignal | undefined
+): Promise<DockerEarlier> {
+    const deadline = Date.now() + CLOSE_READ_DEADLINE_MS;
+    const bounded = boundedExec(execDocker, { deadline, signal });
+    try {
+        const supervisor = stateOf(
+            (await bounded(['inspect', '--format', '{{json .State}}', supervisorName(found.prior)])).stdout
+        );
+        if (supervisor.Running !== true) return found;
+        const lines = (await bounded(['logs', supervisorName(found.prior)])).stdout.split('\n').map((l) => l.trim());
+        if (!lines.includes(SUPERVISOR_RELEASED_LINE) || lines.includes(SUPERVISOR_SERVED_LINE)) return found;
+        const runner = stateOf(
+            (await bounded(['inspect', '--format', '{{json .State}}', containerName(found.prior)])).stdout
+        );
+        return { ...found, live: { startedAt: typeof runner.StartedAt === 'string' ? runner.StartedAt : '' } };
+    } catch (e) {
+        if (signal?.aborted) throw e;
+        // A daemon that stalled the whole deadline would stall the finalize wait's reads as long again.
+        if (Date.now() >= deadline) {
+            throw new AdoptionBlocked(
+                `the exited runner's supervisor could not be read in time: ${(e as Error).message}`
+            );
+        }
+        return found;
+    }
+}
+
 /** An exited earlier runner; `supervisorExit` is how its supervisor ended, once waited for. */
 interface DockerEarlier extends EarlierRun {
     supervisorExit: number | null;
@@ -425,7 +473,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         pacing: { attempts: DISCOVERY_ATTEMPTS, retryMs: DISCOVERY_RETRY_MS, sleep: deps.sleep },
         list: (job, bound) => earlierRunners(boundedExec(execDocker, bound), job),
         admit: (found, _job, signal) =>
-            found.running ? liveRunner(execDocker, found, signal) : Promise.resolve(found),
+            found.running ? liveRunner(execDocker, found, signal) : exitedServing(execDocker, found, signal),
         begin: async () => undefined,
         // The agent's exit is not the run's end: its supervisor may still be draining the exporter and
         // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —

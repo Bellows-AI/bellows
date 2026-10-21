@@ -6556,6 +6556,90 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                 expect(removals(calls)).toEqual([]);
             }
         );
+
+        describe('whose runner exited while its supervisor still serves the steps', () => {
+            const RELEASED = 'supervisor: released the agent';
+            const SERVED = 'supervisor: stopped serving the steps';
+            /** An exited runner whose supervisor answers `inspect` and `logs` as given (a string, or a rejection). */
+            const exitedDaemon = (
+                inspect: string | Error = '{"Status":"running","Running":true}\n',
+                log: string | Error = `serving\n${RELEASED}\n`
+            ) => {
+                const { exec: base, calls, logs } = daemon(listing(), '0', 'did the work\n');
+                const exec = (args: string[]) => {
+                    const forSupervisor = args.includes(supervisorName(job));
+                    if (args[0] === 'inspect' && forSupervisor) {
+                        calls.push(args);
+                        return inspect instanceof Error
+                            ? Promise.reject(inspect)
+                            : Promise.resolve({ stdout: inspect });
+                    }
+                    if (args[0] === 'logs' && forSupervisor && !args.includes('--tail')) {
+                        calls.push(args);
+                        return log instanceof Error ? Promise.reject(log) : Promise.resolve({ stdout: log });
+                    }
+                    return base(args);
+                };
+                return { exec, calls, logs };
+            };
+            const waitedForSupervisor = (calls: string[][]) =>
+                calls.some((args) => args[0] === 'wait' && args.includes(supervisorName(job)));
+
+            it('is taken over as live: no wait for the supervisor, the live run spared, only the older swept', async () => {
+                const { exec, calls, logs } = exitedDaemon();
+
+                const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+                expect(adopted).toMatchObject({
+                    live: true,
+                    claimSeq: 1,
+                    session: SESSION,
+                    prior: { id: job.id, leaseToken: job.leaseToken },
+                });
+                expect(waitedForSupervisor(calls)).toBe(false);
+                expect(removals(calls)).toEqual(['a5a5a5a5a5a5', 'older-mailbox']);
+            });
+
+            // Characterization: the followed log of an exited container closes at once; the bounded wait says
+            // how it exited, and nothing is created, started or ordered.
+            it('follows the exited runner of the prior lease to its exit, creating nothing', async () => {
+                const { exec, calls, logs } = exitedDaemon();
+                const runner = dockerRunner(exec, { spawn: logs });
+                expect(await runner.adopt(adopter)).toMatchObject({ live: true });
+                calls.length = 0;
+                const taken: BoardJob = {
+                    ...adopter,
+                    groupLease: job.leaseToken,
+                    supervisorEnv: { SUPERVISOR_CONTROL_TOKEN: 'tok-new', SUPERVISOR_CONTROL_URL: 'http://driver/' },
+                };
+
+                const outcome = await runner.run(taken, { id: SESSION, resume: true });
+
+                expect(outcome).toMatchObject({ exitCode: 0, timedOut: false });
+                expect(calls[0]).toEqual(['logs', '-f', containerName(job)]);
+                expect(calls.some((args) => args[0] === 'wait')).toBe(true);
+                for (const args of calls) expect(args[0]).not.toMatch(/^(create|start|cp)$/);
+            });
+
+            // Characterization: the finalize wait stands for everything but a proven, still-serving supervisor.
+            it.each([
+                ['has logged that it stopped serving', `${RELEASED}\n${SERVED}\n`, undefined],
+                ['never logged the release', 'serving\n', undefined],
+                ['is stopped', `${RELEASED}\n`, '{"Status":"exited","Running":false}\n'],
+                ['cannot be inspected', `${RELEASED}\n`, new Error('docker inspect exited 1')],
+                ['answers an inspect that is not JSON', `${RELEASED}\n`, 'not json'],
+                ['has a log the daemon refuses', new Error('docker logs exited 1'), undefined],
+            ])('waits for the supervisor, taking nothing over, when it %s', async (_label, log, inspect) => {
+                const { exec, calls, logs } = exitedDaemon(inspect, log);
+
+                const adopted = await dockerRunner(exec, { spawn: logs })
+                    .adopt(adopter)
+                    .catch((e: unknown) => e);
+
+                expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+                expect(waitedForSupervisor(calls)).toBe(true);
+            });
+        });
     });
 });
 

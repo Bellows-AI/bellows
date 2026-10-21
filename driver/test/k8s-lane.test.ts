@@ -426,6 +426,11 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(takeover).toContain('lane-gh-hold');
         expect(takeover).toContain('supervisor: rebound to claim 2');
         expect(takeover).toContain("resumed gates from claim 1's checkpoint");
+        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        for (const step of ['t4', 't5']) {
+            expect(takeover).toContain(`"$(driver_logs)" "job $${step}: $TOOK_OVER"`);
+            expect(takeover).toContain(`expect_not_contains '${step}: the finished runner was not waited out'`);
+        }
         expect(takeover).toContain("commit_plan takeover-restore ''");
     });
 

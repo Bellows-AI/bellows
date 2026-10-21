@@ -48,6 +48,7 @@ import {
     finalReportOf,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_RELEASED_LINE,
+    SUPERVISOR_SERVED_LINE,
 } from './supervisor-contract.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import { finalizeWaitMs } from './supervisor-plan.js';
@@ -164,11 +165,45 @@ async function admitted(deps: K8sDeps, found: EarlierRunner): Promise<EarlierRun
     const pods = await runnerPodsOf(deps, found.prior);
     if (found.finished) return { ...found, finished: groupStateOf(pods) === 'over' };
     const pod = runnerPodOf(pods);
-    if (containerStatusOf(pod, AGENT_CONTAINER)?.state?.terminated) return found;
+    if (containerStatusOf(pod, AGENT_CONTAINER)?.state?.terminated) {
+        // The agent ended: a supervisor that still serves the driver's steps is taken over like a
+        // running agent; anything less certain is waited out for its report, never swept (#829).
+        return (await stillServing(deps, pod)) ? liveOf(found) : found;
+    }
     if (!(await releasedRunning(deps, pod))) return null;
+    return liveOf(found);
+}
+
+function liveOf(found: EarlierRunner): EarlierRunner {
     if (found.uid === undefined)
         throw new AdoptionBlocked('the earlier runner Job lists without a uid to tear down by');
     return { ...found, live: { startedAt: startedAtOf(found), uid: found.uid } };
+}
+
+/**
+ * Whether the pod's supervisor, its agent ended, positively still serves: running, the release
+ * logged and no `SUPERVISOR_SERVED_LINE`. Every read that fails to say so — a state not shown, a
+ * log refused, gone or thrown — is false: the group is waited out, not taken over, not redone.
+ * An attempt stood down meanwhile still ends it.
+ */
+async function stillServing(deps: K8sDeps, pod: K8sPod | undefined): Promise<boolean> {
+    if (pod?.status?.phase !== 'Running' || !pod.metadata?.name) return false;
+    if (!containerStatusOf(pod, SUPERVISOR_CONTAINER)?.state?.running) return false;
+    let log: K8sResponse;
+    try {
+        log = await readLogVerdict(
+            deps,
+            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null, SUPERVISOR_CONTAINER),
+            'reading the earlier supervisor log'
+        );
+    } catch (e) {
+        if (deps.signal?.aborted) throw e;
+        return false;
+    }
+    if (deps.signal?.aborted) throw adoptionAbandoned();
+    if (log.status >= HTTP_ERROR_STATUS || logIsNone(log)) return false;
+    const lines = log.body.split('\n').map((line) => line.trim());
+    return lines.includes(SUPERVISOR_RELEASED_LINE) && !lines.includes(SUPERVISOR_SERVED_LINE);
 }
 
 const startedAtOf = ({ status }: EarlierRunner): string => status.startTime ?? new Date(0).toISOString();

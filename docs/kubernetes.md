@@ -50,8 +50,9 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
 - Stated limit: a runner still RUNNING when its driver is lost, its agent released by the supervisor, is taken over:
   the next claim rebinds the supervisor (`rebind`), the supervisor must poll the new endpoint within
   `SUPERVISOR_REBIND_DELIVERY_MS`, and no sync, setup or `go` follows; one never released is swept by the next
-  claim's re-claim fence and the job redone in its session and tree, an interruption inside the budget; one whose agent exited is waited
-  out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report, and a lost driver
+  claim's re-claim fence and the job redone in its session and tree, an interruption inside the budget; one whose agent exited is taken
+  over the same way while its supervisor still serves (no `supervisor: stopped serving the steps`), its report delivered to the new holder;
+  one whose supervisor stopped serving is waited out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report, and a lost driver
   still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`),
   the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`.
   A finished one is adoptable until its Job's one-hour `ttlSecondsAfterFinished`.

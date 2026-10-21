@@ -12,6 +12,7 @@ import { jobPath } from '../src/k8s-auxspec.js';
 import { releaseClaimAfterGroupEnd } from '../src/k8s-fence.js';
 import { ensureGroup, finishGroup } from '../src/k8s-group.js';
 import { type CloseReads, adoptFinishedRunner } from '../src/k8s-adopt.js';
+import { pollRunnerJobUntilTerminal } from '../src/k8s-poll.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s-transport.js';
 import { AdoptionBlocked, commandMark, ownGroup, type AdoptedRun } from '../src/runner.js';
@@ -525,5 +526,161 @@ describe('a live run (#829)', () => {
 
         const later = { ...adopter, leaseToken: OTHER_TOKEN, claimSeq: 3 };
         expect(await adoptFinishedRunner(deps, later, reads())).toMatchObject({ live: true, claimSeq: 1 });
+    });
+
+    describe('whose agent exited while its supervisor still serves the steps', () => {
+        const SERVED = 'supervisor: stopped serving the steps';
+        const exited = { terminated: { exitCode: 0 } };
+        const exitedWorld = (
+            body: string,
+            supervisor: Record<string, unknown> = { running: {} },
+            extra: unknown[] = []
+        ) => {
+            let listed = [runnerItem({ active: 1 }), ...extra];
+            return world(
+                [],
+                (method, path) => {
+                    if (method === 'GET' && path.startsWith(`${jobsPath(NS)}?`)) {
+                        return { status: 200, body: JSON.stringify({ items: listed }) };
+                    }
+                    if (
+                        method === 'DELETE' &&
+                        extra.length > 0 &&
+                        path.startsWith(jobPath(NS, runnerJobName({ ...job, leaseToken: OTHER_TOKEN })))
+                    ) {
+                        listed = listed.filter((item) => !extra.includes(item));
+                        return { status: 200, body: '{}' };
+                    }
+                    return logSays(body)(method, path);
+                },
+                { pods: runningPods(exited, supervisor as { running: object }) }
+            );
+        };
+        const jobDeletes = (calls: { method: string; path: string }[]) =>
+            deletes(calls).filter((call) => call.path.startsWith(jobPath(NS, priorName)));
+
+        it('is taken over as live, with no finalize wait: the Job and its Secret are spared, an older attempt swept', async () => {
+            const older = runnerItem({ active: 1 }, { lease: OTHER_TOKEN, seq: '0' });
+            const { deps, calls } = exitedWorld(`supervisor: serving\n${RELEASED}\n`, { running: {} }, [older]);
+
+            const adopted = await adoptFinishedRunner(deps, adopter, reads());
+
+            expect(adopted).toMatchObject({ live: true, claimSeq: 1, startedAt: START });
+            expect(deps.groups?.get(job.leaseToken)).toMatchObject({
+                resumed: true,
+                uids: { job: `uid-${priorName}` },
+            });
+            expect(jobDeletes(calls)).toEqual([]);
+            expect(deletes(calls).some((call) => call.path.endsWith(`/${secretName(job)}`))).toBe(false);
+            expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, older.metadata.name)))).toBe(true);
+            // No finalize poll of the Job: only the one admission read of its pods and the log.
+            expect(
+                calls.filter((call) => call.method === 'GET' && call.path.startsWith(jobPath(NS, priorName)))
+            ).toEqual([]);
+        });
+
+        it('blocks the attempt when the listed Job carries no uid to tear down by', async () => {
+            const noUid = runnerItem({ active: 1 });
+            delete (noUid.metadata as { uid?: string }).uid;
+            const { deps, calls } = world([noUid], logSays(`${RELEASED}\n`), {
+                pods: runningPods(exited),
+            });
+
+            await expect(adoptFinishedRunner(deps, adopter, reads())).rejects.toBeInstanceOf(AdoptionBlocked);
+            expect(jobDeletes(calls)).toEqual([]);
+        });
+
+        // Characterization: a supervisor that logged it stopped serving is the finalize-wait path, unchanged.
+        it('is waited out, not taken over, once the supervisor logged that it stopped serving', async () => {
+            const { deps } = exitedWorld(`${RELEASED}\n${SERVED}\n`);
+
+            const adopted = await adoptFinishedRunner(deps, adopter, reads());
+
+            expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+        });
+
+        // Characterization: a supervisor that is not running is waited out for its report.
+        it('is waited out when the supervisor container is not running', async () => {
+            const { deps, calls } = exitedWorld(`${RELEASED}\n`, { terminated: { exitCode: 0 } });
+
+            const adopted = await adoptFinishedRunner(deps, adopter, reads()).catch((e: unknown) => e);
+
+            expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+            expect(calls.some((call) => call.method === 'GET' && call.path.startsWith(jobPath(NS, priorName)))).toBe(
+                true
+            );
+            expect(jobDeletes(calls)).toEqual([]);
+        });
+
+        // Characterization: an unread supervisor state or log never makes the group live, never redoes it.
+        it.each([
+            ['a log the apiserver refuses', () => ({ status: 500, body: 'boom' })],
+            ['a log that is gone', () => ({ status: 404, body: '{"kind":"Status"}' })],
+            ['a log read that throws', () => 'throw'],
+        ])('is waited out, never taken over or swept, on %s', async (_label, answer) => {
+            const { deps, calls } = exitedWorld('');
+            const refusing: K8sDeps = {
+                ...deps,
+                request: (method, path, body, options) => {
+                    if (!supervisorLogPath(path)) return deps.request(method, path, body, options);
+                    const out = answer();
+                    return typeof out === 'string' ? Promise.reject(new Error('socket hang up')) : Promise.resolve(out);
+                },
+            };
+
+            const adopted = await adoptFinishedRunner(refusing, adopter, reads()).catch((e: unknown) => e);
+
+            expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+            expect(adopted).not.toBeInstanceOf(AdoptionBlocked);
+            expect(jobDeletes(calls)).toEqual([]);
+        });
+
+        // Characterization: no release line is an agent that never started or was not released: finalize path.
+        it('is waited out when the supervisor never logged the release', async () => {
+            const { deps } = exitedWorld('supervisor: serving\n');
+
+            const adopted = await adoptFinishedRunner(deps, adopter, reads());
+
+            expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+        });
+
+        // Characterization: the taken-over run on an exited agent is over once the supervisor's report is
+        // in hand, whatever the Job still shows — no `go`, no pod read to wait for.
+        it('ends the followed run at the supervisor report with the Job still active, ordering nothing', async () => {
+            const { deps: base, calls } = exitedWorld(`${RELEASED}\n`);
+            await adoptFinishedRunner(base, adopter, reads());
+            const taken = ownGroup({ ...adopter, groupLease: job.leaseToken });
+            const before = calls.length;
+            const deps: K8sDeps = {
+                ...base,
+                request: (method, path, body, options) =>
+                    method === 'GET' && path === jobPath(NS, priorName)
+                        ? Promise.resolve({
+                              status: 200,
+                              body: JSON.stringify({ metadata: { uid: `uid-${priorName}` }, status: { active: 1 } }),
+                          })
+                        : base.request(method, path, body, options),
+            };
+            // The report is in hand at the first poll; the Job reads active.
+            const polled = await pollRunnerJobUntilTerminal(deps, taken, { over: () => true });
+
+            expect(polled).toEqual({ timedOut: false, jobSucceeded: false });
+            expect(calls.slice(before).filter((call) => call.method !== 'GET')).toEqual([]);
+        });
+
+        it('deletes nothing once the attempt stood down during the log read', async () => {
+            const { deps, calls } = exitedWorld(`${RELEASED}\n`);
+            const stop = new AbortController();
+            const standing: K8sDeps = {
+                ...deps,
+                request: (method, path, body, options) => {
+                    if (supervisorLogPath(path)) stop.abort();
+                    return deps.request(method, path, body, options);
+                },
+            };
+
+            await expect(adoptFinishedRunner(standing, adopter, reads(), stop.signal)).rejects.toThrow();
+            expect(deletes(calls)).toEqual([]);
+        });
     });
 });
