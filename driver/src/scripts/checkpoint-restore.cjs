@@ -131,17 +131,31 @@ const fetchChunk = async (source, chunk) => {
 const CHECKPOINT_SOURCE = { route: '/checkpoint/restore', params: {} };
 
 /**
- * The chunks of one stream appended to `fd` (opened by the caller), in order. They must be gapless from `from`
- * (0 for a checkpoint; for a session, where the previous stream of the file ended). Returns where they end.
+ * The chunks of one stream written to `fd` (opened by the caller), each at its own file offset. A stream may start
+ * before `from` (the exporter restarts at 0 when it counts a file as fresh) but never after it: a chunk past the
+ * bytes held so far is a gap. Bytes a chunk shares with what is already written must be identical. Returns
+ * `{ end, length }`: where the file now ends and the sum of this stream's chunk lengths.
  */
 const append = async (fd, source, chunks, from = 0) => {
-    let next = from;
+    let end = from;
+    let length = 0;
     for (const chunk of chunks) {
-        if (chunk.offset !== next) throw unrestorable('the chunk list has a gap at offset ' + next);
-        fs.writeSync(fd, await fetchChunk(source, chunk));
-        next += chunk.length;
+        if (chunk.offset > end) throw unrestorable('the chunk list has a gap at offset ' + end);
+        const bytes = await fetchChunk(source, chunk);
+        const shared = Math.min(bytes.length, end - chunk.offset);
+        if (shared > 0) {
+            const held = Buffer.alloc(shared);
+            fs.readSync(fd, held, 0, shared, chunk.offset);
+            if (!held.equals(bytes.subarray(0, shared)))
+                throw unrestorable(
+                    'the chunk at offset ' + chunk.offset + ' disagrees with the bytes already restored'
+                );
+        }
+        fs.writeSync(fd, bytes, 0, bytes.length, chunk.offset);
+        end = Math.max(end, chunk.offset + bytes.length);
+        length += bytes.length;
     }
-    return next;
+    return { end, length };
 };
 
 const download = async (file, chunks) => {
@@ -165,7 +179,7 @@ const getJson = async (route) => {
  * and as long as the board says; a chunk that stays wrong through the retries is the board's bytes being bad.
  */
 const downloadSession = async (file, streams) => {
-    const fd = fs.openSync(file, 'w');
+    const fd = fs.openSync(file, 'w+');
     // The exporter keeps a file's byte offsets across attempts: a resumed session's later stream starts where
     // the earlier one ended, not at 0.
     let end = 0;
@@ -177,9 +191,7 @@ const downloadSession = async (file, streams) => {
             };
             let length;
             try {
-                const before = end;
-                end = await append(fd, source, stream.chunks, before);
-                length = end - before;
+                ({ end, length } = await append(fd, source, stream.chunks, end));
             } catch (e) {
                 if (e instanceof Corrupt)
                     throw unrestorable('the transcript of session ' + stream.session + ': ' + e.message);
@@ -380,6 +392,8 @@ const main = async () => {
     fs.mkdirSync(work, { recursive: true });
     try {
         const chunks = JSON.parse(process.env.CHUNKS || '[]');
+        if (chunks.length === 0)
+            throw unrestorable('the tree is not on this volume and no complete checkpoint is stored');
         const stream = path.join(work, 'stream');
         await download(stream, chunks);
         const line = readUntil(stream, 0, '\n', HEADER_MAX_BYTES);

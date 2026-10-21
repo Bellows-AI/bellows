@@ -246,6 +246,24 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
         expect(asked()).toBe(calls);
     });
 
+    it('answers ok and fetches nothing for a tree that is there when no checkpoint is owed (empty chunks)', async () => {
+        workedTree();
+        const { stream, chunks } = checkpointStream();
+        const { url } = await serve(stream);
+        await restore(chunks, url);
+
+        expect(await restore([], url)).toEqual({ ok: true, reason: null, restored: false });
+    });
+
+    it('is checkpoint_unrestorable when no tree is there and no checkpoint is given', async () => {
+        workedTree();
+        const { stream } = checkpointStream();
+        const { url } = await serve(stream);
+
+        expect(await restore([], url)).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        expect(existsSync(restoredTree())).toBe(false);
+    });
+
     it('is checkpoint_unrestorable when the checkpoint was truncated at its cap', async () => {
         workedTree();
         const { stream, chunks } = checkpointStream({ CAP_BYTES: '1' });
@@ -365,6 +383,51 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             );
 
             expect(await restoreSessions({ ...transcripts, streams })).toMatchObject({
+                ok: false,
+                kind: 'checkpoint_unrestorable',
+            });
+        });
+
+        // The exporter writes a stream from offset 0 when it counts the file as fresh (a new inode after any
+        // restore onto a new volume), so a later stream may re-cover bytes an earlier one held.
+        it.each([
+            ['from offset 0, covering the whole earlier stream', 0],
+            ['from the middle of the earlier stream', 1_500],
+        ])('joins a later stream that starts %s, writing each chunk at its own offset', async (_name, from) => {
+            const { original } = thread();
+            const cut = 3_000;
+            const alpha = original.alpha!;
+            const streams = [
+                transcriptStream(JOB_A, 1, 'alpha', { bytes: alpha.subarray(0, cut) }),
+                transcriptStream(JOB_A, 2, 'alpha', { bytes: alpha.subarray(from), from }),
+            ];
+            const data = new Map([
+                [`${JOB_A}/1/alpha`, alpha.subarray(0, cut)],
+                [`${JOB_A}/2/alpha`, alpha.subarray(from)],
+            ]);
+
+            const verdict = await restoreSessions({ streams, data });
+
+            expect(verdict).toMatchObject({ ok: true, restored: true });
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl')).equals(alpha)).toBe(true);
+        });
+
+        it('is checkpoint_unrestorable when overlapping streams disagree on the bytes they share', async () => {
+            const { original } = thread();
+            const cut = 3_000;
+            const alpha = original.alpha!;
+            const other = Buffer.from(alpha);
+            other[10] = (other[10] ?? 0) ^ 0xff;
+            const streams = [
+                transcriptStream(JOB_A, 1, 'alpha', { bytes: alpha.subarray(0, cut) }),
+                transcriptStream(JOB_A, 2, 'alpha', { bytes: other }),
+            ];
+            const data = new Map([
+                [`${JOB_A}/1/alpha`, alpha.subarray(0, cut)],
+                [`${JOB_A}/2/alpha`, other],
+            ]);
+
+            expect(await restoreSessions({ streams, data })).toMatchObject({
                 ok: false,
                 kind: 'checkpoint_unrestorable',
             });
