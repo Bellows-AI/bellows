@@ -682,8 +682,14 @@ export function readerJobSpec(
                             imagePullPolicy: config.imagePullPolicy,
                             ...containerHardeningField(),
                             command: readout.argv,
-                            env: Object.entries(readout.env).map(([key, value]) => ({ name: key, value })),
+                            // The pod log interleaves stderr with stdout, and `node:sqlite` warns on stderr: the
+                            // answer's first line must be the readout's own JSON.
+                            env: [
+                                { name: 'NODE_OPTIONS', value: '--disable-warning=ExperimentalWarning' },
+                                ...Object.entries(readout.env).map(([key, value]) => ({ name: key, value })),
+                            ],
                             volumeMounts: [taskMount()],
+                            ...resourcesField(config),
                         },
                     ],
                     volumes: [taskPodVolume(job)],

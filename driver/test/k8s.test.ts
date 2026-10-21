@@ -57,6 +57,7 @@ import {
     jobsPath,
     opencodeReadoutStep,
     runnerJobName,
+    readerJobSpec,
     runnerJobSpec,
     secretName,
 } from '../src/k8s-podspec.js';
@@ -614,6 +615,7 @@ const POD_NAMES = [
     'the task supervisor',
     'the transcript exporter',
     'the service sidecar',
+    'the reader',
 ] as const;
 type PodName = (typeof POD_NAMES)[number];
 
@@ -691,9 +693,10 @@ const gateView = (config: DriverConfig, of: BoardJob): PodView => {
 
 /**
  * The task volume is ReadWriteOncePod by default: a second pod mounting it while the task pod holds
- * it sits Pending. The task pod is the one consumer, so the driver builds exactly one Job (the
- * runner's) and names the task claim as a volume only in the task pod's own spec; every other
- * read or write of the volume (the close-time readouts, the probe, the snapshot) is a supervised step.
+ * it sits Pending. The task pod is the one consumer while its group runs, so the driver names the
+ * task claim as a volume only in the runner Job's pod spec and, once an adopted group's pod is
+ * terminal, in the one-shot reader Job (`readerJobSpec`); every other read or write of the volume
+ * (the live close-time readouts, the probe, the snapshot) is a supervised step.
  */
 describe('no pod but the task pod mounts the task volume', () => {
     const sources = readdirSync(new URL('../src/', import.meta.url))
@@ -734,6 +737,14 @@ const everyPodSpec = (env: NodeJS.ProcessEnv = {}, of: BoardJob = job): Record<P
         'the task supervisor': () => containerView(config, of, SUPERVISOR_CONTAINER),
         'the transcript exporter': () => containerView(config, of, EXPORTER_CONTAINER),
         'the service sidecar': () => serviceSidecarView(config, of),
+        'the reader': () =>
+            jobView(
+                readerJobSpec(config, of, 'factory-read-0', {
+                    argv: ['node'],
+                    env: {},
+                    timeoutMs: 1_000,
+                }) as unknown as JobSpecOf
+            ),
     };
 };
 
@@ -833,8 +844,8 @@ describe('the lifecycle of every pod the driver specs', () => {
  * stands between that code and the node, and it is unconditional: there is no config knob, because
  * an operator who can turn it off is an operator who will find it off after an incident.
  *
- * The list above is hand-written and can fall behind; the source-scan test below pins that the
- * runner Job is the only Job the driver builds. This suite pins the hardening on each pod in it.
+ * The list above is hand-written and can fall behind; the source-scan test below pins that every
+ * Job spec lives in `k8s-podspec.ts`. This suite pins the hardening on each pod in it.
  */
 describe('the pod hardening on every pod the driver specs (#382)', () => {
     // A capability is a slice of root the kernel hands a process without asking anyone. An agent
