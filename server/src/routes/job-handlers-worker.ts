@@ -516,7 +516,7 @@ export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, r
         return bad(reply, ERROR_CODES.UNAVAILABLE, 'Not every organization board answered', HTTP_UNAVAILABLE);
     }
 
-    const { ids } = body(request.body);
+    const { ids, threads } = body(request.body);
     if (
         !Array.isArray(ids) ||
         ids.length < 1 ||
@@ -529,7 +529,7 @@ export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, r
     const answered = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job lease lookup failed'),
-        () => Promise.all(boards.map((board) => board.leases(ids as string[])))
+        () => Promise.all(boards.map((board) => board.leases(ids as string[], threads === true)))
     );
     if (!answered.ok) return reply;
     const jobs = [...new Map(answered.value.flat().map((row) => [row.id, row])).values()];

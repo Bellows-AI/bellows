@@ -1065,9 +1065,10 @@ export interface JobStore {
      * The batched lease lookup behind `POST /api/jobs/leases` (issue #301): every named id's
      * status and current lease, in no particular order. Ids this org's board does not know are
      * simply not answered — the driver reads an absent id as "no such job here". Read-only, and
-     * deliberately NOT lease-guarded: the reaper holding no lease is the whole point.
+     * deliberately NOT lease-guarded: the reaper holding no lease is the whole point. `withThreads`
+     * adds the thread facts (issue #775) to every ROOT's row; the task-volume sweep asks for them, the group sweep does not.
      */
-    leases(ids: readonly string[]): Promise<JobLeaseInfo[]>;
+    leases(ids: readonly string[], withThreads?: boolean): Promise<JobLeaseInfo[]>;
     /**
      * What an artifact upload for this job is authorized against (the artifact routes): the
      * member and root it is filed under and the newest claim sequence that exists. Deliberately

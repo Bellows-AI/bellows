@@ -68,7 +68,7 @@ export interface ReaperArm {
      * Every task volume of the platform (issue #775), all generations, grouped by thread root; null when
      * the listing proved nothing — a refused call or a row it could not read — and the round deletes none.
      */
-    scanVolumes?(): Promise<VolumeThread[] | null>;
+    scanVolumes?(): Promise<VolumeListing | null>;
     /** Deletes every generation of one thread, answering a line per volume actually removed. */
     reapVolumes?(thread: VolumeThread): Promise<readonly string[]>;
 }
@@ -77,7 +77,14 @@ export interface ReaperArm {
 export interface VolumeThread {
     /** The thread's root job id: what the board is asked about. */
     root: string;
-    volumes: { name: string; uid?: string }[];
+    /** `createdAtMs`: the platform's creation time; null or absent when it could not be read, which keeps the volume. */
+    volumes: { name: string; uid?: string; createdAtMs?: number | null | undefined }[];
+}
+
+/** The task volume listing: the threads it proved, and a line per labelled object skipped as no thread's (logged by the sweep). */
+export interface VolumeListing {
+    threads: VolumeThread[];
+    skipped: readonly string[];
 }
 
 /** How long a task volume outlives its thread's last finalize: `ttlMs` when it is whole, `boundMs` when it is not. */
@@ -143,17 +150,37 @@ export function volumeDecision(
 }
 
 /**
+ * Whether a thread's task volumes may go, given the board's lease row for its root (issue #775), pure.
+ * A row answers by its thread facts. NO row — the root absent from a fully confirmed answer, which is
+ * how `removeTask` leaves a thread — can never finalize again, so its volumes go once every one is at
+ * least the ttl old; a creation time that could not be read keeps them.
+ */
+export function volumeVerdict(
+    row: BoardLease | undefined,
+    volumes: VolumeThread['volumes'],
+    nowMs: number,
+    policy: VolumePolicy
+): 'delete' | 'keep' {
+    if (row !== undefined) return volumeDecision(row.thread, nowMs, policy);
+    const old = volumes.every(
+        (volume) => typeof volume.createdAtMs === 'number' && nowMs - volume.createdAtMs >= policy.ttlMs
+    );
+    return old ? 'delete' : 'keep';
+}
+
+/**
  * Asks the board about every id, in LEASE_BATCH_MAX-sized chunks. Null — ANY chunk refused —
  * aborts the whole round: absence must be proven for every id before anything is condemned.
  */
 const lookupAll = async (
     board: Pick<Board, 'leases'>,
     ids: readonly string[],
-    log: (message: string) => void
+    log: (message: string) => void,
+    withThreads = false
 ): Promise<Map<string, BoardLease> | null> => {
     const leases = new Map<string, BoardLease>();
     for (let i = 0; i < ids.length; i += LEASE_BATCH_MAX) {
-        const answer = await board.leases(ids.slice(i, i + LEASE_BATCH_MAX));
+        const answer = await board.leases(ids.slice(i, i + LEASE_BATCH_MAX), withThreads);
         if (answer === null) {
             log('reaper: the board could not answer a lease lookup — reaping nothing this round');
             return null;
@@ -228,9 +255,10 @@ export function createReaper(deps: {
     };
 
     /** The listed task volume threads that name a board job, the rest logged and skipped. */
-    const threadsOfVolumes = (listed: readonly VolumeThread[]): VolumeThread[] => {
+    const threadsOfVolumes = (listed: VolumeListing): VolumeThread[] => {
+        for (const line of listed.skipped) log(`reaper: skipping ${line}`);
         const threads: VolumeThread[] = [];
-        for (const thread of listed) {
+        for (const thread of listed.threads) {
             if (UUID_SHAPE.test(thread.root)) threads.push(thread);
             else log(`reaper: skipping task volumes whose root label is not a uuid: ${thread.root}`);
         }
@@ -247,14 +275,29 @@ export function createReaper(deps: {
             return;
         }
         const threads = threadsOfVolumes(listed);
-        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log);
+        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log, true);
         if (leases === null) return;
-        const nowMs = now();
         for (const thread of threads) {
-            if (volumeDecision(leases.get(thread.root)?.thread, nowMs, volumePolicy) === 'keep') continue;
+            if (!(await deletable(thread, leases, volumePolicy))) continue;
             for (const removed of await arm.reapVolumes(thread))
                 log(`reaper: thread ${thread.root} — removed ${removed}`);
         }
+    };
+
+    /**
+     * The batch answer is minutes old by the time a thread's turn comes: a follow-up may have been queued
+     * and claimed since, and a volume deleted under it is recreated empty by its mount. So a thread the
+     * batch condemns is decided again on a read of its root alone, right before the delete; an
+     * unconfirmed read keeps it.
+     */
+    const deletable = async (
+        thread: VolumeThread,
+        leases: ReadonlyMap<string, BoardLease>,
+        policy: VolumePolicy
+    ): Promise<boolean> => {
+        if (volumeVerdict(leases.get(thread.root), thread.volumes, now(), policy) === 'keep') return false;
+        const fresh = await lookupAll(deps.board, [thread.root], log, true);
+        return fresh !== null && volumeVerdict(fresh.get(thread.root), thread.volumes, now(), policy) === 'delete';
     };
 
     const sweep = async (): Promise<void> => {

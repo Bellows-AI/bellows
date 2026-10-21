@@ -17,7 +17,7 @@ import { readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict, VolumeThread } from './reaper.js';
+import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict, VolumeListing, VolumeThread } from './reaper.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
 import { TASK_ROOT_LABEL, generationOfName } from './task-volume.js';
 import { parseRfc3339 } from './timestamps.js';
@@ -286,19 +286,44 @@ interface ListedVolumeClaim {
     root: string;
     name: string;
     uid: string;
+    createdAtMs: number | null;
     terminating: boolean;
 }
 
-/** A claim of the task volume listing (issue #775), or null when it cannot be attributed to a thread. */
-const asVolumeClaim = (value: unknown): ListedVolumeClaim | null => {
+/** A labelled claim that is no thread's generation: skipped and logged, never a reason to delete nothing fleet-wide. */
+interface JunkVolumeClaim {
+    junk: string;
+}
+
+/**
+ * A claim of the task volume listing (issue #775): null when it is not an identified object at all (the
+ * list proved nothing), `junk` when it is one whose root label names no thread it is a generation of.
+ */
+const asVolumeClaim = (value: unknown): ListedVolumeClaim | JunkVolumeClaim | null => {
     const item = asIdentified<{
-        metadata: { name: string; uid: string; labels?: Record<string, string>; deletionTimestamp?: string };
+        metadata: {
+            name: string;
+            uid: string;
+            labels?: Record<string, string>;
+            deletionTimestamp?: string;
+            creationTimestamp?: string;
+        };
     }>(value);
     if (item === null) return null;
-    const { name, uid, labels, deletionTimestamp } = item.metadata;
+    const { name, uid, labels, deletionTimestamp, creationTimestamp } = item.metadata;
     const root = labels?.[TASK_ROOT_LABEL];
-    if (typeof root !== 'string' || !isLease(root) || generationOfName(root, name) === null) return null;
-    return { root: root.toLowerCase(), name, uid, terminating: deletionTimestamp !== undefined };
+    if (typeof root !== 'string' || !isLease(root) || generationOfName(root, name) === null) {
+        return {
+            junk: `task volume claim ${name}: its root label (${String(root)}) names no thread it is a generation of`,
+        };
+    }
+    return {
+        root: root.toLowerCase(),
+        name,
+        uid,
+        createdAtMs: typeof creationTimestamp === 'string' ? parseRfc3339(creationTimestamp) : null,
+        terminating: deletionTimestamp !== undefined,
+    };
 };
 
 /**
@@ -307,7 +332,7 @@ const asVolumeClaim = (value: unknown): ListedVolumeClaim | null => {
  * collection, or a claim that cannot be named a generation of its labelled root. A claim already
  * terminating is on its way out and left out.
  */
-const scanVolumes = async (deps: K8sDeps): Promise<VolumeThread[] | null> => {
+const scanVolumes = async (deps: K8sDeps): Promise<VolumeListing | null> => {
     const read = await readTypedList(
         deps,
         `${taskVolumesPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`,
@@ -316,13 +341,18 @@ const scanVolumes = async (deps: K8sDeps): Promise<VolumeThread[] | null> => {
     );
     if (read.kind !== 'value') return null;
     const threads = new Map<string, VolumeThread>();
+    const skipped: string[] = [];
     for (const claim of read.value) {
+        if ('junk' in claim) {
+            skipped.push(claim.junk);
+            continue;
+        }
         if (claim.terminating) continue;
         const thread = threads.get(claim.root) ?? { root: claim.root, volumes: [] };
-        thread.volumes.push({ name: claim.name, uid: claim.uid });
+        thread.volumes.push({ name: claim.name, uid: claim.uid, createdAtMs: claim.createdAtMs });
         threads.set(claim.root, thread);
     }
-    return [...threads.values()];
+    return { threads: [...threads.values()], skipped };
 };
 
 /** Deletes every listed generation, each under the uid it was listed with; one that fails is the next round's. */

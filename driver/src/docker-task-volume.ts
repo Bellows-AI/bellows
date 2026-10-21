@@ -3,6 +3,7 @@ import type { Board, BoardJob } from './board.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from './claim.js';
 import { type ExecDocker, alreadyGone, nameLines, readDocker } from './docker-runner-support.js';
+import { StartupRefused } from './startup-cause.js';
 import { type VolumeListing, planTaskVolume } from './task-restore.js';
 import {
     TASK_MOUNT,
@@ -45,6 +46,25 @@ export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob, si
     const read = await readTaskVolume(execDocker, job, signal);
     return read.kind === 'value' && read.value[TASK_ROOT_LABEL] === taskRootOf(job);
 }
+
+/**
+ * The guard in front of every container that mounts the task volume after `ensureTaskVolume`: the
+ * reaper may have deleted it since (issue #775), and `--mount type=volume` would create an EMPTY
+ * unlabelled one the attempt then runs on. A volume that is gone, or an inspect that proved nothing,
+ * is a transient startup refusal — an infrastructure interruption the board refunds, never a run failure.
+ */
+export async function assertTaskVolumeIsOurs(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    signal?: AbortSignal
+): Promise<void> {
+    if (await taskVolumeIsOurs(execDocker, job, signal)) return;
+    throw new StartupRefused(taskVolumeGoneWords(job), 'transient');
+}
+
+/** What a refusal for a missing task volume says. */
+export const taskVolumeGoneWords = (job: BoardJob): string =>
+    `the task volume ${taskVolumeName(job)} of job ${job.id} is gone or unreadable; nothing is mounted on a volume made empty`;
 
 /**
  * The thread's task volumes by its root label (`docker volume ls`), their generations read off the

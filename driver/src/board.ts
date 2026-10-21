@@ -630,7 +630,7 @@ export interface Board {
      * refused, failed, or malformed answer — means "the board cannot answer", and the reaper
      * reaps nothing on it: absence must be proven, never guessed.
      */
-    leases(ids: readonly string[]): Promise<BoardLease[] | null>;
+    leases(ids: readonly string[], withThreads?: boolean): Promise<BoardLease[] | null>;
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
@@ -737,10 +737,11 @@ const parseLeaseRows = (rows: unknown[]): BoardLease[] | null =>
  */
 const bestEffortLeases = async (
     post: (path: string, body: unknown, allow404?: boolean) => Promise<Response>,
-    ids: readonly string[]
+    ids: readonly string[],
+    withThreads: boolean
 ): Promise<BoardLease[] | null> => {
     try {
-        const response = await post('/api/jobs/leases', { ids: [...ids] });
+        const response = await post('/api/jobs/leases', { ids: [...ids], ...(withThreads ? { threads: true } : {}) });
         if (!response.ok) return null;
         const bodyJson = (await response.json()) as { jobs?: unknown };
         return Array.isArray(bodyJson.jobs) ? parseLeaseRows(bodyJson.jobs) : null;
@@ -1018,8 +1019,8 @@ export function createBoard({
             return answer.code === 'INTERRUPTIONS_EXHAUSTED' ? 'exhausted' : 'lost';
         },
 
-        async leases(ids) {
-            return bestEffortLeases(post, ids);
+        async leases(ids, withThreads = false) {
+            return bestEffortLeases(post, ids, withThreads);
         },
     };
 }

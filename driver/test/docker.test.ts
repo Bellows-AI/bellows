@@ -28,6 +28,7 @@ import {
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { TASK_MOUNT, TASK_ROOT_LABEL, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
 import { withTaskVolume } from './fixtures/task-volume-daemon.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import {
     AdoptionBlocked,
     currentActivity,
@@ -1652,6 +1653,35 @@ describe('the docker runner', () => {
         });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
+    });
+
+    it('starts no runner on a task volume the reaper deleted since the group was made: a transient refusal, no empty volume (issue #775)', async () => {
+        let inspects = 0;
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            // The ensure and the group's guard find the volume; the runner's guard finds it gone.
+            if (args[0] === 'volume' && args[1] === 'inspect' && args[2] === '--format' && ++inspects > 2) {
+                throw Object.assign(new Error('inspect failed'), { stderr: 'Error: No such volume: x' });
+            }
+            return withTaskVolume(noContainer)(args);
+        };
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            spawnFn as unknown as typeof spawn,
+            exec,
+            {
+                steps: fakeSteps().sink,
+                sleep: async () => {},
+            }
+        );
+        const refused = await runner.run(job, { id: SESSION, resume: false }).catch((e: unknown) => e);
+
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect((refused as StartupRefused).startupCause).toBe('transient');
+        expect(calls.some((args) => args[0] === 'create' && args.includes(containerName(job)))).toBe(false);
+        expect(spawnFn).not.toHaveBeenCalled();
     });
 
     // Issue #452: the runner is created, handed its managed settings as a root-owned 0444

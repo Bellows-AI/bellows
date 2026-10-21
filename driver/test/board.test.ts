@@ -362,6 +362,15 @@ describe('asking the board for the orphan reaper lease lookups', () => {
         expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
     });
 
+    it('asks for thread facts with threads: true, and only when told to', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
+        const board = boardOn(fetch);
+
+        await board.leases([ID_A], true);
+
+        expect(calls[0]!.body).toEqual({ ids: [ID_A], threads: true });
+    });
+
     it('omits the bearer header against an open board, like every other call', async () => {
         const { calls, fetch } = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
         const board = boardOn(fetch);

@@ -167,13 +167,18 @@ export async function waitForSettleOf(
  * the reaper needs three facts, and a worker credential must never pull more of a row than the
  * question asked for.
  */
-export async function leasesOf(ctx: JobStoreContext, ids: readonly string[]): Promise<JobLeaseInfo[]> {
+export async function leasesOf(
+    ctx: JobStoreContext,
+    ids: readonly string[],
+    withThreads = false
+): Promise<JobLeaseInfo[]> {
     const { sql, orgId } = ctx;
     const rows = await sql<{ id: string; status: JobStatus; lease_token: string | null }[]>`
         select id, status, lease_token from job
         where org_id = ${orgId} and id = any(${[...ids]}::uuid[])
     `;
-    const threads = await threadFactsOf(ctx, ids);
+    // Thread facts cost a subquery per root, so only the task-volume sweep (which names roots) asks for them.
+    const threads = withThreads ? await threadFactsOf(ctx, ids) : new Map<string, JobThreadFacts>();
     return rows.map((row) => {
         const thread = threads.get(row.id);
         return { id: row.id, status: row.status, leaseToken: row.lease_token, ...(thread ? { thread } : {}) };
@@ -197,12 +202,15 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
             on_last: boolean | null;
             checkpoint_truncated: boolean | null;
             checkpoint_finalized_at: Date | null;
+            last_manifest_at: Date | null;
         }[]
     >`
         select r.id, r.checkpoint_truncated, r.checkpoint_finalized_at,
                exists (select 1 from job t where t.org_id = r.org_id and t.root_job_id = r.id
                        and t.status in ('queued', 'running')) as live,
                last.status as last_status, last.finished_at as last_finished_at,
+               (select max(m.created_at) from artifact_manifest m
+                where m.org_id = r.org_id and m.job_id = last.id::text and m.claim_seq = last.claim_seq) as last_manifest_at,
                (r.checkpoint_job_id = last.id::text and r.checkpoint_claim_seq = last.claim_seq) as on_last,
                (exists (select 1 from artifact_chunk c
                         where c.org_id = r.org_id and c.root_job_id = r.id::text
@@ -224,6 +232,15 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
         ) last on true
         where r.org_id = ${orgId} and r.id = any(${[...ids]}::uuid[]) and r.root_job_id = r.id
     `;
+    // The thread is idle from its newest finalize: the attempt, its checkpoint, or a manifest that landed late.
+    const latestOf = (row: (typeof rows)[number]): Date =>
+        new Date(
+            Math.max(
+                row.last_finished_at?.getTime() ?? 0,
+                row.checkpoint_finalized_at?.getTime() ?? 0,
+                row.last_manifest_at?.getTime() ?? 0
+            )
+        );
     return new Map(
         rows.map((row) => {
             const finalized = row.last_status !== null && !LIVE_STATUSES.includes(row.last_status);
@@ -234,7 +251,7 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
                 row.id,
                 {
                     live: row.live,
-                    lastFinalizedAt: finalized && row.last_finished_at ? row.last_finished_at.toISOString() : null,
+                    lastFinalizedAt: finalized && row.last_finished_at ? latestOf(row).toISOString() : null,
                     artifactsComplete: row.pending === false,
                     checkpoint,
                     checkpointFinalizedAt: row.checkpoint_finalized_at?.toISOString() ?? null,
@@ -286,6 +303,7 @@ export async function restoreScopeOf(
             checkpoint_truncated: boolean | null;
             checkpoint_cause: string | null;
             checkpoint_finalized_at: Date | null;
+            last_manifest_at: Date | null;
         }[]
     >`
         select checkpoint_job_id, checkpoint_claim_seq, checkpoint_executor, checkpoint_session,

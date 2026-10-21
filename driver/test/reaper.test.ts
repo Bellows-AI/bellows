@@ -382,9 +382,11 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
         volumes: [{ name: `factory-task-${root}-1` }, { name: `factory-task-${root}-2`, uid: 'uid-2' }],
     });
 
+    /** `answer` may be a function of the 0-based call, the batch lookup being call 0 and each pre-delete re-read after it. */
     const run = async (opts: {
         listed: VolumeThread[] | null;
-        answer: BoardLease[] | null;
+        skipped?: string[];
+        answer: BoardLease[] | null | ((call: number) => BoardLease[] | null);
         now?: number;
     }): Promise<{ reaped: VolumeThread[]; asked: string[][]; logs: string[] }> => {
         const reaped: VolumeThread[] = [];
@@ -393,7 +395,8 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
         const arm: ReaperArm = {
             scan: async () => [],
             reap: async () => [],
-            scanVolumes: async () => opts.listed,
+            scanVolumes: async () =>
+                opts.listed === null ? null : { threads: opts.listed, skipped: opts.skipped ?? [] },
             reapVolumes: async (t) => {
                 reaped.push(t);
                 return t.volumes.map((v) => v.name);
@@ -403,7 +406,7 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
             board: {
                 leases: async (ids) => {
                     asked.push([...ids]);
-                    return opts.answer;
+                    return typeof opts.answer === 'function' ? opts.answer(asked.length - 1) : opts.answer;
                 },
             },
             arm,
@@ -421,7 +424,8 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
 
     it('deletes every generation of a whole idle thread, once, asking the board by root id', async () => {
         const out = await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, thread())] });
-        expect(out.asked).toEqual([[ROOT_A]]);
+        // The batch lookup, then a single-root re-read right before the delete.
+        expect(out.asked).toEqual([[ROOT_A], [ROOT_A]]);
         expect(out.reaped).toEqual([volumes(ROOT_A)]);
         expect(out.logs.join('\n')).toContain(`factory-task-${ROOT_A}-1`);
     });
@@ -434,9 +438,84 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
         expect(out.reaped.map((t) => t.root)).toEqual([ROOT_B]);
     });
 
-    it('keeps a thread the board does not answer for, and one whose answer carries no thread facts', async () => {
-        const out = await run({ listed: [volumes(ROOT_A), volumes(ROOT_B)], answer: [root(ROOT_B, undefined)] });
+    it('keeps a thread whose answer carries no thread facts', async () => {
+        const out = await run({ listed: [volumes(ROOT_B)], answer: [root(ROOT_B, undefined)] });
         expect(out.reaped).toEqual([]);
+    });
+
+    describe('a root the board no longer holds (the thread was removed)', () => {
+        const dated = (root: string, createdAtMs: number | null | undefined): VolumeThread => ({
+            root,
+            volumes: [{ name: `factory-task-${root}-1`, createdAtMs }],
+        });
+        const NOW = FINALIZED + 25 * HOUR;
+
+        it('deletes the volumes once every one is at least the ttl old', async () => {
+            const old = dated(ROOT_A, NOW - 24 * HOUR);
+            const out = await run({ listed: [old], answer: [], now: NOW });
+            expect(out.reaped).toEqual([old]);
+        });
+
+        it('keeps them while one is younger than the ttl', async () => {
+            const out = await run({ listed: [dated(ROOT_A, NOW - 24 * HOUR + 1)], answer: [], now: NOW });
+            expect(out.reaped).toEqual([]);
+        });
+
+        it.each([
+            ['null', null],
+            ['missing', undefined],
+        ])('keeps them when the creation time is %s', async (_n, at) => {
+            const out = await run({ listed: [dated(ROOT_A, at)], answer: [], now: NOW });
+            expect(out.reaped).toEqual([]);
+        });
+
+        it('keeps them when the board could not answer: an unanswered lookup is not an absence', async () => {
+            const out = await run({ listed: [dated(ROOT_A, 0)], answer: null, now: NOW });
+            expect(out.reaped).toEqual([]);
+        });
+
+        it('keeps them when the re-read before the delete cannot be answered', async () => {
+            const out = await run({
+                listed: [dated(ROOT_A, 0)],
+                answer: (call) => (call === 0 ? [] : null),
+                now: NOW,
+            });
+            expect(out.reaped).toEqual([]);
+        });
+    });
+
+    it('keeps a board-condemned thread while its artifacts are pending, and follows the ttl once they complete', async () => {
+        const pending = thread({ artifactsComplete: false });
+        // Whole at the ttl, pending until the bound: the same thread, 25h idle.
+        expect((await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, pending)] })).reaped).toEqual([]);
+        const done = await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, thread())] });
+        expect(done.reaped).toEqual([volumes(ROOT_A)]);
+    });
+
+    it('deletes nothing when the thread went live between the batch lookup and the delete', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A)],
+            answer: (call) => [root(ROOT_A, call === 0 ? thread() : thread({ live: true }), 'running')],
+        });
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('deletes nothing when the re-read before the delete cannot be answered', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A)],
+            answer: (call) => (call === 0 ? [root(ROOT_A, thread())] : null),
+        });
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('logs the labelled volumes the arm skipped, and still sweeps the rest', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A)],
+            skipped: ['task volume junk: root label is not a uuid'],
+            answer: [root(ROOT_A, thread())],
+        });
+        expect(out.logs.join('\n')).toContain('task volume junk');
+        expect(out.reaped).toEqual([volumes(ROOT_A)]);
     });
 
     it('deletes nothing when the volume list is inconclusive, and never asks the board', async () => {
@@ -463,7 +542,7 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
             arm: {
                 scan: async () => [],
                 reap: async () => [],
-                scanVolumes: async () => [volumes(ROOT_A)],
+                scanVolumes: async () => ({ threads: [volumes(ROOT_A)], skipped: [] }),
                 reapVolumes: async (t) => {
                     reaped.push(t);
                     return [];

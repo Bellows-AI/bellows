@@ -63,7 +63,7 @@ async function task() {
         session: 'none',
         stream,
     });
-    const threadOf = async (root = created.id) => (await jobs.leases([root]))[0]!.thread;
+    const threadOf = async (root = created.id) => (await jobs.leases([root], true))[0]!.thread;
     const succeed = (id: string, leaseToken: string) =>
         jobs.complete(id, leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
     return { id: created.id, first, refOf, threadOf, succeed };
@@ -99,6 +99,23 @@ describe.skipIf(!enabled)('lease lookup thread facts — database', () => {
         await artifacts.finalize(ref, { ...MANIFEST, state: 'truncated', terminalCause: 'checkpoint_cap' });
         await t.succeed(t.id, t.first.leaseToken);
         expect(await t.threadOf()).toMatchObject({ live: false, artifactsComplete: true, checkpoint: 'truncated' });
+    });
+
+    it('measures idle from the newest finalize: a manifest that lands after the attempt moves it', async () => {
+        const t = await task();
+        await artifacts.finalize(t.refOf(t.id, t.first.claimSeq), COMPLETE);
+        await t.succeed(t.id, t.first.leaseToken);
+        const before = Date.parse((await t.threadOf())!.lastFinalizedAt!);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        await artifacts.finalize(t.refOf(t.id, t.first.claimSeq, 'transcript'), COMPLETE);
+        expect(Date.parse((await t.threadOf())!.lastFinalizedAt!)).toBeGreaterThan(before);
+    });
+
+    it('answers no thread facts unless the caller asks for them', async () => {
+        const t = await task();
+        const [row] = await jobs.leases([t.id]);
+        expect(row).toBeDefined();
+        expect(row).not.toHaveProperty('thread');
     });
 
     it('holds artifacts pending while a stream of the last attempt has chunks and no manifest', async () => {
@@ -142,7 +159,7 @@ describe.skipIf(!enabled)('lease lookup thread facts — database', () => {
         await t.succeed(t.id, t.first.leaseToken);
         const child = await jobs.createFollowUp(t.id, 'adjust', null);
         if (typeof child === 'string' || !('id' in child)) throw new Error(`refused: ${JSON.stringify(child)}`);
-        const [row] = await jobs.leases([child.id]);
+        const [row] = await jobs.leases([child.id], true);
         expect(row).toBeDefined();
         expect(row).not.toHaveProperty('thread');
         await claim();

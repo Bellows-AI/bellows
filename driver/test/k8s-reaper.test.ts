@@ -764,29 +764,46 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
         const { arm } = armOver([
             listing([claim(ROOT, 1), claim(ROOT, 2, {}, { [TASK_UNSCHEDULABLE_LABEL]: 'true' }), claim(OTHER, 1)]),
         ]);
-        const threads = await arm.scanVolumes!();
-        expect(threads).toEqual([
+        const listed = await arm.scanVolumes!();
+        expect(listed!.threads).toEqual([
             {
                 root: ROOT,
                 volumes: [
-                    { name: `factory-task-${ROOT}-1`, uid: `uid-1111-1` },
-                    { name: `factory-task-${ROOT}-2`, uid: `uid-1111-2` },
+                    { name: `factory-task-${ROOT}-1`, uid: `uid-1111-1`, createdAtMs: null },
+                    { name: `factory-task-${ROOT}-2`, uid: `uid-1111-2`, createdAtMs: null },
                 ],
             },
-            { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1`, uid: `uid-4444-1` }] },
+            { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1`, uid: `uid-4444-1`, createdAtMs: null }] },
         ]);
+        expect(listed!.skipped).toEqual([]);
+    });
+
+    it('carries the claim’s creationTimestamp, null when it has none', async () => {
+        const { arm } = armOver([
+            listing([claim(ROOT, 1, { creationTimestamp: '2026-10-01T00:00:00Z' }), claim(ROOT, 2)]),
+        ]);
+        const volumes = (await arm.scanVolumes!())!.threads[0]!.volumes;
+        expect(volumes.map((volume) => volume.createdAtMs)).toEqual([Date.parse('2026-10-01T00:00:00Z'), null]);
+    });
+
+    it.each([
+        ['a claim whose root label is no uuid', claim('not-a-uuid', 1)],
+        ['a claim whose name is no generation of its root', claim(ROOT, 1, { name: 'factory-task-x' })],
+    ])('skips and names %s without discarding the rest of the listing', async (_name, junk) => {
+        const { arm } = armOver([listing([junk, claim(OTHER, 1)])]);
+        const listed = (await arm.scanVolumes!())!;
+        expect(listed.threads.map((thread) => thread.root)).toEqual([OTHER]);
+        expect(listed.skipped).toHaveLength(1);
     });
 
     it('leaves a claim that is already terminating to its deletion', async () => {
         const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: '2026-10-01T00:00:00Z' })])]);
-        expect(await arm.scanVolumes!()).toEqual([]);
+        expect(await arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
     });
 
     it.each([
         ['a refused list', [listing([], 500)]],
         ['a transport failure', []],
-        ['a claim whose root label is no uuid', [listing([claim('not-a-uuid', 1)])]],
-        ['a claim whose name is no generation of its root', [listing([claim(ROOT, 1, { name: 'factory-task-x' })])]],
         ['a claim without a uid', [listing([claim(ROOT, 1, { uid: undefined })])]],
     ] as const)('answers null — delete nothing — on %s', async (_name, answers) => {
         const { arm } = armOver(answers);

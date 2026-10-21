@@ -608,10 +608,20 @@ describe('the docker reaper arm: task volumes (issue #775)', () => {
         });
 
     /** A daemon answering by argv: the listing from `listing`, every other call recorded and answered `rm`. */
-    const daemon = (listing: string | Error, rm: (name: string) => Error | null = () => null) => {
+    const CREATED = '2026-01-01T00:00:00Z';
+    const daemon = (
+        listing: string | Error,
+        rm: (name: string) => Error | null = () => null,
+        created: (name: string) => string | Error = () => CREATED
+    ) => {
         const calls: string[][] = [];
         const execDocker: ExecDocker = async (args) => {
             calls.push([...args]);
+            if (args[0] === 'volume' && args[1] === 'inspect') {
+                const at = created(args[4]!);
+                if (at instanceof Error) throw at;
+                return { stdout: at };
+            }
             if (args.join(' ') === LS.join(' ')) {
                 if (listing instanceof Error) throw listing;
                 return { stdout: listing };
@@ -628,22 +638,47 @@ describe('the docker reaper arm: task volumes (issue #775)', () => {
 
     it('lists every generation by the root label and groups them by root', async () => {
         const { arm } = daemon([row(ROOT, 1), row(ROOT, 2), row(OTHER, 1)].join('\n'));
-        expect(await arm.scanVolumes!()).toEqual([
-            { root: ROOT, volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }] },
-            { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1` }] },
+        const createdAtMs = Date.parse(CREATED);
+        expect(await arm.scanVolumes!()).toEqual({
+            threads: [
+                {
+                    root: ROOT,
+                    volumes: [
+                        { name: `factory-task-${ROOT}-1`, createdAtMs },
+                        { name: `factory-task-${ROOT}-2`, createdAtMs },
+                    ],
+                },
+                { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1`, createdAtMs }] },
+            ],
+            skipped: [],
+        });
+    });
+
+    it('reads a creation time the daemon would not give as null, keeping the listing', async () => {
+        const { arm } = daemon(row(ROOT, 1), undefined, () => 'not a date');
+        expect((await arm.scanVolumes!())!.threads[0]!.volumes).toEqual([
+            { name: `factory-task-${ROOT}-1`, createdAtMs: null },
         ]);
     });
 
+    it.each([
+        ['a root label that is no uuid', row('not-a-uuid', 1, { Labels: 'factory.task-root=not-a-uuid' })],
+        ['a name that is no generation of its root', row(ROOT, 1, { Name: 'factory-task-x' })],
+        ['a volume without a root label value', JSON.stringify({ Name: `factory-task-${ROOT}-1`, Labels: '' })],
+    ])('skips and names one junk volume (%s) without discarding the rest of the listing', async (_name, junk) => {
+        const { arm } = daemon([junk, row(OTHER, 1)].join('\n'));
+        const listing = (await arm.scanVolumes!())!;
+        expect(listing.threads.map((thread) => thread.root)).toEqual([OTHER]);
+        expect(listing.skipped).toHaveLength(1);
+    });
+
     it('answers an empty daemon as no threads', async () => {
-        expect(await daemon('').arm.scanVolumes!()).toEqual([]);
+        expect(await daemon('').arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
     });
 
     it.each([
         ['a refused list', new Error('daemon down')],
         ['a line that is no record', 'garbage'],
-        ['a root label that is no uuid', row('not-a-uuid', 1, { Labels: 'factory.task-root=not-a-uuid' })],
-        ['a name that is no generation of its root', row(ROOT, 1, { Name: 'factory-task-x' })],
-        ['a volume without labels', JSON.stringify({ Name: `factory-task-${ROOT}-1` })],
     ])('answers null — delete nothing — on %s', async (_name, listing) => {
         expect(await daemon(listing).arm.scanVolumes!()).toBeNull();
     });
