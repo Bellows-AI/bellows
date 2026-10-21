@@ -69,6 +69,8 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume —
   up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next
   control poll. `driver/src/k8s-binding.ts`.
+- Stated limit: a takeover needs `driver.rebindGraceMs` to outlast that refresh (~60 s measured); a shorter grace ends
+  the group before the new holder's binding arrives. `charts/factory/values.yaml`, `scripts/test-k8s.sh`.
 - Stated limit: why a driver ended a run is recorded on the attempt only where it outlives the kill — a hard-kill
   deletes the Job, its record, its Secrets and its claim before `end` reaches the board, a refused record is
   none — and such a run is redone in its tree and session. `driver/src/termination.ts`,

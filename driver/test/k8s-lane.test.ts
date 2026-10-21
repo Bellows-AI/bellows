@@ -481,8 +481,6 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
         // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
-        // A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind
-        // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.
         expect(script).toContain('LANE_REBIND_GRACE_S=120');
         expect(installCall).toContain('--set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))"');
     });
@@ -493,7 +491,9 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         expect(script).toContain('await_job_complete "$hard_job" "$ORPHANED_S"');
         expect(script).toContain('await_job_complete "$drained_job" "$HANDOVER_S"');
         expect(script).toContain('"job $hard: $TOOK_OVER"');
-        expect(script).toContain('"job $drained: $TOOK_OVER"');
+        // The hard kill's Job may be deleted by the adopter before Complete is seen: gone plus a succeeded row is the end.
+        expect(script).toContain('case "$(await_brief "$hard" \'succeeded*\' 60)" in succeeded*)');
+        expect(script).toContain('"job $drained: $ADOPTED"');
     });
 
     it('renders DRIVER_REBIND_GRACE_MS from a chart value whose default is the driver default', () => {

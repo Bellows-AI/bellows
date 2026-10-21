@@ -218,6 +218,12 @@ describe('the executor isolation record (#382)', () => {
         );
     });
 
+    it('states that a takeover needs the rebind grace to outlast the kubelet refresh', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a takeover needs `driver.rebindGraceMs` to outlast that refresh (~60 s measured); a shorter grace ends the group before the new holder's binding arrives."
+        );
+    });
+
     // Issue #821 (D1): a board that takes neither the staged conclusion nor the verdict for a whole
     // lease leaves the group to adoption, which keeps the agent's outcome but not the rest.
     it('states what an outage past the lease costs a finished attempt', () => {

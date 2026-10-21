@@ -1480,8 +1480,7 @@ helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHA
 }
 state_installed=1
 LANE_LEASE_S=120
-# A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes,
-# docs/kubernetes.md): the grace outlasts it, or the group ends before it can follow the new holder.
+# Stated limit (docs/kubernetes.md): a takeover needs this grace to outlast the kubelet's Secret refresh (~60 s measured).
 LANE_REBIND_GRACE_S=120
 LANE_MARGIN_S=40
 # A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
@@ -2502,8 +2501,16 @@ else
     expect_not_contains 'the reaper logs nothing for the live job' "$(driver_logs)" "reaper: job $hard"
     # The lease then runs out on its own: the runner finishes only past it, and claim 2 takes it over.
     release_stub "$hard_release"
-    await_job_complete "$hard_job" "$ORPHANED_S" && ok 'the runner of a deleted driver runs to its end' ||
+    # The adopting driver deletes the finished Job, which can win the race against Complete: a Job gone
+    # with the board row's attempt ended is the same end.
+    if await_job_complete "$hard_job" "$ORPHANED_S"; then
+        ok 'the runner of a deleted driver runs to its end'
+    elif ! kubectl get job "$hard_job" -n "$NAMESPACE" >/dev/null 2>&1 &&
+        case "$(await_brief "$hard" 'succeeded*' 60)" in succeeded*) true ;; *) false ;; esac; then
+        ok 'the runner of a deleted driver runs to its end'
+    else
         bad 'the runner of a deleted driver runs to its end' "$(kubectl get job "$hard_job" -n "$NAMESPACE" 2>&1)"
+    fi
     hard_end="$(await_brief "$hard" 'succeeded*' 240)"
     [ "$hard_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
         bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end"
@@ -2542,7 +2549,7 @@ if [ -n "$drained_pod" ]; then
     [ "$drained_end" = "succeeded|1|1|1|$DRAINED" ] && ok 'the returning driver adopts the handed-over run' ||
         bad 'the returning driver adopts the handed-over run' "status|attempts|count|claimSeq|reason: $drained_end"
     expect_contains 'the handed-over output is the first runner pod output' "$(job_output "$drained")" "released in $drained_pod"
-    expect_contains 'the returning driver logs the takeover' "$(driver_logs)" "job $drained: $TOOK_OVER"
+    expect_contains 'the returning driver logs the adoption' "$(driver_logs)" "job $drained: $ADOPTED"
 fi
 
 # c. The runner pod deleted mid-run, its driver alive: an interruption the driver reports at once,
