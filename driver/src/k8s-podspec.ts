@@ -641,6 +641,58 @@ export function runnerJobSpec(
     };
 }
 
+/**
+ * The one-shot reader Job of a close-time readout whose group has ended (`k8s-reader.ts`): the only pod
+ * but the task pod that mounts the task volume, and only after the group's pod is terminal. Hardened like
+ * every driver-specced pod; the script and its argv are the supervised readout's own, the env its values.
+ */
+export function readerJobSpec(
+    config: DriverConfig,
+    job: BoardJob,
+    name: string,
+    readout: { argv: string[]; env: Record<string, string>; timeoutMs: number }
+) {
+    const labels = { [JOB_LABEL]: job.id, [LEASE_LABEL]: job.leaseToken, ...releaseLabel(config) };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: Math.max(1, Math.ceil(readout.timeoutMs / MS_PER_SECOND)),
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels, ...doNotDisruptField(config) },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    securityContext: {
+                        ...podHardeningField(),
+                        fsGroup: GATE_GID,
+                        fsGroupChangePolicy: 'OnRootMismatch',
+                    },
+                    ...pullSecretsField(config),
+                    ...schedulingField(config),
+                    containers: [
+                        {
+                            name: 'readout',
+                            image: executorImage(config, job.executorType),
+                            imagePullPolicy: config.imagePullPolicy,
+                            ...containerHardeningField(),
+                            command: readout.argv,
+                            env: Object.entries(readout.env).map(([key, value]) => ({ name: key, value })),
+                            volumeMounts: [taskMount()],
+                        },
+                    ],
+                    volumes: [taskPodVolume(job)],
+                },
+            },
+        },
+    };
+}
+
 export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespaces/${namespace}/jobs`;
 
 /**
@@ -780,8 +832,8 @@ export const runnerName = (job: BoardJob): string => {
 };
 
 /**
- * The close-time readouts under kubernetes (`runReadoutStep`) run as supervised steps of the task pod (the supervisor
- * mounts the task volume), never as Jobs of their own: a second pod mounting a ReadWriteOncePod
+ * The close-time readouts of a live group (`runReadoutStep`) run as supervised steps of the task pod (the supervisor
+ * mounts the task volume), never as Jobs of their own (an adopted ended group has no supervisor: `readerJobSpec`): a second pod mounting a ReadWriteOncePod
  * volume the task pod holds would sit Pending. The scripts are the ones docker runs in a throwaway
  * container (opencode-readout.cjs, claude-turns.cjs), passed by content; everything board-derived
  * travels as an env VALUE. The step runs read-write over the volume on purpose: opening a sqlite

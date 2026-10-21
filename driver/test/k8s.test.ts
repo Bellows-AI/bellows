@@ -601,8 +601,9 @@ describe('the runner job spec', () => {
 });
 
 /*
- * Every container the driver specs, by name: the runner's pod and its sidecars. No other pod
- * exists (the close-time readouts are supervised steps), and the source-scan test below pins that.
+ * Every container the driver specs, by name: the runner's pod and its sidecars. The one other pod is
+ * the reader Job of an ended group's close-time readouts (`readerJobSpec`, `k8s-reader.test.ts`); the
+ * source-scan test below pins that no other Job spec exists.
  * Each entry is a thunk, built inside the it bodies — the file's `namespace` is declared below, and
  * nothing here may build eagerly. The admission policy is the backstop that refuses any other pod
  * at the apiserver either way.
@@ -6451,6 +6452,8 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect(logRead).toBeGreaterThanOrEqual(0);
         expect(deleted).toBe(-1);
         expect(secretGone).toBeGreaterThan(logRead);
+        // The ended group has no supervisor to answer a step: its close-time readout is a reader Job.
+        expect(calls.filter((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toHaveLength(1);
         const held = await request('GET', claimPathFor(job.id));
         expect(JSON.parse(held.body)).toMatchObject({ data: { holder: NEW_TOKEN } });
     });

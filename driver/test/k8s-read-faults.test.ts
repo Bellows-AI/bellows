@@ -314,7 +314,13 @@ const CLAIM = `${API}/configmaps/factory-job-<job>-claim`;
 const OLD_JOBS = `GET ${BATCH}/jobs?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const OLD_PODS = `GET ${API}/pods?labelSelector=factory.job=<job>,factory.lease!=<lease>`;
 const secretsOf = (label: string): string[] => [`DELETE ${API}/secrets/factory-job-<job>-<${label}>-env`];
-const ADOPTED_WRITES = [`POST ${API}/configmaps`, ...secretsOf('prior')];
+// The close-time readout of the ended group is a reader Job: created, read, deleted (`k8s-reader.ts`).
+const ADOPTED_WRITES = [
+    `POST ${API}/configmaps`,
+    `POST ${BATCH}/jobs`,
+    `DELETE ${BATCH}/jobs/factory-read-<hash>`,
+    ...secretsOf('prior'),
+];
 
 /** A scenario's pins, by fault: one line per documented violation. */
 type Pins = Partial<Record<K8sFault, RegExp[]>>;
