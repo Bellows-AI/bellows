@@ -260,7 +260,8 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
         const { stream } = checkpointStream();
         const { url } = await serve(stream);
 
-        expect(await restore([], url)).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        // `absent`: the volume is confirmed to hold no tree, the one answer that may let the driver drop it.
+        expect(await restore([], url)).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable', absent: true });
         expect(existsSync(restoredTree())).toBe(false);
     });
 
@@ -272,6 +273,8 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
         const verdict = await restore(chunks, url);
 
         expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        // A refused checkpoint says nothing about the volume: never `absent`.
+        expect(verdict).not.toHaveProperty('absent');
         expect(existsSync(restoredTree())).toBe(false);
     });
 

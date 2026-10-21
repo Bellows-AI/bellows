@@ -19,7 +19,8 @@
 // the restore's own earlier success: nothing is fetched and nothing is touched.
 // One execFileSync per git call: no value can become a command. One JSON verdict on the last line:
 //   {ok:true, reason:null, restored:boolean}
-//   {ok:false, reason, kind?:'checkpoint_unrestorable'}   `kind` only for a refusal no retry fixes.
+//   {ok:false, reason, kind?:'checkpoint_unrestorable', absent?:true}   `kind` only for a refusal no retry
+//                 fixes; `absent` only when the volume holds no tree and no checkpoint was given.
 //
 // Environment (set by the driver and the supervisor):
 //   CHECKOUT      — the task's own tree (`/task/<repo segment>`), to be created;
@@ -62,6 +63,8 @@ const opencodeDb = process.env.OPENCODE_DB;
 const SESSION_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 
 class Unrestorable extends Error {}
+/** The volume is confirmed to hold no tree and nothing was given to rebuild it: the one answer naming the volume empty. */
+class Absent extends Unrestorable {}
 /** Bytes that do not match the digest the board listed: retried like a transport fault, then final for a session. */
 class Corrupt extends Error {}
 const unrestorable = (message) => new Unrestorable(message);
@@ -393,7 +396,7 @@ const main = async () => {
     try {
         const chunks = JSON.parse(process.env.CHUNKS || '[]');
         if (chunks.length === 0)
-            throw unrestorable('the tree is not on this volume and no complete checkpoint is stored');
+            throw new Absent('the tree is not on this volume and no complete checkpoint is stored');
         const stream = path.join(work, 'stream');
         await download(stream, chunks);
         const line = readUntil(stream, 0, '\n', HEADER_MAX_BYTES);
@@ -435,7 +438,12 @@ const say = (verdict) => process.stdout.write(JSON.stringify(verdict) + '\n');
 void main().then(say, (e) =>
     say(
         e instanceof Unrestorable
-            ? { ok: false, reason: e.message, kind: KIND_UNRESTORABLE }
+            ? {
+                  ok: false,
+                  reason: e.message,
+                  kind: KIND_UNRESTORABLE,
+                  ...(e instanceof Absent ? { absent: true } : {}),
+              }
             : { ok: false, reason: detail(e) }
     )
 );
