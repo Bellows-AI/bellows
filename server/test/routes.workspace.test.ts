@@ -257,7 +257,7 @@ describe('GET /api/workspace: orphan sizes and the checkout total', () => {
         mkdirSync(checkout, { recursive: true });
         writeFileSync(join(checkout, 'block'), 'w'.repeat(2048));
         // Promote the row to `ready` the way the queue would — the state whose directory is real.
-        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+        store.seedReady(caller.user.id, { owner: 'acme', name: 'web' });
 
         await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
         await settle();
@@ -283,7 +283,7 @@ describe('GET /api/workspace: orphan sizes and the checkout total', () => {
         const cacheDir = join(memberDir, '.cache', 'acme', 'web', 'NPM_CONFIG_CACHE');
         mkdirSync(cacheDir, { recursive: true });
         writeFileSync(join(cacheDir, 'tarball'), 'c'.repeat(8192));
-        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+        store.seedReady(caller.user.id, { owner: 'acme', name: 'web' });
 
         await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
         await settle();
@@ -309,7 +309,7 @@ describe('GET /api/workspace: orphan sizes and the checkout total', () => {
         mkdirSync(victim, { recursive: true });
         writeFileSync(join(victim, 'blob'), 'v'.repeat(65_536));
         symlinkSync(join(root, 'other-org'), join(memberDir, '.cache'));
-        await store.markReady(caller.user.id, { owner: 'acme', name: 'web' });
+        store.seedReady(caller.user.id, { owner: 'acme', name: 'web' });
 
         await app.inject({ method: 'GET', url: '/api/workspace', headers: { cookie } });
         await settle();

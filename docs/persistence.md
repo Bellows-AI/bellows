@@ -6,7 +6,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Migration runner, boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts` |
+| Migration runner (advisory-locked, one transaction), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
@@ -43,6 +43,9 @@ the in-memory stores in `server/test/helpers*.ts`.
   no partition covers, and neither writer can promise a range: `npm run backfill` imports
   transcripts of arbitrary age and an OTLP client's clock can run ahead. Every unique index on the
   table must keep `time` among its columns.
+- **Migrations run under one database-wide advisory xact lock** (`MIGRATION_LOCK_KEY`): a second
+  process reads `schema_migrations` only after the first commits, and a wait past `lockWaitMs` fails
+  the attempt. `server/test-db/migrate.concurrency.test.ts`.
 - **Migrations are not awaited before `listen()`.** They retry with backoff while the database
   container starts; every store gates its own queries on `ready` and degrades until then.
 - **`migrate()` also seeds the `AUTH_MODE=none` org and its stand-in account, and reaps expired
