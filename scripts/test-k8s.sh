@@ -3067,7 +3067,8 @@ tk_settled_at='' # the second the brief first read succeeded, set by tk_settled;
 tk_settled() { # tk_settled <name> <job id> <interruption> -> the checks every case shares once the job ran to its end
     local brief left clean until=$(($(date +%s) + 120))
     tk_settled_at=''
-    brief="$(await_brief "$2" 'succeeded*' 240)" && tk_settled_at=$(date +%s)
+    brief="$(await_brief "$2" 'succeeded*' 240)"
+    [ "$brief" = "succeeded|1|1|1|$3" ] && tk_settled_at=$(date +%s)
     [ "$brief" = "succeeded|1|1|1|$3" ] && ok "$1: the next claim finishes the task once, with one interruption" ||
         bad "$1: the next claim finishes the task once, with one interruption" "status|attempts|count|claimSeq|reason: $brief"
     clean=''
@@ -3377,6 +3378,7 @@ if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; t
         [ -n "$held_at" ] && ok 'd1: the replacement driver takes over the running agent' ||
             bad 'd1: the replacement driver takes over the running agent' "$(driver_logs | grep -F "job $d1:" | tail -5)"
         wait "$drain_pid" 2>/dev/null
+        drain_pid=''
         [ -f "$work/drain.end" ] && ok "d1: $WA is drained" || bad "d1: $WA is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
         tk_touch "$TK_D/$n.go" || bad 'd1: the barrier is released' 'the touch failed'
         tk_settled d1 "$d1" "$DRAINED"
@@ -3419,6 +3421,7 @@ if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; t
         [ -n "$held_at" ] && ok 'd2: the replacement runner holds the barrier again' ||
             bad 'd2: the replacement runner holds the barrier again' "job: $(job_brief "$d2"), markers: $(tk_ready "$TK_D/$n.go.ready-")"
         wait "$drain_pid" 2>/dev/null
+        drain_pid=''
         [ -f "$work/drain.end" ] && ok "d2: $WB is drained" || bad "d2: $WB is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
         tk_touch "$TK_D/$n.go" || bad 'd2: the barrier is released' 'the touch failed'
         tk_settled d2 "$d2" "$POD_LOST"
