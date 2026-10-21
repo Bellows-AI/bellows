@@ -1326,6 +1326,11 @@ kind-*)
     # The images reach the node through the cluster's local registry, so a cluster without it is
     # refused before the build rather than after.
     sh scripts/kind-cluster.sh check "$kind_name" || exit 1
+    # The kubelet's pod sync bounds how fast a rebound Secret reaches the supervisor. An unset (0s) or
+    # unreadable value is the kubelet's one-minute default, never a fast sync.
+    sync="$(docker exec "$kind_name-control-plane" sed -n 's/^syncFrequency: *\([0-9][0-9]*\)s$/\1/p' \
+        /var/lib/kubelet/config.yaml 2>/dev/null)"
+    case "$sync" in '' | 0) KUBELET_SYNC_S=60 ;; *) KUBELET_SYNC_S="$sync" ;; esac
     ;;
 *)
     echo "test-k8s: refusing to run the cluster phase against '$context'."
@@ -1480,9 +1485,10 @@ helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHA
 }
 state_installed=1
 LANE_LEASE_S=120
-# A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes,
-# docs/kubernetes.md): the grace outlasts it, or the group ends before it can follow the new holder.
-LANE_REBIND_GRACE_S=120
+# A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes
+# at the default one-minute sync, docs/kubernetes.md): the grace outlasts two syncs, or the group ends
+# before it can follow the new holder. scripts/kind-cluster.yaml syncs every 10 s: a 30 s grace.
+LANE_REBIND_GRACE_S=$((2 * ${KUBELET_SYNC_S:-60} + 10))
 LANE_MARGIN_S=40
 # A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
 LANE_ORPHAN_S=30
