@@ -2320,6 +2320,7 @@ fi
 # What the recovery and takeover phases share: the interruption reasons the board records, and the lease expiry
 # that stands in for waiting a dead driver's lease out.
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
+TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
 JOB_LOST='infrastructure loss: the runner job '
@@ -2350,7 +2351,7 @@ if selected_phase recovery; then
 # stand-in) — an interruption, then the next attempt, in its session. d: the driver pod and its
 # runner Job deleted together — a replacement runner redoes the attempt in the lost session, on the
 # restored tree. e: the driver lost after its agent exited, while the supervisor still finalizes —
-# the surviving replica's claim waits that out and adopts the run, never sweeps it (issue #824).
+# the surviving replica's claim takes the group over, never sweeps it or waits it out (issues #824, #829).
 # Each job refunds its interrupted attempt and records exactly one interruption; an expired lease
 # is that interruption (issue #822). Only this release's objects are touched, by label.
 
@@ -2617,12 +2618,12 @@ else
         bad 'the lost driver lease is expired while the supervisor finalizes' "$expired"
     final_end="$(await_brief "$final" 'succeeded*' 240)"
     [ "$final_end" = "succeeded|1|1|1|$EXPIRED" ] &&
-        ok 'the surviving driver waits the supervisor out and adopts the run: one attempt, one interruption' ||
-        bad 'the surviving driver waits the supervisor out and adopts the run: one attempt, one interruption' \
+        ok 'the surviving driver takes over the run: one attempt, one interruption' ||
+        bad 'the surviving driver takes over the run: one attempt, one interruption' \
             "status|attempts|count|claimSeq|reason: $final_end"
     expect_contains 'the adopted output is the finalizing runner pod output' "$(job_output "$final")" \
         "released in $final_pod"
-    expect_contains 'the surviving driver logs the adoption' "$(driver_logs)" "job $final: $ADOPTED"
+    expect_contains 'the surviving driver logs the takeover' "$(driver_logs)" "job $final: $TOOK_OVER"
 fi
 kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
@@ -2976,7 +2977,6 @@ fi
 # The takeover and drain phases share these (issue #829).
 TK_D="/workspaces/$member_path/.lane-kill"
 TK_ORIGIN="/workspaces/$member_path/.smoke-origin.git"
-TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
 
 tk_exec() { # tk_exec <argv...> -> runs in the dashboard, which mounts the whole workspaces claim
     kubectl exec "deployment/$RELEASE-factory" -c dashboard -n "$NAMESPACE" --request-timeout=10s -- "$@"

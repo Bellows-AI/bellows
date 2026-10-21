@@ -236,6 +236,10 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('kill -TERM "$driver_pid"');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
         expect(SCRIPT).toContain("DRAINED='the driver was drained'");
+        expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
+        expect(phase).toContain('grep -qF "job $killed: $TOOK_OVER"');
+        expect(phase).toContain('supervisor_served "$drained" 330');
+        expect(SCRIPT).toContain("'supervisor: stopped serving the steps'");
         expect(SCRIPT).toContain("ADOPTED='adopted the finished runner of claim 1, whose driver was lost'");
         expect(phase).toContain('attempts 1');
     });
@@ -265,7 +269,7 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('DRIVER_REAP_INTERVAL_MS=2000');
         expect(phase).toContain('DRIVER_REAP_GRACE_MS=1000');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
-        expect(phase).toContain('took over the running agent of claim 1, whose driver was lost');
+        expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
         expect(phase).toContain('supervisor: rebound to claim 2');
         expect(phase).toContain("resumed gates from claim 1's checkpoint");
         // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).

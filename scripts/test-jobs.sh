@@ -351,6 +351,19 @@ disruption_driver() { # disruption_driver [VAR=value ...] — a services-off dri
     driver_pid=$!
 }
 
+supervisor_served() { # supervisor_served <job-id> <seconds> -> 0 once its supervisor logged it stopped serving; an unreadable log is not a pass
+    local i=0 sup logs
+    while [ "$i" -lt "$2" ]; do
+        sup="$(docker ps -aq --filter "label=factory.job=$1" --filter 'label=factory.role=supervisor' | sed -n 1p)"
+        if [ -n "$sup" ] && logs="$(docker logs "$sup" 2>&1)"; then
+            printf '%s' "$logs" | grep -qF 'supervisor: stopped serving the steps' && return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
 first_runner() { # first_runner <job-id> [docker ps filter] -> the claim-1 runner container's id
     docker ps -aq --filter "label=factory.job=$1" --filter "label=factory.claim-seq=1" ${2:+--filter "$2"}
 }
@@ -401,6 +414,7 @@ last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expir
 }
 
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
+TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
 DRAINED='the driver was drained'
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
@@ -1394,8 +1408,8 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$killed_runner" 2>/dev/null)" = '0' ] &&
     ok 'the runner of a killed driver runs to its end' ||
     bad 'the runner of a killed driver runs to its end' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
-# Issue #824: the next claim takes the group between its agent's exit and its supervisor's end —
-# the orphaned supervisor serves on until its bound — and waits it out rather than sweeping it.
+# Issues #824, #829: the next claim finds the group between its agent's exit and its supervisor's end —
+# the orphaned supervisor serves on until its bound — and takes it over rather than sweeping it.
 [ -n "$(docker ps -q --filter "label=factory.job=$killed" --filter 'label=factory.role=supervisor' --filter status=running)" ] &&
     ok 'its supervisor still finalizes when the next driver starts' ||
     bad 'its supervisor still finalizes when the next driver starts' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
@@ -1408,8 +1422,8 @@ expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
 killed_int="$(interruptions_of "$killed_body")"
 [ "$killed_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
     bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $killed_int"
-grep -qF "job $killed: $ADOPTED" "$work/driver.log" && ok 'the driver logs the adoption' ||
-    bad 'the driver logs the adoption' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
+grep -qF "job $killed: $TOOK_OVER" "$work/driver.log" && ok 'the driver logs the takeover' ||
+    bad 'the driver logs the takeover' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
 reaped=""
 for _ in $(seq 1 30); do
     [ -z "$(first_runner "$killed")" ] && {
@@ -1424,8 +1438,9 @@ stop_driver
 
 # b. The handover: SIGTERM, and a drain that outlasts DRIVER_HANDOVER_MS hands the run back as an
 #    interruption — queued at once — and leaves its runner alive. The next driver is started only
-#    once that runner exited, which is what proves the adoption of a FINISHED runner; the takeover
-#    of a still-running agent is the driver-kill phase's K2 and K2d.
+#    once that runner exited AND its released supervisor stopped serving (past the takeover bound,
+#    the lease plus SUPERVISOR_REBIND_GRACE_MS), which is what proves the adoption of a FINISHED
+#    runner; a group whose supervisor still serves is taken over (case a, driver-kill K2/K4).
 disruption_driver DRIVER_HANDOVER_MS=2000
 drained="$(create_job 'sleep 12; echo "ran in $HOSTNAME"')"
 drained_runner="$(await_first_runner "$drained" running)"
@@ -1452,6 +1467,8 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$drained_runner" 2>/dev/null)" = '0' ] &&
     ok 'the handed-over runner exits 0 on its own' ||
     bad 'the handed-over runner exits 0 on its own' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
+supervisor_served "$drained" 330 && ok 'the released supervisor stopped serving the steps' ||
+    bad 'the released supervisor stopped serving the steps' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
 disruption_driver
 expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" "$ADOPT_S")" succeeded
 drained_body="$(body "$(api GET "/api/jobs/$drained")")"
@@ -1544,7 +1561,6 @@ echo '# driver kill'
 
 DK_TREE="/workspaces/$member_path"
 DK_ORIGIN=".smoke-origin.git"
-TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
 
 driver_kill() { # driver_kill -> the driver gone with no drain: its lease is left to expire
     kill -9 "$driver_pid" 2>/dev/null
