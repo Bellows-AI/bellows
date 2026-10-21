@@ -127,6 +127,16 @@ describe('test-jobs phase options', () => {
         expect(lane.trace()).toBe('');
     });
 
+    // Issue #829: a stall watcher is opt-in, by flag or by environment, and never reaches docker for --help.
+    it('lists --watch-stalls with its threshold and leaves docker alone when asked for help', async () => {
+        const lane = fixture();
+        const help = await lane.run(['--help']);
+        expect(help.stdout).toContain('--watch-stalls');
+        expect(help.stdout).toContain('LANE_WATCH_STALLS=1');
+        expect(help.stdout).toContain('LANE_STALL_S');
+        expect(lane.trace()).toBe('');
+    });
+
     // Issue #829: the phase that kills a real driver at each step of a run.
     it('lists the driver-kill phase and accepts it as a phase', async () => {
         const help = await fixture().run(['--help']);
