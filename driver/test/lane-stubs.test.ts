@@ -437,10 +437,10 @@ describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
         expect(call(...view)).toEqual({ code: 0, out: 'https://github.com/factory-smoke/demo/pull/1\n' });
         expect(call('pr', 'view', 'task-1', '--json', 'state,baseRefName', '-q', '.state').out).toBe('OPEN main\n');
         expect(call('pr', 'edit', 'task-1', '--base', 'release').code).toBe(0);
-        expect(call('pr', 'view', 'task-1', '--json', 'state,baseRefName', '-q', '.state').out).toBe(
-            'OPEN release\n'
+        expect(call('pr', 'view', 'task-1', '--json', 'state,baseRefName', '-q', '.state').out).toBe('OPEN release\n');
+        expect(readFileSync(join(origin, 'lane-gh-prs'), 'utf8')).toBe(
+            'task-1 https://github.com/factory-smoke/demo/pull/1\n'
         );
-        expect(readFileSync(join(origin, 'lane-gh-prs'), 'utf8')).toBe('task-1 https://github.com/factory-smoke/demo/pull/1\n');
     });
 
     it('refuses what it does not know', () => {
@@ -461,7 +461,9 @@ describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
         expect(existsSync(join(origin, 'lane-gh-prs'))).toBe(false);
         writeFileSync(join(origin, 'lane-gh-hold.go'), '');
         expect(await exited).toBe(0);
-        expect(readFileSync(join(origin, 'lane-gh-prs'), 'utf8')).toBe('task-2 https://github.com/factory-smoke/demo/pull/1\n');
+        expect(readFileSync(join(origin, 'lane-gh-prs'), 'utf8')).toBe(
+            'task-2 https://github.com/factory-smoke/demo/pull/1\n'
+        );
         expect(call('pr', 'view', 'task-2', '--json', 'url', '-q', '.url').code).toBe(0);
     });
 });

@@ -397,23 +397,31 @@ describe('kind lane timing evidence', () => {
 describe('kind lane takeover and drain phases (issue #829)', () => {
     const script = readRepoFile('scripts/test-k8s.sh');
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
-    const takeover = script.slice(script.indexOf('if selected_phase takeover; then'), script.indexOf('if selected_phase control; then'));
+    const takeover = script.slice(
+        script.indexOf('if selected_phase takeover; then'),
+        script.indexOf('if selected_phase control; then')
+    );
     const drain = script.slice(script.indexOf('if [ "$PHASE" = drain ]; then'));
 
     it('runs takeover in all, between services and control, and drain only when asked for', () => {
-        expect(script.indexOf('if selected_phase takeover; then')).toBeGreaterThan(script.indexOf('if selected_phase services; then'));
-        expect(script.indexOf('if selected_phase takeover; then')).toBeLessThan(script.indexOf('if selected_phase control; then'));
+        expect(script.indexOf('if selected_phase takeover; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase services; then')
+        );
+        expect(script.indexOf('if selected_phase takeover; then')).toBeLessThan(
+            script.indexOf('if selected_phase control; then')
+        );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(/all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|drain\)/);
     });
 
     it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {
-        expect(takeover).toContain('.lane-kill');
+        expect(script).toContain('.lane-kill');
         for (const step of ['t1', 't2', 't4', 't5']) {
             expect(takeover).toContain(`-${step}"`);
         }
-        expect(takeover).toContain('kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force');
-        expect(takeover).toContain('expire_claim_one');
+        expect(script).toContain('kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force');
+        expect(takeover).toContain('tk_kill');
+        expect(script).toContain('expired="$(expire_claim_one "$1")"');
         expect(takeover).toContain('factory-stub-commit');
         expect(takeover).toContain('lane-gh-hold');
         expect(takeover).toContain('supervisor: rebound to claim 2');
@@ -423,7 +431,9 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
 
     it('reads nothing unconfirmed as empty, and leaves nothing of a settled job', () => {
         expect(script).toMatch(/tk_count\(\) \{[^}]*printf '\?'/);
-        expect(takeover).toMatch(/kubectl get jobs,pods -l "factory\.job=\$1,app\.kubernetes\.io\/instance=\$RELEASE"[^\n]*--request-timeout=10s/);
+        expect(script).toMatch(
+            /kubectl get jobs,pods -l "factory\.job=\$1,app\.kubernetes\.io\/instance=\$RELEASE"[^\n]*--request-timeout=10s/
+        );
     });
 
     it('drains the driver node and the runner node, times them, and uncordons', () => {
