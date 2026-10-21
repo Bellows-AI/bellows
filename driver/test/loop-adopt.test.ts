@@ -38,6 +38,10 @@ function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => 
     return { ctx, board, released, logs, state };
 }
 
+const until = async (done: () => boolean) => {
+    while (!done()) await tick();
+};
+
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe('adoptStep', () => {
@@ -239,6 +243,61 @@ describe('taking over a live run (#829)', () => {
         await adoptStep(s.ctx);
 
         expect(s.state.launched).toBe(true);
+    });
+
+    /**
+     * Runs a taken-over attempt through `runJob`, flipping the board's heartbeat the moment the
+     * supervisor confirms the new endpoint — after the takeover counts as launched, before the launch.
+     */
+    async function takeoverThenBeat(beat: 'lost' | 'stop') {
+        let confirmed = false;
+        let verdicts = 0;
+        const board = stubBoard([]).board;
+        const held = board.heartbeat.bind(board);
+        board.heartbeat = async (...args) => {
+            if (!confirmed) return held(...args);
+            verdicts += 1;
+            return beat === 'lost' ? 'lost' : { result: 'held', cancelRequested: true };
+        };
+        // The step after the confirmation reports the interruption: hold it until a beat landed the verdict.
+        const interrupt = board.interrupt.bind(board);
+        board.interrupt = async (...args) => {
+            await until(() => verdicts > 0);
+            return interrupt(...args);
+        };
+        const { stack, gates } = stubGateStack({}, { control: true, polled: true });
+        const polled = gates.server.controlPolled;
+        gates.server.controlPolled = (token) => {
+            const answer = polled(token);
+            if (answer) confirmed = true;
+            return answer;
+        };
+        const runner = stubRunner(async () => ok(), { adopt: async () => live });
+        const released: string[] = [];
+        (runner as { releaseFence?: (j: BoardJob) => Promise<void> }).releaseFence = async (j) => {
+            released.push(j.id);
+        };
+        await runJob(stubRuntime(board, runner, { gates }), { ...job(1), claimSeq: 5, leaseToken: 'lease-new' });
+        return { board, runner, released, stack };
+    }
+
+    it('retains a taken-over group whose lease is lost before the launch: no finish, no fence release, no hand-back', async () => {
+        const t = await takeoverThenBeat('lost');
+
+        expect(t.runner.finished).toEqual([]);
+        expect(t.released).toEqual([]);
+        expect(t.runner.killed).toEqual([]);
+        expect(t.board.interrupted).toEqual([expect.objectContaining({ claimSeq: 4 })]);
+        expect(t.board.suspended).toEqual([]);
+        expect(t.board.completed).toEqual([]);
+    });
+
+    it('stops a taken-over agent on a Stop before the launch, the way a launched run is stopped', async () => {
+        const t = await takeoverThenBeat('stop');
+
+        expect(t.stack.killsRaised).toEqual(t.stack.controlOpened);
+        expect(t.runner.killed).toEqual([job(1).id]);
+        expect(t.board.completed).toEqual([]);
     });
 
     it('does not count an unconfirmed takeover as launched', async () => {

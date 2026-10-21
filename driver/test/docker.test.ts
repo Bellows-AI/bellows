@@ -89,6 +89,7 @@ import {
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_PREFIX,
+    SUPERVISOR_WINDDOWN_MS,
     type StepKind,
     type StepRequest,
     type StepResult,
@@ -6430,6 +6431,81 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             expect(seen[0]?.signal?.aborted).toBe(false);
             seen[0]?.close(0);
             await expect(running).resolves.toMatchObject({ exitCode: 137 });
+        });
+
+        it('keeps the followed log open through a Stop, then reads the exit like a started run', async () => {
+            const { exec, calls } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(
+                (args) =>
+                    args[0] === 'wait' && !args.includes(supervisorName(job))
+                        ? Promise.resolve({ stdout: '143\n' })
+                        : exec(args),
+                { spawn: spawnHeld }
+            );
+            await runner.adopt(adopter);
+            const taken = takenJob();
+            const running = runner.run(taken, { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            await runner.stopAgent(taken);
+
+            // The Stop ends the agent, not the stream: the log closes by itself and the exit is read from the runner.
+            expect(seen[0]?.signal?.aborted).toBe(false);
+            expect(calls.some((args) => args[0] === 'ps' && args.includes('label=factory.role=agent'))).toBe(true);
+            seen[0]?.close(0);
+            await expect(running).resolves.toMatchObject({ exitCode: 143, timedOut: false });
+        });
+
+        it('times a resumed run out when its budget and wind-down have passed with the runner still up', async () => {
+            vitest.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            try {
+                const { exec } = liveDaemon(true, listing());
+                const { seen, spawnHeld } = heldFollow();
+                const runner = dockerRunner(exec, { spawn: spawnHeld });
+                const live = await runner.adopt(adopter);
+                expect(live).toMatchObject({ live: true, startedAt: '2026-10-01T00:00:00Z' });
+                // The run started a budget ago: only the wind-down is left on its backstop.
+                vitest.setSystemTime(Date.parse('2026-10-01T00:00:00Z') + 24 * 60 * 60 * 1000);
+                const running = runner.run(takenJob(), { id: SESSION, resume: true });
+                await vitest.advanceTimersByTimeAsync(0);
+                expect(seen).toHaveLength(1);
+
+                await vitest.advanceTimersByTimeAsync(SUPERVISOR_WINDDOWN_MS + 1_000);
+                seen[0]?.close(0);
+
+                await expect(running).resolves.toMatchObject({ timedOut: true });
+            } finally {
+                vitest.useRealTimers();
+            }
+        });
+
+        it('counts nothing spent when the runner start cannot be read: the backstop keeps the whole budget', async () => {
+            vitest.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            try {
+                const { exec } = liveDaemon(true, listing());
+                const { seen, spawnHeld } = heldFollow();
+                const runner = dockerRunner(
+                    (args) =>
+                        args[0] === 'inspect' && !args.includes(supervisorName(job))
+                            ? Promise.resolve({ stdout: '{"Status":"running","Running":true}\n' })
+                            : exec(args),
+                    { spawn: spawnHeld }
+                );
+                const live = await runner.adopt(adopter);
+                expect(live).toMatchObject({ live: true, startedAt: '' });
+                const running = runner.run(takenJob(), { id: SESSION, resume: true });
+                await vitest.advanceTimersByTimeAsync(0);
+                expect(seen).toHaveLength(1);
+
+                // Past the wind-down alone, which is all a start read as the epoch would leave.
+                await vitest.advanceTimersByTimeAsync(SUPERVISOR_WINDDOWN_MS + 1_000);
+                seen[0]?.close(0);
+
+                await expect(running).resolves.toMatchObject({ timedOut: false });
+            } finally {
+                vitest.useRealTimers();
+            }
         });
 
         it('hangs up on the followed log only when the attempt is abandoned', async () => {

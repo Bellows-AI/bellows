@@ -307,7 +307,7 @@ async function liveRunner(
         throw new AdoptionBlocked('the supervisor of the running earlier runner is not running');
     }
     const { StartedAt } = await inspect(containerName(found.prior));
-    return { ...found, live: { startedAt: typeof StartedAt === 'string' ? StartedAt : new Date(0).toISOString() } };
+    return { ...found, live: { startedAt: typeof StartedAt === 'string' ? StartedAt : '' } };
 }
 
 /** An exited earlier runner; `supervisorExit` is how its supervisor ended, once waited for. */
@@ -473,7 +473,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
                         output: reportTail(full.content),
                         fullLog: full.content,
                         logTruncated: full.truncated,
-                        startedAt: state.StartedAt ?? new Date(0).toISOString(),
+                        startedAt: state.StartedAt ?? '',
                     };
                 },
             };
@@ -494,7 +494,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // Docker keeps no map of the group's claim to forget: the runner addresses it by the prior lease alone.
         adoptLive: ({ prior, session, live }) => {
             deps.groups.set(prior.leaseToken, {
-                startedAt: live?.startedAt ?? new Date(0).toISOString(),
+                startedAt: live?.startedAt ?? '',
                 session: session ? { id: session, resume: true } : null,
                 resumed: true,
             });
