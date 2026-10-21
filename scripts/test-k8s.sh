@@ -1484,7 +1484,9 @@ helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHA
     exit 1
 }
 state_installed=1
-LANE_LEASE_S=120
+# The lease outlasts the orphan bound (a lost driver's group ends inside it) plus one heartbeat period
+# (a third of the lease): L >= 30 + L/3, so 45 s. Below it the group's end can land after the lease's.
+LANE_LEASE_S=45
 # A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes
 # at the default one-minute sync, docs/kubernetes.md): the grace outlasts two syncs, or the group ends
 # before it can follow the new holder. scripts/kind-cluster.yaml syncs every 10 s: a 30 s grace.
@@ -2408,7 +2410,7 @@ SQL
 if selected_phase recovery; then
 #
 # Infrastructure loss interrupts a task, it never loses one — on a real apiserver. The release was
-# installed with a 120s lease and a 70s drain grace, so the chart's handover (grace minus 60s) is
+# installed with the lane lease (LANE_LEASE_S) and a 70s drain grace, so the chart's handover (grace minus 60s) is
 # 10s. a: the driver pod deleted hard while its runner runs — the replacement driver's reaper
 # spares the live runner Job, and once the lease ran out the replacement takes the run over. b: the
 # driver drained (scaled to 0) — the handover queues the job with an interruption and leaves the
@@ -2477,7 +2479,7 @@ final_release="/workspaces/$member_path/.lane-finalizing"
 
 # a. The hard kill: a lease expiry. A forced delete is no SIGKILL — the kubelet still
 #    sends SIGTERM and kills ~2s later — so this is no drain only while the 10s handover outlasts
-#    that. The 120s lease keeps the job live, under the dead driver's claim, through the reaper check, which
+#    that. The lane lease (LANE_LEASE_S) keeps the job live, under the dead driver's claim, through the reaper check, which
 #    runs while the agent is blocked; the lease then ends naturally and claim 2 takes the run over.
 #    At max_attempts 1: the claim records the expiry as claim 1's interruption and takes over.
 begin_phase recovery-hard-kill
@@ -2574,7 +2576,7 @@ else
     evicted_mid="$(await_brief "$evicted" "*|1|1|$POD_LOST*" 45)"
     took=$(($(date +%s) - deleted_at))
     case "$evicted_mid" in
-    *"|1|1|$POD_LOST"*) [ "$took" -lt 30 ] && ok "a deleted runner pod is an interruption (${took}s, inside the 120s lease)" ||
+    *"|1|1|$POD_LOST"*) [ "$took" -lt 30 ] && ok "a deleted runner pod is an interruption (${took}s, inside the ${LANE_LEASE_S}s lease)" ||
         bad 'a deleted runner pod is an interruption inside the lease' "took ${took}s: $evicted_mid" ;;
     *) bad 'a deleted runner pod is an interruption inside the lease' "status|attempts|count|claimSeq|reason: $evicted_mid" ;;
     esac
@@ -2644,7 +2646,7 @@ fi
 
 # e. The driver lost between its agent's exit and its supervisor's end (issue #824). The pod-IP step
 #    channel refuses once the driver is gone, so the supervisor serves on until its orphan bound
-#    (30s under the 120s lease) and only then reports and ends. A second replica is already up; the
+#    (30s, inside the lane lease) and only then reports and ends. A second replica is already up; the
 #    dead driver's claim is expired inside that bound, so the survivor claims a Job whose agent
 #    exited and whose supervisor still runs — the group it must wait out, never sweep.
 begin_phase recovery-finalizing
