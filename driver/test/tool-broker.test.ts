@@ -154,21 +154,18 @@ describe('the tool broker', () => {
         expect(broker.TOOL.uid).toBe(TOOL_UID);
     });
 
-    it('gives the tool its own HOME and shell, and never the run-control token or the CLI’s shell override', () => {
+    it('gives the tool its own HOME and shell, and never the CLI’s shell override', () => {
         const env = broker.toolEnv({
             PATH: '/usr/bin',
             HOME: '/home/node',
             SHELL: '/usr/local/libexec/factory-tool/bash',
             CLAUDE_CODE_SHELL: '/usr/local/libexec/factory-tool/bash',
-            BELLOWS_CONTROL_TOKEN: 'secret',
-            BELLOWS_CONTROL_URL: 'http://driver',
             RUNNER_LEASE_TOKEN: 'lease',
         });
         expect(env).toEqual({
             PATH: '/usr/bin',
             HOME: broker.TOOL_HOME,
             SHELL: '/bin/bash',
-            BELLOWS_CONTROL_URL: 'http://driver',
             RUNNER_LEASE_TOKEN: 'lease',
         });
     });

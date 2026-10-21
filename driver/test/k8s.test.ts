@@ -480,21 +480,21 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
 
-    // Issue #442: the run-control channel rides the same per-attempt Secret as the gate pair, so a
-    // kubernetes runner's stop poller reaches the driver pod's endpoint exactly as a docker one does.
-    it('names the run-control channel by secretKeyRef into the per-job Secret', () => {
+    // The gate pair rides the per-attempt Secret; run-control traffic goes through the supervisor's
+    // relays, so no BELLOWS_CONTROL_* name reaches the runner's env.
+    it('names the gate pair by secretKeyRef into the per-job Secret', () => {
         const controlled: BoardJob = {
             ...job,
             gateEnv: {
-                BELLOWS_CONTROL_URL: 'http://10.1.2.3:41000',
-                BELLOWS_CONTROL_TOKEN: 'ctl-secret',
+                BELLOWS_GATE_URL: 'http://10.1.2.3:41000',
+                BELLOWS_GATE_TOKEN: 'ctl-secret',
             },
         };
         const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), controlled, {
             id: SESSION,
             resume: false,
         }).spec.template.spec.containers[0]!;
-        for (const name of ['BELLOWS_CONTROL_URL', 'BELLOWS_CONTROL_TOKEN']) {
+        for (const name of ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN']) {
             expect(container.env).toContainEqual({
                 name,
                 valueFrom: { secretKeyRef: { name: secretName(controlled), key: name } },
@@ -2761,7 +2761,6 @@ describe('the runner vitals', () => {
 describe('the kubernetes runner and the task supervisor', () => {
     const exporting: BoardJob = {
         ...job,
-        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-agent' },
         ...SUPERVISED,
     };
     const containersOf = (body: unknown): string[] =>

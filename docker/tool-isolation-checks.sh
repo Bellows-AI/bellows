@@ -42,9 +42,6 @@ iso_check 'a tool signalling everything it may leaves the CLI side running' 'too
 iso_check 'a tool reaches neither the broker, the mailboxes nor the CLI'"'"'s environment' 'closed closed closed closed' \
     agent -e T='for p in /run/factory-tool /factory/in /factory/out; do ls "$p" >/dev/null 2>&1 || echo closed; done
         cat /proc/1/environ >/dev/null 2>&1 || echo closed' -- sh -c "$TOOL_SHELL"' -c "$T"'
-iso_check 'a tool never receives the run-control token' '0' \
-    agent -e BELLOWS_CONTROL_TOKEN=secret -e T='env | grep -c "^BELLOWS_CONTROL_TOKEN=" || true' -- \
-    sh -c "$TOOL_SHELL"' -c "$T"'
 iso_check 'a root-owned shared out mailbox turns sticky, and a tool cannot move the agent'"'"'s own' '1777 kept' \
     agent --tmpfs /factory/out:mode=0777 -e T='mv /factory/out/agent /factory/out/x 2>/dev/null && echo moved
         rm -rf /factory/out/agent 2>/dev/null; [ -d /factory/out/agent ] && echo kept' -- \

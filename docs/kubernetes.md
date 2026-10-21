@@ -57,8 +57,9 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   A finished one is adoptable until its Job's one-hour `ttlSecondsAfterFinished`.
   `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
 - A taken-over run's agent and exporter reach the new holder through the supervisor's relay (`serveRelay`); a
-  request in flight across the rebind is hung up on and retried, and the transcript continues under the new
-  claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`.
+  request in flight across the rebind is hung up on (the exporter retries it; the agent's proxy answers 502), and
+  the transcript continues under the new claim from its first unacknowledged byte.
+  `driver/test/supervisor.test.ts`, `driver/test/control-proxy.test.ts`.
 - Stated limit: a taken-over run's agent gate requests (`BELLOWS_GATE_*`) keep the lost driver's endpoint; the
   end-of-run gates run on the new holder (follow-up #909). `driver/src/loop-gates.ts`.
 - Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was

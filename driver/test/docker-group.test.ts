@@ -72,7 +72,7 @@ const job: BoardJob = {
     continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-agent', OTHER: 'x' },
+    gateEnv: { OTHER: 'x' },
     supervisorEnv: {
         SUPERVISOR_CONTROL_URL: 'http://driver:7000',
         SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor',
