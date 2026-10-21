@@ -208,6 +208,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
     // reclaim, so both ends are as worker-only as claim and complete.
     ['/api/reclaims/claim', 'worker'],
+    // The reaper's read of which reclaim acquisitions are still held (issue #829): org-less, read-only.
+    ['/api/reclaims/holds', 'worker'],
     [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
     [`/api/reclaims/${JOB_ID}/renew`, 'worker'],
     [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],

@@ -525,8 +525,43 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
     return reply.code(HTTP_OK).send({ id, status: result.value.status });
 }
 
+/**
+ * The shared front of the reaper's two batch lookups: every board that could know the ids, and the
+ * validated id list — or the refusal already sent. Fails closed on the every-org worker path:
+ * boardsFor DROPS an org whose runtime failed to build, and every id of a dropped board would read
+ * as "unknown to the board" — a reap verdict. Answering from a partial registry is the one thing
+ * these routes must never do, so a registry that cannot fully answer is a 503, exactly like a board
+ * that throws. The org-less shape is the worker-token path only; `none` mode falls through to the
+ * caller's own org — one board IS the whole registry there, whatever foreign org rows a shared
+ * database holds.
+ */
+async function lookupScope(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const boards = await boardsFor(orgs, request);
+    if (!boards.length) return { reply: noBoard(reply) };
+    if (
+        request.auth?.kind === 'worker' &&
+        request.auth.orgId === null &&
+        (await orgs.list()).length !== boards.length
+    ) {
+        return {
+            reply: bad(reply, ERROR_CODES.UNAVAILABLE, 'Not every organization board answered', HTTP_UNAVAILABLE),
+        };
+    }
+
+    const { ids } = body(request.body);
+    if (
+        !Array.isArray(ids) ||
+        ids.length < 1 ||
+        ids.length > LEASE_BATCH_MAX ||
+        ids.some((id) => typeof id !== 'string' || !UUID.test(id))
+    ) {
+        return { reply: bad(reply, ERROR_CODES.BAD_ID, `ids must be 1..${LEASE_BATCH_MAX} uuids`) };
+    }
+    return { boards, ids: ids as string[] };
+}
+
 /*
- * The orphan reaper's one board route (issue #301): a batched "what does the board think of these
+ * The orphan reaper's lease route (issue #301): a batched "what does the board think of these
  * job ids" — each known id's status and CURRENT lease, absent for the ids it does not know. The
  * shared secret authenticates the driver, not an org, so like the claim this is offered every
  * org's board and the answers merge by id; uuids cannot collide across orgs. Unlike every other
@@ -538,38 +573,35 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
  * actually answered.
  */
 export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const boards = await boardsFor(orgs, request);
-    if (!boards.length) return noBoard(reply);
-    // Fail closed on the every-org worker path: boardsFor DROPS an org whose runtime failed to
-    // build, and every id of a dropped board would read as "unknown to the board" — a reap
-    // verdict. Answering from a partial registry is the one thing this route must never do, so a
-    // registry that cannot fully answer is a 503, exactly like a board that throws. The org-less
-    // shape is the worker-token path only; `none` mode falls through to the caller's own org —
-    // one board IS the whole registry there, whatever foreign org rows a shared database holds.
-    if (
-        request.auth?.kind === 'worker' &&
-        request.auth.orgId === null &&
-        (await orgs.list()).length !== boards.length
-    ) {
-        return bad(reply, ERROR_CODES.UNAVAILABLE, 'Not every organization board answered', HTTP_UNAVAILABLE);
-    }
-
-    const { ids } = body(request.body);
-    if (
-        !Array.isArray(ids) ||
-        ids.length < 1 ||
-        ids.length > LEASE_BATCH_MAX ||
-        ids.some((id) => typeof id !== 'string' || !UUID.test(id))
-    ) {
-        return bad(reply, ERROR_CODES.BAD_ID, `ids must be 1..${LEASE_BATCH_MAX} uuids`);
-    }
+    const scope = await lookupScope(orgs, request, reply);
+    if (scope.reply) return scope.reply;
+    const { boards, ids } = scope;
 
     const answered = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job lease lookup failed'),
-        () => Promise.all(boards.map((board) => board.leases(ids as string[])))
+        () => Promise.all(boards.map((board) => board.leases(ids)))
     );
     if (!answered.ok) return reply;
     const jobs = [...new Map(answered.value.flat().map((row) => [row.id, row])).values()];
     return reply.code(HTTP_OK).send({ jobs });
+}
+
+/**
+ * The reaper's other board route (issue #829): which reclaim acquisitions are still held for these
+ * roots. A reclaim group's objects carry their acquisition token; the reaper spares one the board
+ * still holds and reaps one it positively does not. Same fail-closed scope as the lease lookup.
+ */
+export async function handleReclaimHolds(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const scope = await lookupScope(orgs, request, reply);
+    if (scope.reply) return scope.reply;
+    const { boards, ids } = scope;
+
+    const answered = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'reclaim holds lookup failed'),
+        () => Promise.all(boards.map((board) => board.reclaimHolds(ids)))
+    );
+    if (!answered.ok) return reply;
+    return reply.code(HTTP_OK).send({ holds: answered.value.flat() });
 }

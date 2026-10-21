@@ -46,7 +46,7 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, since the
     // shared secret names no org and the id list spans them.
     /^\/api\/jobs\/leases$/,
-    /^\/api\/reclaims\/claim$/,
+    /^\/api\/reclaims\/(claim|holds)$/,
     /^\/api\/reclaims\/[^/]+\/(ack|renew)$/,
     // `stop`, `follow-up`, `retry`, `done`, `reopen` and `remove` are person actions: the driver
     // is told to stop through the heartbeat it already holds, and the board secret moving or

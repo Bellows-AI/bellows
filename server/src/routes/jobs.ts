@@ -6,6 +6,7 @@ import {
     handleGates,
     handleHeartbeat,
     handleLeases,
+    handleReclaimHolds,
     handleOutput,
     handleSession,
     handleSuspend,
@@ -77,6 +78,10 @@ export const jobRoutes =
         // beside /claim — it wins over /api/jobs/:id the same way the claim route already does.
         app.post('/api/jobs/leases', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleLeases(orgs, request, reply)
+        );
+        // The reaper's read of which reclaim acquisitions are still held (issue #829).
+        app.post('/api/reclaims/holds', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleReclaimHolds(orgs, request, reply)
         );
         app.post('/api/jobs/:id/heartbeat', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleHeartbeat(orgs, request, reply)

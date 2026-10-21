@@ -38,7 +38,7 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob } from './job-store-claim.js';
-import { claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-reclaims.js';
+import { claimReclaimRow, ackReclaimRow, renewReclaimRow, reclaimHoldsOf } from './job-store-reclaims.js';
 import {
     threadOf,
     getJob,
@@ -151,6 +151,11 @@ function workerMethods(
         async leases(ids) {
             await gate();
             return leasesOf(ctx, ids);
+        },
+
+        async reclaimHolds(ids) {
+            await gate();
+            return reclaimHoldsOf(ctx, ids);
         },
 
         async artifactScope(id) {

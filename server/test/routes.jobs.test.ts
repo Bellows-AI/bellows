@@ -131,6 +131,8 @@ interface StoreStub extends JobStore {
     reclaimRenewals: { id: string; token: string; leaseSeconds: number }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
     leased: { ids: string[] }[];
+    /** The reclaim-hold lookups the reaper's route made, with the ids it asked for (issue #829). */
+    held: { ids: string[] }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
     /** The question reports and answers the routes handed the store (050). */
@@ -212,6 +214,8 @@ function stubStore(
         reviewRead?: ReadReviewResult;
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
+        /** The held reclaim acquisitions the store answers a holds lookup with; absent means none. */
+        holdRows?: { id: string; token: string }[];
         /**
          * What `waitForSettle` answers (issue #323); null → 404. A function may delay to model
          * the store's hold — the route must await it, never answer first.
@@ -252,6 +256,7 @@ function stubStore(
         reclaimAcks: [],
         reclaimRenewals: [],
         leased: [],
+        held: [],
         waits: [],
         asked: [],
         answered: [],
@@ -394,6 +399,11 @@ function stubStore(
             boom();
             stub.leased.push({ ids: [...ids] });
             return options.leaseRows ?? [];
+        },
+        async reclaimHolds(ids) {
+            boom();
+            stub.held.push({ ids: [...ids] });
+            return options.holdRows ?? [];
         },
         async artifactScope() {
             boom();
@@ -1157,6 +1167,93 @@ describe('POST /api/jobs/:id/heartbeat', () => {
         const response = await post(instance, `/api/jobs/${ID}/heartbeat`, { leaseToken: TOKEN });
         expect(response.statusCode).toBe(200);
         expect(response.json().cancelRequested).toBe(true);
+    });
+});
+
+describe('POST /api/reclaims/holds — the reaper’s reclaim-ownership lookup (issue #829)', () => {
+    const ROOT_B = '44444444-4444-4444-8444-444444444444';
+    const OTHER_TOKEN = '55555555-5555-4555-8555-555555555555';
+
+    it('answers each held root’s acquisition token and merges every org board', async () => {
+        const a = stubStore({ holdRows: [{ id: ID, token: TOKEN }] });
+        const b = stubStore({ holdRows: [{ id: ROOT_B, token: OTHER_TOKEN }] });
+        const instance = await harnessOfBoards([
+            ['org-a', a],
+            ['org-b', b],
+        ]);
+
+        const response = await postAsWorker(instance, '/api/reclaims/holds', { ids: [ID, ROOT_B] });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toEqual({
+            holds: [
+                { id: ID, token: TOKEN },
+                { id: ROOT_B, token: OTHER_TOKEN },
+            ],
+        });
+        expect(a.held).toEqual([{ ids: [ID, ROOT_B] }]);
+    });
+
+    it.each([
+        ['a body without ids', {}],
+        ['a non-uuid entry', { ids: [ID, 'nope'] }],
+        ['an empty list', { ids: [] }],
+    ])('refuses %s with BAD_ID', async (_label, payload) => {
+        const instance = await harnessWith(stubStore());
+        const response = await postAsWorker(instance, '/api/reclaims/holds', payload);
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_ID');
+    });
+
+    it('answers 503 when any board throws', async () => {
+        const failing = stubStore();
+        failing.reclaimHolds = async () => {
+            throw new Error('database is down');
+        };
+        const instance = await harnessOfBoards([
+            ['org-a', failing],
+            ['org-b', stubStore({ holdRows: [{ id: ID, token: TOKEN }] })],
+        ]);
+        const response = await postAsWorker(instance, '/api/reclaims/holds', { ids: [ID] });
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+    });
+
+    // "Not held" is the board's positive answer, so a registry that dropped an org must not answer.
+    it('answers 503 when an organization has no runtime at all', async () => {
+        const config = testConfig({ auth: githubAuth() });
+        const repos = staticRepoSource([]);
+        const telemetry = stubTelemetryClient();
+        const jobs = stubStore();
+        const instance = await buildApp({
+            config,
+            auth: memoryAuthStore(),
+            orgs: {
+                for: async (orgId) =>
+                    orgId === 'org-alive'
+                        ? {
+                              orgId,
+                              repos,
+                              telemetry,
+                              service: createStatsService({ config, repos, telemetry }),
+                              jobs,
+                          }
+                        : null,
+                list: async () => [
+                    { id: 'org-alive', name: 'org-alive', installationId: null },
+                    { id: 'org-dead', name: 'org-dead', installationId: null },
+                ],
+                warmAll: async () => {},
+                reconcileBatches: async () => {},
+                observeBatchPrs: async () => {},
+            },
+        });
+        track(instance);
+
+        const response = await postAsWorker(instance, '/api/reclaims/holds', { ids: [ID] });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
     });
 });
 
