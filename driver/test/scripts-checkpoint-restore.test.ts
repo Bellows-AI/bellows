@@ -344,6 +344,34 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             expect(readdirSync(sessionsDir()).sort()).toEqual(['alpha.jsonl', 'beta.jsonl']);
         });
 
+        // A limit, not a goal (docs/workspace.md): the stream identity carries no parent session, so a subagent
+        // transcript the exporter found under <session>/subagents/ is restored beside the sessions.
+        it('restores a subagent transcript as a session file of its own, beside the sessions', async () => {
+            const { transcripts, original } = thread();
+            const agent = jsonl('agent', 4);
+            const verdict = await restoreSessions({
+                ...transcripts,
+                streams: [...transcripts.streams, transcriptStream(JOB_B, 1, 'agent-a1b2c3', agent)],
+                data: new Map([...transcripts.data, [`${JOB_B}/1/agent-a1b2c3`, agent]]),
+            });
+
+            expect(verdict).toMatchObject({ ok: true });
+            expect(readFileSync(join(sessionsDir(), 'agent-a1b2c3.jsonl')).equals(agent)).toBe(true);
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl')).equals(original.alpha!)).toBe(true);
+        });
+
+        it('is checkpoint_unrestorable when a resumed stream does not start where the previous one ended', async () => {
+            const { transcripts } = thread();
+            const streams = transcripts.streams.map((s, i) =>
+                i === 1 ? { ...s, chunks: s.chunks.map((c) => ({ ...c, offset: c.offset + 1 })) } : s
+            );
+
+            expect(await restoreSessions({ ...transcripts, streams })).toMatchObject({
+                ok: false,
+                kind: 'checkpoint_unrestorable',
+            });
+        });
+
         it('restores no sessions when the driver names no directory for them', async () => {
             const { transcripts } = thread();
             workedTree();
