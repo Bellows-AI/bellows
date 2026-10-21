@@ -230,9 +230,10 @@ const adoptFinalizing: Build<K8sRequest> = async (tap, alias) => {
     aliasPair(alias, adopter, 'lease');
     const item = earlierRunner(prior, prior.leaseToken, { active: 1 });
     const priorPath = jobPath(NS, item.metadata.name);
+    // A Job succeeds only once its pod has: the phase follows the supervisor's exit.
     const pod = (supervisor: Record<string, unknown>) =>
         list([
-            podOf(`${item.metadata.name}-xxxxx`, 'Running', {}, [
+            podOf(`${item.metadata.name}-xxxxx`, 'terminated' in supervisor ? 'Succeeded' : 'Running', {}, [
                 { name: AGENT_CONTAINER, state: { terminated: { exitCode: 0 } } },
                 { name: SUPERVISOR_CONTAINER, state: supervisor },
             ]),
