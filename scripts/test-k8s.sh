@@ -3164,11 +3164,17 @@ tk_supervisor_exit() { # tk_supervisor_exit <job id> <claim seq> <seconds> -> th
     printf '%s' "${code:-?}"
 }
 
-tk_kill() { # tk_kill <job id> -> the driver pod gone with no drain, a replacement up, the dead claim's lease expired
+tk_exit='' # the exit code of the lost driver's supervisor, set by tk_kill when asked to wait for it
+tk_kill() { # tk_kill <job id> [wait] -> the driver pod gone with no drain, a replacement up, the dead claim's lease expired
+    # `wait`: the lost claim-1 supervisor is given the time to end on its own orphan bound first. The expiry
+    # lets the next claim sweep a group that never released its agent, and a swept supervisor dies by SIGKILL
+    # (137) before it can end lost (75) (`driver/test/takeover-sim.test.ts`, t1).
     local expired
+    tk_exit=''
     kill_driver_pods
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 ||
         { bad "$1: the replacement driver is rolled out" "$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" 2>&1)"; give_up; }
+    [ "${2:-}" = wait ] && tk_exit="$(tk_supervisor_exit "$1" 1 120)"
     expired="$(expire_claim_one "$1")"
     [ "$expired" = 1 ] && ok "$1: the dead driver's lease is expired" || {
         bad "$1: the dead driver's lease is expired" "$expired"
@@ -3241,8 +3247,8 @@ if [ -z "$t1" ]; then
 else
     tk_await "$TK_D/$n.setup.count" 1 240 && ok 't1: the setup is running' || bad 't1: the setup is running' "$(tk_count "$TK_D/$n.setup.count")"
     tk_check 't1: the agent has not started' "$(tk_ready "$TK_D/$n.agent.ready-")" 0
-    tk_kill "$t1"
-    tk_check 't1: the supervisor of the lost driver ends lost (exit 75)' "$(tk_supervisor_exit "$t1" 1 120)" 75
+    tk_kill "$t1" wait
+    tk_check 't1: the supervisor of the lost driver ends lost (exit 75)' "$tk_exit" 75
     await_brief "$t1" "*|1|1|$EXPIRED" 120 >/dev/null && ok 't1: the next claim records the interruption' ||
         bad 't1: the next claim records the interruption' "$(job_brief "$t1")"
     tk_touch "$TK_D/$n.go" || bad 't1: the barrier is released' 'the touch failed'

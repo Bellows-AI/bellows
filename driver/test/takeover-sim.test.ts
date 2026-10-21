@@ -98,6 +98,28 @@ const scenarios: Record<string, (s: Sim) => Promise<void>> = {
             expect(s.sweptAt).toEqual([{ exit: null }]);
         },
 
+    't1: lost before the agent is released: the supervisor ends lost (75) at its orphan bound, then the next claim redoes the group':
+        async (s) => {
+            let open!: () => void;
+            s.goGate = new Promise<void>((resolve) => (open = resolve));
+            s.release();
+            const a = await s.start('A');
+            await until('the group', s, () => s.groups.size === 1);
+            const g = firstGroup(s);
+            await s.kill(a);
+            // The lane waits for the lost group's own end before the lease is expired and the next claim sweeps it.
+            await until('the supervisor to end lost', s, () => g.exit !== null, 25_000);
+            expect(g.exit).toBe(75);
+            s.expireLease();
+            open();
+            await s.start('B');
+            await until('the redo released', s, () => s.spawned === 2 && Boolean(released(s)));
+            s.agentExits([...s.groups.values()].find((x) => x !== g)!, 0);
+            await settled(s);
+            expect(s.brief()).toBe('succeeded|1|1');
+            expect(s.sweptAt).toEqual([]);
+        },
+
     'lost together: the group is gone with the driver: the task is redone, one interruption': async (s) => {
         s.release();
         const a = await s.start('A');

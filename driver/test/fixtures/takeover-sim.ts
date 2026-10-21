@@ -28,6 +28,7 @@ import {
     SUPERVISOR_RELEASED_LINE,
     SUPERVISOR_SERVED_LINE,
 } from '../../src/supervisor-contract.js';
+import { reportFinalized } from '../../src/termination.js';
 import { bindingBody, supervisorLiterals } from '../../src/supervisor-plan.js';
 import { config as baseConfig, job as baseJob, ok, stubBoard, stubRunner } from './loop-stubs.js';
 
@@ -386,7 +387,8 @@ export class Sim {
                 }
                 if (earlier.exit === null) await earlier.done;
                 const report = finalReportOf(earlier.logs.join('\n'));
-                if (!report) return null;
+                // An unlaunched or lost report finalized nothing: an infrastructure loss, given back to be redone.
+                if (!reportFinalized(report)) return null;
                 return {
                     outcome: ok({ exitCode: report.agentExit ?? 1, output: 'adopted' }),
                     claimSeq: earlier.claimSeq,
