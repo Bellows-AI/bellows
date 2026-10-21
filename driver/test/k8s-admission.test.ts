@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { runnerJobSpec, secretName } from '../src/k8s-podspec.js';
+import { readerJobSpec, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
 import {
     AGENT_CONTAINER,
@@ -176,6 +176,9 @@ describe('the admission policy requires the pod hardening (#382)', () => {
                 },
                 { id: SESSION, resume: false }
             ).spec.template.spec,
+            // The reader Job of an adopted ended group's close-time readouts (#775).
+            readerJobSpec(config, promptedJob, 'factory-read-0', { argv: ['node'], env: {}, timeoutMs: 1_000 }).spec
+                .template.spec,
         ];
         for (const pod of pods) {
             expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');
