@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { ArtifactStore, StreamSummary } from '../src/artifacts/artifact-store.js';
+import { ArtifactIntegrityError, type ArtifactStore, type StreamSummary } from '../src/artifacts/artifact-store.js';
 import type { StreamRef } from '../src/artifacts/keys.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import type { CheckpointPointer, RestoreScope, RestoreScopeResult } from '../src/db/restore-types.js';
@@ -227,6 +227,19 @@ describe('POST /api/jobs/:id/checkpoint/chunk', () => {
         expect((await post(app, 'checkpoint/chunk', { leaseToken: LEASE, offset: 3 })).statusCode).toBe(404);
         const none = await boot(live({ ...SCOPE, checkpoint: null }), memoryArtifacts(HELD).store);
         expect((await post(none, 'checkpoint/chunk', { leaseToken: LEASE, offset: 0 })).statusCode).toBe(404);
+    });
+
+    it('answers 422 ARTIFACT_CORRUPT for a chunk whose stored bytes fail their sha256: not a store outage', async () => {
+        const fake = memoryArtifacts(HELD).store;
+        const corrupt = Object.assign(Object.create(fake), {
+            readChunk: async () => {
+                throw new ArtifactIntegrityError('the chunk does not match its recorded sha256');
+            },
+        }) as ArtifactStore;
+        const app = await boot(live(), corrupt);
+        const response = await post(app, 'checkpoint/chunk', { leaseToken: LEASE, offset: 7 });
+        expect(response.statusCode).toBe(422);
+        expect(response.json()).toMatchObject({ code: ERROR_CODES.ARTIFACT_CORRUPT });
     });
 
     it('answers 400 for a missing or malformed offset', async () => {

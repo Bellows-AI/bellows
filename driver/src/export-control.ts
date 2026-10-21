@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { ChunkAnswer } from './board.js';
-import type { TranscriptRef, TranscriptStream } from './board-checkpoint.js';
+import { CheckpointChunkCorrupt, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { readBody, readBodyBytes } from './http.js';
 import { parseJsonObject } from './json-parse.js';
 
@@ -41,6 +41,7 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_BAD_GATEWAY = 502;
+const HTTP_GONE = 410;
 
 /** The segment of a stream's key a session may fill: the board's own rule for ids in a key. */
 const SESSION = /^[A-Za-z0-9._-]{1,128}$/;
@@ -125,6 +126,10 @@ const relayFailed = (e: unknown): ExportAnswer => ({
     status: HTTP_BAD_GATEWAY,
     body: { error: e instanceof Error ? e.message : String(e) },
 });
+
+/** A restore read's failure: a chunk the board holds corrupt is 410 (the script's "never restorable"), else as `relayFailed`. */
+const restoreReadFailed = (e: unknown): ExportAnswer =>
+    e instanceof CheckpointChunkCorrupt ? { status: HTTP_GONE, body: { error: e.message } } : relayFailed(e);
 
 /** A manifest answer on the wire. */
 const manifestAnswer = (result: 'stored' | 'duplicate' | 'conflict' | 'rejected'): ExportAnswer =>
@@ -225,7 +230,7 @@ async function serveTranscriptChunk(
     const claimSeq = Number(query.get('claimSeq') ?? Number.NaN);
     const offset = Number(query.get('offset') ?? Number.NaN);
     if (!jobId || !session || !count(offset) || !count(claimSeq) || claimSeq < 1) return BAD_REQUEST;
-    const chunk = await relay.readTranscript({ jobId, claimSeq, session }, offset).catch(relayFailed);
+    const chunk = await relay.readTranscript({ jobId, claimSeq, session }, offset).catch(restoreReadFailed);
     if (!open()) return GONE;
     if (chunk === null) return { status: HTTP_NOT_FOUND, body: { error: 'the board holds no transcript chunk there' } };
     if ('status' in chunk) return chunk;
@@ -240,7 +245,7 @@ async function serveCheckpointRestore(
 ): Promise<ExportAnswer> {
     const offset = Number(new URLSearchParams(search).get('offset') ?? Number.NaN);
     if (!count(offset)) return BAD_REQUEST;
-    const chunk = await relay.readChunk(offset).catch(relayFailed);
+    const chunk = await relay.readChunk(offset).catch(restoreReadFailed);
     if (!open()) return GONE;
     if (chunk === null) return { status: HTTP_NOT_FOUND, body: { error: 'the board holds no checkpoint chunk there' } };
     if ('status' in chunk) return chunk;

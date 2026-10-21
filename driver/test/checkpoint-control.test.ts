@@ -2,7 +2,7 @@ import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ChunkAnswer } from '../src/board.js';
-import type { TranscriptStream } from '../src/board-checkpoint.js';
+import { CheckpointChunkCorrupt, type TranscriptStream } from '../src/board-checkpoint.js';
 import { createControlChannel, type ControlChannel } from '../src/control-channel.js';
 import type { CheckpointRelay } from '../src/export-control.js';
 
@@ -214,6 +214,14 @@ describe('the checkpoint routes', () => {
             throw new Error('board unreachable');
         };
         expect((await call('GET', '/checkpoint/restore?offset=0')).status).toBe(502);
+    });
+
+    it('answer 410, the restore step\'s never-restorable, for a chunk the board reports corrupt', async () => {
+        openCheckpointing();
+        readAnswer = async () => {
+            throw new CheckpointChunkCorrupt('the stored chunk is corrupt');
+        };
+        expect((await call('GET', '/checkpoint/restore?offset=0')).status).toBe(410);
     });
 
     it('open the restore read to the supervisor token alone', async () => {

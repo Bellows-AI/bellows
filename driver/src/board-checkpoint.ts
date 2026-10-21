@@ -81,7 +81,17 @@ function pointerOf(value: unknown): CheckpointPointer | null {
     return { bytes: value.bytes, truncated: value.truncated, chunks };
 }
 
-type Post = (path: string, body: unknown, allow404?: boolean) => Promise<Response>;
+type Post = (
+    path: string,
+    body: unknown,
+    allow404?: boolean,
+    options?: { allow?: readonly number[] }
+) => Promise<Response>;
+
+const HTTP_UNPROCESSABLE = 422;
+
+/** The board reports the stored bytes of a chunk corrupt (they fail their recorded sha256): never restorable. */
+export class CheckpointChunkCorrupt extends Error {}
 
 export function checkpointCalls(
     post: Post
@@ -95,8 +105,13 @@ export function checkpointCalls(
 
     /** One chunk under the lease, its bytes checked against the digest the board sent before anyone trusts them. */
     const readChunk = async (job: BoardJob, route: string, params: object, what: string) => {
-        const response = await post(`/api/jobs/${job.id}${route}`, { leaseToken: job.leaseToken, ...params }, true);
+        const response = await post(`/api/jobs/${job.id}${route}`, { leaseToken: job.leaseToken, ...params }, true, {
+            allow: [HTTP_UNPROCESSABLE],
+        });
         if (response.status === HTTP_NOT_FOUND) return null;
+        if (response.status === HTTP_UNPROCESSABLE) {
+            throw new CheckpointChunkCorrupt(`job ${job.id}: the board's stored ${what} is corrupt`);
+        }
         if (response.status === HTTP_CONFLICT) throw refused(job, response);
         const sha256 = response.headers.get('x-chunk-sha256') ?? '';
         if (!SHA256.test(sha256))

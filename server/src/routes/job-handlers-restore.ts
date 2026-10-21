@@ -1,7 +1,11 @@
 import { CLAUDE_CODE, CONTENT_TYPE_HEADER, ERROR_CODES, OCTET_STREAM_CONTENT_TYPE } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { UUID } from '../config.js';
-import { ArtifactObjectMissingError, CHECKPOINT_STREAM, type ArtifactStore } from '../artifacts/artifact-store.js';
+import {
+    ArtifactIntegrityError,
+    ArtifactObjectMissingError,
+    CHECKPOINT_STREAM, type ArtifactStore,
+} from '../artifacts/artifact-store.js';
 import { isKeySegment, type StreamRef } from '../artifacts/keys.js';
 import type { RestoreScope } from '../db/restore-types.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -89,6 +93,9 @@ async function chunkListing(artifacts: ArtifactStore, ref: StreamRef) {
     return { chunks, bytes: chunks.reduce((n, c) => n + c.length, 0) };
 }
 
+const HTTP_UNPROCESSABLE = 422;
+const CORRUPT = Symbol('corrupt');
+
 /** Sends one stored chunk as bytes, or a 404 when the index or the store no longer has it. */
 async function sendChunk(
     request: FastifyRequest,
@@ -107,11 +114,16 @@ async function sendChunk(
                 return await artifacts.readChunk(ref, raw);
             } catch (e) {
                 if (e instanceof ArtifactObjectMissingError) return null;
+                // Stored bytes that fail their recorded digest are corrupt for good, not a store outage to retry.
+                if (e instanceof ArtifactIntegrityError) return CORRUPT;
                 throw e;
             }
         }
     );
     if (!read.ok) return reply;
+    if (read.value === CORRUPT) {
+        return bad(reply, ERROR_CODES.ARTIFACT_CORRUPT, 'The stored chunk fails its recorded sha256', HTTP_UNPROCESSABLE);
+    }
     if (!read.value) return bad(reply, ERROR_CODES.NOT_FOUND, 'No such chunk', HTTP_NOT_FOUND);
     return reply
         .code(HTTP_OK)

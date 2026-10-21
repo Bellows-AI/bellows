@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { checkpointCalls } from '../src/board-checkpoint.js';
+import { CheckpointChunkCorrupt, checkpointCalls } from '../src/board-checkpoint.js';
 import { syncFailureHalt } from '../src/loop-fence.js';
 
 const job = { id: '22222222-2222-4222-8222-222222222222', leaseToken: 'lease-1' } as BoardJob;
@@ -72,6 +72,13 @@ describe('the board checkpoint chunk read', () => {
 
     it('throws on a 409', async () => {
         await expect(calls(chunk({}, 409)).api.checkpointChunk(job, 0)).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('throws CheckpointChunkCorrupt when the board reports its stored chunk corrupt (422)', async () => {
+        await expect(calls(chunk({}, 422)).api.checkpointChunk(job, 0)).rejects.toBeInstanceOf(CheckpointChunkCorrupt);
+        await expect(calls(chunk({}, 422)).api.transcriptChunk(job, { jobId: job.id, claimSeq: 2, session: 'alpha' }, 0)).rejects.toBeInstanceOf(
+            CheckpointChunkCorrupt
+        );
     });
 
     it('throws on a missing or mismatched digest', async () => {
