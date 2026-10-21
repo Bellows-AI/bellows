@@ -265,7 +265,7 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('DRIVER_REAP_INTERVAL_MS=2000');
         expect(phase).toContain('DRIVER_REAP_GRACE_MS=1000');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
-        expect(phase).toContain("took over the running agent of claim 1, whose driver was lost");
+        expect(phase).toContain('took over the running agent of claim 1, whose driver was lost');
         expect(phase).toContain('supervisor: rebound to claim 2');
         expect(phase).toContain("resumed gates from claim 1's checkpoint");
         expect(phase).toContain('lane-pushes.log');

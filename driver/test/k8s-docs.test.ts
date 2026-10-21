@@ -267,7 +267,7 @@ describe('the executor isolation record (#382)', () => {
     it('names the takeover lanes, the explicit drain phase and where its timings are written', () => {
         expect(prose(testingDocs)).toContain('Its driver-kill phase kills a real driver at setup');
         expect(prose(testingDocs)).toContain(
-            '`--phase drain` (explicit, a `LAYOUT=drain` cluster) drains the driver\'s node and the runner\'s node and writes `.recovery.tsv`'
+            "`--phase drain` (explicit, a `LAYOUT=drain` cluster) drains the driver's node and the runner's node and writes `.recovery.tsv`"
         );
         expect(prose(limitsDocs)).toContain('--phase drain');
         expect(prose(limitsDocs)).toContain('.recovery.tsv');

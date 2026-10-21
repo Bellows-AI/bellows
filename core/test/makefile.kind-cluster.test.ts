@@ -32,7 +32,7 @@ describe('the kind cluster targets', () => {
     it('make cluster passes LAYOUT to the script, which reads scripts/kind-cluster-<layout>.yaml', () => {
         expect(recipe('cluster')).toContain('LAYOUT=$(LAYOUT)');
         const script = readFileSync(new URL('../../scripts/kind-cluster.sh', import.meta.url), 'utf8');
-        expect(script).toContain('config="$here/kind-cluster${LAYOUT:+-$LAYOUT}.yaml"');
+        expect(script).toMatch(/config="\$here\/kind-cluster\$\{LAYOUT:\+-\$LAYOUT}\.yaml"/);
         const drain = readFileSync(new URL('../../scripts/kind-cluster-drain.yaml', import.meta.url), 'utf8');
         expect(drain.match(/role: worker/g)).toHaveLength(3);
         expect(drain).toContain('factory.lane/shared: "true"');
