@@ -2038,6 +2038,32 @@ await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; r
 
 DRIVER_DEPLOY="deployment/$RELEASE-factory-driver"
 DRIVER_SEL="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driver"
+
+# A forced delete removes the pod object at once, but the kubelet still stops the driver's containers on
+# its node afterwards; a driver process that outlives the delete can still complete the job under its
+# expired lease. kill_driver_pods [pod/<name>] deletes the driver pods hard (all of them without an
+# argument) and returns once the node reports no container of theirs left running.
+kill_driver_pods() {
+    local rows pod node out
+    if [ -n "${1:-}" ]; then
+        rows="$(kubectl get "$1" -n "$NAMESPACE" --request-timeout=10s \
+            -o jsonpath='{.metadata.name} {.spec.nodeName}{"\n"}' 2>/dev/null)" || rows=''
+        kubectl delete "$1" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    else
+        rows="$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}' 2>/dev/null)" || rows=''
+        kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    fi
+    [ -n "${kind_name:-}" ] || return 0
+    while read -r pod node; do
+        [ -n "$pod" ] || continue
+        for _ in $(seq 1 60); do
+            out="$(docker exec "$node" crictl ps -q --state running --label "io.kubernetes.pod.name=$pod" 2>/dev/null)" &&
+                [ -z "$out" ] && break
+            sleep 1
+        done
+    done <<<"$rows"
+}
 driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --request-timeout=20s 2>/dev/null; }
 
 if selected_phase admission; then
@@ -2495,7 +2521,7 @@ else
     ok 'the hard-kill runner is running'
     await_blocked "$hard_pod" "$hard_release" && ok 'the hard-kill agent is blocked at its barrier' || give_up
     hard_job="$(first_runner_job "$hard")"
-    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kill_driver_pods
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     # Two and more 3s reaper rounds of the replacement driver while the agent is still blocked at its
     # barrier under the dead driver's live lease: the live runner Job is no orphan, and stays.
@@ -2615,7 +2641,7 @@ else
     # is already synced, and only a replacement that re-synced would move onto this commit.
     advance_origin && ok 'the origin moves after the first runner synced its tree' ||
         bad 'the origin moves after the first runner synced its tree' 'the advance pod did not push'
-    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kill_driver_pods
     kubectl delete job "$lost_job" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     # A force-deleted driver lives on for a moment, and may see its runner Job deleted and hand the
@@ -2672,7 +2698,7 @@ else
         bad 'the driver holding the finalizing job is found' 'no driver pod logged the job'
         give_up
     }
-    kubectl delete "$final_driver" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kill_driver_pods "$final_driver"
     release_stub "$final_release"
     agent_exit=''
     for _ in $(seq 1 20); do
@@ -3131,7 +3157,7 @@ tk_supervisor_exit() { # tk_supervisor_exit <job id> <claim seq> <seconds> -> th
 
 tk_kill() { # tk_kill <job id> -> the driver pod gone with no drain, a replacement up, the dead claim's lease expired
     local expired
-    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kill_driver_pods
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 ||
         { bad "$1: the replacement driver is rolled out" "$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" 2>&1)"; give_up; }
     expired="$(expire_claim_one "$1")"
