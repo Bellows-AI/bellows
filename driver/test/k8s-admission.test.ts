@@ -246,6 +246,14 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         );
         expect(objects).toContain(`k == '${TASK_UNSCHEDULABLE_LABEL}'`);
         expect(objects).toContain('object.spec == oldObject.spec');
+        // An update carrying the label could still strip the pvc-protection finalizer, add an ownerReference the
+        // garbage collector then deletes the claim for, or rewrite the scheduler's selected-node annotation.
+        for (const field of ['annotations', 'finalizers', 'ownerReferences']) {
+            expect(objects).toContain(`has(object.metadata.${field}) == has(oldObject.metadata.${field})`);
+            expect(objects).toContain(
+                `(!has(object.metadata.${field}) || object.metadata.${field} == oldObject.metadata.${field})`
+            );
+        }
         expect(objects).toContain("request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'CREATE'");
     });
 

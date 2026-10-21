@@ -803,6 +803,12 @@ expect_contains 'the admission policy matches the task volume claim update' "$ad
 expect_contains 'the admission policy lets a claim change only its unschedulable label' "$admission" \
     'the driver changes a task volume claim by its unschedulable label alone'
 expect_contains 'the admission policy holds a claim spec fixed on update' "$admission" 'object.spec == oldObject.spec'
+expect_contains 'the admission policy holds a claim annotations fixed on update' "$admission" \
+    '(!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)'
+expect_contains 'the admission policy holds a claim finalizers fixed on update' "$admission" \
+    '(!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers)'
+expect_contains 'the admission policy holds a claim ownerReferences fixed on update' "$admission" \
+    '(!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)'
 expect_not_contains 'the admission policy admits no checkout claim update' "$admission" 'factory.revoked'
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
