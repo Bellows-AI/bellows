@@ -1480,7 +1480,9 @@ helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHA
 }
 state_installed=1
 LANE_LEASE_S=120
-LANE_REBIND_GRACE_S=30
+# A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes,
+# docs/kubernetes.md): the grace outlasts it, or the group ends before it can follow the new holder.
+LANE_REBIND_GRACE_S=120
 LANE_MARGIN_S=40
 # A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
 LANE_ORPHAN_S=30
