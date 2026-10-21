@@ -5,6 +5,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { applyCloseTimeReadout, tickCacheWatch } from '../src/docker-close-read.js';
 import { ensureTaskVolume, taskVolumeIsOurs } from '../src/docker-task-volume.js';
 import { OPENCODE } from '../src/executors.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
 import {
     TASK_GENERATION_LABEL,
@@ -161,6 +162,32 @@ describe("the thread's docker task volume (issue #775)", () => {
         await ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] }, signal);
         const runs = d.calls.flatMap((a, i) => (a[0] === 'run' ? [d.signals[i]] : []));
         expect(runs).toEqual([signal, signal]);
+    });
+
+    // The init containers run the executor image before the group does: a refusal of that image is the
+    // same typed startup refusal the group start answers (a configuration fault), never a raw error.
+    it.each([
+        ['the root init', [] as string[]],
+        ['the reviewer-home init', ['security']],
+    ])('types a refused executor image in %s as a startup refusal', async (_n, reviewerProfiles) => {
+        const runs: string[][] = [];
+        const refusal = Object.assign(new Error('Command failed: docker run'), {
+            stderr: "docker: invalid reference format.\nSee 'docker run --help'.\n",
+        });
+        const execDocker = async (args: string[]) => {
+            if (args[0] === 'volume' && args[1] === 'inspect') return { stdout: `${JSON.stringify(OURS)}\n` };
+            if (args[0] === 'run') {
+                runs.push(args);
+                if (runs.length > (reviewerProfiles.length > 0 ? 1 : 0)) throw refusal;
+            }
+            return { stdout: '' };
+        };
+        const error = await ensureTaskVolume({ config, execDocker }, { ...job, reviewerProfiles }).catch(
+            (e: unknown) => e
+        );
+        expect(error).toBeInstanceOf(StartupRefused);
+        expect(error).toMatchObject({ startupCause: 'image' });
+        expect((error as Error).message).toMatch(/invalid reference format/);
     });
 });
 
