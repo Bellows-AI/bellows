@@ -3187,8 +3187,11 @@ tk_settled() { # tk_settled <name> <job id> <interruption> -> the checks every c
     local brief left clean until=$(($(date +%s) + 120))
     tk_settled_at=''
     brief="$(await_brief "$2" 'succeeded*' 240)"
-    [ "$brief" = "succeeded|1|1|1|$3" ] && tk_settled_at=$(date +%s)
-    [ "$brief" = "succeeded|1|1|1|$3" ] && ok "$1: the next claim finishes the task once, with one interruption" ||
+    # An interruption may carry the pod's own words after the stated cause: "<cause> (<reason>: <message>)".
+    case "$brief" in
+    "succeeded|1|1|1|$3" | "succeeded|1|1|1|$3 ("*")") tk_settled_at=$(date +%s) ;;
+    esac
+    [ -n "$tk_settled_at" ] && ok "$1: the next claim finishes the task once, with one interruption" ||
         bad "$1: the next claim finishes the task once, with one interruption" "status|attempts|count|claimSeq|reason: $brief"
     clean=''
     while :; do
