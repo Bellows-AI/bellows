@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Sql } from 'postgres';
-import { beforeAll, describe, expect, it } from 'vitest';
+import postgres, { type Sql } from 'postgres';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
     ARTIFACT_CAUSE,
     ArtifactIntegrityError,
@@ -343,6 +343,58 @@ describe.skipIf(!enabled).each(BACKENDS)('artifact index over $name', ({ make, p
             expect(columns).toEqual([]);
         });
     });
+
+    // Two API replicas: each its own process (own pool), one database, one object store. Whatever
+    // one wrote, the other serves; a write both race is decided once.
+    describe('across two replicas', () => {
+        async function replicas() {
+            const objects = await make();
+            const peer = postgres(process.env.DATABASE_URL as string, { max: 2, onnotice: () => {} });
+            peers.push(peer);
+            const on = (pool: Sql) =>
+                createArtifactStore({ sql: pool, orgId: ORG, ready: Promise.resolve(), objects, prefix });
+            return { a: on(sql), b: on(peer) };
+        }
+
+        it.skipIf(skip)('serves on one replica the chunks and manifest the other wrote', async () => {
+            const { a, b } = await replicas();
+            const ref = streamRef();
+            await a.putChunk(ref, 0, bytes('first'));
+            await a.putChunk(ref, 5, bytes('second'));
+            await a.finalize(ref, MANIFEST);
+
+            expect(await b.listChunks(ref)).toEqual(await a.listChunks(ref));
+            expect(text((await b.readChunk(ref, 5))?.body)).toBe('second');
+            expect(await b.readManifest(ref)).toEqual(await a.readManifest(ref));
+            expect((await b.readManifest(ref))?.state).toBe('complete');
+        });
+
+        it.skipIf(skip)('decides a chunk both replicas write at once exactly once', async () => {
+            const { a, b } = await replicas();
+            const same = streamRef();
+            const sameResults = await Promise.all([
+                a.putChunk(same, 0, bytes('same')),
+                b.putChunk(same, 0, bytes('same')),
+            ]);
+            expect(sameResults.map((r) => r.result).sort()).toEqual(['duplicate', 'stored']);
+
+            const differ = streamRef();
+            const differResults = await Promise.all([
+                a.putChunk(differ, 0, bytes('from a')),
+                b.putChunk(differ, 0, bytes('from b')),
+            ]);
+            expect(differResults.map((r) => r.result).sort()).toEqual(['conflict', 'stored']);
+            const winner = differResults[0]?.result === 'stored' ? 'from a' : 'from b';
+            expect(text((await a.readChunk(differ, 0))?.body)).toBe(winner);
+            expect(text((await b.readChunk(differ, 0))?.body)).toBe(winner);
+            expect(await chunkRows(differ)).toHaveLength(1);
+        });
+    });
+});
+
+const peers: Sql[] = [];
+afterAll(async () => {
+    await Promise.all(peers.map((peer) => peer.end({ timeout: 5 })));
 });
 
 describe.skipIf(!enabled)('the old job_artifact storage', () => {
