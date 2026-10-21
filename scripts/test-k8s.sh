@@ -2101,7 +2101,25 @@ kubectl delete configmap "$PROBE_CLAIM" admission-probe-plain -n "$NAMESPACE" >/
 PROBE_ENV="factory-job-00000000-0000-4000-8000-000000000829-env"
 kubectl create secret generic "$PROBE_ENV" -n "$NAMESPACE" --from-literal=KEEP=1 >/dev/null
 kubectl label secret "$PROBE_ENV" -n "$NAMESPACE" factory.job=admission-probe >/dev/null
-as_driver_secret() { kubectl patch secret "$1" --as="$DRIVER_SA" -n "$NAMESPACE" --type=merge -p "$2" --dry-run=server 2>&1; }
+# The driver has no `get` on Secrets and `kubectl patch` reads the object first, so the merge patch
+# goes straight to the apiserver through an impersonating proxy, as the driver's own PATCH does.
+as_driver_secret() {
+    local plog pid port out
+    plog="$(mktemp)"
+    kubectl proxy --port=0 --as="$DRIVER_SA" >"$plog" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 100); do grep -q 'Starting to serve' "$plog" && break; sleep 0.1; done
+    port="$(sed -n 's/.*127\.0\.0\.1:\([0-9]*\).*/\1/p' "$plog")"
+    out="$(curl -sS -w '\n%{http_code}' -X PATCH -H 'Content-Type: application/merge-patch+json' -d "$2" \
+        "http://127.0.0.1:$port/api/v1/namespaces/$NAMESPACE/secrets/$1?dryRun=All" 2>&1)"
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f "$plog"
+    case "${out##*$'\n'}" in
+        2??) echo "secret/$1 patched (server dry run)" ;;
+        *) echo "$out" ;;
+    esac
+}
 bound="$(as_driver_secret "$PROBE_ENV" '{"data":{"binding.json":"e30="}}')"
 expect_contains 'the policy admits a binding patch on an attempt Secret' "$bound" 'patched'
 other_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":"eA=="}}')"
@@ -2109,7 +2127,8 @@ expect_contains 'the policy refuses a Secret patch of another key' "$other_key" 
 relabelled_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
 expect_contains 'the policy refuses relabelling an attempt Secret' "$relabelled_secret" 'changes only its binding'
 retyped_secret="$(as_driver_secret "$PROBE_ENV" '{"type":"kubernetes.io/basic-auth"}')"
-expect_contains 'the policy refuses retyping an attempt Secret' "$retyped_secret" 'changes only its binding'
+# A Secret's type is immutable in the apiserver itself, which refuses the change before admission runs.
+expect_contains 'the apiserver refuses retyping an attempt Secret' "$retyped_secret" 'field is immutable'
 reowned_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","name":"thief","uid":"00000000-0000-0000-0000-000000000000"}]}}')"
 expect_contains 'the policy refuses re-owning an attempt Secret' "$reowned_secret" 'changes only its binding'
 dropped_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":null}}')"

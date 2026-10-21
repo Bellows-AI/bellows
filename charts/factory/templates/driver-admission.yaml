@@ -356,7 +356,6 @@ spec:
         - expression: >-
               request.kind.kind != 'Secret' || request.operation != 'UPDATE' ||
               (has(object.metadata.labels) && object.metadata.labels == oldObject.metadata.labels &&
-                (has(object.type) ? object.type : '') == (has(oldObject.type) ? oldObject.type : '') &&
                 variables.newOwners == variables.oldOwners &&
                 variables.newFinalizers == variables.oldFinalizers &&
                 variables.newAnnotations == variables.oldAnnotations &&
