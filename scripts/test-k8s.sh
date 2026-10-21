@@ -1477,6 +1477,11 @@ helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHA
     exit 1
 }
 state_installed=1
+LANE_LEASE_S=120
+LANE_REBIND_GRACE_S=30
+LANE_MARGIN_S=40
+# A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
+LANE_ORPHAN_S=30
 # Fresh throwaway secrets per run; the board token is what the driver presents on every claim, so a
 # job that comes back succeeded proves it end to end. The origin is the port-forward's below.
 PORT=18080
@@ -1490,8 +1495,8 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "collector.image.repository=$LANE_REGISTRY/${COLLECTOR_IMAGE%:*}" \
     --set "database.waitImage=$POSTGRES_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
-    --set-string driver.leaseSeconds=120 --set driver.terminationGracePeriodSeconds=70 \
-    --set-string driver.rebindGraceMs=30000 \
+    --set-string driver.leaseSeconds="$LANE_LEASE_S" --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1
@@ -2366,6 +2371,11 @@ fi
 # that stands in for waiting a dead driver's lease out.
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
 TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
+# A released group waits takeoverBoundMs (the lease plus the rebind grace, driver/src/supervisor-plan.ts)
+# for a new holder, so a runner handed over by a lost or drained driver finishes only past it; the wait
+# is derived from the lane's lease and grace, plus a margin for the run itself.
+HANDOVER_S=$((LANE_LEASE_S + LANE_REBIND_GRACE_S + LANE_MARGIN_S))
+ORPHANED_S=$((LANE_ORPHAN_S + HANDOVER_S))
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
 JOB_LOST='infrastructure loss: the runner job '
@@ -2475,7 +2485,7 @@ else
     kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     release_stub "$hard_release"
-    await_job_complete "$hard_job" 60 && ok 'the runner of a deleted driver runs to its end' ||
+    await_job_complete "$hard_job" "$ORPHANED_S" && ok 'the runner of a deleted driver runs to its end' ||
         bad 'the runner of a deleted driver runs to its end' "$(kubectl get job "$hard_job" -n "$NAMESPACE" 2>&1)"
     # Two and more 3s reaper rounds of the replacement driver while the job is still live under the
     # dead driver's lease: the finished runner Job is unread, and stays.
@@ -2499,7 +2509,7 @@ else
     [ "$hard_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
         bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end"
     expect_contains 'the adopted output is the first runner pod output' "$(job_output "$hard")" "released in $hard_pod"
-    expect_contains 'the replacement driver logs the adoption' "$(driver_logs)" "job $hard: $ADOPTED"
+    expect_contains 'the replacement driver logs the takeover' "$(driver_logs)" "job $hard: $TOOK_OVER"
 fi
 
 # b. The drain: SIGTERM, and the handover 10s in. Scaled to 0, so no driver claims the queued job
@@ -2522,7 +2532,7 @@ else
         ok 'the handed-over runner pod is left running' ||
         bad 'the handed-over runner pod is left running' "$(kubectl get pod "$drained_pod" -n "$NAMESPACE" 2>&1)"
     release_stub "$drain_release"
-    await_job_complete "$drained_job" 90 && ok 'the handed-over runner Job completes on its own' ||
+    await_job_complete "$drained_job" "$HANDOVER_S" && ok 'the handed-over runner Job completes on its own' ||
         bad 'the handed-over runner Job completes on its own' "$(kubectl get job "$drained_job" -n "$NAMESPACE" 2>&1)"
 fi
 # Scaled back whatever happened above: the case after this one needs a driver.
@@ -2533,7 +2543,7 @@ if [ -n "$drained_pod" ]; then
     [ "$drained_end" = "succeeded|1|1|1|$DRAINED" ] && ok 'the returning driver adopts the handed-over run' ||
         bad 'the returning driver adopts the handed-over run' "status|attempts|count|claimSeq|reason: $drained_end"
     expect_contains 'the handed-over output is the first runner pod output' "$(job_output "$drained")" "released in $drained_pod"
-    expect_contains 'the returning driver logs the adoption' "$(driver_logs)" "job $drained: $ADOPTED"
+    expect_contains 'the returning driver logs the takeover' "$(driver_logs)" "job $drained: $TOOK_OVER"
 fi
 
 # c. The runner pod deleted mid-run, its driver alive: an interruption the driver reports at once,

@@ -475,10 +475,21 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
     const installCall = install.slice(0, install.indexOf('>/dev/null'));
 
     it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
-        expect(installCall).toContain('--set-string driver.leaseSeconds=120');
+        expect(script).toContain('LANE_LEASE_S=120');
+        expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
         // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
-        expect(installCall).toContain('--set-string driver.rebindGraceMs=30000');
+        expect(script).toContain('LANE_REBIND_GRACE_S=30');
+        expect(installCall).toContain('--set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))"');
+    });
+
+    it('waits out a handed-over runner for the takeover bound (lease plus rebind grace), and expects the takeover', () => {
+        expect(script).toContain('HANDOVER_S=$((LANE_LEASE_S + LANE_REBIND_GRACE_S + LANE_MARGIN_S))');
+        expect(script).toContain('ORPHANED_S=$((LANE_ORPHAN_S + HANDOVER_S))');
+        expect(script).toContain('await_job_complete "$hard_job" "$ORPHANED_S"');
+        expect(script).toContain('await_job_complete "$drained_job" "$HANDOVER_S"');
+        expect(script).toContain('"job $hard: $TOOK_OVER"');
+        expect(script).toContain('"job $drained: $TOOK_OVER"');
     });
 
     it('renders DRIVER_REBIND_GRACE_MS from a chart value whose default is the driver default', () => {
