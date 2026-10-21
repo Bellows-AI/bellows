@@ -93,6 +93,8 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
     ctx.session = run.session ? { id: run.session, resume: true } : null;
     ctx.fenced = true;
     state.keepGroup = false;
+    // The agent runs: every exit before `launchRun` retains, stops or kills it as a launched attempt's.
+    state.launched = true;
     const reason = `took over the running agent of claim ${run.claimSeq}, whose driver was lost`;
     rt.log(`job ${job.id}: ${reason}`);
     return { record: 'interruption', reason, claimSeq: run.claimSeq };

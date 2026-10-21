@@ -233,6 +233,22 @@ describe('taking over a live run (#829)', () => {
         expect(s.board.interrupted).toEqual([]);
     });
 
+    it('counts a confirmed takeover as launched, so every exit before the launch retains the group', async () => {
+        const s = takeover();
+
+        await adoptStep(s.ctx);
+
+        expect(s.state.launched).toBe(true);
+    });
+
+    it('does not count an unconfirmed takeover as launched', async () => {
+        const s = takeover({ polled: false });
+
+        await adoptStep(s.ctx);
+
+        expect(s.state.launched).toBe(false);
+    });
+
     it('runs a session-less (opencode) takeover with a null session', async () => {
         const s = takeover({ session: null });
 
