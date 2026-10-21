@@ -3,8 +3,7 @@ import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
 import { isSeq, LEASE_LABEL } from './labels.js';
-import { type VolumeListing, planTaskVolume } from './task-restore.js';
-import { TASK_ROOT_LABEL, generationOfName, taskRootOf, taskVolumeName, taskVolumeSpec } from './task-volume.js';
+import { ensureTaskVolume } from './k8s-task-volume.js';
 import {
     claimBody,
     claimPath,
@@ -541,73 +540,6 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
  */
 async function standDownOwnJob(deps: K8sDeps, identity: TeardownIdentity): Promise<void> {
     await endRunnerJob(deps, identity);
-}
-
-/** The task volumes of a namespace (issue #775). */
-export const taskVolumesPath = (namespace: string): string => `/api/v1/namespaces/${namespace}/persistentvolumeclaims`;
-
-/** One claim of a listing: its generation and whether it is being deleted (its name is taken, but it cannot be mounted). */
-interface ListedVolume {
-    generation: number;
-    terminating: boolean;
-}
-
-/**
- * The thread's task volumes by its root label (issue #775). Only a 200 whose items are all this
- * thread's claims counts, so an empty list is the one proof of absence; a refusal, a transport
- * failure and a malformed item throw, and nothing is created or restored on them.
- */
-export async function listTaskVolumes(deps: K8sDeps, job: BoardJob): Promise<VolumeListing> {
-    const root = taskRootOf(job);
-    const path = `${taskVolumesPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(`${TASK_ROOT_LABEL}=${root}`)}`;
-    const entry = (value: unknown): ListedVolume | null => {
-        if (!isRecord(value) || !isRecord(value.metadata)) return null;
-        const { name, labels, deletionTimestamp } = value.metadata;
-        if (typeof name !== 'string' || !isRecord(labels) || labels[TASK_ROOT_LABEL] !== root) return null;
-        const generation = generationOfName(root, name);
-        return generation === null ? null : { generation, terminating: deletionTimestamp !== undefined };
-    };
-    const read = await readTypedList(deps, path, `listing the task volumes of job ${job.id}`, { entry });
-    if (read.kind !== 'value') {
-        throw new Error(read.kind === 'inconclusive' ? read.reason : 'the task volume listing is absent');
-    }
-    return {
-        live: read.value.filter((volume) => !volume.terminating).map((volume) => volume.generation),
-        highest: Math.max(0, ...read.value.map((volume) => volume.generation)),
-    };
-}
-
-/**
- * The thread's task volume: the highest generation listed is adopted; one that is not there is
- * created on the thread's first attempt, or — for a claim that continues a session — as the next
- * generation, to be restored from the checkpoint (`planTaskVolume`). A create that answers 409 lost a
- * race to another creation of the same name: it is listed again and adopted. Nothing here deletes one.
- */
-export async function ensureTaskVolume(deps: K8sDeps, job: BoardJob, signal?: AbortSignal): Promise<void> {
-    signal?.throwIfAborted();
-    const { create } = await planTaskVolume(deps.checkpoints, job, await listTaskVolumes(deps, job));
-    if (!create) return;
-    // An attempt aborted while the listing was out creates nothing.
-    signal?.throwIfAborted();
-    const created = await deps.request(
-        'POST',
-        taskVolumesPath(deps.config.k8sNamespace),
-        taskVolumeSpec(deps.config, job)
-    );
-    if (created.status === HTTP_CONFLICT && (await listTaskVolumes(deps, job)).live.includes(job.taskGeneration!))
-        return;
-    expectOk(created, `creating the task volume of job ${job.id}`);
-}
-
-/** Deletes the thread's older generations once a restore has landed; a claim already gone is deleted. */
-export async function removeTaskVolumes(deps: K8sDeps, job: BoardJob, generations: readonly number[]): Promise<void> {
-    for (const generation of generations) {
-        const answer = await deps.request(
-            'DELETE',
-            `${taskVolumesPath(deps.config.k8sNamespace)}/${taskVolumeName(job, generation)}`
-        );
-        if (answer.status !== HTTP_NOT_FOUND) expectOk(answer, `deleting the task volume generation ${generation}`);
-    }
 }
 
 /**

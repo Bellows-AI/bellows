@@ -39,22 +39,42 @@ describe('planTaskVolume', () => {
     it('starts a first claim on generation 1 and creates it', async () => {
         const job = fresh();
         const source = board({ state: 'none' });
-        expect(await planTaskVolume(source, job, { live: [], highest: 0 })).toEqual({ create: true });
+        expect(await planTaskVolume(source, job, { live: [], highest: 0, unschedulable: [] })).toEqual({
+            create: true,
+        });
         expect(job.taskGeneration).toBe(1);
         expect(job.taskRestore).toBeUndefined();
         expect(source.checkpoint).not.toHaveBeenCalled();
     });
 
+    it('restores a continuing claim into the next generation when the only volume is unschedulable, deleting it after', async () => {
+        const job = continuing();
+        const source = board(found());
+        expect(await planTaskVolume(source, job, { live: [], highest: 2, unschedulable: [2] })).toEqual({
+            create: true,
+        });
+        expect(job.taskGeneration).toBe(3);
+        expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [2], restored: false });
+    });
+
+    it('fails a continuing claim checkpoint_unrestorable when its only volume is unschedulable and no checkpoint exists', async () => {
+        await expect(
+            planTaskVolume(board({ state: 'none' }), continuing(), { live: [], highest: 1, unschedulable: [1] })
+        ).rejects.toBeInstanceOf(CheckpointUnrestorable);
+    });
+
     it('does not reuse the name of a volume still being deleted', async () => {
         const job = fresh();
-        await planTaskVolume(undefined, job, { live: [], highest: 3 });
+        await planTaskVolume(undefined, job, { live: [], highest: 3, unschedulable: [] });
         expect(job.taskGeneration).toBe(4);
     });
 
     it('adopts the highest live generation without asking the board', async () => {
         const job = continuing();
         const source = board(found());
-        expect(await planTaskVolume(source, job, { live: [1], highest: 1 })).toEqual({ create: false });
+        expect(await planTaskVolume(source, job, { live: [1], highest: 1, unschedulable: [] })).toEqual({
+            create: false,
+        });
         expect(job.taskGeneration).toBe(1);
         expect(job.taskRestore).toBeUndefined();
         expect(source.checkpoint).not.toHaveBeenCalled();
@@ -62,28 +82,32 @@ describe('planTaskVolume', () => {
 
     it('owes the restore again on an adopted restored generation, with the older ones to delete', async () => {
         const job = continuing();
-        expect(await planTaskVolume(board(found()), job, { live: [2, 3, 1], highest: 3 })).toEqual({ create: false });
+        expect(await planTaskVolume(board(found()), job, { live: [2, 3, 1], highest: 3, unschedulable: [] })).toEqual({
+            create: false,
+        });
         expect(job.taskGeneration).toBe(3);
         expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [2, 1], restored: false });
     });
 
     it('adopts a restored generation as is when the board holds no complete checkpoint', async () => {
         const job = continuing();
-        await planTaskVolume(board({ state: 'gone' }), job, { live: [2], highest: 2 });
+        await planTaskVolume(board({ state: 'gone' }), job, { live: [2], highest: 2, unschedulable: [] });
         expect(job.taskGeneration).toBe(2);
         expect(job.taskRestore).toBeUndefined();
     });
 
     it('restores a continuing claim whose volume is gone onto generation n+1', async () => {
         const job = continuing();
-        expect(await planTaskVolume(board(found()), job, { live: [], highest: 0 })).toEqual({ create: true });
+        expect(await planTaskVolume(board(found()), job, { live: [], highest: 0, unschedulable: [] })).toEqual({
+            create: true,
+        });
         expect(job.taskGeneration).toBe(2);
         expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [], restored: false });
     });
 
     it('treats a takeover resuming its session as continuing', async () => {
         const job = fresh({ resumeSessionId: 'sess' });
-        await planTaskVolume(board(found()), job, { live: [], highest: 4 });
+        await planTaskVolume(board(found()), job, { live: [], highest: 4, unschedulable: [] });
         expect(job.taskGeneration).toBe(5);
     });
 
@@ -93,7 +117,9 @@ describe('planTaskVolume', () => {
         ['truncated', found({ ...POINTER, truncated: true }), /size cap/],
     ])('fails checkpoint_unrestorable on %s', async (_name, read, message) => {
         const job = continuing();
-        const error = await planTaskVolume(board(read), job, { live: [], highest: 0 }).catch((e: unknown) => e);
+        const error = await planTaskVolume(board(read), job, { live: [], highest: 0, unschedulable: [] }).catch(
+            (e: unknown) => e
+        );
         expect(error).toBeInstanceOf(CheckpointUnrestorable);
         expect((error as Error).message).toMatch(message);
         expect(unrestorableResult(error as CheckpointUnrestorable)).toEqual({
@@ -105,9 +131,9 @@ describe('planTaskVolume', () => {
     });
 
     it('refuses a continuing claim with no checkpoint source rather than starting it empty', async () => {
-        await expect(planTaskVolume(undefined, continuing(), { live: [], highest: 0 })).rejects.toThrow(
-            /no checkpoint source/
-        );
+        await expect(
+            planTaskVolume(undefined, continuing(), { live: [], highest: 0, unschedulable: [] })
+        ).rejects.toThrow(/no checkpoint source/);
     });
 });
 
@@ -173,6 +199,26 @@ describe('restoreTaskTree', () => {
         // Owed no more: a second ask runs nothing.
         expect(await restoreTaskTree(host, job, { removeOlder })).toBeNull();
         expect(steps).toHaveLength(1);
+    });
+
+    it('names where a claude run reads its sessions from, the working directory munged as the CLI does', async () => {
+        const { steps, host } = sink(() => ({ stdout: OK }));
+        const job = owed();
+        job.executorType = 'claude-code';
+        await restoreTaskTree(host, job, { removeOlder: async () => undefined });
+        const env = steps[0]?.env;
+        expect(env).toMatchObject({ SESSIONS_DIR: `/task/.factory/transcripts/${ROOT}/projects/-task-widgets` });
+        expect(env).not.toHaveProperty('OPENCODE_DB');
+    });
+
+    it('names the OpenCode database an opencode run reads, and no sessions directory', async () => {
+        const { steps, host } = sink(() => ({ stdout: OK }));
+        const job = owed();
+        job.executorType = 'opencode';
+        await restoreTaskTree(host, job, { removeOlder: async () => undefined });
+        const env = steps[0]?.env;
+        expect(env).toMatchObject({ OPENCODE_DB: `/task/.factory/opencode/${ROOT}/opencode/opencode.db` });
+        expect(env).not.toHaveProperty('SESSIONS_DIR');
     });
 
     it.each([

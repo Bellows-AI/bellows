@@ -75,7 +75,7 @@ export async function listTaskVolumes(
             );
         return generation;
     });
-    return { live, highest: Math.max(0, ...live) };
+    return { live, highest: Math.max(0, ...live), unschedulable: [] };
 }
 
 /** Removes the thread's older generations once a restore has landed. An already-gone volume is removed. */

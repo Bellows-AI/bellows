@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ChunkAnswer } from '../src/board.js';
+import type { TranscriptStream } from '../src/board-checkpoint.js';
 import { createControlChannel, type ControlChannel } from '../src/control-channel.js';
 import type { CheckpointRelay } from '../src/export-control.js';
 
@@ -20,6 +21,11 @@ let base: string;
 let chunkAnswer: () => Promise<ChunkAnswer>;
 let finalizeAnswer: () => Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
 let readAnswer: (offset: number) => Promise<{ bytes: Uint8Array; sha256: string } | null>;
+let listAnswer: () => Promise<TranscriptStream[]>;
+let transcriptAnswer: (
+    ref: { jobId: string; claimSeq: number; session: string },
+    offset: number
+) => Promise<{ bytes: Uint8Array; sha256: string } | null>;
 const seen: { chunks: [number, Uint8Array][]; manifests: unknown[] } = { chunks: [], manifests: [] };
 
 const relay: CheckpointRelay = {
@@ -32,6 +38,8 @@ const relay: CheckpointRelay = {
         return finalizeAnswer();
     },
     readChunk: (offset) => readAnswer(offset),
+    listTranscripts: () => listAnswer(),
+    readTranscript: (ref, offset) => transcriptAnswer(ref, offset),
 };
 
 beforeEach(async () => {
@@ -40,6 +48,8 @@ beforeEach(async () => {
     chunkAnswer = async () => ({ result: 'stored' });
     finalizeAnswer = async () => 'stored';
     readAnswer = async () => null;
+    listAnswer = async () => [];
+    transcriptAnswer = async () => null;
     channel = createControlChannel();
     server = createServer((request, reply) => {
         const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
@@ -158,6 +168,41 @@ describe('the checkpoint routes', () => {
         expect(Buffer.from(body.bytes, 'base64')).toEqual(Buffer.from(bytes));
         expect(body.sha256).toBe('a'.repeat(64));
         expect(asked).toEqual([1048576]);
+    });
+
+    it('serve the thread’s raw transcript streams, and one chunk of one, to the restore step', async () => {
+        openCheckpointing();
+        const stream = { jobId: 'j1', claimSeq: 2, executor: 'claude-code', session: 'alpha', bytes: 3, chunks: [] };
+        listAnswer = async () => [stream];
+        const asked: unknown[] = [];
+        transcriptAnswer = async (ref, offset) => {
+            asked.push([ref, offset]);
+            return { bytes: Uint8Array.from([1, 2, 3]), sha256: 'b'.repeat(64) };
+        };
+
+        const list = await call('GET', '/checkpoint/transcripts');
+        expect(list.status).toBe(200);
+        expect(await list.json()).toEqual({ streams: [stream] });
+
+        const reply = await call('GET', '/checkpoint/transcripts/chunk?jobId=j1&claimSeq=2&session=alpha&offset=9');
+        expect(reply.status).toBe(200);
+        const body = (await reply.json()) as { bytes: string; sha256: string };
+        expect([...Buffer.from(body.bytes, 'base64')]).toEqual([1, 2, 3]);
+        expect(body.sha256).toBe('b'.repeat(64));
+        expect(asked).toEqual([[{ jobId: 'j1', claimSeq: 2, session: 'alpha' }, 9]]);
+    });
+
+    it('refuse a transcript read with no stream coordinates, answer 404 for a chunk not held, 403 to other tokens', async () => {
+        openCheckpointing();
+        expect(
+            (await call('GET', '/checkpoint/transcripts/chunk?jobId=j1&claimSeq=0&session=alpha&offset=0')).status
+        ).toBe(400);
+        expect((await call('GET', '/checkpoint/transcripts/chunk?claimSeq=1&session=alpha&offset=0')).status).toBe(400);
+        expect(
+            (await call('GET', '/checkpoint/transcripts/chunk?jobId=j1&claimSeq=1&session=alpha&offset=0')).status
+        ).toBe(404);
+        expect((await call('GET', '/checkpoint/transcripts', undefined, EXPORTER)).status).toBe(403);
+        expect((await call('GET', '/checkpoint/transcripts', undefined, AGENT)).status).toBe(403);
     });
 
     it('answer 404 for a chunk the board does not hold, 400 for an offset that is none and 502 when the board is out of reach', async () => {

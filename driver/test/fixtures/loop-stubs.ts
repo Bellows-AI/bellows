@@ -163,6 +163,12 @@ export function stubBoard(
         async checkpointChunk() {
             return null;
         },
+        async transcripts() {
+            return [];
+        },
+        async transcriptChunk() {
+            return null;
+        },
         async putArtifactChunk(claimed, ref, offset, bytes) {
             if (options.artifactsDown) throw new Error('board unreachable');
             const text = Buffer.from(bytes).toString('utf8');

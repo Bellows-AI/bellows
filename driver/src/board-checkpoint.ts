@@ -22,6 +22,19 @@ export interface CheckpointPointer {
     chunks: CheckpointChunk[];
 }
 
+/** One raw Claude transcript stream of the thread: an attempt's bytes of one session, with their chunks. */
+export interface TranscriptStream {
+    jobId: string;
+    claimSeq: number;
+    executor: string;
+    session: string;
+    bytes: number;
+    chunks: CheckpointChunk[];
+}
+
+/** The coordinates of one transcript stream. */
+export type TranscriptRef = Pick<TranscriptStream, 'jobId' | 'claimSeq' | 'session'>;
+
 /** What the board holds: nothing yet, a pointer whose bytes are gone, or a checkpoint. */
 export type CheckpointRead = { state: 'none' } | { state: 'gone' } | { state: 'found'; checkpoint: CheckpointPointer };
 
@@ -33,28 +46,67 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 const record = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
-/** The pointer, or null when any field is not what the board promises: an unreadable answer is never a verdict. */
-function pointerOf(value: unknown): CheckpointPointer | null {
-    if (!record(value) || !count(value.bytes) || typeof value.truncated !== 'boolean') return null;
-    if (!Array.isArray(value.chunks)) return null;
+function chunksOf(value: unknown): CheckpointChunk[] | null {
+    if (!Array.isArray(value)) return null;
     const chunks: CheckpointChunk[] = [];
-    for (const chunk of value.chunks as unknown[]) {
+    for (const chunk of value as unknown[]) {
         if (!record(chunk) || !count(chunk.offset) || !count(chunk.length)) return null;
         if (typeof chunk.sha256 !== 'string' || !SHA256.test(chunk.sha256)) return null;
         chunks.push({ offset: chunk.offset, length: chunk.length, sha256: chunk.sha256 });
     }
+    return chunks;
+}
+
+/** The stream, or null when any field is not what the board promises. */
+function streamOf(value: unknown): TranscriptStream | null {
+    if (!record(value) || typeof value.jobId !== 'string' || typeof value.session !== 'string') return null;
+    if (typeof value.executor !== 'string' || !count(value.claimSeq) || !count(value.bytes)) return null;
+    const chunks = chunksOf(value.chunks);
+    if (!chunks) return null;
+    return {
+        jobId: value.jobId,
+        claimSeq: value.claimSeq,
+        executor: value.executor,
+        session: value.session,
+        bytes: value.bytes,
+        chunks,
+    };
+}
+
+/** The pointer, or null when any field is not what the board promises: an unreadable answer is never a verdict. */
+function pointerOf(value: unknown): CheckpointPointer | null {
+    if (!record(value) || !count(value.bytes) || typeof value.truncated !== 'boolean') return null;
+    const chunks = chunksOf(value.chunks);
+    if (!chunks) return null;
     return { bytes: value.bytes, truncated: value.truncated, chunks };
 }
 
 type Post = (path: string, body: unknown, allow404?: boolean) => Promise<Response>;
 
-export function checkpointCalls(post: Post): Pick<Board, 'checkpoint' | 'checkpointChunk'> {
+export function checkpointCalls(
+    post: Post
+): Pick<Board, 'checkpoint' | 'checkpointChunk' | 'transcripts' | 'transcriptChunk'> {
     /** A lease the board no longer honours, or a thread it no longer has: this attempt has nothing to restore into. */
     const refused = (job: BoardJob, response: Response): BoardHttpError =>
         new BoardHttpError(
             response.status,
             `job ${job.id}: the board refused the checkpoint read (${response.status})`
         );
+
+    /** One chunk under the lease, its bytes checked against the digest the board sent before anyone trusts them. */
+    const readChunk = async (job: BoardJob, route: string, params: object, what: string) => {
+        const response = await post(`/api/jobs/${job.id}${route}`, { leaseToken: job.leaseToken, ...params }, true);
+        if (response.status === HTTP_NOT_FOUND) return null;
+        if (response.status === HTTP_CONFLICT) throw refused(job, response);
+        const sha256 = response.headers.get('x-chunk-sha256') ?? '';
+        if (!SHA256.test(sha256))
+            throw new BoardHttpError(response.status, `job ${job.id}: ${what} came without its sha256`);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (createHash('sha256').update(bytes).digest('hex') !== sha256) {
+            throw new BoardHttpError(response.status, `job ${job.id}: ${what} does not match its sha256`);
+        }
+        return { bytes, sha256 };
+    };
 
     return {
         async checkpoint(job): Promise<CheckpointRead> {
@@ -68,26 +120,19 @@ export function checkpointCalls(post: Post): Pick<Board, 'checkpoint' | 'checkpo
             return { state: 'found', checkpoint };
         },
 
-        async checkpointChunk(job, offset) {
-            const response = await post(
-                `/api/jobs/${job.id}/checkpoint/chunk`,
-                { leaseToken: job.leaseToken, offset },
-                true
-            );
-            if (response.status === HTTP_NOT_FOUND) return null;
-            if (response.status === HTTP_CONFLICT) throw refused(job, response);
-            const sha256 = response.headers.get('x-chunk-sha256') ?? '';
-            if (!SHA256.test(sha256))
-                throw new BoardHttpError(response.status, `job ${job.id}: a checkpoint chunk came without its sha256`);
-            const bytes = new Uint8Array(await response.arrayBuffer());
-            // The bytes are checked against the digest the board sent before anyone downstream trusts them.
-            if (createHash('sha256').update(bytes).digest('hex') !== sha256) {
-                throw new BoardHttpError(
-                    response.status,
-                    `job ${job.id}: a checkpoint chunk does not match its sha256`
-                );
-            }
-            return { bytes, sha256 };
+        checkpointChunk: (job, offset) => readChunk(job, '/checkpoint/chunk', { offset }, 'a checkpoint chunk'),
+
+        async transcripts(job) {
+            const response = await post(`/api/jobs/${job.id}/transcripts`, { leaseToken: job.leaseToken }, true);
+            if (response.status === HTTP_CONFLICT || response.status === HTTP_NOT_FOUND) throw refused(job, response);
+            const body: unknown = await response.json().catch(() => null);
+            const streams = record(body) && Array.isArray(body.streams) ? body.streams.map(streamOf) : null;
+            if (!streams || streams.includes(null))
+                throw new BoardHttpError(response.status, `job ${job.id}: the transcript listing is unreadable`);
+            return streams as TranscriptStream[];
         },
+
+        transcriptChunk: (job, ref, offset) =>
+            readChunk(job, '/transcripts/chunk', { ...ref, offset }, 'a transcript chunk'),
     };
 }

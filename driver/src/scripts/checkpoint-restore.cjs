@@ -8,7 +8,12 @@
 //      remote no longer has (a force-push, a deleted branch) is `checkpoint_unrestorable`;
 //   3. unbundles, puts the task branch on the checkpoint's parent and `read-tree -u --reset`s the
 //      checkpoint's tree into the working tree, then resets the index to the parent. The restored tree
-//      keeps every uncommitted change UNSTAGED (the staging area is not part of a checkpoint).
+//      keeps every uncommitted change UNSTAGED (the staging area is not part of a checkpoint);
+//   4. SESSIONS_DIR set: rebuilds every Claude session file of the thread byte for byte from the board's raw
+//      transcript streams (a session two attempts wrote is its streams joined in order), each chunk's sha256
+//      and each stream's length checked, any gap or mismatch `checkpoint_unrestorable`;
+//   5. OPENCODE_DB set and the stream carrying an OpenCode snapshot: writes it there, temp file then rename,
+//      the old database's WAL and SHM sidecars removed first.
 // The tree is built whole in a sibling directory and moved into place by one rename, so a kill leaves
 // a directory the next claim removes, never a half-made checkout. A checkout that already exists is
 // the restore's own earlier success: nothing is fetched and nothing is touched.
@@ -22,6 +27,8 @@
 //   BRANCH        — the task branch;
 //   CHUNKS        — JSON [{offset,length,sha256}]: the checkpoint stream, from the board's pointer;
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint serving the chunks, and its bearer (the supervisor adds them);
+//   SESSIONS_DIR  — optional: where the Claude session files go (`<transcript dir>/projects/<working dir>`);
+//   OPENCODE_DB   — optional: where the OpenCode session database goes;
 //   CRED_HELPER   — optional: the git credential-helper program (the token itself is in the environment).
 const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
@@ -50,8 +57,13 @@ const branch = process.env.BRANCH;
 const url = process.env.RESTORE_URL;
 const token = process.env.RESTORE_TOKEN;
 const credHelper = process.env.CRED_HELPER;
+const sessionsDir = process.env.SESSIONS_DIR;
+const opencodeDb = process.env.OPENCODE_DB;
+const SESSION_NAME = /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$/;
 
 class Unrestorable extends Error {}
+/** Bytes that do not match the digest the board listed: retried like a transport fault, then final for a session. */
+class Corrupt extends Error {}
 const unrestorable = (message) => new Unrestorable(message);
 
 const detail = (e) => String((e && e.stderr) || (e && e.message) || e).slice(0, GIT_ERROR_MAX_LENGTH);
@@ -81,10 +93,13 @@ const git = (cwd, args, input, offline = false) =>
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** One try at a chunk: its bytes checked against the board's digest; 404/410 mean the board dropped it. */
-const readChunk = async (chunk) => {
-    const response = await fetch(`${url}/checkpoint/restore?offset=${chunk.offset}`, {
-        headers: { authorization: `Bearer ${token}` },
-    });
+const readChunk = async (source, chunk) => {
+    const response = await fetch(
+        `${url}${source.route}?${new URLSearchParams({ ...source.params, offset: chunk.offset })}`,
+        {
+            headers: { authorization: `Bearer ${token}` },
+        }
+    );
     if (response.status === HTTP_NOT_FOUND || response.status === HTTP_GONE) {
         throw unrestorable('the board no longer has the checkpoint bytes at offset ' + chunk.offset);
     }
@@ -93,17 +108,17 @@ const readChunk = async (chunk) => {
     const bytes = Buffer.from(String(body.bytes), 'base64');
     const digest = crypto.createHash('sha256').update(bytes).digest('hex');
     if (bytes.length !== chunk.length || digest !== chunk.sha256 || body.sha256 !== chunk.sha256) {
-        throw new Error('the checkpoint chunk at offset ' + chunk.offset + ' does not match its sha256');
+        throw new Corrupt('the checkpoint chunk at offset ' + chunk.offset + ' does not match its sha256');
     }
     return bytes;
 };
 
 /** One chunk of the stream, retried with a growing pause; a dropped chunk is final. */
-const fetchChunk = async (chunk) => {
+const fetchChunk = async (source, chunk) => {
     let last = null;
     for (let tries = 1; tries <= CHUNK_TRIES; tries += 1) {
         try {
-            return await readChunk(chunk);
+            return await readChunk(source, chunk);
         } catch (e) {
             if (e instanceof Unrestorable) throw e;
             last = e;
@@ -113,19 +128,96 @@ const fetchChunk = async (chunk) => {
     throw last;
 };
 
-/** The whole stream into `file`, chunk by chunk and in order. */
+const CHECKPOINT_SOURCE = { route: '/checkpoint/restore', params: {} };
+
+/** The whole stream appended to `file` (opened by the caller), chunk by chunk and in order. */
+const append = async (fd, source, chunks) => {
+    let next = 0;
+    for (const chunk of chunks) {
+        if (chunk.offset !== next) throw unrestorable('the chunk list has a gap at offset ' + next);
+        fs.writeSync(fd, await fetchChunk(source, chunk));
+        next += chunk.length;
+    }
+    return next;
+};
+
 const download = async (file, chunks) => {
     const fd = fs.openSync(file, 'w');
     try {
-        let next = 0;
-        for (const chunk of chunks) {
-            if (chunk.offset !== next) throw new Error('the checkpoint pointer has a gap at offset ' + next);
-            fs.writeSync(fd, await fetchChunk(chunk));
-            next += chunk.length;
+        await append(fd, CHECKPOINT_SOURCE, chunks);
+    } finally {
+        fs.closeSync(fd);
+    }
+};
+
+const getJson = async (route) => {
+    const response = await fetch(url + route, { headers: { authorization: `Bearer ${token}` } });
+    if (!response.ok) throw new Error('the control endpoint answered ' + response.status);
+    return response.json();
+};
+
+/**
+ * One Claude session file, rebuilt from the thread's raw transcript streams of that session: joined in the
+ * order the attempts ran (the thread's rows by creation, then claim sequence). Every stream must be gapless
+ * and as long as the board says; a chunk that stays wrong through the retries is the board's bytes being bad.
+ */
+const downloadSession = async (file, streams) => {
+    const fd = fs.openSync(file, 'w');
+    try {
+        for (const stream of streams) {
+            const source = {
+                route: '/checkpoint/transcripts/chunk',
+                params: { jobId: stream.jobId, claimSeq: stream.claimSeq, session: stream.session },
+            };
+            let length;
+            try {
+                length = await append(fd, source, stream.chunks);
+            } catch (e) {
+                if (e instanceof Corrupt)
+                    throw unrestorable('the transcript of session ' + stream.session + ': ' + e.message);
+                throw e;
+            }
+            if (length !== stream.bytes) {
+                throw unrestorable(
+                    'the transcript of session ' +
+                        stream.session +
+                        ' has ' +
+                        length +
+                        ' bytes, the board lists ' +
+                        stream.bytes
+                );
+            }
         }
     } finally {
         fs.closeSync(fd);
     }
+};
+
+// Files made beside their final place and renamed into it only once everything verified; a failure removes them.
+const temps = [];
+
+/** The session files, as `{temp, final}` pairs, all downloaded and verified; nothing is renamed yet. */
+const downloadSessions = async () => {
+    const { streams } = await getJson('/checkpoint/transcripts');
+    if (!Array.isArray(streams)) throw new Error('the transcript listing is unreadable');
+    const rows = [...new Set(streams.map((s) => s.jobId))];
+    const bySession = new Map();
+    for (const stream of streams) {
+        if (typeof stream.session !== 'string' || !SESSION_NAME.test(stream.session)) {
+            throw unrestorable('a transcript names a session that is not a plain file name');
+        }
+        bySession.set(stream.session, [...(bySession.get(stream.session) ?? []), stream]);
+    }
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const files = [];
+    for (const [session, parts] of bySession) {
+        parts.sort((a, b) => rows.indexOf(a.jobId) - rows.indexOf(b.jobId) || a.claimSeq - b.claimSeq);
+        const temp = path.join(sessionsDir, `.${session}.jsonl.restore`);
+        files.push({ temp, final: path.join(sessionsDir, `${session}.jsonl`) });
+        temps.push(temp);
+        await downloadSession(temp, parts);
+    }
+    return files;
 };
 
 /** The bytes of `file` from `start` up to (not including) the first `delimiter`, read block by block. */
@@ -254,6 +346,22 @@ const rebuild = (repo, header, bundle) => {
     }
 };
 
+/** The OpenCode snapshot out of the stream into a temp file beside the database. */
+const stageDatabase = (stream, header, start) => {
+    fs.mkdirSync(path.dirname(opencodeDb), { recursive: true });
+    const temp = opencodeDb + '.restore';
+    temps.push(temp);
+    copyRange(stream, start + header.bundleBytes, header.sqliteBytes, temp);
+    return temp;
+};
+
+/** The database replaced whole: its WAL and SHM belong to the file being replaced and would corrupt the new one. */
+const installDatabase = (temp) => {
+    fs.rmSync(opencodeDb + '-wal', { force: true });
+    fs.rmSync(opencodeDb + '-shm', { force: true });
+    fs.renameSync(temp, opencodeDb);
+};
+
 const main = async () => {
     if (exists(path.join(checkout, '.git'))) return { ok: true, reason: null, restored: false };
     assertCredentialedOrigin();
@@ -272,6 +380,7 @@ const main = async () => {
         if (!/^[0-9a-f]{40,64}$/.test(String(header.tip))) throw unrestorable('the checkpoint header names no tip');
         const bundle = path.join(work, 'bundle');
         copyRange(stream, line.length + 1, header.bundleBytes, bundle);
+        const sessions = sessionsDir ? await downloadSessions() : [];
         const tree = path.join(work, 'tree');
         git(work, [
             'clone',
@@ -286,11 +395,16 @@ const main = async () => {
             tree,
         ]);
         rebuild(tree, header, bundle);
+        const database = opencodeDb && header.sqliteBytes > 0 ? stageDatabase(stream, header, line.length + 1) : null;
         fs.rmSync(bundle, { force: true });
         fs.rmSync(stream, { force: true });
+        // The commit: sessions and database in place, the tree last — a checkout that exists is the whole restore done.
+        for (const file of sessions) fs.renameSync(file.temp, file.final);
+        if (database) installDatabase(database);
         fs.renameSync(tree, checkout);
         return { ok: true, reason: null, restored: true };
     } finally {
+        for (const temp of temps) fs.rmSync(temp, { force: true });
         fs.rmSync(work, { recursive: true, force: true });
     }
 };

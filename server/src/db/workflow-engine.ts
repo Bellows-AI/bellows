@@ -70,6 +70,8 @@ export interface CompletedRun {
  * - `publish`           the run's publish step failed: resting it spends no round.
  * - `config`            the run's `.bellows.yaml` could not be read: the same file fails the same
  *                       way on every retry, so no edge is followed, a custom `failed` one included.
+ * - `checkpoint_unrestorable`  the thread's tree cannot be rebuilt from its checkpoint: a retry fails the same way,
+ *                       so no edge is followed; a fresh manual retry stays available.
  * - `no_progress`       the matched rule is `gate-failed` and the run left the tree unchanged:
  *                       a gate-fix round over the same tree can only fail the same way.
  * - `thread_busy`       an off-graph follow-up completed while a graph row of the thread is still
@@ -87,6 +89,7 @@ export type RestReason =
     | 'publish'
     | 'config'
     | 'policy'
+    | 'checkpoint_unrestorable'
     | 'no_progress'
     | 'thread_busy';
 
@@ -97,6 +100,7 @@ const REST_BY_KIND: Partial<Record<FailureKind, RestReason>> = {
     publish: 'publish',
     config: 'config',
     policy: 'policy',
+    checkpoint_unrestorable: 'checkpoint_unrestorable',
 };
 
 export type Transition =

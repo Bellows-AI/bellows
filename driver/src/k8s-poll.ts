@@ -249,12 +249,28 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
     const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
     if (stuck && PULL_REASONS.has(stuck.reason)) {
-        return { blocked: pullDetail(stuck), containerSeen: true, waiting: stuck, held, podState, agentStarted };
+        return {
+            blocked: pullDetail(stuck),
+            containerSeen: true,
+            waiting: stuck,
+            held,
+            podState,
+            agentStarted,
+            volumeAffinity: null,
+        };
     }
     const containerSeen =
         containers.length > 0 &&
         containers.every((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
-    return { blocked: null, containerSeen, waiting: stuck, held, podState, agentStarted };
+    return {
+        blocked: null,
+        containerSeen,
+        waiting: stuck,
+        held,
+        podState,
+        agentStarted,
+        volumeAffinity: volumeAffinityOf(pod),
+    };
 }
 
 export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
@@ -268,7 +284,19 @@ export interface ImagePullStatus {
     podState: PodStartState;
     /** The agent container is running or ended: once released, the run has happened. */
     agentStarted: boolean;
+    /** The scheduler's words when the pod is held Pending by its volume's node affinity (#775); else null. */
+    volumeAffinity: string | null;
 }
+
+const VOLUME_AFFINITY = /volume node affinity conflict/i;
+
+/** The scheduler's words for a pod no node can take because of where its volume lives, else null. */
+const volumeAffinityOf = (
+    pod: { status?: { conditions?: { type?: string; status?: string; message?: string }[] } } | undefined
+) =>
+    pod?.status?.conditions?.find(
+        (c) => c.type === 'PodScheduled' && c.status === 'False' && VOLUME_AFFINITY.test(c.message ?? '')
+    )?.message ?? null;
 
 const PULL_REASONS: ReadonlySet<string> = new Set(['ImagePullBackOff', 'ErrImagePull']);
 const STUCK_REASONS: ReadonlySet<string> = new Set([...PULL_REASONS, 'InvalidImageName', 'CreateContainerConfigError']);

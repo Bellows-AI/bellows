@@ -45,6 +45,16 @@ export function taskVolumeServer(namespace: string) {
                 .filter((claim) => claim.metadata.labels?.[label ?? ''] === root);
             return { status: 200, body: JSON.stringify({ items }) };
         }
+        if (path.startsWith(`${volumesPath}/`) && method === 'PATCH') {
+            const name = path.slice(volumesPath.length + 1);
+            const stored = volumes.get(name);
+            if (!stored) return { status: 404, body: '{"kind":"Status","reason":"NotFound"}' };
+            const claim = JSON.parse(stored) as { metadata: { labels?: Record<string, string> } };
+            const patch = body as { metadata?: { labels?: Record<string, string> } };
+            claim.metadata.labels = { ...claim.metadata.labels, ...patch.metadata?.labels };
+            volumes.set(name, JSON.stringify(claim));
+            return { status: 200, body: volumes.get(name)! };
+        }
         if (path.startsWith(`${volumesPath}/`) && method === 'DELETE') {
             const name = path.slice(volumesPath.length + 1);
             return volumes.delete(name)

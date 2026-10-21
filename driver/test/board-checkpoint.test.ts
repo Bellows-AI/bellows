@@ -82,6 +82,61 @@ describe('the board checkpoint chunk read', () => {
     });
 });
 
+describe('the board transcript reads', () => {
+    const STREAM = {
+        jobId: job.id,
+        claimSeq: 2,
+        executor: 'claude-code',
+        session: 'alpha',
+        bytes: 3,
+        chunks: [{ offset: 0, length: 3, sha256: SHA }],
+    };
+
+    it('lists the thread streams under the lease', async () => {
+        const { api, posted } = calls(json({ streams: [STREAM] }));
+        expect(await api.transcripts(job)).toEqual([STREAM]);
+        expect(posted).toEqual([
+            { path: `/api/jobs/${job.id}/transcripts`, body: { leaseToken: 'lease-1' }, allow404: true },
+        ]);
+    });
+
+    it.each([409, 404])('throws on a %i', async (status) => {
+        await expect(calls(json({}, status)).api.transcripts(job)).rejects.toMatchObject({ status });
+    });
+
+    it.each([
+        ['no stream list', {}],
+        ['a stream with a bad session', { streams: [{ ...STREAM, session: 7 }] }],
+        [
+            'a stream with a bad chunk sha',
+            { streams: [{ ...STREAM, chunks: [{ offset: 0, length: 3, sha256: 'x' }] }] },
+        ],
+    ])('throws on %s: an unreadable answer is never a verdict', async (_what, body) => {
+        await expect(calls(json(body)).api.transcripts(job)).rejects.toThrow(/unreadable/);
+    });
+
+    const bytes = new TextEncoder().encode('abc');
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    const ref = { jobId: job.id, claimSeq: 2, session: 'alpha' };
+
+    it('reads one chunk of one stream, checking its digest', async () => {
+        const { api, posted } = calls(() => new Response(bytes, { headers: { 'x-chunk-sha256': sha } }));
+        const read = await api.transcriptChunk(job, ref, 5);
+        expect(read && [...read.bytes]).toEqual([...bytes]);
+        expect(posted[0]).toMatchObject({
+            path: `/api/jobs/${job.id}/transcripts/chunk`,
+            body: { leaseToken: 'lease-1', ...ref, offset: 5 },
+        });
+    });
+
+    it('answers null for a chunk the board no longer has, and throws on a mismatched digest', async () => {
+        expect(await calls(() => new Response('{}', { status: 404 })).api.transcriptChunk(job, ref, 0)).toBeNull();
+        await expect(
+            calls(() => new Response(bytes, { headers: { 'x-chunk-sha256': SHA } })).api.transcriptChunk(job, ref, 0)
+        ).rejects.toThrow(/does not match/);
+    });
+});
+
 describe('syncFailureHalt', () => {
     it('ends an unrestorable thread with its own failure kind', () => {
         expect(syncFailureHalt({ ok: false, reason: 'no checkpoint', kind: 'checkpoint_unrestorable' })).toMatchObject({

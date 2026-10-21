@@ -35,6 +35,8 @@ export const TASK_ROOT_LABEL = 'factory.task-root';
 export const TASK_GENERATION_LABEL = 'factory.task-generation';
 export const TASK_ORG_LABEL = 'factory.task-org';
 export const TASK_CLAIM_SEQ_LABEL = 'factory.task-claim-seq';
+/** Set on a PVC no pod could be scheduled onto (kubernetes only): the volume lookup never adopts it again. */
+export const TASK_UNSCHEDULABLE_LABEL = 'factory.task-unschedulable';
 
 /** The job fields a task volume is derived from. */
 export interface TaskVolumeJob {

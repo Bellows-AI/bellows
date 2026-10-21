@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import type { CheckpointRead } from '../src/board-checkpoint.js';
 import { loadDriverConfig } from '../src/config.js';
-import { ensureTaskVolume, listTaskVolumes, removeTaskVolumes, taskVolumesPath } from '../src/k8s-fence.js';
+import {
+    ensureTaskVolume,
+    listTaskVolumes,
+    markTaskVolumeUnschedulable,
+    removeTaskVolumes,
+    taskVolumesPath,
+} from '../src/k8s-task-volume.js';
 import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s-transport.js';
 import { CheckpointUnrestorable } from '../src/task-restore.js';
-import { TASK_ROOT_LABEL, taskVolumeName } from '../src/task-volume.js';
+import { TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
 
 const ROOT = '11111111-1111-4111-8111-111111111111';
 const config = loadDriverConfig({ EXECUTOR: 'kubernetes', RUNNER_SERVICES: '0' });
@@ -61,7 +67,7 @@ function server({
             if (method === 'GET') {
                 return isResponse(listing) ? listing : { status: 200, body: JSON.stringify(listing) };
             }
-            return method === 'POST' ? create : remove;
+            return method === 'POST' ? create : method === 'PATCH' ? { status: 200, body: '{}' } : remove;
         },
     };
     return { calls, deps, checkpoints };
@@ -73,10 +79,44 @@ const createdNames = (calls: { method: string; body?: unknown }[]) =>
     posts(calls).map((c) => (c.body as { metadata: { name: string } }).metadata.name);
 const deletes = <T extends { method: string }>(calls: T[]) => calls.filter((c) => c.method === 'DELETE');
 
+const stuck = (generation: number) => ({
+    metadata: {
+        ...claim(generation).metadata,
+        labels: { [TASK_ROOT_LABEL]: ROOT, [TASK_UNSCHEDULABLE_LABEL]: 'true' },
+    },
+});
+
+describe('a volume no pod can be scheduled onto', () => {
+    it('is listed apart: never live, still counted in the highest generation, so its name is not reused', async () => {
+        const { deps } = server({ listing: { items: [stuck(2)] } });
+        expect(await listTaskVolumes(deps, job())).toEqual({ live: [], highest: 2, unschedulable: [2] });
+    });
+
+    it('is marked by a label patch on its claim', async () => {
+        const { deps, calls } = server();
+        await markTaskVolumeUnschedulable(deps, job({ taskGeneration: 2 }));
+        expect(calls).toEqual([
+            {
+                method: 'PATCH',
+                path: `${PATH}/${name(2)}`,
+                body: { metadata: { labels: { [TASK_UNSCHEDULABLE_LABEL]: 'true' } } },
+            },
+        ]);
+    });
+
+    it('leaves the next generation to be created and restored, and the stuck one for the restore to delete', async () => {
+        const { deps, calls } = server({ listing: { items: [stuck(1)] } });
+        const next = continuing();
+        await ensureTaskVolume(deps, next);
+        expect(createdNames(calls)).toEqual([name(2)]);
+        expect(next.taskRestore).toMatchObject({ older: [1], restored: false });
+    });
+});
+
 describe('listTaskVolumes', () => {
     it('lists by the thread root label and reports live generations and the highest, terminating included', async () => {
         const { deps, calls } = server({ listing: { items: [claim(1), claim(2), claim(3, true)] } });
-        expect(await listTaskVolumes(deps, job())).toEqual({ live: [1, 2], highest: 3 });
+        expect(await listTaskVolumes(deps, job())).toEqual({ live: [1, 2], highest: 3, unschedulable: [] });
         expect(calls).toHaveLength(1);
         expect(decodeURIComponent(calls[0]?.path ?? '')).toBe(`${PATH}?labelSelector=${TASK_ROOT_LABEL}=${ROOT}`);
     });

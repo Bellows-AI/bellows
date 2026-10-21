@@ -18,6 +18,14 @@ const chartValues = readFileSync(join(ROOT, 'charts/factory/values.yaml'), 'utf8
 const agentsDoc = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
 const chartReadme = readFileSync(join(ROOT, 'charts/factory/README.md'), 'utf8');
 
+describe('the volume-affinity loss record', () => {
+    // Issue #775: a limit that tells a docker reader to stop looking.
+    it('states the kubernetes-only unschedulable-volume recovery and that docker has no analogue', () => {
+        expect(kubernetesDocs).toContain('factory.task-unschedulable');
+        expect(kubernetesDocs).toContain('docker has no zones, so no analogue');
+    });
+});
+
 describe('the EKS prerequisites record', () => {
     it('states the node and add-on prerequisites in docs/kubernetes.md', () => {
         expect(kubernetesDocs).toContain('EKS prerequisites');

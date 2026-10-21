@@ -1,7 +1,8 @@
 import type { Board, BoardJob } from './board.js';
 import type { CheckpointPointer } from './board-checkpoint.js';
-import { claimContinuesSession } from './claim.js';
+import { claimContinuesSession, opencodeDbPath, runWorkingDir, transcriptDir } from './claim.js';
 import { checkpointRestoreScript } from './container-scripts.js';
+import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
 import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish.js';
 import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
@@ -30,6 +31,8 @@ export interface VolumeListing {
     live: number[];
     /** The highest generation listed at all, a volume being deleted included: its name is not free. */
     highest: number;
+    /** Volumes no pod could be scheduled onto (kubernetes): never adopted, deleted once a restore has landed. */
+    unschedulable: number[];
 }
 
 /** The thread cannot be rebuilt: the failure kind `checkpoint_unrestorable`, a person's to act on. */
@@ -59,7 +62,11 @@ export async function planTaskVolume(
         if (current > FIRST_GENERATION && claimContinuesSession(job) && source && !job.taskRestore?.restored) {
             const read = await source.checkpoint(job);
             if (read.state === 'found' && !read.checkpoint.truncated) {
-                job.taskRestore = { checkpoint: read.checkpoint, older, restored: false };
+                job.taskRestore = {
+                    checkpoint: read.checkpoint,
+                    older: [...older, ...listing.unschedulable],
+                    restored: false,
+                };
             }
         }
         return { create: false };
@@ -80,8 +87,20 @@ export async function planTaskVolume(
         throw new CheckpointUnrestorable("the thread's checkpoint was cut at its size cap and carries no tree");
     }
     job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
-    job.taskRestore = { checkpoint: read.checkpoint, older: [], restored: false };
+    job.taskRestore = { checkpoint: read.checkpoint, older: [...listing.unschedulable], restored: false };
     return { create: true };
+}
+
+/** The CLI keeps a working directory's sessions under `projects/<the path with every non-alphanumeric as '-'>`. */
+const projectSegment = (workingDir: string): string => workingDir.replace(/[^A-Za-z0-9]/g, '-');
+
+/** Where the restored sessions go: the claude run's, or the OpenCode run's, never both. */
+function sessionEnv(job: BoardJob): Record<string, string> {
+    if (job.executorType === OPENCODE) return { OPENCODE_DB: opencodeDbPath(job) };
+    if (job.executorType === CLAUDE_CODE) {
+        return { SESSIONS_DIR: `${transcriptDir(job)}/projects/${projectSegment(runWorkingDir(job))}` };
+    }
+    return {};
 }
 
 /** The restore step's own bound: it downloads the stream, clones and checks out the whole tree. */
@@ -119,6 +138,7 @@ export async function restoreTaskTree(
                 REMOTE: remote,
                 BRANCH: worktreeBranch(job),
                 CHUNKS: JSON.stringify(pending.checkpoint.chunks),
+                ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
                 RESTORE_FEED: '1',
                 ...(options.githubToken ? { CRED_HELPER: CREDENTIAL_HELPER } : {}),

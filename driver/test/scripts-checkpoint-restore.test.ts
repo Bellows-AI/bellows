@@ -1,6 +1,7 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -24,6 +25,37 @@ interface Verdict {
 }
 
 const run = promisify(execFile);
+
+interface Transcripts {
+    streams: {
+        jobId: string;
+        claimSeq: number;
+        executor: string;
+        session: string;
+        bytes: number;
+        chunks: { offset: number; length: number; sha256: string }[];
+    }[];
+    data: Map<string, Buffer>;
+    corrupt?: string;
+}
+
+const JOB_A = '11111111-1111-4111-8111-111111111111';
+const JOB_B = '22222222-2222-4222-8222-222222222222';
+
+/** One raw transcript stream as the board lists it: its bytes cut into chunks, each with its digest. */
+function transcriptStream(
+    jobId: string,
+    claimSeq: number,
+    session: string,
+    bytes: Buffer
+): Transcripts['streams'][number] {
+    const chunks: Transcripts['streams'][number]['chunks'] = [];
+    for (let offset = 0; offset < bytes.length; offset += CHUNK) {
+        const part = bytes.subarray(offset, offset + CHUNK);
+        chunks.push({ offset, length: part.length, sha256: createHash('sha256').update(part).digest('hex') });
+    }
+    return { jobId, claimSeq, executor: 'claude-code', session, bytes: bytes.length, chunks };
+}
 
 describe.skipIf(!hasGit())('the checkpoint restore script', () => {
     const fx = setupWorktreeFixture();
@@ -79,12 +111,43 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
     }
 
     /** The control endpoint of a supervisor: `GET /checkpoint/restore?offset=` answers one chunk as JSON. */
-    async function serve(stream: Buffer, { corrupt = false } = {}): Promise<{ url: string; asked: () => number }> {
+    async function serve(
+        stream: Buffer,
+        { corrupt = false, transcripts = null }: { corrupt?: boolean; transcripts?: Transcripts | null } = {}
+    ): Promise<{ url: string; asked: () => number }> {
         let asked = 0;
         server = createServer((request, reply) => {
             asked += 1;
             const url = new URL(request.url ?? '', 'http://x');
-            if (request.headers.authorization !== `Bearer ${TOKEN}` || url.pathname !== '/checkpoint/restore') {
+            const path = url.pathname;
+            if (request.headers.authorization !== `Bearer ${TOKEN}`) {
+                reply.writeHead(401).end('{}');
+                return;
+            }
+            if (transcripts && path === '/checkpoint/transcripts') {
+                reply
+                    .writeHead(200, { 'content-type': 'application/json' })
+                    .end(JSON.stringify({ streams: transcripts.streams }));
+                return;
+            }
+            if (transcripts && path === '/checkpoint/transcripts/chunk') {
+                const q = url.searchParams;
+                const key = `${q.get('jobId')}/${q.get('claimSeq')}/${q.get('session')}`;
+                const whole = transcripts.data.get(key);
+                const offset = Number(q.get('offset'));
+                if (!whole || offset >= whole.length) {
+                    reply.writeHead(404).end('{}');
+                    return;
+                }
+                const bytes = Buffer.from(whole.subarray(offset, offset + CHUNK));
+                const sha256 = createHash('sha256').update(bytes).digest('hex');
+                if (transcripts.corrupt === key) bytes[0] = (bytes[0] ?? 0) ^ 0xff;
+                reply
+                    .writeHead(200, { 'content-type': 'application/json' })
+                    .end(JSON.stringify({ bytes: bytes.toString('base64'), sha256 }));
+                return;
+            }
+            if (path !== '/checkpoint/restore') {
                 reply.writeHead(401).end('{}');
                 return;
             }
@@ -226,5 +289,143 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
 
         expect(verdict.ok).toBe(false);
         expect(verdict.kind).toBeUndefined();
+    });
+    describe('the Claude sessions of the thread', () => {
+        // A multi-line JSONL whose lines straddle chunk edges, and a session that two attempts wrote in turn.
+        const jsonl = (label: string, lines: number) =>
+            Buffer.from(
+                Array.from({ length: lines }, (_, i) => JSON.stringify({ label, i, pad: 'x'.repeat(90) })).join('\n') +
+                    '\n'
+            );
+        const sessionsDir = () => join(fx.dir(), 'transcripts', 'projects', '-task-factory');
+
+        function thread(): { transcripts: Transcripts; original: Record<string, Buffer> } {
+            const alpha = jsonl('alpha', 40);
+            const beta = jsonl('beta', 25);
+            const cut = 3_000;
+            const streams = [
+                transcriptStream(JOB_A, 1, 'alpha', alpha.subarray(0, cut)),
+                transcriptStream(JOB_A, 2, 'alpha', alpha.subarray(cut)),
+                transcriptStream(JOB_B, 1, 'beta', beta),
+            ];
+            const data = new Map<string, Buffer>([
+                [`${JOB_A}/1/alpha`, alpha.subarray(0, cut)],
+                [`${JOB_A}/2/alpha`, alpha.subarray(cut)],
+                [`${JOB_B}/1/beta`, beta],
+            ]);
+            return { transcripts: { streams, data }, original: { alpha, beta } };
+        }
+
+        async function restoreSessions(transcripts: Transcripts) {
+            workedTree();
+            const { stream, chunks } = checkpointStream();
+            const { url } = await serve(stream, { transcripts });
+            return restore(chunks, url, { SESSIONS_DIR: sessionsDir() });
+        }
+
+        it('rebuilds every session file byte for byte, a session written by two attempts joined in order', async () => {
+            const { transcripts, original } = thread();
+
+            const verdict = await restoreSessions(transcripts);
+
+            expect(verdict).toMatchObject({ ok: true, restored: true });
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl')).equals(original.alpha!)).toBe(true);
+            expect(readFileSync(join(sessionsDir(), 'beta.jsonl')).equals(original.beta!)).toBe(true);
+            expect(readdirSync(sessionsDir()).sort()).toEqual(['alpha.jsonl', 'beta.jsonl']);
+        });
+
+        it('restores no sessions when the driver names no directory for them', async () => {
+            const { transcripts } = thread();
+            workedTree();
+            const { stream, chunks } = checkpointStream();
+            const { url } = await serve(stream, { transcripts });
+
+            expect(await restore(chunks, url)).toMatchObject({ ok: true });
+            expect(existsSync(sessionsDir())).toBe(false);
+        });
+
+        it('is checkpoint_unrestorable, and builds nothing, when a transcript chunk does not match its sha256', async () => {
+            const { transcripts } = thread();
+
+            const verdict = await restoreSessions({ ...transcripts, corrupt: `${JOB_B}/1/beta` });
+
+            expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+            expect(existsSync(restoredTree())).toBe(false);
+            expect(readdirSync(restoreDir())).toEqual([]);
+        });
+
+        it.each([
+            ['has a gap', (s: Transcripts['streams'][number]) => ({ ...s, chunks: s.chunks.slice(1) })],
+            ['is shorter than the board says', (s: Transcripts['streams'][number]) => ({ ...s, bytes: s.bytes + 1 })],
+        ])('is checkpoint_unrestorable when a stream %s', async (_name, mutate) => {
+            const { transcripts } = thread();
+            const streams = transcripts.streams.map((s, i) => (i === 2 ? mutate(s) : s));
+
+            const verdict = await restoreSessions({ ...transcripts, streams });
+
+            expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+            expect(existsSync(restoredTree())).toBe(false);
+            expect(existsSync(join(sessionsDir(), 'beta.jsonl'))).toBe(false);
+            expect(readdirSync(sessionsDir())).toEqual([]);
+        });
+
+        it('refuses a session name that is not a plain file name', async () => {
+            const { transcripts } = thread();
+            const bad = transcriptStream(JOB_B, 2, '../escape', Buffer.from('{}\n'));
+            transcripts.streams.push(bad);
+            transcripts.data.set(`${JOB_B}/2/../escape`, Buffer.from('{}\n'));
+
+            const verdict = await restoreSessions(transcripts);
+
+            expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+            expect(existsSync(join(fx.dir(), 'transcripts', 'escape.jsonl'))).toBe(false);
+        });
+    });
+
+    describe('the OpenCode database', () => {
+        const dbSource = () => join(fx.dir(), 'source-opencode.db');
+        const dbTarget = () => join(fx.dir(), 'data', 'opencode', 'opencode.db');
+
+        function seedDb() {
+            const db = new DatabaseSync(dbSource());
+            db.exec('create table session(id text primary key, title text)');
+            db.exec("insert into session values ('ses_1', 'first'), ('ses_2', 'second')");
+            db.close();
+        }
+
+        it('writes the snapshot to the data dir atomically, a stale WAL beside the old file removed', async () => {
+            workedTree();
+            seedDb();
+            const { stream, chunks } = checkpointStream({ OPENCODE_DB: dbSource() });
+            const { url } = await serve(stream);
+            mkdirSync(join(fx.dir(), 'data', 'opencode'), { recursive: true });
+            writeFileSync(`${dbTarget()}-wal`, 'stale write-ahead log');
+            writeFileSync(`${dbTarget()}-shm`, 'stale shared memory');
+
+            const verdict = await restore(chunks, url, { OPENCODE_DB: dbTarget() });
+
+            expect(verdict).toMatchObject({ ok: true, restored: true });
+            const db = new DatabaseSync(dbTarget(), { readOnly: true });
+            expect(db.prepare('select id from session order by id').all()).toEqual([{ id: 'ses_1' }, { id: 'ses_2' }]);
+            db.close();
+            expect(readdirSync(join(fx.dir(), 'data', 'opencode'))).toEqual(['opencode.db']);
+        });
+
+        it('leaves a database alone when the checkpoint carries none, and when the driver names none', async () => {
+            workedTree();
+            const { stream, chunks } = checkpointStream();
+            const { url } = await serve(stream);
+
+            await restore(chunks, url, { OPENCODE_DB: dbTarget() });
+            expect(existsSync(dbTarget())).toBe(false);
+
+            rmSync(restoreDir(), { recursive: true, force: true });
+            seedDb();
+            const withDb = checkpointStream({ OPENCODE_DB: dbSource() });
+            server?.close();
+            const { url: second } = await serve(withDb.stream);
+            await restore(withDb.chunks, second);
+            expect(existsSync(dbTarget())).toBe(false);
+        });
     });
 });

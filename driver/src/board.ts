@@ -1,5 +1,5 @@
 import { artifactCalls } from './artifact-calls.js';
-import { type CheckpointRead, checkpointCalls } from './board-checkpoint.js';
+import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
 import { reclaimCalls } from './reclaim-calls.js';
@@ -510,6 +510,14 @@ export interface Board {
     checkpoint(job: BoardJob): Promise<CheckpointRead>;
     /** One chunk of that checkpoint's stream, its sha256 verified; null when the board has no such chunk. */
     checkpointChunk(job: BoardJob, offset: number): Promise<{ bytes: Uint8Array; sha256: string } | null>;
+    /** The thread's raw Claude transcript streams (issue #775), read under the live lease like `checkpoint`. */
+    transcripts(job: BoardJob): Promise<TranscriptStream[]>;
+    /** One chunk of one such stream, its sha256 verified; null when the board has no such chunk. */
+    transcriptChunk(
+        job: BoardJob,
+        ref: TranscriptRef,
+        offset: number
+    ): Promise<{ bytes: Uint8Array; sha256: string } | null>;
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
