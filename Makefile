@@ -80,6 +80,8 @@ runners: runners-build
 # — see `state-preflight`.
 
 CLUSTER ?= factory
+# LAYOUT=drain makes the three-worker cluster the node-drain lane needs (scripts/kind-cluster-drain.yaml).
+LAYOUT ?=
 K8S_RELEASE ?= dev
 # Fixed, not a knob: values-local.yaml names this release's objects.
 K8S_STATE_RELEASE := factory-state
@@ -146,7 +148,7 @@ build: runners-build
 	fi
 
 cluster:
-	@sh scripts/kind-cluster.sh create $(CLUSTER)
+	@LAYOUT=$(LAYOUT) sh scripts/kind-cluster.sh create $(CLUSTER)
 
 start:
 	@for tool in docker kind helm kubectl node; do \

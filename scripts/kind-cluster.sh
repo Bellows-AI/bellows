@@ -2,6 +2,7 @@
 # A local kind cluster and the registry its nodes pull from, made and unmade in one place.
 #
 #   sh scripts/kind-cluster.sh create <name>   # make cluster: the cluster, the registry, the mirror
+#   LAYOUT=drain sh scripts/kind-cluster.sh create <name>   # make cluster LAYOUT=drain: three workers
 #   sh scripts/kind-cluster.sh check <name>    # scripts/test-k8s.sh: refuses a cluster without them
 #   sh scripts/kind-cluster.sh delete <name>   # make cleanup: the cluster; the registry with the last one
 #
@@ -24,6 +25,8 @@ name="${2:-}"
     exit 2
 }
 here="$(cd "$(dirname "$0")" && pwd)"
+# LAYOUT=drain selects scripts/kind-cluster-drain.yaml: three workers, for the lane's node drains.
+config="$here/kind-cluster${LAYOUT:+-$LAYOUT}.yaml"
 
 # Fails unless the listing succeeds with at least one node: a silent empty list would skip every check.
 nodes() {
@@ -60,7 +63,7 @@ misbound() {
 case "$verb" in
 create)
     if ! kind get clusters 2>/dev/null | grep -qx "$name"; then
-        kind create cluster --name "$name" --config "$here/kind-cluster.yaml" || exit 1
+        kind create cluster --name "$name" --config "$config" || exit 1
     fi
     node_list="$(nodes)" || rewire "no nodes found for the kind cluster $name"
     for node in $node_list; do

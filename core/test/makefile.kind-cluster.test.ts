@@ -28,6 +28,17 @@ describe('the kind cluster targets', () => {
         expect(recipe('cluster')).toContain('sh scripts/kind-cluster.sh create $(CLUSTER)');
     });
 
+    // Issue #829: the multi-node drain layout is the same script with another cluster config.
+    it('make cluster passes LAYOUT to the script, which reads scripts/kind-cluster-<layout>.yaml', () => {
+        expect(recipe('cluster')).toContain('LAYOUT=$(LAYOUT)');
+        const script = readFileSync(new URL('../../scripts/kind-cluster.sh', import.meta.url), 'utf8');
+        expect(script).toContain('config="$here/kind-cluster${LAYOUT:+-$LAYOUT}.yaml"');
+        const drain = readFileSync(new URL('../../scripts/kind-cluster-drain.yaml', import.meta.url), 'utf8');
+        expect(drain.match(/role: worker/g)).toHaveLength(3);
+        expect(drain).toContain('factory.lane/shared: "true"');
+        expect(drain).toContain('config_path = "/etc/containerd/certs.d"');
+    });
+
     it('start goes through make cluster, and nothing else creates a cluster', () => {
         expect(recipe('start')).toContain('$(MAKE) cluster');
         expect(makefile).not.toContain('kind create cluster');
