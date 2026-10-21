@@ -475,7 +475,7 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
     const installCall = install.slice(0, install.indexOf('>/dev/null'));
 
     it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
-        expect(script).toContain('LANE_LEASE_S=120');
+        expect(script).toContain('LANE_LEASE_S=60');
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
         // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
