@@ -80,7 +80,7 @@ function attempt(answers: Answers = {}, { fenced = false, launched = false } = {
                     return answer(answers.stage, 'held');
                 },
             },
-            config: { leaseSeconds: 300 },
+            config: { leaseSeconds: 300, rebindGraceMs: SUPERVISOR_REBIND_GRACE_MS },
             report: async () => {
                 calls.push('complete');
                 return answer(answers.complete, 'ok');
