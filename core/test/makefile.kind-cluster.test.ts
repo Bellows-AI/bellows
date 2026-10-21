@@ -40,6 +40,13 @@ describe('the kind cluster targets', () => {
         expect(drain.match(/containerPath: \/factory-shared/g)).toHaveLength(4);
         expect(drain.match(/hostPath: @SHARED@/g)).toHaveLength(4);
         expect(drain).toContain('config_path = "/etc/containerd/certs.d"');
+        // The lane's rebind grace is derived from the kubelet sync (scripts/test-k8s.sh): both layouts sync fast.
+        for (const layout of [
+            drain,
+            readFileSync(new URL('../../scripts/kind-cluster.yaml', import.meta.url), 'utf8'),
+        ]) {
+            expect(layout).toContain('kind: KubeletConfiguration\n      syncFrequency: 10s');
+        }
     });
 
     it('an unknown LAYOUT is refused, and the shared directory is per cluster and removed with it', () => {

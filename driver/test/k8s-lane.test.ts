@@ -481,7 +481,9 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
         // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
-        expect(script).toContain('LANE_REBIND_GRACE_S=120');
+        // A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind
+        // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.
+        expect(script).toContain(`LANE_REBIND_GRACE_S=$((2 * $\{KUBELET_SYNC_S:-60} + 10))`);
         expect(installCall).toContain('--set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))"');
     });
 
