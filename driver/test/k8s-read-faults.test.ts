@@ -157,7 +157,7 @@ const teardownHeld: Build<K8sRequest> = async (tap, alias) => {
 /** A reaper round over `request`, the board answering `leases` for every id. */
 const reaperOver = (request: K8sRequest, leases: Parameters<typeof createReaper>[0]['board']['leases']) =>
     createReaper({
-        board: { leases, reclaimHolds: async () => [] },
+        board: { leases, reclaimHolds: async () => new Set<string>() },
         arm: createKubernetesReaper({
             config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NS }),
             request,

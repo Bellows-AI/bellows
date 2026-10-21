@@ -1079,13 +1079,14 @@ export interface JobStore extends PhaseCheckpointStore {
      */
     leases(ids: readonly string[]): Promise<JobLeaseInfo[]>;
     /**
-     * The reclaim acquisitions still held for these roots (issue #829), behind
+     * Which of these acquisition tokens the board still holds (issue #829), behind
      * `POST /api/reclaims/holds`: a task_reclaim row carries its acquisition token from the claim
-     * until the ack deletes it or a re-acquisition replaces the token, expired or not. A root with
-     * no such row is simply not answered: that is the board's positive "nothing holds this group".
+     * until the ack deletes it or a re-acquisition replaces the token, expired or not. Asked by token
+     * because a follow-up member's reclaim is stored under its root. A token no row carries is simply
+     * not answered: that is the board's positive "nothing holds this group".
      * Read-only and NOT lease-guarded, like `leases`.
      */
-    reclaimHolds(ids: readonly string[]): Promise<{ id: string; token: string }[]>;
+    reclaimHolds(tokens: readonly string[]): Promise<string[]>;
     /**
      * What an artifact upload for this job is authorized against (the artifact routes): the
      * member and root it is filed under and the newest claim sequence that exists. Deliberately

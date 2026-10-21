@@ -213,7 +213,7 @@ export function stubBoard(
             return options.leaseRows;
         },
         async reclaimHolds() {
-            return [];
+            return new Set<string>();
         },
         async suspend(claimed) {
             board.suspended.push(claimed.id);

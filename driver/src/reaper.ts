@@ -1,4 +1,4 @@
-import { LEASE_BATCH_MAX, type Board, type BoardLease, type ReclaimHold, UUID_SHAPE } from './board.js';
+import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './board.js';
 
 /**
  * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
@@ -134,29 +134,32 @@ const lookupAll = async (
  */
 const holderOf = (group: OrphanGroup): string | null | undefined => {
     const [first] = group.objects;
-    if (group.objects.every((object) => object.holder === first?.holder)) return first?.holder ?? null;
-    return undefined;
+    if (!group.objects.every((object) => object.holder === first?.holder)) return undefined;
+    const holder = first?.holder ?? null;
+    // A holder the board could never have issued cannot be asked about: unreadable, so spared.
+    return holder === null || UUID_SHAPE.test(holder) ? holder : undefined;
 };
 
 /**
- * Asks the board which reclaim acquisitions are still held for these roots, chunked like the lease
- * lookup. Null — ANY chunk refused — aborts the round: "not held" must be the board's positive answer.
+ * Asks the board which of these acquisition tokens it still holds, chunked like the lease lookup. Null
+ * — ANY chunk refused — aborts the round: "not held" must be the board's positive answer. Asked by
+ * token, never by the group's job label: a follow-up member's reclaim is stored under its root.
  */
 const holdsAll = async (
     board: Pick<Board, 'reclaimHolds'>,
-    ids: readonly string[],
+    tokens: readonly string[],
     log: (message: string) => void
-): Promise<ReclaimHold[] | null> => {
-    const holds: ReclaimHold[] = [];
-    for (let i = 0; i < ids.length; i += LEASE_BATCH_MAX) {
-        const answer = await board.reclaimHolds(ids.slice(i, i + LEASE_BATCH_MAX));
+): Promise<Set<string> | null> => {
+    const held = new Set<string>();
+    for (let i = 0; i < tokens.length; i += LEASE_BATCH_MAX) {
+        const answer = await board.reclaimHolds(tokens.slice(i, i + LEASE_BATCH_MAX));
         if (answer === null) {
             log('reaper: the board could not answer a reclaim holds lookup — reaping nothing this round');
             return null;
         }
-        holds.push(...answer);
+        for (const token of answer) held.add(token);
     }
-    return holds;
+    return held;
 };
 
 /** Decides one group and reaps it, logging a line per object actually removed. */
@@ -165,7 +168,7 @@ const reapOne = async (
     group: OrphanGroup,
     ctx: {
         lease: BoardLease | undefined;
-        holds: readonly ReclaimHold[];
+        held: ReadonlySet<string>;
         graceMs: number;
         nowMs: number;
         log: (message: string) => void;
@@ -176,7 +179,7 @@ const reapOne = async (
     // serves, never by its root job's lease: the root is long terminal while a reclaim runs. Held, or
     // not readable as one holder's, it is spared; not held it is a dead acquisition's, 'gone'.
     if (holder === undefined) return;
-    if (holder !== null && ctx.holds.some((hold) => hold.id === group.jobId && hold.token === holder)) return;
+    if (holder !== null && ctx.held.has(holder)) return;
     const verdict =
         holder === null
             ? reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs)
@@ -228,15 +231,15 @@ export function createReaper(deps: {
             const ids = [...new Set(reapable.map((group) => group.jobId))];
             const leases = await lookupAll(deps.board, ids, log);
             if (leases === null) return;
-            const reclaimRoots = [
-                ...new Set(reapable.filter((group) => typeof holderOf(group) === 'string').map((group) => group.jobId)),
+            const holders = [
+                ...new Set(reapable.map(holderOf).filter((holder): holder is string => typeof holder === 'string')),
             ];
-            const holds = reclaimRoots.length === 0 ? [] : await holdsAll(deps.board, reclaimRoots, log);
-            if (holds === null) return;
+            const held = holders.length === 0 ? new Set<string>() : await holdsAll(deps.board, holders, log);
+            if (held === null) return;
             for (const group of reapable) {
                 await reapOne(deps.arm, group, {
                     lease: leases.get(group.jobId),
-                    holds,
+                    held,
                     graceMs: deps.graceMs,
                     nowMs: now(),
                     log,

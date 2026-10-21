@@ -535,7 +535,12 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
  * caller's own org — one board IS the whole registry there, whatever foreign org rows a shared
  * database holds.
  */
-async function lookupScope(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+async function lookupScope(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply,
+    key: 'ids' | 'tokens' = 'ids'
+) {
     const boards = await boardsFor(orgs, request);
     if (!boards.length) return { reply: noBoard(reply) };
     if (
@@ -548,14 +553,14 @@ async function lookupScope(orgs: OrgRegistry, request: FastifyRequest, reply: Fa
         };
     }
 
-    const { ids } = body(request.body);
+    const ids = body(request.body)[key];
     if (
         !Array.isArray(ids) ||
         ids.length < 1 ||
         ids.length > LEASE_BATCH_MAX ||
         ids.some((id) => typeof id !== 'string' || !UUID.test(id))
     ) {
-        return { reply: bad(reply, ERROR_CODES.BAD_ID, `ids must be 1..${LEASE_BATCH_MAX} uuids`) };
+        return { reply: bad(reply, ERROR_CODES.BAD_ID, `${key} must be 1..${LEASE_BATCH_MAX} uuids`) };
     }
     return { boards, ids: ids as string[] };
 }
@@ -588,20 +593,20 @@ export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, r
 }
 
 /**
- * The reaper's other board route (issue #829): which reclaim acquisitions are still held for these
- * roots. A reclaim group's objects carry their acquisition token; the reaper spares one the board
+ * The reaper's other board route (issue #829): which of these reclaim acquisition tokens the board
+ * still holds. A reclaim group's objects carry their acquisition token; the reaper spares one the board
  * still holds and reaps one it positively does not. Same fail-closed scope as the lease lookup.
  */
 export async function handleReclaimHolds(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const scope = await lookupScope(orgs, request, reply);
+    const scope = await lookupScope(orgs, request, reply, 'tokens');
     if (scope.reply) return scope.reply;
-    const { boards, ids } = scope;
+    const { boards, ids: tokens } = scope;
 
     const answered = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'reclaim holds lookup failed'),
-        () => Promise.all(boards.map((board) => board.reclaimHolds(ids)))
+        () => Promise.all(boards.map((board) => board.reclaimHolds(tokens)))
     );
     if (!answered.ok) return reply;
-    return reply.code(HTTP_OK).send({ holds: answered.value.flat() });
+    return reply.code(HTTP_OK).send({ held: [...new Set(answered.value.flat())] });
 }

@@ -132,7 +132,7 @@ interface StoreStub extends JobStore {
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
     leased: { ids: string[] }[];
     /** The reclaim-hold lookups the reaper's route made, with the ids it asked for (issue #829). */
-    held: { ids: string[] }[];
+    held: { tokens: string[] }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
     /** The question reports and answers the routes handed the store (050). */
@@ -215,7 +215,7 @@ function stubStore(
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
         /** The held reclaim acquisitions the store answers a holds lookup with; absent means none. */
-        holdRows?: { id: string; token: string }[];
+        holdRows?: string[];
         /**
          * What `waitForSettle` answers (issue #323); null → 404. A function may delay to model
          * the store's hold — the route must await it, never answer first.
@@ -400,9 +400,9 @@ function stubStore(
             stub.leased.push({ ids: [...ids] });
             return options.leaseRows ?? [];
         },
-        async reclaimHolds(ids) {
+        async reclaimHolds(tokens) {
             boom();
-            stub.held.push({ ids: [...ids] });
+            stub.held.push({ tokens: [...tokens] });
             return options.holdRows ?? [];
         },
         async artifactScope() {
@@ -1171,33 +1171,29 @@ describe('POST /api/jobs/:id/heartbeat', () => {
 });
 
 describe('POST /api/reclaims/holds — the reaper’s reclaim-ownership lookup (issue #829)', () => {
-    const ROOT_B = '44444444-4444-4444-8444-444444444444';
     const OTHER_TOKEN = '55555555-5555-4555-8555-555555555555';
 
     it('answers each held root’s acquisition token and merges every org board', async () => {
-        const a = stubStore({ holdRows: [{ id: ID, token: TOKEN }] });
-        const b = stubStore({ holdRows: [{ id: ROOT_B, token: OTHER_TOKEN }] });
+        const a = stubStore({ holdRows: [TOKEN] });
+        const b = stubStore({ holdRows: [OTHER_TOKEN] });
         const instance = await harnessOfBoards([
             ['org-a', a],
             ['org-b', b],
         ]);
 
-        const response = await postAsWorker(instance, '/api/reclaims/holds', { ids: [ID, ROOT_B] });
+        const response = await postAsWorker(instance, '/api/reclaims/holds', { tokens: [TOKEN, OTHER_TOKEN] });
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({
-            holds: [
-                { id: ID, token: TOKEN },
-                { id: ROOT_B, token: OTHER_TOKEN },
-            ],
-        });
-        expect(a.held).toEqual([{ ids: [ID, ROOT_B] }]);
+        expect(response.json()).toEqual({ held: [TOKEN, OTHER_TOKEN] });
+        expect(a.held).toEqual([{ tokens: [TOKEN, OTHER_TOKEN] }]);
     });
 
     it.each([
-        ['a body without ids', {}],
-        ['a non-uuid entry', { ids: [ID, 'nope'] }],
-        ['an empty list', { ids: [] }],
+        ['a body without tokens', {}],
+        ['the retired ids key', { ids: [ID] }],
+        ['a non-uuid entry', { tokens: [TOKEN, 'nope'] }],
+        ['an empty list', { tokens: [] }],
+        ['more tokens than a batch', { tokens: Array.from({ length: 101 }, () => TOKEN) }],
     ])('refuses %s with BAD_ID', async (_label, payload) => {
         const instance = await harnessWith(stubStore());
         const response = await postAsWorker(instance, '/api/reclaims/holds', payload);
@@ -1212,9 +1208,9 @@ describe('POST /api/reclaims/holds — the reaper’s reclaim-ownership lookup (
         };
         const instance = await harnessOfBoards([
             ['org-a', failing],
-            ['org-b', stubStore({ holdRows: [{ id: ID, token: TOKEN }] })],
+            ['org-b', stubStore({ holdRows: [TOKEN] })],
         ]);
-        const response = await postAsWorker(instance, '/api/reclaims/holds', { ids: [ID] });
+        const response = await postAsWorker(instance, '/api/reclaims/holds', { tokens: [TOKEN] });
         expect(response.statusCode).toBe(503);
         expect(response.json().code).toBe('UNAVAILABLE');
     });
@@ -1250,7 +1246,7 @@ describe('POST /api/reclaims/holds — the reaper’s reclaim-ownership lookup (
         });
         track(instance);
 
-        const response = await postAsWorker(instance, '/api/reclaims/holds', { ids: [ID] });
+        const response = await postAsWorker(instance, '/api/reclaims/holds', { tokens: [TOKEN] });
 
         expect(response.statusCode).toBe(503);
         expect(response.json().code).toBe('UNAVAILABLE');

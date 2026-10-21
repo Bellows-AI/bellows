@@ -398,7 +398,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
         const reaper = createReaper({
             board: {
                 leases: async () => [{ id: JOB, status: 'queued', leaseToken: null }],
-                reclaimHolds: async () => [],
+                reclaimHolds: async () => new Set<string>(),
             },
             arm,
             intervalMs: 0,
@@ -457,7 +457,7 @@ describe('paused runner recovery after a driver restart', () => {
                                         leaseToken: state === 'live' ? LEASE : state === 'unclaimed' ? null : JOB,
                                     },
                                 ],
-                    reclaimHolds: async () => [],
+                    reclaimHolds: async () => new Set<string>(),
                 },
                 intervalMs: 1000,
                 graceMs: 0,
@@ -485,7 +485,7 @@ describe('paused runner recovery after a driver restart', () => {
         };
         const reaper = createReaper({
             arm: createKubernetesReaper({ config, request }),
-            board: { leases: async () => [], reclaimHolds: async () => [] },
+            board: { leases: async () => [], reclaimHolds: async () => new Set<string>() },
             intervalMs: 1000,
             graceMs: 0,
             log: () => {},
@@ -534,7 +534,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
             // The job is terminal: a live job's runner Job is its next claim's fence's (issue #821).
             board: {
                 leases: async () => [{ id: JOB, status: 'failed', leaseToken: null }],
-                reclaimHolds: async () => [],
+                reclaimHolds: async () => new Set<string>(),
             },
             arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
             intervalMs: 0,
@@ -663,7 +663,10 @@ describe('the kubernetes reaper arm: a live job’s runner Job is the fence’s 
     const sweep = async (lease: { leaseToken: string | null; status: string }) => {
         const { request, calls } = router(lists);
         await createReaper({
-            board: { leases: async () => [{ id: JOB, ...lease }] as never, reclaimHolds: async () => [] },
+            board: {
+                leases: async () => [{ id: JOB, ...lease }] as never,
+                reclaimHolds: async () => new Set<string>(),
+            },
             arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
             intervalMs: 0,
             graceMs: 0,
@@ -762,7 +765,7 @@ describe('the kubernetes reaper arm: a reclaim group is decided by the board’s
     };
     const sweepWith = async (
         leases: { id: string; status: string; leaseToken: string | null }[],
-        holds: { id: string; token: string }[] | null
+        holds: string[] | null
     ) => {
         const { request, calls } = router([
             ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [reclaimJob] }) }],
@@ -774,7 +777,10 @@ describe('the kubernetes reaper arm: a reclaim group is decided by the board’s
             ['DELETE', claimPath, { status: 200, body: '' }],
         ]);
         await createReaper({
-            board: { leases: async () => leases as never, reclaimHolds: async () => holds },
+            board: {
+                leases: async () => leases as never,
+                reclaimHolds: async () => (holds === null ? null : new Set(holds)),
+            },
             arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
             intervalMs: 0,
             graceMs: 0,
@@ -784,7 +790,8 @@ describe('the kubernetes reaper arm: a reclaim group is decided by the board’s
     };
 
     it('deletes nothing of a running reclaim whose acquisition the board holds, root terminal or absent', async () => {
-        const held = [{ id: JOB, token: HOLDER }];
+        // The group's job label is a follow-up member's id; the board holds the token under the root's row.
+        const held = [HOLDER];
         expect(await sweepWith([{ id: JOB, status: 'succeeded', leaseToken: null }], held)).toEqual([]);
         expect(await sweepWith([], held)).toEqual([]);
     });

@@ -1,4 +1,5 @@
-import type { Board, Reclaim, ReclaimHold } from './board.js';
+import type { Board, Reclaim } from './board.js';
+// board.ts imports this file, so its UUID_SHAPE would make a cycle; publish.ts's is the same shape.
 import { UUID as UUID_SHAPE } from './publish.js';
 
 /** The board's POST as `createBoard` hands it out: a 409 is always an answer, a 404 when asked for. */
@@ -18,16 +19,6 @@ function answerOf<T extends 'ok' | 'held'>(response: Response, ok: T): T | 'lost
     if (response.status === HTTP_CONFLICT) return 'lost';
     return response.status === HTTP_NOT_FOUND ? 'missing' : ok;
 }
-
-const isHold = (row: unknown): row is ReclaimHold => {
-    const hold = row as Partial<ReclaimHold> | null;
-    return (
-        typeof hold?.id === 'string' &&
-        UUID_SHAPE.test(hold.id) &&
-        typeof hold.token === 'string' &&
-        UUID_SHAPE.test(hold.token)
-    );
-};
 
 /**
  * The worktree-reclaim queue's calls (issue #41): claim a row for the driver's lease, then renew and
@@ -55,12 +46,13 @@ export function reclaimCalls(
 
         // The reaper's read (issue #829), fail-closed like the lease lookup: a refused, failed or
         // partly unreadable answer is null ("cannot answer"), never a list the reaper would act on.
-        async reclaimHolds(ids) {
+        async reclaimHolds(tokens) {
             try {
-                const response = await post('/api/reclaims/holds', { ids: [...ids] });
+                const response = await post('/api/reclaims/holds', { tokens: [...tokens] });
                 if (!response.ok) return null;
-                const { holds } = (await response.json()) as { holds?: unknown };
-                return Array.isArray(holds) && holds.every(isHold) ? holds : null;
+                const { held } = (await response.json()) as { held?: unknown };
+                const ok = Array.isArray(held) && held.every((t) => typeof t === 'string' && UUID_SHAPE.test(t));
+                return ok ? new Set(held as string[]) : null;
             } catch {
                 return null;
             }

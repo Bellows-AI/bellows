@@ -237,7 +237,7 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
 
 const reaperOver = (exec: ExecDocker, leases: Parameters<typeof createReaper>[0]['board']['leases'], graceMs: number) =>
     createReaper({
-        board: { leases, reclaimHolds: async () => [] },
+        board: { leases, reclaimHolds: async () => new Set<string>() },
         arm: createDockerReaper(exec),
         intervalMs: 0,
         graceMs,

@@ -154,9 +154,9 @@ function workerMethods(
             return leasesOf(ctx, ids);
         },
 
-        async reclaimHolds(ids) {
+        async reclaimHolds(tokens) {
             await gate();
-            return reclaimHoldsOf(ctx, ids);
+            return reclaimHoldsOf(ctx, tokens);
         },
 
         async artifactScope(id) {

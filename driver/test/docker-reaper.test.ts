@@ -195,7 +195,7 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
         const reaper = createReaper({
             board: {
                 leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })),
-                reclaimHolds: async () => [],
+                reclaimHolds: async () => new Set<string>(),
             },
             arm: createDockerReaper(execDocker),
             intervalMs: 0,
@@ -428,7 +428,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         await createReaper({
             board: {
                 leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never,
-                reclaimHolds: async () => [],
+                reclaimHolds: async () => new Set<string>(),
             },
             arm: createDockerReaper(recording),
             intervalMs: 0,
@@ -566,14 +566,14 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             if (args[0] === 'rm' || (args[0] === 'volume' && args[1] === 'rm')) removed.push(args[args.length - 1]!);
             return execDocker(args);
         };
-        const sweep = async (holds: { id: string; token: string }[] | null | 'throws') => {
+        const sweep = async (holds: string[] | null | 'throws') => {
             removed.length = 0;
             await createReaper({
                 board: {
                     leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never,
                     reclaimHolds: async () => {
                         if (holds === 'throws') throw new Error('board unreachable');
-                        return holds;
+                        return holds === null ? null : new Set(holds);
                     },
                 },
                 arm: createDockerReaper(recording),
@@ -584,7 +584,8 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             return [...removed];
         };
 
-        expect(await sweep([{ id: JOB, token: HELD }])).toEqual([]);
+        // The group's job label is a follow-up member's id; the board holds the token under the root's row.
+        expect(await sweep([HELD])).toEqual([]);
         expect(await sweep(null)).toEqual([]);
         expect(await sweep('throws')).toEqual([]);
         expect(await sweep([])).toEqual(
@@ -608,7 +609,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const sweep = async (leases: { id: string; leaseToken: string | null; status: string }[]) => {
             removed.length = 0;
             await createReaper({
-                board: { leases: async () => leases as never, reclaimHolds: async () => [] },
+                board: { leases: async () => leases as never, reclaimHolds: async () => new Set<string>() },
                 arm: createDockerReaper(recording),
                 intervalMs: 0,
                 graceMs: 0,
@@ -656,7 +657,10 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
             return { stdout: '' };
         };
         await createReaper({
-            board: { leases: async () => [{ id: JOB, ...lease }] as never, reclaimHolds: async () => [] },
+            board: {
+                leases: async () => [{ id: JOB, ...lease }] as never,
+                reclaimHolds: async () => new Set<string>(),
+            },
             arm: createDockerReaper(execDocker),
             intervalMs: 0,
             graceMs: 0,

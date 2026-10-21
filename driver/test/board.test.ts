@@ -407,50 +407,37 @@ describe('asking the board for the orphan reaper lease lookups', () => {
 describe('asking the board which reclaim acquisitions it still holds', () => {
     // Issue #829: the reaper spares a reclaim group whose acquisition token the board still holds.
     // Null — refused, failed or malformed — is "cannot answer"; the reaper reaps nothing on it.
-    const ID_A = '11111111-1111-4111-8111-111111111111';
     const TOKEN_A = '22222222-2222-4222-8222-222222222222';
+    const TOKEN_B = '33333333-3333-4333-8333-333333333333';
 
-    it('posts the ids to the holds route and carries the answered rows', async () => {
-        const holds = [{ id: ID_A, token: TOKEN_A }];
-        const { calls, fetch } = recorder(() => Response.json({ holds }, { status: 200 }));
+    it('posts the tokens to the holds route and carries the held set', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ held: [TOKEN_A] }, { status: 200 }));
 
-        expect(await boardOn(fetch, 'fwt_abc').reclaimHolds([ID_A])).toEqual(holds);
+        expect(await boardOn(fetch, 'fwt_abc').reclaimHolds([TOKEN_A, TOKEN_B])).toEqual(new Set([TOKEN_A]));
         expect(calls[0]!.url).toBe('http://board/api/reclaims/holds');
-        expect(calls[0]!.body).toEqual({ ids: [ID_A] });
+        expect(calls[0]!.body).toEqual({ tokens: [TOKEN_A, TOKEN_B] });
         expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
     });
 
-    it('answers an empty list when the board positively holds nothing', async () => {
-        const { fetch } = recorder(() => Response.json({ holds: [] }, { status: 200 }));
-        expect(await boardOn(fetch).reclaimHolds([ID_A])).toEqual([]);
+    it('answers an empty set when the board positively holds nothing', async () => {
+        const { fetch } = recorder(() => Response.json({ held: [] }, { status: 200 }));
+        expect(await boardOn(fetch).reclaimHolds([TOKEN_A])).toEqual(new Set());
     });
 
-    it('answers null when the board refuses, fails or answers a body without holds', async () => {
+    it('answers null when the board refuses, fails or answers a body without held', async () => {
         const refused = recorder(() => Response.json({ error: 'boom' }, { status: 503 }));
-        expect(await boardOn(refused.fetch).reclaimHolds([ID_A])).toBeNull();
+        expect(await boardOn(refused.fetch).reclaimHolds([TOKEN_A])).toBeNull();
         const broken = recorder(() => {
             throw new Error('board unreachable');
         });
-        expect(await boardOn(broken.fetch).reclaimHolds([ID_A])).toBeNull();
+        expect(await boardOn(broken.fetch).reclaimHolds([TOKEN_A])).toBeNull();
         const bare = recorder(() => Response.json({}, { status: 200 }));
-        expect(await boardOn(bare.fetch).reclaimHolds([ID_A])).toBeNull();
+        expect(await boardOn(bare.fetch).reclaimHolds([TOKEN_A])).toBeNull();
     });
 
-    it('answers null when ANY row is unreadable', async () => {
-        const { fetch } = recorder(() =>
-            Response.json(
-                {
-                    holds: [
-                        { id: ID_A, token: TOKEN_A },
-                        { id: ID_A, token: 'nope' },
-                        { id: 'x', token: TOKEN_A },
-                        'junk',
-                    ],
-                },
-                { status: 200 }
-            )
-        );
-        expect(await boardOn(fetch).reclaimHolds([ID_A])).toBeNull();
+    it('answers null when ANY entry is unreadable', async () => {
+        const { fetch } = recorder(() => Response.json({ held: [TOKEN_A, 'nope', 7] }, { status: 200 }));
+        expect(await boardOn(fetch).reclaimHolds([TOKEN_A])).toBeNull();
     });
 });
 
