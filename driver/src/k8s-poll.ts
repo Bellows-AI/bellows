@@ -288,15 +288,23 @@ export interface ImagePullStatus {
     volumeAffinity: string | null;
 }
 
-const VOLUME_AFFINITY = /volume node affinity conflict/i;
+const NODES_AVAILABLE = /^0\/(\d+) nodes are available:([^.]*)/;
+const AFFINITY_COUNT = /(?:^|[\s,])(\d+) node\(s\) had volume node affinity conflict/;
 
-/** The scheduler's words for a pod no node can take because of where its volume lives, else null. */
+/**
+ * The scheduler's words for a pod EVERY node refused because of where its volume lives, else null: the
+ * volume is faulted only when the affinity count equals the node count. A mixed message ("2 Insufficient
+ * cpu, 3 node(s) had volume node affinity conflict") or one that does not parse proves a healthy volume
+ * and is an ordinary transient wait.
+ */
 const volumeAffinityOf = (
     pod: { status?: { conditions?: { type?: string; status?: string; message?: string }[] } } | undefined
-) =>
-    pod?.status?.conditions?.find(
-        (c) => c.type === 'PodScheduled' && c.status === 'False' && VOLUME_AFFINITY.test(c.message ?? '')
-    )?.message ?? null;
+) => {
+    const message = pod?.status?.conditions?.find((c) => c.type === 'PodScheduled' && c.status === 'False')?.message;
+    const available = message ? NODES_AVAILABLE.exec(message) : null;
+    const conflicts = available ? AFFINITY_COUNT.exec(available[2] ?? '') : null;
+    return available && conflicts && Number(available[1]) > 0 && conflicts[1] === available[1] ? (message ?? null) : null;
+};
 
 const PULL_REASONS: ReadonlySet<string> = new Set(['ImagePullBackOff', 'ErrImagePull']);
 const STUCK_REASONS: ReadonlySet<string> = new Set([...PULL_REASONS, 'InvalidImageName', 'CreateContainerConfigError']);

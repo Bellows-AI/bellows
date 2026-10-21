@@ -2,7 +2,7 @@ import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
 import { jobPath } from './k8s-auxspec.js';
 import { ledgerOf, RunnerKilled } from './k8s-kill.js';
-import { launch, prepare, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { launch, prepare, readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { markTaskVolumeUnschedulable } from './k8s-task-volume.js';
 import { jobsPath, runnerJobSpec, runnerName } from './k8s-podspec.js';
 import { isLease } from './k8s-shapes.js';
@@ -154,10 +154,12 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
     if (seen.affinity) {
         // An infrastructure loss (#775), never a run failure: the volume sits in a zone no node can take. It is
         // marked so no claim adopts it again; the next one restores the thread into a new generation.
-        const unmarked = await markTaskVolumeUnschedulable(deps, job).then(
-            () => '',
-            (e: unknown) => ` (the volume could not be marked: ${(e as Error).message})`
-        );
+        // Only under the checkout claim: an attempt another one has taken over labels no volume.
+        const unmarked = await (async () => {
+            if ((await readClaim(deps, job))?.holder !== job.leaseToken) return ' (the claim is no longer ours: the volume is left unmarked)';
+            await markTaskVolumeUnschedulable(deps, job);
+            return '';
+        })().catch((e: unknown) => ` (the volume could not be marked: ${(e as Error).message})`);
         throw new StartupRefused(`${why}: ${seen.affinity}${unmarked}`, 'transient');
     }
     if (seen.last === 'none' || seen.last === 'starting') throw new StartupRefused(why, 'transient');
