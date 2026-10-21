@@ -56,7 +56,9 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`.
   A finished one is adoptable until its Job's one-hour `ttlSecondsAfterFinished`.
   `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
-- Stated limit: a taken-over run's agent publish and review requests and its transcript export keep the lost driver's endpoint, so they fail and the export ends partial from the takeover on. `driver/src/loop-gates.ts` (`openRunControl`).
+- Stated limit: a taken-over run's agent publish and review requests and its transcript export keep the lost
+  driver's endpoint, so they fail and the export ends partial from the takeover on. `driver/src/loop-gates.ts`
+  (`openRunControl`).
 - Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was
   lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter
   then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker).
