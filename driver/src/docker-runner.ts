@@ -450,6 +450,12 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     return out;
 }
 
+/** How much of its budget a run started at `startedAt` has spent; none when the stamp does not parse. */
+const spentMs = (startedAt: string): number => {
+    const started = Date.parse(startedAt);
+    return Number.isNaN(started) ? 0 : Math.max(0, Date.now() - started);
+};
+
 /** How long a taken-over run's exit is waited for once its log stream has closed. */
 const RESUMED_EXIT_WAIT_MS = 30_000;
 
@@ -457,12 +463,12 @@ const RESUMED_EXIT_WAIT_MS = 30_000;
  * The exit code of a taken-over runner container (#829), read with a bounded `docker wait` once its
  * followed log has closed — `docker logs -f` exits 0 whatever the container did. A stream that closed
  * with an error is no end of the run (the container may still run); a wait that cannot say rejects,
- * which the loop leaves to its lease.
+ * which the loop leaves to its lease. `wait` is the uncancelled daemon seam: a killed run's exit is still read.
  */
-async function resumedExit(execDocker: ExecDocker, job: BoardJob, streamExit: number | null): Promise<number> {
+async function resumedExit(wait: ExecDocker, job: BoardJob, streamExit: number | null): Promise<number> {
     if (streamExit !== 0)
         throw new Error(`following the log of ${containerName(job)} ended with ${streamExit ?? 'a signal'}`);
-    const waited = (await execDocker(['wait', containerName(job)], { timeout: RESUMED_EXIT_WAIT_MS })).stdout.trim();
+    const waited = (await wait(['wait', containerName(job)], { timeout: RESUMED_EXIT_WAIT_MS })).stdout.trim();
     if (!/^-?\d+$/.test(waited)) throw new Inconclusive(`docker wait answered '${waited}'`);
     return Number(waited);
 }
@@ -540,13 +546,15 @@ async function dockerRun(
             });
 
         // A taken-over run is already up: its log is followed from the start, and its exit read after.
-        // The followed log ends with the attempt's kill or abandonment (spawn terminates the child on abort).
+        // The followed log ends with the container, as `start -a` does: a Stop, a kill or the backstop end
+        // the container, never the stream, so the verdict they decide is read as a started run's. Only an
+        // abandonment hangs up on it (spawn terminates the child on abort).
         const child = spawnFn(
             'docker',
             resumed ? ['logs', '-f', containerName(job)] : ['start', '-a', containerName(job)],
             {
                 stdio: ['ignore', 'pipe', 'pipe'],
-                ...(resumed ? { signal: anyOf(ledger.signal(job), ledger.abandoned(job)) } : {}),
+                ...(resumed ? { signal: ledger.abandoned(job) } : {}),
             }
         );
         let timedOut = false;
@@ -575,7 +583,7 @@ async function dockerRun(
 
         const done = armRunTimers(
             deps,
-            { execDocker, config, job, backstopMs: agentBackstopMs(config, job) },
+            { execDocker, config, job, backstopMs: agentBackstopMs(config, job, resumed ? spentMs(startedAt) : 0) },
             cacheState,
             {
                 backstop: () => {
@@ -617,7 +625,7 @@ async function dockerRun(
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, the driver's own hard kill explains its exit, and anything else is a
             // supervisor lost, an infrastructure loss (`settleEnd`).
-            void (resumed ? resumedExit(execDocker, job, code) : Promise.resolve(code))
+            void (resumed ? resumedExit(teardown, job, code) : Promise.resolve(code))
                 .then((exit) =>
                     closeEndOf(execDocker, job, { code: exit, output, reported }).then((ended) => ({ ended, exit }))
                 )

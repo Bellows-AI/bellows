@@ -111,10 +111,10 @@ export function supervisorControlNames(job: BoardJob): string[] {
 /**
  * The agent phase's backstop: the run budget plus the wind-down. The supervisor ends the agent at
  * the budget itself and reports within the wind-down; the docker driver's timer only ends a group
- * whose supervisor stopped doing that.
+ * whose supervisor stopped doing that. A taken-over run (#829) has spent `elapsedMs` of the budget already.
  */
-export const agentBackstopMs = (config: DriverConfig, job: BoardJob): number =>
-    runTimeoutMs(config, job) + SUPERVISOR_WINDDOWN_MS;
+export const agentBackstopMs = (config: DriverConfig, job: BoardJob, elapsedMs = 0): number =>
+    Math.max(0, runTimeoutMs(config, job) - elapsedMs) + SUPERVISOR_WINDDOWN_MS;
 
 /**
  * The backstop deadline of the whole group (the kubelet's, on the Job): the agent phase's plus the

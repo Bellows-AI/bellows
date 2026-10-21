@@ -6345,6 +6345,62 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             }
         });
 
+        /** A `docker logs -f` held open until the test closes it, remembering the signal it was spawned with. */
+        const heldFollow = () => {
+            const seen: { signal?: AbortSignal; close: (code: number | null) => void }[] = [];
+            const spawnHeld = ((_command: string, args: string[], options?: { signal?: AbortSignal }) => {
+                const child = new EventEmitter() as ChildProcess;
+                child.stdout = new EventEmitter() as Readable;
+                child.stderr = new EventEmitter() as Readable;
+                const entry = { signal: options?.signal, close: (code: number | null) => child.emit('close', code) };
+                options?.signal?.addEventListener('abort', () => entry.close(null));
+                if (args[0] === 'logs' && args[1] === '-f') seen.push(entry);
+                else process.nextTick(() => child.emit('close', 0));
+                return child;
+            }) as unknown as typeof spawn;
+            return { seen, spawnHeld };
+        };
+        const takenJob = (): BoardJob => ({
+            ...adopter,
+            groupLease: job.leaseToken,
+            supervisorEnv: { SUPERVISOR_CONTROL_TOKEN: 'tok-new', SUPERVISOR_CONTROL_URL: 'http://driver/' },
+        });
+
+        it('keeps the followed log open through a kill, then reads the exit like a started run', async () => {
+            const { exec } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(
+                (args) => (args[0] === 'wait' && !args.includes(supervisorName(job)) ? Promise.resolve({ stdout: '137\n' }) : exec(args)),
+                { spawn: spawnHeld }
+            );
+            await runner.adopt(adopter);
+            const taken = takenJob();
+            const running = runner.run(taken, { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            await runner.kill(taken);
+
+            // The kill ends the container, not the stream: the log closes by itself, as `start -a` does.
+            expect(seen[0]?.signal?.aborted).toBe(false);
+            seen[0]?.close(0);
+            await expect(running).resolves.toMatchObject({ exitCode: 137 });
+        });
+
+        it('hangs up on the followed log only when the attempt is abandoned', async () => {
+            const { exec } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(exec, { spawn: spawnHeld });
+            await runner.adopt(adopter);
+            const taken = takenJob();
+            const running = runner.run(taken, { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            runner.abandon(taken);
+
+            expect(seen[0]?.signal?.aborted).toBe(true);
+            await expect(running).rejects.toThrow(/ended with a signal/);
+        });
+
         it('answers nothing for a group no runner container runs (created, never started)', async () => {
             const { exec, calls, logs } = liveDaemon(true, '');
 
