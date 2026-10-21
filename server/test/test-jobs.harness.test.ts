@@ -249,6 +249,23 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('attempts 1');
     });
 
+    // Issue #829: the recovery waits are the derived bound plus a margin, not the longest bound a
+    // default lease could ever produce (the old 150 s outlasted the lane's 30 s orphan bound five times).
+    it('the recovery waits derive from the lane lease, and a taken-over agent is awaited the same bound', () => {
+        expect(SCRIPT).toContain('LANE_LEASE_S=10');
+        expect(SCRIPT).toContain('DRIVER_LEASE_SECONDS="$LANE_LEASE_S"');
+        expect(SCRIPT).toMatch(
+            /\nADOPT_S=\$\(\(LANE_ORPHAN_S \+ LANE_LEASE_S \+ \$\{LANE_REBIND_GRACE_MS:-20000\} \/ 1000 \+ LANE_MARGIN_S\)\)\n/
+        );
+        expect(SCRIPT).toContain('LANE_ORPHAN_S=30');
+        expect(SCRIPT).not.toContain('ADOPT_S=150');
+        const adopt = SCRIPT.match(/LANE_MARGIN_S=(\d+)/);
+        expect(Number(adopt?.[1])).toBeLessThanOrEqual(40);
+        expect(SCRIPT).toContain('dk_await_log "$k2" "$TOOK_OVER" "$ADOPT_S"');
+        expect(SCRIPT).toContain('dk_await_log "$k2d" "$TOOK_OVER" "$ADOPT_S"');
+        expect(SCRIPT).not.toMatch(/dk_await_log "\$\w+" "\$TOOK_OVER" 120/);
+    });
+
     // Issue #822: an expired lease is the lost attempt's interruption, at max_attempts 1, and a
     // driver lost together with its runner is redone by a replacement in the lost session.
     it('the node-disruption phase recovers an expiry at the last attempt, and a runner lost with its driver', () => {

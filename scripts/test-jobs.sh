@@ -365,7 +365,7 @@ write_bellows() { # write_bellows <contents>
 disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
         RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" \
-        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=10 \
+        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS="$LANE_LEASE_S" \
         DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" "$@" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
@@ -439,9 +439,14 @@ DRAINED='the driver was drained'
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
 # The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to
-# order its `finish` that is SUPERVISOR_ORPHAN_MS (90s, driver/src/scripts/supervisor.cjs) after its
-# last answered call — the documented bound (driver/src/supervisor-contract.ts), plus the claim.
-ADOPT_S=150
+# order its `finish` that is orphanBoundMs after its last answered call (a quarter of the lease,
+# floored at SUPERVISOR_ORPHAN_MIN_MS: 30 s at the lane's lease, driver/src/supervisor-plan.ts), then
+# the lease the adopting claim waits out and the rebind grace it gives a released group, plus a margin
+# for the run itself and its publish.
+LANE_LEASE_S=10
+LANE_ORPHAN_S=30
+LANE_MARGIN_S=40
+ADOPT_S=$((LANE_ORPHAN_S + LANE_LEASE_S + ${LANE_REBIND_GRACE_MS:-20000} / 1000 + LANE_MARGIN_S))
 
 # Barriers and counters for the driver-kill phase (issue #829). Every container of a run — setup,
 # gates, the agent, the publish steps — mounts the member's tree at /workspaces/$member_path
@@ -1711,7 +1716,7 @@ k2_host="$(runner_host "$k2_runner")"
     ok 'k2: the agent is running' || bad 'k2: the agent is running' "runner '$k2_runner'"
 driver_kill
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
-dk_await_log "$k2" "$TOOK_OVER" 120 && ok 'k2: the next driver takes over the running agent' ||
+dk_await_log "$k2" "$TOOK_OVER" "$ADOPT_S" && ok 'k2: the next driver takes over the running agent' ||
     bad 'k2: the next driver takes over the running agent' "$(grep -F "job $k2:" "$work/driver.log" | tail -5)"
 k2_sup="$(dk_supervisor "$k2")"
 rebound=""
@@ -1772,7 +1777,7 @@ fi
 wait "$driver_pid" 2>/dev/null
 driver_pid=""
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
-dk_await_log "$k2d" "$TOOK_OVER" 120 && ok 'k2d: the next driver takes over the running agent' ||
+dk_await_log "$k2d" "$TOOK_OVER" "$ADOPT_S" && ok 'k2d: the next driver takes over the running agent' ||
     bad 'k2d: the next driver takes over the running agent' "$(grep -F "job $k2d:" "$work/driver.log" | tail -5)"
 lane_touch "$LANE_DIR/$n.go" || bad 'k2d: the barrier is released' 'the touch failed'
 dk_settled k2d "$k2d" "$DRAINED"
