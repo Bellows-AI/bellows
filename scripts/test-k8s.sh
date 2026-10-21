@@ -94,6 +94,9 @@ DRIVER_REPO="$LANE_REGISTRY/factory-driver"
 DASH_REF="$DASH_REPO:$RELEASE"
 DRIVER_REF="$DRIVER_REPO:$RELEASE"
 STUB_REF="$LANE_REGISTRY/echo-executor:$RELEASE"
+# The state chart's database image, mirrored through the registry like the collector.
+POSTGRES_IMAGE="$(awk '$1 == "image:" { print $2; exit }' charts/factory-local-state/values.yaml)"
+POSTGRES_REF="$LANE_REGISTRY/$POSTGRES_IMAGE"
 
 pass=0
 fail=0
@@ -545,6 +548,7 @@ expect_contains 'the dashboard image defaults to the appVersion tag' "$gh" "imag
 expect_contains 'the driver image defaults to the appVersion tag'    "$gh" "image: factory-driver:$app_version"
 expect_not_contains 'no chart image is untagged or :latest'           "$gh" 'opentelemetry-collector-contrib:latest'
 COLLECTOR_IMAGE="$(awk '$1 == "image:" && /opentelemetry-collector-contrib/ { print $2; exit }' "$work/rendered.yaml")"
+COLLECTOR_REF="$LANE_REGISTRY/$COLLECTOR_IMAGE"
 case "$COLLECTOR_IMAGE" in
 *:[0-9]*) ok 'the collector image is pinned to a version' ;;
 *) bad 'the collector image is pinned to a version' "got '$COLLECTOR_IMAGE'" ;;
@@ -1375,7 +1379,9 @@ driver_build=''
         docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work"
 } >"$work/stub-build.log" 2>&1 &
 stub_build=$!
-docker image inspect "$COLLECTOR_IMAGE" >/dev/null 2>&1 || docker pull -q "$COLLECTOR_IMAGE" >"$work/collector-pull.log" 2>&1 &
+for image in "$COLLECTOR_IMAGE" "$POSTGRES_IMAGE"; do
+    docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" || exit 1
+done >"$work/collector-pull.log" 2>&1 &
 collector_pull=$!
 wait "$stub_build" || { tail -30 "$work/stub-build.log"; build_failed=1; }
 stub_build=''
@@ -1397,11 +1403,10 @@ push_ref() { # push_ref <image> <ref>
 push_ref "$DASH_IMAGE" "$DASH_REF"
 push_ref "$DRIVER_IMAGE" "$DRIVER_REF"
 push_ref "$STUB_IMAGE" "$STUB_REF"
-# The collector is a pinned upstream image, not rebuilt: kind skips it once the node holds it.
-kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name" >/dev/null || {
-    echo "test-k8s: could not load $COLLECTOR_IMAGE into the kind cluster $kind_name"
-    exit 1
-}
+# The pinned upstream images go through the registry too: side-loading imports a whole copy into
+# every node, and a node pulling from the registry fetches only the layers it lacks.
+push_ref "$COLLECTOR_IMAGE" "$COLLECTOR_REF"
+push_ref "$POSTGRES_IMAGE" "$POSTGRES_REF"
 
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
@@ -1466,7 +1471,8 @@ EOF
     done
     SHARED_SETS=(--set workspaces.storageClass=factory-lane-shared --set 'workspaces.accessModes[0]=ReadWriteMany')
 fi
-helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHARED_SETS[@]}"} -n "$NAMESPACE" >/dev/null || {
+helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHARED_SETS[@]}"} \
+    --set "postgres.image=$POSTGRES_REF" -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install of the state chart failed'
     exit 1
 }
@@ -1481,6 +1487,8 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
     --set "driver.executorImages.claudeCode=$STUB_REF" \
     --set "driver.executorImages.opencode=$STUB_REF" \
+    --set "collector.image.repository=$LANE_REGISTRY/${COLLECTOR_IMAGE%:*}" \
+    --set "database.waitImage=$POSTGRES_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set-string driver.leaseSeconds=120 --set driver.terminationGracePeriodSeconds=70 \
     --set-string driver.rebindGraceMs=30000 \

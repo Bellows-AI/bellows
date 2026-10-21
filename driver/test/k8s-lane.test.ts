@@ -266,9 +266,18 @@ describe('kind lane image load', () => {
             expect(load).toContain(`push_ref "$${image}" "$${ref}"`);
         }
         expect(load).toContain('docker push');
-        // Only the collector, a pinned upstream image kind skips when the node holds it, is side-loaded.
-        expect(load.match(/kind load /g)).toHaveLength(1);
-        expect(load).toContain('kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name"');
+    });
+
+    it('mirrors the pinned upstream images through the registry instead of side-loading them', () => {
+        // kind load imports a whole copy into every node; the registry hands a node only what it lacks.
+        expect(load).not.toContain('kind load');
+        expect(script).toContain('COLLECTOR_REF="$LANE_REGISTRY/$COLLECTOR_IMAGE"');
+        expect(script).toContain('POSTGRES_REF="$LANE_REGISTRY/$POSTGRES_IMAGE"');
+        expect(load).toContain('push_ref "$COLLECTOR_IMAGE" "$COLLECTOR_REF"');
+        expect(load).toContain('push_ref "$POSTGRES_IMAGE" "$POSTGRES_REF"');
+        expect(script).toContain(`--set "collector.image.repository=$LANE_REGISTRY/$\{COLLECTOR_IMAGE%:*}"`);
+        expect(script).toContain('--set "postgres.image=$POSTGRES_REF"');
+        expect(script).toContain('--set "database.waitImage=$POSTGRES_REF"');
     });
 
     it('refuses a cluster without the registry before building anything', () => {
