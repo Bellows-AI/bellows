@@ -4,14 +4,15 @@
  * fence when the attempt stood down while the adoption was still reading. The adoption through the
  * claim loop is `loop.test.ts`.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { adoptStep, recordAdopted } from '../src/loop-adopt.js';
 import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
-import { type AdoptedRun, AdoptionBlocked } from '../src/runner.js';
+import { type AdoptedRun, AdoptionBlocked, type LiveRun } from '../src/runner.js';
+import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../src/supervisor-contract.js';
 import { runJob } from '../src/loop-run.js';
-import { job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+import { job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 const adopted: AdoptedRun = { outcome: ok(), claimSeq: 4 };
 
@@ -180,5 +181,134 @@ describe('recordAdopted', () => {
         expect(s.logs.some((m) => m.includes('could not record the adopted interruption: board unreachable'))).toBe(
             true
         );
+    });
+});
+
+describe('taking over a live run (#829)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    const prior = { ...job(1), leaseToken: 'lease-prior' };
+    const live: LiveRun = { live: true, prior, claimSeq: 4, session: 'sess-prior', startedAt: 'then' };
+
+    function takeover(opts: { polled?: boolean; rebind?: () => Promise<void>; session?: string | null } = {}) {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const claimed: BoardJob = {
+            ...job(1),
+            claimSeq: 5,
+            leaseToken: 'lease-new',
+            supervisorEnv: {
+                [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/',
+                [SUPERVISOR_ENV.controlToken]: 'tok-new',
+            },
+        };
+        const s = setup(claimed, async () => ({
+            ...live,
+            session: opts.session === undefined ? 'sess-prior' : opts.session,
+        }));
+        const { gates } = stubGateStack({}, { control: true, polled: opts.polled ?? true });
+        s.ctx.rt = { ...s.ctx.rt, gates, sleep: async (ms) => void vi.setSystemTime(Date.now() + ms) };
+        if (opts.rebind) (s.ctx.rt.runner as { rebind: unknown }).rebind = opts.rebind;
+        return { ...s, claimed };
+    }
+
+    it('rebinds the prior group to this claim, then owns it only after the first poll', async () => {
+        const s = takeover();
+
+        const answer = await adoptStep(s.ctx);
+
+        const runner = s.ctx.rt.runner as unknown as { rebound: { group: BoardJob; binding: unknown }[] };
+        expect(runner.rebound).toEqual([
+            {
+                group: live.prior,
+                binding: { claimSeq: 5, url: 'http://driver:1/', token: 'tok-new' },
+            },
+        ]);
+        expect(answer).toMatchObject({ record: 'interruption', claimSeq: 4 });
+        expect(s.claimed.groupLease).toBe('lease-prior');
+        expect(s.ctx.takeover).toMatchObject({ live: true, claimSeq: 4 });
+        expect(s.ctx.adopted).toBeUndefined();
+        expect(s.ctx.fenced).toBe(true);
+        expect(s.state.keepGroup).toBeFalsy();
+        expect(s.ctx.session).toEqual({ id: 'sess-prior', resume: true });
+        expect(s.board.interrupted).toEqual([]);
+    });
+
+    it('runs a session-less (opencode) takeover with a null session', async () => {
+        const s = takeover({ session: null });
+
+        await adoptStep(s.ctx);
+
+        expect(s.ctx.session).toBeNull();
+        expect(s.claimed.groupLease).toBe('lease-prior');
+    });
+
+    it('leaves the group to the lease when the rebind is rejected, owning nothing', async () => {
+        const s = takeover({ rebind: async () => Promise.reject(new Error('binding refused')) });
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ halt: 'leave' });
+        expect(s.claimed.groupLease).toBeUndefined();
+        expect(s.state.keepGroup).toBe(true);
+        expect(s.ctx.fenced).toBe(false);
+    });
+
+    it('leaves the group to the lease when the supervisor never polls within the delivery bound', async () => {
+        const s = takeover({ polled: false });
+        const started = Date.now();
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ halt: 'leave' });
+        expect(Date.now() - started).toBeGreaterThan(SUPERVISOR_REBIND_DELIVERY_MS - 10_000);
+        expect(s.claimed.groupLease).toBeUndefined();
+        expect(s.state.keepGroup).toBe(true);
+    });
+
+    it('stands down mid-delivery keeping the group, never owning it', async () => {
+        const s = takeover({ polled: false });
+        s.ctx.rt = {
+            ...s.ctx.rt,
+            sleep: async (ms) => {
+                vi.setSystemTime(Date.now() + ms);
+                s.state.abortNow();
+            },
+        };
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toBe(STOOD_DOWN);
+        expect(s.claimed.groupLease).toBeUndefined();
+        expect(s.state.keepGroup).toBe(true);
+    });
+
+    it('leaves a takeover it cannot deliver without a run-control endpoint', async () => {
+        const s = takeover();
+        s.ctx.rt = { ...s.ctx.rt, gates: undefined };
+
+        expect(await adoptStep(s.ctx)).toMatchObject({ halt: 'leave' });
+        expect(s.claimed.groupLease).toBeUndefined();
+    });
+
+    it('runs the taken-over agent through runJob: no sync, no new session, the run resumes under the prior lease', async () => {
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        const board = stubBoard([]).board;
+        const runs: { job: BoardJob; session: unknown }[] = [];
+        const runner = stubRunner(
+            async (j, session) => {
+                runs.push({ job: j, session });
+                return ok();
+            },
+            { adopt: async () => live }
+        );
+
+        await runJob(stubRuntime(board, runner, { gates }), { ...job(1), claimSeq: 5, leaseToken: 'lease-new' });
+
+        expect(runner.synced).toEqual([]);
+        expect(board.sessions).toEqual([]);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.job.groupLease).toBe('lease-prior');
+        expect(runs[0]?.session).toEqual({ id: 'sess-prior', resume: true });
+        expect(board.interrupted).toEqual([expect.objectContaining({ release: false, claimSeq: 4 })]);
     });
 });

@@ -63,7 +63,12 @@ type GateReport = {
  * where docker's last-wins rule keeps a member-scoped `BELLOWS_GATE_TOKEN` from minting itself a
  * gate credential.
  */
-export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<GateSession | null> {
+export async function beginGates(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    opts: { takeover?: boolean } = {}
+): Promise<GateSession | null> {
     const { gates } = rt;
     // A checkout that declares only `setup` still gets the environment: setup runs in it before
     // the agent starts (issue #733).
@@ -112,7 +117,8 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             BELLOWS_GATE_URL: gates.advertiseUrl(port),
             BELLOWS_GATE_TOKEN: token,
         };
-        await runEnvironmentSetup(rt, job, key, state);
+        // A taken-over run's environment setup ran before the agent did (#829).
+        if (!opts.takeover) await runEnvironmentSetup(rt, job, key, state);
         // The same check at the far edge — listen can take its time, and nothing registered
         // or live may survive a stand-down detected inside this function.
         if (down(state)) {

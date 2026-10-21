@@ -94,8 +94,8 @@ async function waitReclaimBarrier(ctx: AttemptCtx): Promise<SetupConclusion | nu
 async function syncCheckoutStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
     const { rt, job, state } = ctx;
     const { runner } = rt;
-    // An adopted run's tree is its result: nothing rewrites it.
-    if (ctx.adopted) return null;
+    // An adopted run's tree is its result, and a taken-over run is still writing it: nothing rewrites it.
+    if (ctx.adopted || ctx.takeover) return null;
     const turn = await awaitSyncTurn(ctx);
     if (turn === STOOD_DOWN || 'halt' in turn) return turn;
     const githubToken = await checkoutToken(rt, job, turn);
@@ -163,7 +163,7 @@ async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
 async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null | SetupConclusion> {
     const { rt, job, state } = ctx;
     try {
-        const gateOut = await raceStep(state.signal, beginGates(rt, job, state));
+        const gateOut = await raceStep(state.signal, beginGates(rt, job, state, { takeover: !!ctx.takeover }));
         return gateOut === null ? STOOD_DOWN : gateOut.value;
     } catch (e) {
         // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
@@ -189,9 +189,9 @@ const setupSteps: readonly SetupStep[] = [
     adoptStep,
     syncCheckoutStep,
     checkPlanStep,
-    // An adopted run's pre-helpers ran before it did.
-    (ctx) => (ctx.adopted ? Promise.resolve(null) : preHelperStep(ctx)),
-    startServicesStep,
+    // An adopted or taken-over run's pre-helpers ran before it did, and its services are already up.
+    (ctx) => (ctx.adopted || ctx.takeover ? Promise.resolve(null) : preHelperStep(ctx)),
+    (ctx) => (ctx.takeover ? Promise.resolve(null) : startServicesStep(ctx)),
 ];
 
 const isRecord = (answer: SetupConclusion | AdoptedRecord | null): answer is AdoptedRecord =>
@@ -323,8 +323,9 @@ async function launchRun(
         return ctx.adopted.outcome;
     }
     // Reported here, not at attempt start: a setup that concludes the job starts no session, and a
-    // session id reported for one would name a conversation that never existed.
-    await reportNewSession(rt, job, session);
+    // session id reported for one would name a conversation that never existed. A taken-over run's
+    // session was reported by the claim that started it.
+    if (!ctx.takeover) await reportNewSession(rt, job, session);
     state.launched = true;
     transition(state, 'launched');
     // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.
@@ -612,7 +613,7 @@ async function reportNewSession(
 async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     const { rt, job, treeBefore, state } = ctx;
     // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
-    if (treeBefore === null && !ctx.adopted) return null;
+    if (treeBefore === null && !ctx.adopted && !ctx.takeover) return null;
     // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
     // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
     const raced = await raceStep(
@@ -713,7 +714,7 @@ export async function runJob(rt: LoopRuntime, job: BoardJob): Promise<void> {
                 once: true,
             });
 
-        const outcome = await runAttempt(ctx, { session, gateSession, executorType, pump: outputPump });
+        const outcome = await runAttempt(ctx, { session: ctx.session, gateSession, executorType, pump: outputPump });
         if (outcome.done) return;
         const closing = await runPostHelpersAndPublish(ctx, outcome);
         if (closing === null) return;
