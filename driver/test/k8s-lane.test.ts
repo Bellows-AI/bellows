@@ -273,6 +273,8 @@ describe('kind lane image load', () => {
         expect(load).not.toContain('kind load');
         expect(script).toContain('COLLECTOR_REF="$LANE_REGISTRY/$COLLECTOR_IMAGE"');
         expect(script).toContain('POSTGRES_REF="$LANE_REGISTRY/$POSTGRES_IMAGE"');
+        // Two thirds of the Debian image: a fresh node unpacks fewer bytes before the database starts.
+        expect(script).toContain('POSTGRES_IMAGE=postgres:17-alpine');
         expect(load).toContain('push_ref "$COLLECTOR_IMAGE" "$COLLECTOR_REF"');
         expect(load).toContain('push_ref "$POSTGRES_IMAGE" "$POSTGRES_REF"');
         expect(script).toContain(`--set "collector.image.repository=$LANE_REGISTRY/$\{COLLECTOR_IMAGE%:*}"`);

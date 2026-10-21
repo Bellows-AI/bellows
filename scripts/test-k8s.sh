@@ -94,8 +94,10 @@ DRIVER_REPO="$LANE_REGISTRY/factory-driver"
 DASH_REF="$DASH_REPO:$RELEASE"
 DRIVER_REF="$DRIVER_REPO:$RELEASE"
 STUB_REF="$LANE_REGISTRY/echo-executor:$RELEASE"
-# The state chart's database image, mirrored through the registry like the collector.
-POSTGRES_IMAGE="$(awk '$1 == "image:" { print $2; exit }' charts/factory-local-state/values.yaml)"
+# The lane's database image, mirrored through the registry like the collector. Alpine, not the state
+# chart's Debian default: a fresh node unpacks a third fewer bytes, and the lane's database is new
+# every run, so the musl collation never meets a volume initialised under glibc.
+POSTGRES_IMAGE=postgres:17-alpine
 POSTGRES_REF="$LANE_REGISTRY/$POSTGRES_IMAGE"
 
 pass=0
