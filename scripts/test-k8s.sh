@@ -2399,8 +2399,8 @@ if selected_phase recovery; then
 #
 # Infrastructure loss interrupts a task, it never loses one — on a real apiserver. The release was
 # installed with a 120s lease and a 70s drain grace, so the chart's handover (grace minus 60s) is
-# 10s. a: the driver pod deleted hard while its runner runs to the end — the replacement driver
-# adopts the finished runner Job, and its reaper spares that Job while the job is live. b: the
+# 10s. a: the driver pod deleted hard while its runner runs — the replacement driver's reaper
+# spares the live runner Job, and once the lease ran out the replacement takes the run over. b: the
 # driver drained (scaled to 0) — the handover queues the job with an interruption and leaves the
 # runner running; the driver scaled back adopts it. c: the runner pod deleted mid-run (an eviction
 # stand-in) — an interruption, then the next attempt, in its session. d: the driver pod and its
@@ -2467,8 +2467,9 @@ final_release="/workspaces/$member_path/.lane-finalizing"
 
 # a. The hard kill: a lease expiry. A forced delete is no SIGKILL — the kubelet still
 #    sends SIGTERM and kills ~2s later — so this is no drain only while the 10s handover outlasts
-#    that. The 120s lease keeps the job live, under the dead driver's claim, through the reaper check.
-#    At max_attempts 1: the claim records the expiry as claim 1's interruption and adopts.
+#    that. The 120s lease keeps the job live, under the dead driver's claim, through the reaper check, which
+#    runs while the agent is blocked; the lease then ends naturally and claim 2 takes the run over.
+#    At max_attempts 1: the claim records the expiry as claim 1's interruption and takes over.
 begin_phase recovery-hard-kill
 hard="$(queue_job "factory-stub-wait-$hard_release hard kill")"
 if [ -n "$hard" ]; then
@@ -2484,27 +2485,21 @@ else
     hard_job="$(first_runner_job "$hard")"
     kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
-    release_stub "$hard_release"
-    await_job_complete "$hard_job" "$ORPHANED_S" && ok 'the runner of a deleted driver runs to its end' ||
-        bad 'the runner of a deleted driver runs to its end' "$(kubectl get job "$hard_job" -n "$NAMESPACE" 2>&1)"
-    # Two and more 3s reaper rounds of the replacement driver while the job is still live under the
-    # dead driver's lease: the finished runner Job is unread, and stays.
+    # Two and more 3s reaper rounds of the replacement driver while the agent is still blocked at its
+    # barrier under the dead driver's live lease: the live runner Job is no orphan, and stays.
     sleep 8
     hard_live="$(job_brief "$hard")"
     case "$hard_live" in
-    running*) ok 'the job is still live after the runner finished' ;;
-    *) bad 'the job is still live after the runner finished' "$hard_live (the window closed before the reaper check)" ;;
+    running*) ok 'the job is still running under the dead driver lease' ;;
+    *) bad 'the job is still running under the dead driver lease' "$hard_live (the lease ran out before the reaper check)" ;;
     esac
-    kubectl get job "$hard_job" -n "$NAMESPACE" >/dev/null 2>&1 && ok 'the reaper spares the unread finished runner Job' ||
-        bad 'the reaper spares the unread finished runner Job' 'the runner Job is gone before its adoption'
+    kubectl get job "$hard_job" -n "$NAMESPACE" >/dev/null 2>&1 && ok 'the reaper spares the live runner Job' ||
+        bad 'the reaper spares the live runner Job' 'the runner Job is gone while its agent runs'
     expect_not_contains 'the reaper logs nothing for the live job' "$(driver_logs)" "reaper: job $hard"
-    # The live-lease window above is the proof. Expire only this dead driver's claim after it,
-    # instead of spending the remaining lease budget idle; reclaim still uses the real board SQL.
-    expired="$(expire_claim_one "$hard")"
-    [ "$expired" = 1 ] && ok 'the dead driver lease is expired after the reaper observation' || {
-        bad 'the dead driver lease is expired after the reaper observation' "$expired"
-        give_up
-    }
+    # The lease then runs out on its own: the runner finishes only past it, and claim 2 takes it over.
+    release_stub "$hard_release"
+    await_job_complete "$hard_job" "$ORPHANED_S" && ok 'the runner of a deleted driver runs to its end' ||
+        bad 'the runner of a deleted driver runs to its end' "$(kubectl get job "$hard_job" -n "$NAMESPACE" 2>&1)"
     hard_end="$(await_brief "$hard" 'succeeded*' 240)"
     [ "$hard_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
         bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end"
