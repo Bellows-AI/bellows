@@ -38,6 +38,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
+        echo 'The run ends with a slow-jobs summary of attempts past LANE_SLOW_S (default 30) seconds, beside the timings.'
         exit 0
         ;;
     *) echo "test-jobs: unknown argument: $1"; exit 2 ;;
@@ -189,7 +190,12 @@ cleanup() {
         docker volume rm "$VOLUME" >/dev/null 2>&1
         docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     fi
-    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv; do
+    # Which attempts held a slot past LANE_SLOW_S, and which never ended (issue #829); a report, never a verdict.
+    if [ -f "$work/driver.log" ]; then
+        node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "${LANE_SLOW_S:-30}" >"$work/slow-jobs.txt" 2>&1 || true
+        [ -s "$work/slow-jobs.txt" ] && printf '[slow-jobs] %s\n' "$(tail -n 1 "$work/slow-jobs.txt")"
+    fi
+    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
     done
     rm -rf "$work"

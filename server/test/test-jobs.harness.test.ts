@@ -266,6 +266,15 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toMatch(/dk_await_log "\$\w+" "\$TOOK_OVER" 120/);
     });
 
+    // Issue #829: a run reports its slow and unended attempts at the end.
+    it('reports the slow attempts at the end of a run', () => {
+        const cleanup = SCRIPT.slice(SCRIPT.indexOf('\ncleanup() {'), SCRIPT.indexOf('\ntrap cleanup EXIT'));
+        expect(cleanup).toContain(`node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "$\{LANE_SLOW_S:-30}"`);
+        expect(cleanup).toContain('>"$work/slow-jobs.txt"');
+        expect(cleanup).toContain('"$work"/slow-jobs.txt');
+        expect(cleanup.indexOf('lane-slow-jobs.mjs')).toBeLessThan(cleanup.indexOf('rm -rf "$work"'));
+    });
+
     // Issue #822: an expired lease is the lost attempt's interruption, at max_attempts 1, and a
     // driver lost together with its runner is redone by a replacement in the lost session.
     it('the node-disruption phase recovers an expiry at the last attempt, and a runner lost with its driver', () => {
