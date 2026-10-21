@@ -180,12 +180,15 @@ describe('the executor isolation record (#382)', () => {
     });
 
     // Issue #829: a released, running agent is taken over, never swept; the endpoint it keeps is a limit.
-    it('states that a released running agent is taken over, and the endpoint a taken-over run keeps', () => {
+    it('states that a released running agent is taken over, and what a taken-over run reaches the new holder through', () => {
         expect(prose(kubernetesDocs)).toContain(
             'is taken over: the next claim rebinds the supervisor (`rebind`), the supervisor must poll the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS`, and no sync, setup or `go` follows; one never released is swept'
         );
         expect(prose(kubernetesDocs)).toContain(
-            "Stated limit: a taken-over run's agent publish and review requests and its transcript export keep the lost driver's endpoint, so they fail and the export ends partial from the takeover on. `driver/src/loop-gates.ts` (`openRunControl`)."
+            "A taken-over run's agent and exporter reach the new holder through the supervisor's relay (`serveRelay`); a request in flight across the rebind is hung up on and retried, and the transcript continues under the new claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`."
+        );
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a taken-over run's agent gate requests (`BELLOWS_GATE_*`) keep the lost driver's endpoint; the end-of-run gates run on the new holder (follow-up #909). `driver/src/loop-gates.ts`."
         );
     });
 

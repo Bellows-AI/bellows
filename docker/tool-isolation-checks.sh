@@ -56,10 +56,10 @@ iso_check 'a tool writes a tree the CLI made and git trusts it through the CLI'"
 iso_check 'a tool starts in a directory the CLI shares with it but the broker may not enter' '/tmp/shared 1001' \
     agent -e T='printf "%s %s" "$(pwd)" "$(id -u)"' -- \
     sh -c 'mkdir -m 0770 /tmp/shared && cd /tmp/shared && '"$TOOL_SHELL"' -c "$T"'
-iso_check 'a tool reaches the run-control proxy, which adds the token' 'Bearer secret' \
+iso_check 'a tool reaches the run-control proxy, which forwards to the supervisor'"'"'s relay and holds no token' 'relayed' \
     agent -e T='curl -s --unix-socket /run/factory-control/control.sock -X POST -d x http://control/publish' -- \
-    sh -c 'node -e "require(\"http\").createServer((q, s) => s.end(q.headers.authorization)).listen(9411, \"127.0.0.1\")" &
-        BELLOWS_CONTROL_URL=http://127.0.0.1:9411 BELLOWS_CONTROL_TOKEN=secret node /usr/local/bin/control-proxy.cjs &
+    sh -c 'mkdir /tmp/relay && node -e "require(\"http\").createServer((q, s) => s.end(\"relayed\")).listen(\"/tmp/relay/control.sock\")" &
+        sleep 1; FACTORY_CTL_OUT=/tmp/relay node /usr/local/bin/control-proxy.cjs &
         sleep 1; '"$TOOL_SHELL"' -c "$T"'
 
 # The broker is root with two capabilities: it starts under an empty environment, so a run's own

@@ -31,6 +31,7 @@ import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support
 import { StartupRefused } from '../src/startup-cause.js';
 import { bindingWriteArgv, gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import {
+    EXPORT_RELAY_SOCKET,
     MAILBOXES,
     SUPERVISOR_BINDING,
     SUPERVISOR_BINDING_PATH,
@@ -123,11 +124,13 @@ describe('the supervisor container', () => {
         expect(argv).not.toContain('SUPERVISOR_REVIEWER=1');
     });
 
-    it('is told the orphan bound the lease allows, as the exporter is its drain give-up', () => {
-        const bound = orphanBoundMs(config);
-        expect(argv).toContain(`SUPERVISOR_ORPHAN_MS=${bound}`);
-        const exporter = exporterCreateArgs(config, job, START, '/tmp/export.env');
+    it('is told the orphan bound the lease allows, and the exporter waits out a takeover before giving up', () => {
+        expect(argv).toContain(`SUPERVISOR_ORPHAN_MS=${orphanBoundMs(config)}`);
+        const exporter = exporterCreateArgs(config, job, START);
+        const bound = takeoverBoundMs(config);
         expect(exporter).toContain(`EXPORT_DRAIN_GIVEUP_MS=${bound}`);
+        expect(exporter).toContain(`EXPORT_GIVEUP_MS=${Math.max(600_000, bound)}`);
+        expect(exporter).toContain(`EXPORT_CONTROL_SOCKET=${EXPORT_RELAY_SOCKET}`);
     });
 
     it('is told its claim and where a newer holder names itself, which the control pair is not', () => {
@@ -278,7 +281,7 @@ describe('the claim env and the supervisor’s credential names', () => {
 
 describe('the exporter container', () => {
     it('mounts the member’s subtree and only the mailbox it shares with the supervisor', () => {
-        const mounted = mounts(exporterCreateArgs(config, job, START, '/tmp/export.env'));
+        const mounted = mounts(exporterCreateArgs(config, job, START));
         expect(mounted).toHaveLength(2);
         expect(mounted.some((mount) => mount.includes('volume-subpath=bellows/'))).toBe(true);
         expect(mounted.some((mount) => mount.includes(volumeOf('export')))).toBe(true);
@@ -317,14 +320,13 @@ describe('creating and starting the group', () => {
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
 
-    it('writes the supervisor the control pair and the two tokens it relays under, the exporter its own, to 0600 env files removed after', async () => {
-        const { written, removed, deps } = recorder();
+    it('writes the supervisor the control pair and the two tokens it relays under to a 0600 env file removed after, the exporter no credential at all', async () => {
+        const { calls, written, removed, deps } = recorder();
         await createGroup(deps, job, SESSION, { startedAt: START });
         expect(written.map((w) => w.body)).toEqual([
             'SUPERVISOR_CONTROL_URL=http://driver:7000\nSUPERVISOR_CONTROL_TOKEN=tok-supervisor\nSUPERVISOR_AGENT_TOKEN=tok-agent\nSUPERVISOR_EXPORT_TOKEN=tok-export\n',
-            // The exporter's script reads the names it always read; the value is its own export-only token.
-            'BELLOWS_CONTROL_URL=http://driver:7000\nBELLOWS_CONTROL_TOKEN=tok-export\n',
         ]);
+        expect(JSON.stringify(calls)).not.toContain('tok-export');
         expect(written.every((w) => w.mode === 0o600)).toBe(true);
         expect(removed).toEqual(written.map((w) => w.file));
     });
@@ -657,7 +659,7 @@ describe('the holder binding (#829)', () => {
         expect(mounts(supervisorArgs)).toContain(mount);
         const others = [
             dockerArgs(config, reviewing, SESSION, { envFile: '/tmp/env-file' }),
-            exporterCreateArgs(config, reviewing, START, '/tmp/export.env'),
+            exporterCreateArgs(config, reviewing, START),
             gateCreateArgs(config, gated, 'node:24'),
             reviewerCreateArgs(config, reviewing),
         ];

@@ -216,15 +216,15 @@ on_term() {
 }
 trap on_term TERM INT
 
-# The run-control proxy (issue #814): the agent's tools run as their own uid and never hold the
-# run-control token. The proxy keeps it and serves the two routes the baked skills call on a socket
-# a tool can reach; the token leaves this shell's environment before the CLI starts. A sibling like
-# the reporter, stdio discarded.
-if [ -n "${BELLOWS_CONTROL_URL:-}" ] && [ -n "${BELLOWS_CONTROL_TOKEN:-}" ]; then
+# The run-control proxy (issue #814): the agent's tools run as their own uid and hold no run-control
+# token. The proxy serves the two routes the baked skills call on a socket a tool can reach and
+# forwards them to the supervisor's relay socket in FACTORY_CTL_OUT, where the supervisor attaches
+# the agent's token (#829); no token is ever in this shell's environment. A sibling like the
+# reporter, stdio discarded.
+if [ -n "${FACTORY_CTL_OUT:-}" ] && [ -S "$FACTORY_CTL_OUT/control.sock" ]; then
     node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &
     PROXY_PID=$!
 fi
-unset BELLOWS_CONTROL_TOKEN
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!

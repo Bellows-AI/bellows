@@ -57,7 +57,7 @@ describe('the agent’s draft publication (issue #547)', () => {
         const answers: number[] = [];
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
-                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 answers.push((await servePublish(control.publishing, control.publisher)).status);
                 return ok();
@@ -132,7 +132,7 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
                 const key = `bellows/${USER}/.worktrees/${objectiveJob(1).id}`;
-                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 const gate = async () => adHoc.push((await stack.manager.runGate(key, 'test', 'npm test')).exitCode);
                 // 1. implement, run the gate: red.
@@ -172,7 +172,7 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         const { stack, gates } = stubGateStack({ test: 1 }, { control: true });
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
-                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 await servePublish(control.publishing, control.publisher);
                 return ok();
@@ -5809,9 +5809,9 @@ describe('a cooperative stop (issue #442)', () => {
         await driveControlled({ ...board, runner, gates });
 
         // Ungated job, yet the endpoint opened: the control channel is not a gate feature.
-        // The agent holds its own publish/review token; the supervisor's pair and the exporter's own
-        // token ride apart from it, three distinct tokens of one attempt.
-        expect(Object.keys(launchedEnv ?? {}).sort()).toEqual(['BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_URL']);
+        // The agent's env holds no control pair (#829 S3c): its publish/review token rides with the
+        // supervisor's and the exporter's in the supervisor-side env, three distinct tokens of one attempt.
+        expect(Object.keys(launchedEnv ?? {})).toEqual([]);
         expect(Object.keys(supervisorEnv ?? {}).sort()).toEqual([
             'SUPERVISOR_AGENT_TOKEN',
             'SUPERVISOR_CONTROL_TOKEN',
@@ -5819,13 +5819,11 @@ describe('a cooperative stop (issue #442)', () => {
             'SUPERVISOR_EXPORT_TOKEN',
         ]);
         const tokens = [
-            launchedEnv?.BELLOWS_CONTROL_TOKEN,
+            supervisorEnv?.SUPERVISOR_AGENT_TOKEN,
             supervisorEnv?.SUPERVISOR_CONTROL_TOKEN,
             supervisorEnv?.SUPERVISOR_EXPORT_TOKEN,
         ];
         expect(new Set(tokens).size).toBe(3);
-        // The supervisor holds the agent's token too, to relay under it (#829 S3c).
-        expect(supervisorEnv?.SUPERVISOR_AGENT_TOKEN).toBe(launchedEnv?.BELLOWS_CONTROL_TOKEN);
         expect(stack.controlOpened).toEqual([supervisorEnv?.SUPERVISOR_CONTROL_TOKEN]);
         expect(stack.exportersGranted).toEqual([
             [supervisorEnv?.SUPERVISOR_CONTROL_TOKEN, supervisorEnv?.SUPERVISOR_EXPORT_TOKEN],
@@ -6064,7 +6062,7 @@ describe('questions (issue #226)', () => {
         };
         const { stack, gates } = stubGateStack({}, { control: true, polled: options.polled ?? true });
         const runner: ReturnType<typeof stubRunner> = stubRunner(async (running) => {
-            const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+            const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
             if (!control) throw new Error('no control entry');
             return body({ control, board: board.board, runner, stack, beat });
         });

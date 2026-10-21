@@ -5170,7 +5170,7 @@ describe('every container the driver runs is hardened (#382)', () => {
             'the task supervisor of an agentless or reclaim group',
             () => supervisorCreateArgs(config(), repoJob, { exporting: false, agentless: true }, '/tmp/supervisor.env'),
         ],
-        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
+        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START)],
         [
             'a declared service',
             () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] }, supervisorName(job)),

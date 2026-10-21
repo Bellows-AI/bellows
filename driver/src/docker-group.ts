@@ -153,8 +153,7 @@ export function supervisorCreateArgs(
 }
 
 /** The exporter's `docker create` argv: the member's workspace and the one mailbox it shares with the supervisor. */
-export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedAt: string, envFile: string): string[] {
-    const env = exportEnv(config, job, startedAt);
+export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
     return [
         'create',
         ...containerHardeningArgs(),
@@ -163,10 +162,7 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
         ...labelArgs(job, EXPORTER_CONTAINER, false),
         ...workspacesMountArgs(config, workspacePath(job)),
         ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
-        ...reachDriverArgs(config),
-        '--env-file',
-        envFile,
-        ...env.literals.flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        ...exportEnv(config, job, startedAt).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
@@ -313,12 +309,7 @@ export async function createGroup(
             (file) => supervisorCreateArgs(deps.config, job, shape, file)
         );
         if (exporting) {
-            await createWithEnvFile(
-                deps,
-                controlEnvFilePath(job, 'export'),
-                supervisorEnvFileBody(job, exportEnv(deps.config, job, startedAt).control),
-                (file) => exporterCreateArgs(deps.config, job, startedAt, file ?? '')
-            );
+            await deps.execDocker(exporterCreateArgs(deps.config, job, startedAt));
         }
     } catch (e) {
         await removeGroup(deps.teardown ?? deps.execDocker, job);

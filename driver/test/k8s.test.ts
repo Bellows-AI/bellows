@@ -7,6 +7,7 @@ import {
     GO_MARKER,
     MAILBOXES,
     REVIEWER_CONTAINER,
+    EXPORT_RELAY_SOCKET,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_CREDENTIAL_NAMES,
     SUPERVISOR_BINDING,
@@ -5999,7 +6000,7 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
      */
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
 
-    it('claude: the exporter is a container of the run’s pod with its own token by Secret reference, never a value', () => {
+    it('claude: the exporter is a container of the run’s pod that holds no credential, only the supervisor’s relay socket', () => {
         const spec = runnerJobSpec(config, { ...job, ...SUPERVISED }, { id: SESSION, resume: false }, START);
         const container = spec.spec.template.spec.containers.find((c) => c.name === EXPORTER_CONTAINER)!;
         expect(container.command).toEqual(['node', '-e', claudeExportScript]);
@@ -6009,12 +6010,10 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         });
         expect(container.env).toContainEqual({ name: 'RUN_STARTED_AT', value: START });
         expect(container.env).toContainEqual({ name: 'FACTORY_EXPORT_DIR', value: '/factory/export' });
-        expect(container.env).toContainEqual({
-            name: 'BELLOWS_CONTROL_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(job), key: 'SUPERVISOR_EXPORT_TOKEN' } },
-        });
+        expect(container.env).toContainEqual({ name: 'EXPORT_CONTROL_SOCKET', value: EXPORT_RELAY_SOCKET });
+        expect(JSON.stringify(container.env)).not.toMatch(/secretKeyRef|BELLOWS_CONTROL/);
         // The supervisor holds the control pair and the two tokens it relays under (#829 S3c); the
-        // exporter never references the supervisor's token, the agent none of them.
+        // exporter and the agent hold none of them.
         const keysOf = (name: string) =>
             JSON.stringify(spec.spec.template.spec.containers.find((c) => c.name === name)?.env ?? []);
         expect(keysOf(EXPORTER_CONTAINER)).not.toContain('SUPERVISOR_CONTROL_TOKEN');
@@ -8041,9 +8040,10 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '3600' }))).toBeLessThan(SUPERVISOR_WINDDOWN_MS);
     });
 
-    it('reaches the supervisor as its orphan bound and the exporter as its drain give-up', () => {
+    it('reaches the supervisor as its orphan bound and the exporter as a give-up that outlasts a takeover', () => {
         const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: '120' });
         const bound = String(orphanBoundMs(config));
+        const takeover = takeoverBoundMs(config);
         const pod = runnerJobSpec(
             config,
             { ...job, executorType: 'claude-code', ...SUPERVISED },
@@ -8051,7 +8051,11 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         ).spec.template.spec;
         const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
         expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({ name: 'SUPERVISOR_ORPHAN_MS', value: bound });
-        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: bound });
+        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: String(takeover) });
+        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({
+            name: 'EXPORT_GIVEUP_MS',
+            value: String(Math.max(600_000, takeover)),
+        });
     });
 });
 

@@ -1,10 +1,10 @@
 import type { BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, transcriptDir } from './claim.js';
+import { transcriptDir } from './claim.js';
 import { CLAUDE_CODE } from './executors.js';
 import type { RunSession } from './runner.js';
-import { MAILBOXES, SUPERVISOR_ENV } from './supervisor-contract.js';
-import { orphanBoundMs } from './supervisor-plan.js';
+import { EXPORT_RELAY_SOCKET, MAILBOXES, SUPERVISOR_ENV } from './supervisor-contract.js';
+import { takeoverBoundMs } from './supervisor-plan.js';
 
 /**
  * What both executors share about the continuous claude-code transcript exporter
@@ -23,6 +23,9 @@ export const EXPORT_SPOOL_MAX_BYTES = SPOOL_GIB * BYTES_PER_KIB * BYTES_PER_KIB 
 /** Flush at this much pending, or this long after the oldest unflushed byte, whichever comes first. */
 export const EXPORT_FLUSH_BYTES = FLUSH_KIB * BYTES_PER_KIB;
 export const EXPORT_FLUSH_MS = 15_000;
+
+/** The least a flush retries an unreachable holder before it fails the export (the script's own default). */
+const EXPORT_MIN_GIVEUP_MS = 600_000;
 
 /** The attempt failure cause when the spool cap is hit; also the manifest's terminal cause for it. */
 export const SPOOL_FULL_CAUSE = 'artifact_spool_full';
@@ -46,31 +49,22 @@ export function exportsTranscript(job: BoardJob, session: RunSession | null): bo
 }
 
 /**
- * The exporter's env: the literals (paths, the attempt's start, the caps, its mailbox with the
- * supervisor) and the control pair — the one credential-like value, its own per-attempt token, which
- * each executor delivers by reference (an env file in docker, the attempt's Secret in kubernetes),
- * never in argv or a spec. `control` pairs the exporter's own name with the supervisor-side name
- * the value is stored under: the exporter script reads `BELLOWS_CONTROL_*`.
+ * The exporter's env: literals only — paths, the attempt's start, the caps, its mailbox with the
+ * supervisor and the relay socket in it. It holds no credential: the supervisor attaches its own
+ * export-only token to what the exporter sends (#829). A drain or a flush whose holder stays
+ * unreachable gives up only after a takeover has had its whole bound to land.
  */
-export function exportEnv(
-    config: DriverConfig,
-    job: BoardJob,
-    startedAt: string
-): { literals: [string, string][]; control: { name: string; source: string }[] } {
-    return {
-        literals: [
-            ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(config, job)],
-            ['RUN_STARTED_AT', startedAt],
-            ['EXPORT_FLUSH_BYTES', String(EXPORT_FLUSH_BYTES)],
-            ['EXPORT_FLUSH_MS', String(EXPORT_FLUSH_MS)],
-            ['EXPORT_SPOOL_MAX_BYTES', String(EXPORT_SPOOL_MAX_BYTES)],
-            ['FACTORY_EXPORT_DIR', MAILBOXES.export.path],
-            // A drain whose driver stays unreachable this long ends, its bytes left on the volume.
-            ['EXPORT_DRAIN_GIVEUP_MS', String(orphanBoundMs(config))],
-        ],
-        control: [
-            { name: CONTROL_URL_ENV, source: SUPERVISOR_ENV.controlUrl },
-            { name: CONTROL_TOKEN_ENV, source: SUPERVISOR_ENV.exportToken },
-        ],
-    };
+export function exportEnv(config: DriverConfig, job: BoardJob, startedAt: string): [string, string][] {
+    const giveUp = takeoverBoundMs(config);
+    return [
+        ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(config, job)],
+        ['RUN_STARTED_AT', startedAt],
+        ['EXPORT_FLUSH_BYTES', String(EXPORT_FLUSH_BYTES)],
+        ['EXPORT_FLUSH_MS', String(EXPORT_FLUSH_MS)],
+        ['EXPORT_SPOOL_MAX_BYTES', String(EXPORT_SPOOL_MAX_BYTES)],
+        ['FACTORY_EXPORT_DIR', MAILBOXES.export.path],
+        ['EXPORT_CONTROL_SOCKET', EXPORT_RELAY_SOCKET],
+        ['EXPORT_DRAIN_GIVEUP_MS', String(giveUp)],
+        ['EXPORT_GIVEUP_MS', String(Math.max(EXPORT_MIN_GIVEUP_MS, giveUp))],
+    ];
 }

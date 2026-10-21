@@ -1541,12 +1541,18 @@ echo '# review'
 
 mkdir -p "$work/review"
 cat >"$work/review/review-caller.cjs" <<'CALLER'
-const base = (process.env.BELLOWS_CONTROL_URL || '').replace(/\/$/, '');
-const headers = { authorization: `Bearer ${process.env.BELLOWS_CONTROL_TOKEN}`, 'content-type': 'application/json' };
-const call = async (method, path, body) => {
-    const r = await fetch(base + path, { method, headers, body });
-    return { status: r.status, text: await r.text() };
-};
+const http = require('node:http');
+const socketPath = `${process.env.FACTORY_CTL_OUT}/control.sock`;
+const call = (method, path, body) =>
+    new Promise((resolve, reject) => {
+        const req = http.request({ socketPath, method, path, headers: { 'content-type': 'application/json' } }, (res) => {
+            let text = '';
+            res.on('data', (c) => (text += c));
+            res.on('end', () => resolve({ status: res.statusCode, text }));
+        });
+        req.on('error', reject);
+        req.end(body);
+    });
 const ask = (key) => call('POST', '/review', JSON.stringify({ key, profile: 'audit' }));
 (async () => {
     console.log('first=' + (await ask('rv-a')).status);

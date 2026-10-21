@@ -1,6 +1,6 @@
 ---
 name: review
-description: Ask an independent, named reviewer to review your work in a separate run, then read its findings and verdict. Use before you finish, whenever the repository requires a review, or when you want fresh eyes on your changes. Requires BELLOWS_CONTROL_URL to be set.
+description: Ask an independent, named reviewer to review your work in a separate run, then read its findings and verdict. Use before you finish, whenever the repository requires a review, or when you want fresh eyes on your changes. Requires `/run/factory-control/control.sock` to exist.
 ---
 
 # Independent review
@@ -51,8 +51,8 @@ curl -sf --unix-socket /run/factory-control/control.sock http://control/review/s
   workflow graph that reviews at its own step, or a request is already running. Read the reason.
 - `401` — your run is over; stop asking.
 
-If `BELLOWS_CONTROL_URL` is unset this environment cannot invoke a reviewer. Say so; do not guess
-the URL.
+If `/run/factory-control/control.sock` does not exist this environment cannot invoke a reviewer.
+Say so; do not guess another endpoint.
 
 ## Rules
 

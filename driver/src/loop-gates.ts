@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
-import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, gateEnvBody, setupTimeoutMs } from './claim.js';
+import { gateEnvBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import { stepLost } from './step-control.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
@@ -199,9 +199,9 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
  * Opens the run-control channel for one attempt about to launch, gated or not (issue #442): three
  * tokens scoped to this lease. The supervisor's goes to the task supervisor alone
  * (`job.supervisorEnv`) so it can read a Stop the board raised, relay the agent's questions and run
- * the supervised steps; the exporter's, beside it in `job.supervisorEnv`, opens only the transcript
- * export; the agent's, advertised beside the gate pair (`job.gateEnv`), opens only the publish and
- * review routes. Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
+ * the supervised steps; the exporter's and the agent's, beside it in `job.supervisorEnv`, open only
+ * the transcript export and only the publish and review routes. Neither leaves the supervisor: it
+ * relays the agent's and the exporter's requests, attaching the role's token (#829). Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
  * Stop, said out loud, instead of refusing every job over a feature.
  */
 export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
@@ -225,7 +225,6 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);
         const url = gates.advertiseUrl(port);
-        job.gateEnv = { ...job.gateEnv, [CONTROL_URL_ENV]: url, [CONTROL_TOKEN_ENV]: agentToken };
         job.supervisorEnv = {
             [SUPERVISOR_ENV.controlUrl]: url,
             [SUPERVISOR_ENV.controlToken]: token,
