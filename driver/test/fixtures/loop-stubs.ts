@@ -16,6 +16,7 @@ import type {
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board.js';
+import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
@@ -75,6 +76,17 @@ export const job = (n: number, resumeSessionId: string | null = null): BoardJob 
 
 export interface BoardStub extends Board {
     completed: ({ id: string } & Parameters<Board['complete']>[1])[];
+    /** Every phase checkpoint the loop wrote (issue #829), in write order. */
+    phaseCheckpointsWritten: {
+        id: string;
+        leaseToken: string;
+        runClaimSeq: number;
+        phase: CheckpointPhase;
+        tree: string | null;
+        result: unknown;
+    }[];
+    /** The run claim sequence of every phase checkpoint read the loop made, with the job's lease token. */
+    phaseCheckpointReads: { id: string; leaseToken: string; runClaimSeq: number }[];
     /** The final envelopes the loop staged before each verdict (issue #821). */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
@@ -137,6 +149,10 @@ export function stubBoard(
         artifactsDown?: boolean;
         /** The board's answer to an interruption report (issue #792); held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
+        /** The board's answer to a phase checkpoint read (issue #829); null (unreadable) when absent. */
+        phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
+        /** The board's answer to a phase checkpoint write (issue #829); `throw` models a board that throws. */
+        phaseCheckpointWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
         /** The board's answer to a staged conclusion (issue #821); held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
@@ -151,6 +167,8 @@ export function stubBoard(
     const board: BoardStub = {
         completed: [],
         staged: [],
+        phaseCheckpointsWritten: [],
+        phaseCheckpointReads: [],
         sessions: [],
         progressed: [],
         suspended: [],
@@ -254,6 +272,21 @@ export function stubBoard(
         async githubCredential(claimed) {
             board.githubAsks.push(claimed.id);
             return options.githubToken ?? null;
+        },
+        async phaseCheckpoint(claimed, checkpoint) {
+            board.phaseCheckpointsWritten.push({
+                id: claimed.id,
+                leaseToken: claimed.leaseToken,
+                ...checkpoint,
+                result: structuredClone(checkpoint.result),
+            });
+            if (options.phaseCheckpointWrite === 'throw') throw new Error('the board is down');
+            return options.phaseCheckpointWrite ?? 'ok';
+        },
+        async phaseCheckpoints(claimed, runClaimSeq, signal) {
+            board.phaseCheckpointReads.push({ id: claimed.id, leaseToken: claimed.leaseToken, runClaimSeq });
+            const answer = options.phaseCheckpoints ?? null;
+            return typeof answer === 'function' ? answer(signal) : answer;
         },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });

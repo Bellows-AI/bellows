@@ -222,7 +222,7 @@ describe('the executor isolation record (#382)', () => {
     it('states what an outage past the lease costs a finished attempt', () => {
         expect(kubernetesDocs).toContain('Stated limit: a verdict neither staged nor completed within one lease');
         expect(prose(kubernetesDocs)).toContain(
-            'its agent outcome is adopted, but the gates and the post-processing run again'
+            "its agent outcome is adopted and resumes after the last post-run phase checkpointed on the board (`gates` bound to the tree's fingerprint, then `post`, `publish`); a phase whose checkpoint is missing, unreadable or bound to another tree runs again, with every phase after it"
         );
         expect(prose(kubernetesDocs)).toContain('can retire `dead` before it is adopted');
     });

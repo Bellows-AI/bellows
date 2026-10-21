@@ -807,3 +807,94 @@ describe('the staged conclusion', () => {
         expect(await boardOn(fetch).complete(job, verdict)).toEqual({ state: 'lost', reclaimId: null, conflict: true });
     });
 });
+
+describe('the phase checkpoints (issue #829)', () => {
+    const job = boardJob();
+    const row = { phase: 'gates', claimSeq: 2, tree: 'h:2', result: { verdict: 'passed' } };
+
+    it('writes a checkpoint under the lease token and reads the run’s back', async () => {
+        const write = recorder(() => Response.json({ id: 'job-1', phase: 'gates' }));
+        const board = boardOn(write.fetch, 'fwt_abc');
+        expect(
+            await board.phaseCheckpoint(job, {
+                runClaimSeq: 2,
+                phase: 'gates',
+                tree: 'h:2',
+                result: { verdict: 'passed' },
+            })
+        ).toBe('ok');
+        expect(write.calls[0]!.url).toBe('http://board/api/jobs/job-1/phase-checkpoint');
+        expect(write.calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
+        expect(write.calls[0]!.body).toEqual({
+            leaseToken: job.leaseToken,
+            runClaimSeq: 2,
+            phase: 'gates',
+            tree: 'h:2',
+            result: { verdict: 'passed' },
+        });
+
+        const read = recorder(() => Response.json({ checkpoints: [row] }));
+        expect(await boardOn(read.fetch).phaseCheckpoints(job, 2)).toEqual([row]);
+        expect(read.calls[0]!.url).toBe('http://board/api/jobs/job-1/phase-checkpoints');
+        expect(read.calls[0]!.body).toEqual({ leaseToken: job.leaseToken, runClaimSeq: 2 });
+    });
+
+    it('reads an empty answer as no checkpoints, not as an unreadable one', async () => {
+        const { fetch } = recorder(() => Response.json({ checkpoints: [] }));
+        expect(await boardOn(fetch).phaseCheckpoints(job, 2)).toEqual([]);
+    });
+
+    it.each<[string, () => Response]>([
+        ['a 409', () => Response.json({ code: 'LEASE_LOST' }, { status: 409 })],
+        ['a 404', () => Response.json({ code: 'NOT_FOUND' }, { status: 404 })],
+        ['a 500', () => Response.json({ error: 'down' }, { status: 500 })],
+        ['a body that is not JSON', () => new Response('<html>', { status: 200 })],
+        ['no checkpoints field', () => Response.json({})],
+        ['an unknown phase', () => Response.json({ checkpoints: [{ ...row, phase: 'merge' }] })],
+        ['a fractional claim', () => Response.json({ checkpoints: [{ ...row, claimSeq: 1.5 }] })],
+        ['a numeric tree', () => Response.json({ checkpoints: [{ ...row, tree: 7 }] })],
+        ['a duplicated phase', () => Response.json({ checkpoints: [row, row] })],
+        ['a row that is not an object', () => Response.json({ checkpoints: [null] })],
+    ])('reads %s as unreadable, never as empty', async (_what, respond) => {
+        const { fetch } = recorder(respond);
+        expect(await boardOn(fetch).phaseCheckpoints(job, 2)).toBeNull();
+    });
+
+    it('reads a rejected fetch and an aborted signal as unreadable', async () => {
+        const failing = (async () => {
+            throw new Error('connection reset');
+        }) as unknown as typeof globalThis.fetch;
+        expect(await boardOn(failing).phaseCheckpoints(job, 2)).toBeNull();
+        const { fetch } = recorder(() => Response.json({ checkpoints: [row] }));
+        const aborted = AbortSignal.abort();
+        const slow = ((_url: string, init: RequestInit) =>
+            init.signal?.aborted ? Promise.reject(init.signal.reason) : fetch(_url, init)) as unknown as typeof fetch;
+        expect(await boardOn(slow).phaseCheckpoints(job, 2, aborted)).toBeNull();
+    });
+
+    it.each<[string, () => Response, string]>([
+        ['a lost lease', () => Response.json({ code: 'LEASE_LOST' }, { status: 409 }), 'lost'],
+        [
+            'a conflicting run claim',
+            () => Response.json({ code: 'PHASE_CHECKPOINT_CONFLICT' }, { status: 409 }),
+            'rejected',
+        ],
+        ['a removed thread', () => Response.json({ code: 'NOT_FOUND' }, { status: 404 }), 'lost'],
+        ['a 400', () => Response.json({ code: 'BAD_BODY' }, { status: 400 }), 'rejected'],
+        ['a 500', () => Response.json({ error: 'down' }, { status: 500 }), 'rejected'],
+    ])('answers a write refused with %s as %s', async (_what, respond, answer) => {
+        const { fetch } = recorder(respond);
+        expect(
+            await boardOn(fetch).phaseCheckpoint(job, { runClaimSeq: 2, phase: 'gates', tree: null, result: {} })
+        ).toBe(answer);
+    });
+
+    it('never throws on a rejected fetch', async () => {
+        const failing = (async () => {
+            throw new Error('connection reset');
+        }) as unknown as typeof globalThis.fetch;
+        expect(
+            await boardOn(failing).phaseCheckpoint(job, { runClaimSeq: 2, phase: 'gates', tree: null, result: {} })
+        ).toBe('rejected');
+    });
+});

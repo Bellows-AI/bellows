@@ -74,8 +74,10 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   none — and such a run is redone in its tree and session. `driver/src/termination.ts`,
   `driver/src/k8s-runner.ts` (`killRunner`), `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
 - Stated limit: a verdict neither staged nor completed within one lease leaves its group and checkout claim to the
-  next claim: its agent outcome is adopted, but the gates and the post-processing run again, and an attempt with no
-  budget left can retire `dead` before it is adopted. `driver/src/loop-conclusion.ts` (`end`).
+  next claim: its agent outcome is adopted and resumes after the last post-run phase checkpointed on the board (`gates`
+  bound to the tree's fingerprint, then `post`, `publish`); a phase whose checkpoint is missing, unreadable or bound to
+  another tree runs again, with every phase after it, and an attempt with no budget left can retire `dead` before it is
+  adopted. `driver/src/loop-conclusion.ts` (`end`), `driver/src/loop-phase-checkpoints.ts`.
 - Stated limit: a thread with no attempt reclaims in a supervisor-only group (one Job, no agent; the tool uid's
   `release` init container first), because nothing else holds the task volume; its pod requests are held while
   the gates run. `driver/src/k8s-group.ts` (`reclaimInGroup`, `reclaimGroupSpec`).

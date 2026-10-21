@@ -1,3 +1,4 @@
+import type { PhaseChain } from './loop-phase-checkpoints.js';
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { DriverConfig } from './config.js';
 import type { AdoptedRun, LiveRun, RunSession, Runner } from './runner.js';
@@ -101,6 +102,8 @@ export interface AttemptCtx {
     adopted?: AdoptedRun;
     /** The live run of an earlier claim this attempt took over (#829): no sync, setup or launch order follows. */
     takeover?: LiveRun;
+    /** The post-run phase checkpoints (#829), opened by `verifyRun` before the gates and used by the phases after. */
+    phases?: PhaseChain;
 }
 
 /** The completion body the board's `complete` takes: what a conclusion reports. */

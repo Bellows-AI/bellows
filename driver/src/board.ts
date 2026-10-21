@@ -2,6 +2,7 @@ import { artifactCalls } from './artifact-calls.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
 import { reclaimCalls } from './reclaim-calls.js';
+import { phaseCheckpointCalls, type PhaseCheckpoint, type PhaseCheckpointWrite } from './board-phase-checkpoints.js';
 import { verdictCalls } from './board-verdict.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
@@ -655,6 +656,22 @@ export interface Board {
         job: BoardJob,
         result: Parameters<Board['complete']>[1]
     ): Promise<LeaseState | 'conflict' | 'removed'>;
+    /**
+     * Records a post-run phase's outcome on the board under the lease (issue #829), for the run
+     * `runClaimSeq` started. Never throws: `lost` when the lease is not this attempt's, `rejected`
+     * for anything else the board did not take — the run goes on either way.
+     */
+    phaseCheckpoint(
+        job: BoardJob,
+        checkpoint: PhaseCheckpointWrite,
+        signal?: AbortSignal
+    ): Promise<'ok' | 'lost' | 'rejected'>;
+    /**
+     * The checkpoints of the run `runClaimSeq` started. Null for any answer the driver cannot fully
+     * read (non-2xx, a lost lease, a malformed row, an aborted request): an unconfirmed read is
+     * never an empty one, so the caller runs every phase again.
+     */
+    phaseCheckpoints(job: BoardJob, runClaimSeq: number, signal?: AbortSignal): Promise<PhaseCheckpoint[] | null>;
 }
 
 type Fetch = typeof globalThis.fetch;
@@ -923,6 +940,7 @@ export function createBoard({
         ...reviewCalls(post),
 
         ...verdictCalls(post, leaseSeconds),
+        ...phaseCheckpointCalls(post),
         ...artifactCalls({ url, token, fetch }),
         ...githubCredentialCall({ url, fetch }),
 

@@ -2,14 +2,16 @@ import type { BoardJob, VerdictEvidence } from './board.js';
 import { uploadRunArtifacts } from './artifact-upload.js';
 import { repoCacheProblem } from './claim.js';
 import { pickSession } from './runner-plan.js';
-import { evidenceDecision, evidencePolicyActive, type GatesOutcome, gatesEvidenceOf } from './evidence-policy.js';
+import { evidencePolicyActive, type GatesOutcome } from './evidence-policy.js';
 import type { DeadService, RunOutcome, RunSession } from './runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
-import { askGithubToken, checkoutToken } from './loop-github.js';
-import { preHelperStep, runPostHelperPhase } from './loop-helpers.js';
+import { checkoutToken } from './loop-github.js';
+import { preHelperStep } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
 import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
+import { openChain } from './loop-phase-checkpoints.js';
+import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
 import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
@@ -28,10 +30,9 @@ import {
 } from './loop-fence.js';
 import type { AdoptedRecord, AttemptCtx, LoopRuntime, SetupConclusion } from './loop-types.js';
 import { STOOD_DOWN } from './loop-types.js';
-import type { HelperFailureReport } from './helpers.js';
-import type { PublishResult, SyncResult } from './publish.js';
-import { agentFaults, gatesEligible, ledgerOf, postHelperSkipWhy, skipWhyOf } from './loop-ledger.js';
-import { publishBranch, publishModeOf, publishOptionsOf, report, reportFinish } from './loop-verdict.js';
+import type { SyncResult } from './publish.js';
+import { agentFaults, gatesEligible, skipWhyOf } from './loop-ledger.js';
+import { report, reportFinish } from './loop-verdict.js';
 import { OPENCODE } from './executors.js';
 import { masterPromptRefusalReason } from './master-prompt.js';
 import { AGENTLESS_OUTCOME, isAgentless } from './loop-agentless.js';
@@ -246,7 +247,7 @@ async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof S
 type RunPhaseDone = { done: true };
 
 /** The run phase's ordinary conclusion: what to report, and the gate failure (if any) behind it. */
-type RunPhaseResult = {
+export type RunPhaseResult = {
     done: false;
     outcome: RunOutcome;
     failure: GateFailure | null;
@@ -414,11 +415,17 @@ async function verifyRun(
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
+    const phases = await openChain(ctx);
+    ctx.phases = phases;
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
-    const gated = await gatesOrLoss(ctx, gating, outcome);
+    // An adopted run's gates are served from the board when its checkpoint covers this very tree.
+    const resumedGates = phases.resumeGates(gating !== null, treeAfter);
+    const gated = resumedGates ?? (await gatesOrLoss(ctx, gating, outcome));
     if (gated === STOOD_DOWN) return STOOD_DOWN;
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
+    // A tree that could not be read binds no checkpoint to it: the later phases run again.
+    if (gating && !resumedGates && treeAfter !== null) await phases.record('gates', treeAfter, gated);
     return {
         ...gated,
         treeChanged: treeChangedOf(ctx, gated, treeAfter),
@@ -535,60 +542,6 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
     return { failure, deadServices: deadAfter, gatesSkipped: null, recoveredServices };
-}
-
-/** The post-helpers' failure, or `STOOD_DOWN` once they ended the attempt: it is down, or a lost supervisor interrupted it. */
-async function endingPostHelpers(
-    ctx: AttemptCtx,
-    skipReason: string | null
-): Promise<HelperFailureReport | null | typeof STOOD_DOWN> {
-    const found = await runPostHelperPhase(ctx, skipReason);
-    if (await endIfDown(ctx, 'its post-helpers')) return STOOD_DOWN;
-    if (found === null || found === STOOD_DOWN || !('halt' in found)) return found;
-    await end(ctx, setupDecision(found));
-    return STOOD_DOWN;
-}
-
-/**
- * The post-helpers, then the publish, each fenced on a stand-down: a Stop, lost lease or Remove
- * that lands during either must not push to a tree another attempt owns or open a PR for a
- * deleted thread. Null when the attempt stood down (already settled), nothing left to report.
- */
-async function runPostHelpersAndPublish(
-    ctx: AttemptCtx,
-    outcome: RunPhaseResult
-): Promise<{
-    helperFailure: HelperFailureReport | null;
-    published: PublishResult | null;
-    policyRefusal: string | null;
-} | null> {
-    const { rt, job, state } = ctx;
-    const helperFailure = await endingPostHelpers(ctx, postHelperSkipWhy(outcome.outcome));
-    if (helperFailure === STOOD_DOWN) return null;
-    const ledger = ledgerOf({ ...outcome, helperFailure, published: null });
-    let published: PublishResult | null = null;
-    const policyRefusal: string | null = null;
-    const mode = publishModeOf(job, ledger);
-    if (mode !== null) {
-        // The configured evidence is enforced HERE, whatever the agent chose to run: a refusal
-        // pushes nothing, and an authorisation binds the push to the revision it assessed. A
-        // refused draft is no refusal of its own: the services fault already fails the verdict.
-        const decision = evidenceDecision(job.policy, gatesEvidenceOf(outcome.evidence), job.review);
-        if (!decision.ok) return { helperFailure, published, policyRefusal: mode === 'draft' ? null : decision.reason };
-        const githubToken = await askGithubToken(rt, job, 'the publish');
-        // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
-        // and pushing now would outlive it. The push itself is never fenced — it cannot be
-        // recalled (issue #472).
-        if (await endIfDown(ctx, 'its publish')) return null;
-        published = await publishBranch(rt, job, githubToken, publishOptionsOf(mode, decision.revision));
-        // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
-        // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
-        if (await endIfDown(ctx, 'its publish')) return null;
-        // The agent already shipped its work as a draft: a clean tree leaves nothing to push, and
-        // the verdict still carries the publication the agent made.
-        if (published?.ok && !published.published && state.draftPublication) published = state.draftPublication;
-    }
-    return { helperFailure, published, policyRefusal };
 }
 
 /** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
