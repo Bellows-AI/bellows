@@ -47,12 +47,19 @@ function transcriptStream(
     jobId: string,
     claimSeq: number,
     session: string,
-    bytes: Buffer
+    bytes: Buffer,
+    from = 0
 ): Transcripts['streams'][number] {
+    // The exporter keeps a file's byte offsets: a resumed session's later stream starts at `from`, where the
+    // earlier attempt's bytes ended (scripts/claude-export.cjs: track.pos = stat.size).
     const chunks: Transcripts['streams'][number]['chunks'] = [];
-    for (let offset = 0; offset < bytes.length; offset += CHUNK) {
-        const part = bytes.subarray(offset, offset + CHUNK);
-        chunks.push({ offset, length: part.length, sha256: createHash('sha256').update(part).digest('hex') });
+    for (let at = 0; at < bytes.length; at += CHUNK) {
+        const part = bytes.subarray(at, at + CHUNK);
+        chunks.push({
+            offset: from + at,
+            length: part.length,
+            sha256: createHash('sha256').update(part).digest('hex'),
+        });
     }
     return { jobId, claimSeq, executor: 'claude-code', session, bytes: bytes.length, chunks };
 }
@@ -134,8 +141,11 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
                 const q = url.searchParams;
                 const key = `${q.get('jobId')}/${q.get('claimSeq')}/${q.get('session')}`;
                 const whole = transcripts.data.get(key);
-                const offset = Number(q.get('offset'));
-                if (!whole || offset >= whole.length) {
+                const first = transcripts.streams.find(
+                    (s) => `${s.jobId}/${s.claimSeq}/${s.session}` === key
+                )?.chunks[0]?.offset;
+                const offset = Number(q.get('offset')) - (first ?? 0);
+                if (!whole || offset < 0 || offset >= whole.length) {
                     reply.writeHead(404).end('{}');
                     return;
                 }
@@ -305,7 +315,7 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             const cut = 3_000;
             const streams = [
                 transcriptStream(JOB_A, 1, 'alpha', alpha.subarray(0, cut)),
-                transcriptStream(JOB_A, 2, 'alpha', alpha.subarray(cut)),
+                transcriptStream(JOB_A, 2, 'alpha', alpha.subarray(cut), cut),
                 transcriptStream(JOB_B, 1, 'beta', beta),
             ];
             const data = new Map<string, Buffer>([

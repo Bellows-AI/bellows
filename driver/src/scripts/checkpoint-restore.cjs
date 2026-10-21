@@ -130,9 +130,12 @@ const fetchChunk = async (source, chunk) => {
 
 const CHECKPOINT_SOURCE = { route: '/checkpoint/restore', params: {} };
 
-/** The whole stream appended to `file` (opened by the caller), chunk by chunk and in order. */
-const append = async (fd, source, chunks) => {
-    let next = 0;
+/**
+ * The chunks of one stream appended to `fd` (opened by the caller), in order. They must be gapless from `from`
+ * (0 for a checkpoint; for a session, where the previous stream of the file ended). Returns where they end.
+ */
+const append = async (fd, source, chunks, from = 0) => {
+    let next = from;
     for (const chunk of chunks) {
         if (chunk.offset !== next) throw unrestorable('the chunk list has a gap at offset ' + next);
         fs.writeSync(fd, await fetchChunk(source, chunk));
@@ -163,6 +166,9 @@ const getJson = async (route) => {
  */
 const downloadSession = async (file, streams) => {
     const fd = fs.openSync(file, 'w');
+    // The exporter keeps a file's byte offsets across attempts: a resumed session's later stream starts where
+    // the earlier one ended, not at 0.
+    let end = 0;
     try {
         for (const stream of streams) {
             const source = {
@@ -171,7 +177,9 @@ const downloadSession = async (file, streams) => {
             };
             let length;
             try {
-                length = await append(fd, source, stream.chunks);
+                const before = end;
+                end = await append(fd, source, stream.chunks, before);
+                length = end - before;
             } catch (e) {
                 if (e instanceof Corrupt)
                     throw unrestorable('the transcript of session ' + stream.session + ': ' + e.message);
