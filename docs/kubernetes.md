@@ -39,7 +39,7 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**
   `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
 - **A runner group whose driver is lost ends inside its lease** (`orphanBoundMs`, `driver/src/supervisor-plan.ts`;
-  30 s floor under the lane's 60 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
+  30 s floor under a 120 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
   the run is redone, never adopted; a released group (its agent went, `supervisor: released the agent`) waits
   `takeoverBoundMs` (the lease plus `SUPERVISOR_REBIND_GRACE_MS`) for a newer holder instead.
   `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`, `driver/test/k8s.test.ts`.
