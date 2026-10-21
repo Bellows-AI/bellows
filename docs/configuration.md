@@ -35,7 +35,8 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
   `GITHUB_WEBHOOK_SECRET` does not register the route.
 - **Both artifact backends pass one contract** (create-only writes, a 412 that never overwrites, idempotent delete);
   the filesystem backend is single replica only, and an S3-compatible endpoint is sent no SSE-S3 header.
-  `server/test/artifacts.object-store.test.ts`.
+  Two replicas over one database and store serve each other's writes and decide a race once.
+  `server/test/artifacts.object-store.test.ts`, `server/test-db/artifact-store.test.ts`.
 - **`GITHUB_API_URL` and `GITHUB_OAUTH_*_URL` are test seams, undocumented on purpose**; `server/src/main.ts`
   warns when the API URL is not `api.github.com`, and `playwright.config.ts` points them at `e2e/stub-idp.mjs`.
 - **Never log the merged environment** — it holds the App private key. `driver/test/loop.test.ts` pins the

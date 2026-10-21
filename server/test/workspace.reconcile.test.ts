@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Repo } from '../src/config.js';
-import { cloneRepo, workspaceDir } from '../src/workspace/reconcile.js';
+import { type CloneOptions, cloneRepo, workspaceDir } from '../src/workspace/reconcile.js';
 
 /**
  * Offline throughout: every clone here is `file://` from a bare repository this file creates, so
@@ -56,6 +57,15 @@ const repos: Repo[] = [
 
 const USER = '11111111-2222-3333-4444-555555555555';
 
+/** The claim a clone runs under, for a caller that has no store: its own token, and a publish that always wins. */
+const OWN_CLAIM = (): Pick<CloneOptions, 'claimToken' | 'publish'> => ({
+    claimToken: randomUUID(),
+    publish: async (move) => {
+        move();
+        return true;
+    },
+});
+
 describe('workspaceDir', () => {
     it("puts a member's checkouts under their user id", () => {
         expect(workspaceDir('/srv/f', 'acme', USER)).toBe(`/srv/f/acme/${USER}`);
@@ -80,7 +90,7 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
     let cloneUrl: (repo: Repo) => string;
 
     const clone = (repo: Repo, extra: Record<string, unknown> = {}) =>
-        cloneRepo({ root, orgId: 'acme', userId: USER, repo, cloneUrl, ...extra });
+        cloneRepo({ root, orgId: 'acme', userId: USER, repo, cloneUrl, ...OWN_CLAIM(), ...extra });
 
     beforeEach(() => {
         dir = mkdtempSync(join(tmpdir(), 'factory-reconcile-'));
@@ -119,7 +129,7 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
     it("keeps two members' checkouts of the same repo apart", async () => {
         const other = '99999999-8888-7777-6666-555555555555';
         await clone(repos[0] as Repo);
-        await cloneRepo({ root, orgId: 'acme', userId: other, repo: repos[0] as Repo, cloneUrl });
+        await cloneRepo({ root, orgId: 'acme', userId: other, repo: repos[0] as Repo, cloneUrl, ...OWN_CLAIM() });
 
         expect(existsSync(join(root, 'acme', USER, 'widgets', '.git'))).toBe(true);
         expect(existsSync(join(root, 'acme', other, 'widgets', '.git'))).toBe(true);
@@ -153,6 +163,7 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
                 userId: USER,
                 repo: { owner: 'acme', name: 'missing' },
                 cloneUrl: () => `file://${join(dir, 'nonexistent.git')}`,
+                ...OWN_CLAIM(),
             })
         ).rejects.toThrow();
 
@@ -206,5 +217,104 @@ describe.skipIf(!hasGit())('cloning into a member workspace', () => {
             },
         });
         expect(seen[0]).not.toContain('--depth');
+    });
+});
+
+describe('publishing a clone', () => {
+    let root: string;
+    const repo = { owner: 'acme', name: 'widgets' };
+
+    beforeEach(() => {
+        root = mkdtempSync(join(tmpdir(), 'factory-publish-'));
+    });
+
+    /** A git runner that stands in for a clone and, optionally, for another holder publishing first. */
+    const stage =
+        (also?: (dest: string) => void): CloneOptions['run'] =>
+        async (args) => {
+            const staging = args[args.length - 1] as string;
+            mkdirSync(join(staging, '.git'), { recursive: true });
+            also?.(staging.replace(/~tmp-[^/]+$/, ''));
+        };
+
+    it('treats a checkout already at dest as present and removes its own staging', async () => {
+        // An expired holder published before this one: the rename meets a non-empty dest.
+        const dest = join(root, 'acme', USER, 'widgets');
+        const claim = OWN_CLAIM();
+
+        const outcome = await cloneRepo({
+            root,
+            orgId: 'acme',
+            userId: USER,
+            repo,
+            run: stage((d) => mkdirSync(join(d, '.git'), { recursive: true })),
+            ...claim,
+        });
+
+        expect(outcome).toBe('present');
+        expect(readdirSync(join(root, 'acme', USER))).toEqual(['widgets']);
+        expect(existsSync(join(dest, '.git'))).toBe(true);
+    });
+
+    it('stages under the claim token and gives the move to the fenced publish', async () => {
+        const claimToken = randomUUID();
+        const seen: string[] = [];
+
+        const outcome = await cloneRepo({
+            root,
+            orgId: 'acme',
+            userId: USER,
+            repo,
+            claimToken,
+            run: async (args, env) => {
+                seen.push(args[args.length - 1] as string);
+                await stage()?.(args, env);
+            },
+            publish: async (move) => {
+                expect(existsSync(join(root, 'acme', USER, 'widgets'))).toBe(false);
+                move();
+                return true;
+            },
+        });
+
+        expect(outcome).toBe('cloned');
+        expect(seen[0]).toMatch(new RegExp(`widgets~tmp-${claimToken}$`));
+        expect(existsSync(join(root, 'acme', USER, 'widgets', '.git'))).toBe(true);
+    });
+
+    it('removes its staging and reports lost when the publish is refused', async () => {
+        const lines: string[] = [];
+
+        const outcome = await cloneRepo({
+            root,
+            orgId: 'acme',
+            userId: USER,
+            repo,
+            claimToken: randomUUID(),
+            log: (m) => lines.push(m),
+            run: stage(),
+            publish: async () => false,
+        });
+
+        expect(outcome).toBe('lost');
+        expect(readdirSync(join(root, 'acme', USER))).toEqual([]);
+        expect(lines.some((line) => /lease lost/.test(line))).toBe(true);
+    });
+
+    it('rethrows a rename failure that is not a race, and removes its staging', async () => {
+        await expect(
+            cloneRepo({
+                root,
+                orgId: 'acme',
+                userId: USER,
+                repo,
+                claimToken: randomUUID(),
+                run: stage(),
+                publish: async () => {
+                    throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+                },
+            })
+        ).rejects.toThrow(/EACCES/);
+        expect(readdirSync(join(root, 'acme', USER))).toEqual([]);
     });
 });

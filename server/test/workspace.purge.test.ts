@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import type { ChildProcess, SpawnOptions, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type FactsCache, createFactsCache } from '../src/workspace/facts.js';
-import { PURGE_TIMEOUT_MS, removeTree, createPurger } from '../src/workspace/purge.js';
+import { PURGE_STALE_MS, PURGE_TIMEOUT_MS, removeTree, createPurger } from '../src/workspace/purge.js';
 import { memoryUserRepoStore } from './helpers-user-repo-store.js';
 
 /**
@@ -23,17 +23,40 @@ let root: string;
 let userDir: string;
 let checkout: string;
 
+const TOMB = /~purge-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Polls to an absolute deadline: nothing here waits on a bare sleep for a condition. */
+async function until(condition: () => boolean | Promise<boolean>, what: string, timeoutMs = 3000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!(await condition())) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+        await new Promise((r) => setTimeout(r, 5));
+    }
+}
+
+/** The tombstones now under the member's directory; the suite shares one root, so tests compare before and after. */
+const tombstones = () => readdirSync(userDir).filter((entry) => TOMB.test(entry));
+
+const gate = () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    return { held, release };
+};
+
 const tick = async () => {
     for (let i = 0; i < 5; i += 1) await new Promise((r) => setImmediate(r));
 };
 
-beforeAll(() => {
+// A fresh root per test: the tombstones are listed from the disk, so a neighbour's residue must not be in it.
+beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'factory-purge-'));
     userDir = join(root, ORG, ALICE);
     checkout = join(userDir, 'web');
 });
 
-afterAll(() => {
+afterEach(() => {
     execFileSync('rm', ['-rf', '--', root]);
 });
 
@@ -218,6 +241,7 @@ describe('the purger', () => {
             },
         });
 
+        const before = tombstones();
         const outcome = await purger.purge(ALICE, web);
         expect(outcome).toEqual({ result: 'started' });
         await purger.settle();
@@ -225,8 +249,39 @@ describe('the purger', () => {
         const [row] = await store.orphaned(ALICE);
         expect(row!.status).toBe('failed');
         expect(row!.error).toBe('rm: permission denied');
-        // The row outlives the partial directory — visible and retryable.
-        expect(existsSync(checkout)).toBe(true);
+        // The row outlives the partial directory — visible and retryable. The tree sits in its
+        // tombstone, out of the member's path; a retry finds dest absent and cleans the row.
+        expect(existsSync(checkout)).toBe(false);
+        expect(tombstones().filter((entry) => !before.includes(entry))).toHaveLength(1);
+    });
+
+    it('leaves no tombstone behind when two removals fail in a row and the third retry succeeds', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        let failures = 2;
+        const purger = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts: createFactsCache(),
+            remove: async (dir) => {
+                if (failures-- > 0) throw new Error('rm: permission denied');
+                execFileSync('rm', ['-rf', '--', dir]);
+            },
+        });
+
+        await purger.purge(ALICE, web);
+        await purger.settle();
+        expect(tombstones()).toHaveLength(1);
+        // The retry finds the checkout absent and its own removal of the leftover fails too.
+        expect(await purger.purge(ALICE, web)).toEqual({ result: 'started' });
+        expect((await store.orphaned(ALICE))[0]!.status).toBe('failed');
+
+        // The disk, not the row's memory of the last token, says what is owed.
+        expect(await purger.purge(ALICE, web)).toEqual({ result: 'cleaned' });
+        expect(tombstones()).toEqual([]);
+        expect(await store.orphaned(ALICE)).toHaveLength(0);
     });
 
     it('invalidates the facts even when the removal fails', async () => {
@@ -321,13 +376,15 @@ describe('the purger', () => {
             remove: () => gated,
         });
 
+        const before = tombstones();
         const outcome = await purger.purge(ALICE, web);
         expect(outcome).toEqual({ result: 'started' });
         await tick();
 
-        // Deletion still running: the row is stamped, not deleted, and the tree is still there.
+        // Deletion still running: the row is stamped, not deleted, and the tree is still on disk, in
+        // its tombstone.
         expect((await store.orphaned(ALICE))[0]?.status).toBe('purging');
-        expect(existsSync(checkout)).toBe(true);
+        expect(tombstones().filter((entry) => !before.includes(entry))).toHaveLength(1);
 
         release();
         await purger.settle();
@@ -341,6 +398,7 @@ describe('the purger', () => {
         await seedDeselected(store);
         makeCheckout();
         await store.stampPurge(ALICE, web); // a crash left the stamp held
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
 
         const purger = createPurger({ store, root, orgId: ORG, facts: createFactsCache() });
         await purger.recoverInterrupted();
@@ -353,6 +411,7 @@ describe('the purger', () => {
         const store = memoryUserRepoStore();
         await seedDeselected(store);
         await store.stampPurge(ALICE, web);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
 
         const purger = createPurger({ store, root, orgId: ORG, facts: createFactsCache() });
         await purger.recoverInterrupted();
@@ -363,7 +422,10 @@ describe('the purger', () => {
     it('marks recovery failures failed with the reason', async () => {
         const store = memoryUserRepoStore();
         await seedDeselected(store);
-        await store.stampPurge(ALICE, web);
+        makeCheckout();
+        const lost = (await store.stampPurge(ALICE, web)) as { token: string };
+        renameSync(checkout, `${checkout}~purge-${lost.token}`);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
         const purger = createPurger({
             store,
             root,
@@ -386,6 +448,7 @@ describe('the purger', () => {
         await seedDeselected(store);
         makeCheckout();
         await store.stampPurge(ALICE, web);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
         const { facts, invalidated } = spyInvalidation();
         const purger = createPurger({
             store,
@@ -415,5 +478,263 @@ describe('the purger', () => {
         await purger.settle();
 
         expect(existsSync(join(userDir, '.worktrees', 'some-job', 't.txt'))).toBe(true);
+    });
+});
+
+describe('the purger across processes', () => {
+    const recording = () => {
+        const removed: string[] = [];
+        return { removed, remove: async (dir: string) => void removed.push(dir) };
+    };
+
+    it('a live purge removes only its tombstone', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const { removed, remove } = recording();
+        const { facts, invalidated } = spyInvalidation();
+        const purger = createPurger({ store, root, orgId: ORG, facts, remove });
+
+        expect(await purger.purge(ALICE, web)).toEqual({ result: 'started' });
+        await purger.settle();
+
+        expect(removed).toHaveLength(1);
+        expect(removed[0]).toMatch(TOMB);
+        expect(removed[0]?.startsWith(`${checkout}~purge-`)).toBe(true);
+        expect(existsSync(checkout)).toBe(false);
+        expect(await store.orphaned(ALICE)).toHaveLength(0);
+        expect(invalidated).toContain(checkout);
+        expect(invalidated.every((dir) => !TOMB.test(dir))).toBe(true);
+    });
+
+    it('boot recovery leaves a fresh stamp alone', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        await store.stampPurge(ALICE, web);
+        const { removed, remove } = recording();
+
+        await createPurger({ store, root, orgId: ORG, facts: createFactsCache(), remove }).recoverInterrupted();
+
+        expect(removed).toEqual([]);
+        expect((await store.orphaned(ALICE))[0]?.status).toBe('purging');
+        expect(existsSync(checkout)).toBe(true);
+    });
+
+    it("recovery finishes a stale stamp and a lost holder's tombstone found on the disk", async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const lost = `${checkout}~purge-${((await store.stampPurge(ALICE, web)) as { token: string }).token}`;
+        renameSync(checkout, lost); // the holder moved the tree, then died
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+        const { removed, remove } = recording();
+
+        await createPurger({ store, root, orgId: ORG, facts: createFactsCache(), remove }).recoverInterrupted();
+
+        expect(removed).toContain(lost);
+        expect(await store.orphaned(ALICE)).toHaveLength(0);
+    });
+
+    it('a recoverer lost right after claiming leaves the next one the original tombstone', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const original = `${checkout}~purge-${((await store.stampPurge(ALICE, web)) as { token: string }).token}`;
+        renameSync(checkout, original);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+        expect(await store.claimStalePurges(PURGE_STALE_MS)).toHaveLength(1); // restamped, then the recoverer died
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+
+        await createPurger({ store, root, orgId: ORG, facts: createFactsCache() }).recoverInterrupted();
+
+        expect(tombstones()).toEqual([]);
+        expect(await store.orphaned(ALICE)).toHaveLength(0);
+    });
+
+    it.each([
+        [
+            'the tombstone listing',
+            {
+                list: () => {
+                    throw Object.assign(new Error('EIO'), { code: 'EIO' });
+                },
+            },
+            {},
+        ],
+        [
+            'the held-token read',
+            {},
+            {
+                heldTokens: async () => {
+                    throw new Error('connection reset');
+                },
+            },
+        ],
+    ])('keeps the row when %s is unconfirmed, in a purge and in a recovery', async (_what, deps, storeFault) => {
+        const store = Object.assign(memoryUserRepoStore(), storeFault);
+        await seedDeselected(store);
+        const purger = createPurger({ store, root, orgId: ORG, facts: createFactsCache(), ...deps });
+
+        expect(await purger.purge(ALICE, web)).not.toEqual({ result: 'cleaned' });
+        await purger.settle();
+        expect(await store.orphaned(ALICE)).toHaveLength(1);
+
+        await store.stampPurge(ALICE, web);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+        await purger.recoverInterrupted();
+        expect(await store.orphaned(ALICE)).toHaveLength(1);
+    });
+
+    it('two recoverers with a reselection between completions never touch the fresh clone', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        await store.stampPurge(ALICE, web);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+        const slow = gate();
+        const first = recording();
+        const second = recording();
+        const r1 = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts: createFactsCache(),
+            remove: async (dir) => {
+                first.removed.push(dir);
+                await slow.held;
+            },
+        });
+        const r2 = createPurger({ store, root, orgId: ORG, facts: createFactsCache(), remove: second.remove });
+
+        const running = r1.recoverInterrupted();
+        await until(() => first.removed.length === 1, 'the first recoverer to start removing');
+        await r2.recoverInterrupted();
+        expect(second.removed).toEqual([]);
+
+        slow.release();
+        await running;
+        await store.select(ALICE, [web]);
+        mkdirSync(join(checkout, '.git'), { recursive: true });
+        await r2.recoverInterrupted();
+
+        expect(second.removed).toEqual([]);
+        expect(existsSync(join(checkout, '.git'))).toBe(true);
+        expect((await store.list(ALICE))[0]?.status).toBe('queued');
+    });
+
+    it('a purger lost mid-removal never deletes a fresh clone', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const hang = gate();
+        const lines: string[] = [];
+        let p1Dir: string | undefined;
+        const p1 = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts: createFactsCache(),
+            log: (m) => lines.push(m),
+            remove: async (dir) => {
+                p1Dir = dir;
+                await hang.held;
+                // The paused child finally runs, on exactly what it was handed.
+                rmSync(dir, { recursive: true, force: true });
+            },
+        });
+        const p2 = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts: createFactsCache(),
+            remove: (dir) => removeTree(dir),
+        });
+
+        await p1.purge(ALICE, web);
+        await until(() => p1Dir !== undefined, 'the first purger to start removing');
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+        await p2.recoverInterrupted();
+        expect(await store.orphaned(ALICE)).toHaveLength(0);
+
+        await store.select(ALICE, [web]);
+        mkdirSync(join(checkout, '.git'), { recursive: true });
+        writeFileSync(join(checkout, 'fresh.txt'), 'new work\n');
+
+        hang.release();
+        await p1.settle();
+
+        expect(existsSync(join(checkout, 'fresh.txt'))).toBe(true);
+        expect(existsSync(join(checkout, '.git'))).toBe(true);
+        expect((await store.list(ALICE))[0]?.status).toBe('queued');
+        expect(lines.some((line) => /moved behind/.test(line))).toBe(true);
+    });
+
+    it('a purge whose claim is taken before the move never moves the tree', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const lines: string[] = [];
+        const { facts, invalidated } = spyInvalidation();
+        const racing: typeof store = {
+            ...store,
+            holdPurge: async (userId, repo, token, move) => {
+                store.backdatePurge(userId, repo, PURGE_STALE_MS + 1);
+                await store.claimStalePurges(PURGE_STALE_MS);
+                return store.holdPurge(userId, repo, token, move);
+            },
+        };
+        const { removed, remove } = recording();
+        const purger = createPurger({ store: racing, root, orgId: ORG, facts, remove, log: (m) => lines.push(m) });
+
+        expect(await purger.purge(ALICE, web)).toEqual({ result: 'started' });
+        await purger.settle();
+
+        expect(existsSync(join(checkout, 'file.txt'))).toBe(true);
+        expect(removed).toEqual([]);
+        expect(lines.some((line) => /claim/.test(line))).toBe(true);
+        expect(invalidated).toContain(checkout);
+    });
+
+    it('a move that fails with a non-absence error records a failure and keeps the checkout', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        const { facts, invalidated } = spyInvalidation();
+        const purger = createPurger({
+            store,
+            root,
+            orgId: ORG,
+            facts,
+            rename: () => {
+                throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+            },
+        });
+
+        await purger.purge(ALICE, web);
+        await purger.settle();
+
+        const [row] = await store.orphaned(ALICE);
+        expect(row?.status).toBe('failed');
+        expect(row?.error).toMatch(/EACCES/);
+        expect(existsSync(join(checkout, 'file.txt'))).toBe(true);
+        expect(invalidated).toContain(checkout);
+    });
+
+    it('a stale stamp is recovered without a restart', async () => {
+        const store = memoryUserRepoStore();
+        await seedDeselected(store);
+        makeCheckout();
+        await store.stampPurge(ALICE, web);
+        store.backdatePurge(ALICE, web, PURGE_STALE_MS + 1);
+        const purger = createPurger({ store, root, orgId: ORG, facts: createFactsCache() });
+
+        purger.start(20);
+        try {
+            await until(async () => (await store.orphaned(ALICE)).length === 0, 'the stale stamp to be recovered');
+        } finally {
+            purger.stop();
+        }
+        expect(existsSync(checkout)).toBe(false);
     });
 });

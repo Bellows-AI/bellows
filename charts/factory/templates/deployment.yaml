@@ -4,10 +4,11 @@ Dockerfile calls "what deploys". Its environment block mirrors docker-compose.ym
 service line for line — the chart sets the same environment the compose file sets, which is the
 repo's only configuration mechanism.
 
-Exactly one replica, replaced by Recreate, never rolled: the server is the single writer of the
-checkouts (its workspace reconcile serializes in-process), its migrations take no lock, and a
-ReadWriteOnce claim cannot attach to a second node while the first pod holds it. A rolling update
-would run two of all three for its overlap. The cost is a few seconds of downtime per upgrade.
+Exactly one replica, replaced by Recreate, never rolled. Migrations, workspace claims and S3
+artifacts are replica-safe; what still is not: the per-process workspace facts cache (a purge
+invalidates only its own process's copy, server/src/main.ts), the filesystem artifact backend (one
+pod's /tmp), a local cluster's ReadWriteOnce claim, and an old and a new version sharing one
+schema mid-rollout, which no test covers. The cost is a few seconds of downtime per upgrade.
 */}}
 apiVersion: apps/v1
 kind: Deployment

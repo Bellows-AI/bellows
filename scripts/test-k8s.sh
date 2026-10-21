@@ -556,8 +556,8 @@ esac
 expect_contains 'pods roll on a Secret change'        "$gh" 'checksum/secret:'
 expect_contains 'the collector rolls on a config change' "$gh" 'checksum/config:'
 
-# One dashboard, replaced not rolled: an in-process workspace writer, unlocked migrations, and an
-# RWO claim that cannot attach twice.
+# One dashboard, replaced not rolled: a per-process facts cache, the filesystem artifact backend, an
+# RWO claim that cannot attach twice, and no mixed-version rollout coverage (deployment.yaml).
 gh_dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$gh")"
 expect_contains 'the dashboard runs exactly one replica' "$gh_dashboard" 'replicas: 1'
 expect_contains 'the dashboard is recreated, never rolled' "$gh_dashboard" 'type: Recreate'

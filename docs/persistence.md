@@ -6,7 +6,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Migration runner, boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts` |
+| Migration runner (advisory-locked, one transaction), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
@@ -15,7 +15,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Claim sequence, never refunded (057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.interrupt.test.ts` |
 | Idempotency keys on the `job` row (058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
 | Batch plans and runtime (059, 060, 062–065; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/migrations/06[0-5]_*.sql`, `server/src/db/batch-store*.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts`, `server/test-db/batch-merge.test.ts` |
-| Checkpoint pointer on the root `job` row, advanced in the `checkpoint` manifest's finalize transaction only under the uploading row's current `claim_seq` (078) | `server/migrations/078_checkpoint_pointer.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/job-store.checkpoint-pointer.test.ts` |
+| Checkpoint pointer on the root `job` row, advanced in the `checkpoint` manifest's finalize transaction only under the uploading row's current `claim_seq` (079) | `server/migrations/079_checkpoint_pointer.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/job-store.checkpoint-pointer.test.ts` |
 | Artifact index and manifests (070; [configuration.md](configuration.md)) | `server/migrations/070_artifact_index.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/artifact-store.test.ts` |
 | Settle receipts per attempt (072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
 | Reclaim ownership and ack receipts (075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |
@@ -43,6 +43,9 @@ the in-memory stores in `server/test/helpers*.ts`.
   no partition covers, and neither writer can promise a range: `npm run backfill` imports
   transcripts of arbitrary age and an OTLP client's clock can run ahead. Every unique index on the
   table must keep `time` among its columns.
+- **Migrations run under one database-wide advisory xact lock** (`MIGRATION_LOCK_KEY`): a second
+  process reads `schema_migrations` only after the first commits, and a wait past `lockWaitMs` fails
+  the attempt. `server/test-db/migrate.concurrency.test.ts`.
 - **Migrations are not awaited before `listen()`.** They retry with backoff while the database
   container starts; every store gates its own queries on `ready` and degrades until then.
 - **`migrate()` also seeds the `AUTH_MODE=none` org and its stand-in account, and reaps expired

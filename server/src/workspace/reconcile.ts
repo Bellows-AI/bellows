@@ -35,8 +35,11 @@ export function mkdirShared(dir: string): string | undefined {
 /** The variable the credential helper below reads. Never appears on a command line. */
 const TOKEN_VAR = 'GIT_WORKSPACE_TOKEN';
 
-/** `present` means a checkout was already there and was left completely alone. */
-export type CloneOutcome = 'cloned' | 'present';
+/**
+ * `present` means a checkout was already there and was left completely alone. `lost` means the
+ * claim ran out before the publish: this clone's staging is gone and nothing was written.
+ */
+export type CloneOutcome = 'cloned' | 'present' | 'lost';
 
 export type GitRunner = (args: readonly string[], env: NodeJS.ProcessEnv) => Promise<void>;
 
@@ -47,6 +50,13 @@ export interface CloneOptions {
     readonly repo: Repo;
     /** Optional: without one, only public repos clone. A missing token is a supported state. */
     readonly token?: string | undefined;
+    /** Names the staging directory (`<name>~tmp-<claimToken>`), so no two holders of a row can share one. */
+    readonly claimToken: string;
+    /**
+     * Runs `move` (the rename into place) under whatever fence the caller holds and answers whether
+     * it ran. False means the claim was lost: nothing was moved.
+     */
+    readonly publish: (move: () => void) => Promise<boolean>;
     readonly log?: (message: string) => void;
     /** Test seam: lets the suite clone from a local bare repo over file://, with no network. */
     readonly cloneUrl?: ((repo: Repo) => string) | undefined;
@@ -144,16 +154,37 @@ export async function cloneRepo(options: CloneOptions): Promise<CloneOutcome> {
 
     // Cloned aside and renamed into place, so a process killed mid-clone leaves no partial tree at
     // `dest`. One that did would be classified as "exists, not a checkout" on the next attempt and
-    // would then fail forever. `queue.ts` sweeps the leftover staging directories at boot.
-    const staging = `${dest}.tmp-${process.pid}`;
+    // would then fail forever. The queue sweeps the leftover staging directories (`sweepStaging`).
+    const staging = `${dest}~tmp-${options.claimToken}`;
     rmSync(staging, { recursive: true, force: true });
     mkdirShared(userDir);
 
     log(`cloning ${repo.owner}/${repo.name}`);
     const started = Date.now();
+    const raced = { present: false };
+    const move = () => {
+        try {
+            renameSync(staging, dest);
+        } catch (error) {
+            // An expired holder published before this one: dest is a finished checkout, and this
+            // clone's staging is garbage. Anything else is a real failure.
+            const code = (error as NodeJS.ErrnoException).code;
+            if ((code !== 'ENOTEMPTY' && code !== 'EEXIST') || !existsSync(join(dest, '.git'))) throw error;
+            raced.present = true;
+        }
+    };
     try {
         await exec(gitArgs(cloneUrl(repo), staging, Boolean(token)), env);
-        renameSync(staging, dest);
+        if (!(await options.publish(move))) {
+            rmSync(staging, { recursive: true, force: true });
+            log(`lease lost for ${repo.name}; the clone was not published`);
+            return 'lost';
+        }
+        if (raced.present) {
+            rmSync(staging, { recursive: true, force: true });
+            log(`present ${repo.name}`);
+            return 'present';
+        }
         log(`cloned ${repo.name} in ${Date.now() - started}ms`);
         return 'cloned';
     } catch (error) {
