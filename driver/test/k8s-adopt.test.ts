@@ -644,6 +644,27 @@ describe('a live run (#829)', () => {
             expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
         });
 
+        // Characterization: a pod that lists no supervisor container says nothing of it: finalize path.
+        it('is waited out when the pod lists no supervisor container status', async () => {
+            const pods = {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName },
+                            status: { phase: 'Running', containerStatuses: [{ name: AGENT_CONTAINER, state: exited }] },
+                        },
+                    ],
+                }),
+            };
+            const { deps, calls } = world([runnerItem({ active: 1 })], logSays(`${RELEASED}\n`), { pods });
+
+            const adopted = await adoptFinishedRunner(deps, adopter, reads()).catch((e: unknown) => e);
+
+            expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+            expect(jobDeletes(calls)).toEqual([]);
+        });
+
         // Characterization: the taken-over run on an exited agent is over once the supervisor's report is
         // in hand, whatever the Job still shows — no `go`, no pod read to wait for.
         it('ends the followed run at the supervisor report with the Job still active, ordering nothing', async () => {

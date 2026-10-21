@@ -6639,6 +6639,28 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                 expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
                 expect(waitedForSupervisor(calls)).toBe(true);
             });
+
+            // A daemon silent for the whole read deadline would stall the finalize wait's reads as long again.
+            it('blocks the attempt, removing nothing, when the supervisor reads outlast the read deadline', async () => {
+                vitest.useFakeTimers();
+                try {
+                    const { exec: base, calls, logs } = exitedDaemon();
+                    const exec = (args: string[], options?: { timeout?: number }) =>
+                        args[0] === 'inspect' && args.includes(supervisorName(job))
+                            ? hangsUntilTimeout(options)
+                            : base(args);
+                    const adopting = dockerRunner(exec, { spawn: logs })
+                        .adopt(adopter)
+                        .catch((e: unknown) => e);
+
+                    await vitest.advanceTimersByTimeAsync(CLOSE_READ_DEADLINE_MS + 1_000);
+
+                    expect(await adopting).toBeInstanceOf(AdoptionBlocked);
+                    expect(removals(calls)).toEqual([]);
+                } finally {
+                    vitest.useRealTimers();
+                }
+            });
         });
     });
 });

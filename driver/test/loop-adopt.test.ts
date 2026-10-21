@@ -12,6 +12,7 @@ import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
 import { type AdoptedRun, AdoptionBlocked, type LiveRun } from '../src/runner.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../src/supervisor-contract.js';
 import { runJob } from '../src/loop-run.js';
+import { createStepBroker } from '../src/step-control.js';
 import { job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 const adopted: AdoptedRun = { outcome: ok(), claimSeq: 4 };
@@ -394,5 +395,52 @@ describe('taking over a live run (#829)', () => {
         expect(runs[0]?.job.groupLease).toBe('lease-prior');
         expect(runs[0]?.session).toEqual({ id: 'sess-prior', resume: true });
         expect(board.interrupted).toEqual([expect.objectContaining({ release: false, claimSeq: 4 })]);
+    });
+
+    // The agent exited, its supervisor served on: the report reached this holder's endpoint before the loop's
+    // first contact check. The takeover reads it as contact and the run is over at once.
+    it('carries a report buffered before first contact into the verdict, re-attaching nothing', async () => {
+        const broker = createStepBroker();
+        const buffered = {
+            id: 'r1',
+            outcome: 'success',
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exited',
+            drained: true,
+            serving: true,
+        };
+        const attached: string[] = [];
+        const { gates } = stubGateStack({}, { control: true });
+        // The supervisor's report lands on the loop's token before the loop first looks for contact.
+        gates.server.controlPolled = (t) => {
+            if (!broker.has(t)) {
+                broker.open(t);
+                broker.attach(t);
+                expect(broker.report(t, buffered)).toBe('accepted');
+                const attach = broker.attach.bind(broker);
+                broker.attach = (a) => {
+                    attached.push(a);
+                    attach(a);
+                };
+            }
+            return broker.contacted(t);
+        };
+        let verdict: unknown;
+        const board = stubBoard([]).board;
+        const runner = stubRunner(
+            async (j) => {
+                verdict = await broker.awaitReport(j.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '');
+                return ok();
+            },
+            { adopt: async () => live }
+        );
+        const rt = stubRuntime(board, runner, { gates });
+
+        await runJob(rt, { ...job(1), claimSeq: 5, leaseToken: 'lease-new' });
+
+        expect(verdict).toEqual(buffered);
+        expect(attached).toEqual([]);
+        expect(runner.synced).toEqual([]);
     });
 });
