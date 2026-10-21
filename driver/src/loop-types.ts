@@ -1,6 +1,6 @@
 import type { Board, BoardJob, LeaseState } from './board.js';
 import type { DriverConfig } from './config.js';
-import type { AdoptedRun, RunSession, Runner } from './runner.js';
+import type { AdoptedRun, LiveRun, RunSession, Runner } from './runner.js';
 import type { GateManager, GateServer } from './gates.js';
 import type { JobState } from './loop-attempt.js';
 import type { GateSession } from './loop-gates.js';
@@ -99,6 +99,8 @@ export interface AttemptCtx {
      * run, so no sync, pre-helper or launch follows — the tree is the one that run left.
      */
     adopted?: AdoptedRun;
+    /** The live run of an earlier claim this attempt took over (#829): no sync, setup or launch order follows. */
+    takeover?: LiveRun;
 }
 
 /** The completion body the board's `complete` takes: what a conclusion reports. */

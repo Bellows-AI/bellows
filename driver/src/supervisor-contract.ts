@@ -319,6 +319,8 @@ export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
  * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this.
  */
 export const SUPERVISOR_REBIND_GRACE_MS = 240_000;
+/** What a taken-over run's supervisor has, after its rebind is written, to first poll the new endpoint (#829). */
+export const SUPERVISOR_REBIND_DELIVERY_MS = 150_000;
 /**
  * What the kubelet's (or docker's) backstop allows on top of the run budget for the steps a task
  * group serves before and after its agent — the sync, the gates, the helpers, the publish. The

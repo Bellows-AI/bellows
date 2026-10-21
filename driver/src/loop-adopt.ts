@@ -2,7 +2,9 @@ import { raceStep } from './loop-attempt.js';
 import { isAgentless } from './loop-agentless.js';
 import { releaseAbandonedAdoption } from './loop-fence.js';
 import { type AdoptedRecord, type AttemptCtx, type SetupConclusion, STOOD_DOWN } from './loop-types.js';
-import { AdoptionBlocked, type AdoptedRun } from './runner.js';
+import { AdoptionBlocked, type AdoptedRun, type LiveRun } from './runner.js';
+import { awaitFirstContact, controlTokenOf } from './supervised-steps.js';
+import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from './supervisor-contract.js';
 
 /**
  * Adopts the finished runner an earlier claim left behind (issue #792) — before the sync, which
@@ -15,7 +17,7 @@ export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | Adop
     const { rt, job, state } = ctx;
     if (isAgentless(job)) return null;
     const adopting = rt.runner.adopt(job, state.signal);
-    let adoptedOut: { value: AdoptedRun | null } | null;
+    let adoptedOut: { value: AdoptedRun | LiveRun | null } | null;
     try {
         adoptedOut = await raceStep(state.signal, adopting);
     } catch (e) {
@@ -31,6 +33,7 @@ export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | Adop
     }
     const run = adoptedOut.value;
     if (!run) return null;
+    if ('live' in run) return takeOver(ctx, run);
     ctx.adopted = run;
     ctx.fenced = true;
     const reason = `adopted the finished runner of claim ${run.claimSeq}, whose driver was lost`;
@@ -44,4 +47,53 @@ export async function recordAdopted(ctx: AttemptCtx, { reason, claimSeq }: Adopt
     await rt.board
         .interrupt(job, { reason, release: false, claimSeq })
         .catch((e: Error) => rt.log(`job ${job.id}: could not record the adopted interruption: ${e.message}`));
+}
+
+/**
+ * Takes over the agent a lost driver left RUNNING (issue #829): the supervisor's binding is rewritten
+ * to this claim, and only a first poll of the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS` proves it
+ * took. Until then the attempt owns nothing (`groupLease` unset, `keepGroup` set), so every way out of it
+ * leaves the group to the next claim. No sync, setup or go order follows: the run carries on.
+ */
+async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion | AdoptedRecord> {
+    const { rt, job, state } = ctx;
+    const leave = (why: string): SetupConclusion => ({
+        halt: 'leave',
+        log: `${why}, leaving it to the lease`,
+    });
+    const gates = rt.gates;
+    if (!gates) return leave('could not take over the running agent: no run-control endpoint to deliver the claim to');
+    ctx.takeover = run;
+    state.keepGroup = true;
+    try {
+        const binding = {
+            claimSeq: job.claimSeq,
+            url: job.supervisorEnv?.[SUPERVISOR_ENV.controlUrl] ?? '',
+            token: controlTokenOf(job),
+        };
+        const rebound = await raceStep(state.signal, rt.runner.rebind(run.prior, binding, state.signal));
+        if (rebound === null) return STOOD_DOWN;
+    } catch (e) {
+        return leave(`could not rebind the running agent: ${(e as Error).message}`);
+    }
+    let contacted: boolean;
+    try {
+        contacted = await awaitFirstContact({ sink: { contacted: (t) => gates.server.controlPolled(t) } }, job, {
+            sleep: rt.sleep,
+            signal: state.signal,
+            ms: SUPERVISOR_REBIND_DELIVERY_MS,
+        });
+    } catch (e) {
+        if (state.signal.aborted) return STOOD_DOWN;
+        return leave(`could not reach the running agent: ${(e as Error).message}`);
+    }
+    if (state.signal.aborted) return STOOD_DOWN;
+    if (!contacted) return leave('the running agent did not poll the new endpoint');
+    job.groupLease = run.prior.leaseToken;
+    ctx.session = run.session ? { id: run.session, resume: true } : null;
+    ctx.fenced = true;
+    state.keepGroup = false;
+    const reason = `took over the running agent of claim ${run.claimSeq}, whose driver was lost`;
+    rt.log(`job ${job.id}: ${reason}`);
+    return { record: 'interruption', reason, claimSeq: run.claimSeq };
 }

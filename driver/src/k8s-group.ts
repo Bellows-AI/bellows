@@ -86,6 +86,8 @@ export interface TaskGroup {
     agent: boolean;
     /** The incarnation this runner created: its teardown deletes that one only. */
     uids: IncarnationUids;
+    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    resumed?: boolean;
 }
 
 /**

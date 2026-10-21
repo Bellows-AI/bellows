@@ -56,6 +56,7 @@ import { envFileBody } from './claim.js';
 import {
     appendTailKept,
     composeRuntimeSample,
+    onOwnGroup,
     type KeptLog,
     reportTail,
     SERVICE_LOG_TAIL_LINES,
@@ -105,6 +106,8 @@ import { settleEnd } from './termination.js';
 interface GroupState {
     startedAt: string;
     session: RunSession | null;
+    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    resumed?: boolean;
 }
 
 /** How long `finish` waits for the group's supervisor to exit by itself before it kills the group. */
@@ -450,40 +453,18 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     return out;
 }
 
-async function dockerRun(
+/**
+ * Creates the attempt's runner container. Answers the env file the run removes when it is over (null
+ * when it needs none), or the refusal the daemon gave the create.
+ */
+async function createRunner(
     deps: RunnerDeps,
     job: BoardJob,
-    session: RunSession | null,
-    onOutput?: (tail: string) => void
-): Promise<RunOutcome> {
-    const { config, files, spawnFn, ledger } = deps;
-    const execDocker = attemptExecOf(deps, job); // ends with the kill; the cleanup (`teardown`) does not
+    session: RunSession | null
+): Promise<{ file: string | null; refused?: RunOutcome }> {
+    const { config, files, ledger } = deps;
+    const execDocker = attemptExecOf(deps, job);
     const teardown = deps.execDocker;
-    // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
-    // token that was never recorded, so nothing recorded for an earlier attempt can
-    // reach this one — and clearing by id would revive exactly the dead attempt the
-    // token keying exists to keep down. See RunnerDeps for the killed set's own comment.
-
-    /*
-     * The fence before anything this attempt creates — the job-scoped sweep documented
-     * on dockerReclaimFence above — and the group it guards: the supervisor and the exporter, which
-     * the sync already created when the loop synced first (`ensureGroup` finds them), or are
-     * created here when no sync preceded the run. A group the daemon refuses is infrastructure,
-     * thrown like a refused exporter was: never a run that silently loses its record.
-     */
-    // A group made fresh forgets the kill an earlier group of this attempt recorded, so a killed job is refused first.
-    assertJobNotKilled(ledger, job);
-    const { startedAt } = await ensureGroup(deps, job, session);
-
-    /*
-     * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
-     * environment and its setup, in the group supervisor's network namespace the runner joins too
-     * (issue #773); the fence above spares them as this attempt's own. A kill that lands while an
-     * await below is pending must stop the attempt: the check runs after the claim-env file write
-     * and after the create/copy — the last awaits before the spawn — so the gap between that final
-     * check and spawnFn is synchronous.
-     */
-
     // The runner container is the last resource this attempt creates, and the spawn is
     // what a killed setup must never reach — see assertJobNotKilled for why a throw is
     // the right verdict here.
@@ -508,11 +489,11 @@ async function dockerRun(
     // The run's start instant (the group's, which the exporter and both close-time turn reads key
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
     // bounded to what THIS run wrote.
-    const created = { config, execDocker, teardown };
-    const refused = await createRunnerContainer(created, job, session, file ? { envFile: file } : {});
+    const made = { config, execDocker, teardown };
+    const refused = await createRunnerContainer(made, job, session, file ? { envFile: file } : {});
     if (refused && !ledger.was(job).stopped) {
         if (file) await files.rm(file).catch(() => undefined);
-        return refused;
+        return { file, refused };
     }
     // The create and the copy are awaits too: a lease lost behind them must not reach the start.
     // The created container is this attempt's leftover to remove, the group and the env file with it.
@@ -522,18 +503,79 @@ async function dockerRun(
         deps.groups.delete(job.leaseToken);
         await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
     }
+    return { file };
+}
+
+/** How long a taken-over run's exit is waited for once its log stream has closed. */
+const RESUMED_EXIT_WAIT_MS = 30_000;
+
+/**
+ * The exit code of a taken-over runner container (#829), read with a bounded `docker wait` once its
+ * followed log has closed — `docker logs -f` exits 0 whatever the container did. A stream that closed
+ * with an error is no end of the run (the container may still run); a wait that cannot say rejects,
+ * which the loop leaves to its lease.
+ */
+async function resumedExit(execDocker: ExecDocker, job: BoardJob, streamExit: number | null): Promise<number> {
+    if (streamExit !== 0)
+        throw new Error(`following the log of ${containerName(job)} ended with ${streamExit ?? 'a signal'}`);
+    const waited = (await execDocker(['wait', containerName(job)], { timeout: RESUMED_EXIT_WAIT_MS })).stdout.trim();
+    if (!/^-?\d+$/.test(waited)) throw new Inconclusive(`docker wait answered '${waited}'`);
+    return Number(waited);
+}
+
+async function dockerRun(
+    deps: RunnerDeps,
+    job: BoardJob,
+    session: RunSession | null,
+    onOutput?: (tail: string) => void
+): Promise<RunOutcome> {
+    const { config, files, spawnFn, ledger } = deps;
+    const execDocker = attemptExecOf(deps, job); // ends with the kill; the cleanup (`teardown`) does not
+    const teardown = deps.execDocker;
+    // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
+    // token that was never recorded, so nothing recorded for an earlier attempt can
+    // reach this one — and clearing by id would revive exactly the dead attempt the
+    // token keying exists to keep down. See RunnerDeps for the killed set's own comment.
+
+    /*
+     * The fence before anything this attempt creates — the job-scoped sweep documented
+     * on dockerReclaimFence above — and the group it guards: the supervisor and the exporter, which
+     * the sync already created when the loop synced first (`ensureGroup` finds them), or are
+     * created here when no sync preceded the run. A group the daemon refuses is infrastructure,
+     * thrown like a refused exporter was: never a run that silently loses its record.
+     */
+    // A group made fresh forgets the kill an earlier group of this attempt recorded, so a killed job is refused first.
+    assertJobNotKilled(ledger, job);
+    const { startedAt, resumed } = await ensureGroup(deps, job, session);
+
+    /*
+     * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
+     * environment and its setup, in the group supervisor's network namespace the runner joins too
+     * (issue #773); the fence above spares them as this attempt's own. A kill that lands while an
+     * await below is pending must stop the attempt: the check runs after the claim-env file write
+     * and after the create/copy — the last awaits before the spawn — so the gap between that final
+     * check and spawnFn is synchronous.
+     */
+
+    // A group taken over from a lost driver (#829) has its runner container up and released: nothing
+    // is created, no env file written and no `go` ordered; the run attaches to the container's log.
+    const created = resumed ? null : await createRunner(deps, job, session);
+    if (created?.refused) return created.refused;
+    const file = created?.file ?? null;
 
     // The supervisor and the exporter were started with the group and outlive the agent: the agent
     // is released by the supervisor's `go` order, which also hands it what is left of the run
     // budget, and the supervisor reports once the agent is gone and its exporter drained.
     const host = stepHostOf(deps);
     const reported = host.sink.awaitReport(controlTokenOf(job)).catch(() => null);
-    try {
-        await orderGo(host, job);
-    } catch (e) {
-        await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
-        if (file) await files.rm(file).catch(() => undefined);
-        throw e;
+    if (!resumed) {
+        try {
+            await orderGo(host, job);
+        } catch (e) {
+            await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
+            if (file) await files.rm(file).catch(() => undefined);
+            throw e;
+        }
     }
 
     const outcome = new Promise<RunOutcome>((resolve, reject) => {
@@ -553,9 +595,16 @@ async function dockerRun(
                 closed: proven,
             });
 
-        const child = spawnFn('docker', ['start', '-a', containerName(job)], {
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        // A taken-over run is already up: its log is followed from the start, and its exit read after.
+        // The followed log ends with the attempt's kill or abandonment (spawn terminates the child on abort).
+        const child = spawnFn(
+            'docker',
+            resumed ? ['logs', '-f', containerName(job)] : ['start', '-a', containerName(job)],
+            {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                ...(resumed ? { signal: anyOf(ledger.signal(job), ledger.abandoned(job)) } : {}),
+            }
+        );
         let timedOut = false;
         let proven: ClosedState | null = null;
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
@@ -624,14 +673,17 @@ async function dockerRun(
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, the driver's own hard kill explains its exit, and anything else is a
             // supervisor lost, an infrastructure loss (`settleEnd`).
-            void closeEndOf(execDocker, job, { code, output, reported })
-                .then((ended) => {
+            void (resumed ? resumedExit(execDocker, job, code) : Promise.resolve(code))
+                .then((exit) =>
+                    closeEndOf(execDocker, job, { code: exit, output, reported }).then((ended) => ({ ended, exit }))
+                )
+                .then(({ ended, exit }) => {
                     proven = ended.proven;
                     // An exit with no report taken leaves nobody to answer the steps the loop still sends.
                     if (!ended.report) releaseSteps(host, job);
-                    return ended;
+                    return { ...ended, exit };
                 })
-                .then(async ({ report, supervisorExit }) => {
+                .then(async ({ report, supervisorExit, exit: code }) => {
                     // The verdict read below reports the budget, so it is settled first.
                     if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
                         timedOut = true;
@@ -710,7 +762,7 @@ export function createDockerRunner(
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
     };
-    return {
+    return onOwnGroup({
         kill: (job) => dockerKill(deps, job),
         pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
@@ -741,5 +793,5 @@ export function createDockerRunner(
             dockerAdopt({ ...deps, fence: (fenced, stand) => dockerReclaimFence(deps, fenced, stand) }, job, signal),
         stopAgent: (job) => dockerStopAgent(deps, job),
         recordKill: (job, kill) => ledger.record(job, kill),
-    };
+    });
 }

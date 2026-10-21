@@ -220,6 +220,14 @@ export interface BoardJob {
      */
     supervisorEnv?: Record<string, string>;
     /**
+     * The lease whose objects this attempt's group is made of, set by the LOOP once it took over a
+     * running group (#829): the group keeps the lease it was created under while the claim moves on.
+     * Unset, the group is `leaseToken`'s own. A runner addresses it through `ownGroup`.
+     */
+    groupLease?: string;
+    /** Set by `ownGroup` alone: the lease that holds the checkout claim when `leaseToken` names the group's. */
+    claimHolder?: string;
+    /**
      * How long this attempt's `environment.setup` ran before the agent started (issue #733) — set
      * by the LOOP, never by the board; the runner's deadline is the run budget less it.
      */

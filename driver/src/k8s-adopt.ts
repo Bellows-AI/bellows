@@ -4,6 +4,7 @@ import { mergeClaudeCloseRead } from './close-read.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { jobPath, jobPodsPath, jobsSelectorPath, podLogPath } from './k8s-auxspec.js';
 import { acquireClaim, readClaim, releaseClaimAfterGroupEnd, sweepClaimedFleets } from './k8s-fence.js';
+import { groupsOf } from './k8s-group.js';
 import {
     agentRunJob,
     finishedAgentRun,
@@ -33,15 +34,28 @@ import { anyOf } from './poll.js';
 import { pollFor } from './poll.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
-import { AdoptionBlocked, type AdoptedRun, adoptionAbandoned, Inconclusive, type RunOutcome } from './runner.js';
-import { AGENT_CONTAINER, type FinalReport, finalReportOf, SUPERVISOR_CONTAINER } from './supervisor-contract.js';
+import {
+    AdoptionBlocked,
+    type AdoptedRun,
+    adoptionAbandoned,
+    Inconclusive,
+    type LiveRun,
+    type RunOutcome,
+} from './runner.js';
+import {
+    AGENT_CONTAINER,
+    type FinalReport,
+    finalReportOf,
+    SUPERVISOR_CONTAINER,
+    SUPERVISOR_RELEASED_LINE,
+} from './supervisor-contract.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import { finalizeWaitMs } from './supervisor-plan.js';
 import { type KillRecord, killRecordsOf, reportFinalized } from './termination.js';
 
 /** One runner Job of an earlier claim, as the label listing answers it. */
 interface ListedRunner extends ListedRunnerJob {
-    metadata?: { name?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
+    metadata?: { name?: string; uid?: string; labels?: Record<string, string>; annotations?: Record<string, string> };
     status?: K8sJobStatus & { startTime?: string };
 }
 
@@ -52,6 +66,10 @@ interface EarlierRunner extends EarlierRun {
     finished: boolean;
     /** Why its driver ended the run, as recorded on the Job before the kill (`recordRunnerKill`). */
     kills: KillRecord[];
+    /** The incarnation listed, which a taken-over group's teardown deletes (#829). */
+    uid: string | undefined;
+    /** A released group taken over: when it started, and the incarnation (#829). */
+    live?: { startedAt: string; uid: string };
 }
 
 /** The close-time readouts `run` performs, handed in by the runner that owns them. */
@@ -79,6 +97,7 @@ function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | nul
         status: item.status ?? {},
         finished: finishedAgentRun(item, prior),
         kills: killRecordsOf(annotations),
+        uid: item.metadata?.uid,
     };
 }
 
@@ -138,13 +157,50 @@ async function listEarlierRunners(deps: K8sDeps, job: BoardJob): Promise<ListedR
 /**
  * Whether an earlier runner (newest first) is one a claim may adopt: a finished one, or one whose
  * agent exited while its supervisor finalizes (#824) — a Job listed over whose supervisor still
- * runs is that too. A runner whose agent still runs is skipped, as ever.
+ * runs is that too — or a group its supervisor RELEASED whose agent still runs, taken over (#829).
+ * A group not released is skipped, as ever: it is redone.
  */
 async function admitted(deps: K8sDeps, found: EarlierRunner): Promise<EarlierRunner | null> {
     const pods = await runnerPodsOf(deps, found.prior);
     if (found.finished) return { ...found, finished: groupStateOf(pods) === 'over' };
-    if (containerStatusOf(runnerPodOf(pods), AGENT_CONTAINER)?.state?.terminated) return found;
-    return null;
+    const pod = runnerPodOf(pods);
+    if (containerStatusOf(pod, AGENT_CONTAINER)?.state?.terminated) return found;
+    if (!(await releasedRunning(deps, found, pod))) return null;
+    if (found.uid === undefined)
+        throw new AdoptionBlocked('the earlier runner Job lists without a uid to tear down by');
+    return { ...found, live: { startedAt: startedAtOf(found), uid: found.uid } };
+}
+
+const startedAtOf = ({ status }: EarlierRunner): string => status.startTime ?? new Date(0).toISOString();
+
+/**
+ * Whether the pod is a released group still running: its agent and supervisor run and the supervisor
+ * logged the release (`SUPERVISOR_RELEASED_LINE`). A pod that is not up yet, or whose agent was not
+ * released, is none. A running pod whose container states are unread, or a log the apiserver would
+ * not serve, proves nothing and blocks the adoption: redoing would sweep a run that may be live.
+ */
+async function releasedRunning(deps: K8sDeps, found: EarlierRunner, pod: K8sPod | undefined): Promise<boolean> {
+    if (pod?.status?.phase !== 'Running') return false;
+    const agent = containerStatusOf(pod, AGENT_CONTAINER)?.state;
+    const supervisor = containerStatusOf(pod, SUPERVISOR_CONTAINER)?.state;
+    if (agent === undefined || supervisor === undefined) {
+        throw new AdoptionBlocked('the earlier runner pod is running but its container states could not be read');
+    }
+    if (!agent.running || !supervisor.running || !pod.metadata?.name) return false;
+    let log: K8sResponse;
+    try {
+        log = await readLogVerdict(
+            deps,
+            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null, SUPERVISOR_CONTAINER),
+            'reading the earlier supervisor log'
+        );
+    } catch (e) {
+        throw new AdoptionBlocked(`the earlier supervisor's release could not be read: ${(e as Error).message}`);
+    }
+    if (log.status >= HTTP_ERROR_STATUS || logIsNone(log)) {
+        throw new AdoptionBlocked(`the earlier supervisor's release could not be read: HTTP ${log.status}`);
+    }
+    return log.body.split('\n').some((line) => line.trim() === SUPERVISOR_RELEASED_LINE);
 }
 
 /** Whether the runner pods read now show the group over; null when the list proves nothing. */
@@ -293,7 +349,7 @@ export function adoptFinishedRunner(
     job: BoardJob,
     reads: CloseReads,
     signal?: AbortSignal
-): Promise<AdoptedRun | null> {
+): Promise<AdoptedRun | LiveRun | null> {
     // This attempt continues the run it reads: its sweeps keep it (issue #821).
     deps.adopted ??= new Map();
     // The supplied stand-down and the attempt's kill end every request and pause of the adoption.
@@ -354,9 +410,23 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
             }
         },
         recordKey: ({ prior }) => runnerName(prior),
-        sweep: ({ prior }, job, signal) => sweepAfterAdoption(deps, job, prior, signal),
+        sweep: ({ prior, live }, job, signal) => sweepAfterAdoption(deps, job, prior, signal, live !== undefined),
         rollback: async (job) => {
             await releaseClaimAfterGroupEnd(deps, job);
+        },
+        adoptLive: ({ prior, session, live }) => {
+            if (!live) return () => undefined;
+            // The group's end is this process's from here, as if it had created it (`resumed`: it created nothing).
+            groupsOf(deps).set(prior.leaseToken, {
+                startedAt: live.startedAt,
+                session: session ? { id: session, resume: true } : null,
+                agent: true,
+                uids: { job: live.uid },
+                resumed: true,
+            });
+            return () => {
+                groupsOf(deps).delete(prior.leaseToken);
+            };
         },
     };
 }
@@ -367,7 +437,13 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
  * later, never a reason to run again: the Job it is derived from stays listed as its anchor for
  * the reaper's Secret-first pass, and its owner reference takes it with the Job.
  */
-async function sweepAfterAdoption(deps: K8sDeps, job: BoardJob, prior: BoardJob, signal?: AbortSignal): Promise<void> {
+async function sweepAfterAdoption(
+    deps: K8sDeps,
+    job: BoardJob,
+    prior: BoardJob,
+    signal?: AbortSignal,
+    live = false
+): Promise<void> {
     try {
         await sweepClaimedFleets(deps, job, signal ?? ledgerOf(deps).signal(job));
     } catch (e) {
@@ -377,5 +453,6 @@ async function sweepAfterAdoption(deps: K8sDeps, job: BoardJob, prior: BoardJob,
         throw new AdoptionBlocked(`the run was read, but ${(e as Error).message}`);
     }
     if (signal?.aborted) throw adoptionAbandoned();
-    await deleteSecretAcked(deps, secretName(prior));
+    // A live group's Secret carries the binding it follows and the env it runs with: it is never deleted.
+    if (!live) await deleteSecretAcked(deps, secretName(prior));
 }

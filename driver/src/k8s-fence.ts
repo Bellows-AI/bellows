@@ -237,7 +237,7 @@ function claimVerdict(read: Read<K8sClaim>, job: BoardJob): ClaimVerdict {
     if (read.kind === 'inconclusive') return { unconfirmed: read.reason };
     const holder = read.value.data?.holder;
     if (!holder) return { unconfirmed: `${CLAIM_READ} answered a claim with no holder` };
-    return holder === job.leaseToken ? 'ours' : 'taken';
+    return holder === (job.claimHolder ?? job.leaseToken) ? 'ours' : 'taken';
 }
 
 /** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
@@ -285,7 +285,8 @@ export async function releaseClaimAfterGroupEnd(
     job: BoardJob,
     ends: { groups?: readonly GroupRef[]; observed?: ObservedClaim; holderWriters?: boolean } = {}
 ): Promise<boolean> {
-    const holder = ends.observed?.holder ?? job.leaseToken;
+    // A taken-over group is addressed by its own lease (`ownGroup`); the claim is its holder's (#829).
+    const holder = ends.observed?.holder ?? job.claimHolder ?? job.leaseToken;
     if (ends.observed) {
         const now = await readClaim(deps, job);
         if (now?.uid !== ends.observed.uid || now.holder !== holder) return false;
@@ -354,12 +355,13 @@ type SweptItem = ListedRunnerJob & {
 function spared(deps: K8sDeps, { job, kind, kept }: SweepScope, item: SweptItem): boolean {
     const adopted = deps.adopted?.get(job.leaseToken);
     const lease = item.metadata.labels?.[LEASE_LABEL];
+    const live = adoptedLive(deps, job);
     // The adopted Job's lease, spec and ended status are readable (`sweepEntry`): this reads the evidence, never its absence.
     if (
         adopted !== undefined &&
         item.metadata.name === adopted &&
         lease !== undefined &&
-        finishedAgentRun(item, { ...job, leaseToken: lease })
+        (live || finishedAgentRun(item, { ...job, leaseToken: lease }))
     ) {
         kept.jobs.add(adopted);
         kept.leases.add(lease);
@@ -384,6 +386,18 @@ function namedItemsOf(deps: K8sDeps, scope: SweepScope, items: SweptItem[]): Omi
     return found;
 }
 
+/**
+ * Whether the run this attempt adopted is a LIVE group it took over (#829): still running, so the
+ * sweep spares it on its name and lease, not on a status that shows it ended.
+ */
+function adoptedLive(deps: K8sDeps, job: BoardJob): boolean {
+    const adopted = deps.adopted?.get(job.leaseToken);
+    if (adopted === undefined) return false;
+    return [...(deps.groups ?? [])].some(
+        ([lease, group]) => group.resumed === true && runnerName({ ...job, leaseToken: lease }) === adopted
+    );
+}
+
 /** A Job status that shows the run ended: the adopted run is a finished one, and only that status proves it. */
 const endedStatus = (status: unknown): boolean => isRecord(status) && jobOutcome(status) !== 'pending';
 
@@ -396,7 +410,7 @@ const endedStatus = (status: unknown): boolean => isRecord(status) && jobOutcome
  * lease nor a `job-name` cannot say whether it is that run's, so its listing proves nothing.
  */
 const sweepEntry =
-    (adopted: string | undefined, kind: string) =>
+    (adopted: string | undefined, kind: string, live: boolean) =>
     (value: unknown): SweptItem | null => {
         const item = asIdentified<SweptItem>(value);
         if (item === null) return null;
@@ -405,7 +419,7 @@ const sweepEntry =
         const unowned = lease === undefined && !nonEmpty(item.metadata.labels?.['job-name']);
         if (adopted !== undefined && kind === 'pod' && unowned) return null;
         const isAdopted = adopted !== undefined && item.metadata.name === adopted;
-        return isAdopted && (lease === undefined || !validRunnerSpec(item.spec) || !endedStatus(item.status))
+        return isAdopted && (lease === undefined || !validRunnerSpec(item.spec) || !(live || endedStatus(item.status)))
             ? null
             : item;
     };
@@ -422,7 +436,7 @@ async function probeOneFleetKind(
     kept: KeptRuns
 ): Promise<{ fleet: SweepFleet | null; inconclusive: boolean }> {
     const read = await readTypedList<SweptItem>(deps, selectorPath, `listing the leftover ${kind}s`, {
-        entry: sweepEntry(deps.adopted?.get(job.leaseToken), kind),
+        entry: sweepEntry(deps.adopted?.get(job.leaseToken), kind, adoptedLive(deps, job)),
         once: true,
     });
     // A kind answering nothing at all has nothing of this job in it.

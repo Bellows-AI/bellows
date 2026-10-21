@@ -5513,10 +5513,20 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
      * The daemon, and the `docker logs` read the adoption streams through spawn — its argv recorded
      * among the daemon calls, in order, its child printing `log` and exiting `logExit`.
      */
-    const daemon = (ps: string, supervisorExit = '0', log: string | Buffer[] = 'did the work\n', logExit = 0) => {
+    const daemon = (
+        ps: string,
+        supervisorExit = '0',
+        log: string | Buffer[] = 'did the work\n',
+        logExit = 0,
+        running: string | Error = ''
+    ) => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
+            // The still-running runners: none unless a test lists one (#829).
+            if (args[0] === 'ps' && args.includes('status=running')) {
+                return running instanceof Error ? Promise.reject(running) : Promise.resolve({ stdout: running });
+            }
             // The earlier attempt's supervisor: finalized (0) unless a test says how it ended.
             if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
             if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
@@ -6260,6 +6270,78 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, sessionId: SESSION },
         });
+    });
+
+    // #829: a released group's agent still runs (its runner container is up): taken over, not read.
+    describe('a live run (#829)', () => {
+        const supervisorUp = (up: boolean | 'garbled') => (args: string[]) => {
+            if (args[0] !== 'inspect') return undefined;
+            if (args.includes(supervisorName(job))) {
+                return Promise.resolve({
+                    stdout:
+                        up === 'garbled' ? 'not json' : `{"Status":"${up ? 'running' : 'exited'}","Running":${up}}\n`,
+                });
+            }
+            return Promise.resolve({
+                stdout: '{"Status":"running","Running":true,"StartedAt":"2026-10-01T00:00:00Z"}\n',
+            });
+        };
+        const liveDaemon = (up: boolean | 'garbled' = true, running: string | Error = listing()) => {
+            const { exec: base, calls, logs } = daemon('', '0', 'did the work\n', 0, running);
+            const inspect = supervisorUp(up);
+            const exec = (args: string[]) => inspect(args) ?? base(args);
+            return { exec, calls, logs };
+        };
+
+        it('answers a running runner whose supervisor runs as live, recording the group and sweeping only the older', async () => {
+            const { exec, calls, logs } = liveDaemon();
+
+            const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+            expect(adopted).toMatchObject({
+                live: true,
+                claimSeq: 1,
+                session: SESSION,
+                startedAt: '2026-10-01T00:00:00Z',
+                prior: { id: job.id, leaseToken: job.leaseToken },
+            });
+            // The live run's own objects stay; the older attempt's go.
+            expect(removals(calls)).toEqual(['a5a5a5a5a5a5', 'older-mailbox']);
+            expect(calls.some((args) => args[0] === 'logs')).toBe(false);
+            expect(calls.some((args) => args[0] === 'wait')).toBe(false);
+        });
+
+        it('answers nothing for a group no runner container runs (created, never started)', async () => {
+            const { exec, calls, logs } = liveDaemon(true, '');
+
+            expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
+            expect(removals(calls)).toEqual([]);
+        });
+
+        it.each([
+            ['refused', new Error('the daemon answered 503')],
+            ['garbled', 'a\tb\n'],
+        ])('blocks the attempt when the running listing is %s', async (_label, running) => {
+            const { exec, calls, logs } = liveDaemon(true, running);
+
+            await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+            expect(removals(calls)).toEqual([]);
+        });
+
+        it.each([
+            ['stopped', false],
+            ['unreadable', 'garbled' as const],
+        ])(
+            'blocks the attempt, removing nothing, when the supervisor of a running runner is %s',
+            async (_label, up) => {
+                const { exec, calls, logs } = liveDaemon(up);
+
+                await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(
+                    AdoptionBlocked
+                );
+                expect(removals(calls)).toEqual([]);
+            }
+        );
     });
 });
 

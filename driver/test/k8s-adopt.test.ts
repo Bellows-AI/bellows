@@ -318,3 +318,146 @@ describe('the supplied stand-down ends every step of an adoption (#869)', () => 
         expect(await settledOrPending(pending)).toBe('settled');
     });
 });
+
+describe('a live run (#829)', () => {
+    const RELEASED = 'supervisor: released the agent';
+    /** A group whose agent and supervisor both run: the pod of a run a lost driver left going. */
+    const runningPods = (agent: Record<string, unknown> = { running: {} }, supervisor = { running: {} }) => ({
+        status: 200,
+        body: JSON.stringify({
+            items: [
+                {
+                    metadata: { name: podName },
+                    status: {
+                        phase: 'Running',
+                        containerStatuses: [
+                            { name: AGENT_CONTAINER, state: agent },
+                            { name: SUPERVISOR_CONTAINER, state: supervisor },
+                        ],
+                    },
+                },
+            ],
+        }),
+    });
+    const logSays = (body: string) => (_method: string, path: string) =>
+        supervisorLogPath(path) ? { status: 200, body } : undefined;
+    const liveWorld = (body = `supervisor: serving\n${RELEASED}\n`, extra: unknown[] = []) =>
+        world([runnerItem({ active: 1 }), ...extra], logSays(body), { pods: runningPods() });
+
+    it('answers a released, running group as live, with the claim taken and the group recorded under the prior lease', async () => {
+        const { deps, calls } = liveWorld();
+
+        const adopted = await adoptFinishedRunner(deps, adopter, reads());
+
+        expect(adopted).toMatchObject({
+            live: true,
+            claimSeq: 1,
+            session: SESSION,
+            startedAt: START,
+            prior: { id: job.id, leaseToken: job.leaseToken },
+        });
+        expect(calls.some((call) => call.method === 'POST' && call.path.includes('/configmaps'))).toBe(true);
+        expect(deps.adopted?.get(adopter.leaseToken)).toBe(priorName);
+        expect(deps.groups?.get(job.leaseToken)).toMatchObject({
+            startedAt: START,
+            agent: true,
+            resumed: true,
+            uids: { job: `uid-${priorName}` },
+        });
+        // The live Job and its Secret are the run's own: never deleted, nor waited for to finalize.
+        expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, priorName)))).toBe(false);
+        expect(deletes(calls).some((call) => call.path.endsWith(`/${secretName(job)}`))).toBe(false);
+    });
+
+    it('sweeps an older attempt but spares the live group', async () => {
+        const older = runnerItem({ active: 1 }, { lease: OTHER_TOKEN, seq: '0' });
+        let listed = [runnerItem({ active: 1 }), older];
+        const { deps, calls } = world(
+            [],
+            (method, path) => {
+                if (method === 'GET' && path.startsWith(`${jobsPath(NS)}?`)) {
+                    return { status: 200, body: JSON.stringify({ items: listed }) };
+                }
+                if (method === 'DELETE' && path.startsWith(jobPath(NS, older.metadata.name))) {
+                    listed = listed.filter((item) => item !== older);
+                    return { status: 200, body: '{}' };
+                }
+                return logSays(`${RELEASED}\n`)(method, path);
+            },
+            { pods: runningPods() }
+        );
+
+        const adopted = await adoptFinishedRunner(deps, adopter, reads());
+
+        expect(adopted).toMatchObject({ live: true });
+        expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, older.metadata.name)))).toBe(true);
+        expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, priorName)))).toBe(false);
+    });
+
+    it('redoes the run (null, nothing deleted) when the supervisor never released the agent', async () => {
+        const { deps, calls } = liveWorld('supervisor: serving\n');
+
+        expect(await adoptFinishedRunner(deps, adopter, reads())).toBeNull();
+        expect(deletes(calls)).toEqual([]);
+        expect(deps.groups?.has(job.leaseToken) ?? false).toBe(false);
+    });
+
+    it.each([
+        ['an unserving apiserver', { status: 500, body: 'boom' }],
+        ['a log that is gone', { status: 404, body: '{"kind":"Status"}' }],
+    ])('blocks the attempt, deleting nothing, on %s for the release evidence', async (_label, answer) => {
+        const { deps, calls } = world(
+            [runnerItem({ active: 1 })],
+            (_m, path) => (supervisorLogPath(path) ? answer : undefined),
+            {
+                pods: runningPods(),
+            }
+        );
+
+        await expect(adoptFinishedRunner(deps, adopter, reads())).rejects.toBeInstanceOf(AdoptionBlocked);
+        expect(deletes(calls).filter((call) => call.path.startsWith(jobPath(NS, priorName)))).toEqual([]);
+        expect(deps.groups?.has(job.leaseToken) ?? false).toBe(false);
+    });
+
+    it('blocks the attempt when the log read throws', async () => {
+        const { deps } = liveWorld();
+        const thrown: K8sDeps = {
+            ...deps,
+            request: (method, path, body, options) =>
+                supervisorLogPath(path)
+                    ? Promise.reject(new Error('socket hang up'))
+                    : deps.request(method, path, body, options),
+        };
+
+        await expect(adoptFinishedRunner(thrown, adopter, reads())).rejects.toBeInstanceOf(AdoptionBlocked);
+    });
+
+    it('blocks the attempt when a running pod reports no container states', async () => {
+        const { deps } = world([runnerItem({ active: 1 })], logSays(RELEASED), {
+            pods: {
+                status: 200,
+                body: JSON.stringify({ items: [{ metadata: { name: podName }, status: { phase: 'Running' } }] }),
+            },
+        });
+
+        await expect(adoptFinishedRunner(deps, adopter, reads())).rejects.toBeInstanceOf(AdoptionBlocked);
+    });
+
+    it('deletes and takes nothing once the attempt stood down', async () => {
+        const { deps, calls } = liveWorld();
+        const stop = new AbortController();
+        stop.abort();
+
+        await expect(adoptFinishedRunner(deps, adopter, reads(), stop.signal)).rejects.toThrow();
+        expect(deletes(calls)).toEqual([]);
+        expect(calls.some((call) => call.method === 'POST' && call.path.includes('/configmaps'))).toBe(false);
+    });
+
+    it('is live again for a later claim of the same run', async () => {
+        const { deps } = liveWorld();
+        await adoptFinishedRunner(deps, adopter, reads());
+
+        const later = { ...adopter, leaseToken: OTHER_TOKEN, claimSeq: 3 };
+        expect(await adoptFinishedRunner(deps, later, reads())).toMatchObject({ live: true, claimSeq: 1 });
+    });
+});

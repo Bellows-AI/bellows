@@ -1,6 +1,6 @@
 import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { composeRuntimeSample } from './runner.js';
+import { composeRuntimeSample, onOwnGroup } from './runner.js';
 import {
     mergeOpencodeOutcome,
     opencodeReadFailed,
@@ -391,7 +391,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // thrown like any refused runner Job, never a run that silently loses its record. The declared
     // services are the pod's own sidecars (issue #773), waited ready by the loop's setup
     // (`startServices`) before its gate environment, and reached on the pod's loopback by name.
-    const { startedAt } = await ensureGroup(deps, job, session);
+    const { startedAt, resumed } = await ensureGroup(deps, job, session);
 
     // The agent waits on the supervisor's release; the order hands the supervisor what is left of
     // the run budget. The agent's end does not end the pod: the supervisor has the exporter drain,
@@ -405,9 +405,13 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         },
         () => undefined
     );
-    // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
-    await resizeGateSidecar(deps, job, 'idle');
-    await orderGo(host, job);
+    // A group taken over from a lost driver (#829) was released by it: the agent already runs, in the
+    // sizing and under the order its first driver gave, and nothing here creates or releases it.
+    if (!resumed) {
+        // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
+        await resizeGateSidecar(deps, job, 'idle');
+        await orderGo(host, job);
+    }
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
     try {
@@ -630,7 +634,7 @@ export function createKubernetesRunner(
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
     };
-    return {
+    return onOwnGroup({
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
@@ -672,5 +676,5 @@ export function createKubernetesRunner(
         // The orphaned-claim reap (issue #344): uid-preconditioned, by the claim's derivable
         // name — the fence's own GET/DELETE grants, nothing new.
         reapOrphanedClaim: (job: BoardJob, observed: ObservedClaim) => reapOrphanedClaim(deps, job, observed),
-    };
+    });
 }
