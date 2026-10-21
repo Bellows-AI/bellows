@@ -312,4 +312,11 @@ describe('the test-jobs harness', () => {
         const phase = SCRIPT.slice(SCRIPT.indexOf('begin_phase review'), SCRIPT.indexOf('begin_phase workflows'));
         expect(phase).toMatch(/verdict":"clean'\n\n[^\n]*\nwrite_bellows ''\nstop_driver\nfi/);
     });
+
+    // As ensureReviewerHome does: a root-owned .factory left every later claude run unable to make
+    // .factory/transcripts, so the question round trip failed after the review phase (#829).
+    it('makes the reviewer home and its .factory parent group-writable, as the dashboard does', () => {
+        const phase = SCRIPT.slice(SCRIPT.indexOf('begin_phase review'), SCRIPT.indexOf('begin_phase workflows'));
+        expect(phase).toContain('chgrp 1000 "$d" "$d/reviewer" && chmod 2775 "$d" "$d/reviewer"');
+    });
 });

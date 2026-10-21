@@ -1976,9 +1976,11 @@ write_bellows 'reviewers:
     timeout: 5'
 # The reviewer's home on the member's tree (REVIEWER_TREE_DIR). A deployment's dashboard makes it on
 # the shared volume (provision.ts, the claim handler); this lane's board keeps its workspaces on the
-# host, so the volume gets it here, group-writable for the reviewer's gid (GATE_GID, 1000).
+# host, so the volume gets it here, group-writable for the reviewer's gid (GATE_GID, 1000) — the
+# parent too, as ensureReviewerHome makes both: a root-owned .factory left every later claude run
+# unable to make its .factory/transcripts directory, dying before it wrote agent.exit.
 docker run --rm -u 0 -v "$VOLUME:/workspaces" "$IMAGE_BASE" sh -c \
-    'mkdir -p "/workspaces/$1/.factory/reviewer" && chgrp 1000 "/workspaces/$1/.factory/reviewer" && chmod 2775 "/workspaces/$1/.factory/reviewer"' \
+    'd="/workspaces/$1/.factory" && mkdir -p "$d/reviewer" && chgrp 1000 "$d" "$d/reviewer" && chmod 2775 "$d" "$d/reviewer"' \
     sh "$member_path" || {
     echo 'test-jobs: could not make the reviewer home'
     exit 1
