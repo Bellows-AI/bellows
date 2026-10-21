@@ -1745,6 +1745,23 @@ describe('the poll loop', () => {
             }
         });
 
+        it("the loop's sleep takes an AbortSignal as the poll's Sleep does: it rejects on abort and clears its timer (#829 S3)", async () => {
+            vi.useFakeTimers();
+            try {
+                const controller = new AbortController();
+                const sleeping = wait(100_000, controller.signal);
+                const settled = expect(sleeping).rejects.toBeDefined();
+                expect(vi.getTimerCount()).toBe(1);
+                controller.abort();
+                await settled;
+                expect(vi.getTimerCount()).toBe(0);
+                await expect(wait(1, controller.signal)).rejects.toBeDefined();
+                expect(vi.getTimerCount()).toBe(0);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
         it('returns and acks at once when the removal settles under a renew that never answers', async () => {
             const signals: (AbortSignal | undefined)[] = [];
             const { board } = stubBoard([], {
