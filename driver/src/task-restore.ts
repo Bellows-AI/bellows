@@ -19,7 +19,8 @@ import { FIRST_GENERATION } from './task-volume.js';
 
 /** The restore still owed to the volume this attempt runs on. */
 export interface TaskRestore {
-    checkpoint: CheckpointPointer;
+    /** Null when no complete checkpoint is stored: the step then only verifies the tree is on the volume. */
+    checkpoint: CheckpointPointer | null;
     /** The older generations to delete once the restore reports ok. */
     older: number[];
     restored: boolean;
@@ -50,22 +51,28 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
 }
 
 /**
- * The restore an adopted restored generation still owes, from a complete checkpoint. Without one it cannot be
- * known whether the generation was ever filled — a fresh sync would treat a continuing task as a new one — so
- * the claim is unrestorable, unless an unschedulable volume still holds the tree.
+ * The restore an adopted restored generation (`live[0]`) still owes. A volume made by an earlier restore may not
+ * have been filled, and the plan cannot tell: the restore step does (the checkout is there, or it is not), so a
+ * continuing claim asks again and always schedules it. With no complete checkpoint it carries none and only
+ * verifies the tree. A volume no pod could be scheduled onto holds the tree the live one may lack: the claim runs
+ * on it, its mark kept until a later claim finds no live volume, so an interruption before the step has found
+ * the tree there plans this same choice again. The live volumes go only once it has.
  */
 async function owedRestore(
     source: Pick<Board, 'checkpoint'>,
     job: BoardJob,
-    older: number[],
-    treeHeldElsewhere: boolean
+    live: number[],
+    unschedulable: number[]
 ): Promise<void> {
+    const [, ...older] = live;
     const read = await source.checkpoint(job);
     if (read.state === 'found' && !read.checkpoint.truncated) {
-        job.taskRestore = { checkpoint: read.checkpoint, older, restored: false };
-    } else if (!treeHeldElsewhere) {
-        throw unrestorable(read);
+        job.taskRestore = { checkpoint: read.checkpoint, older: [...older, ...unschedulable], restored: false };
+        return;
     }
+    const [held] = [...unschedulable].sort((x, y) => y - x);
+    if (held !== undefined) job.taskGeneration = held;
+    job.taskRestore = { checkpoint: null, older: held === undefined ? older : live, restored: false };
 }
 
 /**
@@ -84,13 +91,11 @@ export async function planTaskVolume(
     listing: VolumeListing
 ): Promise<{ create: boolean; unlabel?: number }> {
     const live = [...listing.live].sort((a, b) => b - a);
-    const [current, ...older] = live;
+    const current = live[0];
     if (current !== undefined) {
         job.taskGeneration = current;
-        // A volume made by an earlier restore may not have been filled: the restore is idempotent, so a
-        // continuing claim asks again and the script finds the tree already there.
         if (current > FIRST_GENERATION && claimContinuesSession(job) && source && !job.taskRestore?.restored) {
-            await owedRestore(source, job, [...older, ...listing.unschedulable], listing.unschedulable.length > 0);
+            await owedRestore(source, job, live, listing.unschedulable);
         }
         return { create: false };
     }
@@ -160,7 +165,7 @@ export async function restoreTaskTree(
                 CHECKOUT: checkout,
                 REMOTE: remote,
                 BRANCH: worktreeBranch(job),
-                CHUNKS: JSON.stringify(pending.checkpoint.chunks),
+                CHUNKS: JSON.stringify(pending.checkpoint?.chunks ?? []),
                 ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
                 RESTORE_FEED: '1',

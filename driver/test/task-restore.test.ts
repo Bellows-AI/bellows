@@ -59,59 +59,36 @@ describe('planTaskVolume', () => {
 
     // Infrastructure loss interrupts a task; the labelled volume still holds the tree, so with no complete
     // checkpoint the claim adopts it again (label cleared) instead of failing unrestorable.
+    // The plan cannot know whether an adopted volume was filled: the restore step decides (the checkout's .git is
+    // there, or it is not). With no complete checkpoint the step is owed with no chunks.
     it.each([
         ['none', { state: 'none' } as CheckpointRead],
         ['gone', { state: 'gone' } as CheckpointRead],
         ['truncated', found({ ...POINTER, truncated: true })],
-    ])('adopts the unschedulable volume again when the checkpoint is %s', async (_name, read) => {
+    ])('leaves the adopted restored generation to the restore step when the checkpoint is %s', async (_n, read) => {
         const job = continuing();
-        expect(await planTaskVolume(board(read), job, { live: [], highest: 3, unschedulable: [2, 3] })).toEqual({
+        expect(await planTaskVolume(board(read), job, { live: [2, 1], highest: 2, unschedulable: [] })).toEqual({
             create: false,
-            unlabel: 3,
         });
+        expect(job.taskGeneration).toBe(2);
+        expect(job.taskRestore).toEqual({ checkpoint: null, older: [1], restored: false });
+    });
+
+    it('runs on the unschedulable volume that holds the tree, mark kept, and removes the live ones once it is verified', async () => {
+        const job = continuing();
+        expect(
+            await planTaskVolume(board({ state: 'gone' }), job, { live: [3], highest: 3, unschedulable: [2] })
+        ).toEqual({ create: false });
+        expect(job.taskGeneration).toBe(2);
+        expect(job.taskRestore).toEqual({ checkpoint: null, older: [3], restored: false });
+    });
+
+    it('restores into the live volume, not the unschedulable one, when a complete checkpoint exists', async () => {
+        const job = continuing();
+        await planTaskVolume(board(found()), job, { live: [3], highest: 3, unschedulable: [2] });
         expect(job.taskGeneration).toBe(3);
-        expect(job.taskRestore).toBeUndefined();
+        expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [2], restored: false });
     });
-
-    it('does not reuse the name of a volume still being deleted', async () => {
-        const job = fresh();
-        await planTaskVolume(undefined, job, { live: [], highest: 3, unschedulable: [] });
-        expect(job.taskGeneration).toBe(4);
-    });
-
-    it('adopts the highest live generation without asking the board', async () => {
-        const job = continuing();
-        const source = board(found());
-        expect(await planTaskVolume(source, job, { live: [1], highest: 1, unschedulable: [] })).toEqual({
-            create: false,
-        });
-        expect(job.taskGeneration).toBe(1);
-        expect(job.taskRestore).toBeUndefined();
-        expect(source.checkpoint).not.toHaveBeenCalled();
-    });
-
-    it('owes the restore again on an adopted restored generation, with the older ones to delete', async () => {
-        const job = continuing();
-        expect(await planTaskVolume(board(found()), job, { live: [2, 3, 1], highest: 3, unschedulable: [] })).toEqual({
-            create: false,
-        });
-        expect(job.taskGeneration).toBe(3);
-        expect(job.taskRestore).toEqual({ checkpoint: POINTER, older: [2, 1], restored: false });
-    });
-
-    it.each([
-        ['none', { state: 'none' } as CheckpointRead],
-        ['gone', { state: 'gone' } as CheckpointRead],
-        ['truncated', found({ ...POINTER, truncated: true })],
-    ])(
-        'fails checkpoint_unrestorable on an adopted restored generation when the checkpoint is %s',
-        async (_n, read) => {
-            const job = continuing();
-            await expect(
-                planTaskVolume(board(read), job, { live: [2], highest: 2, unschedulable: [] })
-            ).rejects.toBeInstanceOf(CheckpointUnrestorable);
-        }
-    );
 
     it.each([
         ['none', { state: 'none' } as CheckpointRead, /no checkpoint/],
@@ -244,6 +221,18 @@ describe('restoreTaskTree', () => {
             throw new Error('apiserver down');
         });
         expect(await restoreTaskTree(host, owed(), { removeOlder })).toEqual({ ok: true, reason: null });
+    });
+
+    it('runs the step with no chunks when no complete checkpoint is owed, and removes the older ones when it is ok', async () => {
+        const job = continuing();
+        job.taskRestore = { checkpoint: null, older: [3], restored: false };
+        const { steps, host } = sink(() => ({ stdout: OK }));
+        const removeOlder = vi.fn(async () => undefined);
+
+        expect(await restoreTaskTree(host, job, { removeOlder })).toEqual({ ok: true, reason: null });
+
+        expect(steps[0]?.env).toMatchObject({ CHUNKS: '[]' });
+        expect(removeOlder).toHaveBeenCalledWith([3]);
     });
 
     it('carries the credential helper only beside a token', async () => {
