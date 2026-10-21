@@ -13,7 +13,7 @@ import {
     REVIEWER_CONTAINER,
     serviceContainerOf,
 } from '../src/supervisor-contract.js';
-import { taskVolumeName } from '../src/task-volume.js';
+import { TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -235,6 +235,16 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(objects).not.toContain("'Service'");
         expect(objects).toContain("resources: ['secrets', 'configmaps']");
         expect(objects).toMatch(/operations: \['DELETE'\]\n\s+resources: \['pods'\]/);
+    });
+
+    // Issue #775: the Role's `patch` on claims labels one unschedulable; admission lets that label change and
+    // nothing else, and the create-time shape check no longer reads a bound claim's volumeName.
+    it('lets a task volume claim change its unschedulable label alone', () => {
+        const objects = policy('objects');
+        expect(objects).toMatch(/operations: \['CREATE', 'UPDATE', 'DELETE'\]\n\s+resources: \['persistentvolumeclaims'\]/);
+        expect(objects).toContain(`k == '${TASK_UNSCHEDULABLE_LABEL}'`);
+        expect(objects).toContain('object.spec == oldObject.spec');
+        expect(objects).toContain("request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'CREATE'");
     });
 
     it(`maps hostAliases only to ${SERVICE_ADDRESS}, which is all the driver writes there`, () => {
