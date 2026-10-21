@@ -2,7 +2,7 @@ import { containerHardeningArgs } from './docker.js';
 import type { BoardJob } from './board.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from './claim.js';
-import { type ExecDocker, readDocker } from './docker-runner-support.js';
+import { type ExecDocker, readDocker, startupRefusalOf } from './docker-runner-support.js';
 import {
     TASK_MOUNT,
     TASK_ROOT_LABEL,
@@ -73,48 +73,48 @@ export async function ensureTaskVolume(
     // into the empty volume, so root does not own what it hands over: chmod needs FOWNER, and
     // keeping the setgid bit while root is outside the group needs FSETID.
     const opts = signal ? { timeout: INIT_DEADLINE_MS, signal } : { timeout: INIT_DEADLINE_MS };
-    await deps.execDocker(
-        [
-            'run',
-            ...containerHardeningArgs(),
-            '--cap-add',
-            'CHOWN',
-            '--cap-add',
-            'FOWNER',
-            '--cap-add',
-            'FSETID',
-            '--rm',
-            '--user',
-            '0:0',
-            ...taskMountArgs(job),
-            '--entrypoint',
-            'sh',
-            executorImage(deps.config, job.executorType),
-            '-c',
-            taskInitScript,
-            'init',
-            TASK_MOUNT,
-            String(GATE_GID),
-        ],
-        opts
-    );
+    // Each init runs the executor image before the group does: a daemon refusing that image is the same
+    // typed startup refusal the group start answers (`startupRefusalOf`), never a raw error.
+    const init = (args: string[]) =>
+        deps.execDocker(args, opts).catch((e: unknown) => {
+            throw startupRefusalOf(e);
+        });
+    await init([
+        'run',
+        ...containerHardeningArgs(),
+        '--cap-add',
+        'CHOWN',
+        '--cap-add',
+        'FOWNER',
+        '--cap-add',
+        'FSETID',
+        '--rm',
+        '--user',
+        '0:0',
+        ...taskMountArgs(job),
+        '--entrypoint',
+        'sh',
+        executorImage(deps.config, job.executorType),
+        '-c',
+        taskInitScript,
+        'init',
+        TASK_MOUNT,
+        String(GATE_GID),
+    ]);
     if ((job.reviewerProfiles?.length ?? 0) === 0) return;
-    await deps.execDocker(
-        [
-            'run',
-            ...containerHardeningArgs(),
-            '--rm',
-            '--user',
-            `${GATE_UID}:${GATE_GID}`,
-            ...taskMountArgs(job),
-            '--entrypoint',
-            'sh',
-            executorImage(deps.config, job.executorType),
-            '-c',
-            taskInitScript,
-            'init',
-            REVIEWER_TREE_PATH,
-        ],
-        opts
-    );
+    await init([
+        'run',
+        ...containerHardeningArgs(),
+        '--rm',
+        '--user',
+        `${GATE_UID}:${GATE_GID}`,
+        ...taskMountArgs(job),
+        '--entrypoint',
+        'sh',
+        executorImage(deps.config, job.executorType),
+        '-c',
+        taskInitScript,
+        'init',
+        REVIEWER_TREE_PATH,
+    ]);
 }
