@@ -5,6 +5,7 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
+import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -830,7 +831,7 @@ export interface JobArtifactScope {
     claimSeq: number;
 }
 
-export interface JobStore {
+export interface JobStore extends PhaseCheckpointStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
      * authenticated caller's id. A client-supplied one would be impersonation on the audit trail of

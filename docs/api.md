@@ -14,6 +14,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts` | `server/test/routes.stats.get.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
 | Jobs: create, claim, worker reports, `POST /:id/conclusion`, actions, reclaims, `GET /:id?waitFor=terminal` ([batches.md](batches.md) for `done` with `force`) | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts`, `server/test/routes.job-conclusion.test.ts` |
+| Phase checkpoints: `POST /api/jobs/:id/phase-checkpoint` (write), `/phase-checkpoints` (read), worker routes under the lease | `server/src/routes/job-handlers-phase-checkpoints.ts`, `server/src/routes/jobs.ts` | `server/test/routes.job-phase-checkpoints.test.ts`, `server/test/auth.enforcement.test.ts` |
 | `Idempotency-Key` header on `POST /api/jobs`, `/:id/follow-up`, `/:id/retry` | `server/src/routes/job-idempotency.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
 | Run activity (`GET /api/jobs/:id/activity`) | `server/src/routes/job-handlers-actions.ts`, `server/src/telemetry/run-activity.ts` | `server/test/routes.jobs.test.ts`, `server/test/run-activity.test.ts` |
 | Artifact reads: `GET /api/jobs/:id/artifacts`, `/artifacts/read` | `server/src/routes/job-handlers-artifacts.ts`, `server/src/artifacts/artifact-read.ts` | `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts` |

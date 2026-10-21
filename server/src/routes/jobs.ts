@@ -42,6 +42,7 @@ import {
 } from './job-handlers-artifacts.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
+import { phaseCheckpointRoutes } from './job-handlers-phase-checkpoints.js';
 import { BODY_LIMIT, CONCLUSION_BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 
@@ -147,6 +148,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/conclusion', { bodyLimit: CONCLUSION_BODY_LIMIT }, (request, reply) =>
             handleConclusion(orgs, request, reply)
         );
+        phaseCheckpointRoutes(app, orgs);
         // The agent's questions (050, issue #531): the driver's reports are worker
         // routes; the answer is a person's, and no organization token reaches it.
         app.post('/api/jobs/:id/question', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>

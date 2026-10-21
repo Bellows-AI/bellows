@@ -8,6 +8,7 @@
  * - `job-store-claim.ts` — the worker's claim and the reclaim claim/ack.
  * - `job-store-worker.ts` — heartbeat, reports, `complete` and the workflow walk.
  * - `job-store-conclusions.ts` — the staged final envelope and the board's commit of it (076).
+ * - `job-store-phase-checkpoints.ts` — the post-run phase outcomes an adopter resumes from (080).
  * - `job-store-actions.ts` — member actions: create, follow up, done, reopen, stop, suspend,
  *   remove, and the wait-control pair (issue #328).
  * - `job-store-questions.ts` — the agent's questions (050): ask, expire, answer, and their reads.
@@ -59,6 +60,7 @@ import {
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
 import { stageConclusion } from './job-store-conclusions.js';
+import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-checkpoints.js';
 
 /**
  * The worker-report method bindings — the claim-to-verdict half of the store. Split out of
@@ -80,6 +82,8 @@ function workerMethods(
     | 'readReview'
     | 'complete'
     | 'stageConclusion'
+    | 'writePhaseCheckpoint'
+    | 'readPhaseCheckpoints'
     | 'leases'
     | 'artifactScope'
 > {
@@ -132,6 +136,16 @@ function workerMethods(
         async stageConclusion(id, leaseToken, result, leaseSeconds) {
             await gate();
             return stageConclusion(ctx, { id, leaseToken }, result, leaseSeconds);
+        },
+
+        async writePhaseCheckpoint(id, leaseToken, checkpoint) {
+            await gate();
+            return writePhaseCheckpoint(ctx, { id, leaseToken }, checkpoint);
+        },
+
+        async readPhaseCheckpoints(id, leaseToken, runClaimSeq) {
+            await gate();
+            return readPhaseCheckpoints(ctx, { id, leaseToken }, runClaimSeq);
         },
 
         async leases(ids) {

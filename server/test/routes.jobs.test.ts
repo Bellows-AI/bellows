@@ -448,6 +448,14 @@ function stubStore(
             boom();
             return { result: options.verdict ?? 'ok' };
         },
+        async writePhaseCheckpoint() {
+            boom();
+            return { result: 'ok' };
+        },
+        async readPhaseCheckpoints() {
+            boom();
+            return { result: 'ok', checkpoints: [] };
+        },
         async gates(id, _token, results) {
             boom();
             stub.gatesReported.push({ id, results });

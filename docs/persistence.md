@@ -19,6 +19,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Settle receipts per attempt (072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
 | Reclaim ownership and ack receipts (075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |
 | Staged conclusions, immutable per attempt (076) | `server/migrations/076_job_conclusions.sql`, `server/src/db/job-store-conclusions.ts` | `server/test-db/job-store.conclusions.test.ts` |
+| Phase checkpoints, one row per run and phase (080) | `server/migrations/080_job_phase_checkpoints.sql`, `server/src/db/job-store-phase-checkpoints.ts` | `server/test-db/job-store.phase-checkpoints.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
 
