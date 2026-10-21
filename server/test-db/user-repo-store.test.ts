@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { beforeAll, describe, expect, it } from 'vitest';
-import type { Sql, TransactionSql } from 'postgres';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import postgres, { type Sql, type TransactionSql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { createUserRepoStore, PurgeConflictError, type UserRepoStore } from '../src/db/user-repo-store.js';
@@ -10,6 +10,9 @@ import { testOrg, testUser } from './fixtures.js';
 const enabled = Boolean(process.env.DATABASE_URL);
 
 let sql: Sql;
+/** A second process: its own pool and its own store over the same database. */
+let otherPool: Sql;
+let other: UserRepoStore;
 let store: UserRepoStore;
 let jobs: JobStore;
 
@@ -21,6 +24,9 @@ const BOB = BOB_USER.id;
 const SESSION = randomUUID();
 
 const web = { owner: 'acme', name: 'web' };
+
+/** What a successful stamp answers: the token is the stamp's own, so only its shape is pinned. */
+const STAMPED = { stamped: true, token: expect.any(String) };
 const api = { owner: 'acme', name: 'api' };
 
 /** A limit above every row this suite ever queues, so a claim proves it exhausted the queue. */
@@ -36,8 +42,34 @@ beforeAll(async () => {
     if (!enabled) return;
     sql = db.sql;
     store = createUserRepoStore({ sql, orgId: ORG });
+    otherPool = postgres(db.url!, { max: 4 });
+    other = createUserRepoStore({ sql: otherPool, orgId: ORG });
     jobs = createJobStore({ sql, orgId: ORG });
 });
+
+afterAll(async () => {
+    if (enabled) await otherPool.end({ timeout: 5 });
+});
+
+/** A stamp older than this is stale. The clock is moved with SQL, never by sleeping. */
+const STALE_MS = 120_000;
+
+const backdatePurge = () =>
+    sql`update user_repo set purge_started_at = now() - interval '1 hour'
+        where org_id = ${ORG} and status = 'purging'`;
+
+/** Lapses every lease, as the passing of the lease time would. */
+const expireLeases = () =>
+    sql`update user_repo set lease_expires_at = now() - interval '1 minute'
+        where org_id = ${ORG} and status = 'cloning'`;
+
+const rowOf = async (repo: { name: string }) => {
+    const [row] = await sql<
+        { status: string; claim_token: string | null; lease_expires_at: Date | null; purge_token: string | null }[]
+    >`select status, claim_token, lease_expires_at, purge_token from user_repo
+      where org_id = ${ORG} and user_id = ${ALICE} and repo_name = ${repo.name}`;
+    return row!;
+};
 
 /**
  * Holds the user_repo row's lock in an open transaction until the test releases it, running the
@@ -76,6 +108,14 @@ async function seedOrphan(repo: { owner: string; name: string }) {
     await store.select(ALICE, []);
 }
 
+/** Stamps an orphan and returns the stamp's token, failing the test on any refusal. */
+async function stamp(repo: { owner: string; name: string }, userId = ALICE): Promise<string> {
+    const stamped = await store.stampPurge(userId, repo);
+    if (typeof stamped === 'string' || !('stamped' in stamped))
+        throw new Error(`stamp refused: ${JSON.stringify(stamped)}`);
+    return stamped.token;
+}
+
 describe.skipIf(!enabled)('the user repo store', () => {
     it('replaces the whole selection, so replaying a PUT changes nothing', async () => {
         await store.select(ALICE, [web, api]);
@@ -106,8 +146,8 @@ describe.skipIf(!enabled)('the user repo store', () => {
         // A clone that is on disk is on disk. Re-queueing it would throw away a working tree that
         // may hold an agent's uncommitted work.
         await store.select(ALICE, [web]);
-        await store.claimPending(1);
-        await store.markReady(ALICE, web);
+        const [job] = await store.claimPending(1);
+        await store.markReady(job!);
         await store.select(ALICE, [web, api]);
 
         const byName = Object.fromEntries((await store.list(ALICE)).map((r) => [r.name, r.status]));
@@ -116,8 +156,8 @@ describe.skipIf(!enabled)('the user repo store', () => {
 
     it("re-queues a failed repo when it is re-selected, so a retry is the member's choice", async () => {
         await store.select(ALICE, [web]);
-        await store.claimPending(1);
-        await store.markFailed(ALICE, web, 'fatal: repository not found');
+        const [job] = await store.claimPending(1);
+        await store.markFailed(job!, 'fatal: repository not found');
         expect((await store.list(ALICE))[0]).toMatchObject({ status: 'failed', error: expect.any(String) });
 
         await store.select(ALICE, [web]);
@@ -145,8 +185,13 @@ describe.skipIf(!enabled)('the user repo store', () => {
         // `for update skip locked`, the same guard the job board uses. This is the property that
         // makes a second dashboard replica a schema question rather than a correctness one.
         await store.select(ALICE, [web, api]);
-        const [a, b] = await Promise.all([store.claimPending(2), store.claimPending(2)]);
-        expect([...a, ...b]).toHaveLength(2);
+        const [a, b] = await Promise.all([store.claimPending(2), other.claimPending(2)]);
+        const claimed = [...a, ...b];
+        expect(claimed).toHaveLength(2);
+        expect(new Set(claimed.map((job) => job.claimToken)).size).toBe(2);
+        const leases = await sql<{ lease_expires_at: Date | null }[]>`
+            select lease_expires_at from user_repo where org_id = ${ORG} and status = 'cloning'`;
+        expect(leases.every((row) => row.lease_expires_at !== null)).toBe(true);
     });
 
     it('does not claim a repo that was deselected while queued', async () => {
@@ -155,14 +200,150 @@ describe.skipIf(!enabled)('the user repo store', () => {
         expect(await store.claimPending(CLAIM_LIMIT)).toHaveLength(0);
     });
 
-    it('returns rows a restart stranded in cloning', async () => {
-        // A `cloning` row is owned by a process that no longer exists, and the claim only takes
-        // `queued` — so without this it stays cloning forever while nothing is cloning it.
-        await store.select(ALICE, [web, api]);
-        await store.claimPending(2);
+    it('recovery does not requeue a row another live process holds', async () => {
+        await store.select(ALICE, [web]);
+        const [job] = await store.claimPending(1);
 
-        expect(await store.requeueStranded()).toBe(2);
-        expect(await store.claimPending(2)).toHaveLength(2);
+        expect(await other.requeueExpired()).toEqual([]);
+
+        expect(await rowOf(web)).toMatchObject({ status: 'cloning', claim_token: job!.claimToken });
+    });
+
+    it('recovery requeues a lapsed lease and names its staging token', async () => {
+        await store.select(ALICE, [web]);
+        const [a] = await store.claimPending(1);
+        await expireLeases();
+
+        expect(await other.requeueExpired()).toEqual([{ userId: ALICE, name: 'web', staleToken: a!.claimToken }]);
+
+        const [b] = await other.claimPending(1);
+        expect(b!.claimToken).not.toBe(a!.claimToken);
+        expect((await store.list(ALICE))[0]).toMatchObject({ status: 'cloning', error: null });
+    });
+
+    it('reselection keeps a clone another process holds', async () => {
+        await store.select(ALICE, [web]);
+        const [a] = await store.claimPending(1);
+        const before = await rowOf(web);
+
+        await other.select(ALICE, [web]);
+        await other.select(ALICE, []);
+        await other.select(ALICE, [web]);
+
+        expect(await rowOf(web)).toEqual(before);
+        expect(await other.claimPending(CLAIM_LIMIT)).toEqual([]);
+        expect(await store.markReady(a!)).toBe(true);
+    });
+
+    it('a lost claim\u2019s publish never runs and its writes are refused', async () => {
+        await store.select(ALICE, [web]);
+        const [a] = await store.claimPending(1);
+        await expireLeases();
+        await other.requeueExpired();
+        const [b] = await other.claimPending(1);
+
+        let published = false;
+        expect(await store.markReady(a!, () => (published = true))).toBe(false);
+        expect(published).toBe(false);
+        expect(await store.markFailed(a!, 'late')).toBe(false);
+        expect(await rowOf(web)).toMatchObject({ status: 'cloning', claim_token: b!.claimToken });
+        expect(await other.markReady(b!, () => (published = true))).toBe(true);
+        expect(published).toBe(true);
+        expect(await rowOf(web)).toMatchObject({ status: 'ready', claim_token: null, lease_expires_at: null });
+    });
+
+    it('a publish runs under the row lock', async () => {
+        await store.select(ALICE, [web]);
+        const [a] = await store.claimPending(1);
+
+        let during: string | undefined;
+        await store.markReady(a!, () => {
+            during = 'ran';
+        });
+        expect(during).toBe('ran');
+        // A failed publish rolls the row back to cloning: it is not recorded ready.
+        await store.select(ALICE, [api]);
+        const [b] = await store.claimPending(1);
+        await expect(
+            store.markReady(b!, () => {
+                throw new Error('rename failed');
+            })
+        ).rejects.toThrow('rename failed');
+        expect(await rowOf(api)).toMatchObject({ status: 'cloning', claim_token: b!.claimToken });
+    });
+
+    it('renewal keeps a live claim and reports a lost one', async () => {
+        await store.select(ALICE, [web, api]);
+        const [a, b] = await store.claimPending(2);
+        await expireLeases();
+        await sql`update user_repo set claim_token = gen_random_uuid()
+            where org_id = ${ORG} and repo_name = ${b!.name}`;
+
+        expect(await store.renewLeases([a!.claimToken, b!.claimToken], 60_000)).toEqual([a!.claimToken]);
+
+        const [renewed] = await sql<{ live: boolean }[]>`
+            select lease_expires_at > now() as live from user_repo where org_id = ${ORG} and repo_name = ${a!.name}`;
+        expect(renewed!.live).toBe(true);
+        expect(await store.renewLeases([], 60_000)).toEqual([]);
+    });
+
+    it('the claim constraints refuse a cloning or purging row without its token', async () => {
+        await store.select(ALICE, [web, api]);
+        const cloning = sql`update user_repo set status = 'cloning' where org_id = ${ORG} and repo_name = 'web'`;
+        await expect(cloning).rejects.toThrow(/user_repo_clone_lease_ck/);
+        const purging = sql`update user_repo set status = 'purging' where org_id = ${ORG} and repo_name = 'api'`;
+        await expect(purging).rejects.toThrow(/user_repo_purge_claim_ck/);
+        const stray = sql`update user_repo set claim_token = gen_random_uuid(), lease_expires_at = now()
+            where org_id = ${ORG} and repo_name = 'web'`;
+        await expect(stray).rejects.toThrow(/user_repo_clone_lease_ck/);
+    });
+
+    it('every store write keeps both claim constraints', async () => {
+        const writes: (() => Promise<unknown>)[] = [
+            () => store.select(ALICE, [web, api]),
+            async () => {
+                const [a] = await store.claimPending(1);
+                await store.renewLeases([a!.claimToken], 1000);
+                await store.markReady(a!);
+            },
+            async () => {
+                const [b] = await store.claimPending(1);
+                await store.markFailed(b!, 'boom');
+            },
+            () => store.select(ALICE, [web, api]),
+            async () => {
+                await store.claimPending(CLAIM_LIMIT);
+                await expireLeases();
+                await store.requeueExpired();
+            },
+            () => store.select(ALICE, []),
+            async () => {
+                const token = await stamp(web);
+                await store.markPurgeFailed(ALICE, web, token, 'x');
+            },
+            async () => {
+                const token = await stamp(web);
+                await backdatePurge();
+                const [claimed] = await store.claimStalePurges(STALE_MS);
+                await store.holdPurge(ALICE, web, claimed!.token, () => 0);
+                await store.deletePurged(ALICE, web, claimed!.token);
+                expect(token).not.toBe(claimed!.token);
+            },
+            () => store.select(ALICE, [web]),
+        ];
+        for (const write of writes) await expect(write()).resolves.not.toThrow();
+        expect(await store.heldTokens()).toBeInstanceOf(Array);
+    });
+
+    it('heldTokens names every claim and purge token, lapsed leases included', async () => {
+        await store.select(ALICE, [web]);
+        const [a] = await store.claimPending(1);
+        await expireLeases();
+        await store.select(ALICE, [web, api]);
+        await store.select(ALICE, [web]);
+        const purge = await stamp(api);
+
+        expect((await store.heldTokens()).sort()).toEqual([a!.claimToken, purge].sort());
     });
 
     it('refuses a repo name that cannot be a directory, at the row', async () => {
@@ -221,7 +402,7 @@ describe.skipIf(!enabled)('the manual purge', () => {
         await store.select(ALICE, [web]);
         await store.select(ALICE, []);
 
-        expect(await store.stampPurge(ALICE, web)).toEqual({ stamped: true });
+        expect(await store.stampPurge(ALICE, web)).toEqual(STAMPED);
 
         const [row] = await store.orphaned(ALICE);
         expect(row!.status).toBe('purging');
@@ -233,8 +414,8 @@ describe.skipIf(!enabled)('the manual purge', () => {
             name: 'refuses a selected row regardless of its clone status',
             arrange: async () => {
                 await store.select(ALICE, [web]);
-                await store.claimPending(1);
-                await store.markReady(ALICE, web);
+                const [job] = await store.claimPending(1);
+                await store.markReady(job!);
             },
             expected: { refused: 'selected' },
         },
@@ -279,7 +460,7 @@ describe.skipIf(!enabled)('the manual purge', () => {
                 await insertJob(BOB, 'other/web');
                 await insertJob(BOB, 'acme/web');
             },
-            expected: { stamped: true },
+            expected: STAMPED,
         },
         {
             name: 'does not count a thread that is terminal and marked done',
@@ -289,7 +470,7 @@ describe.skipIf(!enabled)('the manual purge', () => {
                     () => sql`update job set root_job_id = ${root} where command = 'do it' and status = 'failed'`
                 );
             },
-            expected: { stamped: true },
+            expected: STAMPED,
         },
         {
             name: 'counts a thread that is terminal but never marked done',
@@ -299,7 +480,7 @@ describe.skipIf(!enabled)('the manual purge', () => {
         {
             name: 'does not count command-only tasks',
             seed: () => insertJob(ALICE, null),
-            expected: { stamped: true },
+            expected: STAMPED,
         },
     ])('$name', async ({ seed, expected }) => {
         await store.select(ALICE, [web]);
@@ -331,12 +512,12 @@ describe.skipIf(!enabled)('the manual purge', () => {
     it('deletes only a row that is still deselected and purging', async () => {
         await store.select(ALICE, [web]);
         await store.select(ALICE, []);
-        await store.stampPurge(ALICE, web);
+        const token = await stamp(web);
 
-        expect(await store.deletePurged(ALICE, web)).toBe(true);
+        expect(await store.deletePurged(ALICE, web, token)).toBe(true);
         expect(await store.orphaned(ALICE)).toHaveLength(0);
         // A replay performs no second delete: the row is gone.
-        expect(await store.deletePurged(ALICE, web)).toBe(false);
+        expect(await store.deletePurged(ALICE, web, token)).toBe(false);
     });
 
     it('deletePurged leaves a row that moved behind the purge\u2019s back', async () => {
@@ -344,22 +525,22 @@ describe.skipIf(!enabled)('the manual purge', () => {
         // that commits first re-queues the row, and the stale purge must not delete it.
         await store.select(ALICE, [web]);
         await store.select(ALICE, []);
-        await store.stampPurge(ALICE, web);
+        const token = await stamp(web);
         await sql`
-            update user_repo set deselected_at = null, status = 'queued'
+            update user_repo set deselected_at = null, status = 'queued', purge_token = null
             where org_id = ${ORG} and user_id = ${ALICE} and repo_name = 'web'
         `;
 
-        expect(await store.deletePurged(ALICE, web)).toBe(false);
+        expect(await store.deletePurged(ALICE, web, token)).toBe(false);
         expect(await store.list(ALICE)).toHaveLength(1);
     });
 
     it('lands a failed purge back on failed with the reason', async () => {
         await store.select(ALICE, [web]);
         await store.select(ALICE, []);
-        await store.stampPurge(ALICE, web);
+        const token = await stamp(web);
 
-        await store.markPurgeFailed(ALICE, web, 'rm: permission denied');
+        expect(await store.markPurgeFailed(ALICE, web, token, 'rm: permission denied')).toBe(true);
 
         const [row] = await store.orphaned(ALICE);
         expect(row!.status).toBe('failed');
@@ -367,21 +548,72 @@ describe.skipIf(!enabled)('the manual purge', () => {
         expect(row!.purgeStartedAt).not.toBeNull();
     });
 
-    it('lists every purging row of the org with its member, for boot recovery', async () => {
-        await store.select(ALICE, [web]);
-        await store.select(BOB, [api]);
-        await store.select(ALICE, []);
-        await store.select(BOB, []);
-        await store.stampPurge(ALICE, web);
-        await store.stampPurge(BOB, api);
+    it('a failed purge keeps its token as a pointer, unheld, and a restamp hands it back', async () => {
+        await seedOrphan(web);
+        const first = await stamp(web);
+        expect(await store.markPurgeFailed(ALICE, web, first, 'rm: permission denied')).toBe(true);
 
-        const purging = await store.listPurging();
-        expect(purging.map((r) => [r.userId, r.name]).sort()).toEqual(
-            [
-                [ALICE, 'web'],
-                [BOB, 'api'],
-            ].sort()
-        );
+        const [raw] = await sql<{ purge_token: string | null }[]>`
+            select purge_token from user_repo where org_id = ${ORG} and user_id = ${ALICE} and repo_name = 'web'`;
+        expect(raw!.purge_token).toBe(first);
+        expect(await store.heldTokens()).toEqual([]);
+
+        expect(await store.stampPurge(ALICE, web)).toEqual({
+            stamped: true,
+            token: expect.not.stringMatching(first),
+        });
+    });
+
+    it('a fresh stamp is not claimed; a stale one is claimed exactly once', async () => {
+        // Two recoverers race for one stale stamp. READ COMMITTED re-checks the staleness against the
+        // restamped row, so only one gets it and the other is told nothing.
+        await seedOrphan(web);
+        const stampToken = await stamp(web);
+        expect(await store.claimStalePurges(STALE_MS)).toEqual([]);
+
+        await backdatePurge();
+        const claimed = (
+            await Promise.all([store.claimStalePurges(STALE_MS), other.claimStalePurges(STALE_MS)])
+        ).flat();
+
+        expect(claimed).toHaveLength(1);
+        expect(claimed[0]).toMatchObject({ userId: ALICE, name: 'web' });
+        expect(claimed[0]!.token).not.toBe(stampToken);
+        expect(await store.claimStalePurges(STALE_MS)).toEqual([]);
+    });
+
+    it('a purge completion is fenced by its claim', async () => {
+        await seedOrphan(web);
+        const t1 = await stamp(web);
+        await backdatePurge();
+        const [recovered] = await store.claimStalePurges(STALE_MS);
+        const t2 = recovered!.token;
+
+        let moved = false;
+        expect(await store.holdPurge(ALICE, web, t1, () => (moved = true))).toBeNull();
+        expect(moved).toBe(false);
+        expect(await store.deletePurged(ALICE, web, t1)).toBe(false);
+        expect(await store.markPurgeFailed(ALICE, web, t1, 'late')).toBe(false);
+        expect(await store.holdPurge(ALICE, web, t2, () => 'moved')).toBe('moved');
+        expect(await store.deletePurged(ALICE, web, t2)).toBe(true);
+    });
+
+    it('reselection between two recoverers\u2019 completions keeps the fresh row', async () => {
+        await seedOrphan(web);
+        const t1 = await stamp(web);
+        await backdatePurge();
+        const [recovered] = await store.claimStalePurges(STALE_MS);
+        expect(await store.deletePurged(ALICE, web, recovered!.token)).toBe(true);
+
+        await store.select(ALICE, [web]);
+
+        expect(await store.deletePurged(ALICE, web, t1)).toBe(false);
+        expect(await store.markPurgeFailed(ALICE, web, t1, 'late')).toBe(false);
+        const [row] = await store.list(ALICE);
+        expect(row).toMatchObject({ name: 'web', status: 'queued' });
+        const [raw] = await sql<{ purge_token: string | null }[]>`
+            select purge_token from user_repo where org_id = ${ORG} and user_id = ${ALICE} and repo_name = 'web'`;
+        expect(raw!.purge_token).toBeNull();
     });
 });
 
@@ -398,7 +630,7 @@ describe.skipIf(!enabled)('the purge races', () => {
         const lock = holdRowLock(
             web,
             (tx) =>
-                tx`update user_repo set status = 'purging', purge_started_at = now()
+                tx`update user_repo set status = 'purging', purge_started_at = now(), purge_token = gen_random_uuid()
                where org_id = ${ORG} and user_id = ${ALICE} and repo_name = 'web'`
         );
         await lock.opened;
@@ -453,7 +685,7 @@ describe.skipIf(!enabled)('the purge races', () => {
         const lock = holdRowLock(
             web,
             (tx) =>
-                tx`update user_repo set status = 'purging', purge_started_at = now()
+                tx`update user_repo set status = 'purging', purge_started_at = now(), purge_token = gen_random_uuid()
                where org_id = ${ORG} and user_id = ${ALICE} and repo_name = 'web'`
         );
         await lock.opened;
@@ -471,17 +703,17 @@ describe.skipIf(!enabled)('the purge races', () => {
 
     it('a replay after the row is gone deletes nothing and reports so', async () => {
         await seedOrphan(web);
-        await store.stampPurge(ALICE, web);
+        const token = await stamp(web);
 
-        expect(await store.deletePurged(ALICE, web)).toBe(true);
-        expect(await store.deletePurged(ALICE, web)).toBe(false);
+        expect(await store.deletePurged(ALICE, web, token)).toBe(true);
+        expect(await store.deletePurged(ALICE, web, token)).toBe(false);
     });
 
     it('another member\u2019s same-name tasks never block the purge', async () => {
         await seedOrphan(web);
         await jobs.create('do it', BOB, { repo: 'acme/web', executor: null, workflow: null });
 
-        expect(await store.stampPurge(ALICE, web)).toEqual({ stamped: true });
+        expect(await store.stampPurge(ALICE, web)).toEqual(STAMPED);
     });
 
     it('a follow-up whose checkout row is absent still queues — the existing task contract', async () => {
