@@ -141,7 +141,7 @@ async function applyMigrations(
     await pool.begin(async (tx) => {
         await tx`select set_config('lock_timeout', ${`${lockWaitMs}ms`}, true)`;
         await tx`select pg_advisory_xact_lock(hashtextextended(${MIGRATION_LOCK_KEY}, 0))`;
-        await tx`select set_config('lock_timeout', '0', true)`;
+        await tx`set local lock_timeout to default`;
         await applyLocked(tx, options, log);
     });
 }

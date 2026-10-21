@@ -133,6 +133,35 @@ describe.skipIf(!enabled)('migrations across processes', () => {
         expect(await migrationsTable(schema)).not.toBeNull();
     });
 
+    it('keeps the configured lock_timeout for migration statements once the migration lock is held', async () => {
+        const schema = await freshSchema();
+        await admin.unsafe(
+            `create table ${schema}.schema_migrations (version text primary key, applied_at timestamptz not null default now())`
+        );
+        const blocker = await admin.reserve();
+        await blocker.unsafe(`begin; lock table ${schema}.schema_migrations in access exclusive mode`);
+        const pool = postgres(url as string, {
+            max: 2,
+            onnotice: () => {},
+            connection: { search_path: schema, lock_timeout: 500 },
+        });
+        pools.push(pool);
+
+        try {
+            await expect(
+                Promise.race([
+                    migrate(pool, { attempts: 1 }),
+                    new Promise((_, reject) =>
+                        setTimeout(() => reject(new Error('migration body waited forever')), 5000)
+                    ),
+                ])
+            ).rejects.toMatchObject({ code: 'MIGRATION', message: expect.stringMatching(/lock timeout/) });
+        } finally {
+            await blocker.unsafe('rollback');
+            blocker.release();
+        }
+    });
+
     it('a holder that dies releases the lock to the waiting process', async () => {
         const schema = await freshSchema();
         const tag = `mig-loss-${randomUUID()}`;
