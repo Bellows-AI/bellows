@@ -41,6 +41,21 @@ describe('migrations', () => {
         }
     });
 
+    it('can all run inside the one transaction the migration lock holds', () => {
+        // server/src/db/migrate.ts applies every pending file in one transaction under an advisory
+        // xact lock; these statements refuse to run inside a transaction block.
+        for (const name of names) {
+            const code = read(name)
+                .split('\n')
+                .filter((line) => !line.trimStart().startsWith('--'))
+                .join('\n');
+            expect(code, name).not.toMatch(
+                /\bconcurrently\b|\bvacuum\b|alter\s+system|alter\s+type\b[^;]*\badd\s+value/i
+            );
+            expect(code, name).not.toMatch(/^\s*(begin|commit|rollback)\s*;/im);
+        }
+    });
+
     it('range-partitions metric_point on time, covered by a DEFAULT partition', () => {
         const init = read('001_init.sql');
         expect(init).toMatch(/partition by range \(time\)/);

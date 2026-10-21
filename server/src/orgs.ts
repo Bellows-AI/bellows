@@ -24,7 +24,7 @@ import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
 import type { TelemetryClient } from './telemetry/client.js';
 import { createCloneQueue, type CloneQueue } from './workspace/queue.js';
-import { createPurger, type Purger } from './workspace/purge.js';
+import { createPurger, PURGE_RECOVERY_INTERVAL_MS, type Purger } from './workspace/purge.js';
 import { createFactsCache, type FactsCache } from './workspace/facts.js';
 import { createPlanReader } from './workspace/bellows-plan.js';
 import { createLocalPlanReader, LOCAL_ORIGINS_DIR } from './github/local-origin-plan.js';
@@ -244,12 +244,12 @@ function buildOrgStores({
 
 /**
  * Attaches the write-side stores to a runtime and starts its background work, in the one order
- * that matters: purge recovery is awaited (a row left `purging` is owned by a
- * process that no longer exists, and every workspace mutation and task insert refuses or
+ * that matters: purge recovery is awaited (a row left `purging` by a holder that vanished is
+ * finished once its stamp is stale, and every workspace mutation and task insert refuses or
  * serializes behind a purging stamp — finishing each one here is what makes "boot recovery
- * before accepting mutations" true rather than aspirational; the single-process assumption is
- * 011's, extended by 044), THEN the clone queue starts (fired — recovering stranded clones is
- * minutes of network).
+ * before accepting mutations" true rather than aspirational), the recovery interval keeps
+ * running after boot, THEN the clone queue starts (fired — its first pass recovers expired
+ * clone leases, and a clone is minutes of network).
  */
 async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<typeof buildOrgStores>>): Promise<void> {
     runtime.facts = stores.facts;
@@ -270,6 +270,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     } catch (e) {
         console.error(`[workspace] purge recovery failed: ${(e as Error).message}`);
     }
+    stores.purger?.start(PURGE_RECOVERY_INTERVAL_MS);
     void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
 }
 
