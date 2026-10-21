@@ -1642,11 +1642,18 @@ done
     bad 'k1: the supervisor of the lost driver ends lost (exit 75)' "$(docker ps -a --filter "label=factory.job=$k1" --format '{{.Names}} {{.Status}}')"
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 lane_touch "$LANE_DIR/$n.go" || bad 'k1: the barrier is released' 'the touch failed'
+# Claim 2's agent container is read while the job runs: the settled job leaves none of it.
+k1_agent2=''
+k1_host2=''
+k1_until=$(($(date +%s) + ADOPT_S))
+while [ -z "$k1_host2" ] && [ "$(date +%s)" -lt "$k1_until" ]; do
+    k1_agent2="$(docker ps -aq --filter "label=factory.job=$k1" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent' | sed -n 1p)"
+    [ -n "$k1_agent2" ] && k1_host2="$(runner_host "$k1_agent2")"
+    [ -n "$k1_host2" ] || sleep 0.2
+done
 dk_settled k1 "$k1" "$EXPIRED"
 dk_count 'k1: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 k1_out="$(field "$(body "$(api GET "/api/jobs/$k1")")" output)"
-k1_agent2="$(docker ps -aq --filter "label=factory.job=$k1" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent' | sed -n 1p)"
-k1_host2="$(runner_host "$k1_agent2")"
 if [ -n "$k1_agent2" ] && [ -n "$k1_host2" ]; then
     expect_contains 'k1: the agent ran in a container of claim 2' "$k1_out" "ran in $k1_host2"
 else
