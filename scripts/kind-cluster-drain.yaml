@@ -1,9 +1,10 @@
 # The multi-node kind cluster `make cluster LAYOUT=drain` creates (scripts/kind-cluster.sh), for the
 # node-drain recovery figure of scripts/test-k8s.sh --phase drain (issue #829). One control-plane,
 # schedulable so the board, the database and the collector have a node that is never drained, and
-# three workers carrying the lane's shared label. Every worker bind-mounts one host directory at
-# /factory-shared: the lane's static workspaces volume (ReadWriteMany) lives there, so a task keeps
-# its checkout when its pod is rescheduled onto another worker.
+# three workers. All four nodes carry the lane's shared label and bind-mount one host directory
+# (@SHARED@, rendered by the script into a per-cluster path) at /factory-shared: the lane's static
+# workspaces volume (ReadWriteMany) lives there, so the board on the control plane and a task pod on
+# any worker see one tree, and a task keeps its checkout when its pod is rescheduled.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 containerdConfigPatches:
@@ -12,6 +13,11 @@ containerdConfigPatches:
         config_path = "/etc/containerd/certs.d"
 nodes:
     - role: control-plane
+      labels:
+          factory.lane/shared: "true"
+      extraMounts:
+          - hostPath: @SHARED@
+            containerPath: /factory-shared
       kubeadmConfigPatches:
           - |
             kind: InitConfiguration
@@ -21,17 +27,17 @@ nodes:
       labels:
           factory.lane/shared: "true"
       extraMounts:
-          - hostPath: /tmp/factory-kind-shared
+          - hostPath: @SHARED@
             containerPath: /factory-shared
     - role: worker
       labels:
           factory.lane/shared: "true"
       extraMounts:
-          - hostPath: /tmp/factory-kind-shared
+          - hostPath: @SHARED@
             containerPath: /factory-shared
     - role: worker
       labels:
           factory.lane/shared: "true"
       extraMounts:
-          - hostPath: /tmp/factory-kind-shared
+          - hostPath: @SHARED@
             containerPath: /factory-shared

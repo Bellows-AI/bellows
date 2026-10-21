@@ -214,6 +214,11 @@ cleanup() {
         kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" \
             -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     fi
+    # A drain still running in the background would re-cordon what is uncordoned next: it goes first.
+    if [ -n "${drain_pid:-}" ]; then
+        kill "$drain_pid" >/dev/null 2>&1
+        wait "$drain_pid" >/dev/null 2>&1
+    fi
     # Nodes this run cordoned or drained go back to scheduling, then the shared volume and its directory go.
     for node in $(cat "${cordoned_file:-/dev/null}" 2>/dev/null); do
         kubectl uncordon "$node" --request-timeout=20s >/dev/null 2>&1
@@ -1400,8 +1405,8 @@ kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name" >/dev/null || {
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
 deploy_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# A cluster made with LAYOUT=drain (scripts/kind-cluster-drain.yaml) carries workers that share one host
-# directory, labelled factory.lane/shared: the workspaces then live on a static ReadWriteMany volume over
+# A cluster made with LAYOUT=drain (scripts/kind-cluster-drain.yaml) carries nodes, the control plane too,
+# that share one host directory, labelled factory.lane/shared: the workspaces then live on a static ReadWriteMany volume over
 # it, so a task pod can move between those nodes (issue #829). Any other cluster keeps the claim the
 # state chart makes. An unreadable node list refuses the run: it is never "no such nodes".
 SHARED_SETS=()
@@ -3031,6 +3036,21 @@ tk_claim_jobs() { # tk_claim_jobs <job id> <claim seq> -> the runner Jobs of tha
         awk -v seq="$2" '$2 == seq { print $1 }'
 }
 
+tk_supervisor_exit() { # tk_supervisor_exit <job id> <claim seq> <seconds> -> the supervisor container's exit code; ? when never read
+    local until=$(($(date +%s) + $3)) job code=''
+    while [ "$(date +%s)" -lt "$until" ]; do
+        # A kubectl error leaves the code empty and the loop polling: an unread pod is never an exit code.
+        if job="$(tk_claim_jobs "$1" "$2")" && [ -n "$job" ]; then
+            code="$(kubectl get pods -l "job-name=$job" -n "$NAMESPACE" --request-timeout=10s \
+                -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="supervisor")].state.terminated.exitCode}' 2>/dev/null)" &&
+                [ -n "$code" ] && break
+        fi
+        code=''
+        sleep 2
+    done
+    printf '%s' "${code:-?}"
+}
+
 tk_kill() { # tk_kill <job id> -> the driver pod gone with no drain, a replacement up, the dead claim's lease expired
     local expired
     kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
@@ -3043,9 +3063,11 @@ tk_kill() { # tk_kill <job id> -> the driver pod gone with no drain, a replaceme
     }
 }
 
+tk_settled_at='' # the second the brief first read succeeded, set by tk_settled; empty when it never did
 tk_settled() { # tk_settled <name> <job id> <interruption> -> the checks every case shares once the job ran to its end
     local brief left clean until=$(($(date +%s) + 120))
-    brief="$(await_brief "$2" 'succeeded*' 240)"
+    tk_settled_at=''
+    brief="$(await_brief "$2" 'succeeded*' 240)" && tk_settled_at=$(date +%s)
     [ "$brief" = "succeeded|1|1|1|$3" ] && ok "$1: the next claim finishes the task once, with one interruption" ||
         bad "$1: the next claim finishes the task once, with one interruption" "status|attempts|count|claimSeq|reason: $brief"
     clean=''
@@ -3106,6 +3128,7 @@ else
     tk_await "$TK_D/$n.setup.count" 1 240 && ok 't1: the setup is running' || bad 't1: the setup is running' "$(tk_count "$TK_D/$n.setup.count")"
     tk_check 't1: the agent has not started' "$(tk_ready "$TK_D/$n.agent.ready-")" 0
     tk_kill "$t1"
+    tk_check 't1: the supervisor of the lost driver ends lost (exit 75)' "$(tk_supervisor_exit "$t1" 1 120)" 75
     await_brief "$t1" "*|1|1|$EXPIRED" 120 >/dev/null && ok 't1: the next claim records the interruption' ||
         bad 't1: the next claim records the interruption' "$(job_brief "$t1")"
     tk_touch "$TK_D/$n.go" || bad 't1: the barrier is released' 'the touch failed'
@@ -3211,7 +3234,9 @@ else
     t5_prs_now="$(tk_count "$TK_ORIGIN/lane-gh-prs")"
     case "$t5_pushes$t5_pushes_now" in *'?'*) t5_pushed='?' ;; *) t5_pushed=$((t5_pushes_now - t5_pushes)) ;; esac
     case "$t5_prs$t5_prs_now" in *'?'*) t5_opened='?' ;; *) t5_opened=$((t5_prs_now - t5_prs)) ;; esac
-    tk_check 't5: the branch is pushed once' "$t5_pushed" 1
+    # The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
+    # counts updates; the PR count is the check against a duplicate publication.
+    tk_check 't5: the branch ref is updated once' "$t5_pushed" 1
     tk_check 't5: one PR is opened' "$t5_opened" 1
     tk_check 't5: the gate ran once' "$(tk_count "$TK_D/$n.gate.count")" 1
     tk_check 't5: the agent ran once' "$(tk_ready "$TK_D/$n.agent.ready-")" 1
@@ -3260,7 +3285,7 @@ WA="$(printf '%s\n' "$drain_workers" | sed -n 1p)"
 WB="$(printf '%s\n' "$drain_workers" | sed -n 2p)"
 WC="$(printf '%s\n' "$drain_workers" | sed -n 3p)"
 on_workers="$(kubectl get pods -n "$NAMESPACE" --request-timeout=10s \
-    -l "app.kubernetes.io/instance in ($RELEASE,$STATE_RELEASE),app.kubernetes.io/component!=driver" \
+    -l "app.kubernetes.io/instance in ($RELEASE,$STATE_RELEASE),app.kubernetes.io/component in (dashboard,postgres,collector)" \
     -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}')" || drain_refuse 'the board pods could not be read'
 case "$on_workers" in *"$WA"* | *"$WB"* | *"$WC"*) drain_refuse "the board or the database runs on a worker: $on_workers" ;; esac
 
@@ -3276,7 +3301,9 @@ drain_isolate() { # drain_isolate <node>... -> the named nodes schedulable, ever
 driver_node() { # driver_node -> the node of the running driver pod; non-zero when unread or none
     local at
     at="$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s --field-selector=status.phase=Running \
-        -o jsonpath='{.items[0].spec.nodeName}')" || return 1
+        -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.deletionTimestamp}{"\n"}{end}')" || return 1
+    # A terminating pod is still Running: only one that is not being deleted is the driver.
+    at="$(printf '%s\n' "$at" | awk -F'\t' '$2 == "" && $1 != "" { print $1; exit }')"
     [ -n "$at" ] || return 1
     printf '%s' "$at"
 }
@@ -3304,12 +3331,14 @@ drain_start() { # drain_start <node> -> drains it in the background; <work>/drai
     drain_pid=$!
 }
 
-drain_record() { # drain_record <case> <node> <t0> <held at> <settled at> -> one row; ? where a drain did not return
-    local drained
+drain_record() { # drain_record <case> <node> <t0> <held at> <settled at> -> one row; ? where an event was not observed
+    local drained held=? settled=?
     drained="$(cat "$work/drain.end" 2>/dev/null)"
     if [ -n "$drained" ]; then drained=$((drained - $3)); else drained='?'; fi
-    printf '%s	%s	%s	%s	%s
-' "$1" "$2" "$drained" "$(($4 - $3))" "$(($5 - $3))" >>"$RECOVERY_TSV"
+    [ -n "$4" ] && held=$(($4 - $3))
+    [ -n "$5" ] && settled=$(($5 - $3))
+    [ "$held" != '?' ] && [ "$settled" != '?' ] || bad "$1: the recovery was measured" "held '${4:-}', settled '${5:-}'"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$drained" "$held" "$settled" >>"$RECOVERY_TSV"
 }
 
 drain_restore() { # drain_restore -> every node schedulable again
@@ -3351,9 +3380,8 @@ if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; t
         [ -f "$work/drain.end" ] && ok "d1: $WA is drained" || bad "d1: $WA is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
         tk_touch "$TK_D/$n.go" || bad 'd1: the barrier is released' 'the touch failed'
         tk_settled d1 "$d1" "$DRAINED"
-        settled_at=$(date +%s)
         tk_check 'd1: the agent ran once' "$(tk_ready "$TK_D/$n.go.ready-")" 1
-        [ -n "$held_at" ] && drain_record D1 "$WA" "$t0" "$held_at" "$settled_at"
+        drain_record D1 "$WA" "$t0" "$held_at" "$tk_settled_at"
     fi
 else
     bad 'd1: the driver runs on the first worker' "driver on '$(driver_node)'"
@@ -3394,8 +3422,7 @@ if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; t
         [ -f "$work/drain.end" ] && ok "d2: $WB is drained" || bad "d2: $WB is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
         tk_touch "$TK_D/$n.go" || bad 'd2: the barrier is released' 'the touch failed'
         tk_settled d2 "$d2" "$POD_LOST"
-        settled_at=$(date +%s)
-        [ -n "$held_at" ] && drain_record D2 "$WB" "$t0" "$held_at" "$settled_at"
+        drain_record D2 "$WB" "$t0" "$held_at" "$tk_settled_at"
     fi
 else
     bad 'd2: the driver runs on the first worker' "driver on '$(driver_node)'"

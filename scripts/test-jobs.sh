@@ -1645,7 +1645,13 @@ lane_touch "$LANE_DIR/$n.go" || bad 'k1: the barrier is released' 'the touch fai
 dk_settled k1 "$k1" "$EXPIRED"
 dk_count 'k1: the agent ran once' "$LANE_DIR/$n.agent.count" 1
 k1_out="$(field "$(body "$(api GET "/api/jobs/$k1")")" output)"
-expect_contains 'k1: the agent ran in a container of claim 2' "$k1_out" 'ran in '
+k1_agent2="$(docker ps -aq --filter "label=factory.job=$k1" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent' | sed -n 1p)"
+k1_host2="$(runner_host "$k1_agent2")"
+if [ -n "$k1_agent2" ] && [ -n "$k1_host2" ]; then
+    expect_contains 'k1: the agent ran in a container of claim 2' "$k1_out" "ran in $k1_host2"
+else
+    bad 'k1: the agent ran in a container of claim 2' "claim-2 agent '$k1_agent2', host '$k1_host2'"
+fi
 dk_log "$k1" "$TOOK_OVER" && bad 'k1: nothing was taken over' 'the driver logged a takeover' || ok 'k1: nothing was taken over'
 dk_log "$k1" "$ADOPTED" && bad 'k1: nothing was adopted' 'the driver logged an adoption' || ok 'k1: nothing was adopted'
 stop_driver
@@ -1678,8 +1684,10 @@ for _ in $(seq 1 30); do
 done
 [ -n "$rebound" ] && ok 'k2: the supervisor rebinds to claim 2' || bad 'k2: the supervisor rebinds to claim 2' "$(printf '%s' "$k2_logs" | tail -5)"
 sleep 5
-[ -z "$(docker ps -aq --filter "label=factory.job=$k2" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent')" ] &&
-    ok 'k2: no second agent is started' || bad 'k2: no second agent is started' 'a claim-2 agent container exists'
+# A failed docker ps is not an empty list: it fails the case with docker's own words.
+k2_second="$(docker ps -aq --filter "label=factory.job=$k2" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent' 2>&1)" &&
+    [ -z "$k2_second" ] && ok 'k2: no second agent is started' ||
+    bad 'k2: no second agent is started' "a claim-2 agent container exists, or docker failed: $k2_second"
 lane_touch "$LANE_DIR/$n.go" || bad 'k2: the barrier is released' 'the touch failed'
 dk_settled k2 "$k2" "$EXPIRED"
 expect_contains 'k2: the output names the container of claim 1' "$(field "$(body "$(api GET "/api/jobs/$k2")")" output)" "ran in ${k2_host:-unknown}"
@@ -1709,6 +1717,15 @@ for _ in $(seq 1 8); do
     }
 done
 [ -n "$k2d_handed" ] && ok 'k2d: the drained driver hands its run back' || bad 'k2d: the drained driver hands its run back' "$(interruptions_of "$k2d_body")"
+# A drained driver ends on its own; one that does not within the deadline is killed, never waited on forever.
+for _ in $(seq 1 60); do
+    kill -0 "$driver_pid" 2>/dev/null || break
+    sleep 1
+done
+if kill -0 "$driver_pid" 2>/dev/null; then
+    bad 'k2d: the drained driver exits' 'still running 60s after SIGTERM'
+    kill -KILL "$driver_pid" 2>/dev/null
+fi
 wait "$driver_pid" 2>/dev/null
 driver_pid=""
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
@@ -1755,7 +1772,9 @@ k5_pushes_now="$(lane_count "$DK_ORIGIN/lane-pushes.log")"
 k5_prs_now="$(lane_count "$DK_ORIGIN/lane-gh-prs")"
 case "$k5_pushes$k5_pushes_now" in *'?'*) k5_pushed='?' ;; *) k5_pushed=$((k5_pushes_now - k5_pushes)) ;; esac
 case "$k5_prs$k5_prs_now" in *'?'*) k5_opened='?' ;; *) k5_opened=$((k5_prs_now - k5_prs)) ;; esac
-[ "$k5_pushed" = 1 ] && ok 'k5: the branch is pushed once' || bad 'k5: the branch is pushed once' "pushes added: $k5_pushed"
+# The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
+# counts updates; the PR count below is the check against a duplicate publication.
+[ "$k5_pushed" = 1 ] && ok 'k5: the branch ref is updated once' || bad 'k5: the branch ref is updated once' "ref updates added: $k5_pushed"
 [ "$k5_opened" = 1 ] && ok 'k5: one PR is opened' || bad 'k5: one PR is opened' "PRs added: $k5_opened"
 dk_count 'k5: the gates ran once' "$LANE_DIR/$n.gate.count" 1
 dk_count 'k5: the agent ran once' "$LANE_DIR/$n.agent.count" 1
