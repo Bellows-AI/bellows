@@ -23,6 +23,11 @@ export interface TaskRestore {
     checkpoint: CheckpointPointer | null;
     /** The older generations to delete once the restore reports ok. */
     older: number[];
+    /**
+     * An unschedulable generation that may hold the tree when the live one does not: kept in reserve, never
+     * mounted while marked. The live one is checked first; only its confirmed-empty answer drops it.
+     */
+    held?: number;
     restored: boolean;
 }
 
@@ -32,7 +37,10 @@ export interface VolumeListing {
     live: number[];
     /** The highest generation listed at all, a volume being deleted included: its name is not free. */
     highest: number;
-    /** Volumes no pod could be scheduled onto (kubernetes): never adopted, deleted once a restore has landed. */
+    /**
+     * Volumes no pod could be scheduled onto (kubernetes): never mounted while marked — adopted again, mark
+     * cleared, only when no live volume is left — and deleted once a live one is verified.
+     */
     unschedulable: number[];
 }
 
@@ -54,9 +62,9 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
  * The restore an adopted restored generation (`live[0]`) still owes. A volume made by an earlier restore may not
  * have been filled, and the plan cannot tell: the restore step does (the checkout is there, or it is not), so a
  * continuing claim asks again and always schedules it. With no complete checkpoint it carries none and only
- * verifies the tree. A volume no pod could be scheduled onto holds the tree the live one may lack: the claim runs
- * on it, its mark kept until a later claim finds no live volume, so an interruption before the step has found
- * the tree there plans this same choice again. The live volumes go only once it has.
+ * verifies the tree. The live volume is always the one checked: it may hold newer work than an unschedulable one
+ * beside it (a restore filled it and the delete of the old one failed). The newest unschedulable one is only held
+ * in reserve, for the step's confirmed answer that the live one is empty (`restoreTaskTree`).
  */
 async function owedRestore(
     source: Pick<Board, 'checkpoint'>,
@@ -71,8 +79,12 @@ async function owedRestore(
         return;
     }
     const [held] = [...unschedulable].sort((x, y) => y - x);
-    if (held !== undefined) job.taskGeneration = held;
-    job.taskRestore = { checkpoint: null, older: held === undefined ? older : live, restored: false };
+    job.taskRestore = {
+        checkpoint: null,
+        older: [...older, ...unschedulable],
+        ...(held === undefined ? {} : { held }),
+        restored: false,
+    };
 }
 
 /**
@@ -141,6 +153,9 @@ export const unrestorableResult = (e: CheckpointUnrestorable): SyncResult => ({
     kind: 'checkpoint_unrestorable',
 });
 
+/** The restore script's verdict: a sync result, `absent` when it confirmed the volume holds no tree. */
+type RestoreVerdict = SyncResult & { absent?: boolean };
+
 /**
  * Runs the owed restore as a supervised step, then deletes the older generations through `removeOlder`.
  * Null when nothing is owed. A restore that fails leaves everything where it was.
@@ -174,12 +189,27 @@ export async function restoreTaskTree(
             timeoutMs: RESTORE_DEADLINE_MS,
         })
     );
-    const failed = (): SyncResult => ({
+    const failed = (): RestoreVerdict => ({
         ok: false,
         reason: `the checkpoint restore failed: ${detailOf(result, RESTORE_DEADLINE_MS)}`,
     });
-    const verdict = result.timedOut ? failed() : parseLastJsonLine<SyncResult>(result.stdout, failed);
-    if (!verdict.ok) return verdict;
+    const verdict: RestoreVerdict = result.timedOut
+        ? failed()
+        : parseLastJsonLine<RestoreVerdict>(result.stdout, failed);
+    if (!verdict.ok && verdict.absent === true && pending.held !== undefined && job.taskGeneration !== undefined) {
+        // The live volume is confirmed empty and an unschedulable one may hold the tree. Only the empty one goes;
+        // the claim is handed back, and the next one, finding no live volume, adopts the held one with its mark
+        // cleared (`planTaskVolume`). A delete that fails throws too: the empty one stays, nothing else is touched.
+        await options.removeOlder([job.taskGeneration]);
+        throw new Error(
+            `job ${job.id}: task volume generation ${job.taskGeneration} holds no tree; generation ${pending.held} ` +
+                'may, and is adopted again by the next claim'
+        );
+    }
+    if (!verdict.ok) {
+        const { absent: _absent, ...refused } = verdict;
+        return refused;
+    }
     pending.restored = true;
     // Durable before destructive: only now may the volume it replaces go. A delete that fails leaves an
     // older generation the next claim sees beside the current one and removes then.

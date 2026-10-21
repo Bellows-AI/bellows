@@ -74,14 +74,32 @@ describe('planTaskVolume', () => {
         expect(job.taskRestore).toEqual({ checkpoint: null, older: [1], restored: false });
     });
 
-    it('runs on the unschedulable volume that holds the tree, mark kept, and removes the live ones once it is verified', async () => {
+    // The live volume may be the one holding the newer work (a restore filled it, the delete of the
+    // unschedulable one failed): it is checked first, the unschedulable one only held in reserve.
+    it('stays on the live volume, the newest unschedulable one held in reserve, when no complete checkpoint exists', async () => {
         const job = continuing();
         expect(
-            await planTaskVolume(board({ state: 'gone' }), job, { live: [3], highest: 3, unschedulable: [2] })
+            await planTaskVolume(board({ state: 'gone' }), job, { live: [3], highest: 3, unschedulable: [1, 2] })
         ).toEqual({ create: false });
-        expect(job.taskGeneration).toBe(2);
-        expect(job.taskRestore).toEqual({ checkpoint: null, older: [3], restored: false });
+        expect(job.taskGeneration).toBe(3);
+        expect(job.taskRestore).toEqual({ checkpoint: null, older: [1, 2], held: 2, restored: false });
     });
+
+    it.each([
+        ['none', { state: 'none' } as CheckpointRead],
+        ['gone', { state: 'gone' } as CheckpointRead],
+        ['truncated', found({ ...POINTER, truncated: true })],
+    ])(
+        'adopts the unschedulable volume again, mark cleared, when none is live and the checkpoint is %s',
+        async (_n, read) => {
+            const job = continuing();
+            expect(await planTaskVolume(board(read), job, { live: [], highest: 2, unschedulable: [1, 2] })).toEqual({
+                create: false,
+                unlabel: 2,
+            });
+            expect(job.taskGeneration).toBe(2);
+        }
+    );
 
     it('restores into the live volume, not the unschedulable one, when a complete checkpoint exists', async () => {
         const job = continuing();
@@ -233,6 +251,56 @@ describe('restoreTaskTree', () => {
 
         expect(steps[0]?.env).toMatchObject({ CHUNKS: '[]' });
         expect(removeOlder).toHaveBeenCalledWith([3]);
+    });
+
+    const ABSENT = '{"ok":false,"reason":"no tree","kind":"checkpoint_unrestorable","absent":true}';
+
+    it('drops only the live volume confirmed empty and hands the claim back, so the next one adopts the held volume', async () => {
+        const job = continuing({ taskGeneration: 3 });
+        job.taskRestore = { checkpoint: null, older: [2], held: 2, restored: false };
+        const { host } = sink(() => ({ stdout: ABSENT }));
+        const removeOlder = vi.fn(async () => undefined);
+
+        await expect(restoreTaskTree(host, job, { removeOlder })).rejects.toThrow(/generation 2/);
+
+        // The held volume is never deleted here; its mark is cleared by the next claim, which finds no live one.
+        expect(removeOlder).toHaveBeenCalledExactlyOnceWith([3]);
+        expect(job.taskRestore?.restored).toBe(false);
+    });
+
+    it('hands the claim back without a verdict when the empty live volume cannot be dropped', async () => {
+        const job = continuing({ taskGeneration: 3 });
+        job.taskRestore = { checkpoint: null, older: [2], held: 2, restored: false };
+        const { host } = sink(() => ({ stdout: ABSENT }));
+        const removeOlder = vi.fn(async () => {
+            throw new Error('apiserver down');
+        });
+
+        await expect(restoreTaskTree(host, job, { removeOlder })).rejects.toThrow(/apiserver down/);
+        expect(removeOlder).toHaveBeenCalledExactlyOnceWith([3]);
+    });
+
+    it('is checkpoint_unrestorable, deleting nothing, when the live volume is empty and none is held', async () => {
+        const job = continuing({ taskGeneration: 3 });
+        job.taskRestore = { checkpoint: null, older: [], restored: false };
+        const { host } = sink(() => ({ stdout: ABSENT }));
+        const removeOlder = vi.fn(async () => undefined);
+
+        expect(await restoreTaskTree(host, job, { removeOlder })).toMatchObject({
+            ok: false,
+            kind: 'checkpoint_unrestorable',
+        });
+        expect(removeOlder).not.toHaveBeenCalled();
+    });
+
+    it('deletes nothing on a refused checkpoint that does not say the volume is empty, even with one held', async () => {
+        const job = continuing({ taskGeneration: 3 });
+        job.taskRestore = { checkpoint: POINTER, older: [2], held: 2, restored: false };
+        const { host } = sink(() => ({ stdout: '{"ok":false,"reason":"gap","kind":"checkpoint_unrestorable"}' }));
+        const removeOlder = vi.fn(async () => undefined);
+
+        expect(await restoreTaskTree(host, job, { removeOlder })).toMatchObject({ ok: false });
+        expect(removeOlder).not.toHaveBeenCalled();
     });
 
     it('carries the credential helper only beside a token', async () => {
