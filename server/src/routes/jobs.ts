@@ -41,6 +41,7 @@ import {
 } from './job-handlers-artifacts.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
+import { registerRestoreRoutes } from './job-handlers-restore.js';
 import { BODY_LIMIT, CONCLUSION_BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 
@@ -157,6 +158,8 @@ export const jobRoutes =
         app.post('/api/jobs/:id/review-read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReviewRead(orgs, request, reply)
         );
+        // The restore reads (issue #775), under the live lease: the thread's checkpoint and raw transcripts.
+        registerRestoreRoutes(app, orgs);
         // Artifact uploads (070), authorized by claim sequence rather than the lease. A child scope,
         // so the raw-bytes parser reaches only the chunk route.
         void app.register(async (scope) => {

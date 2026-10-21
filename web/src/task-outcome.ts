@@ -165,6 +165,7 @@ export const FAILURE_KIND_LABEL: Record<FailureKind, string> = {
     services: 'service failed',
     config: 'config error',
     policy: 'evidence required',
+    checkpoint_unrestorable: 'checkpoint unrestorable',
     runner_error: 'runner error',
 };
 

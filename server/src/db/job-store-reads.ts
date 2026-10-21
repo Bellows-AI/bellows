@@ -16,6 +16,7 @@ import type {
     TaskSummary,
     SettleOutcome,
 } from './job-store-types.js';
+import type { RestoreScopeResult } from './restore-types.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from './task-summary.js';
 
@@ -186,6 +187,65 @@ export async function artifactScopeOf(ctx: JobStoreContext, id: string): Promise
     `;
     const row = rows[0];
     return row ? { member: row.created_by, root: row.root_job_id, claimSeq: Number(row.claim_seq) } : null;
+}
+
+/**
+ * The root's checkpoint pointer and the thread's rows, for the live lease of `id` (issue #775). The
+ * lease check is the claim's own: running, and the token the row holds now.
+ */
+export async function restoreScopeOf(
+    ctx: JobStoreContext,
+    id: string,
+    leaseToken: string
+): Promise<RestoreScopeResult> {
+    const { sql, orgId } = ctx;
+    const [live] = await sql<{ root_job_id: string }[]>`
+        select root_job_id from job
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+    `;
+    if (!live) {
+        const known = await sql`select 1 from job where org_id = ${orgId} and id = ${id}`;
+        return { result: known.length > 0 ? 'lost' : 'missing' };
+    }
+    const [root] = await sql<
+        {
+            checkpoint_job_id: string | null;
+            checkpoint_claim_seq: string | null;
+            checkpoint_executor: string | null;
+            checkpoint_session: string | null;
+            checkpoint_truncated: boolean | null;
+            checkpoint_cause: string | null;
+            checkpoint_finalized_at: Date | null;
+        }[]
+    >`
+        select checkpoint_job_id, checkpoint_claim_seq, checkpoint_executor, checkpoint_session,
+               checkpoint_truncated, checkpoint_cause, checkpoint_finalized_at
+        from job where org_id = ${orgId} and id = ${live.root_job_id}
+    `;
+    const rows = await sql<{ id: string; created_by: string | null; claim_seq: string }[]>`
+        select id, created_by, claim_seq from job
+        where org_id = ${orgId} and root_job_id = ${live.root_job_id}
+        order by created_at, id
+    `;
+    const pointed = root?.checkpoint_job_id != null && root.checkpoint_finalized_at != null;
+    return {
+        result: 'ok',
+        scope: {
+            root: live.root_job_id,
+            checkpoint: pointed
+                ? {
+                      jobId: root.checkpoint_job_id!,
+                      claimSeq: Number(root.checkpoint_claim_seq),
+                      executor: root.checkpoint_executor ?? '',
+                      session: root.checkpoint_session ?? '',
+                      truncated: root.checkpoint_truncated === true,
+                      cause: root.checkpoint_cause,
+                      finalizedAt: root.checkpoint_finalized_at!,
+                  }
+                : null,
+            jobs: rows.map((row) => ({ id: row.id, member: row.created_by, claimSeq: Number(row.claim_seq) })),
+        },
+    };
 }
 
 export type ListFilter = Parameters<JobStore['list']>[0];

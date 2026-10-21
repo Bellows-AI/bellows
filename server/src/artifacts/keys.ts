@@ -24,6 +24,9 @@ const CHUNK_KEY_PARTS = 9;
 /** 10^12 − 1 bytes, the largest offset the zero-padded key can order. */
 const MAX_OFFSET = 10 ** OFFSET_DIGITS - 1;
 
+/** Whether `value` is a plain key segment — what a caller-named coordinate must be before a key is built from it. */
+export const isKeySegment = (value: string): boolean => SEGMENT.test(value);
+
 export class InvalidKeyError extends Error {}
 
 function segment(name: string, value: string): string {

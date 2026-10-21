@@ -7,6 +7,7 @@
 
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
+import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
@@ -54,6 +55,7 @@ export type FailureKind =
     | 'services'
     | 'config'
     | 'policy'
+    | 'checkpoint_unrestorable'
     | 'runner_error';
 
 /**
@@ -1084,6 +1086,12 @@ export interface JobStore {
      * claim prefix, and that is all it may do. Null when the org has no such job.
      */
     artifactScope(id: string): Promise<JobArtifactScope | null>;
+    /**
+     * The thread facts the restore reads (issue #775), authorized by the LIVE lease of `id`: the
+     * root's checkpoint pointer and the thread's rows. `lost` is a known job whose lease is not
+     * `leaseToken` (or is not running); `missing` an unknown one. Writes nothing.
+     */
+    restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     heartbeat(
