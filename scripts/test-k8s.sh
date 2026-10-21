@@ -2622,7 +2622,8 @@ else
         bad "the lost driver's attempt is released, by its lease or its own report" "$expired"
     lost_end="$(await_brief "$lost" 'succeeded*' 240)"
     case "$lost_end" in
-    "succeeded|1|1|1|$lost_reason"*) ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ;;
+    # Either release is the one interruption: the dying driver's report can land even after the expiry hit.
+    "succeeded|1|1|1|$EXPIRED"* | "succeeded|1|1|1|$JOB_LOST"*) ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ;;
     *) bad 'a replacement runner redoes the lost attempt: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $lost_end" ;;
     esac
     lost_out="$(job_output "$lost")"
