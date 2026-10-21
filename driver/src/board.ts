@@ -587,9 +587,9 @@ export interface Board {
      */
     leases(ids: readonly string[]): Promise<BoardLease[] | null>;
     /**
-     * Which reclaim acquisitions the board still holds for a batch of root job ids (issue #829):
-     * a reclaim group is labelled with its acquisition token, and the reaper spares one the board
-     * holds. An empty list is the board's positive "nothing is held"; null — refused, failed or
+     * Which of these reclaim acquisition tokens the board still holds (issue #829): a reclaim
+     * group is labelled with its acquisition token, and the reaper spares one the board holds.
+     * An empty set is the board's positive "nothing is held"; null — refused, failed or
      * malformed — means it cannot answer, and the reaper reaps nothing on it.
      */
     reclaimHolds(tokens: readonly string[]): Promise<Set<string> | null>;

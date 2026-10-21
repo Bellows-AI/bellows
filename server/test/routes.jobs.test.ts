@@ -131,7 +131,7 @@ interface StoreStub extends JobStore {
     reclaimRenewals: { id: string; token: string; leaseSeconds: number }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
     leased: { ids: string[] }[];
-    /** The reclaim-hold lookups the reaper's route made, with the ids it asked for (issue #829). */
+    /** The reclaim-hold lookups the reaper's route made, with the tokens it asked for (issue #829). */
     held: { tokens: string[] }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
@@ -1173,7 +1173,7 @@ describe('POST /api/jobs/:id/heartbeat', () => {
 describe('POST /api/reclaims/holds — the reaper’s reclaim-ownership lookup (issue #829)', () => {
     const OTHER_TOKEN = '55555555-5555-4555-8555-555555555555';
 
-    it('answers each held root’s acquisition token and merges every org board', async () => {
+    it('answers the held acquisition tokens and merges every org board', async () => {
         const a = stubStore({ holdRows: [TOKEN] });
         const b = stubStore({ holdRows: [OTHER_TOKEN] });
         const instance = await harnessOfBoards([
