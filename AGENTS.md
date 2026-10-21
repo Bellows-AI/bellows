@@ -27,6 +27,13 @@ or malformed answer is inconclusive: the caller leaves the run alone instead of 
 or reporting it gone. `lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`,
 `driver/test/docker-read-faults.test.ts`.
 
+**Prototype, debug and fix against integration tests; the real lanes are the final touch.** Reproduce
+a bug, and iterate on a fix, in a seconds-long test that runs the real modules together with only the
+outermost boundary faked and its timers compressed — the real supervisor against a fake driver
+endpoint (`driver/test/supervisor.test.ts`), the real store against a disposable database
+(`server/test-db/`). A failure first seen in `scripts/test-jobs.sh` or `scripts/test-k8s.sh` gets
+such a test before the next lane run; a lane is rerun to confirm a fix, never to search for a cause.
+
 **Touching the frontend means running the e2e suite.** A change under `web/src` — a component,
 panel, page, style, label or `aria-*` name — or to a payload a panel renders runs
 `npm run verify:ui` before it ships, and every failure is fixed in the same change: the app if it

@@ -154,7 +154,11 @@ format drift) to settle what it flags.
 In order:
 
 1. RED: write a test that reproduces the issue. Run it (in WORKTREE) and confirm it FAILS for the
-   expected reason — a setup error is not a red.
+   expected reason — a setup error is not a red. Prefer an integration test — the real modules
+   together, only the outermost boundary faked, timers compressed — over a slow real lane: it
+   runs in seconds, so it is where the fix is prototyped and debugged. A failure a lane
+   (`test:jobs`, `test:k8s`) reports is reproduced this way before the lane runs again; the lane
+   only confirms the fix.
 2. GREEN: write the minimum implementation that makes it pass. No features beyond the issue, no
    speculative abstractions.
 3. Run the focused suite plus `npm run typecheck`. If existing tests break, fix them before
