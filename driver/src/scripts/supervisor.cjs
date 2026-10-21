@@ -1427,7 +1427,8 @@ const CHUNK_MIB = 65;
 const JSON_KIB = 4;
 const CONTENT_HEADER = /^content-(type|length)$/;
 const RELAY_MODE = 0o600;
-const REVIEW_KEY = /^\/review\/[A-Za-z0-9][A-Za-z0-9._~%-]{0,255}$/;
+/** `REVIEW_KEY` of the agent's proxy (docker/*-executor/control-proxy.cjs): the one key shape a review is named by. */
+const REVIEW_KEY = /^\/review\/[A-Za-z0-9_-]{1,64}$/;
 const RELAYS = {
     agent: {
         token: 'agentToken',

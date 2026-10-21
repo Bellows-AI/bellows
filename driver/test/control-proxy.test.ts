@@ -1,8 +1,7 @@
 import * as fs from 'node:fs';
-import { mkdtempSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer, request, type IncomingHttpHeaders, type Server } from 'node:http';
 import { createRequire } from 'node:module';
-import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,13 +10,13 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
  * The agent's run-control proxy (issue #814), shipped in both executor images: the agent's tools run
- * as their own uid without the run-control token, and reach the two routes the baked skills call
- * through this socket, which adds it. Driven against a fake board over a scratch socket.
+ * as their own uid and hold no run-control credential, and reach the routes the baked skills call
+ * through this socket, which forwards them to the supervisor's relay (#829 S3c), where the token is
+ * added. Driven against a fake relay over scratch sockets.
  */
 const PROXY = join(ROOT, 'docker/claude-executor/control-proxy.cjs');
-const TOKEN = 'agent-control-token';
 const proxy = createRequire(import.meta.url)(PROXY) as {
-    serve: (deps: { fs: unknown; fetch: typeof fetch; socket: string; url: string; token: string }) => Promise<Server>;
+    serve: (deps: { fs: unknown; socket: string; relay: string }) => Promise<Server>;
     PUBLISH_PATH: string;
     REVIEW_PATH: string;
 };
@@ -36,8 +35,8 @@ interface Seen {
     body: string;
 }
 
-/** A fake board that records what reached it and answers 201 with a body naming the route. */
-async function board(): Promise<{ url: string; seen: Seen[] }> {
+/** A fake relay on a scratch socket that records what reached it and answers 201 with a body naming the route. */
+async function board(): Promise<{ relay: string; seen: Seen[] }> {
     const seen: Seen[] = [];
     const server = createServer((req, res) => {
         let body = '';
@@ -50,16 +49,19 @@ async function board(): Promise<{ url: string; seen: Seen[] }> {
             res.end(JSON.stringify({ route: req.url }));
         });
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const dir = mkdtempSync(join(tmpdir(), 'control-relay-'));
+    dirs.push(dir);
+    const relay = join(dir, 'relay.sock');
+    await new Promise<void>((resolve) => server.listen(relay, resolve));
     servers.push(server);
-    return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/`, seen };
+    return { relay, seen };
 }
 
-async function startProxy(url: string): Promise<string> {
+async function startProxy(relay: string): Promise<string> {
     const dir = mkdtempSync(join(tmpdir(), 'control-proxy-'));
     dirs.push(dir);
     const socket = join(dir, 'control.sock');
-    servers.push(await proxy.serve({ fs, fetch, socket, url, token: TOKEN }));
+    servers.push(await proxy.serve({ fs, socket, relay }));
     return socket;
 }
 
@@ -86,18 +88,20 @@ describe('the run-control proxy', () => {
         ['POST', '/publish', '{"title":"draft"}'],
         ['POST', '/review', '{"key":"security-1","profile":"security"}'],
         ['GET', '/review/security-1', undefined],
-    ])('forwards %s %s with the token added, and the board’s answer unchanged', async (method, path, body) => {
-        const { url, seen } = await board();
-        const socket = await startProxy(url);
-        const answer = await call(socket, method, path, body);
+    ])(
+        'forwards %s %s to the relay with no credential, and the relay’s answer unchanged',
+        async (method, path, body) => {
+            const { relay, seen } = await board();
+            const socket = await startProxy(relay);
+            const answer = await call(socket, method, path, body);
 
-        expect(answer.status).toBe(201);
-        expect(JSON.parse(answer.body)).toEqual({ route: path });
-        expect(seen).toHaveLength(1);
-        expect(seen[0]).toMatchObject({ method, url: path, body: body ?? '' });
-        expect(seen[0]!.headers.authorization).toBe(`Bearer ${TOKEN}`);
-        expect(JSON.stringify(answer)).not.toContain(TOKEN);
-    });
+            expect(answer.status).toBe(201);
+            expect(JSON.parse(answer.body)).toEqual({ route: path });
+            expect(seen).toHaveLength(1);
+            expect(seen[0]).toMatchObject({ method, url: path, body: body ?? '' });
+            expect(seen[0]!.headers.authorization).toBeUndefined();
+        }
+    );
 
     it.each([
         ['GET', '/publish'],
@@ -108,23 +112,38 @@ describe('the run-control proxy', () => {
         ['GET', '/review/'],
         ['DELETE', '/review/security-1'],
         ['POST', '/export/chunk'],
-    ])('answers %s %s 404 without reaching the board', async (method, path) => {
-        const { url, seen } = await board();
-        const socket = await startProxy(url);
+    ])('answers %s %s 404 without reaching the relay', async (method, path) => {
+        const { relay, seen } = await board();
+        const socket = await startProxy(relay);
         expect((await call(socket, method, path, '{}')).status).toBe(404);
         expect(seen).toEqual([]);
     });
 
-    it('answers a board it cannot reach with 502, never with the token', async () => {
-        const socket = await startProxy('http://127.0.0.1:9/');
-        const answer = await call(socket, 'POST', '/publish', '{}');
-        expect(answer.status).toBe(502);
-        expect(answer.body).not.toContain(TOKEN);
+    it('answers a relay that is missing, or refuses connections, with 502', async () => {
+        const socket = await startProxy(join(tmpdir(), 'no-such-relay.sock'));
+        expect((await call(socket, 'POST', '/publish', '{}')).status).toBe(502);
+    });
+
+    it('answers a relay that hangs up on the request with 502', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'control-relay-'));
+        dirs.push(dir);
+        const relay = join(dir, 'relay.sock');
+        const hungUp = createServer((req) => req.socket.destroy());
+        await new Promise<void>((resolve) => hungUp.listen(relay, resolve));
+        servers.push(hungUp);
+        const socket = await startProxy(relay);
+        expect((await call(socket, 'POST', '/publish', '{}')).status).toBe(502);
+    });
+
+    it('holds no credential: it reads no BELLOWS_CONTROL_* name and sets no authorization header', () => {
+        const source = readFileSync(PROXY, 'utf8');
+        expect(source).not.toMatch(/BELLOWS_CONTROL_|authorization/i);
+        expect(source).toContain('FACTORY_CTL_OUT');
     });
 
     it('serves on a socket only its owner and group may connect to', async () => {
-        const { url } = await board();
-        const socket = await startProxy(url);
+        const { relay } = await board();
+        const socket = await startProxy(relay);
         expect(statSync(socket).mode & 0o777).toBe(0o660);
     });
 

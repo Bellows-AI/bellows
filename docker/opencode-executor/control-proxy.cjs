@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * The agent's run-control proxy (issue #814). The agent's tools run as their own uid and never hold
- * the run-control token (BELLOWS_CONTROL_TOKEN): the entrypoint starts this proxy with it and unsets
- * it before the CLI starts. The two routes the baked skills call reach the board through this socket,
- * with the token added here, and nothing else does:
+ * The agent's run-control proxy (issue #814). The agent's tools run as their own uid and hold no
+ * run-control credential at all: the supervisor serves a relay socket in the agent's own mailbox
+ * (`$FACTORY_CTL_OUT/control.sock`, owner-only) that adds the agent's token and follows whichever
+ * driver holds the run (issue #829). This proxy, started by the entrypoint only where that socket
+ * exists, lets the tools reach it, and the two routes the baked skills call are all that cross:
  *
  *   POST /publish        the draft publication (the github skill)
  *   POST /review         a named reviewer (the review skill)
  *   GET  /review/<key>   that review's result
  *
  * Listens on /run/factory-control/control.sock, in a directory of the CLI uid's group, so a tool —
- * group 1000 — reaches it and reads nothing else of the CLI's. Reads BELLOWS_CONTROL_URL and
- * BELLOWS_CONTROL_TOKEN. Status and body come back as the board sent them; the token never does.
+ * group 1000 — reaches it and reads nothing else of the CLI's. Reads FACTORY_CTL_OUT. Status and
+ * body come back as the relay sent them; a relay that is missing or hangs up is a 502.
  *
  * Kept byte-identical in both executor images (driver/test/control-proxy.test.ts).
  */
@@ -21,6 +22,8 @@ const http = require('node:http');
 
 const SOCKET = '/run/factory-control/control.sock';
 const SOCKET_MODE = 0o660;
+/** The supervisor's relay in the agent's mailbox (`MAILBOX_FILES.relay` of driver/src/supervisor-contract.ts). */
+const RELAY_SOCKET = 'control.sock';
 /** `PUBLISH_PATH` and `REVIEW_PATH` of driver/src/control-channel.ts. */
 const PUBLISH_PATH = '/publish';
 const REVIEW_PATH = '/review';
@@ -59,6 +62,32 @@ function readBody(req) {
     });
 }
 
+/** One request to the supervisor's relay socket; resolves with its status, content type and body, rejects on any failure. */
+function viaRelay(deps, req, body, abort) {
+    return new Promise((resolve, reject) => {
+        const headers = req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {};
+        const upstream = http.request(
+            { socketPath: deps.relay, method: req.method, path: req.url, headers, signal: abort.signal },
+            (answered) => {
+                const chunks = [];
+                answered.on('data', (chunk) => chunks.push(chunk));
+                answered.on('error', reject);
+                answered.on('close', () =>
+                    answered.complete
+                        ? resolve({
+                              status: answered.statusCode,
+                              type: answered.headers['content-type'] ?? 'application/json',
+                              body: Buffer.concat(chunks),
+                          })
+                        : reject(new Error('the relay hung up'))
+                );
+            }
+        );
+        upstream.on('error', reject);
+        upstream.end(body ?? undefined);
+    });
+}
+
 async function forward(deps, req, res) {
     const url = req.url ?? '';
     if (!allowed(req.method, url)) return answer(res, HTTP_NOT_FOUND, '{"error":"not a control route"}\n');
@@ -67,17 +96,8 @@ async function forward(deps, req, res) {
     const abort = new AbortController();
     res.on('close', () => abort.abort());
     try {
-        const upstream = await deps.fetch(`${deps.url.replace(/\/$/, '')}${url}`, {
-            method: req.method,
-            headers: {
-                authorization: `Bearer ${deps.token}`,
-                ...(req.headers['content-type'] ? { 'content-type': req.headers['content-type'] } : {}),
-            },
-            ...(body ? { body } : {}),
-            signal: abort.signal,
-        });
-        const type = upstream.headers.get('content-type') ?? 'application/json';
-        answer(res, upstream.status, Buffer.from(await upstream.arrayBuffer()), type);
+        const upstream = await viaRelay(deps, req, body, abort);
+        answer(res, upstream.status, upstream.body, upstream.type);
     } catch (error) {
         if (!res.headersSent) answer(res, HTTP_BAD_GATEWAY, `${JSON.stringify({ error: error.message })}\n`);
     }
@@ -101,12 +121,12 @@ function serve(deps) {
 }
 
 if (require.main === module) {
-    const { BELLOWS_CONTROL_URL: url, BELLOWS_CONTROL_TOKEN: token } = process.env;
-    if (!url || !token) {
-        process.stderr.write('control-proxy: BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN are required\n');
+    const { FACTORY_CTL_OUT: out } = process.env;
+    if (!out) {
+        process.stderr.write('control-proxy: FACTORY_CTL_OUT is required\n');
         process.exit(2);
     }
-    serve({ fs, fetch, socket: SOCKET, url, token }).catch((error) => {
+    serve({ fs, socket: SOCKET, relay: `${out}/${RELAY_SOCKET}` }).catch((error) => {
         process.stderr.write(`control-proxy: could not listen: ${error.message}\n`);
         process.exit(1);
     });
