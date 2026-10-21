@@ -214,6 +214,16 @@ cleanup() {
         kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" \
             -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     fi
+    # Nodes this run cordoned or drained go back to scheduling, then the shared volume and its directory go.
+    for node in $(cat "${cordoned_file:-/dev/null}" 2>/dev/null); do
+        kubectl uncordon "$node" --request-timeout=20s >/dev/null 2>&1
+    done
+    if [ -n "${shared_pv:-}" ]; then
+        kubectl delete pv "$shared_pv" --ignore-not-found --wait=false >/dev/null 2>&1
+        for node in ${shared_names:-}; do
+            docker exec "$node" rm -rf "/factory-shared/$RELEASE" >/dev/null 2>&1
+        done
+    fi
     rm -rf "$work"
     end_phase
     printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
@@ -1390,7 +1400,67 @@ kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name" >/dev/null || {
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
 deploy_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-helm install "$STATE_RELEASE" charts/factory-local-state -n "$NAMESPACE" >/dev/null || {
+# A cluster made with LAYOUT=drain (scripts/kind-cluster-drain.yaml) carries workers that share one host
+# directory, labelled factory.lane/shared: the workspaces then live on a static ReadWriteMany volume over
+# it, so a task pod can move between those nodes (issue #829). Any other cluster keeps the claim the
+# state chart makes. An unreadable node list refuses the run: it is never "no such nodes".
+SHARED_SETS=()
+shared_nodes="$(kubectl get nodes -l factory.lane/shared=true -o name --request-timeout=10s)" || {
+    echo 'test-k8s: could not list the cluster nodes'
+    exit 1
+}
+cordoned_file="$work/cordoned"
+: >"$cordoned_file"
+lane_cordon() { # lane_cordon <node> -> cordoned and recorded, so cleanup uncordons it whatever happens
+    kubectl cordon "$1" --request-timeout=20s >/dev/null && echo "$1" >>"$cordoned_file"
+}
+lane_uncordon() { # lane_uncordon <node> -> schedulable again and dropped from the record
+    kubectl uncordon "$1" --request-timeout=20s >/dev/null && {
+        grep -vx "$1" "$cordoned_file" >"$cordoned_file.next" || true
+        mv "$cordoned_file.next" "$cordoned_file"
+    }
+}
+if [ -n "$shared_nodes" ]; then
+    shared_names="${shared_nodes//node\//}"
+    for node in $shared_names; do
+        docker exec "$node" sh -c 'mkdir -p "$1" && chown 1000:1000 "$1"' sh "/factory-shared/$RELEASE" || {
+            echo "test-k8s: could not prepare /factory-shared/$RELEASE on $node"
+            exit 1
+        }
+    done
+    kubectl apply -f - >/dev/null <<EOF || {
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+    name: $RELEASE-shared
+spec:
+    capacity:
+        storage: 20Gi
+    accessModes: [ReadWriteMany]
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: factory-lane-shared
+    hostPath:
+        path: /factory-shared/$RELEASE
+        type: DirectoryOrCreate
+EOF
+        echo 'test-k8s: could not create the shared workspaces volume'
+        exit 1
+    }
+    shared_pv="$RELEASE-shared"
+    # State and app land on the control plane: a drain case moves the driver and the runner, never the board.
+    workers="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name --request-timeout=10s)" || {
+        echo 'test-k8s: could not list the worker nodes'
+        exit 1
+    }
+    for node in $workers; do
+        lane_cordon "${node#node/}" || {
+            echo "test-k8s: could not cordon $node"
+            exit 1
+        }
+    done
+    SHARED_SETS=(--set workspaces.storageClass=factory-lane-shared --set 'workspaces.accessModes[0]=ReadWriteMany')
+fi
+helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHARED_SETS[@]}"} -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install of the state chart failed'
     exit 1
 }
@@ -1429,6 +1499,10 @@ kubectl wait --for=condition=available \
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
+# The workers were cordoned only so the board landed on the control plane.
+for node in $(cat "$cordoned_file"); do
+    lane_uncordon "$node" || bad "$node is schedulable again" 'kubectl uncordon failed'
+done
 
 # Through the dashboard, so the assertion is the user's own path: queue, then poll the board.
 begin_phase smoke
