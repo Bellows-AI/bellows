@@ -303,7 +303,6 @@ export async function restoreScopeOf(
             checkpoint_truncated: boolean | null;
             checkpoint_cause: string | null;
             checkpoint_finalized_at: Date | null;
-            last_manifest_at: Date | null;
         }[]
     >`
         select checkpoint_job_id, checkpoint_claim_seq, checkpoint_executor, checkpoint_session,

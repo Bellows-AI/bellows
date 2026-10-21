@@ -6,7 +6,7 @@ import { configmapsPath, podsPath, secretsPath } from '../src/k8s-auxspec.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
 import { taskVolumesPath } from '../src/k8s-task-volume.js';
-import { TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL } from '../src/task-volume.js';
+import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, boardIdentity } from '../src/task-volume.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
@@ -746,7 +746,7 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
         metadata: {
             name: `factory-task-${root}-${generation}`,
             uid: `uid-${root.slice(0, 4)}-${generation}`,
-            labels: { [TASK_ROOT_LABEL]: root, ...labels },
+            labels: { [TASK_ROOT_LABEL]: root, [TASK_BOARD_LABEL]: boardIdentity(config), ...labels },
             ...extra,
         },
     });
@@ -794,6 +794,16 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
         const listed = (await arm.scanVolumes!())!;
         expect(listed.threads.map((thread) => thread.root)).toEqual([OTHER]);
         expect(listed.skipped).toHaveLength(1);
+    });
+
+    it.each([
+        ['another board', { [TASK_BOARD_LABEL]: 'ffffffffffffffff' }],
+        ['no board at all', { [TASK_BOARD_LABEL]: undefined }],
+    ])('never lists a claim made for %s: only this board’s volumes are ever reaped', async (_name, labels) => {
+        const { arm } = armOver([listing([claim(ROOT, 1), claim(OTHER, 1, {}, labels)])]);
+        const listed = (await arm.scanVolumes!())!;
+        expect(listed.threads.map((thread) => thread.root)).toEqual([ROOT]);
+        expect(listed.skipped).toEqual([]);
     });
 
     it('leaves a claim that is already terminating to its deletion', async () => {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { DriverConfig } from './config.js';
 import { containerScript } from './container-scripts.js';
 
@@ -35,6 +36,8 @@ export const TASK_ROOT_LABEL = 'factory.task-root';
 export const TASK_GENERATION_LABEL = 'factory.task-generation';
 export const TASK_ORG_LABEL = 'factory.task-org';
 export const TASK_CLAIM_SEQ_LABEL = 'factory.task-claim-seq';
+/** The board a volume was made for (`boardIdentity`): the reaper deletes only volumes carrying its own, never another board's on a shared daemon. */
+export const TASK_BOARD_LABEL = 'factory.task-board';
 /** Set on a PVC no pod could be scheduled onto (kubernetes only): the volume lookup never adopts it again. */
 export const TASK_UNSCHEDULABLE_LABEL = 'factory.task-unschedulable';
 
@@ -71,15 +74,23 @@ export function taskVolumeName(
     return `${TASK_VOLUME_PREFIX}${taskRootOf(job)}-${generation}`;
 }
 
+const BOARD_IDENTITY_LENGTH = 16;
+
+/** This driver's board, stable across restarts: a digest of `JOB_BOARD_URL`, so boards on one daemon need distinct URLs. */
+export const boardIdentity = (config: Pick<DriverConfig, 'boardUrl'>): string =>
+    createHash('sha256').update(config.boardUrl).digest('hex').slice(0, BOARD_IDENTITY_LENGTH);
+
 /** The labels the volume is created with; the org is only a label, so a shape it cannot take is left off. */
 export function taskVolumeLabels(
     job: TaskVolumeJob,
+    board: string,
     generation = job.taskGeneration ?? FIRST_GENERATION
 ): Record<string, string> {
     const org = job.workspacePath?.split('/')[0];
     return {
         [TASK_ROOT_LABEL]: taskRootOf(job),
         [TASK_GENERATION_LABEL]: String(generation),
+        [TASK_BOARD_LABEL]: board,
         ...(org && /^[a-z0-9][a-z0-9_-]{0,38}$/i.test(org) ? { [TASK_ORG_LABEL]: org } : {}),
         ...(job.claimSeq !== undefined ? { [TASK_CLAIM_SEQ_LABEL]: String(job.claimSeq) } : {}),
     };
@@ -87,7 +98,7 @@ export function taskVolumeLabels(
 
 /** The PersistentVolumeClaim of a thread's task volume: no ownerReferences, so nothing garbage-collects it. */
 export function taskVolumeSpec(
-    config: Pick<DriverConfig, 'taskVolume' | 'k8sRelease'>,
+    config: Pick<DriverConfig, 'taskVolume' | 'k8sRelease' | 'boardUrl'>,
     job: TaskVolumeJob
 ): {
     apiVersion: 'v1';
@@ -107,7 +118,7 @@ export function taskVolumeSpec(
             name: taskVolumeName(job),
             // The label every runner Job carries (releaseLabel in k8s-podspec.ts), so one release's cleanup finds its claims.
             labels: {
-                ...taskVolumeLabels(job),
+                ...taskVolumeLabels(job, boardIdentity(config)),
                 ...(config.k8sRelease ? { 'app.kubernetes.io/instance': config.k8sRelease } : {}),
             },
         },

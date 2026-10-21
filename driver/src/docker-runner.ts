@@ -454,9 +454,10 @@ async function dockerRun(
     const { config, files, spawnFn, ledger } = deps;
     const execDocker = attemptExecOf(deps, job); // ends with the kill; the cleanup (`teardown`) does not
     const teardown = deps.execDocker;
-    // No entry-time clearing of the killed set: a fresh claim's lease token was never recorded, so nothing
-    // recorded for an earlier attempt reaches it, and clearing by id would revive the dead attempt the
-    // token keying keeps down. See RunnerDeps for the killed set's own comment.
+    // No entry-time clearing of the killed set: a fresh claim carries a fresh lease
+    // token that was never recorded, so nothing recorded for an earlier attempt can
+    // reach this one — and clearing by id would revive exactly the dead attempt the
+    // token keying exists to keep down. See RunnerDeps for the killed set's own comment.
 
     /*
      * The fence before anything this attempt creates — the job-scoped sweep documented
@@ -477,6 +478,7 @@ async function dockerRun(
      * and after the create/copy — the last awaits before the spawn — so the gap between that final
      * check and spawnFn is synchronous.
      */
+
     // The runner container is the last resource this attempt creates, and the spawn is
     // what a killed setup must never reach — see assertJobNotKilled for why a throw is
     // the right verdict here.

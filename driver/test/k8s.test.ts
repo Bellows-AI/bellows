@@ -5378,6 +5378,19 @@ describe("the thread's task volume claim (issue #775)", () => {
         });
     });
 
+    it('is stamped with this board’s identity, which differs between boards', () => {
+        const other = loadDriverConfig({
+            EXECUTOR: 'kubernetes',
+            K8S_NAMESPACE: namespace,
+            JOB_BOARD_URL: 'http://b:1',
+        });
+        const mine = taskVolumeSpec(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }), job);
+        expect(mine.metadata.labels['factory.task-board']).toMatch(/^[0-9a-f]{16}$/);
+        expect(taskVolumeSpec(other, job).metadata.labels['factory.task-board']).not.toBe(
+            mine.metadata.labels['factory.task-board']
+        );
+    });
+
     it('carries the release label the runner Jobs carry, so a release cleanup finds its claims', () => {
         const withRelease = loadDriverConfig({
             EXECUTOR: 'kubernetes',

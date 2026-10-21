@@ -19,7 +19,7 @@ import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
 import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict, VolumeListing, VolumeThread } from './reaper.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
-import { TASK_ROOT_LABEL, generationOfName } from './task-volume.js';
+import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, boardIdentity, generationOfName } from './task-volume.js';
 import { parseRfc3339 } from './timestamps.js';
 
 /**
@@ -299,7 +299,7 @@ interface JunkVolumeClaim {
  * A claim of the task volume listing (issue #775): null when it is not an identified object at all (the
  * list proved nothing), `junk` when it is one whose root label names no thread it is a generation of.
  */
-const asVolumeClaim = (value: unknown): ListedVolumeClaim | JunkVolumeClaim | null => {
+const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkVolumeClaim | 'foreign' | null => {
     const item = asIdentified<{
         metadata: {
             name: string;
@@ -311,6 +311,7 @@ const asVolumeClaim = (value: unknown): ListedVolumeClaim | JunkVolumeClaim | nu
     }>(value);
     if (item === null) return null;
     const { name, uid, labels, deletionTimestamp, creationTimestamp } = item.metadata;
+    if (labels?.[TASK_BOARD_LABEL] !== board) return 'foreign';
     const root = labels?.[TASK_ROOT_LABEL];
     if (typeof root !== 'string' || !isLease(root) || generationOfName(root, name) === null) {
         return {
@@ -337,12 +338,13 @@ const scanVolumes = async (deps: K8sDeps): Promise<VolumeListing | null> => {
         deps,
         `${taskVolumesPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`,
         'listing the task volumes',
-        { entry: asVolumeClaim, once: true }
+        { entry: (value) => asVolumeClaim(value, boardIdentity(deps.config)), once: true }
     );
     if (read.kind !== 'value') return null;
     const threads = new Map<string, VolumeThread>();
     const skipped: string[] = [];
     for (const claim of read.value) {
+        if (claim === 'foreign') continue;
         if ('junk' in claim) {
             skipped.push(claim.junk);
             continue;

@@ -176,13 +176,13 @@ const lookupAll = async (
     board: Pick<Board, 'leases'>,
     ids: readonly string[],
     log: (message: string) => void,
-    withThreads = false
+    { withThreads = false, consequence = 'reaping nothing this round' } = {}
 ): Promise<Map<string, BoardLease> | null> => {
     const leases = new Map<string, BoardLease>();
     for (let i = 0; i < ids.length; i += LEASE_BATCH_MAX) {
         const answer = await board.leases(ids.slice(i, i + LEASE_BATCH_MAX), withThreads);
         if (answer === null) {
-            log('reaper: the board could not answer a lease lookup — reaping nothing this round');
+            log(`reaper: the board could not answer a lease lookup — ${consequence}`);
             return null;
         }
         for (const row of answer) leases.set(row.id, row);
@@ -275,7 +275,9 @@ export function createReaper(deps: {
             return;
         }
         const threads = threadsOfVolumes(listed);
-        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log, true);
+        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log, {
+            withThreads: true,
+        });
         if (leases === null) return;
         for (const thread of threads) {
             if (!(await deletable(thread, leases, volumePolicy))) continue;
@@ -296,7 +298,10 @@ export function createReaper(deps: {
         policy: VolumePolicy
     ): Promise<boolean> => {
         if (volumeVerdict(leases.get(thread.root), thread.volumes, now(), policy) === 'keep') return false;
-        const fresh = await lookupAll(deps.board, [thread.root], log, true);
+        const fresh = await lookupAll(deps.board, [thread.root], log, {
+            withThreads: true,
+            consequence: `keeping thread ${thread.root} this round`,
+        });
         return fresh !== null && volumeVerdict(fresh.get(thread.root), thread.volumes, now(), policy) === 'delete';
     };
 

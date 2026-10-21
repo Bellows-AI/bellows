@@ -506,6 +506,9 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
             answer: (call) => (call === 0 ? [root(ROOT_A, thread())] : null),
         });
         expect(out.reaped).toEqual([]);
+        // The sweep goes on: the log says this thread is kept, not that the whole round reaps nothing.
+        expect(out.logs.join('\n')).toContain(`keeping thread ${ROOT_A} this round`);
+        expect(out.logs.join('\n')).not.toContain('reaping nothing');
     });
 
     it('logs the labelled volumes the arm skipped, and still sweeps the rest', async () => {
