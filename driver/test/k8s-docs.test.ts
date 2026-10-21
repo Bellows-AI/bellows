@@ -65,6 +65,7 @@ const securityDocs = readFileSync(join(ROOT, 'docs/security.md'), 'utf8');
 const workspaceDocs = readFileSync(join(ROOT, 'docs/workspace.md'), 'utf8');
 const testingDocs = readFileSync(join(ROOT, 'docs/executor-testing.md'), 'utf8');
 const jobsDocs = readFileSync(join(ROOT, 'docs/jobs.md'), 'utf8');
+const limitsDocs = readFileSync(join(ROOT, 'docs/limits.md'), 'utf8');
 
 /**
  * Prose wraps at 100 columns, so a sentence worth pinning is usually split across a line break and
@@ -260,6 +261,16 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(testingDocs)).toContain(
             'a driver pod and its runner Job deleted together end succeeded in the lost session'
         );
+    });
+
+    // Issue #829: the takeover lanes and the drain measurement are stated, with where the numbers land.
+    it('names the takeover lanes, the explicit drain phase and where its timings are written', () => {
+        expect(prose(testingDocs)).toContain('Its driver-kill phase kills a real driver at setup');
+        expect(prose(testingDocs)).toContain(
+            '`--phase drain` (explicit, a `LAYOUT=drain` cluster) drains the driver\'s node and the runner\'s node and writes `.recovery.tsv`'
+        );
+        expect(prose(limitsDocs)).toContain('--phase drain');
+        expect(prose(limitsDocs)).toContain('.recovery.tsv');
     });
 
     // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the

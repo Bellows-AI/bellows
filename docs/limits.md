@@ -33,3 +33,12 @@ reporting a number as measured, or "fixing" anything listed here.
   `scripts/test-k8s.sh` refuses every non-kind context, so no Factory release has been
   installed there and a real sign-in and a real runner write on EFS remain unwatched. See
   [eks-runbook.md](eks-runbook.md).
+- Driver loss and node drain on both executors: `scripts/test-jobs.sh --phase driver-kill` and
+  `scripts/test-k8s.sh --cluster --phase takeover` kill a driver at setup, agent, gates and publish;
+  no block declares a post-phase helper, so neither has a post window
+  (`driver/test/loop-phase-checkpoints.test.ts`). Drain recovery is read from
+  `make cluster CLUSTER=<n> LAYOUT=drain && npm run test:k8s -- --cluster --phase drain`, which
+  writes `artifacts/k8s/<release>.recovery.tsv`: seconds from the start of `kubectl drain`, at
+  `date +%s` resolution, on one laptop's kind cluster. EKS, EFS, spot notices and Karpenter are not
+  covered; three runs are a sample, not a bound. Measured: pending (the date, host, and each of the
+  three runs' held and settled seconds are recorded here once the lane has run).
