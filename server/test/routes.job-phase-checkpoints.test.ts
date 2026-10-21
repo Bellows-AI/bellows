@@ -91,12 +91,13 @@ describe('POST /api/jobs/:id/phase-checkpoint', () => {
     });
 
     it.each([
-        ['missing', 404],
-        ['lost', 409],
-        ['conflict', 409],
-    ] as const)('answers %s as %i', async (answer, status) => {
+        ['missing', 404, 'NOT_FOUND'],
+        ['lost', 409, 'LEASE_LOST'],
+        ['conflict', 409, 'PHASE_CHECKPOINT_CONFLICT'],
+    ] as const)('answers %s as %i with code %s', async (answer, status, code) => {
         const res = await post(await harnessWith(stubStore(answer).store), `/api/jobs/${ID}/phase-checkpoint`, good);
         expect(res.statusCode).toBe(status);
+        expect(res.json()).toMatchObject({ code });
     });
 });
 

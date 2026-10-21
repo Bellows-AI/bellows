@@ -40,6 +40,8 @@ export interface GateSession {
     declared: readonly DeclaredGate[];
     /** Whether the end-of-run pass runs: gates are declared, or setup failed and must be retried. */
     endPass: boolean;
+    /** The gates list the last declared pass left on the board; absent before one ran. */
+    lastReports?: GateReport[];
 }
 
 export interface GateFailure {
@@ -49,7 +51,7 @@ export interface GateFailure {
 }
 
 /** What one gate looks like on the board, at one moment. */
-type GateReport = {
+export type GateReport = {
     name: string;
     status: 'running' | 'passed' | 'failed';
     exitCode: number | null;
@@ -347,6 +349,7 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
  * Runs every declared gate in order, reporting each state change to the board as it happens.
  * The report REPLACES the stored list — every report carries the whole list so the task view
  * always shows all gates at their current state, never a summary that arrived out of order.
+ * That list is left on `gateSession.lastReports`, so a checkpoint can keep what the board was last told.
  *
  * Both the reports and a gate whose exec itself throws are best-effort against the RUN, never
  * against the VERDICT: a board hiccup costs the live view, not the gating. A gate that cannot
@@ -371,6 +374,7 @@ export async function runDeclaredGates(
     // No declared gate to retry a failed setup before: the pass is that retry alone.
     if (gateSession.declared.length === 0) return retryFailedSetup(runCtx);
     const results: GateReport[] = [];
+    gateSession.lastReports = results;
     const report = async (): Promise<void> => {
         try {
             // A copy, not the live array: the report is a state-at-a-moment, and a reader

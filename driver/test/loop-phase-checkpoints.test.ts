@@ -4,9 +4,10 @@
  * resumes after the last phase that finished instead of running every one again. An unconfirmed
  * read is never an empty one: any checkpoint the driver cannot vouch for runs its phase again.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import type { PhaseCheckpoint } from '../src/board-phase-checkpoints.js';
+import { PHASE_CHECKPOINT_READ_MS } from '../src/loop-phase-checkpoints.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { PublishResult } from '../src/publish.js';
 import type { AdoptedRun, LiveRun } from '../src/runner.js';
@@ -29,11 +30,17 @@ const published: PublishResult = {
     prNumber: 9,
 };
 
+const passedReports = [
+    { name: 'test', status: 'passed', exitCode: 0, output: 'test ok' },
+    { name: 'lint', status: 'passed', exitCode: 0, output: 'lint ok' },
+];
 const gatesResult = {
     failure: null,
     deadServices: [],
     gatesSkipped: null,
     recoveredServices: [],
+    reports: passedReports,
+    setupCleared: true,
 };
 const gatesCp = (over: Partial<PhaseCheckpoint> = {}): PhaseCheckpoint => ({
     phase: 'gates',
@@ -53,7 +60,7 @@ const publishCp = (over: Partial<PhaseCheckpoint> = {}): PhaseCheckpoint => ({
     phase: 'publish',
     claimSeq: 1,
     tree: null,
-    result: published,
+    result: { published, revision: null },
     ...over,
 });
 
@@ -65,6 +72,9 @@ interface Scene {
     gated?: boolean;
     post?: boolean;
     publishResult?: PublishResult;
+    leaseGone?: () => boolean;
+    setupFailure?: BoardJob['setupFailure'];
+    probe?: (signal: AbortSignal) => Promise<string | null>;
 }
 
 async function run(scene: Scene = {}) {
@@ -73,11 +83,13 @@ async function run(scene: Scene = {}) {
         attempts: 2,
         claimSeq: 3,
         ...(scene.post === false ? {} : { helperPlans: [postPlan] }),
+        ...(scene.setupFailure ? { setupFailure: scene.setupFailure } : {}),
     } as BoardJob;
     const board = stubBoard([claimed], {
         githubToken: GITHUB_TOKEN,
         phaseCheckpoints: scene.checkpoints ?? null,
         phaseCheckpointWrite: scene.write ?? 'ok',
+        ...(scene.leaseGone ? { leaseGone: scene.leaseGone } : {}),
     });
     const stack = stubGateStack({}, { control: Boolean(scene.adopted && 'live' in scene.adopted) });
     const helperRuns: string[] = [];
@@ -87,6 +99,7 @@ async function run(scene: Scene = {}) {
         publish: scene.publishResult ?? published,
         ...(scene.adopted === undefined ? {} : { adopt: async () => scene.adopted ?? null }),
     });
+    if (scene.probe) runner.probeTree = async (_job, signal) => scene.probe!(signal as AbortSignal);
     runner.runHelper = async (_job, plan) => {
         helperRuns.push(plan.helperId);
         return { ok: true, output: null };
@@ -102,10 +115,14 @@ const gatesRan = (r: Awaited<ReturnType<typeof run>>) => r.stack.ran.names.lengt
 describe('resuming an adopted run from its phase checkpoints', () => {
     it('a: skips the gates a checkpoint on the same tree covers, and the verdict carries its failure', async () => {
         const failure = { name: 'test', exitCode: 1, output: 'FAIL src/a.test.ts' };
+        const reports = [{ name: 'test', status: 'failed', exitCode: 1, output: 'FAIL src/a.test.ts' }];
         const r = await run({
             adopted,
-            checkpoints: [gatesCp({ result: { ...gatesResult, failure } })],
+            checkpoints: [gatesCp({ result: { ...gatesResult, failure, reports } })],
         });
+
+        // The board's gates list was reset by this claim: the resumed phase puts the report back.
+        expect(r.board.gatesReported.map((g) => g.results)).toEqual([reports]);
 
         expect(gatesRan(r)).toBe(false);
         expect(r.board.phaseCheckpointReads).toEqual([
@@ -114,6 +131,22 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
         expect(r.board.completed[0]!.output).toContain('FAIL src/a.test.ts');
         expect(r.logs).toContain(`job ${r.claimed.id}: resumed gates from claim 1's checkpoint`);
+    });
+
+    it('a2: a resumed pass clears the setup failure the live pass would have cleared', async () => {
+        const setupFailure = { exitCode: 1, output: 'npm ci failed' };
+        const r = await run({ adopted, setupFailure, checkpoints: [gatesCp()] });
+
+        expect(gatesRan(r)).toBe(false);
+        expect(r.claimed.setupFailure).toBeNull();
+    });
+
+    it('a3: a checkpoint whose reports are missing or malformed runs the gates again', async () => {
+        const { reports: _reports, ...withoutReports } = gatesResult;
+        for (const result of [withoutReports, { ...gatesResult, reports: [{ name: 'test', status: 'weird' }] }]) {
+            const r = await run({ adopted, checkpoints: [gatesCp({ result })] });
+            expect(gatesRan(r)).toBe(true);
+        }
     });
 
     it('b: runs the gates again for a checkpoint on another tree, and ignores the later phases', async () => {
@@ -173,12 +206,17 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         expect(gatesRan(r)).toBe(false);
     });
 
-    it('j: a tree that cannot be read runs the gates, writes no gates checkpoint, and ignores the later ones', async () => {
+    it('j: a tree that cannot be read runs the gates, records a gates row bound to no tree, and ignores the later ones', async () => {
         const r = await run({ adopted, probeTree: null, checkpoints: [gatesCp(), postCp(), publishCp()] });
 
         expect(gatesRan(r)).toBe(true);
         expect(r.helperRuns).toEqual(['notify']);
-        expect(r.board.phaseCheckpointsWritten.map((w) => w.phase)).toEqual(['post', 'publish']);
+        // The null-tree row never resumes, and writing it makes the board drop the stale later rows.
+        expect(r.board.phaseCheckpointsWritten.map((w) => [w.phase, w.tree])).toEqual([
+            ['gates', null],
+            ['post', null],
+            ['publish', null],
+        ]);
     });
 
     it.each([
@@ -198,7 +236,11 @@ describe('resuming an adopted run from its phase checkpoints', () => {
     it('runs the publish again for a checkpoint that is not a publication', async () => {
         const r = await run({
             adopted,
-            checkpoints: [gatesCp(), postCp(), publishCp({ result: { ok: true, published: 'yes' } })],
+            checkpoints: [
+                gatesCp(),
+                postCp(),
+                publishCp({ result: { published: { ok: true, published: 'yes' }, revision: null } }),
+            ],
         });
 
         expect(r.runner.published).toHaveLength(1);
@@ -218,6 +260,70 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         expect(signals[0]).toBeInstanceOf(AbortSignal);
         expect(signals[0]!.aborted).toBe(false);
         expect(r.board.phaseCheckpointReads).toHaveLength(1);
+    });
+
+    it('l2: a stand-down during the read ends the read and the attempt runs and writes nothing', async () => {
+        let gone = false;
+        const r = await run({
+            adopted,
+            leaseGone: () => gone,
+            checkpoints: (signal) =>
+                new Promise((resolve) => {
+                    gone = true;
+                    signal!.addEventListener('abort', () => resolve(null));
+                }),
+        });
+
+        expect(r.stack.ran.names).toEqual([]);
+        expect(r.helperRuns).toEqual([]);
+        expect(r.runner.published).toEqual([]);
+        expect(r.board.phaseCheckpointsWritten).toEqual([]);
+        expect(r.board.completed).toEqual([]);
+        expect(r.logs.some((m) => m.includes('no phase checkpoints'))).toBe(false);
+    });
+
+    it('l3: a stand-down during the tree probe runs no phase', async () => {
+        let gone = false;
+        const r = await run({
+            adopted,
+            checkpoints: [gatesCp()],
+            leaseGone: () => gone,
+            probe: (signal) =>
+                new Promise((resolve) => {
+                    gone = true;
+                    signal.addEventListener('abort', () => resolve(TREE));
+                }),
+        });
+
+        expect(r.board.gatesReported).toEqual([]);
+        expect(r.stack.ran.names).toEqual([]);
+        expect(r.helperRuns).toEqual([]);
+        expect(r.runner.published).toEqual([]);
+        expect(r.board.phaseCheckpointsWritten).toEqual([]);
+        expect(r.board.completed).toEqual([]);
+    });
+
+    it('l4: a read that hangs is cut by the timeout signal and every phase runs', async () => {
+        const timeout = new AbortController();
+        const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+            return ms === PHASE_CHECKPOINT_READ_MS ? timeout.signal : new AbortController().signal;
+        });
+        try {
+            const r = await run({
+                adopted,
+                checkpoints: (signal) =>
+                    new Promise((resolve) => {
+                        signal!.addEventListener('abort', () => resolve(null));
+                        timeout.abort();
+                    }),
+            });
+
+            expect(gatesRan(r)).toBe(true);
+            expect(r.helperRuns).toEqual(['notify']);
+            expect(r.runner.published).toHaveLength(1);
+        } finally {
+            spy.mockRestore();
+        }
     });
 });
 
@@ -249,7 +355,7 @@ describe('writing the phase checkpoints', () => {
                 runClaimSeq: 3,
                 phase: 'publish',
                 tree: null,
-                result: published,
+                result: { published, revision: null },
             },
         ]);
     });
@@ -263,6 +369,29 @@ describe('writing the phase checkpoints', () => {
             expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
         }
     );
+
+    it('m: a gates write the board did not take leaves no post or publish checkpoint behind it', async () => {
+        const r = await run({ adopted: null, write: 'rejected' });
+
+        expect(r.board.phaseCheckpointsWritten.map((w) => w.phase)).toEqual(['gates']);
+        expect(r.runner.published).toHaveLength(1);
+    });
+
+    it('n: with no gates, a post write the board did not take leaves no publish checkpoint', async () => {
+        const r = await run({ adopted: null, gated: false, write: 'rejected' });
+
+        expect(r.board.phaseCheckpointsWritten.map((w) => w.phase)).toEqual(['post']);
+        expect(r.runner.published).toHaveLength(1);
+    });
+
+    it('o: a publish checkpoint binds the revision its evidence authorised', async () => {
+        const r = await run({
+            adopted,
+            checkpoints: [gatesCp(), postCp(), publishCp({ result: { published, revision: 'h:stale' } })],
+        });
+
+        expect(r.runner.published).toHaveLength(1);
+    });
 
     it('i: a publish that did not land leaves no publish checkpoint', async () => {
         const failed: PublishResult = {

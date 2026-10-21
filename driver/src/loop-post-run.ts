@@ -50,10 +50,11 @@ async function postPhase(
 async function publishPhase(
     ctx: AttemptCtx,
     phases: PhaseChain,
-    options: PublishOptions | undefined
+    options: PublishOptions | undefined,
+    revision: string | null
 ): Promise<PublishResult | null | typeof STOOD_DOWN> {
     const { rt, job, state } = ctx;
-    const resumed = phases.resumePublish();
+    const resumed = phases.resumePublish(revision);
     if (resumed) return resumed;
     const githubToken = await askGithubToken(rt, job, 'the publish');
     // The fence sits BETWEEN the ask and the push: a Stop during the ask killed the runner,
@@ -67,7 +68,7 @@ async function publishPhase(
     // The agent already shipped its work as a draft: a clean tree leaves nothing to push, and
     // the verdict still carries the publication the agent made.
     if (published?.ok && !published.published && state.draftPublication) published = state.draftPublication;
-    if (published?.ok) await phases.record('publish', null, published);
+    if (published?.ok) await phases.record('publish', null, { published, revision });
     return published;
 }
 
@@ -98,7 +99,7 @@ export async function runPostHelpersAndPublish(
     if (!decision.ok) {
         return { helperFailure, published: null, policyRefusal: mode === 'draft' ? null : decision.reason };
     }
-    const published = await publishPhase(ctx, phases, publishOptionsOf(mode, decision.revision));
+    const published = await publishPhase(ctx, phases, publishOptionsOf(mode, decision.revision), decision.revision);
     if (published === STOOD_DOWN) return null;
     return { helperFailure, published, policyRefusal: null };
 }

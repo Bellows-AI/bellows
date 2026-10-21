@@ -337,11 +337,11 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(run).not.toMatch(/settleNonFinish|\bdown\(/);
     });
 
-    it('fences every phase boundary from loop-run, and nowhere else', () => {
+    it('fences every phase boundary from loop-run and loop-post-run, and nowhere else', () => {
         const callers = loopSources()
             .filter(([file, source]) => file !== 'loop-fence.ts' && /endIfDown\(ctx, '/.test(source))
             .map(([file]) => file);
-        expect(callers).toEqual(['loop-run.ts']);
+        expect(callers).toEqual(['loop-post-run.ts', 'loop-run.ts']);
     });
 });
 

@@ -8,9 +8,16 @@ import { adoptStep, recordAdopted } from './loop-adopt.js';
 import { checkoutToken } from './loop-github.js';
 import { preHelperStep } from './loop-helpers.js';
 import type { GateFailure, GateSession } from './loop-gates.js';
-import { beginGates, openRunControl, probeDeadServices, runDeclaredGates, sizeGateForVerify } from './loop-gates.js';
+import {
+    type GateReport,
+    beginGates,
+    openRunControl,
+    probeDeadServices,
+    runDeclaredGates,
+    sizeGateForVerify,
+} from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
-import { openChain } from './loop-phase-checkpoints.js';
+import { openChain, replayGates } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
 import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
@@ -417,15 +424,21 @@ async function verifyRun(
     // not: it is the revision the evidence is bound to.
     const phases = await openChain(ctx);
     ctx.phases = phases;
+    // A stand-down that cut the read short settles here, before any probe or phase.
+    if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     // An adopted run's gates are served from the board when its checkpoint covers this very tree.
     const resumedGates = phases.resumeGates(gating !== null, treeAfter);
+    if (resumedGates) await replayGates(ctx, resumedGates);
     const gated = resumedGates ?? (await gatesOrLoss(ctx, gating, outcome));
     if (gated === STOOD_DOWN) return STOOD_DOWN;
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
-    // A tree that could not be read binds no checkpoint to it: the later phases run again.
-    if (gating && !resumedGates && treeAfter !== null) await phases.record('gates', treeAfter, gated);
+    // A tree that could not be read binds the row to none: it never resumes, and writing it makes the
+    // board drop the later phases a former holder left.
+    if (gating && !resumedGates) {
+        await phases.record('gates', treeAfter, { ...gated, setupCleared: job.setupFailure === null });
+    }
     return {
         ...gated,
         treeChanged: treeChangedOf(ctx, gated, treeAfter),
@@ -465,6 +478,8 @@ interface GatesPhase {
     gatesSkipped: string | null;
     /** The services found dead before the gates and restarted for them (issue #560): noted, not faults. */
     recoveredServices: DeadService[];
+    /** The gates list as the board was last told it; empty when no declared gate ran. */
+    reports: GateReport[];
 }
 
 /**
@@ -493,7 +508,8 @@ async function gatesOrLoss(
     gateSession: GateSession | null,
     outcome: RunOutcome
 ): Promise<GatesPhase | typeof STOOD_DOWN> {
-    if (!gateSession) return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [] };
+    if (!gateSession)
+        return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices: [], reports: [] };
     try {
         return await runGatesPhase(ctx, gateSession, outcome);
     } catch (e) {
@@ -518,6 +534,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
             deadServices: await probeDeadServices(rt, job),
             gatesSkipped,
             recoveredServices: [],
+            reports: [],
         };
     }
     // A gate against a dead service fails on an environment the agent cannot fix, and a
@@ -531,17 +548,23 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         const restartFailure = await restartDeadServices(rt, job, state.signal, deadBefore);
         // A stand-down during the restart runs no gates; the caller's fence settles the attempt.
         if (restartFailure === STOOD_DOWN)
-            return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices };
+            return { failure: null, deadServices: [], gatesSkipped: null, recoveredServices, reports: [] };
         if (restartFailure !== null) {
             const deadServices = deadBefore.map((dead) => ({ ...dead, restartFailure }));
-            return { failure: null, deadServices, gatesSkipped: null, recoveredServices };
+            return { failure: null, deadServices, gatesSkipped: null, recoveredServices, reports: [] };
         }
         recoveredServices = deadBefore;
     }
     const failure = await runDeclaredGates(rt, job, gateSession, state);
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
-    return { failure, deadServices: deadAfter, gatesSkipped: null, recoveredServices };
+    return {
+        failure,
+        deadServices: deadAfter,
+        gatesSkipped: null,
+        recoveredServices,
+        reports: gateSession.lastReports ?? [],
+    };
 }
 
 /** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */

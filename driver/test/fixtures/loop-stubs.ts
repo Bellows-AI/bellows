@@ -123,6 +123,8 @@ export function stubBoard(
     jobs: BoardJob[],
     options: {
         lease?: LeaseState;
+        /** A lease that goes while the attempt runs: the first heartbeat after this answers true loses it. */
+        leaseGone?: () => boolean;
         progressLease?: LeaseState;
         failProgress?: boolean;
         idleBeforeStop?: number;
@@ -245,7 +247,7 @@ export function stubBoard(
         },
         async heartbeat() {
             board.beats += 1;
-            if (options.lease === 'lost') return 'lost';
+            if (options.lease === 'lost' || options.leaseGone?.()) return 'lost';
             if (options.removedOnBeat) return 'removed';
             const verdict: HeartbeatVerdict = { result: 'held', cancelRequested: options.cancelRequested ?? false };
             return verdict;

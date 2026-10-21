@@ -9,7 +9,7 @@
 
 import type { CheckpointPhase, PhaseCheckpoint } from './board-phase-checkpoints.js';
 import type { HelperFailureReport } from './helpers.js';
-import type { GateFailure } from './loop-gates.js';
+import type { GateFailure, GateReport } from './loop-gates.js';
 import type { AttemptCtx } from './loop-types.js';
 import type { PublishResult } from './publish.js';
 import type { DeadService } from './runner.js';
@@ -25,6 +25,10 @@ export interface GatesCheckpoint {
     deadServices: DeadService[];
     gatesSkipped: string | null;
     recoveredServices: DeadService[];
+    /** The gates list the board was last told: a claim resets it, so a resumed phase sends it again. */
+    reports: GateReport[];
+    /** Whether the run's failed pre-agent setup stood fixed once the gates passed (`job.setupFailure` null). */
+    setupCleared: boolean;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -45,6 +49,14 @@ const isDeadService = (v: unknown): v is DeadService =>
     isString(v.logTail) &&
     (v.restartFailure === undefined || isString(v.restartFailure));
 
+const GATE_STATUSES: readonly unknown[] = ['running', 'passed', 'failed'];
+const isReport = (v: unknown): v is GateReport =>
+    isRecord(v) &&
+    isString(v.name) &&
+    GATE_STATUSES.includes(v.status) &&
+    nullable(v.exitCode, isNumber) &&
+    nullable(v.output, isString);
+
 const servicesOf = (v: unknown): DeadService[] | null =>
     Array.isArray(v) && v.every(isDeadService) ? (v as DeadService[]) : null;
 
@@ -55,7 +67,12 @@ function gatesOf(raw: unknown): GatesCheckpoint | null {
     if (!deadServices || !recoveredServices) return null;
     if (!nullable(raw.failure, isFailure) || !nullable(raw.gatesSkipped, isString)) return null;
     if (!('failure' in raw) || !('gatesSkipped' in raw)) return null;
+    if (!Array.isArray(raw.reports) || !raw.reports.every(isReport) || typeof raw.setupCleared !== 'boolean') {
+        return null;
+    }
     return {
+        reports: raw.reports,
+        setupCleared: raw.setupCleared,
         failure: raw.failure as GateFailure | null,
         deadServices,
         gatesSkipped: raw.gatesSkipped as string | null,
@@ -73,8 +90,11 @@ function postOf(raw: unknown): { failure: HelperFailureReport | null } | null {
     return { failure: failure as unknown as HelperFailureReport };
 }
 
-function publishOf(raw: unknown): PublishResult | null {
-    if (!isRecord(raw) || raw.ok !== true || typeof raw.published !== 'boolean') return null;
+/** The publication a checkpoint holds, only when it was pushed for the revision this attempt now ships. */
+function publishOf(row: unknown, revision: string | null): PublishResult | null {
+    if (!isRecord(row) || row.revision !== revision || !isRecord(row.published)) return null;
+    const raw = row.published;
+    if (raw.ok !== true || typeof raw.published !== 'boolean') return null;
     for (const field of ['branch', 'prUrl', 'reason', 'repository', 'baseBranch'] as const) {
         if (!nullable(raw[field], isString)) return null;
     }
@@ -90,8 +110,12 @@ export interface PhaseChain {
      */
     resumeGates(applicable: boolean, treeAfter: string | null): GatesCheckpoint | null;
     resumePost(applicable: boolean): { failure: HelperFailureReport | null } | null;
-    resumePublish(): PublishResult | null;
-    /** Records a phase that ran, awaited and bounded; a failed write is logged and the run goes on. */
+    resumePublish(revision: string | null): PublishResult | null;
+    /**
+     * Records a phase that ran, awaited and bounded; a failed write is logged and the run goes on —
+     * but no phase after a record the board did not take is written: a later row beside a missing
+     * earlier one would let a future holder resume a chain that never ran in one piece.
+     */
     record(phase: CheckpointPhase, tree: string | null, result: unknown): Promise<void>;
 }
 
@@ -108,11 +132,13 @@ export async function openChain(ctx: AttemptCtx): Promise<PhaseChain> {
     if (resuming) {
         const signal = AbortSignal.any([state.signal, AbortSignal.timeout(PHASE_CHECKPOINT_READ_MS)]);
         const read = await rt.board.phaseCheckpoints(job, runClaimSeq, signal);
-        if (read === null) rt.log(`job ${job.id}: no phase checkpoints of claim ${runClaimSeq} could be read`);
+        if (read === null && !state.signal.aborted)
+            rt.log(`job ${job.id}: no phase checkpoints of claim ${runClaimSeq} could be read`);
         for (const row of read ?? []) rows.set(row.phase, row);
     }
     // The chain breaks at the first phase that applies and runs: nothing after it may be resumed.
     let broken = false;
+    let unrecorded = false;
     const resumed = (phase: CheckpointPhase) =>
         rt.log(`job ${job.id}: resumed ${phase} from claim ${rows.get(phase)!.claimSeq}'s checkpoint`);
 
@@ -139,9 +165,9 @@ export async function openChain(ctx: AttemptCtx): Promise<PhaseChain> {
             resumed('post');
             return post;
         },
-        resumePublish() {
+        resumePublish(revision) {
             const row = rows.get('publish');
-            const published = row && !broken ? publishOf(row.result) : null;
+            const published = row && !broken ? publishOf(row.result, revision) : null;
             if (!published) {
                 broken = true;
                 return null;
@@ -150,14 +176,17 @@ export async function openChain(ctx: AttemptCtx): Promise<PhaseChain> {
             return published;
         },
         async record(phase, tree, result) {
+            if (unrecorded) return;
             const answer = await writeBounded(
                 rt.board.phaseCheckpoint(
                     job,
                     { runClaimSeq, phase, tree, result },
-                    AbortSignal.timeout(PHASE_CHECKPOINT_WRITE_MS)
+                    AbortSignal.any([state.signal, AbortSignal.timeout(PHASE_CHECKPOINT_WRITE_MS)])
                 )
             );
-            if (answer !== 'ok') rt.log(`job ${job.id}: the ${phase} checkpoint was not recorded (${answer})`);
+            if (answer === 'ok') return;
+            unrecorded = true;
+            rt.log(`job ${job.id}: the ${phase} checkpoint was not recorded (${answer})`);
         },
     };
 }
@@ -175,4 +204,20 @@ async function writeBounded(write: Promise<'ok' | 'lost' | 'rejected'>): Promise
 export async function phasesOf(ctx: AttemptCtx): Promise<PhaseChain> {
     ctx.phases ??= await openChain(ctx);
     return ctx.phases;
+}
+
+/**
+ * Puts back what the gates phase did on the board when it ran live, for a phase served from its
+ * checkpoint: the claim reset the board's gates list, and the workflow engine reads it. Best-effort
+ * like the live report — a board hiccup costs the view, never the verdict.
+ */
+export async function replayGates(ctx: AttemptCtx, gates: GatesCheckpoint): Promise<void> {
+    const { rt, job } = ctx;
+    if (gates.setupCleared) job.setupFailure = null;
+    if (gates.reports.length === 0) return;
+    try {
+        await rt.board.gates(job, [...gates.reports]);
+    } catch (e) {
+        rt.log(`job ${job.id}: could not report gate state, continuing: ${(e as Error).message}`);
+    }
 }
