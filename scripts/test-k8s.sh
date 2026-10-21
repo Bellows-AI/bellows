@@ -1489,8 +1489,11 @@ state_installed=1
 LANE_LEASE_S=45
 # A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes
 # at the default one-minute sync, docs/kubernetes.md): the grace outlasts two syncs, or the group ends
-# before it can follow the new holder. scripts/kind-cluster.yaml syncs every 5 s: a 20 s grace.
+# before it can follow the new holder. scripts/kind-cluster.yaml syncs every 5 s: the 30 s floor below.
 LANE_REBIND_GRACE_S=$((2 * ${KUBELET_SYNC_S:-60} + 10))
+# Measured on the kind lane: a 5 s sync (a 20 s grace) leaves the hard-kill case's rebind undelivered
+# (the supervisor ends before it polls the new endpoint, three runs in three), a 30 s grace delivers it.
+[ "$LANE_REBIND_GRACE_S" -ge 30 ] || LANE_REBIND_GRACE_S=30
 LANE_MARGIN_S=40
 # A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
 LANE_ORPHAN_S=30
@@ -2521,6 +2524,9 @@ else
     ok 'the hard-kill runner is running'
     await_blocked "$hard_pod" "$hard_release" && ok 'the hard-kill agent is blocked at its barrier' || give_up
     hard_job="$(first_runner_job "$hard")"
+    hard_sup_log="${TIMINGS_FILE%.tsv}.hard-kill.supervisor.log"
+    kubectl logs -f "$hard_pod" -c supervisor -n "$NAMESPACE" >"$hard_sup_log" 2>&1 &
+    hard_sup_pid=$!
     kill_driver_pods
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     # Two and more 3s reaper rounds of the replacement driver while the agent is still blocked at its
@@ -2548,7 +2554,10 @@ else
     fi
     hard_end="$(await_brief "$hard" 'succeeded*' 240)"
     [ "$hard_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
-        bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end"
+        bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end
+$(driver_logs | grep -F "job $hard" | tail -15)
+supervisor: $(tail -20 "$hard_sup_log")"
+    kill "$hard_sup_pid" 2>/dev/null
     expect_contains 'the adopted output is the first runner pod output' "$(job_output "$hard")" "released in $hard_pod"
     expect_contains 'the replacement driver logs the takeover' "$(driver_logs)" "job $hard: $TOOK_OVER"
 fi
