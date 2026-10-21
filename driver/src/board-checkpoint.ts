@@ -89,6 +89,7 @@ type Post = (
 ) => Promise<Response>;
 
 const HTTP_UNPROCESSABLE = 422;
+const ARTIFACT_CORRUPT_CODE = 'ARTIFACT_CORRUPT';
 
 /** The board reports the stored bytes of a chunk corrupt (they fail their recorded sha256): never restorable. */
 export class CheckpointChunkCorrupt extends Error {}
@@ -110,7 +111,12 @@ export function checkpointCalls(
         });
         if (response.status === HTTP_NOT_FOUND) return null;
         if (response.status === HTTP_UNPROCESSABLE) {
-            throw new CheckpointChunkCorrupt(`job ${job.id}: the board's stored ${what} is corrupt`);
+            // The board's own error code (core ERROR_CODES), copied: any other 422 is an ordinary error.
+            const body = (await response.json().catch(() => null)) as { code?: unknown } | null;
+            if (body?.code === ARTIFACT_CORRUPT_CODE) {
+                throw new CheckpointChunkCorrupt(`job ${job.id}: the board's stored ${what} is corrupt`);
+            }
+            throw new BoardHttpError(response.status, `job ${job.id}: the board refused the ${what} (422)`);
         }
         if (response.status === HTTP_CONFLICT) throw refused(job, response);
         const sha256 = response.headers.get('x-chunk-sha256') ?? '';

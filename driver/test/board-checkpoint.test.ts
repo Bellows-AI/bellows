@@ -74,11 +74,25 @@ describe('the board checkpoint chunk read', () => {
         await expect(calls(chunk({}, 409)).api.checkpointChunk(job, 0)).rejects.toMatchObject({ status: 409 });
     });
 
-    it('throws CheckpointChunkCorrupt when the board reports its stored chunk corrupt (422)', async () => {
-        await expect(calls(chunk({}, 422)).api.checkpointChunk(job, 0)).rejects.toBeInstanceOf(CheckpointChunkCorrupt);
+    const corruptBody = () => new Response(JSON.stringify({ error: 'x', code: 'ARTIFACT_CORRUPT' }), { status: 422 });
+
+    it('throws CheckpointChunkCorrupt when the board reports its stored chunk corrupt (422 ARTIFACT_CORRUPT)', async () => {
+        await expect(calls(corruptBody).api.checkpointChunk(job, 0)).rejects.toBeInstanceOf(CheckpointChunkCorrupt);
         await expect(
-            calls(chunk({}, 422)).api.transcriptChunk(job, { jobId: job.id, claimSeq: 2, session: 'alpha' }, 0)
+            calls(corruptBody).api.transcriptChunk(job, { jobId: job.id, claimSeq: 2, session: 'alpha' }, 0)
         ).rejects.toBeInstanceOf(CheckpointChunkCorrupt);
+    });
+
+    it('treats any other 422 as an ordinary board error, not a corrupt chunk', async () => {
+        const other = () => new Response(JSON.stringify({ error: 'x', code: 'VALIDATION_ERROR' }), { status: 422 });
+        const error = await calls(other)
+            .api.checkpointChunk(job, 0)
+            .catch((e: unknown) => e);
+        expect(error).not.toBeInstanceOf(CheckpointChunkCorrupt);
+        expect(error).toMatchObject({ status: 422 });
+        await expect(calls(chunk({}, 422)).api.checkpointChunk(job, 0)).rejects.not.toBeInstanceOf(
+            CheckpointChunkCorrupt
+        );
     });
 
     it('throws on a missing or mismatched digest', async () => {
