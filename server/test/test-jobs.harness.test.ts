@@ -241,8 +241,8 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('supervisor_served "$drained" 60');
         // The lane drivers shorten the takeover grace and the drain, so a waited-out bound or a
         // stuck run costs seconds, not minutes, and a run that never settles dumps its containers.
-        expect(SCRIPT).toContain('DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}"');
-        expect(SCRIPT).toContain('DRIVER_HANDOVER_MS="${LANE_HANDOVER_MS:-5000}"');
+        expect(SCRIPT).toContain(`DRIVER_REBIND_GRACE_MS="$\{LANE_REBIND_GRACE_MS:-20000}"`);
+        expect(SCRIPT).toContain(`DRIVER_HANDOVER_MS="$\{LANE_HANDOVER_MS:-5000}"`);
         expect(SCRIPT).toMatch(/done\n {4}dump_stall "\$id"\n/);
         expect(SCRIPT).toContain("'supervisor: stopped serving the steps'");
         expect(SCRIPT).toContain("ADOPTED='adopted the finished runner of claim 1, whose driver was lost'");
