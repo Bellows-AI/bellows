@@ -1,13 +1,32 @@
+import { randomUUID } from 'node:crypto';
 import { type CloneStatus, PurgeConflictError, type UserRepo, type UserRepoStore } from '../src/db/user-repo-store.js';
 
 /** How the memory double counts tasks blocking a purge. The SQL store reads the job table; this has none. */
 export type BlockingTasks = (userId: string, name: string) => number;
 
+type RepoRef = { owner: string; name: string };
+
 export interface MemoryUserRepoStore extends UserRepoStore {
     /** Every row, deselected ones included, so a test can assert nothing was deleted. */
-    rows(): { userId: string; owner: string; name: string; status: CloneStatus; deselected: boolean }[];
-    /** Puts a row into `cloning` without a queue, to stand in for a process that then died. */
-    strand(userId: string, repo: { owner: string; name: string }): void;
+    rows(): {
+        userId: string;
+        owner: string;
+        name: string;
+        status: CloneStatus;
+        deselected: boolean;
+        claimToken: string | null;
+        purgeToken: string | null;
+    }[];
+    /** Puts a row into `cloning` under an already-lapsed lease, to stand in for a process that then died. */
+    strand(userId: string, repo: RepoRef): void;
+    /** Puts a row into `cloning` under a lease that is still live and a token a test names. */
+    holdLive(userId: string, repo: RepoRef, token: string): void;
+    /** Lapses a `cloning` row's lease, as the passing of the lease time would. */
+    expire(userId: string, repo: RepoRef): void;
+    /** Ages a `purging` stamp by `ms`, as the passing of that time would. */
+    backdatePurge(userId: string, repo: RepoRef, ms: number): void;
+    /** A checkout that is on disk and owned by nobody: the state a finished clone leaves. */
+    seedReady(userId: string, repo: RepoRef): void;
 }
 
 interface Row {
@@ -22,6 +41,23 @@ interface Row {
     readyAt: string | null;
     purgeStartedAt: string | null;
     deselectedAt: string | null;
+    claimToken: string | null;
+    leaseExpiresAt: number | null;
+    purgeToken: string | null;
+}
+
+/** The two claim constraints of 078, restated: a write that would violate either throws, as the database would. */
+function assertClaimInvariant(rows: readonly Row[]): void {
+    for (const row of rows) {
+        const leased = row.claimToken !== null && row.leaseExpiresAt !== null;
+        if ((row.status === 'cloning') !== leased) {
+            throw new Error(`user_repo_clone_lease_ck violated by ${row.name} (${row.status})`);
+        }
+        const stamped = row.purgeToken !== null && row.purgeStartedAt !== null;
+        if (row.status === 'purging' && !stamped) {
+            throw new Error(`user_repo_purge_claim_ck violated by ${row.name} (${row.status})`);
+        }
+    }
 }
 
 /** Applies one selection request: holds an existing row (re-queuing unless already ready) or adds a new one. */
@@ -30,8 +66,9 @@ function applySelection(rows: Row[], at: () => string, userId: string, repo: { o
     if (held) {
         held.deselectedAt = null;
         held.selectedAt = at();
-        // A checkout that is on disk is on disk, whatever a later request says.
-        if (held.status !== 'ready') {
+        // A checkout that is on disk is on disk, and a clone another process holds is its own:
+        // neither is re-queued by a later request (the lease columns are never touched).
+        if (held.status !== 'ready' && held.status !== 'cloning') {
             held.status = 'queued';
             held.error = null;
         }
@@ -49,6 +86,9 @@ function applySelection(rows: Row[], at: () => string, userId: string, repo: { o
         readyAt: null,
         purgeStartedAt: null,
         deselectedAt: null,
+        claimToken: null,
+        leaseExpiresAt: null,
+        purgeToken: null,
     });
 }
 
@@ -71,6 +111,9 @@ function markDropped(
  * exercising the selection rules, the claim and the restart recovery. The SQL behind it is covered
  * by server/test-db, which needs a container.
  *
+ * Every write mirrors its SQL twin, claim fences included, and ends in `assertClaimInvariant` so a
+ * write the database's constraints would refuse throws here too.
+ *
  * `blockingTasks` stands in for the job-table count behind `stampPurge`'s `tasks` refusal; the
  * default counts nothing, which is what a member with no tasks is.
  */
@@ -78,7 +121,7 @@ export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks })
     const rows: Row[] = [];
     const blockingTasks = options?.blockingTasks ?? (() => 0);
     const at = () => new Date().toISOString();
-    const find = (userId: string, repo: { owner: string; name: string }) =>
+    const find = (userId: string, repo: RepoRef) =>
         rows.find((r) => r.userId === userId && r.owner === repo.owner && r.name === repo.name);
     const view = (row: Row): UserRepo => ({
         owner: row.owner,
@@ -91,6 +134,19 @@ export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks })
         readyAt: row.readyAt,
         purgeStartedAt: row.purgeStartedAt,
     });
+    /** The row `job` still owns, or undefined: the same fence as `status = 'cloning' and claim_token = …`. */
+    const owned = (job: { userId: string; owner: string; name: string; claimToken: string }) => {
+        const row = find(job.userId, job);
+        return row?.status === 'cloning' && row.claimToken === job.claimToken ? row : undefined;
+    };
+    const heldPurge = (userId: string, repo: RepoRef, token: string) => {
+        const row = find(userId, repo);
+        return row?.status === 'purging' && row.purgeToken === token ? row : undefined;
+    };
+    const checked = <T>(value: T): T => {
+        assertClaimInvariant(rows);
+        return value;
+    };
 
     return {
         rows: () =>
@@ -100,11 +156,46 @@ export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks })
                 name: r.name,
                 status: r.status,
                 deselected: r.deselectedAt !== null,
+                claimToken: r.claimToken,
+                purgeToken: r.purgeToken,
             })),
 
         strand(userId, repo) {
             const row = find(userId, repo);
-            if (row) row.status = 'cloning';
+            if (!row) return;
+            row.status = 'cloning';
+            row.claimToken = randomUUID();
+            row.leaseExpiresAt = 0;
+            checked(0);
+        },
+
+        holdLive(userId, repo, token) {
+            const row = find(userId, repo);
+            if (!row) return;
+            row.status = 'cloning';
+            row.claimToken = token;
+            row.leaseExpiresAt = Date.now() + 60_000;
+            checked(0);
+        },
+
+        expire(userId, repo) {
+            const row = find(userId, repo);
+            if (row?.status === 'cloning') row.leaseExpiresAt = 0;
+        },
+
+        backdatePurge(userId, repo, ms) {
+            const row = find(userId, repo);
+            if (row?.purgeStartedAt) row.purgeStartedAt = new Date(Date.parse(row.purgeStartedAt) - ms).toISOString();
+        },
+
+        seedReady(userId, repo) {
+            const row = find(userId, repo);
+            if (!row) return;
+            row.status = 'ready';
+            row.readyAt = at();
+            row.claimToken = null;
+            row.leaseExpiresAt = null;
+            checked(0);
         },
 
         async select(userId, repos) {
@@ -119,6 +210,7 @@ export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks })
             if (purging.length) throw new PurgeConflictError(purging);
             for (const repo of repos) applySelection(rows, at, userId, repo);
             markDropped(rows, at, userId, repos);
+            checked(0);
         },
 
         async list(userId) {
@@ -139,67 +231,120 @@ export function memoryUserRepoStore(options?: { blockingTasks?: BlockingTasks })
             if (count > 0) return { refused: 'tasks', count };
             row.status = 'purging';
             row.purgeStartedAt = at();
+            row.purgeToken = randomUUID();
             row.error = null;
-            return { stamped: true };
+            return checked({ stamped: true as const, token: row.purgeToken });
         },
 
-        async deletePurged(userId, repo) {
-            const row = find(userId, repo);
-            if (!row || row.deselectedAt === null || row.status !== 'purging') return false;
+        async claimStalePurges(staleMs) {
+            const cutoff = Date.now() - staleMs;
+            const stale = rows.filter((r) => r.status === 'purging' && Date.parse(r.purgeStartedAt ?? '') < cutoff);
+            return checked(
+                stale.map((row) => {
+                    row.purgeToken = randomUUID();
+                    row.purgeStartedAt = at();
+                    return {
+                        userId: row.userId,
+                        owner: row.owner,
+                        name: row.name,
+                        token: row.purgeToken,
+                    };
+                })
+            );
+        },
+
+        async holdPurge(userId, repo, token, move) {
+            return heldPurge(userId, repo, token) ? move() : null;
+        },
+
+        async deletePurged(userId, repo, token) {
+            const row = heldPurge(userId, repo, token);
+            if (!row || row.deselectedAt === null) return false;
             rows.splice(rows.indexOf(row), 1);
             return true;
         },
 
-        async markPurgeFailed(userId, repo, error) {
-            const row = find(userId, repo);
-            if (!row || row.status !== 'purging') return;
+        async markPurgeFailed(userId, repo, token, error) {
+            const row = heldPurge(userId, repo, token);
+            if (!row) return false;
             row.status = 'failed';
             row.error = error;
+            return checked(true);
         },
 
-        async listPurging() {
-            return rows
-                .filter((r) => r.status === 'purging')
-                .sort((a, b) => (a.purgeStartedAt ?? '').localeCompare(b.purgeStartedAt ?? ''))
-                .map((row) => ({ userId: row.userId, ...view(row) }));
-        },
-
-        async claimPending(limit) {
+        async claimPending(limit, leaseMs = 60_000) {
             const claimed = rows
                 .filter((r) => r.status === 'queued' && r.deselectedAt === null)
                 .sort((a, b) => a.selectedAt.localeCompare(b.selectedAt))
                 .slice(0, Math.max(0, limit));
             for (const row of claimed) {
                 row.status = 'cloning';
+                row.claimToken = randomUUID();
+                row.leaseExpiresAt = Date.now() + leaseMs;
                 row.startedAt = at();
                 row.attempts += 1;
                 row.error = null;
             }
-            return claimed.map((r) => ({ userId: r.userId, owner: r.owner, name: r.name }));
+            return checked(
+                claimed.map((r) => ({
+                    userId: r.userId,
+                    owner: r.owner,
+                    name: r.name,
+                    claimToken: r.claimToken as string,
+                }))
+            );
         },
 
-        async markReady(userId, repo) {
-            const row = find(userId, repo);
-            if (!row) return;
+        async renewLeases(tokens, leaseMs = 60_000) {
+            const renewed = rows.filter(
+                (r) => r.status === 'cloning' && r.claimToken !== null && tokens.includes(r.claimToken)
+            );
+            for (const row of renewed) row.leaseExpiresAt = Date.now() + leaseMs;
+            return checked(renewed.map((r) => r.claimToken as string));
+        },
+
+        async markReady(job, publish) {
+            const row = owned(job);
+            if (!row) return false;
+            publish?.();
             row.status = 'ready';
             row.readyAt = at();
             row.error = null;
+            row.claimToken = null;
+            row.leaseExpiresAt = null;
+            return checked(true);
         },
 
-        async markFailed(userId, repo, error) {
-            const row = find(userId, repo);
-            if (!row) return;
+        async markFailed(job, error) {
+            const row = owned(job);
+            if (!row) return false;
             row.status = 'failed';
             row.error = error;
+            row.claimToken = null;
+            row.leaseExpiresAt = null;
+            return checked(true);
         },
 
-        async requeueStranded() {
-            const stranded = rows.filter((r) => r.status === 'cloning');
-            for (const row of stranded) {
-                row.status = 'queued';
-                row.error = null;
-            }
-            return stranded.length;
+        async requeueExpired() {
+            const expired = rows.filter(
+                (r) => r.status === 'cloning' && r.leaseExpiresAt !== null && r.leaseExpiresAt < Date.now()
+            );
+            return checked(
+                expired.map((row) => {
+                    const staleToken = row.claimToken as string;
+                    row.status = 'queued';
+                    row.error = null;
+                    row.claimToken = null;
+                    row.leaseExpiresAt = null;
+                    return { userId: row.userId, name: row.name, staleToken };
+                })
+            );
+        },
+
+        async heldTokens() {
+            return rows
+                .flatMap((r) => [r.claimToken, r.status === 'purging' ? r.purgeToken : null])
+                .filter((t): t is string => t !== null);
         },
     };
 }
