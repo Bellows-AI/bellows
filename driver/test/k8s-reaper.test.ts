@@ -396,7 +396,10 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
         const { request, calls } = router(lists([finishedRunner]));
         const arm = createKubernetesReaper({ config, request });
         const reaper = createReaper({
-            board: { leases: async () => [{ id: JOB, status: 'queued', leaseToken: null }] },
+            board: {
+                leases: async () => [{ id: JOB, status: 'queued', leaseToken: null }],
+                reclaimHolds: async () => [],
+            },
             arm,
             intervalMs: 0,
             graceMs: 0,
@@ -454,6 +457,7 @@ describe('paused runner recovery after a driver restart', () => {
                                         leaseToken: state === 'live' ? LEASE : state === 'unclaimed' ? null : JOB,
                                     },
                                 ],
+                    reclaimHolds: async () => [],
                 },
                 intervalMs: 1000,
                 graceMs: 0,
@@ -481,7 +485,7 @@ describe('paused runner recovery after a driver restart', () => {
         };
         const reaper = createReaper({
             arm: createKubernetesReaper({ config, request }),
-            board: { leases: async () => [] },
+            board: { leases: async () => [], reclaimHolds: async () => [] },
             intervalMs: 1000,
             graceMs: 0,
             log: () => {},
@@ -528,7 +532,10 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
     const sweep = (request: K8sRequest) =>
         createReaper({
             // The job is terminal: a live job's runner Job is its next claim's fence's (issue #821).
-            board: { leases: async () => [{ id: JOB, status: 'failed', leaseToken: null }] },
+            board: {
+                leases: async () => [{ id: JOB, status: 'failed', leaseToken: null }],
+                reclaimHolds: async () => [],
+            },
             arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
             intervalMs: 0,
             graceMs: 0,
@@ -656,7 +663,7 @@ describe('the kubernetes reaper arm: a live job’s runner Job is the fence’s 
     const sweep = async (lease: { leaseToken: string | null; status: string }) => {
         const { request, calls } = router(lists);
         await createReaper({
-            board: { leases: async () => [{ id: JOB, ...lease }] as never },
+            board: { leases: async () => [{ id: JOB, ...lease }] as never, reclaimHolds: async () => [] },
             arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
             intervalMs: 0,
             graceMs: 0,
@@ -733,5 +740,63 @@ describe('the kubernetes reaper arm: a 409 on a listed uid is no removal (#821)'
             'gone'
         );
         expect(deleteCalls(calls).some((path) => path.startsWith(claimPath))).toBe(false);
+    });
+});
+
+/*
+ * Issue #829 (G7): a reclaim Job is labelled with its root job id — terminal or removed by the time a
+ * reclaim runs — and the acquisition token it serves. The root's lease would condemn a live reclaim
+ * writer, so the board's holds decide: held → untouched; not held → reaped, and its claim released.
+ */
+describe('the kubernetes reaper arm: a reclaim group is decided by the board’s holds (#829)', () => {
+    const HOLDER = '77777777-7777-4777-8777-777777777777';
+    const RECLAIM_JOB = 'factory-reclaim-0123456789abcdef';
+    const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
+    const reclaimJob = {
+        metadata: {
+            name: RECLAIM_JOB,
+            uid: 'reclaim-uid',
+            labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE, 'factory.holder': HOLDER },
+            creationTimestamp: '2026-10-01T00:00:00Z',
+        },
+    };
+    const sweepWith = async (
+        leases: { id: string; status: string; leaseToken: string | null }[],
+        holds: { id: string; token: string }[] | null
+    ) => {
+        const { request, calls } = router([
+            ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [reclaimJob] }) }],
+            [
+                'GET',
+                claimPath,
+                { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: HOLDER } }) },
+            ],
+            ['DELETE', claimPath, { status: 200, body: '' }],
+        ]);
+        await createReaper({
+            board: { leases: async () => leases as never, reclaimHolds: async () => holds },
+            arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => {},
+        }).sweep();
+        return deleteCalls(calls);
+    };
+
+    it('deletes nothing of a running reclaim whose acquisition the board holds, root terminal or absent', async () => {
+        const held = [{ id: JOB, token: HOLDER }];
+        expect(await sweepWith([{ id: JOB, status: 'succeeded', leaseToken: null }], held)).toEqual([]);
+        expect(await sweepWith([], held)).toEqual([]);
+    });
+
+    it('deletes nothing when the holds lookup cannot answer', async () => {
+        expect(await sweepWith([], null)).toEqual([]);
+    });
+
+    // Characterization: an ended holder's reclaim is reaped and its claim released, as before.
+    it('reaps a reclaim whose acquisition is no longer held, and releases the claim it served', async () => {
+        const deletes = await sweepWith([{ id: JOB, status: 'succeeded', leaseToken: null }], []);
+        expect(deletes.some((path) => path.includes(RECLAIM_JOB))).toBe(true);
+        expect(deletes).toContain(claimPath);
     });
 });

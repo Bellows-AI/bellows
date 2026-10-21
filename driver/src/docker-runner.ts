@@ -343,7 +343,7 @@ async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<R
         // Issue #814: the tool uid first gives back what it closed; the reclaim's verdict decides.
         const release = toolTreeReleaseArgs(config, job);
         if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
-        await createGroup(deps, group, null, { startedAt: new Date().toISOString(), reclaim: true });
+        await createGroup(deps, group, null, { startedAt: new Date().toISOString(), reclaim: job.leaseToken });
         await startGroup(deps.execDocker, group, null);
         await awaitGroupUp(deps, group);
         return await runReclaimStep(stepHostOf(deps), group);

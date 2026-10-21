@@ -212,6 +212,9 @@ export function stubBoard(
             if (options.leaseRows === undefined) return [];
             return options.leaseRows;
         },
+        async reclaimHolds() {
+            return [];
+        },
         async suspend(claimed) {
             board.suspended.push(claimed.id);
             return 'held';

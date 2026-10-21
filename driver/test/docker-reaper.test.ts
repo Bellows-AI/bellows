@@ -193,7 +193,10 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
             return { stdout: '' };
         };
         const reaper = createReaper({
-            board: { leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })) },
+            board: {
+                leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })),
+                reclaimHolds: async () => [],
+            },
             arm: createDockerReaper(execDocker),
             intervalMs: 0,
             graceMs: 0,
@@ -260,6 +263,9 @@ describe('the docker reaper arm: reap', () => {
 describe('the docker reaper arm: task groups (#821 D16)', () => {
     const OLD = '2026-09-01 00:00:00 +0000 UTC';
     const OLD_VOLUME = '2026-09-01T00:00:00Z';
+    /** The reclaim mark, and — when given a string — the acquisition token the group serves (#829). */
+    const reclaimLabels = (reclaim: boolean | string | undefined): string =>
+        reclaim ? `,factory.reclaim=true${typeof reclaim === 'string' ? `,factory.holder=${reclaim}` : ''}` : '';
     const pair = (jobId: string, lease: string) => ({ id: jobId, leaseToken: lease }) as BoardJob;
     const roleLine = (fields: {
         id: string;
@@ -268,19 +274,19 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         lease: string;
         role: string;
         state: string;
-        reclaim?: boolean;
+        reclaim?: boolean | string;
     }) =>
         JSON.stringify({
             ID: fields.id,
             Names: fields.name,
-            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}${fields.reclaim ? ',factory.reclaim=true' : ''}`,
+            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}${reclaimLabels(fields.reclaim)}`,
             CreatedAt: OLD,
             State: fields.state,
         });
-    const volumeLine = (name: string, jobId: string, lease: string, reclaim = false) =>
+    const volumeLine = (name: string, jobId: string, lease: string, reclaim: boolean | string = false) =>
         JSON.stringify({
             Name: name,
-            Labels: `factory.job=${jobId},factory.lease=${lease}${reclaim ? ',factory.reclaim=true' : ''}`,
+            Labels: `factory.job=${jobId},factory.lease=${lease}${reclaimLabels(reclaim)}`,
         });
 
     /** A daemon holding role-labelled containers and job+lease volumes; `refuse` names one verb to refuse. */
@@ -300,7 +306,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         };
         return { execDocker, calls };
     };
-    const group = (lease = LEASE, state = 'running', reclaim = false) => {
+    const group = (lease = LEASE, state = 'running', reclaim: boolean | string = false) => {
         const named = pair(JOB, lease);
         return {
             containers: [
@@ -420,7 +426,10 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
 
         await expect(createDockerReaper(recording).scan()).resolves.toEqual([]);
         await createReaper({
-            board: { leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never },
+            board: {
+                leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never,
+                reclaimHolds: async () => [],
+            },
             arm: createDockerReaper(recording),
             intervalMs: 0,
             graceMs: 0,
@@ -493,7 +502,30 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         ]);
     });
 
-    it('leaves a reclaim group out of scope, containers and volumes alike', async () => {
+    // Issue #829: a reclaim group labelled with the acquisition token it serves is in scope, so the
+    // board's holds decide its fate; the holder rides every object for the shared reaper to read.
+    const HOLDER = '77777777-7777-4777-8777-777777777777';
+
+    it('scans a reclaim group labelled with its holder, every object carrying it', async () => {
+        const g = group(LEASE, 'exited', HOLDER);
+        const { execDocker } = daemon(g.containers, g.volumes);
+
+        const groups = await createDockerReaper(execDocker).scan();
+
+        expect(groups).toHaveLength(1);
+        expect(groups[0]).toMatchObject({ jobId: JOB, leaseToken: LEASE });
+        expect(groups[0]!.objects).toHaveLength(4);
+        expect(groups[0]!.objects.every((object) => object.holder === HOLDER)).toBe(true);
+    });
+
+    it('answers nothing when a reclaim row carries a holder label that is no uuid — the listing is inconclusive', async () => {
+        const g = group(LEASE, 'exited', 'not-a-uuid');
+        const { execDocker } = daemon(g.containers, g.volumes);
+
+        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+    });
+
+    it('leaves a reclaim group with no holder label out of scope, containers and volumes alike', async () => {
         const g = group(LEASE, 'exited', true);
         const { execDocker } = daemon(g.containers, g.volumes);
 
@@ -523,6 +555,43 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         ]);
     });
 
+    // Issue #829 (G7): the dead driver's reclaim group is reaped once the board no longer holds the
+    // acquisition it serves, and spared — whatever its root job says — while it does.
+    it('through the reaper: a reclaim group is spared while its acquisition is held, reaped once it is not', async () => {
+        const HELD = '77777777-7777-4777-8777-777777777777';
+        const g = group(LEASE, 'exited', HELD);
+        const { execDocker } = daemon(g.containers, g.volumes);
+        const removed: string[] = [];
+        const recording: ExecDocker = async (args) => {
+            if (args[0] === 'rm' || (args[0] === 'volume' && args[1] === 'rm')) removed.push(args[args.length - 1]!);
+            return execDocker(args);
+        };
+        const sweep = async (holds: { id: string; token: string }[] | null | 'throws') => {
+            removed.length = 0;
+            await createReaper({
+                board: {
+                    leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never,
+                    reclaimHolds: async () => {
+                        if (holds === 'throws') throw new Error('board unreachable');
+                        return holds;
+                    },
+                },
+                arm: createDockerReaper(recording),
+                intervalMs: 0,
+                graceMs: 0,
+                log: () => undefined,
+            }).sweep();
+            return [...removed];
+        };
+
+        expect(await sweep([{ id: JOB, token: HELD }])).toEqual([]);
+        expect(await sweep(null)).toEqual([]);
+        expect(await sweep('throws')).toEqual([]);
+        expect(await sweep([])).toEqual(
+            expect.arrayContaining([hexId(`sup-${LEASE}`), `factory-kill-timeout-${JOB}-${LEASE}`])
+        );
+    });
+
     it('through the reaper: a gone job is reaped, a superseded unread runner kept with its kill marks, a live lease untouched', async () => {
         const gone = group(LEASE, 'running');
         const superseded = group(LEASE2, 'exited');
@@ -539,7 +608,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const sweep = async (leases: { id: string; leaseToken: string | null; status: string }[]) => {
             removed.length = 0;
             await createReaper({
-                board: { leases: async () => leases as never },
+                board: { leases: async () => leases as never, reclaimHolds: async () => [] },
                 arm: createDockerReaper(recording),
                 intervalMs: 0,
                 graceMs: 0,
@@ -587,7 +656,7 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
             return { stdout: '' };
         };
         await createReaper({
-            board: { leases: async () => [{ id: JOB, ...lease }] as never },
+            board: { leases: async () => [{ id: JOB, ...lease }] as never, reclaimHolds: async () => [] },
             arm: createDockerReaper(execDocker),
             intervalMs: 0,
             graceMs: 0,

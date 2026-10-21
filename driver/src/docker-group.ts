@@ -36,7 +36,7 @@ import {
     type RunnerFiles,
     startupRefusalOf,
 } from './docker-runner-support.js';
-import { JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
+import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL } from './labels.js';
 import { Inconclusive, REBIND_DEADLINE_MS, type RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
@@ -72,23 +72,31 @@ export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(j
 export const gateName = (job: BoardJob): string => `factory-gate-${idsOf(job)}`;
 export const reviewerName = (job: BoardJob): string => `factory-reviewer-${idsOf(job)}`;
 
-/** The reclaim group's mark (`RECLAIM_LABEL`), on each of its objects; nothing on an attempt's. */
-const reclaimLabelArgs = (reclaim: boolean): string[] => (reclaim ? ['--label', `${RECLAIM_LABEL}=true`] : []);
+/**
+ * The reclaim group's mark (`RECLAIM_LABEL`) and the acquisition token it serves (`HOLDER_LABEL`,
+ * issue #829), on each of its objects; nothing on an attempt's.
+ */
+const reclaimLabelArgs = (reclaim: boolean, holder?: string): string[] =>
+    reclaim ? ['--label', `${RECLAIM_LABEL}=true`, ...(holder ? ['--label', `${HOLDER_LABEL}=${holder}`] : [])] : [];
 
-const labelArgs = (job: BoardJob, role: string, reclaim: boolean): string[] => [
+const labelArgs = (job: BoardJob, role: string, reclaim: boolean, holder?: string): string[] => [
     '--label',
     `${JOB_LABEL}=${job.id}`,
     '--label',
     `${LEASE_LABEL}=${job.leaseToken}`,
     '--label',
     `${ROLE_LABEL}=${role}`,
-    ...reclaimLabelArgs(reclaim),
+    ...reclaimLabelArgs(reclaim, holder),
 ];
 
 /** The `docker volume create` argv of each mailbox: labelled with the job and lease, so a fence can find them. */
 export const ctlVolumeArgs = (
     job: BoardJob,
-    { reclaim = false, reviewing = false }: { reclaim?: boolean; reviewing?: boolean } = {}
+    {
+        reclaim = false,
+        holder,
+        reviewing = false,
+    }: { reclaim?: boolean; holder?: string | undefined; reviewing?: boolean } = {}
 ): string[][] =>
     [...mailboxesOf(reviewing).map((box) => ctlVolumeName(job, box)), ...(reclaim ? [] : [bindingVolumeName(job)])].map(
         (name) => [
@@ -98,7 +106,7 @@ export const ctlVolumeArgs = (
             `${JOB_LABEL}=${job.id}`,
             '--label',
             `${LEASE_LABEL}=${job.leaseToken}`,
-            ...reclaimLabelArgs(reclaim),
+            ...reclaimLabelArgs(reclaim, holder),
             name,
         ]
     );
@@ -123,7 +131,14 @@ const serviceHostArgs = (config: DriverConfig, job: BoardJob): string[] =>
 export function supervisorCreateArgs(
     config: DriverConfig,
     job: BoardJob,
-    group: { exporting: boolean; agentless: boolean; gated?: boolean; reviewing?: boolean; reclaim?: boolean },
+    group: {
+        exporting: boolean;
+        agentless: boolean;
+        gated?: boolean;
+        reviewing?: boolean;
+        reclaim?: boolean;
+        holder?: string | undefined;
+    },
     envFile: string | null
 ): string[] {
     return [
@@ -131,7 +146,7 @@ export function supervisorCreateArgs(
         ...containerHardeningArgs(),
         '--name',
         supervisorName(job),
-        ...labelArgs(job, SUPERVISOR_CONTAINER, group.reclaim === true),
+        ...labelArgs(job, SUPERVISOR_CONTAINER, group.reclaim === true, group.holder),
         ...reachDriverArgs(config),
         ...serviceHostArgs(config, job),
         ...(envFile ? ['--env-file', envFile] : []),
@@ -289,15 +304,16 @@ export function groupShape(
  * Creates the group's mailboxes and its supervisor and exporter containers (not started). A
  * failure removes what was created and throws: a run whose supervisor cannot exist is an
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
- * A terminal reclaim's group (`reclaim`) carries `RECLAIM_LABEL` on every object it creates.
+ * A terminal reclaim's group (`reclaim`, the acquisition token it serves) carries `RECLAIM_LABEL` and
+ * that token as `HOLDER_LABEL` on every object it creates (issue #829).
  */
 export async function createGroup(
     deps: GroupDeps,
     job: BoardJob,
     session: RunSession | null,
-    { startedAt, reclaim = false }: { startedAt: string; reclaim?: boolean }
+    { startedAt, reclaim }: { startedAt: string; reclaim?: string }
 ): Promise<void> {
-    const shape = { ...groupShape(job, session), reclaim };
+    const shape = { ...groupShape(job, session), reclaim: reclaim !== undefined, holder: reclaim };
     const { exporting } = shape;
     try {
         for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);

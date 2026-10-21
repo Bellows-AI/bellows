@@ -291,6 +291,12 @@ export interface BoardLease {
     leaseToken: string | null;
 }
 
+/** One row of `POST /api/reclaims/holds` (issue #829): a root's reclaim and the acquisition token holding it. */
+export interface ReclaimHold {
+    id: string;
+    token: string;
+}
+
 /**
  * How many job ids one `POST /api/jobs/leases` may carry — the same bound the server's route
  * enforces, copied here because this package imports nothing from the server. The reaper chunks
@@ -586,6 +592,13 @@ export interface Board {
      * reaps nothing on it: absence must be proven, never guessed.
      */
     leases(ids: readonly string[]): Promise<BoardLease[] | null>;
+    /**
+     * Which reclaim acquisitions the board still holds for a batch of root job ids (issue #829):
+     * a reclaim group is labelled with its acquisition token, and the reaper spares one the board
+     * holds. An empty list is the board's positive "nothing is held"; null — refused, failed or
+     * malformed — means it cannot answer, and the reaper reaps nothing on it.
+     */
+    reclaimHolds(ids: readonly string[]): Promise<ReclaimHold[] | null>;
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,

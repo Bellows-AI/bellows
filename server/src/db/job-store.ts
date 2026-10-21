@@ -85,6 +85,7 @@ function workerMethods(
     | 'writePhaseCheckpoint'
     | 'readPhaseCheckpoints'
     | 'leases'
+    | 'reclaimHolds'
     | 'artifactScope'
 > {
     return {

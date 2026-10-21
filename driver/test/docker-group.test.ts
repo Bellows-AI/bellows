@@ -654,6 +654,21 @@ describe('the holder binding (#829)', () => {
         expect(ctlVolumeArgs(job, { reclaim: true }).flat()).not.toContain(bindingVolumeName(job));
     });
 
+    it('labels a reclaim group’s volumes with the holder it serves, and an attempt’s with none (#829)', () => {
+        const HOLDER = '77777777-7777-4777-8777-777777777777';
+        for (const argv of ctlVolumeArgs(job, { reclaim: true, holder: HOLDER })) {
+            expect(argv).toEqual(expect.arrayContaining(['factory.reclaim=true', `factory.holder=${HOLDER}`]));
+        }
+        expect(ctlVolumeArgs(job).flat().join(' ')).not.toContain('factory.holder');
+        const supervisor = supervisorCreateArgs(
+            config,
+            job,
+            { exporting: false, agentless: true, reclaim: true, holder: HOLDER },
+            '/tmp/supervisor.env'
+        );
+        expect(supervisor).toEqual(expect.arrayContaining(['factory.reclaim=true', `factory.holder=${HOLDER}`]));
+    });
+
     it('mounts the binding volume in the supervisor alone, and not in a reclaim supervisor', () => {
         const mount = `type=volume,src=${bindingVolumeName(reviewing)},target=${SUPERVISOR_BINDING.dir}`;
         expect(mounts(supervisorArgs)).toContain(mount);

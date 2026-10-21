@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { boardScan } from './job-context.js';
 import {
     handleClaimJob,
@@ -54,6 +54,23 @@ export interface JobRouteDeps {
     workspaceRoot?: string | null;
 }
 
+/** The worktree-reclaim queue's routes: the driver's claim, ack and renew, and the reaper's holds lookup (issue #829). */
+function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
+    const firstReclaimClaim = boardScan();
+    app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)
+    );
+    app.post('/api/reclaims/holds', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimHolds(orgs, request, reply)
+    );
+    app.post('/api/reclaims/:id/ack', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimsAck(orgs, request, reply)
+    );
+    app.post('/api/reclaims/:id/renew', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimsRenew(orgs, request, reply)
+    );
+}
+
 /**
  * The job board's HTTP surface. The validation and the per-route logic live beside it in
  * `job-limits.ts` (sizes, status codes, the shared refusals), `job-field-validation.ts` (body/query
@@ -65,7 +82,6 @@ export const jobRoutes =
     ({ orgs, workspaceRoot = null }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const firstJobClaim = boardScan();
-        const firstReclaimClaim = boardScan();
 
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreateJob(orgs, request, reply));
 
@@ -78,10 +94,6 @@ export const jobRoutes =
         // beside /claim — it wins over /api/jobs/:id the same way the claim route already does.
         app.post('/api/jobs/leases', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleLeases(orgs, request, reply)
-        );
-        // The reaper's read of which reclaim acquisitions are still held (issue #829).
-        app.post('/api/reclaims/holds', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimHolds(orgs, request, reply)
         );
         app.post('/api/jobs/:id/heartbeat', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleHeartbeat(orgs, request, reply)
@@ -138,15 +150,7 @@ export const jobRoutes =
         app.post('/api/jobs/:id/wait/poke', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleWaitPoke(orgs, request, reply)
         );
-        app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)
-        );
-        app.post('/api/reclaims/:id/ack', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimsAck(orgs, request, reply)
-        );
-        app.post('/api/reclaims/:id/renew', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimsRenew(orgs, request, reply)
-        );
+        reclaimRoutes(app, orgs);
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleCompleteJob(orgs, request, reply)
         );

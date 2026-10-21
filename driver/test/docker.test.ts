@@ -4243,7 +4243,10 @@ describe('publishing the produced work', () => {
         const create = creates[0]!;
         expect(create).toContain('--entrypoint');
         expect(create).not.toContain('db:127.0.0.1');
-        expect(create.some((arg) => arg.includes(repoJob.leaseToken))).toBe(false);
+        // The acquisition token rides only as the holder label the orphan reaper asks the board about (#829).
+        expect(create.filter((arg) => arg.includes(repoJob.leaseToken))).toEqual([
+            `factory.holder=${repoJob.leaseToken}`,
+        ]);
         expect(create.join(' ')).not.toContain(RECLAIM_TOKEN);
         expect(create).toEqual(
             expect.arrayContaining([
@@ -4260,7 +4263,11 @@ describe('publishing the produced work', () => {
         // orphan reaper never reads its lease of its own as a dead attempt's.
         const volumes = d.calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
         expect(volumes).toHaveLength(Object.keys(MAILBOXES).length - 1); // no review mailbox without a reviewer
-        for (const made of [create, ...volumes]) expect(made).toEqual(expect.arrayContaining(['factory.reclaim=true']));
+        for (const made of [create, ...volumes]) {
+            expect(made).toEqual(
+                expect.arrayContaining(['factory.reclaim=true', `factory.holder=${repoJob.leaseToken}`])
+            );
+        }
     });
 
     it("marks no attempt's own group as a reclaim group (#821 D16)", async () => {
@@ -4269,6 +4276,7 @@ describe('publishing the produced work', () => {
         const made = d.calls.filter((a) => a[0] === 'create' || (a[0] === 'volume' && a[1] === 'create'));
         expect(made.length).toBeGreaterThan(0);
         expect(made.some((args) => args.includes('factory.reclaim=true'))).toBe(false);
+        expect(made.some((args) => args.some((arg) => arg.startsWith('factory.holder=')))).toBe(false);
     });
 
     it('releases the tree as the tool uid, hardened, naming only the tree', () => {

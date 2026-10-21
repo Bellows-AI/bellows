@@ -22,9 +22,10 @@ export const isSeq = (value: unknown): value is string =>
 export const isCommandMark = (value: unknown): value is string =>
     typeof value === 'string' && /^[0-9a-f]{16}$/.test(value);
 /**
- * Kubernetes only: the checkout claim's holder a reclaim group serves, on its Job and its pod
- * template. The group's own lease token is random per invocation, so its names are never reused;
- * this label is how a retry, an orphaned claim's reap and the reaper find what that holder left.
+ * The reclaim acquisition token a reclaim group serves (also the checkout claim's holder), on its
+ * Job and pod template (kubernetes) or each container and volume (docker). The group's own lease
+ * token is random per invocation, so its names are never reused; this label is how a retry, an
+ * orphaned claim's reap and the reaper (which asks the board whether it is still held) find it.
  */
 export const HOLDER_LABEL = 'factory.holder';
 /**

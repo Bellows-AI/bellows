@@ -236,7 +236,13 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
 }
 
 const reaperOver = (exec: ExecDocker, leases: Parameters<typeof createReaper>[0]['board']['leases'], graceMs: number) =>
-    createReaper({ board: { leases }, arm: createDockerReaper(exec), intervalMs: 0, graceMs, log: () => undefined });
+    createReaper({
+        board: { leases, reclaimHolds: async () => [] },
+        arm: createDockerReaper(exec),
+        intervalMs: 0,
+        graceMs,
+        log: () => undefined,
+    });
 
 /** D-RP1: a live job's superseded lease left a service, an unread exited runner group and a mailbox. */
 const reaperSuperseded: Build<ExecDocker> = async (tap, alias) => {

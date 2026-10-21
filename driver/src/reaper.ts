@@ -1,4 +1,4 @@
-import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './board.js';
+import { LEASE_BATCH_MAX, type Board, type BoardLease, type ReclaimHold, UUID_SHAPE } from './board.js';
 
 /**
  * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
@@ -29,7 +29,10 @@ export interface OrphanObject {
     runner?: true;
     /** The uid the scan listed it under: its delete names that incarnation only, never one created since. */
     uid?: string;
-    /** Kubernetes: the checkout holder a listed reclaim group serves (`HOLDER_LABEL`). */
+    /**
+     * The reclaim acquisition token a listed reclaim group serves (`HOLDER_LABEL`; issue #829): the
+     * board's holds decide its fate. Kubernetes' Jobs and docker's containers and volumes carry it.
+     */
     holder?: string;
 }
 
@@ -124,13 +127,60 @@ const lookupAll = async (
     return leases;
 };
 
+/**
+ * The acquisition token a reclaim group serves: the one holder every object of the group carries.
+ * Null when no object carries one (an attempt's group); undefined when the group is a reclaim group
+ * whose objects disagree or lack it — unreadable, so spared.
+ */
+const holderOf = (group: OrphanGroup): string | null | undefined => {
+    const [first] = group.objects;
+    if (group.objects.every((object) => object.holder === first?.holder)) return first?.holder ?? null;
+    return undefined;
+};
+
+/**
+ * Asks the board which reclaim acquisitions are still held for these roots, chunked like the lease
+ * lookup. Null — ANY chunk refused — aborts the round: "not held" must be the board's positive answer.
+ */
+const holdsAll = async (
+    board: Pick<Board, 'reclaimHolds'>,
+    ids: readonly string[],
+    log: (message: string) => void
+): Promise<ReclaimHold[] | null> => {
+    const holds: ReclaimHold[] = [];
+    for (let i = 0; i < ids.length; i += LEASE_BATCH_MAX) {
+        const answer = await board.reclaimHolds(ids.slice(i, i + LEASE_BATCH_MAX));
+        if (answer === null) {
+            log('reaper: the board could not answer a reclaim holds lookup — reaping nothing this round');
+            return null;
+        }
+        holds.push(...answer);
+    }
+    return holds;
+};
+
 /** Decides one group and reaps it, logging a line per object actually removed. */
 const reapOne = async (
     arm: ReaperArm,
     group: OrphanGroup,
-    ctx: { lease: BoardLease | undefined; graceMs: number; nowMs: number; log: (message: string) => void }
+    ctx: {
+        lease: BoardLease | undefined;
+        holds: readonly ReclaimHold[];
+        graceMs: number;
+        nowMs: number;
+        log: (message: string) => void;
+    }
 ): Promise<void> => {
-    const verdict = reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs);
+    const holder = holderOf(group);
+    // A reclaim group (issue #829) is decided by whether the board still holds the acquisition it
+    // serves, never by its root job's lease: the root is long terminal while a reclaim runs. Held, or
+    // not readable as one holder's, it is spared; not held it is a dead acquisition's, 'gone'.
+    if (holder === undefined) return;
+    if (holder !== null && ctx.holds.some((hold) => hold.id === group.jobId && hold.token === holder)) return;
+    const verdict =
+        holder === null
+            ? reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs)
+            : reapDecision(undefined, group, ctx.nowMs, ctx.graceMs);
     if (verdict === null) return;
     // A live job's next claim adopts it (issue #792), or its fence sweeps it: never deleted from a scan.
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
@@ -145,7 +195,7 @@ const reapOne = async (
  * problem.
  */
 export function createReaper(deps: {
-    board: Pick<Board, 'leases'>;
+    board: Pick<Board, 'leases' | 'reclaimHolds'>;
     arm: ReaperArm;
     intervalMs: number;
     graceMs: number;
@@ -178,9 +228,15 @@ export function createReaper(deps: {
             const ids = [...new Set(reapable.map((group) => group.jobId))];
             const leases = await lookupAll(deps.board, ids, log);
             if (leases === null) return;
+            const reclaimRoots = [
+                ...new Set(reapable.filter((group) => typeof holderOf(group) === 'string').map((group) => group.jobId)),
+            ];
+            const holds = reclaimRoots.length === 0 ? [] : await holdsAll(deps.board, reclaimRoots, log);
+            if (holds === null) return;
             for (const group of reapable) {
                 await reapOne(deps.arm, group, {
                     lease: leases.get(group.jobId),
+                    holds,
                     graceMs: deps.graceMs,
                     nowMs: now(),
                     log,

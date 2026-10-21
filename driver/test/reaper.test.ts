@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardLease } from '../src/board.js';
+import type { BoardLease, ReclaimHold } from '../src/board.js';
 import { LEASE_BATCH_MAX } from '../src/board.js';
 import { createReaper, reapDecision, type OrphanGroup, type ReaperArm, type ReapVerdict } from '../src/reaper.js';
 
@@ -100,11 +100,18 @@ const recordingArm = (removed: string[] = ['pod svc-postgres']): { arm: ReaperAr
     };
 };
 
-const boardOf = (answer: BoardLease[] | null, calls: string[][] = []) => ({
+const noHolds = async (): Promise<ReclaimHold[] | null> => [];
+
+const boardOf = (
+    answer: BoardLease[] | null,
+    calls: string[][] = [],
+    reclaimHolds: (ids: readonly string[]) => Promise<ReclaimHold[] | null> = noHolds
+) => ({
     leases: async (ids: readonly string[]) => {
         calls.push([...ids]);
         return answer === null ? null : answer.filter((row) => ids.includes(row.id));
     },
+    reclaimHolds,
 });
 
 describe('the reaper sweep', () => {
@@ -185,6 +192,7 @@ describe('the reaper sweep', () => {
                 // REFUSED — the board cannot answer — which must abort the whole round.
                 return leaseCalls.length === 1 ? [] : null;
             },
+            reclaimHolds: noHolds,
         };
         const reaper = createReaper({
             board,
@@ -236,6 +244,7 @@ describe('the reaper sweep', () => {
                     leaseCalls += 1;
                     return [];
                 },
+                reclaimHolds: noHolds,
             },
             arm,
             intervalMs: 3_600_000,
@@ -249,6 +258,131 @@ describe('the reaper sweep', () => {
         await Promise.all([first, second]);
 
         expect(leaseCalls).toBe(1);
+    });
+});
+
+/**
+ * Issue #829 (G7): a reclaim group is labelled with the acquisition token holding it. Its fate is the
+ * board's answer to "is that acquisition still held", not its root job's lease: the root is terminal
+ * or removed by the time a reclaim runs, so the lease lookup alone would reap a live reclaim.
+ */
+describe('the reaper sweep — reclaim groups', () => {
+    const HOLDER = '55555555-5555-4555-8555-555555555555';
+    const OTHER_HOLDER = '66666666-6666-4666-8666-666666666666';
+    const reclaimGroup = (overrides: Partial<OrphanGroup> = {}): OrphanGroup =>
+        group({ objects: [{ kind: 'job', name: 'reclaim', holder: HOLDER }], ...overrides });
+
+    const sweepWith = async (opts: {
+        groups: OrphanGroup[];
+        holds: ((ids: readonly string[]) => Promise<ReclaimHold[] | null>) | ReclaimHold[] | null;
+        leases?: BoardLease[] | null;
+        holdCalls?: string[][];
+    }) => {
+        const { arm, calls } = recordingArm();
+        arm.scan = async () => opts.groups;
+        const reclaimHolds = async (ids: readonly string[]) => {
+            opts.holdCalls?.push([...ids]);
+            if (typeof opts.holds === 'function') return opts.holds(ids);
+            return opts.holds;
+        };
+        const reaper = createReaper({
+            board: boardOf(opts.leases === undefined ? [lease()] : opts.leases, [], reclaimHolds),
+            arm,
+            intervalMs: 3_600_000,
+            graceMs: GRACE,
+            now: () => NOW,
+            log: () => {},
+        });
+        await reaper.sweep();
+        return calls;
+    };
+
+    it('spares a reclaim whose acquisition the board still holds, though its root job is terminal or absent', async () => {
+        const held = [{ id: JOB_A, token: HOLDER }];
+        expect(await sweepWith({ groups: [reclaimGroup()], holds: held, leases: [lease()] })).toEqual([]);
+        expect(await sweepWith({ groups: [reclaimGroup()], holds: held, leases: [] })).toEqual([]);
+    });
+
+    it('reaps a reclaim the board does not hold as gone, past the grace window', async () => {
+        const g = reclaimGroup();
+        expect(await sweepWith({ groups: [g], holds: [], leases: [lease({ status: 'running' })] })).toEqual([
+            { group: g, verdict: 'gone' },
+        ]);
+    });
+
+    it('reaps a reclaim held only under another token — the acquisition it served was replaced', async () => {
+        const g = reclaimGroup();
+        const calls = await sweepWith({ groups: [g], holds: [{ id: JOB_A, token: OTHER_HOLDER }] });
+        expect(calls).toEqual([{ group: g, verdict: 'gone' }]);
+    });
+
+    it('defers an unheld reclaim inside the grace window', async () => {
+        const young = reclaimGroup({ createdAtMs: NOW - GRACE / 2 });
+        expect(await sweepWith({ groups: [young], holds: [] })).toEqual([]);
+    });
+
+    it('reaps nothing — not even an unrelated orphan — when the holds lookup is refused', async () => {
+        const holdCalls: string[][] = [];
+        const orphan = group({ jobId: JOB_B });
+        const calls = await sweepWith({
+            groups: [reclaimGroup(), orphan],
+            holds: null,
+            leases: [lease(), lease({ id: JOB_B })],
+            holdCalls,
+        });
+        expect(holdCalls).toEqual([[JOB_A]]);
+        expect(calls).toEqual([]);
+    });
+
+    it('reaps nothing when the holds lookup throws', async () => {
+        const calls = await sweepWith({
+            groups: [reclaimGroup()],
+            holds: async () => {
+                throw new Error('board unreachable');
+            },
+        });
+        expect(calls).toEqual([]);
+    });
+
+    it('spares a group whose objects carry mixed or missing holders', async () => {
+        const mixed = reclaimGroup({
+            objects: [
+                { kind: 'job', name: 'a', holder: HOLDER },
+                { kind: 'job', name: 'b', holder: OTHER_HOLDER },
+            ],
+        });
+        const partial = reclaimGroup({
+            jobId: JOB_B,
+            objects: [
+                { kind: 'job', name: 'a', holder: HOLDER },
+                { kind: 'job', name: 'b' },
+            ],
+        });
+        expect(
+            await sweepWith({ groups: [mixed, partial], holds: [], leases: [lease(), lease({ id: JOB_B })] })
+        ).toEqual([]);
+    });
+
+    it('does not ask the board about holds when no group is a reclaim group', async () => {
+        const holdCalls: string[][] = [];
+        await sweepWith({ groups: [group()], holds: [], holdCalls });
+        expect(holdCalls).toEqual([]);
+    });
+
+    it('chunks the holds lookup by the batch bound and aborts the round when any chunk is refused', async () => {
+        const groups: OrphanGroup[] = [];
+        for (let i = 0; i < LEASE_BATCH_MAX + 1; i += 1) {
+            groups.push(reclaimGroup({ jobId: `${String(i).padStart(8, '0')}-1111-4111-8111-111111111111` }));
+        }
+        const holdCalls: string[][] = [];
+        const calls = await sweepWith({
+            groups,
+            leases: [],
+            holdCalls,
+            holds: async () => (holdCalls.length === 1 ? [] : null),
+        });
+        expect(holdCalls.map((ids) => ids.length)).toEqual([LEASE_BATCH_MAX, 1]);
+        expect(calls).toEqual([]);
     });
 });
 
@@ -266,6 +400,7 @@ describe('the reaper timer', () => {
                         leaseCalls += 1;
                         return [];
                     },
+                    reclaimHolds: noHolds,
                 },
                 arm,
                 intervalMs: 1_000,
@@ -295,6 +430,7 @@ describe('the reaper timer', () => {
                         leaseCalls += 1;
                         return [];
                     },
+                    reclaimHolds: noHolds,
                 },
                 arm,
                 intervalMs: 0,
