@@ -33,7 +33,7 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|control]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|drain]');
     });
 });
 
@@ -391,5 +391,55 @@ describe('kind lane timing evidence', () => {
             /kill "\$runner_log_pid"/
         );
         expect(cleanup).toMatch(/kill "\$runner_log_pid"/);
+    });
+});
+
+describe('kind lane takeover and drain phases (issue #829)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    const takeover = script.slice(script.indexOf('if selected_phase takeover; then'), script.indexOf('if selected_phase control; then'));
+    const drain = script.slice(script.indexOf('if [ "$PHASE" = drain ]; then'));
+
+    it('runs takeover in all, between services and control, and drain only when asked for', () => {
+        expect(script.indexOf('if selected_phase takeover; then')).toBeGreaterThan(script.indexOf('if selected_phase services; then'));
+        expect(script.indexOf('if selected_phase takeover; then')).toBeLessThan(script.indexOf('if selected_phase control; then'));
+        expect(script).not.toMatch(/selected_phase drain/);
+        expect(script).toMatch(/all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|drain\)/);
+    });
+
+    it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {
+        expect(takeover).toContain('.lane-kill');
+        for (const step of ['t1', 't2', 't4', 't5']) {
+            expect(takeover).toContain(`-${step}"`);
+        }
+        expect(takeover).toContain('kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force');
+        expect(takeover).toContain('expire_claim_one');
+        expect(takeover).toContain('factory-stub-commit');
+        expect(takeover).toContain('lane-gh-hold');
+        expect(takeover).toContain('supervisor: rebound to claim 2');
+        expect(takeover).toContain("resumed gates from claim 1's checkpoint");
+        expect(takeover).toContain("commit_plan takeover-restore ''");
+    });
+
+    it('reads nothing unconfirmed as empty, and leaves nothing of a settled job', () => {
+        expect(script).toMatch(/tk_count\(\) \{[^}]*printf '\?'/);
+        expect(takeover).toMatch(/kubectl get jobs,pods -l "factory\.job=\$1,app\.kubernetes\.io\/instance=\$RELEASE"[^\n]*--request-timeout=10s/);
+    });
+
+    it('drains the driver node and the runner node, times them, and uncordons', () => {
+        expect(drain).toContain('kubectl drain');
+        expect(drain).toContain('--ignore-daemonsets');
+        expect(drain).toContain('.recovery.tsv');
+        expect(drain).toContain('uncordon');
+        expect(drain).toContain('make cleanup CLUSTER=');
+        expect(cleanup).toContain('uncordon');
+        expect(cleanup).toContain('kubectl delete pv');
+    });
+
+    it('puts the workspaces on a shared volume only when the cluster carries the drain layout', () => {
+        expect(script).toContain('factory.lane/shared');
+        expect(script).toContain('factory-lane-shared');
+        expect(script).toContain('ReadWriteMany');
+        expect(script).toContain('/factory-shared/$RELEASE');
     });
 });

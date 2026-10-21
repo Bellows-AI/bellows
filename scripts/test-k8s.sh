@@ -37,11 +37,11 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|control) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|drain) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|control] | --netpol]'
-        echo 'All cluster phases run smoke prerequisites. The default cluster phase is all.'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|drain] | --netpol]'
+        echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain: it needs a LAYOUT=drain cluster.'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
         ;;
@@ -2238,6 +2238,28 @@ kubectl delete pod fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=fa
 # --- Node disruption (issue #796) ---------------------------------------------------------------
 fi
 
+# What the recovery and takeover phases share: the interruption reasons the board records, and the lease expiry
+# that stands in for waiting a dead driver's lease out.
+ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
+DRAINED='the driver was drained'
+POD_LOST='infrastructure loss: the runner pod was deleted'
+JOB_LOST='infrastructure loss: the runner job '
+# The interruption the next claim records for an attempt whose lease expired (issue #822).
+EXPIRED='the lease expired: its driver went silent'
+
+expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
+    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+with expired as (
+    update job set lease_expires_at = now() - interval '1 second'
+    where id = :'job' and status = 'running' and claim_seq = 1 and lease_expires_at > now()
+    returning id
+)
+select count(*) from expired;
+SQL
+}
+
 if selected_phase recovery; then
 #
 # Infrastructure loss interrupts a task, it never loses one — on a real apiserver. The release was
@@ -2255,13 +2277,6 @@ if selected_phase recovery; then
 
 echo
 echo '# node disruption'
-
-ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
-DRAINED='the driver was drained'
-POD_LOST='infrastructure loss: the runner pod was deleted'
-JOB_LOST='infrastructure loss: the runner job '
-# The interruption the next claim records for an attempt whose lease expired (issue #822).
-EXPIRED='the lease expired: its driver went silent'
 
 job_session() { # job_session <id>
     node -e "$JS_HEADERS"'
@@ -2282,19 +2297,6 @@ SQL
         printf '%s' "${capped:-no job row changed}"
         return 1
     }
-}
-
-expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
-    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-        psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
-        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with expired as (
-    update job set lease_expires_at = now() - interval '1 second'
-    where id = :'job' and status = 'running' and claim_seq = 1 and lease_expires_at > now()
-    returning id
-)
-select count(*) from expired;
-SQL
 }
 
 advance_origin() { # advance_origin -> success once the origin's main has a new `lane-upstream` commit
@@ -2571,21 +2573,8 @@ for job in $hard $drained $evicted $lost $final $unpullable; do
 done
 fi
 
-if selected_phase services; then
-begin_phase services
-# --- Declared services and gates in the task pod (issue #773) -----------------------------------
-#
-# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
-# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
-# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
-# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
-# sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
-# `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
-# reach `postgres:5432` and `s3:9000` there by name.
-
-echo
-echo '# declared services'
-
+# The plan committer the services and takeover phases share (issues #773, #829): a plan, or none, lands
+# in the member's origin and its mirror.
 # The gate scripts every plan commits beside it. reach.sh: both names on 127.0.0.1, then a TCP
 # connect to each, retried while a service still boots. leave.sh: a background write the gate loop's
 # `kill -KILL -1` must stop before the next gate runs (the `isolated` gate checks it never landed).
@@ -2662,6 +2651,22 @@ EOF
     *) printf '%s' "$out" >&2; return 1 ;;
     esac
 }
+
+if selected_phase services; then
+begin_phase services
+# --- Declared services and gates in the task pod (issue #773) -----------------------------------
+#
+# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
+# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
+# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
+# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
+# sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
+# `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
+# reach `postgres:5432` and `s3:9000` there by name.
+
+echo
+echo '# declared services'
+
 
 sidecar_restarts() { # sidecar_restarts <pod> <container> -> its restartCount, empty when unread
     kubectl get pod "$1" -n "$NAMESPACE" \
@@ -2887,6 +2892,258 @@ for job in $reached $restarted $crashed $ghost $ghost_gate $review_idle $review_
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done
+fi
+
+if selected_phase takeover; then
+begin_phase takeover
+# --- Driver killed at each step of a run (issue #829) -------------------------------------------
+#
+# The driver pod is deleted hard at one step of a run — while its setup blocks, while the agent
+# runs, while a gate runs, while the publish waits at the PR — and the lease is expired as waiting it
+# out would. The replacement driver finishes the task once: counted from outside by barrier files
+# under the member tree (`.lane-kill/`, mounted at the same path in the task pod's supervisor, gate
+# sidecar, setup Job and the dashboard), the origin's push log and the stub gh's PR list. A driver
+# lost after the publish has nothing left to repeat, and the finalizing step is recovery case e.
+
+echo
+echo '# driver takeover'
+
+TK_D="/workspaces/$member_path/.lane-kill"
+TK_ORIGIN="/workspaces/$member_path/.smoke-origin.git"
+TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
+
+tk_exec() { # tk_exec <argv...> -> runs in the dashboard, which mounts the whole workspaces claim
+    kubectl exec "deployment/$RELEASE-factory" -c dashboard -n "$NAMESPACE" --request-timeout=10s -- "$@"
+}
+
+tk_count() { # tk_count <path> -> its line count; 0 only when absent; ? when the read failed
+    local out
+    out="$(tk_exec sh -c 'if [ -e "$1" ]; then wc -l <"$1" | tr -d " "; else echo 0; fi' sh "$1" 2>/dev/null)" &&
+        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+}
+
+tk_ready() { # tk_ready <path prefix> -> how many files start with it; ? when the read failed
+    local out
+    out="$(tk_exec sh -c 'ls -1d "$1"* 2>/dev/null | wc -l | tr -d " "' sh "$1" 2>/dev/null)" &&
+        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+}
+
+tk_touch() { # tk_touch <path> -> success once the file exists
+    tk_exec touch "$1" >/dev/null 2>&1
+}
+
+tk_await() { # tk_await <path> <want> <seconds> -> success once the file holds at least <want> lines
+    local until=$(($(date +%s) + $3)) got
+    while [ "$(date +%s)" -lt "$until" ]; do
+        got="$(tk_count "$1")"
+        case "$got" in '' | '?' | *[!0-9]*) ;; *) [ "$got" -ge "$2" ] && return 0 ;; esac
+        sleep 1
+    done
+    return 1
+}
+
+tk_wait() { # tk_wait <path> -> shell text that blocks (at most 300 s) until the file exists
+    printf 'i=0; while [ ! -e %s ] && [ $i -lt 300 ]; do i=$((i+1)); sleep 1; done' "$1"
+}
+
+tk_plan() { # tk_plan <gate command> [setup command] -> a .bellows.yaml with one gate on the stub image
+    printf 'environment:\n    image: %s\n' "$STUB_REF"
+    [ -z "${2:-}" ] || printf "    setup: '%s'\n" "$2"
+    printf "    gates:\n        - name: hold\n          command: '%s'\n" "$1"
+}
+
+tk_left() { # tk_left <job id> -> success only when kubectl answered and the job has no Job or pod
+    local out
+    out="$(kubectl get jobs,pods -l "factory.job=$1,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s -o name 2>"$work/tk-left.err")" || {
+        printf '%s' "$(cat "$work/tk-left.err")"
+        return 1
+    }
+    [ -z "$out" ] || {
+        printf '%s' "$out"
+        return 1
+    }
+}
+
+tk_claim_jobs() { # tk_claim_jobs <job id> <claim seq> -> the runner Jobs of that claim; non-zero when kubectl did not answer
+    kubectl get jobs -l "factory.job=$1,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.annotations.factory\.claim-seq}{"\n"}{end}' |
+        awk -v seq="$2" '$2 == seq { print $1 }'
+}
+
+tk_kill() { # tk_kill <job id> -> the driver pod gone with no drain, a replacement up, the dead claim's lease expired
+    local expired
+    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 ||
+        { bad "$1: the replacement driver is rolled out" "$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" 2>&1)"; give_up; }
+    expired="$(expire_claim_one "$1")"
+    [ "$expired" = 1 ] && ok "$1: the dead driver's lease is expired" || {
+        bad "$1: the dead driver's lease is expired" "$expired"
+        give_up
+    }
+}
+
+tk_settled() { # tk_settled <name> <job id> <interruption> -> the checks every case shares once the job ran to its end
+    local brief left clean until=$(($(date +%s) + 120))
+    brief="$(await_brief "$2" 'succeeded*' 240)"
+    [ "$brief" = "succeeded|1|1|1|$3" ] && ok "$1: the next claim finishes the task once, with one interruption" ||
+        bad "$1: the next claim finishes the task once, with one interruption" "status|attempts|count|claimSeq|reason: $brief"
+    clean=''
+    while :; do
+        if left="$(tk_left "$2")"; then
+            clean=1
+            break
+        fi
+        [ "$(date +%s)" -lt "$until" ] || break
+        sleep 2
+    done
+    [ -n "$clean" ] && ok "$1: nothing of the job is left" || bad "$1: nothing of the job is left" "${left:-unconfirmed}"
+}
+
+tk_check() { # tk_check <name> <got> <want>
+    [ "$2" = "$3" ] && ok "$1" || bad "$1" "got '$2', want '$3'"
+}
+
+# The barrier directory is world-writable: the gate, setup and agent containers run as different users.
+# The origin keeps a push log (a hook) and the stub gh's state beside it.
+tk_exec sh -c 'mkdir -p "$1" && chmod 0777 "$1" && chmod 0777 "$2" &&
+    printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$2/hooks/post-receive" &&
+    chmod 0755 "$2/hooks/post-receive"' sh "$TK_D" "$TK_ORIGIN" >/dev/null 2>&1 &&
+    ok 'the takeover barriers and the origin push log are prepared' || {
+    bad 'the takeover barriers and the origin push log are prepared' 'the dashboard could not write the member tree'
+    give_up
+}
+
+# T1. Before the agent: setup blocks. Lost before `go`, the group has nothing to take over; the next
+#     claim runs the whole attempt once.
+begin_phase takeover-setup
+n="$RELEASE-t1"
+tk_touch "$TK_D/$n.agent"
+commit_plan takeover-setup "$(tk_plan "echo x >>$TK_D/$n.gate.count" "echo x >>$TK_D/$n.setup.count; $(tk_wait "$TK_D/$n.go")")" ||
+    bad 'the setup plan is committed' 'the plan pod did not commit'
+t1="$(queue_job "factory-stub-wait-$TK_D/$n.agent")"
+if [ -z "$t1" ]; then
+    bad 'the setup job is queued' 'the board refused it'
+else
+    tk_await "$TK_D/$n.setup.count" 1 240 && ok 't1: the setup is running' || bad 't1: the setup is running' "$(tk_count "$TK_D/$n.setup.count")"
+    tk_check 't1: the agent has not started' "$(tk_ready "$TK_D/$n.agent.ready-")" 0
+    tk_kill "$t1"
+    await_brief "$t1" "*|1|1|$EXPIRED" 120 >/dev/null && ok 't1: the next claim records the interruption' ||
+        bad 't1: the next claim records the interruption' "$(job_brief "$t1")"
+    tk_touch "$TK_D/$n.go" || bad 't1: the barrier is released' 'the touch failed'
+    tk_settled t1 "$t1" "$EXPIRED"
+    tk_check 't1: the agent ran once' "$(tk_ready "$TK_D/$n.agent.ready-")" 1
+    tk_check 't1: the gate ran once' "$(tk_count "$TK_D/$n.gate.count")" 1
+fi
+
+# T2. The agent runs, its driver dies: the next driver rebinds the supervisor and takes over the live
+#     agent (no second runner Job is ever created); the agent finishes once, in its own pod.
+begin_phase takeover-agent
+n="$RELEASE-t2"
+commit_plan takeover-agent "$(tk_plan "echo x >>$TK_D/$n.gate.count")" || bad 'the agent plan is committed' 'the plan pod did not commit'
+t2="$(queue_job "factory-stub-patient factory-stub-wait-$TK_D/$n.go")"
+t2_pod="$(await_runner_pod "$t2")"
+if [ -z "$t2" ] || [ -z "$t2_pod" ]; then
+    bad 't2: the agent is running' "job '$t2': $(job_brief "$t2")"
+else
+    await_blocked "$t2_pod" "$TK_D/$n.go" && ok 't2: the agent is running' || give_up
+    tk_kill "$t2"
+    took=""
+    until=$(($(date +%s) + 240))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        case "$(driver_logs)" in *"job $t2: $TOOK_OVER"*)
+            took=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ -n "$took" ] && ok 't2: the next driver takes over the running agent' ||
+        bad 't2: the next driver takes over the running agent' "$(driver_logs | grep -F "job $t2:" | tail -5)"
+    # The new binding reaches the supervisor through a mounted Secret: the kubelet refreshes it within a minute or two.
+    rebound=""
+    until=$(($(date +%s) + 300))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        sup_logs="$(kubectl logs "$t2_pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s 2>/dev/null)"
+        case "$sup_logs" in *'supervisor: rebound to claim 2'*)
+            rebound=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ -n "$rebound" ] && ok 't2: the supervisor rebinds to claim 2' ||
+        bad 't2: the supervisor rebinds to claim 2' "$(printf '%s' "$sup_logs" | tail -5)"
+    second="$(tk_claim_jobs "$t2" 2)" && [ -z "$second" ] && ok 't2: no second runner is started' ||
+        bad 't2: no second runner is started' "claim 2 Jobs: '$second'"
+    tk_touch "$TK_D/$n.go" || bad 't2: the barrier is released' 'the touch failed'
+    tk_settled t2 "$t2" "$EXPIRED"
+    tk_check 't2: the agent ran once' "$(tk_ready "$TK_D/$n.go.ready-")" 1
+    tk_check 't2: the gate ran once' "$(tk_count "$TK_D/$n.gate.count")" 1
+fi
+
+# T4. The gates: killed while a gate runs. A gate that never finished has no checkpoint, so the next
+#     claim runs it again; the agent is not repeated.
+begin_phase takeover-gates
+n="$RELEASE-t4"
+tk_touch "$TK_D/$n.agent"
+commit_plan takeover-gates "$(tk_plan "echo x >>$TK_D/$n.gate.count; $(tk_wait "$TK_D/$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
+t4="$(queue_job "factory-stub-wait-$TK_D/$n.agent")"
+if [ -z "$t4" ]; then
+    bad 'the gate job is queued' 'the board refused it'
+else
+    tk_await "$TK_D/$n.gate.count" 1 300 && ok 't4: the gate is running' || bad 't4: the gate is running' "$(tk_count "$TK_D/$n.gate.count")"
+    tk_kill "$t4"
+    await_brief "$t4" "*|1|1|$EXPIRED" 120 >/dev/null && ok 't4: the next claim records the interruption' ||
+        bad 't4: the next claim records the interruption' "$(job_brief "$t4")"
+    tk_touch "$TK_D/$n.go" || bad 't4: the barrier is released' 'the touch failed'
+    tk_settled t4 "$t4" "$EXPIRED"
+    tk_check 't4: the gate ran again, once' "$(tk_count "$TK_D/$n.gate.count")" 2
+    tk_check 't4: the agent ran once' "$(tk_ready "$TK_D/$n.agent.ready-")" 1
+fi
+
+# T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next
+#     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
+begin_phase takeover-publish
+n="$RELEASE-t5"
+tk_touch "$TK_D/$n.agent"
+commit_plan takeover-publish "$(tk_plan "echo x >>$TK_D/$n.gate.count")" || bad 'the publish plan is committed' 'the plan pod did not commit'
+tk_exec sh -c 'rm -f "$1"/lane-gh-hold.ready "$1"/lane-gh-hold.go && : >"$1"/lane-gh-hold' sh "$TK_ORIGIN" >/dev/null 2>&1 ||
+    bad 't5: the gh hold is set' 'the hold file was not written'
+t5_pushes="$(tk_count "$TK_ORIGIN/lane-pushes.log")"
+t5_prs="$(tk_count "$TK_ORIGIN/lane-gh-prs")"
+t5="$(queue_job "factory-stub-commit factory-stub-wait-$TK_D/$n.agent")"
+if [ -z "$t5" ]; then
+    bad 'the publish job is queued' 'the board refused it'
+else
+    held=""
+    until=$(($(date +%s) + 300))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        tk_exec test -e "$TK_ORIGIN/lane-gh-hold.ready" >/dev/null 2>&1 && {
+            held=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$held" ] && ok 't5: the publish is at the PR' || bad 't5: the publish is at the PR' "job: $(job_brief "$t5")"
+    tk_kill "$t5"
+    tk_touch "$TK_ORIGIN/lane-gh-hold.go" || bad 't5: the hold is released' 'the touch failed'
+    tk_settled t5 "$t5" "$EXPIRED"
+    t5_pushes_now="$(tk_count "$TK_ORIGIN/lane-pushes.log")"
+    t5_prs_now="$(tk_count "$TK_ORIGIN/lane-gh-prs")"
+    case "$t5_pushes$t5_pushes_now" in *'?'*) t5_pushed='?' ;; *) t5_pushed=$((t5_pushes_now - t5_pushes)) ;; esac
+    case "$t5_prs$t5_prs_now" in *'?'*) t5_opened='?' ;; *) t5_opened=$((t5_prs_now - t5_prs)) ;; esac
+    tk_check 't5: the branch is pushed once' "$t5_pushed" 1
+    tk_check 't5: one PR is opened' "$t5_opened" 1
+    tk_check 't5: the gate ran once' "$(tk_count "$TK_D/$n.gate.count")" 1
+    tk_check 't5: the agent ran once' "$(tk_ready "$TK_D/$n.agent.ready-")" 1
+    expect_contains 't5: the gates are resumed from their checkpoint' "$(driver_logs)" "job $t5: resumed gates from claim 1's checkpoint"
+    expect_contains 't5: the verdict carries the stub PR' "$(job_output "$t5")" 'factory-smoke/demo/pull/'
+fi
+tk_exec sh -c 'rm -f "$1"/lane-gh-hold "$1"/lane-gh-hold.ready "$1"/lane-gh-hold.go' sh "$TK_ORIGIN" >/dev/null 2>&1 ||
+    bad 't5: the gh hold is cleared' 'the hold files were not removed'
+
+# The origin and its mirror carry no plan again: a later phase runs as it always did.
+commit_plan takeover-restore '' && ok 'the plan is removed again' || bad 'the plan is removed again' 'the plan pod did not commit'
 fi
 
 if selected_phase control; then

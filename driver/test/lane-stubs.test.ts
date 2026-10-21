@@ -276,6 +276,20 @@ describe('the kind recovery stub barrier', () => {
         expect(child.stdout()).not.toContain('released in');
     });
 
+    // Issue #829: a takeover case holds the agent past the 120 s a plain wait allows.
+    it('waits past the plain deadline when it is patient', async () => {
+        const box = sandbox();
+        const release = join(box.outDir, 'release');
+        const stub = join(ROOT, 'scripts/k8s-stub.sh');
+        const env = { HOSTNAME: 'first', FACTORY_STUB_TIMEOUT_SECONDS: '1' };
+        const patient = run(box.wrapper, ['sh', stub, `factory-stub-patient factory-stub-wait-${release}`], env);
+        await whenFileExists(`${release}.ready-first`);
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        writeFileSync(release, '');
+        expect(await patient.exited).toBe(0);
+        expect(patient.stdout()).toContain('released in first');
+    });
+
     // Issue #822: a replacement runner on the tree a lost runner left finds that runner's mark and
     // the tree's head, so the lane can tell a restored tree from a re-synced one.
     it('marks the tree on a first run and reports the mark and head to a replacement', async () => {

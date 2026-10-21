@@ -126,7 +126,10 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         [ -n "$release" ] || exit 1
         : > "$release.ready-${HOSTNAME:-stub}"
         echo "waiting in ${HOSTNAME:-stub}"
-        deadline=$(($(date +%s) + ${FACTORY_STUB_TIMEOUT_SECONDS:-120}))
+        wait_seconds="${FACTORY_STUB_TIMEOUT_SECONDS:-120}"
+        # `factory-stub-patient` (issue #829): a takeover case holds the agent past a kubelet Secret refresh.
+        case "$*" in *factory-stub-patient*) wait_seconds=900 ;; esac
+        deadline=$(($(date +%s) + wait_seconds))
         while [ ! -f "$release" ]; do
             if [ -n "$stoppable" ] && [ -f "${FACTORY_CTL_IN:-/nonexistent}/stop" ]; then
                 echo "stopped in ${HOSTNAME:-stub}"
