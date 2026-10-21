@@ -1,7 +1,7 @@
 # The kind cluster `make cluster` creates (scripts/kind-cluster.sh). containerd reads registry
 # mirrors from config_path only when it is set at node creation; kind-cluster.sh then drops a
 # hosts.toml under it that sends localhost:5001 to the local registry container. The kubelet syncs
-# pods every 10 s instead of every minute, so a changed Secret reaches its pod within seconds: the
+# pods every 5 s instead of every minute, so a changed Secret reaches its pod within seconds: the
 # lane's rebind grace (scripts/test-k8s.sh) is derived from it.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
@@ -12,4 +12,4 @@ containerdConfigPatches:
 kubeadmConfigPatches:
     - |
       kind: KubeletConfiguration
-      syncFrequency: 10s
+      syncFrequency: 5s

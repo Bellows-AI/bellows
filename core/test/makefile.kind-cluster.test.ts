@@ -45,7 +45,7 @@ describe('the kind cluster targets', () => {
             drain,
             readFileSync(new URL('../../scripts/kind-cluster.yaml', import.meta.url), 'utf8'),
         ]) {
-            expect(layout).toContain('kind: KubeletConfiguration\n      syncFrequency: 10s');
+            expect(layout).toContain('kind: KubeletConfiguration\n      syncFrequency: 5s');
         }
     });
 

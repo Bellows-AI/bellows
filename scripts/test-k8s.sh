@@ -1489,7 +1489,7 @@ state_installed=1
 LANE_LEASE_S=45
 # A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes
 # at the default one-minute sync, docs/kubernetes.md): the grace outlasts two syncs, or the group ends
-# before it can follow the new holder. scripts/kind-cluster.yaml syncs every 10 s: a 30 s grace.
+# before it can follow the new holder. scripts/kind-cluster.yaml syncs every 5 s: a 20 s grace.
 LANE_REBIND_GRACE_S=$((2 * ${KUBELET_SYNC_S:-60} + 10))
 LANE_MARGIN_S=40
 # A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
