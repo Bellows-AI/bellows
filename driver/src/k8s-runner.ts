@@ -63,7 +63,8 @@ import {
     supervisedStepMembers,
 } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
-import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
+import { KILL_WINDDOWN_MS, type StepResult, type SupervisorReport } from './supervisor-contract.js';
+import { readViaReaderJob } from './k8s-reader.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -91,71 +92,100 @@ function headCut(stdout: string): boolean {
 }
 
 /**
- * The close-time opencode session scrape, as a supervised step of the task group: the same read the
- * docker runner performs with a throwaway container after the run's close, against the database
- * the run persisted on the task volume. NEVER throws — the scrape is the run's follow-up-ability,
- * finish reason and context vitals, and a failed read is not a failed run.
+ * How a close-time readout runs: a supervised step of the live group, or — for an adopted group that
+ * has ended and has no supervisor to answer — a reader Job over the task volume (`k8s-reader.ts`).
  */
-async function scrapeOpencodeSession(
+type Readout = (
     deps: K8sDeps,
     job: BoardJob,
-    startedAt: string,
-    deadline: number
-): Promise<OpencodeRunOutcome> {
-    try {
-        const answered = await runReadoutStep(stepHostOf(deps), job, {
-            name: 'opencode-readout',
-            ...opencodeReadoutStep(job, startedAt),
-            timeoutMs: Math.min(READOUT_STEP_TIMEOUT_MS, timeLeft(deadline)),
-        });
-        if (answered.timedOut) return opencodeReadFailed('the session readout exceeded its deadline');
-        if (answered.exitCode !== 0) {
-            return opencodeReadFailed(
-                `the session readout step failed: ${detailOf(answered, READOUT_STEP_TIMEOUT_MS)}`
-            );
-        }
-        return parseOpencodeRunOutcome(answered.stdout, headCut(answered.stdout));
-    } catch (e) {
-        return opencodeReadFailed((e as Error).message);
-    }
-}
+    readout: { name: string; argv: string[]; env: Record<string, string>; timeoutMs?: number }
+) => Promise<StepResult>;
+
+const supervisedReadout: Readout = (deps, job, readout) => runReadoutStep(stepHostOf(deps), job, readout);
+
+const readerJobReadout: Readout = (deps, job, readout) =>
+    readViaReaderJob(deps, job, { ...readout, timeoutMs: readout.timeoutMs ?? READOUT_STEP_TIMEOUT_MS });
 
 /**
- * The close-time claude-code read: one supervised step, its one answer parsed to the turn count and
- * the run's last words, or nulls. Every failure on the way answers nulls: unmeasured, never zero,
- * exactly the contract the docker twin's failed exec keeps.
+ * The close-time readouts of one run, over the way they execute (`Readout`): the live group's, or an
+ * adopted ended group's. NEVER throw — a failed read is "unmeasured", not a failed run.
  */
-async function scrapeClaudeCloseRead(
-    deps: K8sDeps,
-    job: BoardJob,
-    sessionId: string,
-    startedAt: string
-): Promise<ClaudeCloseRead> {
-    try {
-        const answered = await runReadoutStep(stepHostOf(deps), job, {
-            name: 'claude-turns',
-            ...claudeTurnsStep(job, sessionId, startedAt),
-        });
-        return answered.exitCode === 0 && !answered.timedOut ? parseClaudeCloseRead(answered.stdout) : CLAUDE_READ_NONE;
-    } catch {
-        return CLAUDE_READ_NONE;
+function closeReadsOver(readout: Readout) {
+    /**
+     * The close-time opencode session scrape, as a supervised step of the task group: the same read the
+     * docker runner performs with a throwaway container after the run's close, against the database
+     * the run persisted on the task volume. NEVER throws — the scrape is the run's follow-up-ability,
+     * finish reason and context vitals, and a failed read is not a failed run.
+     */
+    async function scrapeOpencodeSession(
+        deps: K8sDeps,
+        job: BoardJob,
+        startedAt: string,
+        deadline: number
+    ): Promise<OpencodeRunOutcome> {
+        try {
+            const answered = await readout(deps, job, {
+                name: 'opencode-readout',
+                ...opencodeReadoutStep(job, startedAt),
+                timeoutMs: Math.min(READOUT_STEP_TIMEOUT_MS, timeLeft(deadline)),
+            });
+            if (answered.timedOut) return opencodeReadFailed('the session readout exceeded its deadline');
+            if (answered.exitCode !== 0) {
+                return opencodeReadFailed(
+                    `the session readout step failed: ${detailOf(answered, READOUT_STEP_TIMEOUT_MS)}`
+                );
+            }
+            return parseOpencodeRunOutcome(answered.stdout, headCut(answered.stdout));
+        } catch (e) {
+            return opencodeReadFailed((e as Error).message);
+        }
     }
+
+    /**
+     * The close-time claude-code read: one supervised step, its one answer parsed to the turn count and
+     * the run's last words, or nulls. Every failure on the way answers nulls: unmeasured, never zero,
+     * exactly the contract the docker twin's failed exec keeps.
+     */
+    async function scrapeClaudeCloseRead(
+        deps: K8sDeps,
+        job: BoardJob,
+        sessionId: string,
+        startedAt: string
+    ): Promise<ClaudeCloseRead> {
+        try {
+            const answered = await readout(deps, job, {
+                name: 'claude-turns',
+                ...claudeTurnsStep(job, sessionId, startedAt),
+            });
+            return answered.exitCode === 0 && !answered.timedOut
+                ? parseClaudeCloseRead(answered.stdout)
+                : CLAUDE_READ_NONE;
+        } catch {
+            return CLAUDE_READ_NONE;
+        }
+    }
+
+    async function attachOpencodeOutcome(
+        deps: K8sDeps,
+        job: BoardJob,
+        startedAt: string,
+        outcome: RunOutcome
+    ): Promise<void> {
+        const live = withSignal(deps, ledgerOf(deps).signal(job));
+        const { scraped, reason } = await readOpencodeWithRetries(
+            (deadline) => scrapeOpencodeSession(live, job, startedAt, deadline),
+            deps.sleep,
+            live.signal
+        );
+        mergeOpencodeOutcome(outcome, scraped, reason);
+    }
+    return { scrapeClaudeCloseRead, attachOpencodeOutcome };
 }
 
-async function attachOpencodeOutcome(
-    deps: K8sDeps,
-    job: BoardJob,
-    startedAt: string,
-    outcome: RunOutcome
-): Promise<void> {
-    const live = withSignal(deps, ledgerOf(deps).signal(job));
-    const { scraped, reason } = await readOpencodeWithRetries(
-        (deadline) => scrapeOpencodeSession(live, job, startedAt, deadline),
-        deps.sleep,
-        live.signal
-    );
-    mergeOpencodeOutcome(outcome, scraped, reason);
-}
+const { scrapeClaudeCloseRead, attachOpencodeOutcome } = closeReadsOver(supervisedReadout);
+
+/** An adoption's close-time readouts: its group has ended, so each runs as a reader Job, never a step. */
+const adoptionReads = closeReadsOver(readerJobReadout);
 
 // The docker runner samples `docker stats`; the twin here is the metrics API, read from the
 // runner's own pod. Every failure (no pod yet, no metrics-server, a blink) answers null for the
@@ -526,8 +556,7 @@ export function createKubernetesRunner(
         startServices: (job: BoardJob, signal?: AbortSignal) => startServiceFleet(deps, job, signal),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
-        adopt: (job: BoardJob, signal?: AbortSignal) =>
-            adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }, signal),
+        adopt: (job: BoardJob, signal?: AbortSignal) => adoptFinishedRunner(deps, job, adoptionReads, signal),
         ...supervisedStepMembers({
             host: stepHostOf(deps),
             hasGroup: (job) => groupsOf(deps).has(job.leaseToken),
