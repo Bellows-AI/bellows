@@ -303,7 +303,9 @@ const volumeAffinityOf = (
     const message = pod?.status?.conditions?.find((c) => c.type === 'PodScheduled' && c.status === 'False')?.message;
     const available = message ? NODES_AVAILABLE.exec(message) : null;
     const conflicts = available ? AFFINITY_COUNT.exec(available[2] ?? '') : null;
-    return available && conflicts && Number(available[1]) > 0 && conflicts[1] === available[1] ? (message ?? null) : null;
+    return available && conflicts && Number(available[1]) > 0 && conflicts[1] === available[1]
+        ? (message ?? null)
+        : null;
 };
 
 const PULL_REASONS: ReadonlySet<string> = new Set(['ImagePullBackOff', 'ErrImagePull']);

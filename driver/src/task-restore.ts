@@ -50,6 +50,25 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
 }
 
 /**
+ * The restore an adopted restored generation still owes, from a complete checkpoint. Without one it cannot be
+ * known whether the generation was ever filled — a fresh sync would treat a continuing task as a new one — so
+ * the claim is unrestorable, unless an unschedulable volume still holds the tree.
+ */
+async function owedRestore(
+    source: Pick<Board, 'checkpoint'>,
+    job: BoardJob,
+    older: number[],
+    treeHeldElsewhere: boolean
+): Promise<void> {
+    const read = await source.checkpoint(job);
+    if (read.state === 'found' && !read.checkpoint.truncated) {
+        job.taskRestore = { checkpoint: read.checkpoint, older, restored: false };
+    } else if (!treeHeldElsewhere) {
+        throw unrestorable(read);
+    }
+}
+
+/**
  * Decides which volume the attempt runs on and what it owes it, setting `job.taskGeneration` and
  * `job.taskRestore`. Answers whether the volume must be created.
  *
@@ -71,18 +90,7 @@ export async function planTaskVolume(
         // A volume made by an earlier restore may not have been filled: the restore is idempotent, so a
         // continuing claim asks again and the script finds the tree already there.
         if (current > FIRST_GENERATION && claimContinuesSession(job) && source && !job.taskRestore?.restored) {
-            const read = await source.checkpoint(job);
-            if (read.state === 'found' && !read.checkpoint.truncated) {
-                job.taskRestore = {
-                    checkpoint: read.checkpoint,
-                    older: [...older, ...listing.unschedulable],
-                    restored: false,
-                };
-            } else if (listing.unschedulable.length === 0) {
-                // Whether this generation was ever filled is unknowable without the checkpoint it was made
-                // from: running a fresh sync on it would treat a continuing task as a new one.
-                throw unrestorable(read);
-            }
+            await owedRestore(source, job, [...older, ...listing.unschedulable], listing.unschedulable.length > 0);
         }
         return { create: false };
     }

@@ -397,9 +397,18 @@ describe('the task group of one attempt', () => {
                 const answer = await api.request(method, path, body);
                 // From the given claim read on, the checkout claim is held by another attempt.
                 if (method === 'GET' && path.includes('/configmaps/')) claimReads += 1;
-                if (steal && claimReads >= steal.fromRead && method === 'GET' && path.includes('/configmaps/') && answer.status === 200) {
+                if (
+                    steal &&
+                    claimReads >= steal.fromRead &&
+                    method === 'GET' &&
+                    path.includes('/configmaps/') &&
+                    answer.status === 200
+                ) {
                     const claim = JSON.parse(answer.body) as { data: object };
-                    return { status: 200, body: JSON.stringify({ ...claim, data: { ...claim.data, holder: steal.holder } }) };
+                    return {
+                        status: 200,
+                        body: JSON.stringify({ ...claim, data: { ...claim.data, holder: steal.holder } }),
+                    };
                 }
                 return answer;
             };
@@ -432,8 +441,14 @@ describe('the task group of one attempt', () => {
         });
 
         it.each([
-            ['a mix of reasons', '0/5 nodes are available: 2 Insufficient cpu, 3 node(s) had volume node affinity conflict.'],
-            ['a taint beside the conflict', '0/3 nodes are available: 1 node(s) had untolerated taint, 2 node(s) had volume node affinity conflict.'],
+            [
+                'a mix of reasons',
+                '0/5 nodes are available: 2 Insufficient cpu, 3 node(s) had volume node affinity conflict.',
+            ],
+            [
+                'a taint beside the conflict',
+                '0/3 nodes are available: 1 node(s) had untolerated taint, 2 node(s) had volume node affinity conflict.',
+            ],
             ['words without a node count', 'pod has unbound volumes: volume node affinity conflict'],
         ])('marks nothing for %s: the volume is not proven the fault', async (_name, message) => {
             const { thrown, patched } = await stuckSync(pending(message));

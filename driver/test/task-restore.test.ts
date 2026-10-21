@@ -103,12 +103,15 @@ describe('planTaskVolume', () => {
         ['none', { state: 'none' } as CheckpointRead],
         ['gone', { state: 'gone' } as CheckpointRead],
         ['truncated', found({ ...POINTER, truncated: true })],
-    ])('fails checkpoint_unrestorable on an adopted restored generation when the checkpoint is %s', async (_n, read) => {
-        const job = continuing();
-        await expect(
-            planTaskVolume(board(read), job, { live: [2], highest: 2, unschedulable: [] })
-        ).rejects.toBeInstanceOf(CheckpointUnrestorable);
-    });
+    ])(
+        'fails checkpoint_unrestorable on an adopted restored generation when the checkpoint is %s',
+        async (_n, read) => {
+            const job = continuing();
+            await expect(
+                planTaskVolume(board(read), job, { live: [2], highest: 2, unschedulable: [] })
+            ).rejects.toBeInstanceOf(CheckpointUnrestorable);
+        }
+    );
 
     it.each([
         ['none', { state: 'none' } as CheckpointRead, /no checkpoint/],

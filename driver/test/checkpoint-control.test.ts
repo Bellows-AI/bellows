@@ -216,7 +216,7 @@ describe('the checkpoint routes', () => {
         expect((await call('GET', '/checkpoint/restore?offset=0')).status).toBe(502);
     });
 
-    it('answer 410, the restore step\'s never-restorable, for a chunk the board reports corrupt', async () => {
+    it("answer 410, the restore step's never-restorable, for a chunk the board reports corrupt", async () => {
         openCheckpointing();
         readAnswer = async () => {
             throw new CheckpointChunkCorrupt('the stored chunk is corrupt');

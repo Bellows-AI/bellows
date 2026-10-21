@@ -156,7 +156,8 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
         // marked so no claim adopts it again; the next one restores the thread into a new generation.
         // Only under the checkout claim: an attempt another one has taken over labels no volume.
         const unmarked = await (async () => {
-            if ((await readClaim(deps, job))?.holder !== job.leaseToken) return ' (the claim is no longer ours: the volume is left unmarked)';
+            if ((await readClaim(deps, job))?.holder !== job.leaseToken)
+                return ' (the claim is no longer ours: the volume is left unmarked)';
             await markTaskVolumeUnschedulable(deps, job);
             return '';
         })().catch((e: unknown) => ` (the volume could not be marked: ${(e as Error).message})`);

@@ -4,7 +4,8 @@ import { UUID } from '../config.js';
 import {
     ArtifactIntegrityError,
     ArtifactObjectMissingError,
-    CHECKPOINT_STREAM, type ArtifactStore,
+    CHECKPOINT_STREAM,
+    type ArtifactStore,
 } from '../artifacts/artifact-store.js';
 import { isKeySegment, type StreamRef } from '../artifacts/keys.js';
 import type { RestoreScope } from '../db/restore-types.js';
@@ -122,7 +123,12 @@ async function sendChunk(
     );
     if (!read.ok) return reply;
     if (read.value === CORRUPT) {
-        return bad(reply, ERROR_CODES.ARTIFACT_CORRUPT, 'The stored chunk fails its recorded sha256', HTTP_UNPROCESSABLE);
+        return bad(
+            reply,
+            ERROR_CODES.ARTIFACT_CORRUPT,
+            'The stored chunk fails its recorded sha256',
+            HTTP_UNPROCESSABLE
+        );
     }
     if (!read.value) return bad(reply, ERROR_CODES.NOT_FOUND, 'No such chunk', HTTP_NOT_FOUND);
     return reply

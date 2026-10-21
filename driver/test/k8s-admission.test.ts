@@ -241,7 +241,9 @@ describe('the admission policy fences the task pod shape (#773)', () => {
     // nothing else, and the create-time shape check no longer reads a bound claim's volumeName.
     it('lets a task volume claim change its unschedulable label alone', () => {
         const objects = policy('objects');
-        expect(objects).toMatch(/operations: \['CREATE', 'UPDATE', 'DELETE'\]\n\s+resources: \['persistentvolumeclaims'\]/);
+        expect(objects).toMatch(
+            /operations: \['CREATE', 'UPDATE', 'DELETE'\]\n\s+resources: \['persistentvolumeclaims'\]/
+        );
         expect(objects).toContain(`k == '${TASK_UNSCHEDULABLE_LABEL}'`);
         expect(objects).toContain('object.spec == oldObject.spec');
         expect(objects).toContain("request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'CREATE'");

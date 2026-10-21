@@ -47,8 +47,7 @@ function transcriptStream(
     jobId: string,
     claimSeq: number,
     session: string,
-    bytes: Buffer,
-    from = 0
+    { bytes, from = 0 }: { bytes: Buffer; from?: number }
 ): Transcripts['streams'][number] {
     // The exporter keeps a file's byte offsets: a resumed session's later stream starts at `from`, where the
     // earlier attempt's bytes ended (scripts/claude-export.cjs: track.pos = stat.size).
@@ -141,9 +140,8 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
                 const q = url.searchParams;
                 const key = `${q.get('jobId')}/${q.get('claimSeq')}/${q.get('session')}`;
                 const whole = transcripts.data.get(key);
-                const first = transcripts.streams.find(
-                    (s) => `${s.jobId}/${s.claimSeq}/${s.session}` === key
-                )?.chunks[0]?.offset;
+                const first = transcripts.streams.find((s) => `${s.jobId}/${s.claimSeq}/${s.session}` === key)
+                    ?.chunks[0]?.offset;
                 const offset = Number(q.get('offset')) - (first ?? 0);
                 if (!whole || offset < 0 || offset >= whole.length) {
                     reply.writeHead(404).end('{}');
@@ -314,9 +312,9 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             const beta = jsonl('beta', 25);
             const cut = 3_000;
             const streams = [
-                transcriptStream(JOB_A, 1, 'alpha', alpha.subarray(0, cut)),
-                transcriptStream(JOB_A, 2, 'alpha', alpha.subarray(cut), cut),
-                transcriptStream(JOB_B, 1, 'beta', beta),
+                transcriptStream(JOB_A, 1, 'alpha', { bytes: alpha.subarray(0, cut) }),
+                transcriptStream(JOB_A, 2, 'alpha', { bytes: alpha.subarray(cut), from: cut }),
+                transcriptStream(JOB_B, 1, 'beta', { bytes: beta }),
             ];
             const data = new Map<string, Buffer>([
                 [`${JOB_A}/1/alpha`, alpha.subarray(0, cut)],
@@ -351,7 +349,7 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             const agent = jsonl('agent', 4);
             const verdict = await restoreSessions({
                 ...transcripts,
-                streams: [...transcripts.streams, transcriptStream(JOB_B, 1, 'agent-a1b2c3', agent)],
+                streams: [...transcripts.streams, transcriptStream(JOB_B, 1, 'agent-a1b2c3', { bytes: agent })],
                 data: new Map([...transcripts.data, [`${JOB_B}/1/agent-a1b2c3`, agent]]),
             });
 
@@ -409,7 +407,7 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
 
         it('refuses a session name that is not a plain file name', async () => {
             const { transcripts } = thread();
-            const bad = transcriptStream(JOB_B, 2, '../escape', Buffer.from('{}\n'));
+            const bad = transcriptStream(JOB_B, 2, '../escape', { bytes: Buffer.from('{}\n') });
             transcripts.streams.push(bad);
             transcripts.data.set(`${JOB_B}/2/../escape`, Buffer.from('{}\n'));
 

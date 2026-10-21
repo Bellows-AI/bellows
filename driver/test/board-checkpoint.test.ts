@@ -76,9 +76,9 @@ describe('the board checkpoint chunk read', () => {
 
     it('throws CheckpointChunkCorrupt when the board reports its stored chunk corrupt (422)', async () => {
         await expect(calls(chunk({}, 422)).api.checkpointChunk(job, 0)).rejects.toBeInstanceOf(CheckpointChunkCorrupt);
-        await expect(calls(chunk({}, 422)).api.transcriptChunk(job, { jobId: job.id, claimSeq: 2, session: 'alpha' }, 0)).rejects.toBeInstanceOf(
-            CheckpointChunkCorrupt
-        );
+        await expect(
+            calls(chunk({}, 422)).api.transcriptChunk(job, { jobId: job.id, claimSeq: 2, session: 'alpha' }, 0)
+        ).rejects.toBeInstanceOf(CheckpointChunkCorrupt);
     });
 
     it('throws on a missing or mismatched digest', async () => {
