@@ -283,6 +283,23 @@ settled() { # settled <id> -> status once it is no longer queued/running, empty 
     esac
 }
 
+dump_stall() { # dump_stall <job-id> — what a job that never settled was still running, for the log
+    # Every container of the job with its state, process tree and log tail: a stall names its own
+    # stuck process instead of costing a re-run to catch it live. Diagnostics only; never a verdict.
+    local file="$work/stall-$1.log" c
+    {
+        echo "== job $1 at $(date -u +%T)"
+        timeout 10 docker ps -a --filter "label=factory.job=$1" \
+            --format '{{.Names}} {{.Status}} {{.Label "factory.role"}} {{.Label "factory.claim-seq"}}' 2>&1
+        for c in $(timeout 10 docker ps -aq --filter "label=factory.job=$1" 2>/dev/null); do
+            echo "== $(timeout 10 docker inspect --format '{{.Name}} {{json .State}}' "$c" 2>&1)"
+            timeout 10 docker top "$c" -o pid,ppid,stat,etime,args 2>&1
+            timeout 10 docker logs --tail 40 "$c" 2>&1
+        done
+    } >"$file" 2>&1
+    echo "test-jobs: job $1 did not settle; its containers: $file" >&2
+}
+
 await_settled() { # await_settled <id> [seconds] -> final status, or empty on timeout
     # Wall-clock seconds, not polls: each poll's request may itself take up to its own timeout.
     local id="$1" until=$(($(date +%s) + ${2:-60})) s=""
@@ -294,6 +311,7 @@ await_settled() { # await_settled <id> [seconds] -> final status, or empty on ti
         }
         sleep 1
     done
+    dump_stall "$id"
     printf ''
 }
 
@@ -306,6 +324,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES] [DRIVER_CONCURRENCY]
         RUNNER_SERVICES="${2:-0}" \
         WORKSPACE_VOLUME="$VOLUME" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY="${3:-2}" DRIVER_LEASE_SECONDS=60 \
+        DRIVER_HANDOVER_MS="${LANE_HANDOVER_MS:-5000}" DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -346,7 +365,8 @@ write_bellows() { # write_bellows <contents>
 disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
         RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" \
-        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=10 "$@" \
+        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=10 \
+        DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" "$@" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -1467,7 +1487,7 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$drained_runner" 2>/dev/null)" = '0' ] &&
     ok 'the handed-over runner exits 0 on its own' ||
     bad 'the handed-over runner exits 0 on its own' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
-supervisor_served "$drained" 330 && ok 'the released supervisor stopped serving the steps' ||
+supervisor_served "$drained" 60 && ok 'the released supervisor stopped serving the steps' ||
     bad 'the released supervisor stopped serving the steps' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
 disruption_driver
 expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" "$ADOPT_S")" succeeded

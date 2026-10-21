@@ -138,16 +138,13 @@ describe('the executor branch reporter', () => {
         // instead of nothing at all.
         if (cli === 'opencode') {
             expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$WATCHER_PID \$CTL_PID/);
-            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" "\$CTL_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" "\$CTL_PID" 2>\/dev\/null \|\| true/);
+            for (const pid of ['REPORTER_PID', 'WATCHER_PID', 'CTL_PID']) expect(entry).toContain(`stop_helper "$${pid}"`);
         } else {
             expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$PROGRESS_PID \$CTL_PID/);
-            expect(entry).toMatch(/kill -TERM "\$CTL_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$CTL_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$PROGRESS_PID" 2>\/dev\/null \|\| true/);
+            for (const pid of ['REPORTER_PID', 'CTL_PID', 'PROGRESS_PID']) expect(entry).toContain(`stop_helper "$${pid}"`);
         }
+        // Each helper is terminated and reaped by stop_helper before the close-time sample.
+        expect(entry.lastIndexOf('stop_helper "$CTL_PID"')).toBeLessThan(entry.indexOf('branch-reporter.cjs --once'));
         expect(entry).toMatch(/branch-reporter\.cjs --once/);
         expect(entry).toMatch(/exit "\$STATUS"/);
 

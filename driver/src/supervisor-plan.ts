@@ -13,7 +13,6 @@ import {
     SUPERVISOR_ORPHAN_LEASE_SHARE,
     SUPERVISOR_ORPHAN_MAX_MS,
     SUPERVISOR_ORPHAN_MIN_MS,
-    SUPERVISOR_REBIND_GRACE_MS,
     SUPERVISOR_STEPS_MS,
     type SupervisorBinding,
     SUPERVISOR_WINDDOWN_MS,
@@ -40,7 +39,7 @@ export const orphanBoundMs = (config: DriverConfig): number =>
 
 /** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it (#829). */
 export const takeoverBoundMs = (config: DriverConfig): number =>
-    config.leaseSeconds * MS_PER_SECOND + SUPERVISOR_REBIND_GRACE_MS;
+    config.leaseSeconds * MS_PER_SECOND + config.rebindGraceMs;
 
 /** The pace a lease is renewed at while the driver holds it: a third of the lease, never under a second. */
 export const heartbeatPeriodMs = (config: DriverConfig): number =>

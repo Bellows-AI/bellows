@@ -7,6 +7,7 @@
  * workspace a job belongs to, so it does not even need to know the organization.
  */
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
+import { SUPERVISOR_REBIND_GRACE_MS } from './supervisor-contract.js';
 
 export interface DriverConfig {
     /** Where the board is. The driver is a client of it, never of the database. */
@@ -206,6 +207,12 @@ export interface DriverConfig {
      * claim, instead of the drain being SIGKILLed with the lease held. `0` hands over at once.
      */
     handoverMs: number;
+    /**
+     * How long past its lease a released group waits for a newer holder to find and bind it
+     * (DRIVER_REBIND_GRACE_MS, #829); `takeoverBoundMs` is the lease plus this. The default suits a
+     * driver replaced by a scheduler; the lanes shorten it so a waited-out takeover costs seconds.
+     */
+    rebindGraceMs: number;
     /**
      * Resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
      * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT, kubernetes quantity strings) rendered onto every
@@ -696,6 +703,10 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         }),
         handoverMs: int(env.DRIVER_HANDOVER_MS, 'DRIVER_HANDOVER_MS', DEFAULT_HANDOVER_MS, {
             min: 0,
+            max: 24 * MS_PER_HOUR,
+        }),
+        rebindGraceMs: int(env.DRIVER_REBIND_GRACE_MS, 'DRIVER_REBIND_GRACE_MS', SUPERVISOR_REBIND_GRACE_MS, {
+            min: 1_000,
             max: 24 * MS_PER_HOUR,
         }),
         // Validated here, stored verbatim: the pod specs render these strings as-is, and the

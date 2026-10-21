@@ -326,7 +326,8 @@ export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
 /**
  * What a released group (its agent went) waits for a newer holder on top of the lease (#829): the
  * next claim must find the group, learn it is released and write its binding, which a driver that
- * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this.
+ * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this. The
+ * default of DRIVER_REBIND_GRACE_MS (driver/src/config.ts).
  */
 export const SUPERVISOR_REBIND_GRACE_MS = 240_000;
 /** What a taken-over run's supervisor has, after its rebind is written, to first poll the new endpoint (#829). */

@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
 
@@ -175,6 +175,29 @@ describe('scripts/stub-agent.sh, run locally under /bin/sh', () => {
             expect(child.stdout()).toBe('stub-said\n');
             expect(readFileSync(join(box.outDir, 'agent.exit'), 'utf8')).toBe('3\n');
             expect(existsSync(join(box.outDir, 'agent.exit.tmp'))).toBe(false);
+        },
+        CASE_TIMEOUT_MS
+    );
+
+    // #829: a helper TERMed while still between its fork and exec runs the shell's handler in the
+    // child and swallows the signal; a bare `wait` on it then held PID 1, and the run, forever.
+    it(
+        'still ends and writes agent.exit when ctl-agent swallows the first TERM',
+        async () => {
+            const box = sandbox();
+            writeFileSync(
+                join(dirname(box.wrapper), 'ctl-agent.cjs'),
+                "let terms = 0; process.on('SIGTERM', () => { if (++terms > 1) process.exit(143); });\n" +
+                    "require('node:fs').writeFileSync(require('node:path').join(process.env.FACTORY_CTL_OUT, 'ctl-ready'), '');\n" +
+                    'setInterval(() => {}, 1000);\n'
+            );
+            const ready = join(box.outDir, 'ctl-ready');
+            const child = run(box.wrapper, ['sh', '-c', `while [ ! -e "${ready}" ]; do sleep 0.05; done; exit 6`], {
+                FACTORY_CTL_IN: box.inDir,
+                FACTORY_CTL_OUT: box.outDir,
+            });
+            expect(await child.exited).toBe(6);
+            expect(readFileSync(join(box.outDir, 'agent.exit'), 'utf8')).toBe('6\n');
         },
         CASE_TIMEOUT_MS
     );
