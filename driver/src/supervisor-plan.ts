@@ -108,6 +108,12 @@ export function supervisorControlNames(job: BoardJob): string[] {
     return [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].filter((name) => job.supervisorEnv?.[name]);
 }
 
+/** How much of its budget a run started at `startedAt` has spent; none when the stamp does not parse. */
+export const spentMs = (startedAt: string): number => {
+    const started = Date.parse(startedAt);
+    return Number.isNaN(started) ? 0 : Math.max(0, Date.now() - started);
+};
+
 /**
  * The agent phase's backstop: the run budget plus the wind-down. The supervisor ends the agent at
  * the budget itself and reports within the wind-down; the docker driver's timer only ends a group

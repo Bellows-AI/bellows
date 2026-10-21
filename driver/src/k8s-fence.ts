@@ -330,7 +330,8 @@ async function groupsEnded(
         const end = await endRunnerJob(deps, group, holder);
         if (end !== 'ended') held = true;
     }
-    const live = deps.groups?.has(holder) === true || (groupLease !== undefined && deps.groups?.has(groupLease) === true);
+    const live =
+        deps.groups?.has(holder) === true || (groupLease !== undefined && deps.groups?.has(groupLease) === true);
     return !held && !live && !holderUnconfirmed(deps, holder);
 }
 

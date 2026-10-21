@@ -384,25 +384,34 @@ describe('a live run (#829)', () => {
         expect(calls.slice(before).filter((call) => call.method === 'POST')).toEqual([]);
     });
 
-    describe('the claim of a taken-over group is its holder\'s, the group the prior lease\'s', () => {
+    describe("the claim of a taken-over group is its holder's, the group the prior lease's", () => {
         const claimDeletes = (calls: { method: string; path: string }[]) =>
             deletes(calls).filter((call) => call.path.includes('/configmaps/'));
 
         it('ends a taken-over group whose delete went unconfirmed again at the next finish, then gives the claim back', async () => {
             let refusing = true;
             let jobGone = false;
-            const { deps, calls } = world([runnerItem({ active: 1 })], (method, path) => {
-                if (path.startsWith(jobPath(NS, priorName))) {
-                    if (method === 'DELETE') jobGone = true;
-                    return method === 'GET' && !jobGone
-                        ? { status: 200, body: JSON.stringify({ metadata: { uid: `uid-${priorName}` }, status: {} }) }
-                        : { status: jobGone ? 404 : 200, body: '{}' };
-                }
-                if (method === 'DELETE' && path.endsWith(`/secrets/${secretName(job)}`) && refusing) {
-                    return { status: 500, body: 'unavailable' };
-                }
-                return supervisorLogPath(path) ? { status: 200, body: `supervisor: serving\n${RELEASED}\n` } : undefined;
-            }, { pods: runningPods() });
+            const { deps, calls } = world(
+                [runnerItem({ active: 1 })],
+                (method, path) => {
+                    if (path.startsWith(jobPath(NS, priorName))) {
+                        if (method === 'DELETE') jobGone = true;
+                        return method === 'GET' && !jobGone
+                            ? {
+                                  status: 200,
+                                  body: JSON.stringify({ metadata: { uid: `uid-${priorName}` }, status: {} }),
+                              }
+                            : { status: jobGone ? 404 : 200, body: '{}' };
+                    }
+                    if (method === 'DELETE' && path.endsWith(`/secrets/${secretName(job)}`) && refusing) {
+                        return { status: 500, body: 'unavailable' };
+                    }
+                    return supervisorLogPath(path)
+                        ? { status: 200, body: `supervisor: serving\n${RELEASED}\n` }
+                        : undefined;
+                },
+                { pods: runningPods() }
+            );
             await adoptFinishedRunner(deps, adopter, reads());
             const taken = ownGroup({ ...adopter, groupLease: job.leaseToken });
 

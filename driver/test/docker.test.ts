@@ -5601,7 +5601,9 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             listings += 1;
             const filtered = args.find((arg) => arg.startsWith('status='));
             const state = listings === 1 ? 'running' : 'exited';
-            return Promise.resolve({ stdout: !filtered || filtered === `status=${state}` ? withState(row, state) : '' });
+            return Promise.resolve({
+                stdout: !filtered || filtered === `status=${state}` ? withState(row, state) : '',
+            });
         };
 
         await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
@@ -6385,12 +6387,15 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         /** A `docker logs -f` held open until the test closes it, remembering the signal it was spawned with. */
         const heldFollow = () => {
-            const seen: { signal?: AbortSignal; close: (code: number | null) => void }[] = [];
+            const seen: { signal: AbortSignal | undefined; close: (code: number | null) => void }[] = [];
             const spawnHeld = ((_command: string, args: string[], options?: { signal?: AbortSignal }) => {
                 const child = new EventEmitter() as ChildProcess;
                 child.stdout = new EventEmitter() as Readable;
                 child.stderr = new EventEmitter() as Readable;
-                const entry = { signal: options?.signal, close: (code: number | null) => child.emit('close', code) };
+                const entry = {
+                    signal: options?.signal,
+                    close: (code: number | null) => void child.emit('close', code),
+                };
                 options?.signal?.addEventListener('abort', () => entry.close(null));
                 if (args[0] === 'logs' && args[1] === '-f') seen.push(entry);
                 else process.nextTick(() => child.emit('close', 0));
@@ -6408,7 +6413,10 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             const { exec } = liveDaemon(true, listing());
             const { seen, spawnHeld } = heldFollow();
             const runner = dockerRunner(
-                (args) => (args[0] === 'wait' && !args.includes(supervisorName(job)) ? Promise.resolve({ stdout: '137\n' }) : exec(args)),
+                (args) =>
+                    args[0] === 'wait' && !args.includes(supervisorName(job))
+                        ? Promise.resolve({ stdout: '137\n' })
+                        : exec(args),
                 { spawn: spawnHeld }
             );
             await runner.adopt(adopter);

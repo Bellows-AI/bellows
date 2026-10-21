@@ -19,7 +19,7 @@ import {
 import { supervisorName } from './docker-mailbox.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
-import { agentBackstopMs } from './supervisor-plan.js';
+import { agentBackstopMs, spentMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
@@ -449,12 +449,6 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     }
     return out;
 }
-
-/** How much of its budget a run started at `startedAt` has spent; none when the stamp does not parse. */
-const spentMs = (startedAt: string): number => {
-    const started = Date.parse(startedAt);
-    return Number.isNaN(started) ? 0 : Math.max(0, Date.now() - started);
-};
 
 /** How long a taken-over run's exit is waited for once its log stream has closed. */
 const RESUMED_EXIT_WAIT_MS = 30_000;
