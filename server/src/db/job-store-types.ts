@@ -1159,13 +1159,6 @@ export interface JobStore {
      */
     suspend(id: string, leaseToken: string): Promise<SuspendResult>;
     /**
-     * Hands a pre-run claim back after checkout contention (issue #559). Lease-guarded: the row
-     * goes back to `queued` with the claim's attempt refunded and its next claim deferred by
-     * `REQUEUE_DELAY_SECONDS`, so contention never exhausts `max_attempts` and never spins. A Stop
-     * already stamped on the row wins: it settles `stopped` instead. `lost` for a stale token.
-     */
-    requeue(id: string, leaseToken: string): Promise<SuspendResult>;
-    /**
      * Records an attempt the infrastructure interrupted (issue #792), lease-guarded, refunding the
      * attempt and appending the reason. `release` hands the claim back claimable at once (a drained
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the

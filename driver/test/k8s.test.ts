@@ -1641,7 +1641,7 @@ describe('the worktree sync', () => {
     });
 
     /*
-     * Issue #559: a contention requeue refunds the attempt, so `attempts` can go DOWN between two
+     * Issue #559: an interruption (a drain, a lost lease) refunds the attempt, so `attempts` can go DOWN between two
      * claims of one job. The claim is ordered by the claim sequence, which never does — a stale
      * worker whose attempt count is ahead of its replacement's still stands down, and a
      * replacement whose attempt was refunded still takes over the claim it supersedes.

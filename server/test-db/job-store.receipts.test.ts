@@ -7,7 +7,7 @@ import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 
 /**
- * Issue #821: a settle's answer is durable. An attempt's conclusion — complete, suspend, requeue or
+ * Issue #821: a settle's answer is durable. An attempt's conclusion — complete, suspend or
  * a released interrupt — records a receipt in the settle's own transaction, so the identical
  * request replayed after its response was lost answers the original result instead of `lost`, and
  * a different request under the concluded lease is still refused. A threadDone verdict queues its
@@ -147,15 +147,6 @@ describe.skipIf(!enabled)('settle receipts — database', () => {
         expect(await receipts(id)).toEqual([{ operation: 'suspend' }]);
     });
 
-    it('an identical requeue replay answers its original status', async () => {
-        const id = await queue();
-        const c = await claim();
-        const first = await store.requeue(id, c.leaseToken);
-        expect(first).toEqual({ result: 'ok', status: 'queued' });
-        expect(await store.requeue(id, c.leaseToken)).toEqual(first);
-        expect(await store.get(id)).toMatchObject({ status: 'queued', attempts: 0 });
-    });
-
     it('an identical released interrupt replay answers its original status and records one interruption', async () => {
         const id = await queue();
         const c = await claim();
@@ -184,17 +175,18 @@ describe.skipIf(!enabled)('settle receipts — database', () => {
         expect(await store.suspend(id, c.leaseToken)).toEqual({ result: 'lost' });
     });
 
-    it('a requeue replay of a superseded attempt answers its own receipt and leaves the newer attempt running', async () => {
+    it('a released-interrupt replay of a superseded attempt answers its own receipt and leaves the newer attempt running', async () => {
         const id = await queue();
         const old = await claim();
-        await store.requeue(id, old.leaseToken);
+        const interruption = { reason: 'drained', release: true } as const;
+        const first = await store.interrupt(id, old.leaseToken, interruption);
         await sql`update job set lease_expires_at = now() where id = ${id}`;
         const fresh = await claim('worker-2');
         const attempts = (await store.get(id))!.attempts;
 
-        expect(await store.requeue(id, old.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        expect(await store.interrupt(id, old.leaseToken, interruption)).toEqual(first);
         expect(await store.get(id)).toMatchObject({ status: 'running', attempts });
-        expect(await store.requeue(id, fresh.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+        expect(fresh.leaseToken).not.toBe(old.leaseToken);
     });
 
     it('an adoption (release false) stays idempotent and writes no receipt', async () => {

@@ -8,7 +8,7 @@ import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 /**
  * Issue #821 (D1): `POST /api/jobs/:id/conclusion` stages the attempt's final envelope under its
  * lease — the very body `complete` takes, parsed by the same validation so the staged fingerprint is
- * the receipt's — and a staged conclusion binds the attempt: a different complete, a park, a requeue
+ * the receipt's — and a staged conclusion binds the attempt: a different complete, a park
  * or a released interrupt under that lease is refused `409 CONCLUSION_CONFLICT`.
  */
 const track = trackApps();
@@ -35,7 +35,6 @@ function stubStore(answer: Answer = 'ok'): JobStore & { staged: Staged[]; comple
             return answer === 'ok' ? { result: 'ok', threadDone: false, reclaimId: null } : { result: answer };
         },
         suspend: settled,
-        requeue: settled,
         interrupt: settled,
     } as unknown as JobStore & { staged: Staged[]; completed: Staged['result'][] };
 }
@@ -147,7 +146,6 @@ describe('a staged conclusion refuses the attempt’s other settles', () => {
     it.each([
         ['a different complete', 'complete', done],
         ['a park', 'suspend', { leaseToken: TOKEN }],
-        ['a requeue', 'requeue', { leaseToken: TOKEN }],
         ['a released interrupt', 'interrupt', { leaseToken: TOKEN, reason: 'drained', release: true }],
     ])('answers %s 409 CONCLUSION_CONFLICT', async (_what, route, body) => {
         const instance = await harnessWith(stubStore('conflict'));

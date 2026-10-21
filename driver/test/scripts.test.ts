@@ -20,6 +20,7 @@ import {
     reviewReplyScript,
 } from '../src/review.js';
 import {
+    checkpointScript,
     claudeTurnsScript,
     gateLoopScript,
     reviewLoopScript,
@@ -59,6 +60,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['claude-turns.cjs', 'node'],
     ['claude-export.cjs', 'node'],
     ['supervisor.cjs', 'node'],
+    ['checkpoint.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
@@ -121,6 +123,7 @@ describe('the container scripts', () => {
         expect(prSummaryScript).toBe(readFileSync(pathOf('pr-summary.cjs'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
+        expect(checkpointScript).toBe(readFileSync(pathOf('checkpoint.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(gateShellScript).toBe(readFileSync(pathOf('gate-shell.sh'), 'utf8'));

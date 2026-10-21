@@ -834,7 +834,6 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(board.board.completed[0]?.status).toBe('failed');
-        expect(board.board.requeued).toEqual([]);
         expect(runner.synced).toHaveLength(1);
         expect(runner.reclaimed).toEqual([repoJob]);
     });
@@ -1979,13 +1978,12 @@ describe('the poll loop', () => {
         expect(board.board.completed).toEqual([]);
     });
 
-    it('requeues only classified contention — a sync that threw is still left to its lease', async () => {
+    it('leaves a sync that threw to its lease', async () => {
         const board = stubBoard([job(1)]);
         const runner = stubRunner(async () => ok(), { syncError: new Error('daemon went away') });
 
         await drive({ ...board, runner });
 
-        expect(board.board.requeued).toEqual([]);
         expect(board.board.completed).toEqual([]);
     });
 

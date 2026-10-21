@@ -9,7 +9,7 @@ import { exists } from './job-store-rows.js';
  * replays the stored answer, a different one under a concluded lease is still refused.
  */
 
-export type SettleOperation = 'complete' | 'suspend' | 'requeue' | 'interrupt';
+export type SettleOperation = 'complete' | 'suspend' | 'interrupt';
 
 /** Stable JSON: object keys sorted at every depth, so key order never changes a fingerprint. */
 export function canonical(value: unknown): string {

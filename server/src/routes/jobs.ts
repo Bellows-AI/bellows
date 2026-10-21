@@ -9,7 +9,6 @@ import {
     handleOutput,
     handleSession,
     handleSuspend,
-    handleRequeue,
     handleInterrupt,
     handleConclusion,
 } from './job-handlers-worker.js';
@@ -89,9 +88,6 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/suspend', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleSuspend(orgs, request, reply)
-        );
-        app.post('/api/jobs/:id/requeue', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleRequeue(orgs, request, reply)
         );
         app.post('/api/jobs/:id/interrupt', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleInterrupt(orgs, request, reply)

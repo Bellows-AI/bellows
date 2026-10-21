@@ -80,7 +80,7 @@ export interface JobState {
     trace: (transition: AttemptTransition) => void;
     /**
      * True when the runner must outlive the attempt (issues #821, #828): neither the staged verdict
-     * nor the complete, nor the park, interruption or requeue, reached the board, or the attempt is
+     * nor the complete, nor the park or interruption, reached the board, or the attempt is
      * left to its lease after its launch. `end`'s teardown then leaves the group and the checkout
      * claim for the next claim to adopt.
      */

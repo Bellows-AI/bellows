@@ -100,7 +100,7 @@ async function holdsLiveLease(deps: K8sDeps, job: BoardJob): Promise<boolean> {
 
 /**
  * The claim sequence a claim carries, NaN for a legacy claim that carries none. Ordered by the
- * claim sequence, never by `attempts`: a stop or a contention requeue refunds an attempt, and a
+ * claim sequence, never by `attempts`: a stop or an interruption refunds an attempt, and a
  * replacement must still read as newer than every claim before it. A field that is present is
  * digits within the safe integers (`asClaim`): `Number('')` is 0 and a long run of digits is
  * Infinity, and neither may read as an ordered claim (#869).
