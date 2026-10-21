@@ -266,13 +266,23 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).not.toMatch(/dk_await_log "\$\w+" "\$TOOK_OVER" 120/);
     });
 
-    // Issue #829: a run reports its slow and unended attempts at the end.
-    it('reports the slow attempts at the end of a run', () => {
+    // Issue #829: a run reports its slow and unended attempts, and can watch for stalled containers while it runs.
+    it('reports the slow attempts at the end and watches for stalled containers only on request', () => {
         const cleanup = SCRIPT.slice(SCRIPT.indexOf('\ncleanup() {'), SCRIPT.indexOf('\ntrap cleanup EXIT'));
         expect(cleanup).toContain(`node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "$\{LANE_SLOW_S:-30}"`);
         expect(cleanup).toContain('>"$work/slow-jobs.txt"');
         expect(cleanup).toContain('"$work"/slow-jobs.txt');
+        expect(cleanup).toContain('[ -n "$stall_watch_pid" ] && kill "$stall_watch_pid"');
         expect(cleanup.indexOf('lane-slow-jobs.mjs')).toBeLessThan(cleanup.indexOf('rm -rf "$work"'));
+        expect(SCRIPT).toContain('--watch-stalls) WATCH_STALLS=1 ;;');
+        expect(SCRIPT).toContain(`WATCH_STALLS="$\{LANE_WATCH_STALLS:-0}"`);
+        const watcher = SCRIPT.slice(SCRIPT.indexOf('\nwatch_stalls() {'), SCRIPT.indexOf('\ncleanup() {'));
+        expect(watcher).toContain('LANE_STALL_S:-120');
+        expect(watcher).toContain('timeout 10 docker ps -q --filter "label=factory.job=$job"');
+        expect(watcher).toContain('cat "$work/created-jobs"');
+        expect(watcher).toContain('"$work/stalls/$c.log"');
+        expect(watcher).toContain('dump_container "$c"');
+        expect(SCRIPT).toMatch(/\[ "\$WATCH_STALLS" = 1 \] && \{\n {4}watch_stalls &\n {4}stall_watch_pid=\$!\n\}/);
     });
 
     // Issue #822: an expired lease is the lost attempt's interruption, at max_attempts 1, and a

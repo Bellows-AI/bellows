@@ -15,6 +15,7 @@ cd "$REPO" || exit 1
 
 PHASE=all
 CLI_WORKERS=2
+WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --phase)
@@ -30,14 +31,16 @@ while [ "$#" -gt 0 ]; do
         CLI_WORKERS="${1:-}"
         case "$CLI_WORKERS" in 1|2) ;; *) echo 'test-jobs: --cli-workers must be 1 or 2'; exit 2 ;; esac
         ;;
+    --watch-stalls) WATCH_STALLS=1 ;;
     --help)
-        echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2]'
+        echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2] [--watch-stalls]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, compose-driver, auth, cooperative-stop,'
         echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
+        echo '--watch-stalls (or LANE_WATCH_STALLS=1) dumps every job container alive past LANE_STALL_S (default 120) seconds.'
         echo 'The run ends with a slow-jobs summary of attempts past LANE_SLOW_S (default 30) seconds, beside the timings.'
         exit 0
         ;;
@@ -83,6 +86,7 @@ pass=0
 fail=0
 server_pid=""
 driver_pid=""
+stall_watch_pid=""
 mint_pid=""
 compose_pid=""
 supervisor_log_pid=""
@@ -163,6 +167,27 @@ bad() {
     fail=$((fail + 1))
 }
 
+watch_stalls() { # background: dump each job container alive past LANE_STALL_S once, into $work/stalls (--watch-stalls)
+    local limit="${LANE_STALL_S:-120}" c started age
+    mkdir -p "$work/stalls"
+    while sleep 10; do
+        # Only this run's own jobs: the daemon is shared with other lanes.
+        for c in $(for job in $(cat "$work/created-jobs" 2>/dev/null); do
+            timeout 10 docker ps -q --filter "label=factory.job=$job" 2>/dev/null
+        done); do
+            [ -e "$work/stalls/$c.log" ] && continue
+            started="$(timeout 10 docker inspect --format '{{.State.StartedAt}}' "$c" 2>/dev/null)" || continue
+            case "$started" in '' | 0001-*) continue ;; esac # never started: not a stall
+            age="$(node -e 'const t = Date.parse(process.argv[1]); if (Number.isFinite(t)) process.stdout.write(String(Math.floor((Date.now() - t) / 1000)));' "$started" 2>/dev/null)" || continue
+            [ -n "$age" ] && [ "$age" -ge "$limit" ] || continue
+            {
+                echo "== alive ${age}s at $(date -u +%T)"
+                dump_container "$c"
+            } >"$work/stalls/$c.log" 2>&1
+        done
+    done
+}
+
 cleanup() {
     local result=$?
     begin_phase cleanup
@@ -172,6 +197,7 @@ cleanup() {
         worker="${marker##*/}"
         lane_resources_cleanup "${worker%.*}"
     done
+    [ -n "$stall_watch_pid" ] && kill "$stall_watch_pid" 2>/dev/null
     [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
     [ -n "$supervisor_log_pid" ] && kill "$supervisor_log_pid" 2>/dev/null
     [ -n "$compose_pid" ] && kill "$compose_pid" 2>/dev/null
@@ -195,7 +221,7 @@ cleanup() {
         node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "${LANE_SLOW_S:-30}" >"$work/slow-jobs.txt" 2>&1 || true
         [ -s "$work/slow-jobs.txt" ] && printf '[slow-jobs] %s\n' "$(tail -n 1 "$work/slow-jobs.txt")"
     fi
-    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt; do
+    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt "$work"/stalls/*; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
     done
     rm -rf "$work"
@@ -208,6 +234,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+[ "$WATCH_STALLS" = 1 ] && {
+    watch_stalls &
+    stall_watch_pid=$!
+}
 
 # --- HTTP, in node, so the script needs neither curl nor jq ----------------------------------
 
@@ -289,6 +319,12 @@ settled() { # settled <id> -> status once it is no longer queued/running, empty 
     esac
 }
 
+dump_container() { # dump_container <container> — its state, process tree and log tail; diagnostics only, never a verdict
+    echo "== $(timeout 10 docker inspect --format '{{.Name}} {{json .State}}' "$1" 2>&1)"
+    timeout 10 docker top "$1" -o pid,ppid,stat,etime,args 2>&1
+    timeout 10 docker logs --tail 40 "$1" 2>&1
+}
+
 dump_stall() { # dump_stall <job-id> — what a job that never settled was still running, for the log
     # Every container of the job with its state, process tree and log tail: a stall names its own
     # stuck process instead of costing a re-run to catch it live. Diagnostics only; never a verdict.
@@ -298,9 +334,7 @@ dump_stall() { # dump_stall <job-id> — what a job that never settled was still
         timeout 10 docker ps -a --filter "label=factory.job=$1" \
             --format '{{.Names}} {{.Status}} {{.Label "factory.role"}} {{.Label "factory.claim-seq"}}' 2>&1
         for c in $(timeout 10 docker ps -aq --filter "label=factory.job=$1" 2>/dev/null); do
-            echo "== $(timeout 10 docker inspect --format '{{.Name}} {{json .State}}' "$c" 2>&1)"
-            timeout 10 docker top "$c" -o pid,ppid,stat,etime,args 2>&1
-            timeout 10 docker logs --tail 40 "$c" 2>&1
+            dump_container "$c"
         done
     } >"$file" 2>&1
     echo "test-jobs: job $1 did not settle; its containers: $file" >&2
