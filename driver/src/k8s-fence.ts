@@ -119,10 +119,11 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     // An answer that is no claim proves nothing about the holder: it is never released on it.
     if (read.kind === 'inconclusive') throw new Error(read.reason);
     const claim = read.value;
-    if (claim.data?.holder === job.leaseToken) {
+    const holder = job.claimHolder ?? job.leaseToken;
+    if (claim.data?.holder === holder) {
         // Our own claim, kept because a group of ours could not be confirmed ended (issue #821): a
         // retry under the same holder — a reclaim offered again — may not start beside it.
-        if (!(await retryUnconfirmed(deps, job.leaseToken))) {
+        if (!(await retryUnconfirmed(deps, holder))) {
             throw new Error(
                 `job ${job.id} stands down: a group of this holder could not be confirmed ended, ` +
                     'so the checkout claim it keeps is not taken again'
@@ -294,7 +295,7 @@ export async function releaseClaimAfterGroupEnd(
     // A recovery's claim, or a reclaim's, goes only with no reclaim group of its holder still
     // writing — another invocation's, or a pod outliving its Job's delete.
     if ((ends.observed || ends.holderWriters) && !(await holderWritersGone(deps, job, holder))) return false;
-    if (!(await groupsEnded(deps, holder, ends.groups ?? []))) return false;
+    if (!(await groupsEnded(deps, holder, ends.groups ?? [], groupLeaseOf(job)))) return false;
     const claim = await readClaim(deps, job);
     if (claim?.holder !== holder || (ends.observed && claim.uid !== ends.observed.uid)) return false;
     try {
@@ -310,14 +311,27 @@ export async function releaseClaimAfterGroupEnd(
     }
 }
 
-/** Ends `groups` under `holder`; true only when every group of the holder is confirmed ended and none is live here. */
-async function groupsEnded(deps: K8sDeps, holder: string, groups: readonly GroupRef[]): Promise<boolean> {
+/** The lease a taken-over attempt's group lives under (#829): `job` as the loop has it, or as `ownGroup` addresses it. */
+const groupLeaseOf = (job: BoardJob): string | undefined =>
+    job.groupLease ?? (job.claimHolder ? job.leaseToken : undefined);
+
+/**
+ * Ends `groups` under `holder`; true only when every group of the holder is confirmed ended and none is live here —
+ * a taken-over group is recorded under its own lease (`groupLease`), the claim under its holder's.
+ */
+async function groupsEnded(
+    deps: K8sDeps,
+    holder: string,
+    groups: readonly GroupRef[],
+    groupLease?: string
+): Promise<boolean> {
     let held = false;
     for (const group of groups) {
         const end = await endRunnerJob(deps, group, holder);
         if (end !== 'ended') held = true;
     }
-    return !held && !deps.groups?.has(holder) && !holderUnconfirmed(deps, holder);
+    const live = deps.groups?.has(holder) === true || (groupLease !== undefined && deps.groups?.has(groupLease) === true);
+    return !held && !live && !holderUnconfirmed(deps, holder);
 }
 
 /** One kind's leftover objects — a job or a pod — the sweep found by label, with the leases they carry. */

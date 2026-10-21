@@ -9,7 +9,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobPath } from '../src/k8s-auxspec.js';
-import { ensureGroup } from '../src/k8s-group.js';
+import { releaseClaimAfterGroupEnd } from '../src/k8s-fence.js';
+import { ensureGroup, finishGroup } from '../src/k8s-group.js';
 import { type CloseReads, adoptFinishedRunner } from '../src/k8s-adopt.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s-transport.js';
@@ -381,6 +382,48 @@ describe('a live run (#829)', () => {
         expect(group).toMatchObject({ resumed: true, startedAt: START });
         expect(taken.leaseToken).toBe(job.leaseToken);
         expect(calls.slice(before).filter((call) => call.method === 'POST')).toEqual([]);
+    });
+
+    describe('the claim of a taken-over group is its holder\'s, the group the prior lease\'s', () => {
+        const claimDeletes = (calls: { method: string; path: string }[]) =>
+            deletes(calls).filter((call) => call.path.includes('/configmaps/'));
+
+        it('ends a taken-over group whose delete went unconfirmed again at the next finish, then gives the claim back', async () => {
+            let refusing = true;
+            let jobGone = false;
+            const { deps, calls } = world([runnerItem({ active: 1 })], (method, path) => {
+                if (path.startsWith(jobPath(NS, priorName))) {
+                    if (method === 'DELETE') jobGone = true;
+                    return method === 'GET' && !jobGone
+                        ? { status: 200, body: JSON.stringify({ metadata: { uid: `uid-${priorName}` }, status: {} }) }
+                        : { status: jobGone ? 404 : 200, body: '{}' };
+                }
+                if (method === 'DELETE' && path.endsWith(`/secrets/${secretName(job)}`) && refusing) {
+                    return { status: 500, body: 'unavailable' };
+                }
+                return supervisorLogPath(path) ? { status: 200, body: `supervisor: serving\n${RELEASED}\n` } : undefined;
+            }, { pods: runningPods() });
+            await adoptFinishedRunner(deps, adopter, reads());
+            const taken = ownGroup({ ...adopter, groupLease: job.leaseToken });
+
+            await finishGroup(deps, taken);
+            // The end is unconfirmed under the claim's holder, the new lease: the claim stays.
+            expect(claimDeletes(calls)).toEqual([]);
+
+            refusing = false;
+            await finishGroup(deps, taken);
+            expect(claimDeletes(calls)).toHaveLength(1);
+        });
+
+        it('keeps the claim while the taken-over group is still live in this runner', async () => {
+            const { deps, calls } = liveWorld();
+            await adoptFinishedRunner(deps, adopter, reads());
+
+            await releaseClaimAfterGroupEnd(deps, { ...adopter, groupLease: job.leaseToken });
+
+            // The group is recorded under the prior lease, the claim held by the adopter.
+            expect(claimDeletes(calls)).toEqual([]);
+        });
     });
 
     it('sweeps an older attempt but spares the live group', async () => {
