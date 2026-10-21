@@ -330,11 +330,13 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
         expect(minting).toEqual([]);
     });
 
-    it('leaves loop-run no second stand-down path and no phase-level check of its own', () => {
+    it('leaves the phase files no second stand-down path and no phase-level check of their own', () => {
         // What remains of `down(state)` are re-checks after an await INSIDE a step (loop-gates,
         // loop-helpers); a phase boundary asks `standDown` (issue #488).
-        const run = loopSources().find(([file]) => file === 'loop-run.ts')?.[1] ?? '';
-        expect(run).not.toMatch(/settleNonFinish|\bdown\(/);
+        const phaseFiles = ['loop-run.ts', 'loop-post-run.ts', 'loop-phase-checkpoints.ts'];
+        const sources = loopSources().filter(([file]) => phaseFiles.includes(file));
+        expect(sources.map(([file]) => file).sort()).toEqual([...phaseFiles].sort());
+        for (const [, source] of sources) expect(source).not.toMatch(/settleNonFinish|\bdown\(/);
     });
 
     it('fences every phase boundary from loop-run and loop-post-run, and nowhere else', () => {

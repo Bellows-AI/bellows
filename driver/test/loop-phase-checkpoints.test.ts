@@ -10,10 +10,18 @@ import type { PhaseCheckpoint } from '../src/board-phase-checkpoints.js';
 import { PHASE_CHECKPOINT_READ_MS } from '../src/loop-phase-checkpoints.js';
 import type { HelperPlan } from '../src/helpers.js';
 import type { PublishResult } from '../src/publish.js';
-import type { AdoptedRun, LiveRun } from '../src/runner.js';
+import type { AdoptedRun, DeadService, LiveRun } from '../src/runner.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
 
 const TREE = 'h:after';
+const deadMongo: DeadService = {
+    name: 'test-mongo',
+    image: 'mongo:8.0.11',
+    state: 'failed',
+    exitCode: 1,
+    reason: 'Error',
+    logTail: 'killed',
+};
 const GITHUB_TOKEN = 'ghs_stubbed_installation_token';
 
 const postPlan: HelperPlan = { helperId: 'notify', phase: 'post', input: null, githubWriting: false };
@@ -75,6 +83,8 @@ interface Scene {
     leaseGone?: () => boolean;
     setupFailure?: BoardJob['setupFailure'];
     probe?: (signal: AbortSignal) => Promise<string | null>;
+    policy?: BoardJob['policy'];
+    deadServices?: DeadService[];
 }
 
 async function run(scene: Scene = {}) {
@@ -84,6 +94,7 @@ async function run(scene: Scene = {}) {
         claimSeq: 3,
         ...(scene.post === false ? {} : { helperPlans: [postPlan] }),
         ...(scene.setupFailure ? { setupFailure: scene.setupFailure } : {}),
+        ...(scene.policy ? { policy: scene.policy } : {}),
     } as BoardJob;
     const board = stubBoard([claimed], {
         githubToken: GITHUB_TOKEN,
@@ -98,6 +109,7 @@ async function run(scene: Scene = {}) {
         probeTree: scene.probeTree === undefined ? TREE : scene.probeTree,
         publish: scene.publishResult ?? published,
         ...(scene.adopted === undefined ? {} : { adopt: async () => scene.adopted ?? null }),
+        ...(scene.deadServices ? { deadServices: async () => scene.deadServices! } : {}),
     });
     if (scene.probe) runner.probeTree = async (_job, signal) => scene.probe!(signal as AbortSignal);
     runner.runHelper = async (_job, plan) => {
@@ -266,6 +278,7 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         let gone = false;
         const r = await run({
             adopted,
+            deadServices: [deadMongo],
             leaseGone: () => gone,
             checkpoints: (signal) =>
                 new Promise((resolve) => {
@@ -275,6 +288,10 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         });
 
         expect(r.stack.ran.names).toEqual([]);
+        expect(r.runner.probed).toEqual([]);
+        expect(r.runner.deadServiceProbes).toBe(0);
+        expect(r.runner.restartedServices).toEqual([]);
+        expect(r.runner.resized).toEqual([]);
         expect(r.helperRuns).toEqual([]);
         expect(r.runner.published).toEqual([]);
         expect(r.board.phaseCheckpointsWritten).toEqual([]);
@@ -297,6 +314,30 @@ describe('resuming an adopted run from its phase checkpoints', () => {
 
         expect(r.board.gatesReported).toEqual([]);
         expect(r.stack.ran.names).toEqual([]);
+        expect(r.helperRuns).toEqual([]);
+        expect(r.runner.published).toEqual([]);
+        expect(r.board.phaseCheckpointsWritten).toEqual([]);
+        expect(r.board.completed).toEqual([]);
+    });
+
+    it('l3b: a stand-down during an unreadable tree probe restarts no service and runs no gate', async () => {
+        let gone = false;
+        const r = await run({
+            adopted,
+            checkpoints: null,
+            deadServices: [deadMongo],
+            leaseGone: () => gone,
+            probe: (signal) =>
+                new Promise((resolve) => {
+                    gone = true;
+                    signal.addEventListener('abort', () => resolve(null));
+                }),
+        });
+
+        expect(r.stack.ran.names).toEqual([]);
+        expect(r.runner.deadServiceProbes).toBe(0);
+        expect(r.runner.restartedServices).toEqual([]);
+        expect(r.runner.resized).toEqual([]);
         expect(r.helperRuns).toEqual([]);
         expect(r.runner.published).toEqual([]);
         expect(r.board.phaseCheckpointsWritten).toEqual([]);
@@ -391,6 +432,18 @@ describe('writing the phase checkpoints', () => {
         });
 
         expect(r.runner.published).toHaveLength(1);
+    });
+
+    it('p: a publish checkpoint on the probed tree under an evidence policy is not pushed again', async () => {
+        const r = await run({
+            adopted,
+            policy: { gates: true },
+            checkpoints: [gatesCp(), postCp(), publishCp({ result: { published, revision: TREE } })],
+        });
+
+        expect(r.runner.published).toEqual([]);
+        expect(r.board.phaseCheckpointsWritten).toEqual([]);
+        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 
     it('i: a publish that did not land leaves no publish checkpoint', async () => {
