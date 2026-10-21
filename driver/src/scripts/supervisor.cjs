@@ -1306,8 +1306,8 @@ async function putCheckpoint(run, route, options, abort) {
 }
 
 /** The header line, then each part's bytes, as the stream's consecutive chunks. */
-function* checkpointChunks(header, parts) {
-    const line = Buffer.from(`${JSON.stringify(header)}\n`);
+function* checkpointChunks(headerFile, parts) {
+    const line = Buffer.from(`${JSON.stringify(JSON.parse(fs.readFileSync(headerFile, 'utf8')))}\n`);
     yield line;
     for (const part of parts) {
         const fd = fs.openSync(part.path, 'r');
@@ -1327,7 +1327,7 @@ function* checkpointChunks(header, parts) {
 /** Puts the stream's chunks in order; how it ended: the cause it stopped short for, or null when every chunk is stored. */
 async function uploadCheckpoint(run, verdict, abort) {
     let offset = 0;
-    for (const bytes of checkpointChunks(verdict.header, verdict.parts)) {
+    for (const bytes of checkpointChunks(verdict.headerFile, verdict.parts)) {
         beat(run);
         const answer = await putCheckpoint(run, `/checkpoint/chunk?offset=${offset}`, { bytes }, abort);
         if (answer && answer.status === HTTP_PAYLOAD_TOO_LARGE) {

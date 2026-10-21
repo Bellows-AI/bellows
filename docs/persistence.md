@@ -27,8 +27,9 @@ the in-memory stores in `server/test/helpers*.ts`.
 
 - **The artifact index arbitrates the object store.** The chunk row is inserted before the write; a store 412 is
   success only when the stored body is the recorded sha256; a different body at one stream and offset is refused;
-  every read is scoped to the caller's org. Finalization state lives on the manifest, never on `job`.
-  `server/test-db/artifact-store.test.ts`.
+  every read is scoped to the caller's org. Finalization state lives on the manifest, never on `job`; the one
+  exception is the root `job` row's checkpoint pointer (078), written in the manifest-finalize transaction.
+  `server/test-db/artifact-store.test.ts`, `server/test-db/job-store.checkpoint-pointer.test.ts`.
 - **Applied migrations are never edited.** They are skipped by filename, so an edit changes nothing
   for an existing database. Every schema change is a new file; a feature's schema is removed by a
   new `drop` migration (`023_drop_pull_requests.sql`), children listed before parents.

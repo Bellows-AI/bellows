@@ -27,6 +27,9 @@ const SCRIPT = join(import.meta.dirname, '..', 'src', 'scripts', 'checkpoint.cjs
 interface Verdict {
     ok: boolean;
     reason?: string;
+    headerFile?: string;
+    /** The verdict line's own size: the supervisor keeps only the tail of a step's stdout. */
+    lineBytes?: number;
     state?: string;
     cause?: string | null;
     header?: {
@@ -48,7 +51,11 @@ const runCheckpoint = (env: Record<string, string>): Verdict => {
         env: { ...process.env, ...SCRIPT_IDENTITY, ...env },
         encoding: 'utf8',
     });
-    return JSON.parse(out.stdout.trim().split('\n').filter(Boolean).pop() ?? '{}');
+    const line = out.stdout.trim().split('\n').filter(Boolean).pop() ?? '{}';
+    const verdict: Verdict = { ...JSON.parse(line), lineBytes: Buffer.byteLength(line) };
+    // The header rides a file named by the verdict, never the verdict line itself.
+    if (verdict.headerFile) verdict.header = JSON.parse(readFileSync(verdict.headerFile, 'utf8'));
+    return verdict;
 };
 
 const hashOf = (path: string): string => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -137,6 +144,33 @@ describe.skipIf(!hasGit())('the checkpoint script', () => {
         expect(bundledFiles(join(outDir(), 'bundle'), header!.tip).files).toContain('later.txt');
     });
 
+    it('checkpoints a repository with thousands of remote branches: a small verdict line, every prerequisite in the header file', () => {
+        workedTree();
+        const head = git(fx.checkout(), 'rev-parse', 'refs/remotes/origin/main');
+        const count = 12_000;
+        // Packed directly: twelve thousand loose refs cost tens of seconds to create one by one.
+        const packed = join(fx.checkout(), git(fx.checkout(), 'rev-parse', '--git-common-dir'), 'packed-refs');
+        git(fx.checkout(), 'pack-refs', '--all');
+        const kept = readFileSync(packed, 'utf8')
+            .split('\n')
+            .filter((l) => l && !l.startsWith('#') && !l.startsWith('^'));
+        const entries = [
+            ...kept,
+            ...Array.from({ length: count }, (_, i) => `${head} refs/remotes/origin/bulk/${'x'.repeat(60)}-${i}`),
+        ].sort((a, b) => (a.slice(41) < b.slice(41) ? -1 : 1));
+        writeFileSync(packed, `# pack-refs with: sorted \n${entries.join('\n')}\n`);
+
+        const verdict = checkpoint();
+
+        expect(verdict).toMatchObject({ ok: true, state: 'complete' });
+        expect(verdict.lineBytes).toBeLessThan(4096);
+        expect(verdict.header?.prerequisites.filter((p) => p.ref.includes('/bulk/'))).toHaveLength(count);
+        const bundle = join(outDir(), 'bundle');
+        const { files } = bundledFiles(bundle, verdict.header!.tip);
+        expect(files).toContain('feature.txt');
+        git(fx.checkout(), 'bundle', 'verify', bundle);
+    });
+
     it('never touches the real index, HEAD, refs or working tree', () => {
         workedTree();
         const index = join(fx.checkout(), '.git', 'index');
@@ -192,7 +226,7 @@ describe.skipIf(!hasGit())('the checkpoint script', () => {
         expect(verdict.header).toMatchObject({ truncated: true, bundleBytes: 0, sqliteBytes: 0, branch: fx.branch() });
         expect(verdict.header?.tip).toMatch(/^[0-9a-f]{40}$/);
         expect(existsSync(join(outDir(), 'bundle'))).toBe(false);
-        expect(readdirSync(outDir())).toEqual([]);
+        expect(readdirSync(outDir())).toEqual(['header.json']);
     });
 
     it('snapshots the OpenCode database through the sqlite backup API, WAL contents included', () => {

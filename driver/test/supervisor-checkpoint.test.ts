@@ -129,9 +129,13 @@ function fakeScript(parts: Record<string, string>, verdict: string, before = '')
     `;
 }
 
+/** Verdict source writing the header file in the script's directory (`dir`); the verdict carries its path, not the header. */
+const headerAt = (header: object): string =>
+    `(fs.writeFileSync(dir + '/header.json', JSON.stringify(${JSON.stringify(header)})), dir + '/header.json')`;
+
 /** The verdict source for a script that made `names` in its directory (`dir`), complete. */
 const completeVerdict = (names: string[]): string =>
-    `({ ok: true, state: 'complete', cause: null, header: { version: 1, tip: 'a' },
+    `({ ok: true, state: 'complete', cause: null, headerFile: ${headerAt({ version: 1, tip: 'a' })},
         parts: ${JSON.stringify(names)}.map((n) => ({ path: dir + '/' + n, bytes: require('node:fs').statSync(dir + '/' + n).size })) })`;
 
 function run(driver: Driver | null, script: string | null, env: Record<string, string> = {}) {
@@ -217,7 +221,9 @@ describe('the supervisor’s finalize stage: the checkpoint', () => {
         const driver = await startDriver();
         const script = fakeScript(
             {},
-            "({ ok: true, state: 'truncated', cause: 'checkpoint_cap', header: { version: 1, truncated: true }, parts: [] })"
+            "({ ok: true, state: 'truncated', cause: 'checkpoint_cap', headerFile: " +
+                headerAt({ version: 1, truncated: true }) +
+                ', parts: [] })'
         );
 
         await run(driver, script).done;

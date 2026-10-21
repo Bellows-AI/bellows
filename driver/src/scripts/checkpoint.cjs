@@ -10,9 +10,10 @@
 // (OFFLINE_ENV), so an object the partial clone never fetched fails fast. One JSON verdict on the last line
 // of stdout:
 //   {ok:true, state:'none'}                                    no checkout: nothing to carry;
-//   {ok:true, state:'complete'|'truncated', cause, header, parts}
+//   {ok:true, state:'complete'|'truncated', cause, headerFile, parts}
 //   {ok:false, reason}
-// `parts` are the files to upload after the header line, in order, with their sizes; `truncated`
+// `headerFile` is the header's JSON in OUT_DIR (it lists every remote ref, so it never rides the verdict line,
+// which the supervisor keeps only the tail of); `parts` are the files to upload after the header line, in order, with their sizes; `truncated`
 // (cause `checkpoint_cap`) leaves none: above the cap the bytes are not uploaded at all.
 //
 // Environment (set by the supervisor; paths and a branch name, never a credential):
@@ -28,6 +29,9 @@ const path = require('node:path');
 
 const DEFAULT_CAP_BYTES = 268_435_456; // 256 MiB
 const MAX_BUFFER = 1_048_576;
+const REFS_BUFFER_FACTOR = 256;
+// A repository can track tens of thousands of remote branches: that listing is far past MAX_BUFFER.
+const REFS_MAX_BUFFER = REFS_BUFFER_FACTOR * MAX_BUFFER;
 // No lazy fetch, and — for a git that predates GIT_NO_LAZY_FETCH — no transport and no prompt either.
 const OFFLINE_ENV = { GIT_NO_LAZY_FETCH: '1', GIT_ALLOW_PROTOCOL: '', GIT_TERMINAL_PROMPT: '0' };
 const ADD_ERR = 'add.err';
@@ -48,13 +52,14 @@ const outDir = process.env.OUT_DIR;
 const opencodeDb = process.env.OPENCODE_DB || '';
 const cap = Number(process.env.CAP_BYTES || DEFAULT_CAP_BYTES);
 
-const git = (args, env = {}) =>
+const git = (args, env = {}, extra = {}) =>
     execFileSync('git', args, {
         cwd: checkout,
         encoding: 'utf8',
         env: { ...process.env, ...OFFLINE_ENV, ...env },
         maxBuffer: MAX_BUFFER,
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...extra,
     }).trim();
 
 // ENOENT/ENOTDIR is absence; any other errno is a failure to read, never "not there".
@@ -127,7 +132,13 @@ const defaultBranch = () => {
 
 /** Every remote-tracking ref (the symbolic origin/HEAD aside) and its commit: what the remote already has. */
 const remoteRefs = () => {
-    const out = git(['for-each-ref', '--format=%(refname) %(objectname) %(symref)', 'refs/remotes/origin']);
+    const out = git(
+        ['for-each-ref', '--format=%(refname) %(objectname) %(symref)', 'refs/remotes/origin'],
+        {},
+        {
+            maxBuffer: REFS_MAX_BUFFER,
+        }
+    );
     return out
         .split('\n')
         .map((line) => line.split(' '))
@@ -139,7 +150,9 @@ const bundle = (tip, prerequisites, file) => {
     git(['update-ref', TIP_REF, tip]);
     try {
         const excluded = [...new Set(prerequisites.map((p) => p.sha))];
-        git(['bundle', 'create', file, TIP_REF, ...excluded.map((s) => `^${s}`)]);
+        // The exclusions ride stdin: one `^<sha>` argv per ref would near ARG_MAX on a repository with many branches.
+        const revisions = [TIP_REF, ...excluded.map((s) => `^${s}`)].join('\n');
+        git(['bundle', 'create', file, '--stdin'], {}, { input: `${revisions}\n`, stdio: ['pipe', 'pipe', 'pipe'] });
     } finally {
         git(['update-ref', '-d', TIP_REF]);
     }
@@ -178,6 +191,7 @@ const main = async () => {
         sqliteBytes: 0,
         truncated: false,
     };
+    const headerFile = path.join(outDir, 'header.json');
     const bundleFile = path.join(outDir, 'bundle');
     const sqliteFile = path.join(outDir, 'opencode.db');
     bundle(tip, Object.values(prerequisites).filter(Boolean), bundleFile);
@@ -187,17 +201,13 @@ const main = async () => {
     if (header.bundleBytes + header.sqliteBytes > cap) {
         fs.rmSync(outDir, { recursive: true, force: true });
         fs.mkdirSync(outDir, { recursive: true });
-        return {
-            ok: true,
-            state: 'truncated',
-            cause: 'checkpoint_cap',
-            header: { ...header, bundleBytes: 0, sqliteBytes: 0, truncated: true },
-            parts: [],
-        };
+        fs.writeFileSync(headerFile, JSON.stringify({ ...header, bundleBytes: 0, sqliteBytes: 0, truncated: true }));
+        return { ok: true, state: 'truncated', cause: 'checkpoint_cap', headerFile, parts: [] };
     }
+    fs.writeFileSync(headerFile, JSON.stringify(header));
     const parts = [{ path: bundleFile, bytes: header.bundleBytes }];
     if (header.sqliteBytes > 0) parts.push({ path: sqliteFile, bytes: header.sqliteBytes });
-    return { ok: true, state: 'complete', cause: null, header, parts };
+    return { ok: true, state: 'complete', cause: null, headerFile, parts };
 };
 
 const say = (verdict) => process.stdout.write(`${JSON.stringify(verdict)}\n`);
