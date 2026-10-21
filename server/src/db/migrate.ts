@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { LOCAL_ORG_ID } from '../config.js';
 import { TelemetryError } from '../telemetry/errors.js';
 import { ADMIN_ROLE } from '@factory-ai/core';
@@ -25,8 +25,13 @@ export interface MigrateOptions {
      */
     attempts?: number;
     backoffMs?: number;
+    /** How long one attempt waits for another process's migration lock before it fails. */
+    lockWaitMs?: number;
     log?: (message: string) => void;
 }
+
+/** The database-wide advisory lock every migrating process takes, hashed like the claim locks. */
+export const MIGRATION_LOCK_KEY = 'factory:migrate';
 
 /**
  * The login of the stand-in account used when AUTH_MODE=none.
@@ -45,7 +50,7 @@ const LOCAL_GITHUB_USER_ID = 0;
  * The row is created, never updated, and only in localUser mode: github mode's organizations are
  * materialized at sign-in from the App's installations, and none of them can be named at boot.
  */
-async function seedOrganization(sql: Sql, orgId: string): Promise<void> {
+async function seedOrganization(sql: Sql | TransactionSql, orgId: string): Promise<void> {
     await sql`
         insert into organization (id, name) values (${orgId}, ${orgId})
         on conflict (id) do nothing
@@ -55,7 +60,7 @@ async function seedOrganization(sql: Sql, orgId: string): Promise<void> {
 /**
  * The account AUTH_MODE=none attributes every request to.
  */
-async function ensureLocalUser(sql: Sql, orgId: string): Promise<void> {
+async function ensureLocalUser(sql: Sql | TransactionSql, orgId: string): Promise<void> {
     const [user] = await sql<{ id: string }[]>`
         insert into app_user (github_user_id, github_login, display_name)
         values (${LOCAL_GITHUB_USER_ID}, ${LOCAL_LOGIN}, 'Local')
@@ -79,7 +84,7 @@ async function ensureLocalUser(sql: Sql, orgId: string): Promise<void> {
  * `expires_at` regardless. It exists so the table does not grow without bound on a deployment whose
  * users never log out.
  */
-export async function reapSessions(sql: Sql): Promise<number> {
+export async function reapSessions(sql: Sql | TransactionSql): Promise<number> {
     const result = await sql`delete from session where expires_at < now()`;
     return result.count;
 }
@@ -91,7 +96,7 @@ export async function reapSessions(sql: Sql): Promise<number> {
  * read path spends an expired row on sight regardless (findPendingSignIn deletes it), so like
  * reapSessions this is table hygiene, not enforcement — the cookie expires with the row.
  */
-export async function reapPendingSignIns(sql: Sql): Promise<number> {
+export async function reapPendingSignIns(sql: Sql | TransactionSql): Promise<number> {
     const result = await sql`delete from pending_sign_in where expires_at < now()`;
     return result.count;
 }
@@ -121,8 +126,31 @@ function files(): { version: string; sql: string; repeatable: boolean }[] {
     return [...all.filter((f) => !f.repeatable), ...all.filter((f) => f.repeatable)];
 }
 
-/** One attempt's worth of `migrate()`'s work, pulled out so the retry loop stays readable. */
-async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message: string) => void): Promise<void> {
+/**
+ * One attempt's worth of `migrate()`'s work: one transaction under the migration lock, so two
+ * processes booting together serialize, and the second reads `schema_migrations` only after the
+ * first committed. A lock wait past `lockWaitMs` fails the attempt; the xact lock cannot outlive
+ * the transaction or a dead backend.
+ */
+async function applyMigrations(
+    pool: Sql,
+    options: MigrateOptions,
+    lockWaitMs: number,
+    log: (message: string) => void
+): Promise<void> {
+    await pool.begin(async (tx) => {
+        await tx`select set_config('lock_timeout', ${`${lockWaitMs}ms`}, true)`;
+        await tx`select pg_advisory_xact_lock(hashtextextended(${MIGRATION_LOCK_KEY}, 0))`;
+        await tx`select set_config('lock_timeout', '0', true)`;
+        await applyLocked(tx, options, log);
+    });
+}
+
+async function applyLocked(
+    sql: TransactionSql,
+    options: MigrateOptions,
+    log: (message: string) => void
+): Promise<void> {
     await sql`
         create table if not exists schema_migrations (
             version    text primary key,
@@ -142,16 +170,8 @@ async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message:
     for (const { version, sql: body, repeatable } of files()) {
         if (!repeatable && applied.has(version)) continue;
         log(`applying ${repeatable ? 'repeatable ' : ''}migration ${version}`);
-        // Not wrapped in a transaction with the insert. Since #371 no file creates an extension,
-        // so the original reason is gone — but postgres already wraps each multi-statement
-        // `unsafe` body in an implicit transaction (005's header depends on it), so an explicit
-        // one would only add the insert below to that scope. The insert is `on conflict do
-        // nothing`, so re-running it is free — but the body is not universally replayable: 033
-        // and 039 end in an unguarded `alter table job add constraint … not valid`, which fails
-        // with 42710 the second time. A crash after the body commits and before the version row
-        // lands therefore wedges those two files, and `on conflict` cannot reach back to cover
-        // the earlier statement. The window is a lost insert, not a lost body; widening the
-        // transaction to close it is the fix if it ever bites.
+        // Body and version row commit together with every other file in this attempt, so a crash
+        // between them cannot record a body without its row (033 and 039 are not replayable).
         await sql.unsafe(body);
         if (repeatable) continue;
         await sql`insert into schema_migrations (version) values (${version})
@@ -172,16 +192,16 @@ async function applyMigrations(sql: Sql, options: MigrateOptions, log: (message:
 /**
  * Applies pending migrations. A second run is a no-op because applied versions are recorded — not
  * because every file could survive being replayed: 033 and 039 end in an unguarded
- * `add constraint`, the window applyMigrations documents. Statements are `if not exists` or
+ * `add constraint`, which is why a body and its version row commit together. Statements are `if not exists` or
  * `create or replace` wherever postgres offers it, which is everywhere but those two.
  */
 export async function migrate(sql: Sql, options: MigrateOptions): Promise<void> {
-    const { attempts = 10, backoffMs = 1000, log = () => {} } = options;
+    const { attempts = 10, backoffMs = 1000, lockWaitMs = 60_000, log = () => {} } = options;
 
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
         try {
-            await applyMigrations(sql, options, log);
+            await applyMigrations(sql, options, lockWaitMs, log);
             return;
         } catch (e) {
             lastError = e;

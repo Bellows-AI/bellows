@@ -5,9 +5,9 @@ service line for line — the chart sets the same environment the compose file s
 repo's only configuration mechanism.
 
 Exactly one replica, replaced by Recreate, never rolled: the server is the single writer of the
-checkouts (its workspace reconcile serializes in-process), its migrations take no lock, and a
-ReadWriteOnce claim cannot attach to a second node while the first pod holds it. A rolling update
-would run two of all three for its overlap. The cost is a few seconds of downtime per upgrade.
+checkouts (its workspace reconcile serializes in-process), and a ReadWriteOnce claim cannot attach
+to a second node while the first pod holds it. A rolling update would run two of both for its
+overlap. The cost is a few seconds of downtime per upgrade.
 */}}
 apiVersion: apps/v1
 kind: Deployment
