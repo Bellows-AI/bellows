@@ -127,6 +127,17 @@ describe('test-jobs phase options', () => {
         expect(lane.trace()).toBe('');
     });
 
+    // Issue #829: the phase that kills a real driver at each step of a run.
+    it('lists the driver-kill phase and accepts it as a phase', async () => {
+        const help = await fixture().run(['--help']);
+        expect(help.stdout).toContain('driver-kill');
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'driver-kill'], { JOBS_TEST_DB: 'factory_dev' });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('ending _test');
+        expect(result.stdout).not.toContain('invalid --phase');
+    });
+
     it.each([
         ['--phase'],
         ['--phase', 'unknown'],

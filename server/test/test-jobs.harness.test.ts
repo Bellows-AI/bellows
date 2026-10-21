@@ -230,12 +230,13 @@ describe('the test-jobs harness', () => {
         expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# orphan reaper'"));
         expect(start).toBeLessThan(SCRIPT.indexOf("echo '# workflows'"));
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
-        expect(phase).toContain('--filter "label=factory.claim-seq=1"');
+        // The helpers both recovery phases use sit at file scope (issue #829).
+        expect(SCRIPT).toContain('--filter "label=factory.claim-seq=1"');
         expect(phase).toContain('kill -9 "$driver_pid"');
         expect(phase).toContain('kill -TERM "$driver_pid"');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
-        expect(phase).toContain("'the driver was drained'");
-        expect(phase).toContain("'adopted the finished runner of claim 1, whose driver was lost'");
+        expect(SCRIPT).toContain("DRAINED='the driver was drained'");
+        expect(SCRIPT).toContain("ADOPTED='adopted the finished runner of claim 1, whose driver was lost'");
         expect(phase).toContain('attempts 1');
     });
 
@@ -244,13 +245,39 @@ describe('the test-jobs harness', () => {
     it('the node-disruption phase recovers an expiry at the last attempt, and a runner lost with its driver', () => {
         const start = SCRIPT.indexOf("echo '# node disruption'");
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
-        expect(phase).toContain("EXPIRED='the lease expired: its driver went silent'");
+        expect(SCRIPT).toContain("EXPIRED='the lease expired: its driver went silent'");
         // The cap is checked, not assumed (driver/test/lane-last-attempt.test.ts).
         expect(phase).toContain('capped="$(last_attempt "$killed")" && ok');
         expect(phase).toContain('capped="$(last_attempt "$lost")" && ok');
         expect(phase).toContain('docker ps -aq --filter "label=factory.job=$lost" |');
         expect(phase).toContain('"job $lost: attempt 1 resuming session $lost_session"');
         expect(phase).toContain('upstream:0');
+    });
+
+    // Issue #829: a driver killed at each step of a run, on real containers, finishes the task once.
+    it('the driver-kill phase kills a real driver at setup, agent, gates and publish, then finishes once', () => {
+        const start = SCRIPT.indexOf("echo '# driver kill'");
+        expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(start).toBeLessThan(SCRIPT.indexOf("echo '# run deadline'"));
+        const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# run deadline'"));
+        expect(phase).toContain('kill -9 "$driver_pid"');
+        expect(phase).toContain('kill -TERM "$driver_pid"');
+        expect(phase).toContain('DRIVER_REAP_INTERVAL_MS=2000');
+        expect(phase).toContain('DRIVER_REAP_GRACE_MS=1000');
+        expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
+        expect(phase).toContain("took over the running agent of claim 1, whose driver was lost");
+        expect(phase).toContain('supervisor: rebound to claim 2');
+        expect(phase).toContain("resumed gates from claim 1's checkpoint");
+        expect(phase).toContain('lane-pushes.log');
+        expect(phase).toContain('lane-gh-prs');
+        expect(phase).toContain('factory.claim-seq=2');
+        expect(phase).toContain('label=factory.role=agent');
+        // An unconfirmed read is never "clean": the leftovers check fails on a docker error.
+        expect(SCRIPT).toContain('lane_count() {');
+        expect(SCRIPT).toContain('lane_left() {');
+        // The shared recovery helpers sit at file scope, where node-disruption and this phase both see them.
+        expect(SCRIPT.indexOf('\ndisruption_driver() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\nawait_released() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
     });
 
     it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {
