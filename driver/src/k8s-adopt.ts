@@ -165,7 +165,7 @@ async function admitted(deps: K8sDeps, found: EarlierRunner): Promise<EarlierRun
     if (found.finished) return { ...found, finished: groupStateOf(pods) === 'over' };
     const pod = runnerPodOf(pods);
     if (containerStatusOf(pod, AGENT_CONTAINER)?.state?.terminated) return found;
-    if (!(await releasedRunning(deps, found, pod))) return null;
+    if (!(await releasedRunning(deps, pod))) return null;
     if (found.uid === undefined)
         throw new AdoptionBlocked('the earlier runner Job lists without a uid to tear down by');
     return { ...found, live: { startedAt: startedAtOf(found), uid: found.uid } };
@@ -179,7 +179,7 @@ const startedAtOf = ({ status }: EarlierRunner): string => status.startTime ?? n
  * released, is none. A running pod whose container states are unread, or a log the apiserver would
  * not serve, proves nothing and blocks the adoption: redoing would sweep a run that may be live.
  */
-async function releasedRunning(deps: K8sDeps, found: EarlierRunner, pod: K8sPod | undefined): Promise<boolean> {
+async function releasedRunning(deps: K8sDeps, pod: K8sPod | undefined): Promise<boolean> {
     if (pod?.status?.phase !== 'Running') return false;
     const agent = containerStatusOf(pod, AGENT_CONTAINER)?.state;
     const supervisor = containerStatusOf(pod, SUPERVISOR_CONTAINER)?.state;
@@ -410,7 +410,8 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
             }
         },
         recordKey: ({ prior }) => runnerName(prior),
-        sweep: ({ prior, live }, job, signal) => sweepAfterAdoption(deps, job, prior, signal, live !== undefined),
+        sweep: ({ prior, live }, job, signal) =>
+            sweepAfterAdoption(deps, job, prior, { signal, live: live !== undefined }),
         rollback: async (job) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
@@ -441,8 +442,7 @@ async function sweepAfterAdoption(
     deps: K8sDeps,
     job: BoardJob,
     prior: BoardJob,
-    signal?: AbortSignal,
-    live = false
+    { signal, live = false }: { signal: AbortSignal | undefined; live?: boolean }
 ): Promise<void> {
     try {
         await sweepClaimedFleets(deps, job, signal ?? ledgerOf(deps).signal(job));

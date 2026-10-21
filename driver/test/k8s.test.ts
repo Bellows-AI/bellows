@@ -42,6 +42,7 @@ import {
     commandMark,
     OPENCODE_EXPORT_LIMIT,
     SERVICE_LOG_TAIL_LINES,
+    type AdoptedRun,
 } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
@@ -6878,7 +6879,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
         });
-        expect(adopted!.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun).outcome.output).toContain('did the work');
         const logRead = calls.findIndex((call) =>
             call.path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)
         );
@@ -6951,7 +6952,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
     });
 
     // Failure injection at the transport boundary: a runner-Job list too big for a log's stream
@@ -7061,8 +7062,8 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // A full spool rides a supervised stop: its record never explains a supervisor lost after it.
@@ -7456,8 +7457,10 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // The report is the supervisor's finalization: a crash after it does not unsay it.
@@ -7639,7 +7642,9 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
         expect(podReads).toBeGreaterThan(2);
         const secretGone = calls.findIndex(
             (call) => call.method === 'DELETE' && call.path.endsWith(`/secrets/${secretName(job)}`)
@@ -7720,7 +7725,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
     });
 
     // Failure injection: a pod list that answers 200 with no list in it proves no pod over.
@@ -7893,7 +7898,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
                 ? Promise.resolve({ status: 503, body: 'unavailable' })
                 : base(method, path, body);
 
-        expect((await runner(request).adopt(adopter))?.outcome.output).toContain('did the work');
+        expect(((await runner(request).adopt(adopter)) as AdoptedRun | null)?.outcome.output).toContain('did the work');
     });
 
     // A Stop while the earlier runners are read: no claim is taken, so no stale claim is deleted.
@@ -7930,8 +7935,8 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         const adopted = await runner(request).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, sessionId: SESSION } });
-        expect(adopted?.outcome.output).toContain('did the work');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
         expect(calls.some((call) => isSupervisorLogRead(call.path))).toBe(true);
         expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
     });
@@ -7958,9 +7963,11 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         const adopted = await runner(request).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 137, started: true, sessionId: SESSION } });
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
-        expect(adopted?.outcome.output).toContain('did the work');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
+        expect((adopted as AdoptedRun | null)?.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
         // The read run's Job is kept for a later claim (#821); only its Secrets go.
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
@@ -7983,7 +7990,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             await expect(adopting).rejects.toBeInstanceOf(AdoptionBlocked);
             expect(deletedPrior(calls)).toBe(false);
         } else {
-            expect((await adopting)?.outcome.output).toBe('');
+            expect(((await adopting) as AdoptedRun | null)?.outcome.output).toBe('');
         }
     });
 

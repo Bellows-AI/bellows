@@ -163,7 +163,7 @@ async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
 async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null | SetupConclusion> {
     const { rt, job, state } = ctx;
     try {
-        const gateOut = await raceStep(state.signal, beginGates(rt, job, state, { takeover: !!ctx.takeover }));
+        const gateOut = await raceStep(state.signal, beginGates(rt, job, state, { takeover: Boolean(ctx.takeover) }));
         return gateOut === null ? STOOD_DOWN : gateOut.value;
     } catch (e) {
         // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.

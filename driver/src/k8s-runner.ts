@@ -407,11 +407,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     );
     // A group taken over from a lost driver (#829) was released by it: the agent already runs, in the
     // sizing and under the order its first driver gave, and nothing here creates or releases it.
-    if (!resumed) {
-        // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
-        await resizeGateSidecar(deps, job, 'idle');
-        await orderGo(host, job);
-    }
+    // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
+    if (!resumed) await resizeGateSidecar(deps, job, 'idle').then(() => orderGo(host, job));
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
     try {

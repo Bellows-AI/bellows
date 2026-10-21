@@ -13,7 +13,7 @@ import { ensureGroup } from '../src/k8s-group.js';
 import { type CloseReads, adoptFinishedRunner } from '../src/k8s-adopt.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s-transport.js';
-import { AdoptionBlocked, commandMark, ownGroup } from '../src/runner.js';
+import { AdoptionBlocked, commandMark, ownGroup, type AdoptedRun } from '../src/runner.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 
@@ -136,7 +136,7 @@ describe('the close-time readouts an adoption performs', () => {
             expect.objectContaining({ exitCode: 0 })
         );
         expect(injected.scrape).not.toHaveBeenCalled();
-        expect(adopted?.outcome.agentTurns).toBe(3);
+        expect((adopted as AdoptedRun | null)?.outcome.agentTurns).toBe(3);
     });
 
     it('reads no close-time readout for a claude run that carries no session', async () => {

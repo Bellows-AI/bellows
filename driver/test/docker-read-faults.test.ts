@@ -168,6 +168,8 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
     const { exec } = routedDocker(
         either(writes, (args) => {
             if (is(args, 'wait')) return ok('0\n');
+            // No runner still runs (#829): the live-run listing is empty.
+            if (is(args, 'ps') && has(args, 'status=running')) return ok('');
             if (is(args, 'ps')) return ok(has(args, 'status=exited') ? listing : fencePs);
             if (is(args, 'volume', 'ls')) return ok(fenceVolumes);
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.

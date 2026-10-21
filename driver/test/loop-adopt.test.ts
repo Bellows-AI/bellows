@@ -16,7 +16,7 @@ import { job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fi
 
 const adopted: AdoptedRun = { outcome: ok(), claimSeq: 4 };
 
-function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>) {
+function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | LiveRun | null>) {
     const board = stubBoard([]).board;
     const runner = stubRunner(async () => ok(), { adopt });
     const released: string[] = [];
@@ -284,7 +284,8 @@ describe('taking over a live run (#829)', () => {
 
     it('leaves a takeover it cannot deliver without a run-control endpoint', async () => {
         const s = takeover();
-        s.ctx.rt = { ...s.ctx.rt, gates: undefined };
+        const { gates: _gates, ...withoutGates } = s.ctx.rt;
+        s.ctx.rt = withoutGates;
 
         expect(await adoptStep(s.ctx)).toMatchObject({ halt: 'leave' });
         expect(s.claimed.groupLease).toBeUndefined();

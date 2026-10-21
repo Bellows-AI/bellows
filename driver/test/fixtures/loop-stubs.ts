@@ -31,6 +31,7 @@ import type { ReviewRelay } from '../../src/review-control.js';
 import type { SnapshotResult } from '../../src/review-snapshot.js';
 import type {
     AdoptedRun,
+    LiveRun,
     DeadService,
     GateSizing,
     ReviewerSizing,
@@ -304,7 +305,7 @@ export function stubRunner(
             control: ReviewControl
         ) => Promise<StepResult>;
         /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
-        adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>;
+        adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | LiveRun | null>;
     } = {}
 ): Runner & {
     killed: string[];

@@ -46,13 +46,11 @@ import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type Sy
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
     containerName,
-    envFilePath,
     parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
     toolTreeReleaseArgs,
 } from './docker.js';
-import { envFileBody } from './claim.js';
 import {
     appendTailKept,
     composeRuntimeSample,
@@ -69,11 +67,10 @@ import {
 } from './runner.js';
 import { applyCloseTimeReadout, dockerAdopt } from './docker-close-read.js';
 import { armRunTimers } from './docker-run-timers.js';
+import { createRunner } from './docker-create-runner.js';
 import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
-    assertNotKilledAfterEnvWrite,
-    createRunnerContainer,
     dockerErrorDetail,
     dockerRunVerdict,
     CONTAINER_ID,
@@ -453,59 +450,6 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     return out;
 }
 
-/**
- * Creates the attempt's runner container. Answers the env file the run removes when it is over (null
- * when it needs none), or the refusal the daemon gave the create.
- */
-async function createRunner(
-    deps: RunnerDeps,
-    job: BoardJob,
-    session: RunSession | null
-): Promise<{ file: string | null; refused?: RunOutcome }> {
-    const { config, files, ledger } = deps;
-    const execDocker = attemptExecOf(deps, job);
-    const teardown = deps.execDocker;
-    // The runner container is the last resource this attempt creates, and the spawn is
-    // what a killed setup must never reach — see assertJobNotKilled for why a throw is
-    // the right verdict here.
-    assertJobNotKilled(ledger, job);
-
-    /*
-     * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
-     * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
-     * in argv and never in this process's environment. The body is the claim env PLUS the
-     * loop's minted gate credentials PLUS the runner's own attempt pair, so a gated job whose
-     * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN and the credential
-     * its attribution reports authenticate with.
-     */
-    const body = envFileBody(job, config);
-    const file = body ? envFilePath(job) : null;
-    if (file) await files.writeFile(file, body, { mode: 0o600 });
-    // The write above is an await, so the kill-check must run once more: see
-    // assertNotKilledAfterEnvWrite for why a lease lost while it was pending must not
-    // reach spawnFn.
-    await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
-
-    // The run's start instant (the group's, which the exporter and both close-time turn reads key
-    // on): a follow-up resumes its session's conversation, so the delta each read reports is
-    // bounded to what THIS run wrote.
-    const made = { config, execDocker, teardown };
-    const refused = await createRunnerContainer(made, job, session, file ? { envFile: file } : {});
-    if (refused && !ledger.was(job).stopped) {
-        if (file) await files.rm(file).catch(() => undefined);
-        return { file, refused };
-    }
-    // The create and the copy are awaits too: a lease lost behind them must not reach the start.
-    // The created container is this attempt's leftover to remove, the group and the env file with it.
-    if (ledger.was(job).stopped) {
-        await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
-        await removeGroup(teardown, job);
-        deps.groups.delete(job.leaseToken);
-        await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
-    }
-    return { file };
-}
-
 /** How long a taken-over run's exit is waited for once its log stream has closed. */
 const RESUMED_EXIT_WAIT_MS = 30_000;
 
@@ -559,7 +503,7 @@ async function dockerRun(
 
     // A group taken over from a lost driver (#829) has its runner container up and released: nothing
     // is created, no env file written and no `go` ordered; the run attaches to the container's log.
-    const created = resumed ? null : await createRunner(deps, job, session);
+    const created = resumed ? null : await createRunner(deps, attemptExecOf(deps, job), job, session);
     if (created?.refused) return created.refused;
     const file = created?.file ?? null;
 

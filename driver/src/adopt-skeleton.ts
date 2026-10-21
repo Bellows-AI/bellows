@@ -152,7 +152,8 @@ export async function adoptEarlierRun<F extends EarlierRun>(
         // A takeover of a stale claim deletes it: never once the attempt stood down.
         if (signal?.aborted) throw adoptionAbandoned();
         await p.begin(job, signal);
-        if (first.live) return await takeOver(p, adopted, first as F & { live: { startedAt: string } }, job, signal);
+        if (first.live)
+            return await takeOver(p, adopted, first as F & { live: { startedAt: string } }, { job, signal });
         const found = await p.awaitEnd(first, job, signal);
         if (!found) {
             rolledBack = true;
@@ -193,8 +194,7 @@ async function takeOver<F extends EarlierRun>(
     p: AdoptPrimitives<F>,
     adopted: Map<string, string>,
     found: F & { live: { startedAt: string } },
-    job: BoardJob,
-    signal: AbortSignal | undefined
+    { job, signal }: { job: BoardJob; signal: AbortSignal | undefined }
 ): Promise<LiveRun> {
     await p.confirmOwnership(found, job, signal);
     adopted.set(job.leaseToken, p.recordKey(found));

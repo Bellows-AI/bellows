@@ -47,13 +47,16 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
   derived name; the binding patch's answer is discarded unread.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
   `make reset`. `core/test/makefile.state-preflight.test.ts`.
-- Stated limit: a runner still RUNNING when its driver is lost is swept by the next claim's re-claim fence and
-  the job redone in its session and tree, an interruption inside the budget; one whose agent exited is waited
+- Stated limit: a runner still RUNNING when its driver is lost, its agent released by the supervisor, is taken over:
+  the next claim rebinds the supervisor (`rebind`), the supervisor must poll the new endpoint within
+  `SUPERVISOR_REBIND_DELIVERY_MS`, and no sync, setup or `go` follows; one never released is swept by the next
+  claim's re-claim fence and the job redone in its session and tree, an interruption inside the budget; one whose agent exited is waited
   out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report, and a lost driver
   still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`),
   the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`.
   A finished one is adoptable until its Job's one-hour `ttlSecondsAfterFinished`.
   `driver/src/k8s-adopt.ts`, `driver/src/docker-close-read.ts`.
+- Stated limit: a taken-over run's agent publish and review requests and its transcript export keep the lost driver's endpoint, so they fail and the export ends partial from the takeover on. `driver/src/loop-gates.ts` (`openRunControl`).
 - Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was
   lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter
   then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker).

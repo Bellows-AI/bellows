@@ -36,6 +36,7 @@ import {
     stripAnsi,
     tailBytes,
     tailKept,
+    type AdoptedRun,
 } from '../src/runner.js';
 import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
 import {
@@ -5517,8 +5518,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         ps: string,
         supervisorExit = '0',
         log: string | Buffer[] = 'did the work\n',
-        logExit = 0,
-        running: string | Error = ''
+        { logExit = 0, running = '' }: { logExit?: number; running?: string | Error } = {}
     ) => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
@@ -5589,7 +5589,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
         });
-        expect(adopted!.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun).outcome.output).toContain('did the work');
         expect(calls[0]).toEqual(expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`, 'status=exited']));
         const read = calls.findIndex((args) => args[0] === 'logs');
         const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('a5a5a5a5a5a5'));
@@ -5632,7 +5632,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, timedOut: false } });
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // Issue #796: a run read but never swept is no adoption — and, like the kubernetes twin, the
@@ -5757,7 +5757,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.timedOut).toBe(true);
+        expect((adopted as AdoptedRun | null)?.outcome.timedOut).toBe(true);
         const waited = calls.findIndex((args) => args[0] === 'wait');
         expect(waited).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'logs')).toBeGreaterThan(waited);
@@ -5830,7 +5830,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const adopted = await dockerRunner(withReport(base, {}), { spawn: logs }).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true } });
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     /** The daemon of `daemon`, refusing the earlier supervisor's `docker logs` with `stderr`. */
@@ -6075,8 +6075,8 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ started: true, ...fields });
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ started: true, ...fields });
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
         // The record is the earlier attempt's, kept with the read run for a later adoption (#821).
         expect(calls.some((args) => args[0] === 'rm' && args.includes('a4a4a4a4a4a4'))).toBe(false);
     });
@@ -6087,7 +6087,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
     });
 
     // A full spool rides a supervised stop, so its record never explains how the supervisor ended:
@@ -6118,8 +6118,10 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     it('reads no stop from a supervisor that logged no report', async () => {
@@ -6127,7 +6129,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBeUndefined();
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBeUndefined();
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
@@ -6156,10 +6158,12 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.logTruncated).toBe(true);
-        expect(adopted?.outcome.fullLog?.endsWith(line)).toBe(true);
-        expect(Buffer.byteLength(adopted?.outcome.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
-        expect(Buffer.byteLength(adopted?.outcome.output ?? '')).toBeLessThanOrEqual(16 * 1024);
+        expect((adopted as AdoptedRun | null)?.outcome.logTruncated).toBe(true);
+        expect((adopted as AdoptedRun | null)?.outcome.fullLog?.endsWith(line)).toBe(true);
+        expect(Buffer.byteLength((adopted as AdoptedRun | null)?.outcome.fullLog ?? '')).toBeLessThanOrEqual(
+            ARTIFACT_LIMIT
+        );
+        expect(Buffer.byteLength((adopted as AdoptedRun | null)?.outcome.output ?? '')).toBeLessThanOrEqual(16 * 1024);
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
@@ -6170,7 +6174,10 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ fullLog: 'did the work\n', logTruncated: false });
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({
+            fullLog: 'did the work\n',
+            logTruncated: false,
+        });
     });
 
     it('decodes a multibyte character split across two log chunks once, whole — below and above the cap', async () => {
@@ -6179,7 +6186,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
             const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-            expectWholeEuro(adopted?.outcome, truncated);
+            expectWholeEuro((adopted as AdoptedRun | null)?.outcome, truncated);
         }
     });
 
@@ -6188,11 +6195,11 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ fullLog: 'ok\uFFFD', logTruncated: false });
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ fullLog: 'ok\uFFFD', logTruncated: false });
     });
 
     it('rejects an adoption whose log read failed, and removes nothing', async () => {
-        const { exec, calls, logs } = daemon(listing(), '0', 'Error: No such container\n', 1);
+        const { exec, calls, logs } = daemon(listing(), '0', 'Error: No such container\n', { logExit: 1 });
 
         await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toThrow(/docker logs/);
         expect(calls.some((args) => args[0] === 'rm')).toBe(false);
@@ -6275,7 +6282,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     // #829: a released group's agent still runs (its runner container is up): taken over, not read.
     describe('a live run (#829)', () => {
         const supervisorUp = (up: boolean | 'garbled') => (args: string[]) => {
-            if (args[0] !== 'inspect') return undefined;
+            if (args[0] !== 'inspect') return;
             if (args.includes(supervisorName(job))) {
                 return Promise.resolve({
                     stdout:
@@ -6287,7 +6294,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             });
         };
         const liveDaemon = (up: boolean | 'garbled' = true, running: string | Error = listing()) => {
-            const { exec: base, calls, logs } = daemon('', '0', 'did the work\n', 0, running);
+            const { exec: base, calls, logs } = daemon('', '0', 'did the work\n', { running });
             const inspect = supervisorUp(up);
             const exec = (args: string[]) => inspect(args) ?? base(args);
             return { exec, calls, logs };
