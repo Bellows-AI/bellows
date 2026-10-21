@@ -151,6 +151,7 @@ export const MAILBOX_FILES = {
     go: 'go',
     steps: 'steps',
     report: 'report.json',
+    relay: 'control.sock',
 } as const;
 
 /**
@@ -162,6 +163,13 @@ export const AGENT_MAILBOX_DIR = 'agent';
 /** The agent's side of `in` (`FACTORY_CTL_IN`) and of `out` (`FACTORY_CTL_OUT`). */
 export const AGENT_IN = `${MAILBOXES.in.path}/${AGENT_MAILBOX_DIR}`;
 export const AGENT_OUT = `${MAILBOXES.out.path}/${AGENT_MAILBOX_DIR}`;
+/**
+ * The supervisor's relays (`serveRelay` of supervisor.cjs): an owner-only unix socket per role, each in
+ * a directory only that role mounts. The agent's proxy reaches the holder through the first, the
+ * exporter through the second; neither holds a token, the supervisor attaches the role's.
+ */
+export const AGENT_RELAY_SOCKET = `${AGENT_OUT}/${MAILBOX_FILES.relay}`;
+export const EXPORT_RELAY_SOCKET = `${MAILBOXES.export.path}/${MAILBOX_FILES.relay}`;
 
 /**
  * The marker the supervisor writes in the agent's read-only mailbox when the driver releases the
@@ -338,12 +346,14 @@ export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70, lost: 
 export const DRIVER_LOST_LOSS = 'the task supervisor lost its driver before the agent was released';
 
 /**
- * The supervisor's environment names. Only the supervisor container carries the control pair; the
- * transcript exporter's own token (`exportToken`) rides into the exporter alone.
+ * The supervisor's environment names. Only the supervisor container carries the control pair and the
+ * two tokens it relays under — the agent's (`agentToken`) and the transcript exporter's
+ * (`exportToken`): the agent's proxy and the exporter reach the holder through its sockets and hold none.
  */
 export const SUPERVISOR_ENV = {
     controlUrl: 'SUPERVISOR_CONTROL_URL',
     controlToken: 'SUPERVISOR_CONTROL_TOKEN',
+    agentToken: 'SUPERVISOR_AGENT_TOKEN',
     exportToken: 'SUPERVISOR_EXPORT_TOKEN',
     controlMs: 'SUPERVISOR_CONTROL_MS',
     deadlineMs: 'SUPERVISOR_DEADLINE_MS',
@@ -367,12 +377,15 @@ export interface SupervisorBinding {
     claimSeq: number;
     url: string;
     token: string;
+    agentToken: string;
+    exportToken: string;
 }
 
-/** The names that carry the supervisor's and the exporter's credentials: the agent container never receives one. */
+/** The names that carry the run-control credentials: only the supervisor container receives one. */
 export const SUPERVISOR_CREDENTIAL_NAMES: readonly string[] = [
     SUPERVISOR_ENV.controlUrl,
     SUPERVISOR_ENV.controlToken,
+    SUPERVISOR_ENV.agentToken,
     SUPERVISOR_ENV.exportToken,
 ];
 

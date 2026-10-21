@@ -75,6 +75,7 @@ const job: BoardJob = {
     supervisorEnv: {
         SUPERVISOR_CONTROL_URL: 'http://driver:7000',
         SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor',
+        SUPERVISOR_AGENT_TOKEN: 'tok-agent',
         SUPERVISOR_EXPORT_TOKEN: 'tok-export',
     },
 };
@@ -316,11 +317,11 @@ describe('creating and starting the group', () => {
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
     });
 
-    it('writes each container only its own control pair to a 0600 env file and removes each', async () => {
+    it('writes the supervisor the control pair and the two tokens it relays under, the exporter its own, to 0600 env files removed after', async () => {
         const { written, removed, deps } = recorder();
         await createGroup(deps, job, SESSION, { startedAt: START });
         expect(written.map((w) => w.body)).toEqual([
-            'SUPERVISOR_CONTROL_URL=http://driver:7000\nSUPERVISOR_CONTROL_TOKEN=tok-supervisor\n',
+            'SUPERVISOR_CONTROL_URL=http://driver:7000\nSUPERVISOR_CONTROL_TOKEN=tok-supervisor\nSUPERVISOR_AGENT_TOKEN=tok-agent\nSUPERVISOR_EXPORT_TOKEN=tok-export\n',
             // The exporter's script reads the names it always read; the value is its own export-only token.
             'BELLOWS_CONTROL_URL=http://driver:7000\nBELLOWS_CONTROL_TOKEN=tok-export\n',
         ]);
@@ -610,8 +611,14 @@ describe('the gate container (issue #773)', () => {
 });
 
 describe('the holder binding (#829)', () => {
-    const BINDING = { claimSeq: 4, url: 'http://driver.example:8080', token: 'tok-new-holder' };
-    const SECRETS = ['tok-new-holder', 'driver.example'];
+    const BINDING = {
+        claimSeq: 4,
+        url: 'http://driver.example:8080',
+        token: 'tok-new-holder',
+        agentToken: 'tok-new-agent',
+        exportToken: 'tok-new-export',
+    };
+    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'driver.example'];
     const reclaimArgs = { exporting: false, agentless: true, reclaim: true };
     const supervisorArgs = supervisorCreateArgs(
         config,
@@ -678,6 +685,7 @@ describe('the holder binding (#829)', () => {
             ...bindingWriteArgv(Buffer.byteLength(body)),
         ]);
         expect(calls[0]!.options.input).toEqual(Buffer.from(body));
+        expect(JSON.parse(body)).toEqual(BINDING);
         expect(calls[0]!.options.timeout).toBe(REBIND_DEADLINE_MS);
         expect(calls[0]!.options.signal).toBe(signal);
         for (const secret of SECRETS) expect(calls[0]!.argv.join(' ')).not.toContain(secret);
@@ -727,6 +735,10 @@ describe('the holder binding (#829)', () => {
             { ...BINDING, url: 'ftp://driver.example' },
             { ...BINDING, token: 'has space' },
             { ...BINDING, token: 'x'.repeat(257) },
+            { ...BINDING, agentToken: '' },
+            { ...BINDING, agentToken: 'has space' },
+            { ...BINDING, exportToken: '' },
+            { ...BINDING, exportToken: 'x'.repeat(257) },
         ];
         for (const binding of bad) {
             const { calls, execDocker } = exec(async () => ({ stdout: '' }));
@@ -737,6 +749,7 @@ describe('the holder binding (#829)', () => {
             expect(calls).toEqual([]);
             expect(String((error as Error).message)).not.toContain('driver.example');
             expect(String((error as Error).message)).not.toContain('has space');
+            for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
         }
     });
 });

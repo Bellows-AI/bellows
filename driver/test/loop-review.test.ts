@@ -71,6 +71,7 @@ describe('openRunControl', () => {
         expect(job.supervisorEnv).toEqual({
             [SUPERVISOR_ENV.controlUrl]: 'http://driver:9099',
             [SUPERVISOR_ENV.controlToken]: token,
+            [SUPERVISOR_ENV.agentToken]: agentToken,
             [SUPERVISOR_ENV.exportToken]: exporterToken,
         });
         expect(JSON.stringify(job.gateEnv)).not.toContain(token);

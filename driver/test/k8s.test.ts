@@ -141,6 +141,7 @@ const SUPERVISED: Pick<BoardJob, 'supervisorEnv'> = {
     supervisorEnv: {
         SUPERVISOR_CONTROL_URL: 'http://driver:7000',
         SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor',
+        SUPERVISOR_AGENT_TOKEN: 'tok-agent',
         SUPERVISOR_EXPORT_TOKEN: 'tok-export',
     },
 };
@@ -6012,13 +6013,18 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
             name: 'BELLOWS_CONTROL_TOKEN',
             valueFrom: { secretKeyRef: { name: secretName(job), key: 'SUPERVISOR_EXPORT_TOKEN' } },
         });
-        // Each credential reaches its own container only: the exporter never references the
-        // supervisor's token, the supervisor never the exporter's, the agent neither.
+        // The supervisor holds the control pair and the two tokens it relays under (#829 S3c); the
+        // exporter never references the supervisor's token, the agent none of them.
         const keysOf = (name: string) =>
             JSON.stringify(spec.spec.template.spec.containers.find((c) => c.name === name)?.env ?? []);
         expect(keysOf(EXPORTER_CONTAINER)).not.toContain('SUPERVISOR_CONTROL_TOKEN');
         expect(keysOf(SUPERVISOR_CONTAINER)).toContain('SUPERVISOR_CONTROL_TOKEN');
-        expect(keysOf(SUPERVISOR_CONTAINER)).not.toContain('SUPERVISOR_EXPORT_TOKEN');
+        for (const name of ['SUPERVISOR_AGENT_TOKEN', 'SUPERVISOR_EXPORT_TOKEN']) {
+            expect(container.env).not.toContainEqual(expect.objectContaining({ name }));
+            expect(spec.spec.template.spec.containers.find((c) => c.name === SUPERVISOR_CONTAINER)?.env).toContainEqual(
+                { name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } }
+            );
+        }
         for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(keysOf(AGENT_CONTAINER)).not.toContain(name);
         expect(JSON.stringify(spec)).not.toMatch(/"value":"[^"]*tok-/);
         // The member's subtree and the one mailbox it shares with the supervisor — nothing else.
@@ -10422,9 +10428,15 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
 });
 
 describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
-    const BINDING = { claimSeq: 4, url: 'http://driver.example:8080', token: 'tok-new-holder' };
+    const BINDING = {
+        claimSeq: 4,
+        url: 'http://driver.example:8080',
+        token: 'tok-new-holder',
+        agentToken: 'tok-new-agent',
+        exportToken: 'tok-new-export',
+    };
     const SENTINEL = 'sentinel-body-text';
-    const SECRETS = ['tok-new-holder', 'driver.example', SENTINEL];
+    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'driver.example', SENTINEL];
     const podOf = (group: BoardJob) =>
         runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
@@ -10483,6 +10495,7 @@ describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
         expect(seen[0]!.body).toEqual({
             data: { [SUPERVISOR_BINDING.file]: Buffer.from(bindingBody(BINDING)).toString('base64') },
         });
+        expect(JSON.parse(bindingBody(BINDING))).toEqual(BINDING);
         const options = seen[0]!.options as { timeoutMs: number; signal: AbortSignal; contentType?: string };
         expect(options.timeoutMs).toBeLessThanOrEqual(REBIND_DEADLINE_MS);
         expect(options.signal.aborted).toBe(false);
@@ -10529,11 +10542,19 @@ describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
         expect(await pending).toBeUndefined();
     });
 
-    it('refuses an invalid binding before any request', async () => {
+    it.each([
+        ['a negative claim sequence', { ...BINDING, claimSeq: -1 }],
+        ['no agent token', { ...BINDING, agentToken: '' }],
+        ['an agent token with whitespace', { ...BINDING, agentToken: 'has space' }],
+        ['no export token', { ...BINDING, exportToken: '' }],
+        ['an export token with whitespace', { ...BINDING, exportToken: 'has space' }],
+    ])('refuses an invalid binding (%s) before any request, naming no token', async (_what, binding) => {
         const request = vi.fn(() => ok());
-        await expect(
-            rebinder(request).rebind(job, { ...BINDING, claimSeq: -1 }, new AbortController().signal)
-        ).rejects.toThrow();
+        const error = await rebinder(request)
+            .rebind(job, binding, new AbortController().signal)
+            .catch((caught: Error) => caught);
+        expect(error).toBeInstanceOf(Error);
+        for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
         expect(request).not.toHaveBeenCalled();
     });
 });

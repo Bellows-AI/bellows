@@ -45,6 +45,9 @@
 //   FACTORY_CTL_ROOT          — the mailbox root (default /factory).
 //   SUPERVISOR_CONTROL_URL / SUPERVISOR_CONTROL_TOKEN — the driver's run-control endpoint; absent on
 //                               an attempt with none, which then has no Stop, questions or exporter.
+//   SUPERVISOR_AGENT_TOKEN    — the agent's token on the driver; the agent relay attaches it (absent: no agent relay).
+//   SUPERVISOR_EXPORT_TOKEN   — the exporter's token on the driver; the export relay attaches it (absent: no export relay).
+//   SUPERVISOR_RELAY_TIMEOUT_MS — how long one relayed request may take, end to end (default 900000).
 //   SUPERVISOR_CONTROL_MS     — the driver poll period (default 5000).
 //   SUPERVISOR_TICK_MS        — the mailbox period (default 500).
 //   SUPERVISOR_DEADLINE_MS    — the run budget, paused while a question waits; absent = unbounded.
@@ -67,9 +70,12 @@
 // agent's own exit code is the kubelet's (or docker's) to report, never ours.
 'use strict';
 const fs = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { pipeline, Transform } = require('node:stream');
 
 const STAGES = ['prepare', 'setup', 'execute', 'verify', 'publish', 'finalize', 'report'];
 /** Stages the driver performs until the supervisor takes them over: never recorded as performed here. */
@@ -113,6 +119,7 @@ const FILES = {
     go: 'go',
     steps: 'steps',
     report: 'report.json',
+    relay: 'control.sock',
 };
 /** The supervised steps, by kind; the two last are the group's own orders (`STEP_KINDS` of supervisor-contract.ts). */
 const STEP_KINDS = [
@@ -183,6 +190,7 @@ const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_UNAVAILABLE = 503;
 const HTTP_SERVER_ERROR = 500;
 const REQUEST_TIMEOUT_MS = 10_000;
 const REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
@@ -201,6 +209,8 @@ const DEFAULT_STEP_WAIT_MS = 15_000;
 const DEFAULT_REPORT_MS = 60_000;
 const DEFAULT_GATE_LOST_MS = 30_000;
 const DEFAULT_GATE_CANCEL_MS = 10_000;
+/** A relayed publish waits for the whole answer (a supervised step allows 600s): this is that and headroom. */
+const DEFAULT_RELAY_MS = 900_000;
 
 /** The lifecycle machine: legal transitions only, and a record of what really ran. */
 function createMachine(initial = 'prepare') {
@@ -278,6 +288,10 @@ function settingsOf(env) {
         },
         url: env.SUPERVISOR_CONTROL_URL || null,
         token: env.SUPERVISOR_CONTROL_TOKEN || null,
+        // The tokens the relays attach: the agent and the exporter hold none, only this supervisor does.
+        agentToken: env.SUPERVISOR_AGENT_TOKEN || null,
+        exportToken: env.SUPERVISOR_EXPORT_TOKEN || null,
+        relayMs: positive(env, 'SUPERVISOR_RELAY_TIMEOUT_MS', DEFAULT_RELAY_MS),
         // The claim this binding belongs to, and the file a newer holder names itself in; no claim, no following.
         claimSeq: /^\d{1,15}$/.test(env.SUPERVISOR_CLAIM_SEQ ?? '') ? Number(env.SUPERVISOR_CLAIM_SEQ) : null,
         bindingFile: env.SUPERVISOR_BINDING_FILE || null,
@@ -391,11 +405,19 @@ function newRun(settings, now, log) {
         contactedAt: startedAt,
         // The holder this supervisor answers to: it follows a newer one (`followBinding`), and a request
         // of an older generation never lands (`ask`). `bindingAbort` ends the old holder's requests.
-        binding: { claimSeq: settings.claimSeq, url: settings.url, token: settings.token },
+        binding: {
+            claimSeq: settings.claimSeq,
+            url: settings.url,
+            token: settings.token,
+            agentToken: settings.agentToken,
+            exportToken: settings.exportToken,
+        },
         bindingGen: 0,
         bindingAbort: new AbortController(),
         refusedBinding: null,
         abort: new AbortController(),
+        // The relay servers by role, and how many requests each has in flight (`serveRelay`).
+        relays: { agent: { server: null, active: 0 }, export: { server: null, active: 0 } },
         // Aborted when the group stops taking steps; `inflight` interrupts the one still running.
         pulling: new AbortController(),
         inflight: null,
@@ -453,13 +475,22 @@ function newerBinding(text, claimSeq) {
     }
     if (named === null || typeof named !== 'object' || Array.isArray(named)) return null;
     if (!Number.isSafeInteger(named.claimSeq) || named.claimSeq <= claimSeq) return null;
-    if (typeof named.token !== 'string' || !/^\S{1,256}$/.test(named.token)) return null;
+    // The control token and the two the relays attach: a holder that names fewer is not followed.
+    for (const field of ['token', 'agentToken', 'exportToken']) {
+        if (typeof named[field] !== 'string' || !/^\S{1,256}$/.test(named[field])) return null;
+    }
     try {
         if (!['http:', 'https:'].includes(new URL(named.url).protocol)) return null;
     } catch {
         return null;
     }
-    return { claimSeq: named.claimSeq, url: named.url, token: named.token };
+    return {
+        claimSeq: named.claimSeq,
+        url: named.url,
+        token: named.token,
+        agentToken: named.agentToken,
+        exportToken: named.exportToken,
+    };
 }
 
 /**
@@ -1383,6 +1414,173 @@ function openReviewMailbox(run) {
 }
 
 /**
+ * The relays (#829): the supervisor is the one place a run's holder is named, so the agent's proxy and
+ * the exporter reach it through an owner-only unix socket each and hold no token. A relay forwards only
+ * its role's routes to the CURRENT holder under that role's token; anything the holder does not
+ * answer in full — unreachable, rebound mid-request, timed out, cut off — is hung up on, never
+ * answered 502, so a client reads a lost holder as a lost holder. A relayed answer is not contact:
+ * `run.contactedAt` is the supervisor's own polls alone.
+ */
+const KIB = 1024;
+const MIB = KIB * KIB;
+const CHUNK_MIB = 65;
+const JSON_KIB = 4;
+const CONTENT_HEADER = /^content-(type|length)$/;
+const RELAY_MODE = 0o600;
+const REVIEW_KEY = /^\/review\/[A-Za-z0-9][A-Za-z0-9._~%-]{0,255}$/;
+const RELAYS = {
+    agent: {
+        token: 'agentToken',
+        inflight: 4,
+        routes: [
+            { method: 'POST', match: (p) => p === '/publish', cap: MIB },
+            { method: 'POST', match: (p) => p === '/review', cap: MIB },
+            { method: 'GET', match: (p) => REVIEW_KEY.test(p), cap: MIB },
+        ],
+    },
+    export: {
+        token: 'exportToken',
+        inflight: 2,
+        routes: [
+            { method: 'PUT', match: (p) => p === '/export/chunk', query: true, cap: CHUNK_MIB * MIB },
+            { method: 'PUT', match: (p) => p === '/export/manifest', query: true, cap: JSON_KIB * KIB },
+            { method: 'POST', match: (p) => p === '/export/state', query: true, cap: JSON_KIB * KIB },
+        ],
+    },
+};
+
+/** The relay route a request is, or null; a query rides only where the route takes one. */
+function relayRouteOf(spec, request) {
+    const [pathname, ...query] = (request.url ?? '').split('?');
+    return (
+        spec.routes.find(
+            (route) => route.method === request.method && route.match(pathname) && (query.length === 0 || route.query)
+        ) ?? null
+    );
+}
+
+/** Refuses a body past `cap` by erroring the stream: the relay then hangs up on both sides. */
+const capped = (cap) => {
+    let seen = 0;
+    return new Transform({
+        transform(chunk, _encoding, done) {
+            seen += chunk.length;
+            done(seen > cap ? new Error('body past its cap') : null, chunk);
+        },
+    });
+};
+
+/** A refusal answered by its status alone; what the client still sends is drained (its length is declared), so it reads the answer, not a broken pipe. */
+const refuse = (request, response, status) => {
+    request.resume();
+    response.writeHead(status);
+    response.end();
+};
+
+/** One relayed request: streamed through, fenced by the binding generation it started under. */
+function relayRequest(run, role, request, response) {
+    const spec = RELAYS[role];
+    const state = run.relays[role];
+    const route = relayRouteOf(spec, request);
+    if (!route) return refuse(request, response, HTTP_NOT_FOUND);
+    const declared = Number(request.headers['content-length'] ?? 0);
+    if (declared > route.cap) return refuse(request, response, HTTP_PAYLOAD_TOO_LARGE);
+    const { binding } = run;
+    const token = binding[spec.token];
+    if (!binding.url || !token || state.active >= spec.inflight) {
+        if (binding.url && token) return refuse(request, response, HTTP_UNAVAILABLE);
+        return void response.destroy();
+    }
+    const gen = run.bindingGen;
+    const gone = new AbortController();
+    const signal = AbortSignal.any([
+        run.abort.signal,
+        run.bindingAbort.signal,
+        gone.signal,
+        AbortSignal.timeout(run.settings.relayMs),
+    ]);
+    const headers = { authorization: `Bearer ${token}` };
+    for (const [name, value] of Object.entries(request.headers)) {
+        if (CONTENT_HEADER.test(name)) headers[name] = value;
+    }
+    const lib = binding.url.startsWith('https:') ? https : http;
+    state.active += 1;
+    let settled = false;
+    let upstream = null;
+    const settle = (hangUp) => {
+        if (settled) return;
+        settled = true;
+        state.active -= 1;
+        if (!hangUp) return;
+        request.destroy();
+        response.destroy();
+        upstream?.destroy();
+    };
+    response.once('close', () => {
+        if (!response.writableFinished) gone.abort();
+        settle(!response.writableFinished);
+    });
+    try {
+        upstream = lib.request(`${binding.url}${request.url}`, { method: request.method, headers, signal });
+    } catch {
+        return settle(true);
+    }
+    upstream.on('error', () => settle(true));
+    upstream.on('response', (answer) => {
+        // The holder this started with is gone, or the run is over: whatever it says is no answer.
+        if (signal.aborted || run.bindingGen !== gen) return settle(true);
+        response.writeHead(
+            answer.statusCode ?? 0,
+            Object.fromEntries(Object.entries(answer.headers).filter(([name]) => CONTENT_HEADER.test(name)))
+        );
+        pipeline(answer, response, (error) => settle(Boolean(error)));
+    });
+    pipeline(request, capped(route.cap), upstream, (error) => {
+        if (error) settle(true);
+    });
+}
+
+/** Starts one role's relay on its socket; a listen that fails leaves that role without one, said in fixed words. */
+function serveRelay(run, role) {
+    const socket = path.join(role === 'agent' ? run.file.agentOut : run.settings.dirs.export, FILES.relay);
+    return new Promise((resolve) => {
+        fs.rmSync(socket, { force: true });
+        const server = http.createServer((request, response) => relayRequest(run, role, request, response));
+        server.on('clientError', (_error, connection) => connection.destroy());
+        server.once('error', () => {
+            run.log(`supervisor: could not serve the ${role} relay`);
+            resolve();
+        });
+        server.listen(socket, () => {
+            try {
+                fs.chmodSync(socket, RELAY_MODE);
+            } catch {
+                server.close();
+                run.log(`supervisor: could not serve the ${role} relay`);
+                return resolve();
+            }
+            run.relays[role].server = server;
+            resolve();
+        });
+    });
+}
+
+/** The relays this run needs: the agent's where an agent runs, the exporter's where one waits; none without the token. */
+async function openRelays(run) {
+    const { settings, binding } = run;
+    if (!binding.url) return;
+    if (!settings.agentless && binding.agentToken) await serveRelay(run, 'agent');
+    if (settings.exports && binding.exportToken) await serveRelay(run, 'export');
+}
+
+function closeRelays(run) {
+    for (const { server } of Object.values(run.relays)) {
+        server?.close();
+        server?.closeAllConnections();
+    }
+}
+
+/**
  * Runs the supervisor to its report. Returns the exit status; `now` and `log` are test seams.
  * Never throws for the attempt's own failures: those are the outcome. A bug throws, and the
  * caller exits 70, which the driver reads as a lost supervisor — an infrastructure loss.
@@ -1399,6 +1597,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     for (const dir of [run.file.agentIn, run.file.agentOut]) fs.chmodSync(dir, AGENT_DIR_MODE);
     for (const dir of [run.file.answers, run.file.questions, ...gateDirs(run)]) fs.mkdirSync(dir, { recursive: true });
     openReviewMailbox(run);
+    await openRelays(run);
     beat(run);
     run.machine.enter('setup'); // delegated: the gate environment's setup is the driver's
     persist(run);
@@ -1434,6 +1633,7 @@ async function supervise(env = process.env, log = (line) => process.stdout.write
     for (const lane of LANES) run.lanes[lane].stopped = true;
     if (run.machine.stage === 'publish') run.machine.enter('finalize');
     run.abort.abort();
+    closeRelays(run);
     await stepping;
     await Promise.all(LANES.flatMap((lane) => [...run.lanes[lane].answers]));
     run.machine.enter('report');

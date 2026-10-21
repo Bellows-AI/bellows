@@ -5813,6 +5813,7 @@ describe('a cooperative stop (issue #442)', () => {
         // token ride apart from it, three distinct tokens of one attempt.
         expect(Object.keys(launchedEnv ?? {}).sort()).toEqual(['BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_URL']);
         expect(Object.keys(supervisorEnv ?? {}).sort()).toEqual([
+            'SUPERVISOR_AGENT_TOKEN',
             'SUPERVISOR_CONTROL_TOKEN',
             'SUPERVISOR_CONTROL_URL',
             'SUPERVISOR_EXPORT_TOKEN',
@@ -5823,6 +5824,8 @@ describe('a cooperative stop (issue #442)', () => {
             supervisorEnv?.SUPERVISOR_EXPORT_TOKEN,
         ];
         expect(new Set(tokens).size).toBe(3);
+        // The supervisor holds the agent's token too, to relay under it (#829 S3c).
+        expect(supervisorEnv?.SUPERVISOR_AGENT_TOKEN).toBe(launchedEnv?.BELLOWS_CONTROL_TOKEN);
         expect(stack.controlOpened).toEqual([supervisorEnv?.SUPERVISOR_CONTROL_TOKEN]);
         expect(stack.exportersGranted).toEqual([
             [supervisorEnv?.SUPERVISOR_CONTROL_TOKEN, supervisorEnv?.SUPERVISOR_EXPORT_TOKEN],

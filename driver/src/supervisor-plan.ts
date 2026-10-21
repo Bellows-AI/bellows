@@ -103,9 +103,14 @@ export const agentMailboxEnv = (): [string, string][] => [
     ['FACTORY_CTL_GO', GO_MARKER],
 ];
 
-/** The names of the supervisor's control pair this attempt carries; none when it has no control endpoint. */
+/** The names of the supervisor's control pair and relay tokens this attempt carries; none when it has no control endpoint. */
 export function supervisorControlNames(job: BoardJob): string[] {
-    return [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].filter((name) => job.supervisorEnv?.[name]);
+    return [
+        SUPERVISOR_ENV.controlUrl,
+        SUPERVISOR_ENV.controlToken,
+        SUPERVISOR_ENV.agentToken,
+        SUPERVISOR_ENV.exportToken,
+    ].filter((name) => job.supervisorEnv?.[name]);
 }
 
 /** How much of its budget a run started at `startedAt` has spent; none when the stamp does not parse. */
@@ -139,7 +144,7 @@ const BINDING_TOKEN = /^\S{1,256}$/;
  * names neither the url nor the token.
  */
 export function bindingBody(binding: SupervisorBinding): string {
-    const { claimSeq, url, token } = binding;
+    const { claimSeq, url, token, agentToken, exportToken } = binding;
     let protocol = '';
     try {
         protocol = new URL(url).protocol;
@@ -151,5 +156,7 @@ export function bindingBody(binding: SupervisorBinding): string {
     }
     if (protocol !== 'http:' && protocol !== 'https:') throw new Error('the holder binding has no valid board url');
     if (!BINDING_TOKEN.test(token)) throw new Error('the holder binding has no valid token');
-    return JSON.stringify({ claimSeq, url, token });
+    if (!BINDING_TOKEN.test(agentToken)) throw new Error('the holder binding has no valid agent token');
+    if (!BINDING_TOKEN.test(exportToken)) throw new Error('the holder binding has no valid export token');
+    return JSON.stringify({ claimSeq, url, token, agentToken, exportToken });
 }

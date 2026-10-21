@@ -211,6 +211,7 @@ export const RESERVED_ENV_NAMES = [
     CONTROL_TOKEN_ENV,
     SUPERVISOR_ENV.controlUrl,
     SUPERVISOR_ENV.controlToken,
+    SUPERVISOR_ENV.agentToken,
     SUPERVISOR_ENV.exportToken,
     'CRED_HELPER',
     'RESTORE',

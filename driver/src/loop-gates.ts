@@ -229,6 +229,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         job.supervisorEnv = {
             [SUPERVISOR_ENV.controlUrl]: url,
             [SUPERVISOR_ENV.controlToken]: token,
+            [SUPERVISOR_ENV.agentToken]: agentToken,
             [SUPERVISOR_ENV.exportToken]: exporterToken,
         };
         state.control = token;

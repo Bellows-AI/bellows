@@ -46,14 +46,13 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_BINDING,
     SUPERVISOR_CONTAINER,
-    SUPERVISOR_ENV,
     DRIVER_LOST_LOSS,
     SUPERVISOR_EXIT,
     SUPERVISOR_WINDDOWN_MS,
     type SupervisorBinding,
     type SupervisorReport,
 } from './supervisor-contract.js';
-import { bindingBody, gateImageOf, supervisorLiterals } from './supervisor-plan.js';
+import { bindingBody, gateImageOf, supervisorControlNames, supervisorLiterals } from './supervisor-plan.js';
 import { groupServices, SERVICE_ADDRESS } from './services.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
 
@@ -306,10 +305,7 @@ export async function createGroup(
     const { exporting } = shape;
     try {
         for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);
-        const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
-            name,
-            source: name,
-        }));
+        const supervisorPair = supervisorControlNames(job).map((name) => ({ name, source: name }));
         await createWithEnvFile(
             deps,
             controlEnvFilePath(job, 'supervisor'),

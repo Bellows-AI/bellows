@@ -54,6 +54,7 @@ const job = {
     supervisorEnv: {
         [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130',
         [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN,
+        [SUPERVISOR_ENV.agentToken]: 'tok-agent',
         [SUPERVISOR_ENV.exportToken]: 'tok-export',
     },
 } as BoardJob;

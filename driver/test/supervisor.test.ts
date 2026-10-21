@@ -10,7 +10,16 @@ import {
     statSync,
     writeFileSync,
 } from 'node:fs';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
+import {
+    type ClientRequest,
+    createServer,
+    type IncomingHttpHeaders,
+    request as httpRequest,
+    type IncomingMessage,
+    type Server,
+    type ServerResponse,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -70,6 +79,8 @@ interface SupervisorModule {
 const supervisor = createRequire(import.meta.url)('../src/scripts/supervisor.cjs') as SupervisorModule;
 
 const TOKEN = 'tok-supervisor-secret';
+const AGENT_TOKEN = 'tok-agent-secret';
+const EXPORT_TOKEN = 'tok-export-secret';
 
 describe('the lifecycle machine', () => {
     it('walks prepare -> setup -> execute -> verify -> publish -> finalize -> report, and only that way', () => {
@@ -174,6 +185,15 @@ interface Driver {
     held: number;
     /** While set, every request is dropped unanswered: a driver that is gone. */
     silent: boolean;
+    /** While set, the supervisor's own routes are dropped but the relayed ones answer: a driver only the agent reaches. */
+    silentControl: boolean;
+    /** The agent's and the exporter's bearer tokens this driver accepts on the relayed routes. */
+    agentToken: string;
+    exportToken: string;
+    /** Every relayed request (`/publish`, `/review`, `/export`) it received, and whether its connection has closed. */
+    seen: { method: string; url: string; authorization: string; body: Buffer; closed: boolean }[];
+    /** Replaces the default relayed answer; the request has already been recorded in `seen`. */
+    relayAnswer: ((response: ServerResponse, entry: Driver['seen'][number]) => void | Promise<void>) | null;
 }
 
 interface Report {
@@ -209,13 +229,25 @@ const readBody = (request: IncomingMessage): Promise<string> =>
         request.on('end', () => resolve(text));
     });
 
+const readBytes = (request: IncomingMessage): Promise<Buffer> =>
+    new Promise((resolve) => {
+        const parts: Buffer[] = [];
+        request.on('data', (chunk: Buffer) => parts.push(chunk));
+        request.on('end', () => resolve(Buffer.concat(parts)));
+        request.on('close', () => resolve(Buffer.concat(parts)));
+    });
+
 /** The driver's run-control endpoint as the supervisor sees it: `/control`, and the question routes. */
 async function startDriver({
     release = true,
     token = TOKEN,
+    agentToken = AGENT_TOKEN,
+    exportToken = EXPORT_TOKEN,
 }: {
     release?: boolean;
     token?: string;
+    agentToken?: string;
+    exportToken?: string;
 } = {}): Promise<Driver> {
     const driver: Driver = {
         url: '',
@@ -224,6 +256,11 @@ async function startDriver({
         hold: null,
         held: 0,
         silent: false,
+        silentControl: false,
+        agentToken,
+        exportToken,
+        seen: [],
+        relayAnswer: null,
         stop: false,
         kill: false,
         cancel: [],
@@ -246,6 +283,26 @@ async function startDriver({
             };
             driver.calls += 1;
             if (driver.silent) return request.socket.destroy();
+            if (/^\/(publish|review|export)(\/|\?|$)/.test(request.url ?? '')) {
+                const entry = {
+                    method: request.method ?? '',
+                    url: request.url ?? '',
+                    authorization: request.headers.authorization ?? '',
+                    body: await readBytes(request),
+                    closed: false,
+                };
+                request.socket.on('close', () => (entry.closed = true));
+                driver.seen.push(entry);
+                if (driver.relayAnswer) return void (await driver.relayAnswer(response, entry));
+                const want = (request.url ?? '').startsWith('/export') ? driver.exportToken : driver.agentToken;
+                if (entry.authorization !== `Bearer ${want}`) return send(401, {});
+                return send(200, {
+                    echoed: entry.url,
+                    bytes: entry.body.length,
+                    sha: createHash('sha256').update(entry.body).digest('hex'),
+                });
+            }
+            if (driver.silentControl) return request.socket.destroy();
             if (driver.closed || request.headers.authorization !== `Bearer ${driver.token}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
                 const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
@@ -1586,7 +1643,16 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             supervised,
             file,
             name: (next: Driver, claimSeq: number) =>
-                writeFileSync(file, bindingBody({ claimSeq, url: next.url, token: next.token })),
+                writeFileSync(
+                    file,
+                    bindingBody({
+                        claimSeq,
+                        url: next.url,
+                        token: next.token,
+                        agentToken: next.agentToken,
+                        exportToken: next.exportToken,
+                    })
+                ),
             rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
         };
     }
@@ -1634,8 +1700,13 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         expect(supervised.logs.some((line) => line.startsWith('supervisor: rebound'))).toBe(false);
     });
 
-    const NAMED = (claimSeq: string, url: string, token: string) =>
-        `{"claimSeq":${claimSeq},"url":${JSON.stringify(url)},"token":${JSON.stringify(token)}}`;
+    const NAMED = (
+        claimSeq: string,
+        url: string,
+        token: string,
+        relay = { agent: AGENT_TOKEN, export: EXPORT_TOKEN }
+    ) =>
+        `{"claimSeq":${claimSeq},"url":${JSON.stringify(url)},"token":${JSON.stringify(token)},"agentToken":${JSON.stringify(relay.agent)},"exportToken":${JSON.stringify(relay.export)}}`;
     it.each([
         ['an empty file', () => ''],
         ['a partial write', () => '{"claimSeq":2,"url":"http://127'],
@@ -1646,6 +1717,20 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         ['a url that is not http', () => NAMED('2', 'ftp://127.0.0.1:1', NEWER_TOKEN)],
         ['no token', (u: string) => NAMED('2', u, '')],
         ['a token with whitespace', (u: string) => NAMED('2', u, 'tok en')],
+        ['no agent token', (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: '', export: EXPORT_TOKEN })],
+        [
+            'an agent token with whitespace',
+            (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: 'tok en', export: EXPORT_TOKEN }),
+        ],
+        ['no export token', (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: AGENT_TOKEN, export: '' })],
+        [
+            'an export token with whitespace',
+            (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: AGENT_TOKEN, export: 'tok en' }),
+        ],
+        [
+            'a binding that names no relay tokens at all',
+            (u: string) => `{"claimSeq":2,"url":${JSON.stringify(u)},"token":"${NEWER_TOKEN}"}`,
+        ],
         ['an array', () => '[]'],
     ])('keeps the holder it has through %s', async (_what, content) => {
         const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
@@ -1968,5 +2053,360 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
             expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
             expect(next.reports).toHaveLength(1);
         });
+    });
+});
+
+interface Relayed {
+    status: number;
+    headers: IncomingHttpHeaders;
+    body: Buffer;
+}
+
+/** One request to a relay socket; a hang-up (no answer at all) rejects, an answer of any status resolves. */
+const viaSocket = (
+    socketPath: string,
+    method: string,
+    url: string,
+    {
+        body,
+        headers = {},
+        onRequest,
+    }: {
+        body?: Buffer | string | undefined;
+        headers?: Record<string, string>;
+        onRequest?: (request: ClientRequest) => void;
+    } = {}
+): Promise<Relayed> =>
+    new Promise((resolve, reject) => {
+        const request = httpRequest(
+            {
+                socketPath,
+                method,
+                path: url,
+                headers:
+                    body === undefined ? headers : { 'content-length': String(Buffer.byteLength(body)), ...headers },
+            },
+            (response) => {
+                const parts: Buffer[] = [];
+                response.on('data', (chunk: Buffer) => parts.push(chunk));
+                response.on('error', reject);
+                response.on('close', () =>
+                    response.complete
+                        ? resolve({
+                              status: response.statusCode ?? 0,
+                              headers: response.headers,
+                              body: Buffer.concat(parts),
+                          })
+                        : reject(new Error('the answer was cut off'))
+                );
+            }
+        );
+        request.on('error', reject);
+        onRequest?.(request);
+        request.end(body);
+    });
+
+describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
+    const SEEN_LATER = 'tok-newer-agent-secret';
+    const relayed = (driver: Driver | null, env: Record<string, string> = {}) =>
+        run(driver, {
+            SUPERVISOR_AGENT_TOKEN: AGENT_TOKEN,
+            SUPERVISOR_EXPORT_TOKEN: EXPORT_TOKEN,
+            SUPERVISOR_EXPORTS: '1',
+            ...env,
+        });
+    const socketsOf = (supervised: ReturnType<typeof run>) => ({
+        agent: join(supervised.agent.out, 'control.sock'),
+        export: join(supervised.box.export, 'control.sock'),
+    });
+    const ready = async (supervised: ReturnType<typeof run>) => {
+        await until('the relays', () => Object.values(socketsOf(supervised)).every((socket) => existsSync(socket)));
+        return socketsOf(supervised);
+    };
+    const finish = async (supervised: ReturnType<typeof run>) => {
+        supervised.exporterDone();
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+    };
+    const named = (driver: Driver, claimSeq: number, file: string) =>
+        writeFileSync(
+            file,
+            bindingBody({
+                claimSeq,
+                url: driver.url,
+                token: driver.token,
+                agentToken: driver.agentToken,
+                exportToken: driver.exportToken,
+            })
+        );
+    /** A supervisor of claim 1 following a binding file. */
+    const bound = (driver: Driver, env: Record<string, string> = {}) => {
+        const dir = mkdtempSync(join(tmpdir(), 'binding-'));
+        dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        const supervised = relayed(driver, { SUPERVISOR_CLAIM_SEQ: '1', SUPERVISOR_BINDING_FILE: file, ...env });
+        return {
+            supervised,
+            name: (next: Driver, claimSeq: number) => named(next, claimSeq, file),
+            rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
+        };
+    };
+
+    it.each([
+        ['POST', '/publish', '{}'],
+        ['POST', '/review', '{"profile":"a"}'],
+        ['GET', '/review/key-1', undefined],
+    ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const { agent } = await ready(supervised);
+        const answer = await viaSocket(agent, method, url, { body });
+        expect(answer.status).toBe(200);
+        expect(JSON.parse(answer.body.toString())).toMatchObject({ echoed: url, bytes: Buffer.byteLength(body ?? '') });
+        expect(driver.seen).toEqual([expect.objectContaining({ method, url, authorization: `Bearer ${AGENT_TOKEN}` })]);
+        await finish(supervised);
+        const text = [...supervised.logs, answer.body.toString()].join('\n');
+        expect(text).not.toContain(AGENT_TOKEN);
+        expect(text).not.toContain(EXPORT_TOKEN);
+    });
+
+    it('relays the export routes under the export token: a binary chunk past a MiB with its query, the manifest, the state', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const { export: socket } = await ready(supervised);
+        const chunk = Buffer.alloc(3 * 1024 * 1024 + 7, 0xff);
+        const query = '/export/chunk?session=s%201&offset=1048576';
+        const answer = await viaSocket(socket, 'PUT', query, { body: chunk });
+        expect(JSON.parse(answer.body.toString())).toMatchObject({
+            echoed: query,
+            bytes: chunk.length,
+            sha: createHash('sha256').update(chunk).digest('hex'),
+        });
+        expect((await viaSocket(socket, 'PUT', '/export/manifest', { body: '{"a":1}' })).status).toBe(200);
+        expect((await viaSocket(socket, 'POST', '/export/state', { body: '{"b":2}' })).status).toBe(200);
+        expect(driver.seen.map((entry) => entry.authorization)).toEqual(new Array(3).fill(`Bearer ${EXPORT_TOKEN}`));
+        await finish(supervised);
+    });
+
+    it.each([
+        ['agent', 'DELETE', '/publish'],
+        ['agent', 'GET', '/publish'],
+        ['agent', 'POST', '/question'],
+        ['agent', 'GET', '/control'],
+        ['agent', 'GET', '/step?wait=1'],
+        ['agent', 'POST', '/report'],
+        ['agent', 'GET', '/review/../control'],
+        ['agent', 'PUT', '/export/chunk?session=s&offset=0'],
+        ['agent', 'POST', '/review?x=1'],
+        ['export', 'POST', '/publish'],
+        ['export', 'GET', '/control'],
+        ['export', 'GET', '/export/chunk?session=s&offset=0'],
+        ['export', 'PUT', '/export/state'],
+        ['export', 'PUT', '/export/chunk/../../control'],
+        ['export', 'POST', '/report'],
+    ] as const)(
+        'refuses what the %s role may not call (%s %s) without reaching the driver',
+        async (role, method, url) => {
+            const driver = await startDriver();
+            const supervised = relayed(driver);
+            const sockets = await ready(supervised);
+            const answer = await viaSocket(sockets[role], method, url, { body: method === 'GET' ? undefined : '{}' });
+            expect(answer.status).toBe(404);
+            expect(driver.seen).toEqual([]);
+            await finish(supervised);
+        }
+    );
+
+    it('serves each relay on a socket only its owner may use', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        for (const socket of Object.values(sockets)) expect(statSync(socket).mode & 0o777).toBe(0o600);
+        await finish(supervised);
+    });
+
+    it('serves no relay without the tokens (a reclaimed group), and no agent relay for an agentless one', async () => {
+        const reclaim = await startDriver();
+        const bare = run(reclaim, { SUPERVISOR_EXPORTS: '1' });
+        await until('the agent to be released', () => bare.saw(MAILBOX_FILES.go));
+        expect(Object.values(socketsOf(bare)).some((socket) => existsSync(socket))).toBe(false);
+        bare.exporterDone();
+        bare.agentExits(0);
+        await bare.done;
+        const agentless = relayed(await startDriver(), { SUPERVISOR_AGENTLESS: '1' });
+        await until('the export relay', () => existsSync(socketsOf(agentless).export));
+        expect(existsSync(socketsOf(agentless).agent)).toBe(false);
+        agentless.exporterDone();
+        await agentless.done;
+    });
+
+    it('serves no export relay for a run that exports nothing', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver, { SUPERVISOR_EXPORTS: '0' });
+        await until('the agent relay', () => existsSync(socketsOf(supervised).agent));
+        expect(existsSync(socketsOf(supervised).export)).toBe(false);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('relays to the new holder, under its tokens, after a rebind', async () => {
+        const next = await startDriver({ token: 'tok-next', agentToken: SEEN_LATER, exportToken: 'tok-next-export' });
+        const old = await startDriver();
+        old.autoFinish = false;
+        const { supervised, name, rebound } = bound(old);
+        const sockets = await ready(supervised);
+        await viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' });
+        name(next, 2);
+        await until('the rebind', rebound);
+        await viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' });
+        await viaSocket(sockets.export, 'POST', '/export/state', { body: '{}' });
+        expect(old.seen).toHaveLength(1);
+        expect(next.seen.map((entry) => entry.authorization)).toEqual([
+            `Bearer ${SEEN_LATER}`,
+            'Bearer tok-next-export',
+        ]);
+        await finish(supervised);
+        expect(supervised.logs.join('\n')).not.toContain(SEEN_LATER);
+    });
+
+    it('hangs up on a request in flight across a rebind, never lets the late old answer through, and lands the retry on the new holder', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: 'tok-next' })];
+        old.autoFinish = false;
+        let release = () => {};
+        const late = new Promise<void>((resolve) => (release = resolve));
+        old.relayAnswer = async (response) => {
+            await late;
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end('{"from":"old"}');
+        };
+        const { supervised, name, rebound } = bound(old);
+        const sockets = await ready(supervised);
+        const inFlight = viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' });
+        const outcome = inFlight.then(
+            (answer) => answer,
+            (error: Error) => error
+        );
+        await until('the request to reach the old holder', () => old.seen.length === 1);
+        name(next, 2);
+        await until('the rebind', rebound);
+        expect(await outcome).toBeInstanceOf(Error);
+        release();
+        expect((await viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' })).body.toString()).toContain(
+            '"echoed"'
+        );
+        expect(next.seen).toHaveLength(1);
+        await finish(supervised);
+    });
+
+    describe('a holder that does not answer', () => {
+        it.each([
+            [
+                'is gone',
+                (driver: Driver) => {
+                    driver.silent = true;
+                },
+            ],
+            [
+                'answers a head and dies mid-body',
+                (driver: Driver) => {
+                    driver.relayAnswer = (response) => {
+                        response.writeHead(200, { 'content-type': 'application/json', 'content-length': '100' });
+                        response.write('{"half":');
+                        setTimeout(() => response.socket?.destroy(), 20);
+                    };
+                },
+            ],
+            [
+                'never answers (the relay timeout)',
+                (driver: Driver) => {
+                    driver.relayAnswer = () => new Promise<void>(() => {});
+                },
+            ],
+        ])('hangs up on a holder that %s: no answer is made up, a 502 least of all', async (_what, silence) => {
+            const driver = await startDriver();
+            const supervised = relayed(driver, { SUPERVISOR_RELAY_TIMEOUT_MS: '300' });
+            const sockets = await ready(supervised);
+            silence(driver);
+            for (const [socket, url] of [
+                [sockets.agent, '/publish'],
+                [sockets.export, '/export/state'],
+            ] as [string, string][]) {
+                await expect(viaSocket(socket, 'POST', url, { body: '{}' })).rejects.toBeInstanceOf(Error);
+            }
+            driver.silent = false;
+            driver.relayAnswer = null;
+            await finish(supervised);
+        });
+    });
+
+    it('aborts the upstream request when the client hangs up', async () => {
+        const driver = await startDriver();
+        driver.relayAnswer = () => new Promise<void>(() => {});
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        let request: ClientRequest | undefined;
+        const gone = viaSocket(sockets.agent, 'POST', '/publish', {
+            body: '{}',
+            onRequest: (r) => {
+                request = r;
+            },
+        }).catch(() => 'hung up');
+        await until('the request to reach the driver', () => driver.seen.length === 1);
+        request?.destroy();
+        expect(await gone).toBe('hung up');
+        await until('the upstream request to close', () => driver.seen[0]?.closed === true);
+        driver.relayAnswer = null;
+        await finish(supervised);
+    });
+
+    it('answers 503 past the in-flight cap and 413 past a body cap, the driver untouched by the refused ones', async () => {
+        const driver = await startDriver();
+        driver.relayAnswer = () => new Promise<void>(() => {});
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        const requests = Array.from({ length: 2 }, () =>
+            viaSocket(sockets.export, 'POST', '/export/state', { body: '{}' }).catch(() => 0)
+        );
+        await until('both export slots to be taken', () => driver.seen.length === 2);
+        expect((await viaSocket(sockets.export, 'POST', '/export/state', { body: '{}' })).status).toBe(503);
+        expect(driver.seen).toHaveLength(2);
+        const over = await viaSocket(sockets.agent, 'POST', '/publish', { body: Buffer.alloc(1024 * 1024 + 1) });
+        expect(over.status).toBe(413);
+        const manifest = await viaSocket(sockets.export, 'PUT', '/export/manifest', { body: Buffer.alloc(4097) });
+        expect([413, 503]).toContain(manifest.status);
+        expect(driver.seen).toHaveLength(2);
+        driver.relayAnswer = null;
+        for (const server of servers) server.closeAllConnections();
+        await Promise.all(requests);
+        await finish(supervised);
+    });
+
+    it('does not count a relayed answer as the driver being there: the orphan bound still fires', async () => {
+        const driver = await startDriver({ release: false });
+        driver.silentControl = true;
+        const supervised = relayed(driver, { SUPERVISOR_ORPHAN_MS: '400' });
+        const { agent } = await ready(supervised);
+        const until400 = Date.now() + 800;
+        const outcome = Promise.race([
+            supervised.done,
+            new Promise<'still serving'>((r) => setTimeout(() => r('still serving'), 3_000)),
+        ]);
+        while (Date.now() < until400) {
+            await viaSocket(agent, 'POST', '/publish', { body: '{}' }).catch(() => null);
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        expect(await outcome).toBe(SUPERVISOR_EXIT.lost);
+    });
+
+    it('closes the relays when the run ends', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        await finish(supervised);
+        for (const socket of Object.values(sockets)) {
+            await expect(viaSocket(socket, 'POST', '/publish', { body: '{}' })).rejects.toMatchObject({
+                code: expect.stringMatching(/ENOENT|ECONNREFUSED/),
+            });
+        }
     });
 });

@@ -203,6 +203,8 @@ describe('taking over a live run (#829)', () => {
             supervisorEnv: {
                 [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/',
                 [SUPERVISOR_ENV.controlToken]: 'tok-new',
+                [SUPERVISOR_ENV.agentToken]: 'tok-new-agent',
+                [SUPERVISOR_ENV.exportToken]: 'tok-new-export',
             },
         };
         const s = setup(claimed, async () => ({
@@ -224,7 +226,13 @@ describe('taking over a live run (#829)', () => {
         expect(runner.rebound).toEqual([
             {
                 group: live.prior,
-                binding: { claimSeq: 5, url: 'http://driver:1/', token: 'tok-new' },
+                binding: {
+                    claimSeq: 5,
+                    url: 'http://driver:1/',
+                    token: 'tok-new',
+                    agentToken: 'tok-new-agent',
+                    exportToken: 'tok-new-export',
+                },
             },
         ]);
         expect(answer).toMatchObject({ record: 'interruption', claimSeq: 4 });
