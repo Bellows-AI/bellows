@@ -578,6 +578,7 @@ expect_contains 'the driver has a liveness probe'      "$gh_driver" 'livenessPro
 expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_HEARTBEAT_FILE'
 expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
 expect_contains 'the driver hands over a minute before SIGKILL' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "540000"'
+expect_contains 'the driver gives a released group the default rebind grace' "$(grep -A1 'name: DRIVER_REBIND_GRACE_MS' <<<"$gh_driver")" 'value: "240000"'
 
 # Selectors hold only name/instance/component: they are immutable, so a chart-version label in
 # one would make every upgrade an apiserver refusal.
@@ -1482,6 +1483,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "driver.executorImages.opencode=$STUB_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set-string driver.leaseSeconds=120 --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.rebindGraceMs=30000 \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1
@@ -1980,6 +1982,21 @@ fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(Strin
 ' "$BASE/api/jobs/$1"
 }
 
+kind_dump_stall() { # kind_dump_stall <id> — what a job that never settled was still running, once per job
+    # Pods and Jobs of the job with their nodes, a describe (events included) and every container's
+    # log tail, beside the timings: a stall names its own stuck pod instead of costing a re-run.
+    # Diagnostics only; a kubectl error lands in the dump as text and is never a verdict.
+    local file="${TIMINGS_FILE%.tsv}.stall-$1.log" sel="factory.job=$1,app.kubernetes.io/instance=$RELEASE"
+    [ -e "$file" ] && return 0
+    {
+        echo "== job $1 at $(date -u +%T)"
+        kubectl get pods,jobs -l "$sel" -n "$NAMESPACE" -o wide --request-timeout=10s 2>&1
+        kubectl describe pods -l "$sel" -n "$NAMESPACE" --request-timeout=10s 2>&1
+        kubectl logs --all-containers --tail=40 -l "$sel" -n "$NAMESPACE" --request-timeout=10s 2>&1
+    } >"$file" 2>&1
+    echo "test-k8s: job $1 did not settle; its pods: $file" >&2
+}
+
 await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; returns 0 once it matched
     # Wall-clock seconds, not polls: each poll's request may itself take up to its own timeout.
     local until=$(($(date +%s) + $3)) b=""
@@ -1989,6 +2006,7 @@ await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; r
         case "$b" in $2) printf '%s' "$b"; return 0 ;; esac
         sleep 1
     done
+    kind_dump_stall "$1"
     printf '%s' "$b"
     return 1
 }

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
 import { REPO_ROOT, readRepoFile } from './fixtures/repo-files.js';
 
 describe('kind lane argument validation', () => {
@@ -456,5 +457,42 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(script).toContain('factory-lane-shared');
         expect(script).toContain('ReadWriteMany');
         expect(script).toContain('/factory-shared/$RELEASE');
+    });
+});
+
+describe('kind lane compressed timers and stall evidence (issue #829)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const install = script.slice(script.indexOf(`helm install "$RELEASE" charts/factory "$\{LOCAL_SETS[@]}"`));
+    const installCall = install.slice(0, install.indexOf('>/dev/null'));
+
+    it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
+        expect(installCall).toContain('--set-string driver.leaseSeconds=120');
+        // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
+        expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
+        expect(installCall).toContain('--set-string driver.rebindGraceMs=30000');
+    });
+
+    it('renders DRIVER_REBIND_GRACE_MS from a chart value whose default is the driver default', () => {
+        const values = readRepoFile('charts/factory/values.yaml');
+        const template = readRepoFile('charts/factory/templates/driver-deployment.yaml');
+        expect(template).toContain('- name: DRIVER_REBIND_GRACE_MS');
+        expect(template).toContain('value: {{ $.Values.driver.rebindGraceMs | quote }}');
+        expect(values).toContain(`    rebindGraceMs: '${SUPERVISOR_REBIND_GRACE_MS}'`);
+        expect(script).toContain(`'value: "${SUPERVISOR_REBIND_GRACE_MS}"'`);
+    });
+
+    it('dumps a job that never settled: pods and Jobs, a describe and every container log, each bounded', () => {
+        const dump = script.slice(script.indexOf('kind_dump_stall() {'), script.indexOf('\nawait_brief() {'));
+        expect(dump).toContain('sel="factory.job=$1,app.kubernetes.io/instance=$RELEASE"');
+        expect(dump).toContain('kubectl get pods,jobs -l "$sel"');
+        expect(dump).toContain('-o wide');
+        expect(dump).toContain('kubectl describe pods');
+        expect(dump).toContain('kubectl logs --all-containers --tail=40 -l "$sel"');
+        for (const call of dump.split('\n').filter((l) => /^\s+kubectl /.test(l))) {
+            expect(call).toContain('--request-timeout=10s');
+        }
+        expect(dump).toContain(`$\{TIMINGS_FILE%.tsv}.stall-$1.log`);
+        const brief = script.slice(script.indexOf('\nawait_brief() {'), script.indexOf('\nDRIVER_DEPLOY='));
+        expect(brief).toMatch(/done\n {4}kind_dump_stall "\$1"\n/);
     });
 });
