@@ -6311,6 +6311,33 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             expect(calls.some((args) => args[0] === 'wait')).toBe(false);
         });
 
+        it('follows the live runner of the prior lease on a resumed run: no create, no env, no start, no go order', async () => {
+            const { exec, calls, logs } = liveDaemon();
+            const runner = dockerRunner(exec, { spawn: logs });
+            const live = await runner.adopt(adopter);
+            expect(live).toMatchObject({ live: true });
+            calls.length = 0;
+            const taken: BoardJob = {
+                ...adopter,
+                groupLease: job.leaseToken,
+                supervisorEnv: { SUPERVISOR_CONTROL_TOKEN: 'tok-new', SUPERVISOR_CONTROL_URL: 'http://driver/' },
+            };
+
+            const outcome = await runner.run(taken, { id: SESSION, resume: true });
+
+            // The followed log ended and the bounded `docker wait` said how the runner exited.
+            expect(outcome).toMatchObject({ exitCode: 0 });
+            expect(calls.some((args) => args[0] === 'wait')).toBe(true);
+
+            const named = containerName({ ...job, leaseToken: job.leaseToken });
+            // The very first daemon call is the follow: nothing was created, copied or started before it.
+            expect(calls[0]).toEqual(['logs', '-f', named]);
+            for (const args of calls) {
+                expect(args[0]).not.toMatch(/^(create|start|cp)$/);
+                expect(args.join(' ')).not.toContain(containerName(adopter));
+            }
+        });
+
         it('answers nothing for a group no runner container runs (created, never started)', async () => {
             const { exec, calls, logs } = liveDaemon(true, '');
 

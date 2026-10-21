@@ -166,6 +166,20 @@ describe('the publish steps over the supervisor', () => {
         expect(b.submitted[0]!.id).not.toBe(a.submitted[0]!.id);
     });
 
+    it('names a taken-over attempt’s step by the group’s lease, so it is the same step the lost driver asked (#829)', async () => {
+        const prior = sink();
+        const taken = sink();
+        const op = 'fix/10@' + 'c'.repeat(40);
+        const newLease = '66666666-6666-4666-8666-666666666666';
+        await supervisedStepRunner(prior.host, job, { kind: 'publish' })(publishStep({ op }));
+        await supervisedStepRunner(
+            taken.host,
+            { ...job, leaseToken: newLease, groupLease: job.leaseToken },
+            { kind: 'publish' }
+        )(publishStep({ op }));
+        expect(taken.submitted[0]!.id).toBe(prior.submitted[0]!.id);
+    });
+
     it('asks an unanswered step again under the same identity, and gives up after three asks', async () => {
         let calls = 0;
         const s = sink((_step, call) => {

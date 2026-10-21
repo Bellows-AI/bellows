@@ -9,10 +9,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobPath } from '../src/k8s-auxspec.js';
+import { ensureGroup } from '../src/k8s-group.js';
 import { type CloseReads, adoptFinishedRunner } from '../src/k8s-adopt.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s-transport.js';
-import { AdoptionBlocked, commandMark } from '../src/runner.js';
+import { AdoptionBlocked, commandMark, ownGroup } from '../src/runner.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 
@@ -367,6 +368,19 @@ describe('a live run (#829)', () => {
         // The live Job and its Secret are the run's own: never deleted, nor waited for to finalize.
         expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, priorName)))).toBe(false);
         expect(deletes(calls).some((call) => call.path.endsWith(`/${secretName(job)}`))).toBe(false);
+    });
+
+    it('answers a resumed run its recorded group, creating nothing, under the prior lease it addresses', async () => {
+        const { deps, calls } = liveWorld();
+        await adoptFinishedRunner(deps, adopter, reads());
+        const before = calls.length;
+        const taken = ownGroup({ ...adopter, groupLease: job.leaseToken });
+
+        const group = await ensureGroup(deps, taken, { id: SESSION, resume: true });
+
+        expect(group).toMatchObject({ resumed: true, startedAt: START });
+        expect(taken.leaseToken).toBe(job.leaseToken);
+        expect(calls.slice(before).filter((call) => call.method === 'POST')).toEqual([]);
     });
 
     it('sweeps an older attempt but spares the live group', async () => {
