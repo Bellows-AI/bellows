@@ -5,6 +5,8 @@ import { JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
 import { configmapsPath, podsPath, secretsPath } from '../src/k8s-auxspec.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
+import { taskVolumesPath } from '../src/k8s-task-volume.js';
+import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, boardIdentity } from '../src/task-volume.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
@@ -733,5 +735,191 @@ describe('the kubernetes reaper arm: a 409 on a listed uid is no removal (#821)'
             'gone'
         );
         expect(deleteCalls(calls).some((path) => path.startsWith(claimPath))).toBe(false);
+    });
+});
+
+describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
+    const ROOT = '11111111-1111-4111-8111-111111111111';
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    const LIST_VOLUMES = `${taskVolumesPath(NAMESPACE)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`;
+    const claim = (root: string, generation: number, extra: Record<string, unknown> = {}, labels = {}) => ({
+        metadata: {
+            name: `factory-task-${root}-${generation}`,
+            uid: `uid-${root.slice(0, 4)}-${generation}`,
+            labels: { [TASK_ROOT_LABEL]: root, [TASK_BOARD_LABEL]: boardIdentity(config), ...labels },
+            ...extra,
+        },
+    });
+    const listing = (items: unknown[], status = 200): readonly [K8sMethod, string, K8sResponse] => [
+        'GET',
+        LIST_VOLUMES,
+        { status, body: JSON.stringify({ items }) },
+    ];
+    const armOver = (answers: readonly (readonly [K8sMethod, string, K8sResponse])[]) => {
+        const { request, calls } = router(answers);
+        return { arm: createKubernetesReaper({ config, request }), calls };
+    };
+
+    it('lists every generation by the root label, grouped by root, unschedulable ones included', async () => {
+        const { arm } = armOver([
+            listing([claim(ROOT, 1), claim(ROOT, 2, {}, { [TASK_UNSCHEDULABLE_LABEL]: 'true' }), claim(OTHER, 1)]),
+        ]);
+        const listed = await arm.scanVolumes!();
+        expect(listed!.threads).toEqual([
+            {
+                root: ROOT,
+                volumes: [
+                    { name: `factory-task-${ROOT}-1`, uid: `uid-1111-1`, createdAtMs: null },
+                    { name: `factory-task-${ROOT}-2`, uid: `uid-1111-2`, createdAtMs: null },
+                ],
+            },
+            { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1`, uid: `uid-4444-1`, createdAtMs: null }] },
+        ]);
+        expect(listed!.skipped).toEqual([]);
+    });
+
+    it('carries the claim’s creationTimestamp, null when it has none', async () => {
+        const { arm } = armOver([
+            listing([claim(ROOT, 1, { creationTimestamp: '2026-10-01T00:00:00Z' }), claim(ROOT, 2)]),
+        ]);
+        const volumes = (await arm.scanVolumes!())!.threads[0]!.volumes;
+        expect(volumes.map((volume) => volume.createdAtMs)).toEqual([Date.parse('2026-10-01T00:00:00Z'), null]);
+    });
+
+    it.each([
+        ['a claim whose root label is no uuid', claim('not-a-uuid', 1)],
+        ['a claim whose name is no generation of its root', claim(ROOT, 1, { name: 'factory-task-x' })],
+    ])('skips and names %s without discarding the rest of the listing', async (_name, junk) => {
+        const { arm } = armOver([listing([junk, claim(OTHER, 1)])]);
+        const listed = (await arm.scanVolumes!())!;
+        expect(listed.threads.map((thread) => thread.root)).toEqual([OTHER]);
+        expect(listed.skipped).toHaveLength(1);
+    });
+
+    it.each([
+        ['another board', { [TASK_BOARD_LABEL]: 'ffffffffffffffff' }],
+        ['no board at all', { [TASK_BOARD_LABEL]: undefined }],
+    ])('never lists a claim made for %s: only this board’s volumes are ever reaped', async (_name, labels) => {
+        const { arm } = armOver([listing([claim(ROOT, 1), claim(OTHER, 1, {}, labels)])]);
+        const listed = (await arm.scanVolumes!())!;
+        expect(listed.threads.map((thread) => thread.root)).toEqual([ROOT]);
+        expect(listed.skipped).toEqual([]);
+    });
+
+    it('leaves a claim that is already terminating to its deletion', async () => {
+        const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: '2026-10-01T00:00:00Z' })])]);
+        expect(await arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
+    });
+
+    it.each([
+        ['a refused list', [listing([], 500)]],
+        ['a transport failure', []],
+        ['a claim without a uid', [listing([claim(ROOT, 1, { uid: undefined })])]],
+    ] as const)('answers null — delete nothing — on %s', async (_name, answers) => {
+        const { arm } = armOver(answers);
+        expect(await arm.scanVolumes!()).toBeNull();
+    });
+
+    it('deletes every generation of a thread, each under the uid it was listed with', async () => {
+        const { arm, calls } = armOver([
+            ['DELETE', `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-1`, { status: 200, body: '' }],
+            ['DELETE', `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-2`, { status: 200, body: '' }],
+        ]);
+        const removed = await arm.reapVolumes!({
+            root: ROOT,
+            volumes: [
+                { name: `factory-task-${ROOT}-1`, uid: 'u1' },
+                { name: `factory-task-${ROOT}-2`, uid: 'u2' },
+            ],
+        });
+        expect(removed).toEqual([`volume factory-task-${ROOT}-1`, `volume factory-task-${ROOT}-2`]);
+        expect(calls.map((c) => c.body)).toEqual([
+            { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'u1' } },
+            { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'u2' } },
+        ]);
+    });
+
+    it('does not report a generation whose delete failed or met another incarnation, and goes on', async () => {
+        const { arm } = armOver([
+            ['DELETE', `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-1`, { status: 409, body: '' }],
+            ['DELETE', `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-2`, { status: 200, body: '' }],
+        ]);
+        const removed = await arm.reapVolumes!({
+            root: ROOT,
+            volumes: [
+                { name: `factory-task-${ROOT}-1`, uid: 'u1' },
+                { name: `factory-task-${ROOT}-2`, uid: 'u2' },
+            ],
+        });
+        expect(removed).toEqual([`volume factory-task-${ROOT}-2`]);
+    });
+
+    describe('swept with the board', () => {
+        const FINAL = Date.parse('2026-10-01T00:00:00Z');
+        const HOUR = 3_600_000;
+        const factsOf = (over: Record<string, unknown> = {}) => ({
+            live: false,
+            lastFinalizedAt: new Date(FINAL).toISOString(),
+            artifactsComplete: true,
+            checkpoint: 'complete' as const,
+            checkpointFinalizedAt: new Date(FINAL).toISOString(),
+            ...over,
+        });
+        const sweep = async (
+            thread: ReturnType<typeof factsOf>,
+            ageH: number,
+            listed = [claim(ROOT, 1), claim(ROOT, 2)]
+        ) => {
+            const { arm, calls } = armOver([
+                listing(listed),
+                ['DELETE', `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-1`, { status: 200, body: '' }],
+                ['DELETE', `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-2`, { status: 200, body: '' }],
+            ]);
+            await createReaper({
+                board: { leases: async () => [{ id: ROOT, status: 'succeeded', leaseToken: null, thread }] },
+                arm,
+                intervalMs: 0,
+                graceMs: 0,
+                volumePolicy: { ttlMs: 24 * HOUR, boundMs: 168 * HOUR },
+                now: () => FINAL + ageH * HOUR,
+                log: () => undefined,
+            }).sweep();
+            return deleteCalls(calls);
+        };
+
+        it('deletes all generations after the ttl, together', async () => {
+            expect(await sweep(factsOf(), 25)).toEqual([
+                `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-1`,
+                `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-2`,
+            ]);
+        });
+
+        it.each([
+            ['inside the ttl', factsOf(), 23],
+            ['while a job is live', factsOf({ live: true }), 500],
+            ['while artifacts are pending', factsOf({ artifactsComplete: false }), 100],
+            ['while the checkpoint is truncated', factsOf({ checkpoint: 'truncated' }), 100],
+            ['when the last attempt never finalized', factsOf({ lastFinalizedAt: null }), 500],
+        ])('keeps the volumes %s', async (_name, facts, ageH) => {
+            expect(await sweep(facts, ageH)).toEqual([]);
+        });
+
+        it('deletes a truncated thread only at the bound', async () => {
+            expect(await sweep(factsOf({ checkpoint: 'truncated' }), 169)).toHaveLength(2);
+        });
+
+        it('deletes nothing when the claim list is refused', async () => {
+            const { arm, calls } = armOver([listing([], 500)]);
+            await createReaper({
+                board: { leases: async () => [{ id: ROOT, status: 'succeeded', leaseToken: null, thread: factsOf() }] },
+                arm,
+                intervalMs: 0,
+                graceMs: 0,
+                volumePolicy: { ttlMs: HOUR, boundMs: HOUR },
+                now: () => FINAL + 500 * HOUR,
+                log: () => undefined,
+            }).sweep();
+            expect(deleteCalls(calls)).toEqual([]);
+        });
     });
 });

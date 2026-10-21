@@ -126,7 +126,7 @@ interface StoreStub extends JobStore {
     reclaimAcks: { id: string; token: string }[];
     reclaimRenewals: { id: string; token: string; leaseSeconds: number }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
-    leased: { ids: string[] }[];
+    leased: { ids: string[]; threads?: true }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
     /** The question reports and answers the routes handed the store (050). */
@@ -379,9 +379,9 @@ function stubStore(
             stub.reclaimRenewals.push({ id, token, leaseSeconds });
             return options.renewReclaim ?? { result: 'ok', leaseExpiresAt: '2026-08-21T12:10:00.000Z' };
         },
-        async leases(ids) {
+        async leases(ids, withThreads) {
             boom();
-            stub.leased.push({ ids: [...ids] });
+            stub.leased.push({ ids: [...ids], ...(withThreads ? { threads: true } : {}) });
             return options.leaseRows ?? [];
         },
         async artifactScope() {
@@ -1137,6 +1137,16 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
         });
         // The unknown id reached the store — its absence from the ANSWER is the board's verdict.
         expect(store.leased).toEqual([{ ids: [ID, JOB_B, UNKNOWN] }]);
+    });
+
+    it('asks the store for thread facts only when the body says threads: true', async () => {
+        const store = stubStore({ leaseRows: [] });
+        const instance = await harnessWith(store);
+
+        await postAsWorker(instance, '/api/jobs/leases', { ids: [ID], threads: true });
+        await postAsWorker(instance, '/api/jobs/leases', { ids: [ID], threads: 'yes' });
+
+        expect(store.leased).toEqual([{ ids: [ID], threads: true }, { ids: [ID] }]);
     });
 
     // The shared secret authenticates the driver, not an org, so this route — like the claim —

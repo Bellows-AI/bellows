@@ -37,6 +37,13 @@ export interface DriverConfig {
      * no class, mode or size. `storageClass` null is the cluster default.
      */
     taskVolume: { storageClass: string | null; accessMode: string; size: string };
+    /**
+     * How long a thread's task volume outlives its last finalize (issue #775): `taskVolumeTtlMs` when
+     * everything the thread left is whole, `taskVolumeBoundMs` (the longer) when a checkpoint is
+     * truncated or an artifact is still pending. The reaper alone deletes it.
+     */
+    taskVolumeTtlMs: number;
+    taskVolumeBoundMs: number;
     /** Where a task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`. */
     cloneBase: string;
     /**
@@ -262,6 +269,9 @@ export function executorImage(config: DriverConfig, executorType: ExecutorType |
 
 /** One hour in milliseconds — the unit most of the bounds below are expressed in. */
 const MS_PER_HOUR = 3_600_000;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
+const DAYS_PER_WEEK = 7;
+const DAYS_PER_YEAR = 365;
 /** Names the runner never takes from the driver's env: its GitHub token is the board's to mint and renew. */
 const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN'];
 
@@ -297,6 +307,12 @@ const MAX_CACHE_WATCH_POLL_MS = 300_000;
 const DEFAULT_REAP_INTERVAL_MS = 300_000;
 /** The default DRIVER_REAP_GRACE_MS: ten minutes, comfortably longer than an attempt's own teardown. */
 const DEFAULT_REAP_GRACE_MS = 600_000;
+/** The default TASK_VOLUME_TTL_MS: a day of idleness after a whole thread's last finalize. */
+const DEFAULT_TASK_VOLUME_TTL_MS = MS_PER_DAY;
+/** The default TASK_VOLUME_BOUND_MS: a week, the bound on keeping a thread whose checkpoint is not whole. */
+const DEFAULT_TASK_VOLUME_BOUND_MS = DAYS_PER_WEEK * MS_PER_DAY;
+/** The longest TASK_VOLUME_TTL_MS / TASK_VOLUME_BOUND_MS the driver accepts: a year. */
+const MAX_TASK_VOLUME_MS = DAYS_PER_YEAR * MS_PER_DAY;
 /** The default DRIVER_HANDOVER_MS: nine minutes, a minute under the chart's drain grace. */
 const DEFAULT_HANDOVER_MS = 540_000;
 
@@ -690,6 +706,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             DEFAULT_CACHE_WATCH_POLL_MS,
             { min: MIN_CACHE_WATCH_POLL_MS, max: MAX_CACHE_WATCH_POLL_MS }
         ),
+        taskVolumeTtlMs: int(env.TASK_VOLUME_TTL_MS, 'TASK_VOLUME_TTL_MS', DEFAULT_TASK_VOLUME_TTL_MS, {
+            min: 0,
+            max: MAX_TASK_VOLUME_MS,
+        }),
+        taskVolumeBoundMs: int(env.TASK_VOLUME_BOUND_MS, 'TASK_VOLUME_BOUND_MS', DEFAULT_TASK_VOLUME_BOUND_MS, {
+            min: 0,
+            max: MAX_TASK_VOLUME_MS,
+        }),
         reapIntervalMs: int(env.DRIVER_REAP_INTERVAL_MS, 'DRIVER_REAP_INTERVAL_MS', DEFAULT_REAP_INTERVAL_MS, {
             min: 0,
             max: 24 * MS_PER_HOUR,

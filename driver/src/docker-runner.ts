@@ -1,5 +1,5 @@
 import { JOB_LABEL } from './labels.js';
-import { ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
+import { assertTaskVolumeIsOurs, ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
 import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
@@ -271,6 +271,30 @@ async function ensureGroup(
 }
 
 /**
+ * Creates the runner container once its mount is sure to find the task volume (issue #775): the reaper may
+ * have deleted it since the group was made, and the mount would make an empty one. A gone volume goes
+ * with the group and the env file, and is thrown as a transient startup refusal — an interruption.
+ */
+async function createRunnerOnVolume(
+    deps: RunnerDeps,
+    job: BoardJob,
+    session: RunSession | null,
+    envFile: string | null
+): Promise<RunOutcome | null> {
+    const execDocker = attemptExecOf(deps, job);
+    try {
+        await assertTaskVolumeIsOurs(execDocker, job);
+    } catch (e) {
+        if (envFile) await deps.files.rm(envFile).catch(() => undefined);
+        await removeGroup(deps.execDocker, job);
+        deps.groups.delete(job.leaseToken);
+        throw e;
+    }
+    const created = { config: deps.config, execDocker, teardown: deps.execDocker };
+    return createRunnerContainer(created, job, session, envFile ? { envFile } : {});
+}
+
+/**
  * Ends the attempt's group by order, waits (bounded) for its supervisor to exit, and removes it —
  * every time: a group a kill already took out of `groups` was only stopped, and its supervisor,
  * exporter and mailboxes are still this attempt's to remove (issue #821). Never throws.
@@ -479,8 +503,7 @@ async function dockerRun(
     // The run's start instant (the group's, which the exporter and both close-time turn reads key
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
     // bounded to what THIS run wrote.
-    const created = { config, execDocker, teardown };
-    const refused = await createRunnerContainer(created, job, session, file ? { envFile: file } : {});
+    const refused = await createRunnerOnVolume(deps, job, session, file);
     if (refused && !ledger.was(job).stopped) {
         if (file) await files.rm(file).catch(() => undefined);
         return refused;

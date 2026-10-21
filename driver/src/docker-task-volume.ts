@@ -3,6 +3,7 @@ import type { Board, BoardJob } from './board.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from './claim.js';
 import { type ExecDocker, alreadyGone, nameLines, readDocker, startupRefusalOf } from './docker-runner-support.js';
+import { StartupRefused } from './startup-cause.js';
 import { type VolumeListing, planTaskVolume } from './task-restore.js';
 import {
     TASK_MOUNT,
@@ -11,8 +12,10 @@ import {
     taskInitScript,
     taskMountArgs,
     taskRootOf,
+    boardIdentity,
     taskVolumeLabels,
     taskVolumeName,
+    TASK_VOLUME_PREFIX,
 } from './task-volume.js';
 
 const INIT_DEADLINE_MS = 60_000;
@@ -47,10 +50,31 @@ export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob, si
 }
 
 /**
+ * The guard in front of every container that mounts the task volume after `ensureTaskVolume`: the
+ * reaper may have deleted it since (issue #775), and `--mount type=volume` would create an EMPTY
+ * unlabelled one the attempt then runs on. A volume that is gone, or an inspect that proved nothing,
+ * is a transient startup refusal — an infrastructure interruption the board refunds, never a run failure.
+ */
+export async function assertTaskVolumeIsOurs(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    signal?: AbortSignal
+): Promise<void> {
+    if (await taskVolumeIsOurs(execDocker, job, signal)) return;
+    throw new StartupRefused(taskVolumeGoneWords(job), 'transient');
+}
+
+/** What a refusal for a missing task volume says. */
+export const taskVolumeGoneWords = (job: BoardJob): string =>
+    `the task volume ${taskVolumeName(job)} of job ${job.id} is gone or unreadable; nothing is mounted on a volume made empty`;
+
+/**
  * The thread's task volumes by its root label (`docker volume ls`), their generations read off the
  * names. Only a listing the daemon answered and every line of which is one of the thread's volumes
  * counts: a refused call, an unreadable answer or a name that is not a generation of this root throws,
- * so nothing is created or restored on an inconclusive read.
+ * so nothing is created or restored on an inconclusive read. A second listing by name prefix finds a
+ * volume a mount auto-created unlabelled after the reaper removed the labelled one: it is no volume of
+ * the thread (`live`), but its generation is taken (`highest`), so no create ever lands on it.
  */
 export async function listTaskVolumes(
     execDocker: ExecDocker,
@@ -67,6 +91,16 @@ export async function listTaskVolumes(
     if (read.kind !== 'value') {
         throw new Error(read.kind === 'inconclusive' ? read.reason : 'the task volume listing is absent');
     }
+    const named = await readDocker(
+        (args) => execDocker(args, signal ? { signal } : undefined),
+        ['volume', 'ls', '--filter', `name=${TASK_VOLUME_PREFIX}${root}-`, '--format', '{{.Name}}'],
+        `the task volume names of job ${job.id}`,
+        { parse: nameLines }
+    );
+    if (named.kind !== 'value') {
+        throw new Error(named.kind === 'inconclusive' ? named.reason : 'the task volume name listing is absent');
+    }
+    const taken = named.value.flatMap((name) => generationOfName(root, name) ?? []);
     const live = read.value.map((name) => {
         const generation = generationOfName(root, name);
         if (generation === null)
@@ -75,7 +109,7 @@ export async function listTaskVolumes(
             );
         return generation;
     });
-    return { live, highest: Math.max(0, ...live), unschedulable: [] };
+    return { live, highest: Math.max(0, ...live, ...taken), unschedulable: [] };
 }
 
 /** Removes the thread's older generations once a restore has landed. An already-gone volume is removed. */
@@ -114,8 +148,13 @@ export async function ensureTaskVolume(
     const name = taskVolumeName(job);
     signal?.throwIfAborted();
     if (create) {
-        const labels = Object.entries(taskVolumeLabels(job)).flatMap(([key, value]) => ['--label', `${key}=${value}`]);
+        const labels = Object.entries(taskVolumeLabels(job, boardIdentity(deps.config))).flatMap(([key, value]) => [
+            '--label',
+            `${key}=${value}`,
+        ]);
         await deps.execDocker(['volume', 'create', ...labels, name], signal ? { signal } : undefined);
+        // `volume create` of a name that exists answers ok and labels nothing: only a labelled volume is ours.
+        await assertTaskVolumeIsOurs(deps.execDocker, job, signal);
     } else {
         const read = await readTaskVolume(deps.execDocker, job, signal);
         if (read.kind !== 'value') {

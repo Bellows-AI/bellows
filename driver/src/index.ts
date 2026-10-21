@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
 import { createDockerReaper } from './docker-reaper.js';
+import { boardIdentity } from './task-volume.js';
 import { createDockerRunner } from './docker-runner.js';
 import { createGateServer, createSupervisedGateManager } from './gates.js';
 import { createKubernetesReaper } from './k8s-reaper.js';
@@ -95,9 +96,13 @@ const reaper = createReaper({
     arm:
         config.executor === 'kubernetes'
             ? createKubernetesReaper({ config, request: request! })
-            : createDockerReaper((args, options) => run('docker', args, { ...options, encoding: 'utf8' })),
+            : createDockerReaper(
+                  (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
+                  boardIdentity(config)
+              ),
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,
+    volumePolicy: { ttlMs: config.taskVolumeTtlMs, boundMs: config.taskVolumeBoundMs },
     log: (m) => console.log(`[driver] ${m}`),
 });
 if (config.reapIntervalMs > 0) reaper.start();

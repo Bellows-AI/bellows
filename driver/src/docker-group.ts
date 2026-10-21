@@ -23,6 +23,7 @@ import {
     type RunnerFiles,
     startupRefusalOf,
 } from './docker-runner-support.js';
+import { assertTaskVolumeIsOurs } from './docker-task-volume.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
 import { Inconclusive, type RunSession } from './runner.js';
 import {
@@ -274,6 +275,8 @@ export async function createGroup(
     const shape = groupShape(job, session);
     const { exporting } = shape;
     try {
+        // The supervisor and exporter create mounts the task volume: a reaped one would be made empty by the mount.
+        await assertTaskVolumeIsOurs(deps.execDocker, job);
         for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);
         const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
             name,
@@ -307,6 +310,7 @@ async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
     const image = gateImageOf(job);
     if (!image) return;
     try {
+        await assertTaskVolumeIsOurs(deps.execDocker, job);
         await deps.execDocker(gateCreateArgs(deps.config, job, image));
     } catch (e) {
         await removeGroup(deps.teardown ?? deps.execDocker, job);
@@ -318,6 +322,7 @@ async function createGate(deps: GroupDeps, job: BoardJob): Promise<void> {
 async function createReviewer(deps: GroupDeps, job: BoardJob): Promise<void> {
     if (!groupShape(job, null).reviewing) return;
     try {
+        await assertTaskVolumeIsOurs(deps.execDocker, job);
         await deps.execDocker(reviewerCreateArgs(deps.config, job));
     } catch (e) {
         await removeGroup(deps.teardown ?? deps.execDocker, job);

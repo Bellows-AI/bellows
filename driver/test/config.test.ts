@@ -437,6 +437,15 @@ describe('the driver config: the orphan reaper', () => {
         expect(loadDriverConfig({ DRIVER_REAP_GRACE_MS: '0' }).reapGraceMs).toBe(0);
     });
 
+    it('defaults the task volume ttl to a day and the bound on a thread that is not whole to a week (issue #775)', () => {
+        expect(loadDriverConfig({}).taskVolumeTtlMs).toBe(86_400_000);
+        expect(loadDriverConfig({}).taskVolumeBoundMs).toBe(604_800_000);
+        expect(loadDriverConfig({ TASK_VOLUME_TTL_MS: '3600000' }).taskVolumeTtlMs).toBe(3_600_000);
+        expect(loadDriverConfig({ TASK_VOLUME_BOUND_MS: '7200000' }).taskVolumeBoundMs).toBe(7_200_000);
+        expect(() => loadDriverConfig({ TASK_VOLUME_TTL_MS: '-1' })).toThrow(/TASK_VOLUME_TTL_MS/);
+        expect(() => loadDriverConfig({ TASK_VOLUME_BOUND_MS: 'week' })).toThrow(/TASK_VOLUME_BOUND_MS/);
+    });
+
     it('refuses a bad cadence or grace rather than falling back to the default', () => {
         expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: '-1' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);
         expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: 'soon' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);

@@ -28,7 +28,7 @@ import {
 import { ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { TASK_MOUNT, taskVolumeName } from '../src/task-volume.js';
+import { TASK_MOUNT, TASK_ROOT_LABEL, taskRootOf, taskVolumeName } from '../src/task-volume.js';
 import { gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import { MAILBOXES, SUPERVISOR_CREDENTIAL_NAMES, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
 import { orphanBoundMs } from '../src/supervisor-plan.js';
@@ -261,7 +261,8 @@ describe('the exporter container', () => {
 });
 
 describe('creating and starting the group', () => {
-    const recorder = (refuse: (argv: string[]) => boolean = () => false) => {
+    /** `volumeGone`: the daemon has no task volume (the reaper took it); otherwise it answers one carrying the root label. */
+    const recorder = (refuse: (argv: string[]) => boolean = () => false, volumeGone = false) => {
         const calls: string[][] = [];
         const written: { file: string; body: string; mode: number }[] = [];
         const removed: string[] = [];
@@ -274,6 +275,12 @@ describe('creating and starting the group', () => {
             }) as never,
         };
         const execDocker = async (argv: string[]) => {
+            // The guard's inspect is not a mutation: the calls list is what the group created.
+            if (argv[0] === 'volume' && argv[1] === 'inspect' && argv[2] === '--format') {
+                if (volumeGone)
+                    throw Object.assign(new Error('inspect failed'), { stderr: 'Error: No such volume: x' });
+                return { stdout: JSON.stringify({ [TASK_ROOT_LABEL]: taskRootOf(job) }) };
+            }
             calls.push(argv);
             if (refuse(argv)) throw new Error('daemon said no');
             return { stdout: '' };
@@ -290,6 +297,17 @@ describe('creating and starting the group', () => {
         expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
+    });
+
+    it('creates no container when the task volume is gone: a transient refusal, never an empty volume made by a mount', async () => {
+        const { calls, deps } = recorder(() => false, true);
+        const refused = await createGroup(deps, job, SESSION, { startedAt: START }).catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect((refused as StartupRefused).startupCause).toBe('transient');
+        expect(calls.some((argv) => argv[0] === 'create')).toBe(false);
+        expect(calls.some((argv) => argv.some((arg) => arg.includes('type=volume,src=' + taskVolumeName(job))))).toBe(
+            false
+        );
     });
 
     it('writes each container only its own control pair to a 0600 env file and removes each', async () => {

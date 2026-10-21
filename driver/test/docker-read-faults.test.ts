@@ -38,6 +38,8 @@ import {
     replayDocker,
 } from './fixtures/read-faults.js';
 
+const BOARD = 'b0a4d00000000001';
+
 /** Names `pair`'s job and lease by role; every docker name of an attempt spells the two out. */
 const aliasPair = (alias: Alias, pair: BoardJob, label: string): void => {
     alias(pair.id, 'job');
@@ -235,7 +237,13 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
 }
 
 const reaperOver = (exec: ExecDocker, leases: Parameters<typeof createReaper>[0]['board']['leases'], graceMs: number) =>
-    createReaper({ board: { leases }, arm: createDockerReaper(exec), intervalMs: 0, graceMs, log: () => undefined });
+    createReaper({
+        board: { leases },
+        arm: createDockerReaper(exec, BOARD),
+        intervalMs: 0,
+        graceMs,
+        log: () => undefined,
+    });
 
 /** D-RP1: a live job's superseded lease left a service, an unread exited runner group and a mailbox. */
 const reaperSuperseded: Build<ExecDocker> = async (tap, alias) => {

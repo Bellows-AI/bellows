@@ -17,7 +17,9 @@ import { readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict } from './reaper.js';
+import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict, VolumeListing, VolumeThread } from './reaper.js';
+import { taskVolumesPath } from './k8s-task-volume.js';
+import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, boardIdentity, generationOfName } from './task-volume.js';
 import { parseRfc3339 } from './timestamps.js';
 
 /**
@@ -279,6 +281,92 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
     return removed;
 };
 
+/** One listed task volume claim, as far as the scan reads it: its thread, its name and the incarnation. */
+interface ListedVolumeClaim {
+    root: string;
+    name: string;
+    uid: string;
+    createdAtMs: number | null;
+    terminating: boolean;
+}
+
+/** A labelled claim that is no thread's generation: skipped and logged, never a reason to delete nothing fleet-wide. */
+interface JunkVolumeClaim {
+    junk: string;
+}
+
+/**
+ * A claim of the task volume listing (issue #775): null when it is not an identified object at all (the
+ * list proved nothing), `junk` when it is one whose root label names no thread it is a generation of.
+ */
+const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkVolumeClaim | 'foreign' | null => {
+    const item = asIdentified<{
+        metadata: {
+            name: string;
+            uid: string;
+            labels?: Record<string, string>;
+            deletionTimestamp?: string;
+            creationTimestamp?: string;
+        };
+    }>(value);
+    if (item === null) return null;
+    const { name, uid, labels, deletionTimestamp, creationTimestamp } = item.metadata;
+    if (labels?.[TASK_BOARD_LABEL] !== board) return 'foreign';
+    const root = labels?.[TASK_ROOT_LABEL];
+    if (typeof root !== 'string' || !isLease(root) || generationOfName(root, name) === null) {
+        return {
+            junk: `task volume claim ${name}: its root label (${String(root)}) names no thread it is a generation of`,
+        };
+    }
+    return {
+        root: root.toLowerCase(),
+        name,
+        uid,
+        createdAtMs: typeof creationTimestamp === 'string' ? parseRfc3339(creationTimestamp) : null,
+        terminating: deletionTimestamp !== undefined,
+    };
+};
+
+/**
+ * Every task volume claim, by its root label, all generations — the unschedulable-labelled included —
+ * grouped by thread (issue #775). Null when the list proved nothing: a refused call, an absent
+ * collection, or a claim that cannot be named a generation of its labelled root. A claim already
+ * terminating is on its way out and left out.
+ */
+const scanVolumes = async (deps: K8sDeps): Promise<VolumeListing | null> => {
+    const read = await readTypedList(
+        deps,
+        `${taskVolumesPath(deps.config.k8sNamespace)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`,
+        'listing the task volumes',
+        { entry: (value) => asVolumeClaim(value, boardIdentity(deps.config)), once: true }
+    );
+    if (read.kind !== 'value') return null;
+    const threads = new Map<string, VolumeThread>();
+    const skipped: string[] = [];
+    for (const claim of read.value) {
+        if (claim === 'foreign') continue;
+        if ('junk' in claim) {
+            skipped.push(claim.junk);
+            continue;
+        }
+        if (claim.terminating) continue;
+        const thread = threads.get(claim.root) ?? { root: claim.root, volumes: [] };
+        thread.volumes.push({ name: claim.name, uid: claim.uid, createdAtMs: claim.createdAtMs });
+        threads.set(claim.root, thread);
+    }
+    return { threads: [...threads.values()], skipped };
+};
+
+/** Deletes every listed generation, each under the uid it was listed with; one that fails is the next round's. */
+const reapVolumes = async (deps: K8sDeps, thread: VolumeThread): Promise<readonly string[]> => {
+    const removed: string[] = [];
+    for (const volume of thread.volumes) {
+        const path = `${taskVolumesPath(deps.config.k8sNamespace)}/${volume.name}`;
+        if ((await deleteNamed(deps.request, path, volume.uid)) === 'removed') removed.push(`volume ${volume.name}`);
+    }
+    return removed;
+};
+
 /**
  * The arm. See the file header for the posture; `scan` is one collection GET, `reap` is the
  * derived-name Secret deletes FIRST — one failure stops the round, since nothing rediscoverable
@@ -299,5 +387,7 @@ export function createKubernetesReaper({
     return {
         scan: () => scan(deps),
         reap: (group, verdict) => reap(deps, group, verdict),
+        scanVolumes: () => scanVolumes(deps),
+        reapVolumes: (thread) => reapVolumes(deps, thread),
     };
 }

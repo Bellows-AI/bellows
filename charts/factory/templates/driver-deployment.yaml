@@ -133,6 +133,10 @@ spec:
                         value: {{ $.Values.taskVolume.accessMode | quote }}
                       - name: TASK_VOLUME_SIZE
                         value: {{ $.Values.taskVolume.size | quote }}
+                      - name: TASK_VOLUME_TTL_MS
+                        value: {{ $.Values.taskVolume.ttlMs | quote }}
+                      - name: TASK_VOLUME_BOUND_MS
+                        value: {{ $.Values.taskVolume.boundMs | quote }}
                       {{- with $.Values.driver.repoCloneBase }}
                       - name: REPO_CLONE_BASE
                         value: {{ . | quote }}

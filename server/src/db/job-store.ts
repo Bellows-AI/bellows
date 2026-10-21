@@ -135,9 +135,9 @@ function workerMethods(
             return stageConclusion(ctx, { id, leaseToken }, result, leaseSeconds);
         },
 
-        async leases(ids) {
+        async leases(ids, withThreads) {
             await gate();
-            return leasesOf(ctx, ids);
+            return leasesOf(ctx, ids, withThreads);
         },
 
         async artifactScope(id) {

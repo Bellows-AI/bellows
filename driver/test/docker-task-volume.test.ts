@@ -9,7 +9,9 @@ import { OPENCODE } from '../src/executors.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
 import {
+    TASK_BOARD_LABEL,
     TASK_GENERATION_LABEL,
+    boardIdentity,
     TASK_MOUNT,
     TASK_ROOT_LABEL,
     taskInitScript,
@@ -37,20 +39,37 @@ const OTHER_ROOT = '99999999-9999-4999-8999-999999999999';
  * or an Error. `volume ls` lists the thread's one first-generation volume unless it is 'absent' (empty
  * list) or an Error (the call fails), or `listed` names the volumes. Every call is recorded.
  */
-const daemon = (volume: Record<string, string> | null | 'absent' | string | Error, listed: string[] | null = null) => {
+const daemon = (
+    volume: Record<string, string> | null | 'absent' | string | Error,
+    listed: string[] | null = null,
+    // `unlabelled`: volumes only the name listing sees. `createIsNoop`: `volume create` of an existing name answers ok and labels nothing.
+    extra: { unlabelled?: string[]; createIsNoop?: boolean } = {}
+) => {
+    let current = volume;
     const calls: string[][] = [];
     const signals: (AbortSignal | undefined)[] = [];
     const execDocker = async (args: string[], options?: { signal?: AbortSignal }) => {
         calls.push(args);
         signals.push(options?.signal);
         if (args[0] === 'volume' && args[1] === 'ls') {
-            if (volume instanceof Error) throw volume;
-            return { stdout: (listed ?? (volume === 'absent' ? [] : [NAME])).map((name) => `${name}\n`).join('') };
+            if (current instanceof Error) throw current;
+            const names = listed ?? (current === 'absent' ? [] : [NAME]);
+            const byName = args[3]?.startsWith('name=');
+            return {
+                stdout: [...names, ...(byName ? (extra.unlabelled ?? []) : [])].map((name) => `${name}\n`).join(''),
+            };
+        }
+        if (args[0] === 'volume' && args[1] === 'create' && !extra.createIsNoop) {
+            const labels: Record<string, string> = {};
+            args.forEach((arg, i) => {
+                if (args[i - 1] === '--label') labels[arg.split('=')[0]!] = arg.slice(arg.indexOf('=') + 1);
+            });
+            current = labels;
         }
         if (args[0] === 'volume' && args[1] === 'inspect') {
-            if (volume instanceof Error) throw volume;
-            if (volume === 'absent') throw new Error('Error response from daemon: get x: no such volume');
-            return { stdout: typeof volume === 'string' ? volume : `${JSON.stringify(volume)}\n` };
+            if (current instanceof Error) throw current;
+            if (current === 'absent') throw new Error('Error response from daemon: get x: no such volume');
+            return { stdout: typeof current === 'string' ? current : `${JSON.stringify(current)}\n` };
         }
         return { stdout: '' };
     };
@@ -76,8 +95,11 @@ describe("the thread's docker task volume (issue #775)", () => {
             '--format',
             '{{.Name}}',
         ]);
+        // The name listing sees what the label listing cannot: a volume a mount auto-created, unlabelled.
+        expect(d.calls[1]).toEqual(['volume', 'ls', '--filter', `name=factory-task-${ROOT}-`, '--format', '{{.Name}}']);
         expect(creates(d.calls)).toHaveLength(1);
         const [create] = creates(d.calls);
+        expect(create).toEqual(expect.arrayContaining(['--label', `${TASK_BOARD_LABEL}=${boardIdentity(config)}`]));
         expect(create).toEqual(expect.arrayContaining(['--label', `${TASK_ROOT_LABEL}=${ROOT}`]));
         expect(create).toEqual(expect.arrayContaining(['--label', `${TASK_GENERATION_LABEL}=1`]));
         expect(create!.at(-1)).toBe(NAME);
@@ -88,7 +110,7 @@ describe("the thread's docker task volume (issue #775)", () => {
         await ensureTaskVolume(d.deps, job);
         expect(creates(d.calls)).toEqual([]);
         // The listing and the label check, then the root init of the volume root: no reviewer, so no second init.
-        expect(d.calls.map((a) => (a[0] === 'volume' ? a[1] : a[0]))).toEqual(['ls', 'inspect', 'run']);
+        expect(d.calls.map((a) => (a[0] === 'volume' ? a[1] : a[0]))).toEqual(['ls', 'ls', 'inspect', 'run']);
     });
 
     it.each([[null], [{ [TASK_ROOT_LABEL]: '99999999-9999-4999-8999-999999999999' }], [{ other: 'x' }]])(
@@ -247,6 +269,27 @@ describe("the thread's docker task volume across generations (issue #775)", () =
         expect(restoring.taskGeneration).toBe(2);
         expect(restoring.taskRestore).toEqual({ checkpoint: POINTER, older: [], restored: false });
         expect(taskMountArgs(restoring)[1]).toContain(`src=factory-task-${ROOT}-2,`);
+    });
+
+    it('counts an unlabelled leftover generation toward the next name, so a create never lands on it', async () => {
+        const d = daemon('absent', [], { unlabelled: [`factory-task-${ROOT}-2`, `xfactory-task-${ROOT}-9`] });
+        const checkpoints = board({ state: 'found', checkpoint: POINTER });
+        const restoring = { ...continuing } as BoardJob;
+
+        await ensureTaskVolume({ ...d.deps, checkpoints }, restoring);
+
+        expect(creates(d.calls)[0]!.at(-1)).toBe(`factory-task-${ROOT}-3`);
+        expect(restoring.taskGeneration).toBe(3);
+    });
+
+    it('refuses transiently, naming the volume, when a create answered ok but the volume is not labelled ours', async () => {
+        const d = daemon('absent', [], { createIsNoop: true });
+        // Nothing exists at inspect time: the create "succeeded" yet the volume is still absent/unlabelled.
+        await expect(ensureTaskVolume(d.deps, job)).rejects.toMatchObject({
+            name: 'StartupRefused',
+            startupCause: 'transient',
+        });
+        expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 
     it('adopts the highest generation listed and owes it the older ones to delete after a restore', async () => {
