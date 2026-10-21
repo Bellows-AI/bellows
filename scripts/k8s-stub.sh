@@ -14,6 +14,13 @@ case "$*" in
     mkdir -p "$WORKDIR/.factory" && echo "${HOSTNAME:-stub}" >"$WORKDIR/.factory/stub-mark"
     ;;
 esac
+# `factory-stub-commit` (issue #829): one empty commit on the task branch, so the publish after the run
+# has something to push; made before any wait, so a driver killed at the wait finds it already there.
+case "$*" in
+*factory-stub-commit*)
+    git -C "$WORKDIR" -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit
+    ;;
+esac
 # `factory-stub-services` (issue #773): the names a task pod's hosts file puts on its loopback, then
 # a TCP connect to each declared service of the services lane, retried while one still boots.
 reach() { # reach <host> <port>

@@ -1339,7 +1339,7 @@ begin_phase images
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
 cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
-    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
+    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
 cp docker/claude-executor/github-credential.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
 printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"

@@ -21,7 +21,7 @@ const COPY = 'COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\n';
 const ENTRY = 'ENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh",';
 const STAGE =
     'cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \\\n' +
-    '    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"';
+    '    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"';
 const BASE = read('scripts/stub-runner.Dockerfile');
 
 /** The one printf line that writes `target`. */
@@ -44,6 +44,8 @@ describe('the lane stub executor images', () => {
             'addgroup -g 1002 factory-agent && addgroup node factory-agent',
             'chmod 2750 /run/factory-tool',
             'ln -s /bin/setpriv /usr/bin/setpriv',
+            'COPY lane-gh.sh /usr/local/bin/gh\n',
+            'chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/gh',
         ]) {
             expect(BASE, needle).toContain(needle);
         }
@@ -367,5 +369,85 @@ describe('the kind recovery stub barrier', () => {
         writeFileSync(join(box.inDir, 'answers', 'stub-first.json'), '{"state":"cancelled"}');
         expect(await child.exited).toBe(1);
         expect(child.stdout()).toContain('ANSWER: {"state":"cancelled"}');
+    });
+});
+
+// #829: the driver-kill lanes (test-jobs `driver-kill`, test-k8s `takeover`) need a commit to
+// publish and a stand-in for `gh`, with state that survives the driver being killed.
+describe('scripts/k8s-stub.sh factory-stub-commit', () => {
+    it('leaves one empty lane-commit on the task branch before any wait', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'lane-commit-'));
+        dirs.push(dir);
+        execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+        const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
+        execFileSync('git', ['-C', dir, ...identity, 'commit', '-q', '--allow-empty', '-m', 'the task base']);
+        execFileSync('sh', [join(ROOT, 'scripts/k8s-stub.sh'), 'factory-stub-commit'], {
+            env: { PATH: process.env.PATH ?? '', WORKDIR: dir },
+        });
+        const log = execFileSync('git', ['-C', dir, 'log', '--format=%s'], { encoding: 'utf8' });
+        expect(log).toBe('lane-commit\nthe task base\n');
+    });
+});
+
+describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
+    const gh = join(ROOT, 'scripts/lane-gh.sh');
+    /** A bare origin, and a worktree whose `origin` is it: where the stub keeps its state. */
+    const fixture = () => {
+        const root = mkdtempSync(join(tmpdir(), 'lane-gh-'));
+        dirs.push(root);
+        const origin = join(root, 'origin.git');
+        const tree = join(root, 'tree');
+        execFileSync('git', ['init', '-q', '--bare', origin]);
+        execFileSync('git', ['init', '-q', '-b', 'main', tree]);
+        execFileSync('git', ['-C', tree, 'remote', 'add', 'origin', origin]);
+        const call = (...args: string[]) => {
+            try {
+                return {
+                    code: 0,
+                    out: execFileSync('sh', [gh, ...args], { cwd: tree, encoding: 'utf8', timeout: 10_000 }),
+                };
+            } catch (e) {
+                return { code: (e as { status: number }).status, out: String((e as { stdout: Buffer }).stdout) };
+            }
+        };
+        return { origin, tree, call };
+    };
+
+    it('has no PR until one is created, then answers the recorded URL and a main base', () => {
+        const { call, origin } = fixture();
+        const view = ['pr', 'view', 'task-1', '--json', 'url', '-q', '.url'];
+        expect(call(...view).code).toBe(1);
+        const created = call('pr', 'create', '--head', 'task-1', '--title', 't', '--body', 'b');
+        expect(created.code).toBe(0);
+        expect(created.out.trim()).toBe('https://github.com/factory-smoke/demo/pull/1');
+        expect(call(...view)).toEqual({ code: 0, out: 'https://github.com/factory-smoke/demo/pull/1\n' });
+        expect(call('pr', 'view', 'task-1', '--json', 'state,baseRefName', '-q', '.state').out).toBe('OPEN main\n');
+        expect(call('pr', 'edit', 'task-1', '--base', 'release').code).toBe(0);
+        expect(call('pr', 'view', 'task-1', '--json', 'state,baseRefName', '-q', '.state').out).toBe(
+            'OPEN release\n'
+        );
+        expect(readFileSync(join(origin, 'lane-gh-prs'), 'utf8')).toBe('task-1 https://github.com/factory-smoke/demo/pull/1\n');
+    });
+
+    it('refuses what it does not know', () => {
+        expect(fixture().call('repo', 'view').code).toBe(2);
+    });
+
+    it('holds a create at the hold file until released, and records it once', async () => {
+        const { call, origin, tree } = fixture();
+        writeFileSync(join(origin, 'lane-gh-hold'), '');
+        const child = spawn('sh', [gh, 'pr', 'create', '--head', 'task-2', '--title', 't', '--body', 'b'], {
+            cwd: tree,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            detached: true,
+        });
+        spawned.push(child);
+        const exited = new Promise<number | null>((resolve) => child.once('exit', resolve));
+        await whenFileExists(join(origin, 'lane-gh-hold.ready'));
+        expect(existsSync(join(origin, 'lane-gh-prs'))).toBe(false);
+        writeFileSync(join(origin, 'lane-gh-hold.go'), '');
+        expect(await exited).toBe(0);
+        expect(readFileSync(join(origin, 'lane-gh-prs'), 'utf8')).toBe('task-2 https://github.com/factory-smoke/demo/pull/1\n');
+        expect(call('pr', 'view', 'task-2', '--json', 'url', '-q', '.url').code).toBe(0);
     });
 });
