@@ -71,6 +71,7 @@ export function createCheckpointRelay(rt: LoopRuntime, job: BoardJob): Checkpoin
                 schemaVersion: CHECKPOINT_SCHEMA_VERSION,
                 ...manifest,
             }),
+        readChunk: (offset) => rt.board.checkpointChunk(job, offset),
     };
 }
 

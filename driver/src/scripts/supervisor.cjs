@@ -465,6 +465,16 @@ const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice
  * Runs one command step as a child process group of this container; its streams and exit are the
  * answer, and `interrupted` says the supervisor killed it on its way out (`run.inflight`).
  */
+/**
+ * The control endpoint and its bearer, for the one step that asks for them (issue #775): the checkpoint
+ * restore reads the thread's checkpoint through the driver's `/checkpoint/restore` route. A step that does
+ * not set RESTORE_FEED=1 — every publish, helper and sync — never sees the supervisor's token.
+ */
+function restoreFeed(run, step) {
+    if (!step.env || step.env.RESTORE_FEED !== '1') return {};
+    return { RESTORE_URL: run.settings.url || '', RESTORE_TOKEN: run.settings.token || '' };
+}
+
 function spawnStep(run, step) {
     return new Promise((resolve) => {
         const [exe, ...args] = step.argv;
@@ -475,7 +485,7 @@ function spawnStep(run, step) {
         try {
             child = spawn(exe, args, {
                 cwd: step.cwd || undefined,
-                env: { ...run.settings.childEnv, ...step.env },
+                env: { ...run.settings.childEnv, ...step.env, ...restoreFeed(run, step) },
                 stdio: ['ignore', 'pipe', 'pipe'],
                 detached: true,
             });

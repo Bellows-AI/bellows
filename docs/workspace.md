@@ -10,6 +10,7 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
 | The clone queue, claim, restart recovery | `server/src/workspace/queue.ts` | `server/test/workspace.queue.test.ts` |
 | Branch / commit / size facts and their cache | `server/src/workspace/facts.ts` | `server/test/workspace.facts.test.ts` |
 | Per-repo package cache: `environment.cache` names pointed at `/task/.cache/<owner>/<repo>/<NAME>` on the thread's task volume (`repoCacheEnv`), and its size on the payload | `driver/src/claim.ts`, `server/src/workspace/bellows-cache.ts`, `server/src/routes/workspace.ts` | `driver/test/runner-plan.test.ts`, `server/test/bellows.test.ts`, `server/test/routes.workspace.test.ts` |
+| Restore of a lost task volume: a continuing claim with no volume gets generation n+1, rebuilt from the board's checkpoint by a supervised `restore` step, the older generation deleted only after it reports ok; none, gone or truncated fails `checkpoint_unrestorable` | `driver/src/task-restore.ts`, `driver/src/scripts/checkpoint-restore.cjs`, `driver/src/docker-task-volume.ts`, `driver/src/k8s-fence.ts` | `driver/test/task-restore.test.ts`, `driver/test/k8s-task-volume.test.ts`, `driver/test/k8s-restore.test.ts`, `driver/test/scripts-checkpoint-restore.test.ts`, `driver/test/docker-task-volume.test.ts` |
 | Manual purge of one orphaned checkout | `server/src/workspace/purge.ts`, `server/src/routes/workspace-purge.ts` | `server/test/workspace.purge.test.ts`, `server/test-db/user-repo-store.test.ts` |
 | Routes and the payload the page polls | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts` |
 | Repo selection rows and their constraints | `server/src/db/user-repo-store.ts`, `server/migrations/011_user_workspace.sql`, `044_user_repo_purge.sql` | `server/test-db/user-repo-store.test.ts` |
@@ -65,3 +66,6 @@ A per-member tree at `<root>/<orgId>/<userId>/`, one clone per repository that m
   contents), and its cap is 256 MiB. `driver/src/scripts/checkpoint.cjs`, `driver/test/scripts-checkpoint.test.ts`.
 - **The package cache is per thread and repo, on the task volume, never shared and never evicted.**
   `driver/src/claim.ts`, `driver/test/runner-plan.test.ts`.
+- **Restore leaves every uncommitted change unstaged**: the tree is rebuilt at the checkpoint's tip and the index reset, so
+  a change that was staged comes back as a working-tree change. `driver/src/scripts/checkpoint-restore.cjs`,
+  `driver/test/scripts-checkpoint-restore.test.ts`.

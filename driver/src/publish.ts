@@ -163,7 +163,8 @@ export interface PublishOptions {
  * the script too, which docker.test.ts pins.
  */
 export const SYNC_FAILURE_KINDS = ['branch_unrestorable', 'missing_base_branch'] as const;
-export type SyncFailureKind = (typeof SYNC_FAILURE_KINDS)[number];
+/** What a refused sync names: a config kind above, or the thread's lost checkpoint (`task-restore.ts`), which is its own failure kind. */
+export type SyncFailureKind = (typeof SYNC_FAILURE_KINDS)[number] | 'checkpoint_unrestorable';
 
 /**
  * The turn context a conflict handed over by the sync adds (issue #661): the paths, and what the

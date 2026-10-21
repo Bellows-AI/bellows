@@ -16,7 +16,8 @@ import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
 import { jobPath, jobPodsPath } from './k8s-auxspec.js';
-import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { acquireClaim, releaseClaimAfterGroupEnd, removeTaskVolumes } from './k8s-fence.js';
+import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
 import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
 import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
 import { podsOf, pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict, readTyped } from './k8s-poll.js';
@@ -454,10 +455,18 @@ async function syncCheckout(
         await ensureGroup(deps, job, session, signal);
     } catch (e) {
         await failed();
+        // A thread that cannot be rebuilt is a verdict, not a fault of the cluster: the loop fails the task with it.
+        if (e instanceof CheckpointUnrestorable) return unrestorableResult(e);
         throw e;
     }
     try {
-        const result = await runSyncStep(stepHostOf(deps), job, githubToken);
+        const host = stepHostOf(deps);
+        // A volume made by a restore is filled before the sync looks at it; the generation it replaces goes after.
+        const restored = await restoreTaskTree(host, job, {
+            githubToken,
+            removeOlder: (generations) => removeTaskVolumes(signal ? withSignal(deps, signal) : deps, job, generations),
+        });
+        const result = restored && !restored.ok ? restored : await runSyncStep(host, job, githubToken);
         // A failed sync means no runner follows — nobody else would give the checkout back.
         if (!result.ok) await failed();
         return result;
@@ -486,14 +495,20 @@ export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
     sleep: Sleep = abortableSleep,
-    wiring: { leases?: Board['leases']; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
+    wiring: {
+        leases?: Board['leases'];
+        checkpoints?: Pick<Board, 'checkpoint'>;
+        steps?: StepSink;
+        endpoint?: SupervisorEndpoint;
+    } = {}
 ): Runner {
-    const { leases, steps, endpoint } = wiring;
+    const { leases, checkpoints, steps, endpoint } = wiring;
     const deps: K8sDeps = {
         config,
         request,
         sleep,
         ...(leases ? { leases } : {}),
+        ...(checkpoints ? { checkpoints } : {}),
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
     };

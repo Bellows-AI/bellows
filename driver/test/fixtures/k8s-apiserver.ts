@@ -22,7 +22,7 @@ export type Special = (
 
 /**
  * The thread's task volume claims (issue #775), emulated the way the apiserver arbitrates them: a GET
- * reads 404 until a POST stores the claim, and a second POST of the same name answers 409. Answers
+ * lists none until a POST stores the claim (a list is by the root label), and a second POST of the same name answers 409. Answers
  * `undefined` for any path that is not a claim's, so a suite's own routes stay in charge of the rest.
  */
 export function taskVolumeServer(namespace: string) {
@@ -35,11 +35,21 @@ export function taskVolumeServer(namespace: string) {
             volumes.set(name, JSON.stringify(body));
             return { status: 201, body: volumes.get(name)! };
         }
-        if (path.startsWith(`${volumesPath}/`) && method === 'GET') {
-            const stored = volumes.get(path.slice(volumesPath.length + 1));
-            return stored === undefined
-                ? { status: 404, body: '{"kind":"Status","reason":"NotFound"}' }
-                : { status: 200, body: stored };
+        if (path.startsWith(`${volumesPath}?`) && method === 'GET') {
+            const selector = decodeURIComponent(
+                new URLSearchParams(path.slice(volumesPath.length + 1)).get('labelSelector') ?? ''
+            );
+            const [label, root] = selector.split('=');
+            const items = [...volumes.values()]
+                .map((stored) => JSON.parse(stored) as { metadata: { labels?: Record<string, string> } })
+                .filter((claim) => claim.metadata.labels?.[label ?? ''] === root);
+            return { status: 200, body: JSON.stringify({ items }) };
+        }
+        if (path.startsWith(`${volumesPath}/`) && method === 'DELETE') {
+            const name = path.slice(volumesPath.length + 1);
+            return volumes.delete(name)
+                ? { status: 200, body: '{}' }
+                : { status: 404, body: '{"kind":"Status","reason":"NotFound"}' };
         }
         return undefined;
     };

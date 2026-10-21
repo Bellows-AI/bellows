@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { BoardJob, ReviewClaim } from '../src/board.js';
+import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
 import {
@@ -26,7 +26,7 @@ import {
     parseDockerStats,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
-import { TASK_MOUNT, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
+import { TASK_MOUNT, TASK_ROOT_LABEL, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
 import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import {
     AdoptionBlocked,
@@ -6573,5 +6573,119 @@ describe('untilStandDown', () => {
         own.abort();
 
         expect(seen?.aborted).toBe(true);
+    });
+});
+
+/*
+ * Restoring a thread's task tree (issue #775): a continuing claim whose volume is gone is rebuilt from
+ * the board's checkpoint onto the next generation by a supervised `restore` step that runs before the
+ * sync step; the generation it replaces is removed only after that step reports ok.
+ */
+describe('the docker runner restoring a task volume', () => {
+    const ROOT_ID = '77777777-7777-4777-8777-777777777777';
+    const restoreJob = (over: Partial<BoardJob> = {}): BoardJob => ({
+        ...job,
+        repo: 'acme/widgets',
+        rootJobId: ROOT_ID,
+        followUp: true,
+        env: { GITHUB_TOKEN: 'claim-token' },
+        ...over,
+    });
+    const named = (generation: number) => `factory-task-${ROOT_ID}-${generation}`;
+    const POINTER = {
+        state: 'found' as const,
+        checkpoint: { bytes: 4, truncated: false, chunks: [{ offset: 0, length: 4, sha256: 'c'.repeat(64) }] },
+    };
+    /** A daemon listing `volumes` for the thread; every other verb answers nothing. */
+    const daemon = (volumes: number[]) => {
+        const calls: string[][] = [];
+        const exec = (async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'volume' && args[1] === 'ls' && args[3]?.startsWith(`label=${TASK_ROOT_LABEL}=`)) {
+                return { stdout: volumes.map((g) => `${named(g)}\n`).join('') };
+            }
+            if (args[0] === 'volume' && args[1] === 'inspect') {
+                return { stdout: JSON.stringify({ [TASK_ROOT_LABEL]: ROOT_ID }) };
+            }
+            return { stdout: args[0] === 'wait' ? '0\n' : '' };
+        }) as unknown as Parameters<typeof createDockerRunner>[2];
+        return { calls, exec };
+    };
+    const runner = (volumes: number[], steps: ReturnType<typeof fakeSteps>, checkpoints: Pick<Board, 'checkpoint'>) => {
+        const d = daemon(volumes);
+        return {
+            d,
+            runner: createDockerRunner(loadDriverConfig({}), spawnChild('', '', 0), d.exec, {
+                steps: steps.sink,
+                sleep: async () => {},
+                checkpoints,
+            }),
+        };
+    };
+    const restoreStep = (steps: ReturnType<typeof fakeSteps>) =>
+        steps.submitted.find((s) => s.step.id.endsWith('-restore'));
+    const taskCreates = (calls: string[][]) =>
+        calls
+            .filter((a) => a[0] === 'volume' && a[1] === 'create')
+            .flatMap((a) => a.filter((x) => x.startsWith('factory-task-')));
+    const removes = (calls: string[][]) => calls.filter((a) => a[0] === 'volume' && a[1] === 'rm').map((a) => a[2]);
+
+    it('creates the next generation, restores onto it before the sync step, and removes the old one after ok', async () => {
+        const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+        const { d, runner: r } = runner([], steps, { checkpoint: async () => POINTER });
+        const j = restoreJob();
+        const result = await r.syncCheckout(j, undefined, null, 'ghs_x');
+        expect(result).toEqual({ ok: true, reason: null });
+        expect(j.taskGeneration).toBe(2);
+        expect(taskCreates(d.calls)).toEqual([named(2)]);
+        const ids = steps.submitted.map((s) => s.step.id);
+        expect(ids[0]).toMatch(/-restore$/);
+        expect(ids).toHaveLength(2);
+        expect(restoreStep(steps)?.step.env).toMatchObject({ RESTORE_FEED: '1' });
+        expect(steps.submitted[1]?.step.env).toMatchObject({ RESTORE: '1' });
+    });
+
+    it('keeps the older generation when the restore step fails, and fails the sync with its reason', async () => {
+        const steps = fakeSteps((step) =>
+            step.id.endsWith('-restore')
+                ? ok('{"ok":false,"reason":"bundle unreadable"}')
+                : ok('{"ok":true,"reason":null}')
+        );
+        const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
+        const result = await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        expect(result).toMatchObject({ ok: false });
+        expect(result.reason).toContain('bundle unreadable');
+        expect(removes(d.calls)).toEqual([]);
+        // The sync step never ran on the half-restored volume.
+        expect(steps.submitted).toHaveLength(1);
+    });
+
+    it('removes the older generation once the restore of an adopted restored volume reports ok', async () => {
+        const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+        const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
+        await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        expect(removes(d.calls)).toEqual([named(1)]);
+    });
+
+    it.each([
+        ['none', { state: 'none' as const }],
+        ['gone', { state: 'gone' as const }],
+        ['truncated', { state: 'found' as const, checkpoint: { bytes: 1, truncated: true, chunks: [] } }],
+    ])('ends a follow-up with checkpoint_unrestorable on a %s checkpoint and no volume', async (_n, read) => {
+        const steps = fakeSteps();
+        const { d, runner: r } = runner([], steps, { checkpoint: async () => read });
+        const result = await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        expect(result).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        expect(steps.submitted).toEqual([]);
+        expect(taskCreates(d.calls)).toEqual([]);
+    });
+
+    it('starts a first claim on generation 1 with a fresh clone and no restore', async () => {
+        const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+        const { runner: r } = runner([], steps, { checkpoint: async () => ({ state: 'none' as const }) });
+        const j = restoreJob({ followUp: false });
+        await r.syncCheckout(j, undefined, null, 'ghs_x');
+        expect(j.taskGeneration).toBe(1);
+        expect(restoreStep(steps)).toBeUndefined();
     });
 });

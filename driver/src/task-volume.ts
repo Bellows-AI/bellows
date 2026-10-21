@@ -27,7 +27,7 @@ export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 /** The name prefix of every task volume, and the admission rule's anchor (charts/factory/templates/driver-admission.yaml). */
 export const TASK_VOLUME_PREFIX = 'factory-task-';
 
-/** The generation of the one volume a thread has until restore can replace it. */
+/** The generation of a thread's first volume; a restore replaces it with the next generation (`task-restore.ts`). */
 export const FIRST_GENERATION = 1;
 
 /** The labels a task volume carries, on kubernetes PVCs and docker volumes alike. */
@@ -42,6 +42,11 @@ export interface TaskVolumeJob {
     rootJobId?: string | null;
     claimSeq?: number;
     workspacePath?: string | null;
+    /**
+     * The generation of the thread's volume THIS attempt runs on, set by the driver once the claim has
+     * found, adopted or created it (never read off the wire); absent before then, which names the first.
+     */
+    taskGeneration?: number | undefined;
 }
 
 /** The thread root, asserted: the one id that names the thread's volume. */
@@ -54,7 +59,10 @@ export function taskRootOf(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>): string
 }
 
 /** `factory-task-<root uuid>-<generation>`, the name of the thread's volume. */
-export function taskVolumeName(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>, generation = FIRST_GENERATION): string {
+export function taskVolumeName(
+    job: Pick<TaskVolumeJob, 'id' | 'rootJobId' | 'taskGeneration'>,
+    generation = job.taskGeneration ?? FIRST_GENERATION
+): string {
     if (!Number.isSafeInteger(generation) || generation < 1) {
         throw new Error(`refusing to name a task volume for generation ${generation}`);
     }
@@ -62,7 +70,10 @@ export function taskVolumeName(job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>, gen
 }
 
 /** The labels the volume is created with; the org is only a label, so a shape it cannot take is left off. */
-export function taskVolumeLabels(job: TaskVolumeJob, generation = FIRST_GENERATION): Record<string, string> {
+export function taskVolumeLabels(
+    job: TaskVolumeJob,
+    generation = job.taskGeneration ?? FIRST_GENERATION
+): Record<string, string> {
     const org = job.workspacePath?.split('/')[0];
     return {
         [TASK_ROOT_LABEL]: taskRootOf(job),
@@ -107,14 +118,14 @@ export function taskVolumeSpec(
 }
 
 /** The pod volume that serves the task volume to a group's containers. */
-export const taskPodVolume = (job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>) => ({
+export const taskPodVolume = (job: Pick<TaskVolumeJob, 'id' | 'rootJobId' | 'taskGeneration'>) => ({
     name: TASK_VOLUME,
     persistentVolumeClaim: { claimName: taskVolumeName(job) },
 });
 
 /** The `--mount` argv of the task volume for a docker container; `subPath` narrows it (the reviewer's home). */
 export const taskMountArgs = (
-    job: Pick<TaskVolumeJob, 'id' | 'rootJobId'>,
+    job: Pick<TaskVolumeJob, 'id' | 'rootJobId' | 'taskGeneration'>,
     options: { readOnly?: boolean; subPath?: string; target?: string } = {}
 ): string[] => [
     '--mount',
@@ -125,3 +136,13 @@ export const taskMountArgs = (
 
 /** The task volume's directory prepared before a subPath mount names it: see scripts/task-init.sh. */
 export const taskInitScript = containerScript('task-init.sh');
+
+/**
+ * The generation a volume name carries for the thread `root`, or null when the name is not one of that
+ * thread's volumes. A listing is read through it, so a name it cannot read is never adopted.
+ */
+export function generationOfName(root: string, name: string): number | null {
+    const prefix = `${TASK_VOLUME_PREFIX}${root.toLowerCase()}-`;
+    const digits = name.startsWith(prefix) ? name.slice(prefix.length) : '';
+    return /^[1-9][0-9]{0,8}$/.test(digits) ? Number(digits) : null;
+}

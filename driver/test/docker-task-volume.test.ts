@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { applyCloseTimeReadout, tickCacheWatch } from '../src/docker-close-read.js';
-import { ensureTaskVolume, taskVolumeIsOurs } from '../src/docker-task-volume.js';
+import { CheckpointUnrestorable } from '../src/task-restore.js';
+import { ensureTaskVolume, removeTaskVolumes, taskVolumeIsOurs } from '../src/docker-task-volume.js';
 import { OPENCODE } from '../src/executors.js';
 import type { RunOutcome } from '../src/runner.js';
 import {
@@ -21,22 +22,30 @@ const job = {
     rootJobId: ROOT,
     executorType: 'claude-code',
     claimSeq: 1,
+    followUp: false,
+    resumeSessionId: null,
     workspacePath: 'acme/33333333-3333-4333-8333-333333333333',
 } as BoardJob;
 const config = loadDriverConfig({});
 const NAME = `factory-task-${ROOT}-1`;
+const OTHER_ROOT = '99999999-9999-4999-8999-999999999999';
 
 /**
  * A daemon whose `volume inspect <name>` answers `volume`: a label map (the volume exists with
  * those labels), `null` (it exists unlabeled), 'absent' (docker's own `no such volume`), raw text,
- * or an Error. Every call is recorded.
+ * or an Error. `volume ls` lists the thread's one first-generation volume unless it is 'absent' (empty
+ * list) or an Error (the call fails), or `listed` names the volumes. Every call is recorded.
  */
-const daemon = (volume: Record<string, string> | null | 'absent' | string | Error) => {
+const daemon = (volume: Record<string, string> | null | 'absent' | string | Error, listed: string[] | null = null) => {
     const calls: string[][] = [];
     const signals: (AbortSignal | undefined)[] = [];
     const execDocker = async (args: string[], options?: { signal?: AbortSignal }) => {
         calls.push(args);
         signals.push(options?.signal);
+        if (args[0] === 'volume' && args[1] === 'ls') {
+            if (volume instanceof Error) throw volume;
+            return { stdout: (listed ?? (volume === 'absent' ? [] : [NAME])).map((name) => `${name}\n`).join('') };
+        }
         if (args[0] === 'volume' && args[1] === 'inspect') {
             if (volume instanceof Error) throw volume;
             if (volume === 'absent') throw new Error('Error response from daemon: get x: no such volume');
@@ -55,10 +64,17 @@ describe("the thread's docker task volume (issue #775)", () => {
         expect(taskVolumeName({ ...job, id: ROOT, rootJobId: null })).toBe(NAME);
     });
 
-    it('is inspected by name, then created with its labels when the thread has none', async () => {
+    it('is listed by its root label, then created with its labels when the thread has none', async () => {
         const d = daemon('absent');
         await ensureTaskVolume(d.deps, job);
-        expect(d.calls[0]).toEqual(['volume', 'inspect', '--format', '{{json .Labels}}', NAME]);
+        expect(d.calls[0]).toEqual([
+            'volume',
+            'ls',
+            '--filter',
+            `label=${TASK_ROOT_LABEL}=${ROOT}`,
+            '--format',
+            '{{.Name}}',
+        ]);
         expect(creates(d.calls)).toHaveLength(1);
         const [create] = creates(d.calls);
         expect(create).toEqual(expect.arrayContaining(['--label', `${TASK_ROOT_LABEL}=${ROOT}`]));
@@ -70,8 +86,8 @@ describe("the thread's docker task volume (issue #775)", () => {
         const d = daemon(OURS);
         await ensureTaskVolume(d.deps, job);
         expect(creates(d.calls)).toEqual([]);
-        // The inspect, then the root init of the volume root: no reviewer, so no second init.
-        expect(d.calls.map((a) => a[0])).toEqual(['volume', 'run']);
+        // The listing and the label check, then the root init of the volume root: no reviewer, so no second init.
+        expect(d.calls.map((a) => (a[0] === 'volume' ? a[1] : a[0]))).toEqual(['ls', 'inspect', 'run']);
     });
 
     it.each([[null], [{ [TASK_ROOT_LABEL]: '99999999-9999-4999-8999-999999999999' }], [{ other: 'x' }]])(
@@ -86,7 +102,7 @@ describe("the thread's docker task volume (issue #775)", () => {
         }
     );
 
-    it('is never created on a failed inspect: the refusal throws and nothing else is asked', async () => {
+    it('is never created on a failed listing: the refusal throws and nothing else is asked', async () => {
         const d = daemon(new Error('Cannot connect to the Docker daemon'));
         await expect(ensureTaskVolume(d.deps, job)).rejects.toThrow(/Cannot connect to the Docker daemon/);
         expect(d.calls).toHaveLength(1);
@@ -97,6 +113,23 @@ describe("the thread's docker task volume (issue #775)", () => {
         await expect(ensureTaskVolume(d.deps, job)).rejects.toThrow(/not the listing/);
         expect(creates(d.calls)).toEqual([]);
     });
+
+    it.each([['<html>proxy error</html>\n'], [`factory-task-${OTHER_ROOT}-1\n`], [`${NAME}-x\n`]])(
+        'is never created, nor restored, on a listing that is not a list of its generations: %j',
+        async (raw) => {
+            const calls: string[][] = [];
+            const execDocker = async (args: string[]) => {
+                calls.push(args);
+                return { stdout: raw };
+            };
+            const checkpoint = vi.fn();
+            await expect(
+                ensureTaskVolume({ config, execDocker, checkpoints: { checkpoint } }, { ...job, followUp: true })
+            ).rejects.toThrow();
+            expect(creates(calls)).toEqual([]);
+            expect(checkpoint).not.toHaveBeenCalled();
+        }
+    );
 
     it('is never asked for by an aborted attempt: the daemon sees no create', async () => {
         const d = daemon('absent');
@@ -161,6 +194,85 @@ describe("the thread's docker task volume (issue #775)", () => {
         await ensureTaskVolume(d.deps, { ...job, reviewerProfiles: ['security'] }, signal);
         const runs = d.calls.flatMap((a, i) => (a[0] === 'run' ? [d.signals[i]] : []));
         expect(runs).toEqual([signal, signal]);
+    });
+});
+
+const POINTER = { bytes: 10, truncated: false, chunks: [{ offset: 0, length: 10, sha256: 'a'.repeat(64) }] };
+const continuing = { ...job, followUp: true } as BoardJob;
+
+describe("the thread's docker task volume across generations (issue #775)", () => {
+    const board = (
+        read: Awaited<ReturnType<NonNullable<Parameters<typeof ensureTaskVolume>[0]['checkpoints']>['checkpoint']>>
+    ) => ({
+        checkpoint: vi.fn(async () => read),
+    });
+
+    it('restores into generation n+1 when no volume is listed: the next volume is created, labelled and owed a restore', async () => {
+        const d = daemon('absent');
+        const checkpoints = board({ state: 'found', checkpoint: POINTER });
+        const restoring = { ...continuing } as BoardJob;
+
+        await ensureTaskVolume({ ...d.deps, checkpoints }, restoring);
+
+        const [create] = creates(d.calls);
+        expect(create!.at(-1)).toBe(`factory-task-${ROOT}-2`);
+        expect(create).toEqual(expect.arrayContaining(['--label', `${TASK_GENERATION_LABEL}=2`]));
+        expect(restoring.taskGeneration).toBe(2);
+        expect(restoring.taskRestore).toEqual({ checkpoint: POINTER, older: [], restored: false });
+        expect(taskMountArgs(restoring)[1]).toContain(`src=factory-task-${ROOT}-2,`);
+    });
+
+    it('adopts the highest generation listed and owes it the older ones to delete after a restore', async () => {
+        const d = daemon(OURS, [NAME, `factory-task-${ROOT}-3`]);
+        const checkpoints = board({ state: 'found', checkpoint: POINTER });
+        const adopting = { ...continuing } as BoardJob;
+
+        await ensureTaskVolume({ ...d.deps, checkpoints }, adopting);
+
+        expect(creates(d.calls)).toEqual([]);
+        expect(adopting.taskGeneration).toBe(3);
+        expect(adopting.taskRestore).toEqual({ checkpoint: POINTER, older: [1], restored: false });
+        expect(d.calls.find((a) => a[1] === 'inspect')!.at(-1)).toBe(`factory-task-${ROOT}-3`);
+    });
+
+    it('fails checkpoint_unrestorable, creating nothing, for a follow-up whose volume is gone and whose checkpoint is none, gone or truncated', async () => {
+        for (const read of [
+            { state: 'none' },
+            { state: 'gone' },
+            { state: 'found', checkpoint: { ...POINTER, truncated: true } },
+        ] as const) {
+            const d = daemon('absent');
+            await expect(ensureTaskVolume({ ...d.deps, checkpoints: board(read) }, continuing)).rejects.toBeInstanceOf(
+                CheckpointUnrestorable
+            );
+            expect(creates(d.calls)).toEqual([]);
+        }
+    });
+
+    it('starts a thread fresh on its first claim even when the board holds no checkpoint: generation 1, no board read', async () => {
+        const d = daemon('absent');
+        const checkpoints = board({ state: 'none' });
+        const first = { ...job } as BoardJob;
+
+        await ensureTaskVolume({ ...d.deps, checkpoints }, first);
+
+        expect(creates(d.calls)[0]!.at(-1)).toBe(NAME);
+        expect(first.taskRestore).toBeUndefined();
+        expect(checkpoints.checkpoint).not.toHaveBeenCalled();
+    });
+
+    it('removes an older generation by name and treats one already gone as removed', async () => {
+        const calls: string[][] = [];
+        const execDocker = async (args: string[]) => {
+            calls.push(args);
+            if (args.at(-1)?.endsWith('-2')) throw new Error('Error response from daemon: no such volume');
+            return { stdout: '' };
+        };
+        await removeTaskVolumes(execDocker, job, [1, 2]);
+        expect(calls).toEqual([
+            ['volume', 'rm', `factory-task-${ROOT}-1`],
+            ['volume', 'rm', `factory-task-${ROOT}-2`],
+        ]);
     });
 });
 

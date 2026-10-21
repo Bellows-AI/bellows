@@ -33,6 +33,9 @@ export const supervisorScript = script('supervisor.cjs');
 /** The attempt's checkpoint at finalize (issue #775): see scripts/checkpoint.cjs. */
 export const checkpointScript = script('checkpoint.cjs');
 
+/** The task tree rebuilt from the thread's checkpoint on a replacement volume (issue #775): see scripts/checkpoint-restore.cjs. */
+export const checkpointRestoreScript = script('checkpoint-restore.cjs');
+
 /** The live cache probe: see scripts/opencode-cache-probe.cjs. */
 export const opencodeCacheProbeScript = script('opencode-cache-probe.cjs');
 

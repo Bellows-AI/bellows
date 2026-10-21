@@ -57,8 +57,13 @@ const endpoint: SupervisorEndpoint = {
 };
 const runner =
     config.executor === 'kubernetes'
-        ? createKubernetesRunner(config, request!, undefined, { leases: (ids) => board.leases(ids), steps, endpoint })
-        : createDockerRunner(config, undefined, undefined, { steps, endpoint });
+        ? createKubernetesRunner(config, request!, undefined, {
+              leases: (ids) => board.leases(ids),
+              checkpoints: board,
+              steps,
+              endpoint,
+          })
+        : createDockerRunner(config, undefined, undefined, { steps, endpoint, checkpoints: board });
 
 // The gate machinery is one on both executors (issue #773): every gate and the setup run in the
 // attempt's own task group, the declared image as a gate container beside the supervisor, as one

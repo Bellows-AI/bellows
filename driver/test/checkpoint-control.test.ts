@@ -19,6 +19,7 @@ let channel: ControlChannel;
 let base: string;
 let chunkAnswer: () => Promise<ChunkAnswer>;
 let finalizeAnswer: () => Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
+let readAnswer: (offset: number) => Promise<{ bytes: Uint8Array; sha256: string } | null>;
 const seen: { chunks: [number, Uint8Array][]; manifests: unknown[] } = { chunks: [], manifests: [] };
 
 const relay: CheckpointRelay = {
@@ -30,6 +31,7 @@ const relay: CheckpointRelay = {
         seen.manifests.push(manifest);
         return finalizeAnswer();
     },
+    readChunk: (offset) => readAnswer(offset),
 };
 
 beforeEach(async () => {
@@ -37,6 +39,7 @@ beforeEach(async () => {
     seen.manifests = [];
     chunkAnswer = async () => ({ result: 'stored' });
     finalizeAnswer = async () => 'stored';
+    readAnswer = async () => null;
     channel = createControlChannel();
     server = createServer((request, reply) => {
         const auth = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1] ?? '';
@@ -137,6 +140,42 @@ describe('the checkpoint routes', () => {
         expect((await call('PUT', '/checkpoint/manifest', 'not json')).status).toBe(400);
         finalizeAnswer = async () => 'conflict';
         expect((await call('PUT', '/checkpoint/manifest', JSON.stringify(MANIFEST))).status).toBe(409);
+    });
+
+    it('serve one chunk of the board’s checkpoint to the restore step as base64 beside its sha256', async () => {
+        openCheckpointing();
+        const bytes = Uint8Array.from({ length: 300 }, (_, i) => i % 251);
+        const asked: number[] = [];
+        readAnswer = async (offset) => {
+            asked.push(offset);
+            return { bytes, sha256: 'a'.repeat(64) };
+        };
+
+        const reply = await call('GET', '/checkpoint/restore?offset=1048576');
+
+        expect(reply.status).toBe(200);
+        const body = (await reply.json()) as { bytes: string; sha256: string };
+        expect(Buffer.from(body.bytes, 'base64')).toEqual(Buffer.from(bytes));
+        expect(body.sha256).toBe('a'.repeat(64));
+        expect(asked).toEqual([1048576]);
+    });
+
+    it('answer 404 for a chunk the board does not hold, 400 for an offset that is none and 502 when the board is out of reach', async () => {
+        openCheckpointing();
+
+        expect((await call('GET', '/checkpoint/restore?offset=0')).status).toBe(404);
+        expect((await call('GET', '/checkpoint/restore?offset=-1')).status).toBe(400);
+        readAnswer = async () => {
+            throw new Error('board unreachable');
+        };
+        expect((await call('GET', '/checkpoint/restore?offset=0')).status).toBe(502);
+    });
+
+    it('open the restore read to the supervisor token alone', async () => {
+        openCheckpointing();
+
+        expect((await call('GET', '/checkpoint/restore?offset=0', undefined, EXPORTER)).status).toBe(403);
+        expect((await call('GET', '/checkpoint/restore?offset=0', undefined, AGENT)).status).toBe(403);
     });
 
     it('answer 400 where the attempt has no checkpoint relay', async () => {

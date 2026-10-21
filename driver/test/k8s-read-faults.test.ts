@@ -335,7 +335,7 @@ function scenario(name: string, build: Build<K8sRequest>, { writes, allowed }: E
 }
 
 const CLAIM_READ = `GET ${CLAIM}`;
-const TASK_VOLUME_READ = `GET ${API}/persistentvolumeclaims/factory-task-<job>-1`;
+const TASK_VOLUME_READ = `GET ${API}/persistentvolumeclaims?labelSelector=factory.task-root=<job>`;
 
 scenario(
     'the sync fence sweeping an earlier lease (K-FS)',

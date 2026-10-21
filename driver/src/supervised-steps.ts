@@ -86,7 +86,7 @@ export function controlTokenOf(job: BoardJob): string {
  * as `GITHUB_TOKEN` when the loop got one (docs/connections.md). The claim env itself never carries
  * one: the name is reserved, so `claimEnv` drops any a board sent.
  */
-const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string, string> => ({
+export const claimStepEnv = (job: BoardJob, githubToken?: string): Record<string, string> => ({
     ...claimEnv(job),
     ...(githubToken ? { GITHUB_TOKEN: githubToken } : {}),
 });
@@ -246,7 +246,8 @@ export async function runSyncStep(host: StepHost, job: BoardJob, githubToken?: s
     const checkout = checkoutDir(job);
     const remote = remoteUrl(config, job);
     if (!checkout || !remote) return { ok: true, reason: null }; // nothing synced, nothing to fail either
-    const restore = claimContinuesSession(job);
+    // A restored tree is the conversation's tree like any continuing claim's: nothing fetched, nothing rebased.
+    const restore = claimContinuesSession(job) || job.taskRestore?.restored === true;
     const base = baseBranchOf(job);
     const result = await submitStep(
         host,

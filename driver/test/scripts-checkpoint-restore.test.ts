@@ -1,0 +1,230 @@
+import { execFile, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:http';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { afterEach, describe, expect, it } from 'vitest';
+import { SCRIPT_IDENTITY, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
+
+/**
+ * The checkpoint restore script (issue #775): a checkpoint taken by scripts/checkpoint.cjs from a worked
+ * task tree, served chunk by chunk over a control endpoint, is rebuilt into a fresh directory by the
+ * script FILE as the container runs it. Real git on a real partial clone.
+ */
+const SCRIPTS = join(import.meta.dirname, '..', 'src', 'scripts');
+const CHUNK = 700;
+const TOKEN = 'restore-token';
+
+interface Verdict {
+    ok: boolean;
+    reason: string | null;
+    kind?: string;
+    restored?: boolean;
+}
+
+const run = promisify(execFile);
+
+describe.skipIf(!hasGit())('the checkpoint restore script', () => {
+    const fx = setupWorktreeFixture();
+    let server: Server | null = null;
+    afterEach(() => {
+        server?.close();
+        server = null;
+    });
+
+    /** A task with every kind of change the checkpoint must carry, and one it must not. */
+    function workedTree(): void {
+        fx.pushToOrigin('gone.txt', 'to be deleted\n', 'a file the task deletes');
+        expect(fx.sync()).toMatchObject({ ok: true });
+        writeFileSync(join(fx.checkout(), '.gitignore'), 'node_modules/\n');
+        git(fx.checkout(), 'add', '.gitignore');
+        fx.commitIn(fx.checkout(), 'feature.txt', 'committed work\n', 'the task commit');
+        writeFileSync(join(fx.checkout(), 'README.md'), '# edited\n');
+        rmSync(join(fx.checkout(), 'gone.txt'));
+        writeFileSync(join(fx.checkout(), 'untracked.txt'), 'never added\n');
+        mkdirSync(join(fx.checkout(), 'node_modules'));
+        writeFileSync(join(fx.checkout(), 'node_modules', 'dep.js'), 'ignored\n');
+    }
+
+    /** The checkpoint script's stream — header line, then the bundle — and the pointer the board would hold. */
+    function checkpointStream(extra: Record<string, string> = {}) {
+        const outDir = join(fx.dir(), 'checkpoint');
+        const out = spawnSync('node', ['--no-warnings', join(SCRIPTS, 'checkpoint.cjs')], {
+            env: {
+                ...process.env,
+                ...SCRIPT_IDENTITY,
+                CHECKOUT: fx.checkout(),
+                BRANCH: fx.branch(),
+                OUT_DIR: outDir,
+                ...extra,
+            },
+            encoding: 'utf8',
+        });
+        const verdict = JSON.parse(out.stdout.trim().split('\n').pop()!) as {
+            headerFile: string;
+            parts: { path: string }[];
+        };
+        const header = readFileSync(verdict.headerFile, 'utf8');
+        const stream = Buffer.concat([
+            Buffer.from(`${JSON.stringify(JSON.parse(header))}\n`),
+            ...verdict.parts.map((part) => readFileSync(part.path)),
+        ]);
+        const chunks: { offset: number; length: number; sha256: string }[] = [];
+        for (let offset = 0; offset < stream.length; offset += CHUNK) {
+            const bytes = stream.subarray(offset, offset + CHUNK);
+            chunks.push({ offset, length: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+        }
+        return { stream, chunks };
+    }
+
+    /** The control endpoint of a supervisor: `GET /checkpoint/restore?offset=` answers one chunk as JSON. */
+    async function serve(stream: Buffer, { corrupt = false } = {}): Promise<{ url: string; asked: () => number }> {
+        let asked = 0;
+        server = createServer((request, reply) => {
+            asked += 1;
+            const url = new URL(request.url ?? '', 'http://x');
+            if (request.headers.authorization !== `Bearer ${TOKEN}` || url.pathname !== '/checkpoint/restore') {
+                reply.writeHead(401).end('{}');
+                return;
+            }
+            const offset = Number(url.searchParams.get('offset'));
+            const bytes = Buffer.from(stream.subarray(offset, offset + CHUNK));
+            const sha256 = createHash('sha256').update(bytes).digest('hex');
+            if (corrupt && offset > 0) bytes[0] = (bytes[0] ?? 0) ^ 0xff;
+            reply
+                .writeHead(200, { 'content-type': 'application/json' })
+                .end(JSON.stringify({ bytes: bytes.toString('base64'), sha256 }));
+        });
+        await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+        const address = server.address() as { port: number };
+        return { url: `http://127.0.0.1:${address.port}`, asked: () => asked };
+    }
+
+    const restoreDir = () => join(fx.dir(), 'replacement');
+    const restoredTree = () => join(restoreDir(), 'factory');
+
+    async function restore(
+        chunks: { offset: number; length: number; sha256: string }[],
+        url: string,
+        env: Record<string, string> = {}
+    ): Promise<Verdict> {
+        mkdirSync(restoreDir(), { recursive: true });
+        const { stdout } = await run('node', ['--no-warnings', join(SCRIPTS, 'checkpoint-restore.cjs')], {
+            env: {
+                ...process.env,
+                ...SCRIPT_IDENTITY,
+                CHECKOUT: restoredTree(),
+                REMOTE: `file://${fx.bare()}`,
+                BRANCH: fx.branch(),
+                CHUNKS: JSON.stringify(chunks),
+                RESTORE_URL: url,
+                RESTORE_TOKEN: TOKEN,
+                ...env,
+            },
+            encoding: 'utf8',
+        });
+        return JSON.parse(stdout.trim().split('\n').pop()!) as Verdict;
+    }
+
+    const status = (cwd: string) => git(cwd, 'status', '--porcelain');
+
+    it('rebuilds the tree: commits, the edit, the deletion and the untracked file; not the ignored directory', async () => {
+        workedTree();
+        const head = git(fx.checkout(), 'rev-parse', 'HEAD');
+        const before = status(fx.checkout());
+        const { stream, chunks } = checkpointStream();
+        const { url } = await serve(stream);
+
+        const verdict = await restore(chunks, url);
+
+        expect(verdict).toEqual({ ok: true, reason: null, restored: true });
+        expect(git(restoredTree(), 'rev-parse', 'HEAD')).toBe(head);
+        expect(git(restoredTree(), 'branch', '--show-current')).toBe(fx.branch());
+        // Every uncommitted change is back, unstaged — the stated limit of a restore.
+        expect(status(restoredTree())).toBe(before);
+        expect(readFileSync(join(restoredTree(), 'README.md'), 'utf8')).toBe('# edited\n');
+        expect(readFileSync(join(restoredTree(), 'untracked.txt'), 'utf8')).toBe('never added\n');
+        expect(existsSync(join(restoredTree(), 'gone.txt'))).toBe(false);
+        expect(existsSync(join(restoredTree(), 'node_modules'))).toBe(false);
+        expect(readdirSync(restoreDir())).toEqual(['factory']);
+    });
+
+    it('leaves the factory state namespace ignored, as the startup sync does', async () => {
+        workedTree();
+        const { stream, chunks } = checkpointStream();
+        const { url } = await serve(stream);
+        await restore(chunks, url);
+
+        mkdirSync(join(restoredTree(), '.factory'));
+        writeFileSync(join(restoredTree(), '.factory', 'state.json'), '{}\n');
+
+        expect(status(restoredTree())).not.toContain('.factory');
+    });
+
+    it('answers ok and fetches nothing when the tree is already there: a restore that landed is not redone', async () => {
+        workedTree();
+        const { stream, chunks } = checkpointStream();
+        const { url, asked } = await serve(stream);
+        await restore(chunks, url);
+        const calls = asked();
+
+        const again = await restore(chunks, url);
+
+        expect(again).toEqual({ ok: true, reason: null, restored: false });
+        expect(asked()).toBe(calls);
+    });
+
+    it('is checkpoint_unrestorable when the checkpoint was truncated at its cap', async () => {
+        workedTree();
+        const { stream, chunks } = checkpointStream({ CAP_BYTES: '1' });
+        const { url } = await serve(stream);
+
+        const verdict = await restore(chunks, url);
+
+        expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        expect(existsSync(restoredTree())).toBe(false);
+    });
+
+    it('is checkpoint_unrestorable when a commit the bundle builds on is gone from the remote', async () => {
+        workedTree();
+        git(fx.checkout(), 'push', '--quiet', 'origin', fx.branch());
+        const { stream, chunks } = checkpointStream();
+        const { url } = await serve(stream);
+        // A force-push / deleted branch: the pushed commit leaves the remote for good.
+        git(fx.bare(), 'update-ref', '-d', `refs/heads/${fx.branch()}`);
+        git(fx.bare(), 'reflog', 'expire', '--expire=now', '--all');
+        git(fx.bare(), 'gc', '--quiet', '--prune=now');
+
+        const verdict = await restore(chunks, url);
+
+        expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        expect(existsSync(restoredTree())).toBe(false);
+        expect(readdirSync(restoreDir())).toEqual([]);
+    });
+
+    it('fails without a kind, and builds nothing, when a chunk does not match its sha256', async () => {
+        workedTree();
+        const { stream, chunks } = checkpointStream();
+        expect(chunks.length).toBeGreaterThan(1);
+        const { url } = await serve(stream, { corrupt: true });
+
+        const verdict = await restore(chunks, url, { CHUNKS: JSON.stringify(chunks) });
+
+        expect(verdict.ok).toBe(false);
+        expect(verdict.kind).toBeUndefined();
+        expect(existsSync(restoredTree())).toBe(false);
+        expect(readdirSync(restoreDir())).toEqual([]);
+    });
+
+    it('fails without a kind when the control endpoint refuses the token', async () => {
+        workedTree();
+        const { stream, chunks } = checkpointStream();
+        const { url } = await serve(stream);
+
+        const verdict = await restore(chunks, url, { RESTORE_TOKEN: 'wrong' });
+
+        expect(verdict.ok).toBe(false);
+        expect(verdict.kind).toBeUndefined();
+    });
+});

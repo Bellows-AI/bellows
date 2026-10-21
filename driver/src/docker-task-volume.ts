@@ -1,11 +1,13 @@
 import { containerHardeningArgs } from './docker.js';
-import type { BoardJob } from './board.js';
+import type { Board, BoardJob } from './board.js';
 import { type DriverConfig, executorImage } from './config.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from './claim.js';
-import { type ExecDocker, readDocker } from './docker-runner-support.js';
+import { type ExecDocker, alreadyGone, nameLines, readDocker } from './docker-runner-support.js';
+import { type VolumeListing, planTaskVolume } from './task-restore.js';
 import {
     TASK_MOUNT,
     TASK_ROOT_LABEL,
+    generationOfName,
     taskInitScript,
     taskMountArgs,
     taskRootOf,
@@ -45,28 +47,83 @@ export async function taskVolumeIsOurs(execDocker: ExecDocker, job: BoardJob, si
 }
 
 /**
- * The task volume of the job's thread, created on the thread's first attempt and adopted by every
- * later one (issue #775). Presence is judged by inspecting the volume by name, as the kubernetes
- * executor GETs its claim: a refused or malformed inspect throws, and nothing is created or mounted
- * on it; a volume of the name without the thread's root label is refused, never adopted. An aborted
- * attempt creates nothing. The volume root is handed to the task group by a root init, and a thread
- * with a reviewer also gets the reviewer's home made before the reviewer's container mounts it.
+ * The thread's task volumes by its root label (`docker volume ls`), their generations read off the
+ * names. Only a listing the daemon answered and every line of which is one of the thread's volumes
+ * counts: a refused call, an unreadable answer or a name that is not a generation of this root throws,
+ * so nothing is created or restored on an inconclusive read.
+ */
+export async function listTaskVolumes(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    signal?: AbortSignal
+): Promise<VolumeListing> {
+    const root = taskRootOf(job);
+    const read = await readDocker(
+        (args) => execDocker(args, signal ? { signal } : undefined),
+        ['volume', 'ls', '--filter', `label=${TASK_ROOT_LABEL}=${root}`, '--format', '{{.Name}}'],
+        `the task volumes of job ${job.id}`,
+        { parse: nameLines }
+    );
+    if (read.kind !== 'value') {
+        throw new Error(read.kind === 'inconclusive' ? read.reason : 'the task volume listing is absent');
+    }
+    const live = read.value.map((name) => {
+        const generation = generationOfName(root, name);
+        if (generation === null)
+            throw new Error(
+                `the task volume listing of job ${job.id} names ${name}, which is no generation of ${root}`
+            );
+        return generation;
+    });
+    return { live, highest: Math.max(0, ...live) };
+}
+
+/** Removes the thread's older generations once a restore has landed. An already-gone volume is removed. */
+export async function removeTaskVolumes(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    generations: readonly number[],
+    signal?: AbortSignal
+): Promise<void> {
+    for (const generation of generations) {
+        try {
+            await execDocker(['volume', 'rm', taskVolumeName(job, generation)], signal ? { signal } : undefined);
+        } catch (e) {
+            if (!alreadyGone(e)) throw e;
+        }
+    }
+}
+
+/**
+ * The task volume of the job's thread (issue #775): the thread's highest generation listed by its root
+ * label is adopted, and one that is not there is created on the thread's first attempt, or — for a
+ * claim that continues a session — as the next generation to be restored from the checkpoint
+ * (`planTaskVolume`). A refused or malformed listing throws and nothing is created or mounted; a
+ * volume of the name without the thread's root label is refused, never adopted. An aborted attempt
+ * creates nothing. The volume root is handed to the task group by a root init, and a thread with a
+ * reviewer also gets the reviewer's home made before the reviewer's container mounts it.
  */
 export async function ensureTaskVolume(
-    deps: { config: DriverConfig; execDocker: ExecDocker },
+    deps: { config: DriverConfig; execDocker: ExecDocker; checkpoints?: Pick<Board, 'checkpoint'> | undefined },
     job: BoardJob,
     signal?: AbortSignal
 ): Promise<void> {
+    signal?.throwIfAborted();
+    const listing = await listTaskVolumes(deps.execDocker, job, signal);
+    const { create } = await planTaskVolume(deps.checkpoints, job, listing);
     const name = taskVolumeName(job);
     signal?.throwIfAborted();
-    const read = await readTaskVolume(deps.execDocker, job, signal);
-    if (read.kind === 'inconclusive') throw new Error(read.reason);
-    if (read.kind === 'absent') {
-        signal?.throwIfAborted();
+    if (create) {
         const labels = Object.entries(taskVolumeLabels(job)).flatMap(([key, value]) => ['--label', `${key}=${value}`]);
         await deps.execDocker(['volume', 'create', ...labels, name], signal ? { signal } : undefined);
-    } else if (read.value[TASK_ROOT_LABEL] !== taskRootOf(job)) {
-        throw new Error(`the volume ${name} exists but is not labelled as the task volume of job ${job.id}`);
+    } else {
+        const read = await readTaskVolume(deps.execDocker, job, signal);
+        if (read.kind !== 'value') {
+            throw new Error(read.kind === 'inconclusive' ? read.reason : `the listed volume ${name} is gone`);
+        }
+        if (read.value[TASK_ROOT_LABEL] !== taskRootOf(job)) {
+            throw new Error(`the volume ${name} exists but is not labelled as the task volume of job ${job.id}`);
+        }
     }
     // The task group cannot write a fresh named volume's root: kubernetes hands it to GATE_GID
     // through fsGroup, the daemon has no such thing. The daemon copies the image's /task (uid 1000)

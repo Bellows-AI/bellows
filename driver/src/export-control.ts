@@ -20,6 +20,8 @@ export const EXPORT_STATE_PATH = `${EXPORT_PATH}/state`;
 export const CHECKPOINT_PATH = '/checkpoint';
 export const CHECKPOINT_CHUNK_PATH = `${CHECKPOINT_PATH}/chunk`;
 export const CHECKPOINT_MANIFEST_PATH = `${CHECKPOINT_PATH}/manifest`;
+/** `GET /checkpoint/restore?offset=`: one chunk of the thread's checkpoint, read by the restore step (issue #775). */
+export const CHECKPOINT_RESTORE_PATH = `${CHECKPOINT_PATH}/restore`;
 
 const BYTES_PER_KIB = 1024;
 const BYTES_PER_MIB = BYTES_PER_KIB * BYTES_PER_KIB;
@@ -32,6 +34,7 @@ export const EXPORT_JSON_BODY_LIMIT = JSON_BODY_KIB * BYTES_PER_KIB;
 const HTTP_OK = 200;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
+const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_BAD_GATEWAY = 502;
@@ -75,6 +78,8 @@ export interface CheckpointManifestRequest {
 export interface CheckpointRelay {
     putChunk(offset: number, bytes: Uint8Array): Promise<ChunkAnswer>;
     finalize(manifest: CheckpointManifestRequest): Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
+    /** One chunk of the board's checkpoint stream, its sha256 verified; null when the board has none there. */
+    readChunk(offset: number): Promise<{ bytes: Uint8Array; sha256: string } | null>;
 }
 
 /** One token's checkpoint state: the relay, null until the loop attaches it. */
@@ -182,10 +187,27 @@ export async function serveCheckpoint(
     const { relay } = slot;
     if (!relay) return { status: HTTP_BAD_REQUEST, body: { error: 'this attempt checkpoints nothing' } };
     const [path, search = ''] = (request.url ?? '').split('?');
+    if (request.method === 'GET' && path === CHECKPOINT_RESTORE_PATH)
+        return serveCheckpointRestore(relay, search, open);
     if (request.method !== 'PUT') return BAD_REQUEST;
     if (path === CHECKPOINT_CHUNK_PATH) return serveCheckpointChunk(relay, { request, search }, open);
     if (path === CHECKPOINT_MANIFEST_PATH) return serveCheckpointManifest(relay, request, open);
     return BAD_REQUEST;
+}
+
+/** The restore step's read: the chunk at `offset` as base64 beside its sha256, so the control channel stays JSON. */
+async function serveCheckpointRestore(
+    relay: CheckpointRelay,
+    search: string,
+    open: () => boolean
+): Promise<ExportAnswer> {
+    const offset = Number(new URLSearchParams(search).get('offset') ?? Number.NaN);
+    if (!count(offset)) return BAD_REQUEST;
+    const chunk = await relay.readChunk(offset).catch(relayFailed);
+    if (!open()) return GONE;
+    if (chunk === null) return { status: HTTP_NOT_FOUND, body: { error: 'the board holds no checkpoint chunk there' } };
+    if ('status' in chunk) return chunk;
+    return { status: HTTP_OK, body: { bytes: Buffer.from(chunk.bytes).toString('base64'), sha256: chunk.sha256 } };
 }
 
 async function serveCheckpointChunk(

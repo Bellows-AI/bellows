@@ -7,7 +7,7 @@ import type { Read } from './runner.js';
 import type { RuntimeSample } from './runner.js';
 import { UUID } from './publish.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, MERGE_PATCH_CONTENT_TYPE } from './http.js';
-import type { BoardLease } from './board.js';
+import type { Board, BoardLease } from './board.js';
 import type { KillLedger } from './kill-ledger.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import type { TaskGroup } from './k8s-group.js';
@@ -329,6 +329,8 @@ export interface K8sDeps {
      * that carries no claim sequence (`takeOverStaleClaim`). Absent, such a claim is stood down on.
      */
     leases?: (ids: readonly string[]) => Promise<BoardLease[] | null>;
+    /** The board's checkpoint read, for a continuing claim whose task volume is gone (`task-restore.ts`). */
+    checkpoints?: Pick<Board, 'checkpoint'>;
     /**
      * The supervised-step channel (issue #771) every sync, probe, snapshot, publish and helper runs
      * through, and the endpoint a supervisor-only group (a terminal reclaim) is served on. Absent,
