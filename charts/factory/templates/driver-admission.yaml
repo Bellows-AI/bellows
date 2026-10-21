@@ -293,7 +293,7 @@ spec:
               resources: ['secrets', 'configmaps']
             - apiGroups: ['']
               apiVersions: ['v1']
-              operations: ['CREATE', 'DELETE']
+              operations: ['CREATE', 'UPDATE', 'DELETE']
               resources: ['persistentvolumeclaims']
             - apiGroups: ['']
               apiVersions: ['v1']
@@ -325,11 +325,24 @@ spec:
                   '-' + variables.target.metadata.labels['factory.task-generation'])
           message: 'the driver creates and deletes only task volume claims named for their labelled thread root and generation'
         - expression: >-
-              request.kind.kind != 'PersistentVolumeClaim' || request.operation == 'DELETE' ||
+              request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'CREATE' ||
               (object.spec.accessModes.all(a, a in ['ReadWriteOnce', 'ReadWriteOncePod']) &&
                 !has(object.spec.volumeName) && !has(object.spec.dataSource) && !has(object.spec.dataSourceRef){{ with .Values.taskVolume.storageClass }} &&
                 has(object.spec.storageClassName) && object.spec.storageClassName == {{ . | squote }}{{ end }})
           message: 'a task volume claim is never ReadWriteMany and names no volume or data source, and takes the chart class'
+        # The one change the driver makes to a claim it created (issue #775): the unschedulable label.
+        - expression: >-
+              request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'UPDATE' ||
+              (object.spec == oldObject.spec &&
+                has(object.metadata.annotations) == has(oldObject.metadata.annotations) &&
+                (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations) &&
+                has(object.metadata.finalizers) == has(oldObject.metadata.finalizers) &&
+                (!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers) &&
+                has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences) &&
+                (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences) &&
+                object.metadata.labels.all(k, k == 'factory.task-unschedulable' || (k in oldObject.metadata.labels && oldObject.metadata.labels[k] == object.metadata.labels[k])) &&
+                oldObject.metadata.labels.all(k, k == 'factory.task-unschedulable' || k in object.metadata.labels))
+          message: 'the driver changes a task volume claim by its unschedulable label alone'
         - expression: >-
               request.kind.kind != 'Secret' ||
               (variables.target.metadata.name.matches({{ squote $secretName }}) &&

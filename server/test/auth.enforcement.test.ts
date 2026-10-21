@@ -231,6 +231,11 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/review-read`, 'worker'],
     [`/api/jobs/${JOB_ID}/artifact/chunk`, 'worker'],
     [`/api/jobs/${JOB_ID}/artifact/manifest`, 'worker'],
+    // The restore reads (issue #775): the thread's checkpoint and raw transcripts, under the live lease.
+    [`/api/jobs/${JOB_ID}/checkpoint`, 'worker'],
+    [`/api/jobs/${JOB_ID}/checkpoint/chunk`, 'worker'],
+    [`/api/jobs/${JOB_ID}/transcripts`, 'worker'],
+    [`/api/jobs/${JOB_ID}/transcripts/chunk`, 'worker'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the

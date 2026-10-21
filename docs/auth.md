@@ -40,6 +40,9 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   `server/src/db/migrate.ts` (`LOCAL_LOGIN`), `server/test/config.auth.test.ts`.
 - **An idempotency key is scoped to org, caller and operation**, and a replay re-passes the route's credential
   and author check. `server/src/db/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
+- **The restore reads (`checkpoint`, `transcripts`) are worker routes whose credential is the job's live lease** in
+  the body: a lost, foreign or unknown lease reads nothing. `server/src/routes/job-handlers-restore.ts`,
+  `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`.
 - **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing
   or under 32 characters), so a claim is offered every org's queue. `server/src/config.ts`.
 - **`POST /api/sessions/branch` demands an org-bound credential in github mode** (the runner's lease pair or a

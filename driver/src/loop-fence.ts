@@ -219,8 +219,16 @@ function leaveConclusion(
 
 /** The halt a failed checkout sync ends the attempt with: always a fault, config when the script named a kind. */
 export function syncFailureHalt(synced: SyncResult): SetupHalt {
+    // A thread whose task volume is gone and whose checkpoint cannot rebuild it: its own kind, for a person.
+    if (synced.kind === 'checkpoint_unrestorable') {
+        return faultHalt(
+            `checkout restore failed: ${synced.reason}`,
+            `The task's checkout could not be restored before the run: ${synced.reason}`,
+            'checkpoint_unrestorable'
+        );
+    }
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
-    const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
+    const deterministic = synced.kind !== undefined && (SYNC_FAILURE_KINDS as readonly string[]).includes(synced.kind);
     return faultHalt(
         `checkout sync failed: ${synced.reason}`,
         `The checkout could not be synced with the remote before the run: ${synced.reason}`,

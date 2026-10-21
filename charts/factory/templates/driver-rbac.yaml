@@ -55,10 +55,11 @@ rules:
       resources: ['pods']
       verbs: ['delete', 'list']
     # The thread's task volume (issue #775): the driver creates one claim per root thread and reads
-    # it back on a later attempt. The admission policy admits only the claim's name, labels and shape.
+    # it back on a later attempt, and `patch` labels one no pod can be scheduled onto. The admission
+    # policy admits only the claim's name, labels and shape, and that one label.
     - apiGroups: ['']
       resources: ['persistentvolumeclaims']
-      verbs: ['create', 'get', 'list', 'delete']
+      verbs: ['create', 'get', 'list', 'delete', 'patch']
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']

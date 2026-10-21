@@ -326,10 +326,10 @@ expect_contains     'the driver role lists and deletes pods, never creates one' 
     "resources: ['pods']
       verbs: ['delete', 'list']"
 # Issue #775: the driver creates one task volume claim per root thread, reads it back and, from the
-# slices that follow, deletes it.
+# slices that follow, deletes it, and labels one no pod can be scheduled onto (patch).
 expect_contains     'the driver role manages the task volume claims' "$rbac" \
     "resources: ['persistentvolumeclaims']
-      verbs: ['create', 'get', 'list', 'delete']"
+      verbs: ['create', 'get', 'list', 'delete', 'patch']"
 expect_not_contains 'the driver role creates no Service'    "$rbac" "resources: ['services']"
 expect_not_contains 'the driver role reads no event'        "$rbac" "resources: ['events']"
 # The gate sidecar's in-place resize (issue #773): patch on the resize subresource and no more.
@@ -797,6 +797,18 @@ expect_contains 'the admission policy fences deletes by label' "$admission" "'fa
 expect_contains 'the admission policy matches the gate resize' "$admission" "operations: ['UPDATE']
               resources: ['pods/resize']"
 expect_contains 'the admission policy lets a resize change only the gate' "$admission" "c.name == 'gate'"
+# Issue #775: the claim's one update is its unschedulable label (the Role's `patch`), never its spec.
+expect_contains 'the admission policy matches the task volume claim update' "$admission" "operations: ['CREATE', 'UPDATE', 'DELETE']
+              resources: ['persistentvolumeclaims']"
+expect_contains 'the admission policy lets a claim change only its unschedulable label' "$admission" \
+    'the driver changes a task volume claim by its unschedulable label alone'
+expect_contains 'the admission policy holds a claim spec fixed on update' "$admission" 'object.spec == oldObject.spec'
+expect_contains 'the admission policy holds a claim annotations fixed on update' "$admission" \
+    '(!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)'
+expect_contains 'the admission policy holds a claim finalizers fixed on update' "$admission" \
+    '(!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers)'
+expect_contains 'the admission policy holds a claim ownerReferences fixed on update' "$admission" \
+    '(!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)'
 expect_not_contains 'the admission policy admits no checkout claim update' "$admission" 'factory.revoked'
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"

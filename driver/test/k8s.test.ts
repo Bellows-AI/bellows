@@ -943,9 +943,9 @@ const podName = `${runnerJobName(job)}-xxxxx`;
 
 const { FAKE, claimServer, fakeRequest, routed } = k8sApiserver({ namespace, podName });
 
-/** The thread's task volume, as `prepare` asks the apiserver for it: a read that finds nothing, then the create. */
-const taskVolumeCalls = (j: BoardJob): string[] => [
-    `GET /api/v1/namespaces/factory/persistentvolumeclaims/${taskVolumeName(j)}`,
+/** The thread's task volume, as `prepare` asks the apiserver for it: a label list that finds nothing, then the create. */
+const taskVolumeCalls = (): string[] => [
+    'GET /api/v1/namespaces/factory/persistentvolumeclaims',
     'POST /api/v1/namespaces/factory/persistentvolumeclaims',
 ];
 
@@ -1287,15 +1287,34 @@ describe('the worktree sync', () => {
     // Its sync is a RESTORE: the step carries the literal, no credential helper even with a
     // token, and no claim env at all.
     it('carries RESTORE for a claim that continues a session, with no helper and no claim env', async () => {
+        // The thread's volume is there (a continuing claim with none is restored from a checkpoint instead).
+        const held = () =>
+            routed((method, path) =>
+                method === 'GET' && path.startsWith(`/api/v1/namespaces/${namespace}/persistentvolumeclaims`)
+                    ? {
+                          status: 200,
+                          body: JSON.stringify({
+                              items: [
+                                  {
+                                      metadata: {
+                                          name: taskVolumeName(repoJob),
+                                          labels: { [TASK_ROOT_LABEL]: repoJob.id },
+                                      },
+                                  },
+                              ],
+                          }),
+                      }
+                    : undefined
+            ).request;
         const followUp = fakeSteps();
-        await sync({ ...repoJob, followUp: true }, followUp, undefined, 't0k-3n');
+        await sync({ ...repoJob, followUp: true }, followUp, held(), 't0k-3n');
         expect(syncOf(followUp).env.RESTORE).toBe('1');
         expect(syncOf(followUp).env).not.toHaveProperty('CRED_HELPER');
         expect(JSON.stringify(syncOf(followUp))).not.toContain('t0k-3n');
 
         // A parked job resumed (resumeSessionId without followUp) is the same mid-task hazard.
         const parked = fakeSteps();
-        await sync({ ...repoJob, resumeSessionId: SESSION }, parked, undefined, 't0k-3n');
+        await sync({ ...repoJob, resumeSessionId: SESSION }, parked, held(), 't0k-3n');
         expect(syncOf(parked).env.RESTORE).toBe('1');
         expect(JSON.stringify(syncOf(parked))).not.toContain('t0k-3n');
 
@@ -2427,7 +2446,7 @@ describe('the kubernetes runner', () => {
             // Secret (the runner's attempt pair), so a Secret never exists without a Job to derive
             // it from (issue #821); the post-create verify, then the resume that starts the pod.
             `GET ${claimPathFor(job.id)}`,
-            ...taskVolumeCalls(job),
+            ...taskVolumeCalls(),
             `POST ${jobsPath(namespace)}`,
             `POST /api/v1/namespaces/factory/secrets`,
             `GET ${claimPathFor(job.id)}`,
@@ -3067,7 +3086,7 @@ describe('the kubernetes runner', () => {
             // The Job created suspended, then the per-attempt Secret, kept with the group: `finish`
             // reaps it, not the run. The resume starts the pod after the post-create verify.
             `GET ${claimPath}`,
-            ...taskVolumeCalls(newerJob),
+            ...taskVolumeCalls(),
             `POST ${jobsPath(namespace)}`,
             `POST /api/v1/namespaces/factory/secrets`,
             `GET ${claimPath}`,
@@ -5413,8 +5432,11 @@ describe("the thread's task volume claim (issue #775)", () => {
         const stored = JSON.stringify(specOf());
         let reads = 0;
         const { request, calls } = routed((method, path) => {
-            if (path !== `${volumes}/${taskVolumeName(job)}` && path !== volumes) return;
-            if (method === 'GET') return reads++ === 0 ? { status: 404, body: '{}' } : { status: 200, body: stored };
+            if (!path.startsWith(volumes)) return;
+            // The thread's claims are listed by label: none the first time, the racing creation's the second.
+            if (method === 'GET') {
+                return { status: 200, body: JSON.stringify({ items: reads++ === 0 ? [] : [JSON.parse(stored)] }) };
+            }
             return { status: 409, body: '{"reason":"AlreadyExists"}' };
         });
         await sync(request);
@@ -5434,9 +5456,12 @@ describe("the thread's task volume claim (issue #775)", () => {
         const foreign = specOf();
         foreign.metadata.labels[TASK_ROOT_LABEL] = '66666666-6666-4666-8666-666666666666';
         const { request, calls } = routed((method, path) =>
-            method === 'GET' && path.startsWith(volumes) ? { status: 200, body: JSON.stringify(foreign) } : undefined
+            method === 'GET' && path.startsWith(volumes)
+                ? { status: 200, body: JSON.stringify({ items: [foreign] }) }
+                : undefined
         );
-        await expect(sync(request)).rejects.toThrow(/not the task volume/);
+        // The listing is by the thread's label, so another thread's claim in it is a listing that proves nothing.
+        await expect(sync(request)).rejects.toThrow(/listing the task volumes/);
         expect(posts(calls)).toEqual([]);
     });
 
@@ -5719,7 +5744,9 @@ describe('the kubernetes runner under opencode', () => {
             if (path === `${ns}/pods/${podName}/log`) return Promise.resolve({ status: 200, body: 'did the work\n' });
             // The thread's task volume: absent on the first read, created by the POST.
             if (path.startsWith(`${ns}/persistentvolumeclaims`)) {
-                return Promise.resolve(method === 'POST' ? { status: 201, body: '{}' } : { status: 404, body: '{}' });
+                return Promise.resolve(
+                    method === 'POST' ? { status: 201, body: '{}' } : { status: 200, body: '{"items":[]}' }
+                );
             }
             // The per-attempt Secret (the runner's attempt pair), created and reaped per attempt.
             if (path === `${ns}/secrets`) {

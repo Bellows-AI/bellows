@@ -1,5 +1,6 @@
 import { JOB_LABEL } from './labels.js';
-import { ensureTaskVolume } from './docker-task-volume.js';
+import { ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
+import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
 import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
 import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
@@ -15,7 +16,7 @@ import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from './supervisor-contract
 import { agentBackstopMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { rm, writeFile } from 'node:fs/promises';
-import type { BoardJob } from './board.js';
+import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { abortableSleep, anyOf, type Sleep } from './poll.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
@@ -115,6 +116,8 @@ interface RunnerDeps {
     /** The supervised-step channel and the endpoint a supervisor-only group is served on (`step-control.ts`). */
     steps?: StepSink;
     endpoint?: SupervisorEndpoint;
+    /** The board's checkpoint read, for a continuing claim whose task volume is gone (`task-restore.ts`). */
+    checkpoints?: Pick<Board, 'checkpoint'>;
     /** The attempt groups this runner created, by lease token: one per attempt, never shared. */
     groups: Map<string, GroupState>;
     /**
@@ -302,12 +305,21 @@ async function dockerSyncCheckout(
     if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced
     try {
         await ensureGroup(deps, job, session, signal);
-        return await runSyncStep(stepHostOf(deps), job, githubToken);
+        const host = stepHostOf(deps);
+        // A volume made by a restore is filled before the sync looks at it; the generation it replaces goes after.
+        const restored = await restoreTaskTree(host, job, {
+            githubToken,
+            removeOlder: (generations) => removeTaskVolumes(deps.execDocker, job, generations, signal),
+        });
+        if (restored && !restored.ok) return restored;
+        return await runSyncStep(host, job, githubToken);
     } catch (e) {
         // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
         // and nothing to hand back: the loop leaves the job to its lease.
         await removeGroup(deps.execDocker, job);
         deps.groups.delete(job.leaseToken);
+        // A thread that cannot be rebuilt is a verdict, not a fault of the daemon: the loop fails the task with it.
+        if (e instanceof CheckpointUnrestorable) return unrestorableResult(e);
         throw e;
     }
 }
@@ -666,13 +678,19 @@ export function createDockerRunner(
         if (input) pending.child.stdin?.end(input);
         return pending;
     },
-    extras: { files?: RunnerFiles; steps?: StepSink; endpoint?: SupervisorEndpoint; sleep?: Sleep } = {}
+    extras: {
+        files?: RunnerFiles;
+        steps?: StepSink;
+        endpoint?: SupervisorEndpoint;
+        sleep?: Sleep;
+        checkpoints?: Pick<Board, 'checkpoint'>;
+    } = {}
 ): Runner {
     const deadlines = createDeadlineRegistry();
     const ledger = createKillLedger({
         write: (job, kill) => recordDockerKill(execDocker, job, kill),
     });
-    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep } = extras;
+    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep, checkpoints } = extras;
     const deps: RunnerDeps = {
         config,
         execDocker,
@@ -685,6 +703,7 @@ export function createDockerRunner(
         adopted: new Map(),
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
+        ...(checkpoints ? { checkpoints } : {}),
     };
     return {
         kill: (job) => dockerKill(deps, job),

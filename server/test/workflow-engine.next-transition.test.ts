@@ -130,6 +130,18 @@ describe('nextTransition: blocked and no-progress rests', () => {
         expect(t).toEqual({ action: 'rest', reason: 'policy' });
     });
 
+    // The thread's tree cannot be rebuilt: a custom failed edge would only ask for the same restore again.
+    it('rests an unrestorable thread, a custom failed edge included', () => {
+        const t = nextTransition({
+            params: {},
+            command: '',
+            snapshot: { ...snapshot, edges: [{ from: 'implement', to: 'fix', when: 'failed' }] },
+            rows: [row({ id: 'r1', node: 'implement' })],
+            completed: done({ id: 'r1', status: 'failed', failureKind: 'checkpoint_unrestorable' }),
+        });
+        expect(t).toEqual({ action: 'rest', reason: 'checkpoint_unrestorable' });
+    });
+
     it('rests a gate-failed edge over a tree the run left unchanged', () => {
         const t = nextTransition({
             params: {},

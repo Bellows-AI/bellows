@@ -388,6 +388,10 @@ function stubStore(
             boom();
             return null;
         },
+        async restoreScope() {
+            boom();
+            return { result: 'missing' };
+        },
         async session(id, _token, sessionId) {
             boom();
             stub.sessions.push({ id, sessionId });

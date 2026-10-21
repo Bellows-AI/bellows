@@ -249,12 +249,28 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
     const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
     if (stuck && PULL_REASONS.has(stuck.reason)) {
-        return { blocked: pullDetail(stuck), containerSeen: true, waiting: stuck, held, podState, agentStarted };
+        return {
+            blocked: pullDetail(stuck),
+            containerSeen: true,
+            waiting: stuck,
+            held,
+            podState,
+            agentStarted,
+            volumeAffinity: null,
+        };
     }
     const containerSeen =
         containers.length > 0 &&
         containers.every((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
-    return { blocked: null, containerSeen, waiting: stuck, held, podState, agentStarted };
+    return {
+        blocked: null,
+        containerSeen,
+        waiting: stuck,
+        held,
+        podState,
+        agentStarted,
+        volumeAffinity: volumeAffinityOf(pod),
+    };
 }
 
 export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
@@ -268,7 +284,29 @@ export interface ImagePullStatus {
     podState: PodStartState;
     /** The agent container is running or ended: once released, the run has happened. */
     agentStarted: boolean;
+    /** The scheduler's words when the pod is held Pending by its volume's node affinity (#775); else null. */
+    volumeAffinity: string | null;
 }
+
+const NODES_AVAILABLE = /^0\/(\d+) nodes are available:([^.]*)/;
+const AFFINITY_COUNT = /(?:^|[\s,])(\d+) node\(s\) had volume node affinity conflict/;
+
+/**
+ * The scheduler's words for a pod EVERY node refused because of where its volume lives, else null: the
+ * volume is faulted only when the affinity count equals the node count. A mixed message ("2 Insufficient
+ * cpu, 3 node(s) had volume node affinity conflict") or one that does not parse proves a healthy volume
+ * and is an ordinary transient wait.
+ */
+const volumeAffinityOf = (
+    pod: { status?: { conditions?: { type?: string; status?: string; message?: string }[] } } | undefined
+) => {
+    const message = pod?.status?.conditions?.find((c) => c.type === 'PodScheduled' && c.status === 'False')?.message;
+    const available = message ? NODES_AVAILABLE.exec(message) : null;
+    const conflicts = available ? AFFINITY_COUNT.exec(available[2] ?? '') : null;
+    return available && conflicts && Number(available[1]) > 0 && conflicts[1] === available[1]
+        ? (message ?? null)
+        : null;
+};
 
 const PULL_REASONS: ReadonlySet<string> = new Set(['ImagePullBackOff', 'ErrImagePull']);
 const STUCK_REASONS: ReadonlySet<string> = new Set([...PULL_REASONS, 'InvalidImageName', 'CreateContainerConfigError']);

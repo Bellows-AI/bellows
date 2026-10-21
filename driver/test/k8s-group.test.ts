@@ -6,6 +6,7 @@ import { holderGroupsOf } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { TASK_UNSCHEDULABLE_LABEL } from '../src/task-volume.js';
 import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
 import { createStepBroker, type StepBroker, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import {
@@ -374,6 +375,107 @@ describe('the task group of one attempt', () => {
         // No step was submitted to a supervisor that never came up, and the group is gone.
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+    });
+
+    describe('a task pod held Pending by its volume', () => {
+        const AFFINITY = '0/3 nodes are available: 3 node(s) had volume node affinity conflict.';
+        const pending = (message: string) => ({
+            phase: 'Pending',
+            conditions: [{ type: 'PodScheduled', status: 'False', reason: 'Unschedulable', message }],
+        });
+        /** The sync of an attempt whose supervisor never answers, with the volume patches the driver sent. */
+        async function stuckSync(podStatus: unknown, steal?: { holder: string; fromRead: number }) {
+            const api = cluster({ podStatus });
+            const patched: { path: string; body: unknown }[] = [];
+            let claimReads = 0;
+            let readsAtPatch = 0;
+            const request: K8sRequest = async (method, path, body) => {
+                if (method === 'PATCH' && path.includes('/persistentvolumeclaims/')) {
+                    patched.push({ path, body });
+                    readsAtPatch = claimReads;
+                }
+                const answer = await api.request(method, path, body);
+                // From the given claim read on, the checkout claim is held by another attempt.
+                if (method === 'GET' && path.includes('/configmaps/')) claimReads += 1;
+                if (
+                    steal &&
+                    claimReads >= steal.fromRead &&
+                    method === 'GET' &&
+                    path.includes('/configmaps/') &&
+                    answer.status === 200
+                ) {
+                    const claim = JSON.parse(answer.body) as { data: object };
+                    return {
+                        status: 200,
+                        body: JSON.stringify({ ...claim, data: { ...claim.data, holder: steal.holder } }),
+                    };
+                }
+                return answer;
+            };
+            const s = steps(() => ok(), false);
+            const thrown = await runner(request, s.sink)
+                .syncCheckout(job, undefined, SESSION)
+                .then(
+                    () => null,
+                    (e: unknown) => e
+                );
+            return { thrown, patched, api, readsAtPatch };
+        }
+
+        it('is an infrastructure loss, never a failure: refused as transient, its volume marked unschedulable', async () => {
+            const { thrown, patched, api } = await stuckSync(pending(AFFINITY));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({
+                startupCause: 'transient',
+                message: expect.stringContaining('volume node affinity'),
+            });
+            expect(patched).toEqual([
+                {
+                    path: expect.stringMatching(/\/persistentvolumeclaims\/.+/),
+                    body: { metadata: { labels: { [TASK_UNSCHEDULABLE_LABEL]: 'true' } } },
+                },
+            ]);
+            // The group is gone, as for any refused start; the volume is not deleted here.
+            expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+        });
+
+        it.each([
+            [
+                'a mix of reasons',
+                '0/5 nodes are available: 2 Insufficient cpu, 3 node(s) had volume node affinity conflict.',
+            ],
+            [
+                'a taint beside the conflict',
+                '0/3 nodes are available: 1 node(s) had untolerated taint, 2 node(s) had volume node affinity conflict.',
+            ],
+            ['words without a node count', 'pod has unbound volumes: volume node affinity conflict'],
+        ])('marks nothing for %s: the volume is not proven the fault', async (_name, message) => {
+            const { thrown, patched } = await stuckSync(pending(message));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({ startupCause: 'transient' });
+            expect(patched).toEqual([]);
+        });
+
+        it('marks nothing once the claim is no longer ours: a fenced attempt touches no volume', async () => {
+            // The claim reads of an undisturbed attempt end with the one before the mark: lose just that one.
+            const { readsAtPatch } = await stuckSync(pending(AFFINITY));
+            const { thrown, patched } = await stuckSync(pending(AFFINITY), {
+                holder: 'another-lease',
+                fromRead: readsAtPatch,
+            });
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(patched).toEqual([]);
+        });
+
+        it('marks nothing for a pod held Pending for another reason: not a volume fault', async () => {
+            const { thrown, patched } = await stuckSync(pending('0/3 nodes are available: 3 Insufficient cpu.'));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(patched).toEqual([]);
+        });
     });
 
     it('creates no group for a lease its driver killed, for the sync or any later step', async () => {

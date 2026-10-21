@@ -2,7 +2,8 @@ import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
 import { jobPath } from './k8s-auxspec.js';
 import { ledgerOf, RunnerKilled } from './k8s-kill.js';
-import { launch, prepare, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { launch, prepare, readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { markTaskVolumeUnschedulable } from './k8s-task-volume.js';
 import { jobsPath, runnerJobSpec, runnerName } from './k8s-podspec.js';
 import { isLease } from './k8s-shapes.js';
 import { asIdentified } from './k8s-pod-shapes.js';
@@ -129,7 +130,11 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
  */
 async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): Promise<void> {
     const image = executorImage(deps.config, job.executorType);
-    const seen: { last: PodStartState; unproven: string | null } = { last: 'unread', unproven: null };
+    const seen: { last: PodStartState; unproven: string | null; affinity: string | null } = {
+        last: 'unread',
+        unproven: null,
+        affinity: null,
+    };
     const contacted = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
         signal: ledgerOf(deps).signal(job),
@@ -139,11 +144,25 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
             if (refused) throw refused;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
             if (pull.podState !== 'unread') seen.last = pull.podState;
+            // The latest word only: a pod that got scheduled after all has nothing to say about its volume.
+            if (pull.podState !== 'unread') seen.affinity = pull.volumeAffinity;
         },
     });
     if (contacted) return;
     if (seen.unproven) throw new Error(seen.unproven);
     const why = `the task supervisor of ${jobName} never came up within ${GROUP_UP_WAIT_MS}ms`;
+    if (seen.affinity) {
+        // An infrastructure loss (#775), never a run failure: the volume sits in a zone no node can take. It is
+        // marked so no claim adopts it again; the next one restores the thread into a new generation.
+        // Only under the checkout claim: an attempt another one has taken over labels no volume.
+        const unmarked = await (async () => {
+            if ((await readClaim(deps, job))?.holder !== job.leaseToken)
+                return ' (the claim is no longer ours: the volume is left unmarked)';
+            await markTaskVolumeUnschedulable(deps, job);
+            return '';
+        })().catch((e: unknown) => ` (the volume could not be marked: ${(e as Error).message})`);
+        throw new StartupRefused(`${why}: ${seen.affinity}${unmarked}`, 'transient');
+    }
     if (seen.last === 'none' || seen.last === 'starting') throw new StartupRefused(why, 'transient');
     throw new Error(why);
 }

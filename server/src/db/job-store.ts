@@ -45,6 +45,7 @@ import {
     listTasksOf,
     leasesOf,
     artifactScopeOf,
+    restoreScopeOf,
 } from './job-store-reads.js';
 import {
     wallTickFragment,
@@ -81,6 +82,7 @@ function workerMethods(
     | 'stageConclusion'
     | 'leases'
     | 'artifactScope'
+    | 'restoreScope'
 > {
     return {
         async claim(worker, leaseSeconds) {
@@ -141,6 +143,11 @@ function workerMethods(
         async artifactScope(id) {
             await gate();
             return artifactScopeOf(ctx, id);
+        },
+
+        async restoreScope(id, leaseToken) {
+            await gate();
+            return restoreScopeOf(ctx, id, leaseToken);
         },
     };
 }

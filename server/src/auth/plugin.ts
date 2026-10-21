@@ -57,6 +57,9 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
     // request authorizes the attempt (job-handlers-artifacts.ts), and no lease is consulted.
     /^\/api\/jobs\/[^/]+\/artifact\/(chunk|manifest)$/,
+    // The restore reads (issue #775): the thread's checkpoint and raw transcripts, authorized by the
+    // job's live lease in the body (job-handlers-restore.ts) — the lease is the credential.
+    /^\/api\/jobs\/[^/]+\/(checkpoint|transcripts)(\/chunk)?$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector. The branch route is NOT here — see BRANCH. */

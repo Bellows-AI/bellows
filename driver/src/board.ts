@@ -1,8 +1,10 @@
 import { artifactCalls } from './artifact-calls.js';
+import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
 import { reclaimCalls } from './reclaim-calls.js';
 import { verdictCalls } from './board-verdict.js';
+import type { TaskRestore } from './task-restore.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
@@ -153,6 +155,13 @@ export interface BoardJob {
      * it, and the job is then its own root — the correct answer for every non-follow-up.
      */
     rootJobId?: string | null;
+    /**
+     * The generation of the thread's task volume this attempt runs on, and the restore still owed to it
+     * (issue #775). Set by the driver's runner once the claim has found, adopted or created the volume,
+     * never read off the wire.
+     */
+    taskGeneration?: number | undefined;
+    taskRestore?: TaskRestore | undefined;
     /**
      * The branch the run bases its checkout and its PR on — a batch task's target branch. Absent
      * outside a batch, where the remote default (`origin/HEAD`) is the base. Copied from the
@@ -391,6 +400,7 @@ export type FailureKind =
     | 'services'
     | 'config'
     | 'policy'
+    | 'checkpoint_unrestorable'
     | 'runner_error';
 
 /**
@@ -493,6 +503,21 @@ export interface Board {
         ref: ArtifactStreamRef,
         manifest: ArtifactManifest
     ): Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
+    /**
+     * What the board holds as the thread's checkpoint (issue #775), read under the live lease. Throws
+     * on a lease the board no longer honours and on an answer it cannot read: never a guess.
+     */
+    checkpoint(job: BoardJob): Promise<CheckpointRead>;
+    /** One chunk of that checkpoint's stream, its sha256 verified; null when the board has no such chunk. */
+    checkpointChunk(job: BoardJob, offset: number): Promise<{ bytes: Uint8Array; sha256: string } | null>;
+    /** The thread's raw Claude transcript streams (issue #775), read under the live lease like `checkpoint`. */
+    transcripts(job: BoardJob): Promise<TranscriptStream[]>;
+    /** One chunk of one such stream, its sha256 verified; null when the board has no such chunk. */
+    transcriptChunk(
+        job: BoardJob,
+        ref: TranscriptRef,
+        offset: number
+    ): Promise<{ bytes: Uint8Array; sha256: string } | null>;
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
@@ -910,6 +935,7 @@ export function createBoard({
 
         ...verdictCalls(post, leaseSeconds),
         ...artifactCalls({ url, token, fetch }),
+        ...checkpointCalls(post),
         ...githubCredentialCall({ url, fetch }),
 
         ...reclaimCalls(post, leaseSeconds),

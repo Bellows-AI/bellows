@@ -240,7 +240,7 @@ export interface CompleteFields {
 /**
  * The structured terminal reasons a verdict may name (issue #339). The route is the value
  * boundary: anything not in this list is refused, so the stored column is always one of these
- * eight spellings or null — "not a failure".
+ * spellings or null — "not a failure".
  */
 export const FAILURE_KINDS: readonly FailureKind[] = [
     'timeout',
@@ -252,6 +252,7 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'services',
     'config',
     'policy',
+    'checkpoint_unrestorable',
     'runner_error',
 ];
 
