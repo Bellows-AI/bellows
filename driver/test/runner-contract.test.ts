@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import { loadDriverConfig } from '../src/config.js';
 import { createDockerRunner } from '../src/docker-runner.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
+import { jobPath } from '../src/k8s-auxspec.js';
+import { runnerJobName } from '../src/k8s-podspec.js';
 import type { BoardJob } from '../src/board.js';
 import { onOwnGroup, ownGroup, type Runner } from '../src/runner.js';
 
@@ -97,4 +99,50 @@ describe('the Runner contract', () => {
             expect(ownGroup({ id: 'j', leaseToken: 'x' } as BoardJob).leaseToken).toBe('x');
         }
     );
+
+    describe('the real members reach the prior group and the new holder\'s claim (#829)', () => {
+        const ID = '11111111-1111-4111-8111-111111111111';
+        const PRIOR = '22222222-2222-4222-8222-222222222222';
+        const NEW = '99999999-9999-4999-8999-999999999999';
+        const taken = { id: ID, leaseToken: NEW, groupLease: PRIOR, claimSeq: 2, executorType: 'claude-code' } as BoardJob;
+        const priorJob = { ...taken, leaseToken: PRIOR } as BoardJob;
+
+        it('docker: kill names the prior lease and never the new one', async () => {
+            const calls: string[][] = [];
+            const runner = createDockerRunner(loadDriverConfig({}), undefined, async (args) => {
+                calls.push(args);
+                return { stdout: '' };
+            });
+
+            await runner.kill(taken);
+
+            const named = calls.flat().join(' ');
+            expect(named).toContain(PRIOR);
+            expect(named).not.toContain(NEW);
+        });
+
+        it('kubernetes: kill ends the prior lease\'s Job and hands back the claim only to the new holder', async () => {
+            const requests: { method: string; path: string }[] = [];
+            const runner = createKubernetesRunner(
+                loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory', RUNNER_SERVICES: '0' }),
+                async (method, path) => {
+                    requests.push({ method, path });
+                    if (path.includes('/configmaps/')) {
+                        return {
+                            status: 200,
+                            body: JSON.stringify({ metadata: { uid: 'claim-uid' }, data: { holder: NEW, claimSeq: '2' } }),
+                        };
+                    }
+                    return { status: 404, body: '{"kind":"Status"}' };
+                }
+            );
+
+            await runner.kill(taken);
+
+            expect(requests.some((r) => r.path.startsWith(jobPath('factory', runnerJobName(priorJob))))).toBe(true);
+            expect(requests.some((r) => r.path.includes(runnerJobName({ ...taken, groupLease: undefined })))).toBe(false);
+            // The claim is the new holder's: given back once the prior group's end is confirmed.
+            expect(requests.some((r) => r.method === 'DELETE' && r.path.includes('/configmaps/'))).toBe(true);
+        });
+    });
 });
