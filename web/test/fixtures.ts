@@ -32,7 +32,6 @@ export function memberSession(
         account: { createdAt: null, lastLoginAt: null },
         organization: BELLOWS,
         organizations: [BELLOWS],
-        workspacePath: null,
         mode: 'github',
         ...rest,
     };

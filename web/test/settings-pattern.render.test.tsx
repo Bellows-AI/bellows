@@ -1,11 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { SettingsSaveActions, UNSAVED_CHANGES_LABEL } from '../src/components/SettingsSaveActions.js';
-import { WORKSPACE_ROOT_BANNER_TITLE, WorkspaceRootBanner } from '../src/components/WorkspaceRootBanner.js';
 
 /**
- * The two pieces every settings editor shares (issue 282): the Save/Cancel footer with its
- * "Unsaved changes" indicator, and the root-null warning banner. Both are presentational, so a
+ * The piece every settings editor shares (issue 282): the Save/Cancel footer with its
+ * "Unsaved changes" indicator. It is presentational, so a
  * static render is a complete render.
  */
 
@@ -61,17 +60,5 @@ describe('SettingsSaveActions', () => {
         const html = actions({ dirty: true, canSave: true });
         expect(html.match(/class="[^"]*\bprimary\b/g)).toHaveLength(1);
         expect(buttonTag(html, 'Save changes')).toContain('primary');
-    });
-});
-
-describe('WorkspaceRootBanner', () => {
-    it('renders a warn banner with the alert glyph, the title and its body, and no button', () => {
-        const html = renderToStaticMarkup(<WorkspaceRootBanner>Set it on the deployment.</WorkspaceRootBanner>);
-        expect(html).toContain('class="banner-warn"');
-        expect(html).toMatch(/<svg[^>]*class="icon"[^>]*aria-hidden="true"/);
-        expect(html).toContain(`class="banner-title">${WORKSPACE_ROOT_BANNER_TITLE}<`);
-        expect(WORKSPACE_ROOT_BANNER_TITLE).toBe('Workspace root not configured');
-        expect(html).toContain('Set it on the deployment.');
-        expect(html).not.toContain('<button');
     });
 });

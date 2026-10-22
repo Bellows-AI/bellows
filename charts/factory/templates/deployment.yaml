@@ -108,10 +108,6 @@ spec:
                       # The organizations are the App's installations, materialized at sign-in
                       # (#99) — there is no org env to set. Install the App on every account this
                       # deployment should serve.
-                      # The checkouts. Same path the runners mount the claim at: the board writes
-                      # there, and `workspacePath` on a claim is relative to this root.
-                      - name: ORG_WORKSPACE_ROOT
-                        value: {{ .Values.dashboard.workspaceRoot | quote }}
                       # Shared admission budgets (server/src/db/job-store-admission.ts); empty is unlimited.
                       - name: ADMISSION_MAX_RUNNING
                         value: {{ .Values.dashboard.admission.maxRunning | quote }}
@@ -119,6 +115,11 @@ spec:
                         value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_REPO
                         value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
+                      {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
+                      # The offline entry reads each repo's .bellows.yaml from this origin.
+                      - name: REPO_CLONE_BASE
+                        value: {{ .Values.driver.repoCloneBase | quote }}
+                      {{- end }}
                       - name: TELEMETRY_SOURCE
                         value: {{ .Values.telemetry.source | quote }}
                       - name: TELEMETRY_TTL_SECONDS
@@ -236,13 +237,8 @@ spec:
                           port: http
                       periodSeconds: 30
                   volumeMounts:
-                      - name: workspaces
-                        mountPath: {{ .Values.dashboard.workspaceRoot }}
                       - name: tmp
                         mountPath: /tmp
             volumes:
-                - name: workspaces
-                  persistentVolumeClaim:
-                      claimName: {{ include "factory.workspaceClaim" . }}
                 - name: tmp
                   emptyDir: {}

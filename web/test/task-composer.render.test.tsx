@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
+import type { UseRepos } from '../src/api/useRepos.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import { type ComposerDraftInput, ComposerDraftProvider } from '../src/composer-draft.js';
 import { WorkflowParameterFields } from '../src/components/WorkflowParameterFields.js';
@@ -23,10 +24,10 @@ describe('the tasks pages', () => {
         loading: true,
         error: null,
         saving: false,
-        save: async () => null,
         saveExecutors: async () => null,
         listExecutorConfigs: async () => null,
     } as unknown as UseWorkspace;
+    const idleRepos = { data: null, loading: true, error: null, refresh: () => {} } as unknown as UseRepos;
 
     const renderPage = (path: string, sessionLoading = false) =>
         renderToStaticMarkup(
@@ -36,7 +37,14 @@ describe('the tasks pages', () => {
                     <Routes>
                         <Route
                             element={
-                                <Outlet context={{ tasks: fakeTasks, workspace: idleWorkspace, sessionLoading }} />
+                                <Outlet
+                                    context={{
+                                        tasks: fakeTasks,
+                                        workspace: idleWorkspace,
+                                        repos: idleRepos,
+                                        sessionLoading,
+                                    }}
+                                />
                             }
                         >
                             <Route path="tasks">
@@ -76,18 +84,39 @@ describe('the tasks pages', () => {
 });
 
 describe('TaskComposer', () => {
-    it('waits for the workspace before offering a repository choice', () => {
-        // "Not known yet" and "known empty" are different sentences: an unreachable workspace must
-        // not read as a member who never picked anything, and there is nothing to type into yet.
-        const html = renderComposer({ repos: null });
+    it('waits for the workspace before offering any choice', () => {
+        const html = renderComposer({ workspaceLoaded: false });
         expect(html).toMatch(/Loading your workspace/);
         expect(html).not.toContain('<textarea');
     });
 
     it('says so, with a way back in, when the workspace could not be loaded', () => {
-        const html = renderComposer({ repos: null, workspaceError: 'Request failed (503)' });
+        const html = renderComposer({ workspaceLoaded: false, workspaceError: 'Request failed (503)' });
         expect(html).toContain('Request failed (503)');
         expect(html).toContain('Retry');
+    });
+
+    // "Not known" and "confirmed empty" are different sentences: a repository read that is still
+    // out, failed, or answered with a named error must never read as "no repositories are tracked".
+    it('waits for the repositories read, without claiming none are tracked', () => {
+        const html = renderComposer({ repos: null });
+        expect(html).toMatch(/Loading repositories/);
+        expect(html).not.toContain('<textarea');
+        expect(html).not.toContain('No repositories tracked');
+    });
+
+    it('names a failed or errored repositories read, with a retry, and never calls it empty', () => {
+        const html = renderComposer({ repos: null, reposError: 'GitHub is unreachable' });
+        expect(html).toContain('GitHub is unreachable');
+        expect(html).toContain('Retry');
+        expect(html).not.toContain('No repositories tracked');
+        expect(html).not.toContain('<textarea');
+    });
+
+    it('says no repositories are tracked only for a confirmed empty list', () => {
+        const html = renderComposer({ repos: [], restored: restoredDraft({ draft: 'fix it' }) });
+        expect(html).toContain('No repositories tracked');
+        expect(html).not.toContain('Loading repositories');
     });
 
     it('offers one repository option per selection, first repository selected by default', () => {
@@ -97,8 +126,8 @@ describe('TaskComposer', () => {
         // executor select does for its own empty list.
         const html = renderComposer({
             repos: [
-                { owner: 'acme', name: 'web', status: 'ready' },
-                { owner: 'acme', name: 'api', status: 'ready' },
+                { owner: 'acme', name: 'web' },
+                { owner: 'acme', name: 'api' },
             ],
         });
         // The Listbox server-renders the trigger only — the options are client-side — so the
@@ -146,16 +175,13 @@ describe('TaskComposer', () => {
         expect(trigger(html)).toContain('>heavy</span></button>');
     });
 
-    it('keeps the composer reachable when no repository is selected, and says where to fix that', () => {
-        // A member with nothing picked still reaches the composer: the pointer at Settings sits
-        // under the repository select, and the launch itself is blocked by the no-synced-repos
-        // verdict (issue 263), tested below.
-        const html = renderComposer({ repos: [] });
+    it('keeps the composer reachable when no repository is tracked, and says where to fix that', () => {
+        // The launch itself is blocked by the no-repos verdict, tested below; the banner under the
+        // prompt points at Settings.
+        const html = renderComposer({ repos: [], restored: restoredDraft({ draft: 'fix it' }) });
         expect(html).toContain('<textarea');
         expect(html).toContain('>Start task<');
-        expect(html).toContain('Select repositories in');
         expect(html).toContain('href="/settings/repos?return=/tasks/new"');
-        expect(html).toContain('to run against a codebase');
         // aria-label, not aria-labelledby: the ListboxButton's label context overrides a
         // labelledby that points outside it, so each select carries its name directly (issue 190).
         // The workflow select renders only once a workflows list exists, so this render carries one.
@@ -211,7 +237,7 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('never emits a placeholder value', () => {
         const html = renderComposer({
-            repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
+            repos: [{ owner: 'acme', name: 'web' }],
             executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             actionError: null,
         });
@@ -263,7 +289,7 @@ describe('TaskComposer — the prompt and the launch', () => {
 
     it('gathers repository, executor and workflow as one row of chips, with no section around them', () => {
         const html = renderComposer({
-            repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
+            repos: [{ owner: 'acme', name: 'web' }],
             executors: [{ name: 'main', type: 'claude', scope: 'user' }],
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
@@ -410,12 +436,12 @@ describe('the redesigned composer (#280)', () => {
         expect(html.match(/class="panel /g) ?? []).toHaveLength(1);
     });
 
-    describe('the repository must be selected and synced (issue 263)', () => {
+    describe('the repository must be tracked and chosen', () => {
         const draft = (patch: Partial<ComposerDraftInput> = {}) => restoredDraft({ draft: 'fix it', ...patch });
 
-        const NOT_SYNCED = [
-            'No repos synced',
-            'Go to the Repositories page to select and sync a repository before running a task.',
+        const NONE_TRACKED = [
+            'No repositories tracked',
+            'Track a repository in Settings to run a task.',
             'href="/settings/repos?return=/tasks/new"',
         ];
 
@@ -429,50 +455,44 @@ describe('the redesigned composer (#280)', () => {
         };
 
         const rows: Row[] = [
-            // Nothing synced keeps Start clickable, so it can open the dialog, and says why.
-            ...(['queued', 'cloning', 'failed', 'purging'] as const).map((status) => ({
-                label: `keeps Start clickable when the only repository is ${status}, and says why`,
-                input: { repos: [{ owner: 'acme', name: 'web', status }], restored: draft() },
-                disabled: false,
-                has: NOT_SYNCED,
-            })),
             {
-                label: 'keeps Start clickable when the workspace has no repositories, and says why',
+                label: 'holds Start when the tracked list is confirmed empty, and says why',
                 input: { repos: [], restored: draft() },
-                disabled: false,
-                has: ['No repos synced'],
+                disabled: true,
+                has: NONE_TRACKED,
             },
             {
-                label: 'does not claim "no repos synced" while the workspace is loading',
+                label: 'does not claim "no repositories tracked" while the read is out',
                 input: { repos: null, restored: draft() },
-                lacks: ['No repos synced', '>Start task<'],
+                lacks: ['No repositories tracked', '>Start task<'],
             },
             {
-                label: 'does not claim "no repos synced" when the workspace failed',
-                input: { repos: null, workspaceError: 'Request failed (503)', restored: draft() },
-                lacks: ['No repos synced', '>Start task<'],
+                label: 'does not claim "no repositories tracked" when the read failed',
+                input: { repos: null, reposError: 'Request failed (503)', restored: draft() },
+                has: ['Request failed (503)'],
+                lacks: ['No repositories tracked', '>Start task<'],
             },
             {
-                label: 'requires a selection when another repository is synced',
+                label: 'requires a selection when repositories are tracked but none is chosen',
                 input: {
-                    repos: [{ owner: 'acme', name: 'web', status: 'ready' }],
+                    repos: [{ owner: 'acme', name: 'web' }],
                     restored: draft({ repo: '', repoTouched: true }),
                 },
                 disabled: true,
                 has: ['No repository selected'],
-                lacks: ['No repos synced'],
+                lacks: ['No repositories tracked'],
             },
             {
-                label: 'holds a chosen repository that is not ready, even though another is ready',
+                label: 'lets any tracked repository launch: there is no sync state to wait on',
                 input: {
                     repos: [
-                        { owner: 'acme', name: 'web', status: 'ready' },
-                        { owner: 'acme', name: 'api', status: 'cloning' },
+                        { owner: 'acme', name: 'web' },
+                        { owner: 'acme', name: 'api' },
                     ],
                     restored: draft({ repo: 'acme/api', workflowRepo: 'acme/api' }),
                 },
-                disabled: true,
-                has: ['Repository not synced', 'acme/api is cloning'],
+                disabled: false,
+                lacks: ['No repositories tracked', 'not synced', 'No repository selected'],
             },
         ];
 
@@ -565,8 +585,8 @@ describe('the redesigned composer (#280)', () => {
     it('restores a held draft exactly: request, workflow, params and step overrides', () => {
         const html = renderComposer({
             repos: [
-                { owner: 'acme', name: 'web', status: 'ready' },
-                { owner: 'acme', name: 'api', status: 'ready' },
+                { owner: 'acme', name: 'web' },
+                { owner: 'acme', name: 'api' },
             ],
             executors: [
                 { name: 'main', type: 'claude-code', scope: 'user' },

@@ -14,7 +14,6 @@ const session = memberSession({
     user: { avatarUrl: 'https://avatars.githubusercontent.com/u/4242.png' },
     membership: { invitedAt: '2026-01-15T09:30:00.000Z', claimedAt: '2026-01-16T10:00:00.000Z' },
     account: { createdAt: '2026-01-15T09:30:00.000Z', lastLoginAt: '2026-08-21T12:00:00.000Z' },
-    workspacePath: '/workspaces/bellows/00000000-0000-4000-8000-000000000001',
 });
 
 const render = (forSession: Session) =>

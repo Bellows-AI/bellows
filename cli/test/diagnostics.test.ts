@@ -28,19 +28,22 @@ const me = {
 };
 
 const workspace = (overrides: Record<string, unknown> = {}) => ({
-    root: '/ws/o1/u1',
-    repos: [
-        { owner: 'acme', name: 'api', status: 'ready', error: null },
-        { owner: 'acme', name: 'web', status: 'cloning', error: null },
-        { owner: 'acme', name: 'old', status: 'failed', error: 'clone refused' },
-    ],
-    orphaned: [],
     executors: [
         { name: 'mine', type: 'claude', suspended: false },
         { name: 'paused', type: 'claude', suspended: true },
     ],
     orgExecutors: [{ name: 'team', type: 'opencode', suspended: false }],
     defaultExecutor: { scope: 'user', name: 'mine' },
+    ...overrides,
+});
+
+const tracked = (overrides: Record<string, unknown> = {}) => ({
+    repos: [
+        { owner: 'acme', name: 'api', private: true, defaultBranch: 'main', pushedAt: null },
+        { owner: 'acme', name: 'web', private: false, defaultBranch: 'main', pushedAt: null },
+    ],
+    installation: null,
+    meta: { fetchedAt: null, error: null },
     ...overrides,
 });
 
@@ -74,6 +77,7 @@ const connections = [
 const board = (overrides: Record<string, () => Response> = {}) => ({
     '/api/version': () => json({ version: '9.9.9' }),
     '/api/auth/me': () => json(me),
+    '/api/repos': () => json(tracked()),
     '/api/workspace': () => json(workspace()),
     '/api/skills': () => json({ skills }),
     '/api/connections': () => json({ connections }),
@@ -268,15 +272,15 @@ describe('bellows job preflight', () => {
         return { code, result: envelope(h.out), calls: h.calls, printed: h.printed };
     };
 
-    it('passes a ready selection, reading only the workspace when nothing else is selected', async () => {
+    it('passes a ready selection, reading only the workspace and the tracked repositories', async () => {
         const { code, result, calls } = await preflight(['--repo', 'acme/api', '--executor', 'mine']);
         expect(code).toBe(0);
         expect(result.data.ready).toBe(true);
         expect(result.data.checks).toEqual([
-            { subject: 'repo', name: 'acme/api', status: 'ok', detail: 'synced and ready' },
+            { subject: 'repo', name: 'acme/api', status: 'ok', detail: 'tracked by this board' },
             { subject: 'executor', name: 'mine', status: 'ok', detail: 'user claude' },
         ]);
-        expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /api/workspace']);
+        expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /api/workspace', 'GET /api/repos']);
     });
 
     it('reads skills and connections only when they are selected, and never writes', async () => {
@@ -297,16 +301,15 @@ describe('bellows job preflight', () => {
         expect(code).toBe(0);
         expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
             'GET /api/workspace',
+            'GET /api/repos',
             'GET /api/skills',
             'GET /api/connections',
         ]);
     });
 
     it.each([
-        ['no --repo', [], 'repo', /pass --repo/],
-        ['a repo outside the selection', ['--repo', 'acme/nope'], 'repo', /not in your selected repositories/],
-        ['a repo still cloning', ['--repo', 'acme/web'], 'repo', /acme\/web is cloning/],
-        ['a repo whose clone failed', ['--repo', 'acme/old'], 'repo', /failed, not synced yet: clone refused/],
+        ['no --repo', [], 'repo', /pass --repo: a task runs against a tracked repository/],
+        ['a repo the board does not track', ['--repo', 'acme/nope'], 'repo', /acme\/nope is not tracked by this board/],
         ['an unknown executor', ['--repo', 'acme/api', '--executor', 'ghost'], 'executor', /no user executor ghost/],
         ['a suspended executor', ['--repo', 'acme/api', '--executor', 'paused'], 'executor', /suspended/],
         [
@@ -375,13 +378,31 @@ describe('bellows job preflight', () => {
         });
     });
 
-    it('leaves the repo unverified on a board with workspaces off', async () => {
+    it('leaves a missing repo unverified while the board names an error on its list', async () => {
         const { code, result } = await preflight(
-            ['--executor', 'mine'],
-            board({ '/api/workspace': () => json(workspace({ root: null, repos: [] })) })
+            ['--repo', 'acme/nope', '--executor', 'mine'],
+            board({ '/api/repos': () => json(tracked({ meta: { fetchedAt: null, error: 'GitHub is unreachable' } })) })
         );
         expect(code).toBe(0);
-        expect(result.data.checks[0]).toMatchObject({ subject: 'repo', status: 'unverified' });
+        expect(result.data.checks[0]).toMatchObject({ subject: 'repo', name: 'acme/nope', status: 'unverified' });
+        expect(result.data.checks[0].detail).toContain('GitHub is unreachable');
+    });
+
+    it('leaves the repo unverified when the tracked list could not be read', async () => {
+        const { code, result } = await preflight(
+            ['--repo', 'acme/api', '--executor', 'mine'],
+            board({ '/api/repos': () => json({ error: 'down', code: 'UNAVAILABLE' }, 503) })
+        );
+        expect(code).toBe(0);
+        expect(result.data.checks[0]).toMatchObject({ subject: 'repo', name: 'acme/api', status: 'unverified' });
+    });
+
+    it('keeps a listed repo ok even when the list carries a refresh error', async () => {
+        const { result } = await preflight(
+            ['--repo', 'acme/api', '--executor', 'mine'],
+            board({ '/api/repos': () => json(tracked({ meta: { fetchedAt: null, error: 'stale' } })) })
+        );
+        expect(result.data.checks[0]).toMatchObject({ status: 'ok' });
     });
 
     it('surfaces an unauthorized identity as the board refusal', async () => {
@@ -395,33 +416,33 @@ describe('bellows job preflight', () => {
 
     it('prints one line per check for a person, and says the board rechecks', async () => {
         const { out, err, io } = harness(board());
-        expect(await run(['job', 'preflight', '--repo', 'acme/web', '--executor', 'mine'], io)).toBe(1);
-        expect(out.join('')).toContain('blocked     repo acme/web  acme/web is cloning, not synced yet');
+        expect(await run(['job', 'preflight', '--repo', 'acme/nope', '--executor', 'mine'], io)).toBe(1);
+        expect(out.join('')).toContain('blocked     repo acme/nope  acme/nope is not tracked by this board');
         expect(err.join('')).toContain('the board rechecks at create and at claim');
     });
 
     it('never prints the token', async () => {
-        const { printed } = await preflight(['--repo', 'acme/web']);
+        const { printed } = await preflight(['--repo', 'acme/nope']);
         expect(printed()).not.toContain('s3cr3t');
     });
 
     it("is advisory: a selection that changes after preflight is the board's refusal at create", async () => {
-        let status = 'ready';
+        let listed = true;
         const routes = board({
-            '/api/workspace': () => json(workspace({ repos: [{ owner: 'acme', name: 'api', status, error: null }] })),
-            // The board's own recheck at create, against the state at that moment.
+            '/api/repos': () => json(tracked({ repos: listed ? tracked().repos : [] })),
+            // The board's own recheck at create, against the list at that moment.
             '/api/jobs': () =>
-                status === 'ready'
+                listed
                     ? json({ id: 'job-1', status: 'queued' }, 201)
-                    : json({ error: 'acme/api is cloning, not synced yet.', code: 'REPO_NOT_READY' }, 409),
+                    : json({ error: 'acme/api is not a tracked repository.', code: 'UNKNOWN_REPO' }, 400),
         });
         const first = harness(routes);
         expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], first.io)).toBe(0);
 
-        status = 'cloning';
+        listed = false;
         const launch = harness(routes);
         expect(await run(['job', 'create', '--repo', 'acme/api', '--json', '--', 'npm test'], launch.io)).toBe(1);
-        expect(envelope(launch.out).error).toMatchObject({ code: 'REPO_NOT_READY', status: 409 });
+        expect(envelope(launch.out).error).toMatchObject({ code: 'UNKNOWN_REPO', status: 400 });
         // Re-running preflight now names the same change the board refused on.
         const again = harness(routes);
         expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], again.io)).toBe(1);

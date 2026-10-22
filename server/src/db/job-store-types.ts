@@ -682,7 +682,7 @@ type SettleRefusal = { result: 'lost' } | { result: 'missing' } | { result: 'con
  *                  parent's session, and a session resumes only in the checkout tree it ran in —
  *                  the author's; a member's command may only ever run in their own tree.
  */
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 /**
  * Why a retry was refused (issue #326). The follow-up set — a session is never a precondition of
@@ -694,9 +694,8 @@ export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbid
  * - `forbidden`    the task was queued by a different account. A retry runs in the thread's
  *                  worktree, which lives in the author's checkout tree — the author-scoped rule
  *                  follow-up takes.
- * - `purging`      the task repo's checkout row is being deleted (issue #92).
  */
-export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 /**
  * What a stop request did.
@@ -885,7 +884,7 @@ export interface JobStore extends PhaseCheckpointStore {
              */
             idempotency?: IdempotencyInput | undefined;
         }
-    ): Promise<{ id: string; replayed?: boolean } | 'purging'>;
+    ): Promise<{ id: string; replayed?: boolean }>;
     /**
      * Queues a follow-up on a finished task: a new job that inherits the parent's repo, executor
      * and — the thread's PRIMARY — session ids, linked through `followUpTo`. Atomic and
@@ -917,8 +916,7 @@ export interface JobStore extends PhaseCheckpointStore {
      *
      * Atomic and conditional like the follow-up insert: the preconditions (terminal, not done,
      * the caller's own task) ride the named row's select with its `for update` lock, so the
-     * refusals are decided in the same statement that would have created the row. The checkout
-     * purge guard (`refuseIfCheckoutPurging`) runs first, on the named row's repo label.
+     * refusals are decided in the same statement that would have created the row.
      */
     createRetry(
         id: string,
@@ -1403,17 +1401,9 @@ export interface TaskListResponse {
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
- *
- * `hasWorkspaces` is bound the same way, and it decides whether a claim reports a `workspacePath`
- * at all. Without a configured workspace root no directory was ever created, so naming one would
- * hand the driver a path that does not exist — and `docker run -w` silently CREATES a missing
- * workdir, so the runner would start in an empty directory rather than failing the job. That is
- * exactly the case the driver's null check exists to catch, and it only reaches it if the board is
- * honest here.
  */
 export interface CreateJobStoreDeps {
     sql: Sql;
-    hasWorkspaces?: boolean;
     orgId: string;
     ready?: Promise<unknown>;
     /**
@@ -1555,7 +1545,6 @@ export interface JobStorePrs {
 export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission'>> {
     sql: Sql;
     orgId: string;
-    hasWorkspaces: boolean;
     env: CreateJobStoreDeps['env'];
     githubApp: boolean;
     planReader: CreateJobStoreDeps['plan'];

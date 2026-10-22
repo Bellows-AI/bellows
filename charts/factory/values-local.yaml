@@ -24,7 +24,6 @@ dashboard:
     image:
         repository: factory-ai
         tag: latest
-    workspaceRoot: /workspaces
 
 # The database and the checkouts live in the `factory-state` release (charts/factory-local-state),
 # not this one, so uninstalling this release keeps both. These two values are that release's

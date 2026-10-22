@@ -120,9 +120,18 @@ export function createRepoSource({
         produce: async () => {
             if (!client) {
                 if (!stored) return { repos: empty, installation: null };
-                const names = await stored();
-                const repos = names.map(parseFullName).filter((repo): repo is InstallationRepo => repo !== null);
-                return narrow({ repos: Object.freeze(repos), installation: null });
+                // Same contract as the client branch: a failed read is recorded and rethrown, so a
+                // caller sees an unconfirmed list (503) rather than an empty one it could refuse on.
+                try {
+                    const names = await stored();
+                    const repos = names.map(parseFullName).filter((repo): repo is InstallationRepo => repo !== null);
+                    const listing = await narrow({ repos: Object.freeze(repos), installation: null });
+                    error = null;
+                    return listing;
+                } catch (failure) {
+                    error = (failure as Error).message;
+                    throw failure;
+                }
             }
             try {
                 const listing = await client.listRepositories();

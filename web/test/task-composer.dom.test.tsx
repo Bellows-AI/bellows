@@ -1,36 +1,33 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import type { WorkspacePayload, WorkspaceRepo } from '../src/api/useWorkspace.js';
+import type { WorkspacePayload } from '../src/api/useWorkspace.js';
 import { type FetchReply, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
 /**
  * The composer's launch triggers over a stubbed board: Start and Ctrl/Cmd+Enter share one gate, and
- * with nothing synced both open the No repos synced dialog instead of queueing. The cross-page
- * launch journey stays in e2e/journeys.spec.ts.
+ * with no tracked repository both stay dark behind the inline banner instead of queueing. The
+ * cross-page launch journey stays in e2e/journeys.spec.ts.
  */
 
 const CREATED = '2026-01-01T00:00:00.000Z';
 const LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 
-const repo = (status: WorkspaceRepo['status'], name = 'web'): WorkspaceRepo => ({
+const tracked = (name = 'web') => ({
     owner: 'acme',
     name,
-    status,
-    error: null,
-    selectedAt: CREATED,
-    readyAt: status === 'ready' ? CREATED : null,
-    branch: null,
-    lastCommit: null,
-    sizeBytes: null,
-    cacheSizeBytes: null,
+    private: true,
+    defaultBranch: 'main',
+    pushedAt: null,
 });
 
-const workspace = (repos: WorkspaceRepo[]): WorkspacePayload => ({
-    root: '/e2e/workspace',
-    repos,
-    orphaned: [],
-    checkoutTotalBytes: null,
+const reposReply = (names: string[], error: string | null = null) => ({
+    repos: names.map((name) => tracked(name)),
+    installation: null,
+    meta: { fetchedAt: CREATED, error },
+});
+
+const workspace: WorkspacePayload = {
     executors: [
         {
             id: '22222222-2222-4222-8222-222222222222',
@@ -43,21 +40,31 @@ const workspace = (repos: WorkspaceRepo[]): WorkspacePayload => ({
     ],
     orgExecutors: [],
     defaultExecutor: { scope: 'user', name: 'e2e-executor' },
-});
+};
 
 function openComposer(
-    repos: WorkspaceRepo[],
+    repos: FetchReply,
     launchReply: FetchReply = { status: 201, body: { id: LAUNCHED_ID, status: 'queued' } }
 ) {
+    let reposAnswer = repos;
     const calls = stubFetch(({ method, url }) => {
-        if (url === '/api/workspace') return workspace(repos);
+        if (url === '/api/workspace') return workspace;
+        if (url === '/api/repos') return reposAnswer;
         // The held draft belongs to a session, so /api/auth/me must answer.
         if (url === '/api/auth/me') return OPEN_BOARD_SESSION;
         if (method === 'POST' && url === '/api/jobs') return launchReply;
     });
     const view = renderApp('/tasks/new');
     const launches = () => calls.filter((c) => c.method === 'POST' && c.url === '/api/jobs');
-    return { ...view, launches };
+    const reads = (path: string) => calls.filter((c) => c.method === 'GET' && c.url === path);
+    return {
+        ...view,
+        launches,
+        reads,
+        answerRepos: (next: FetchReply) => {
+            reposAnswer = next;
+        },
+    };
 }
 
 const KEYBOARD_LAUNCH = '{Control>}{Enter}{/Control}';
@@ -65,7 +72,7 @@ const KEYBOARD_LAUNCH = '{Control>}{Enter}{/Control}';
 describe('the composer launch triggers', () => {
     it('share the button validation on the keyboard: an empty prompt never queues', async () => {
         const user = userEvent.setup();
-        const { router, launches } = openComposer([repo('ready')]);
+        const { router, launches } = openComposer(reposReply(['web']));
         const prompt = await screen.findByLabelText('What should the agent do?');
         await waitFor(() => expect(screen.getByRole('button', { name: /^Executor: / })).toBeTruthy());
 
@@ -83,44 +90,31 @@ describe('the composer launch triggers', () => {
         expect(launches()).toHaveLength(1);
     });
 
-    it('with nothing synced, both open the dialog, queue nothing, and Cancel keeps the draft', async () => {
+    it('with nothing tracked, Start stays dark behind the inline banner and no shortcut queues', async () => {
         const user = userEvent.setup();
-        const { launches } = openComposer([repo('cloning')]);
+        const { launches } = openComposer(reposReply([]));
         const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
         await user.type(prompt, 'fix the login crash');
         const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
-        await waitFor(() => expect(start.disabled).toBe(false));
         await waitFor(() =>
-            expect(document.querySelector('.composer .banner-bad')?.textContent).toContain('No repos synced')
+            expect(document.querySelector('.composer .banner-bad')?.textContent).toContain('No repositories tracked')
         );
-
-        await user.click(start);
-        let dialog = await screen.findByRole('dialog', { name: 'No repos synced' });
-        expect(dialog.textContent).toContain(
-            'Go to the Repositories page to select and sync a repository before running a task.'
-        );
-        await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await waitFor(() => expect(document.activeElement).toBe(start));
-        expect(prompt.value).toBe('fix the login crash');
+        expect(start.disabled).toBe(true);
+        expect(screen.queryByRole('dialog')).toBeNull();
 
         await user.click(prompt);
         await user.keyboard(KEYBOARD_LAUNCH);
-        dialog = await screen.findByRole('dialog', { name: 'No repos synced' });
-        await user.keyboard('{Escape}');
-        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-        await waitFor(() => expect(document.activeElement).toBe(prompt));
+        expect(screen.queryByRole('dialog')).toBeNull();
         expect(launches()).toHaveLength(0);
+        expect(prompt.value).toBe('fix the login crash');
     });
 
-    it('Go to Repositories carries the draft there and back', async () => {
+    it('the banner link carries the draft to Repositories and back', async () => {
         const user = userEvent.setup();
-        const { router } = openComposer([]);
+        const { router } = openComposer(reposReply([]));
         const prompt = await screen.findByLabelText('What should the agent do?');
         await user.type(prompt, 'fix the login crash');
-        await user.click(screen.getByRole('button', { name: 'Start task' }));
-        const dialog = await screen.findByRole('dialog', { name: 'No repos synced' });
-        await user.click(within(dialog).getByRole('button', { name: 'Go to Repositories' }));
+        await user.click(await screen.findByRole('link', { name: 'Go to Repositories' }));
         await waitFor(() =>
             expect(`${router.state.location.pathname}${router.state.location.search}`).toBe(
                 '/settings/repos?return=/tasks/new'
@@ -131,26 +125,46 @@ describe('the composer launch triggers', () => {
         expect(back.value).toBe('fix the login crash');
     });
 
-    it('a chosen repository that is not ready blocks launch even though another is ready', async () => {
+    it('any tracked repository launches, with the chosen one on the request', async () => {
         const user = userEvent.setup();
-        const { launches } = openComposer([repo('ready'), repo('cloning', 'api')]);
+        const { launches, router } = openComposer(reposReply(['web', 'api']));
         const prompt = await screen.findByLabelText('What should the agent do?');
         await user.type(prompt, 'fix the login crash');
         await user.click(await screen.findByRole('button', { name: /^Repository: / }));
         await user.click(await screen.findByRole('option', { name: 'acme/api' }));
-        await waitFor(() =>
-            expect(document.querySelector('.composer .banner-bad')?.textContent).toContain('Repository not synced')
-        );
-        expect((screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement).disabled).toBe(true);
+        expect(document.querySelector('.composer .banner-bad')).toBeNull();
+        const start = screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement;
+        await waitFor(() => expect(start.disabled).toBe(false));
+        await user.click(start);
+        await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
+        expect(launches()).toHaveLength(1);
+        expect((launches()[0]!.body as { repo: string }).repo).toBe('acme/api');
+    });
 
-        await user.click(prompt);
-        await user.keyboard(KEYBOARD_LAUNCH);
-        expect(launches()).toHaveLength(0);
+    it('a failed repositories read is not "no repositories tracked", and Retry re-reads only /api/repos', async () => {
+        const user = userEvent.setup();
+        const { reads, answerRepos } = openComposer({ status: 503, body: { error: 'Repositories are unavailable' } });
+        expect(await screen.findByText(/Repositories are unavailable/)).toBeTruthy();
+        expect(screen.queryByText('No repositories tracked')).toBeNull();
+        expect(screen.queryByLabelText('What should the agent do?')).toBeNull();
+
+        answerRepos(reposReply(['web']));
+        await user.click(screen.getByRole('button', { name: 'Retry' }));
+        expect(await screen.findByLabelText('What should the agent do?')).toBeTruthy();
+        expect(reads('/api/repos')).toHaveLength(2);
+        expect(reads('/api/workspace')).toHaveLength(1);
+    });
+
+    it('an empty list carrying meta.error is an unreadable list, not a confirmed empty one', async () => {
+        const { reads } = openComposer(reposReply([], 'GitHub is unreachable'));
+        expect(await screen.findByText(/GitHub is unreachable/)).toBeTruthy();
+        expect(screen.queryByText('No repositories tracked')).toBeNull();
+        expect(reads('/api/repos')).toHaveLength(1);
     });
 
     it("the board's refusal shows in the composer as an alert and keeps the draft", async () => {
         const user = userEvent.setup();
-        const { router, launches } = openComposer([repo('ready')], {
+        const { router, launches } = openComposer(reposReply(['web']), {
             status: 503,
             body: { error: 'The board is unavailable' },
         });

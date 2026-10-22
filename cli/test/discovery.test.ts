@@ -19,12 +19,6 @@ const visible = (overrides: Record<string, unknown> = {}) => ({
 });
 
 const workspace = (overrides: Record<string, unknown> = {}) => ({
-    root: '/ws/org/user',
-    repos: [
-        { owner: 'acme', name: 'api', status: 'ready', error: null },
-        { owner: 'gone', name: 'old', status: 'ready', error: null },
-    ],
-    orphaned: [],
     executors: [{ id: 'e1', name: 'mine', type: 'claude', suspended: false }],
     orgExecutors: [{ name: 'team', type: 'claude', suspended: true }],
     defaultExecutor: { scope: 'user', name: 'mine' },
@@ -32,62 +26,44 @@ const workspace = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('bellows repo list', () => {
-    it('joins visible with synced and keeps a synced repo the installation no longer shows', async () => {
-        const { out, calls, io } = harness({
-            '/api/repos': () => json(visible()),
-            '/api/workspace': () => json(workspace()),
-        });
+    it('lists the repositories the board tracks, and reads nothing else', async () => {
+        const { out, calls, io } = harness({ '/api/repos': () => json(visible()) });
 
         const code = await run(['repo', 'list', '--json'], io);
 
         expect(code).toBe(0);
         const envelope = JSON.parse(out.join(''));
         expect(envelope.command).toBe('repo list');
-        expect(
-            envelope.data.repos.map((r: { repo: string; visible: boolean; synced: boolean }) => [
-                r.repo,
-                r.visible,
-                r.synced,
-            ])
-        ).toEqual([
-            ['acme/api', true, true],
-            ['acme/web', true, false],
-            ['gone/old', false, true],
+        expect(envelope.data.repos).toEqual([
+            { repo: 'acme/api', private: true, defaultBranch: 'main' },
+            { repo: 'acme/web', private: false, defaultBranch: 'trunk' },
         ]);
-        // Read-only: discovery never writes, so it can neither sync nor provision.
-        expect(calls.every((call) => call.method === 'GET')).toBe(true);
+        expect(Object.keys(envelope.data).sort()).toEqual(['error', 'fetchedAt', 'repos']);
+        // Read-only, and the workspace read is not part of it: nothing here is synced.
+        expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /api/repos']);
     });
 
     it('prints one line per repo for a person', async () => {
-        const { out, io } = harness({
-            '/api/repos': () => json(visible()),
-            '/api/workspace': () => json(workspace()),
-        });
+        const { out, io } = harness({ '/api/repos': () => json(visible()) });
 
         expect(await run(['repo', 'list'], io)).toBe(0);
 
         const text = out.join('');
-        expect(text).toContain('acme/api  visible  synced(ready)  private  main');
-        expect(text).toContain('acme/web  visible  not-synced  public  trunk');
-        expect(text).toContain('gone/old  not-visible  synced(ready)');
+        expect(text).toContain('acme/api  private  main');
+        expect(text).toContain('acme/web  public  trunk');
+        for (const gone of ['visible', 'synced', 'workspace root']) expect(text).not.toContain(gone);
     });
 
-    it('says so for an empty installation, and carries the board error with the last good list', async () => {
-        const empty = harness({
-            '/api/repos': () => json(visible({ repos: [] })),
-            '/api/workspace': () => json(workspace({ repos: [] })),
-        });
+    it('says so for an empty list, and carries the board error with the last good list', async () => {
+        const empty = harness({ '/api/repos': () => json(visible({ repos: [] })) });
         expect(await run(['repo', 'list'], empty.io)).toBe(0);
-        expect(empty.out.join('')).toContain('no repositories visible');
+        expect(empty.out.join('')).toContain('no repositories tracked');
 
         const stale = harness({
             '/api/repos': () => json(visible({ meta: { fetchedAt: null, error: 'GitHub is unreachable' } })),
-            '/api/workspace': () => json(workspace({ root: null, repos: [] })),
         });
         expect(await run(['repo', 'list', '--json'], stale.io)).toBe(0);
-        const data = JSON.parse(stale.out.join('')).data;
-        expect(data.error).toBe('GitHub is unreachable');
-        expect(data.workspaceEnabled).toBe(false);
+        expect(JSON.parse(stale.out.join('')).data.error).toBe('GitHub is unreachable');
     });
 });
 

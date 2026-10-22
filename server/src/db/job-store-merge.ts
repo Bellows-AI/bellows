@@ -141,7 +141,7 @@ async function applyMergeCloseToRoot(tx: TransactionSql, ctx: JobStoreContext, r
 
     // The shared reclaim rule: queues only when EVERY member is terminal — a member still
     // running keeps the tree, and its own settle reclaims it.
-    await queueReclaimIfThreadDone(tx, orgId, ctx.hasWorkspaces, rootJobId);
+    await queueReclaimIfThreadDone(tx, orgId, rootJobId);
     return true;
 }
 
@@ -204,7 +204,7 @@ async function closeMarkedThreadIfTerminal(
               and status in ('succeeded','failed','dead','stopped')
         `;
     }
-    await queueReclaimIfThreadDone(tx, ctx.orgId, ctx.hasWorkspaces, rootJobId);
+    await queueReclaimIfThreadDone(tx, ctx.orgId, rootJobId);
     return true;
 }
 

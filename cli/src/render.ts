@@ -247,21 +247,13 @@ export function renderTaskPage(page: BoardTaskPage): string {
     return lines.length === 0 ? 'no tasks' : lines.join('\n');
 }
 
-/** Repo discovery: one row per repo, visible and synced marked, a note when the list may be thin. */
+/** Repo discovery: one row per tracked repo, a note when the list may be thin. */
 export function renderRepos(discovery: RepoDiscovery): string {
-    const lines = discovery.repos.map((row) => {
-        const visibility = row.private === null ? DASH : row.private ? 'private' : 'public';
-        return [
-            row.repo,
-            row.visible ? 'visible' : 'not-visible',
-            row.synced ? `synced(${row.syncStatus ?? DASH})` : 'not-synced',
-            visibility,
-            row.defaultBranch ?? DASH,
-        ].join('  ');
-    });
+    const lines = discovery.repos.map((row) =>
+        [row.repo, row.private ? 'private' : 'public', row.defaultBranch ?? DASH].join('  ')
+    );
     if (discovery.error) lines.push(`note: the repository list may be stale — ${discovery.error}`);
-    if (!discovery.workspaceEnabled) lines.push('note: this board has no workspace root, so nothing can be synced');
-    return lines.length === 0 ? 'no repositories visible' : lines.join('\n');
+    return lines.length === 0 ? 'no repositories tracked' : lines.join('\n');
 }
 
 /** Executor discovery: scope, name, type, and the flags a selection cares about. */

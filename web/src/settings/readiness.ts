@@ -1,20 +1,17 @@
 import type { UseEnv } from '../api/useEnv.js';
 import { roleLabel, type Session } from '../api/useSession.js';
+import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 
 /**
  * The configuration overview's derivation (issue 180): the five readiness items, computed from
- * exactly what `SettingsLayout` already polls — the session, the shared workspace poll and the
- * shared environment read. Pure data on purpose: no JSX, no fetch effects, no icons, no color
+ * exactly what `SettingsLayout` already reads — the session, the shared workspace and repository
+ * reads and the shared environment read. Pure data on purpose: no JSX, no fetch effects, no icons, no color
  * words. The page renders what this returns, which is what keeps "what is configured" testable
  * without a browser and stops a status sentence from growing markup opinions.
  *
  * Precedence is the if-chain order, pinned by web/test/settings-overview.test.tsx:
  *
- * - a failed repository outranks queued/cloning ones;
- * - a missing workspace root outranks empty executor/repository lists — root-null is deliberate
- *   deployment configuration, but the driver refuses a claim without `workspacePath`, so nothing
- *   here may call the system runnable;
  * - an initial load never reports zero: `loading` with no data reads as "checking", not "empty";
  * - stale data stays: an `error` that arrives WITH data is ignored here (the page renders it as a
  *   separate line), so a later poll failure never replaces the last true answer with an outage —
@@ -54,14 +51,14 @@ export interface ReadinessItem {
 export interface ReadinessInput {
     session: Pick<Session, 'organization' | 'role'> | null;
     workspace: Pick<UseWorkspace, 'data' | 'loading' | 'error'>;
+    repos: Pick<UseRepos, 'data' | 'loading' | 'error'>;
     environment: Pick<UseEnv, 'data' | 'loading' | 'error'>;
 }
 
 /** A count as a sentence fragment with the verb/noun agreeing — "1 repository needs", "2 repositories need". */
 const count = (n: number, singular: string, plural: string): string => `${n} ${n === 1 ? singular : plural}`;
 
-const REVIEW_WORKSPACE: ReadinessAction = { label: 'Review workspace setup', to: '/settings/workspace' };
-const REVIEW_REPOS: ReadinessAction = { label: 'Review repository status', to: '/settings/repos' };
+const REVIEW_REPOS: ReadinessAction = { label: 'Review repositories', to: '/settings/repos' };
 const MANAGE_EXECUTORS: ReadinessAction = { label: 'Manage executors', to: '/settings/executors' };
 
 function organizationItem(session: ReadinessInput['session']): ReadinessItem {
@@ -111,31 +108,20 @@ function workspaceItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             action: null,
         };
     }
-    if (data.root === null) {
-        return {
-            id: 'workspace',
-            heading: 'Workspace',
-            status: 'Workspace is not configured; tasks cannot run',
-            facts: [],
-            tone: 'attention',
-            action: REVIEW_WORKSPACE,
-        };
-    }
     return {
         id: 'workspace',
         heading: 'Workspace',
         status: 'Workspace available',
-        // The quiet path value itself — where the checkouts land is the fact a member verifies.
-        facts: [{ text: data.root }],
+        facts: [],
         tone: 'ok',
         action: { label: 'Open workspace settings', to: '/settings/workspace' },
     };
 }
 
-function repositoriesItem(workspace: ReadinessInput['workspace']): ReadinessItem {
-    const { data, loading } = workspace;
-    if (!data) {
-        if (loading) {
+function repositoriesItem(repos: ReadinessInput['repos']): ReadinessItem {
+    const tracked = trackedRepos(repos);
+    if (tracked.repos === null) {
+        if (tracked.error === null) {
             return {
                 id: 'repositories',
                 heading: 'Repositories',
@@ -145,70 +131,32 @@ function repositoriesItem(workspace: ReadinessInput['workspace']): ReadinessItem
                 action: null,
             };
         }
-        // The workspace item directly above carries the named error — all three of these items read
-        // the same poll, and printing the error three times is noise, not information.
         return {
             id: 'repositories',
             heading: 'Repositories',
             status: 'Repository status unavailable',
-            facts: [],
+            facts: [{ text: tracked.error }],
             tone: 'attention',
             action: null,
         };
     }
-    if (data.root === null) {
+    if (tracked.repos.length === 0) {
         return {
             id: 'repositories',
             heading: 'Repositories',
-            status: 'Repository checkouts require a workspace root',
-            facts: [],
-            tone: 'attention',
-            action: REVIEW_WORKSPACE,
-        };
-    }
-    // Failed outranks in-progress: a clone that failed is the thing to act on, even while others
-    // are still cloning.
-    const failed = data.repos.filter((repo) => repo.status === 'failed');
-    const inProgress = data.repos.filter((repo) => repo.status === 'queued' || repo.status === 'cloning');
-    if (failed.length > 0) {
-        return {
-            id: 'repositories',
-            heading: 'Repositories',
-            status: `${count(failed.length, 'repository needs', 'repositories need')} attention`,
-            facts: failed.map((repo) => ({
-                text: repo.error ? `${repo.owner}/${repo.name} — ${repo.error}` : `${repo.owner}/${repo.name}`,
-            })),
-            tone: 'attention',
-            action: REVIEW_REPOS,
-        };
-    }
-    if (inProgress.length > 0) {
-        return {
-            id: 'repositories',
-            heading: 'Repositories',
-            status: `Setting up ${count(inProgress.length, 'repository', 'repositories')}`,
-            facts: inProgress.map((repo) => ({ text: `${repo.owner}/${repo.name}` })),
-            tone: 'pending',
-            action: REVIEW_REPOS,
-        };
-    }
-    if (data.repos.length === 0) {
-        return {
-            id: 'repositories',
-            heading: 'Repositories',
-            status: 'No repositories enabled for your workspace',
+            status: 'No repositories tracked',
             facts: [],
             tone: 'info',
-            action: { label: 'Choose repositories', to: '/settings/repos' },
+            action: REVIEW_REPOS,
         };
     }
     return {
         id: 'repositories',
         heading: 'Repositories',
-        status: count(data.repos.length, 'repository ready', 'repositories ready'),
+        status: count(tracked.repos.length, 'repository tracked', 'repositories tracked'),
         facts: [],
         tone: 'ok',
-        action: { label: 'Review repositories', to: '/settings/repos' },
+        action: REVIEW_REPOS,
     };
 }
 
@@ -232,17 +180,6 @@ function executorsItem(workspace: ReadinessInput['workspace']): ReadinessItem {
             facts: [],
             tone: 'attention',
             action: null,
-        };
-    }
-    // Root-null outranks the (empty) list: without a root the rows could not run anyway.
-    if (data.root === null) {
-        return {
-            id: 'executors',
-            heading: 'Executors',
-            status: 'Personal executors are unavailable',
-            facts: [{ text: 'Tasks cannot run until a workspace root is configured.' }],
-            tone: 'attention',
-            action: REVIEW_WORKSPACE,
         };
     }
     // The composer can select from either scope (issue 391): with no personal rows but an
@@ -375,7 +312,7 @@ export function deriveReadiness(input: ReadinessInput): ReadinessItem[] {
     return [
         organizationItem(input.session),
         workspaceItem(input.workspace),
-        repositoriesItem(input.workspace),
+        repositoriesItem(input.repos),
         executorsItem(input.workspace),
         environmentItem(input.environment),
     ];

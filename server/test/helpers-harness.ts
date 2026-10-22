@@ -5,16 +5,12 @@ import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js'
 import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflow-store.js';
-import type { UserRepoStore } from '../src/db/user-repo-store.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
-import { createFactsCache, type FactsCache } from '../src/workspace/facts.js';
-import type { Purger } from '../src/workspace/purge.js';
 import { type RepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
 import type { InstallationRepo } from '../src/github/app-client.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import { testConfig } from './helpers-config.js';
-import { memoryUserExecutorStore } from './helpers-user-executor-store.js';
 import { stubTelemetryClient, type TelemetryStub } from './helpers-telemetry.js';
 
 /**
@@ -43,11 +39,7 @@ export function staticRegistry(
         connections?: OrgRuntime['connections'];
         /** The org's installation mint, behind the runner GitHub credential route. */
         githubToken?: OrgRuntime['githubToken'];
-        userRepos?: OrgRuntime['userRepos'];
         userExecutors?: OrgRuntime['userExecutors'];
-        cloneQueue?: OrgRuntime['cloneQueue'];
-        purger?: OrgRuntime['purger'];
-        facts?: OrgRuntime['facts'];
         /** When set, `for()` answers null for every id not in it. */
         orgsFor?: readonly string[];
     } = {}
@@ -71,14 +63,7 @@ export function staticRegistry(
         branchHead: parts.branchHead,
         connections: parts.connections,
         githubToken: parts.githubToken,
-        userRepos: parts.userRepos,
         userExecutors: parts.userExecutors,
-        cloneQueue: parts.cloneQueue,
-        purger: parts.purger,
-        // Default, not undefined: a runtime with stores but no cache would 503 every GET, and a
-        // cheap Map is not worth a per-test decision. A test that must SHARE the instance with
-        // its purger passes it here.
-        facts: parts.facts ?? createFactsCache(),
     };
     return {
         for: async (orgId) => {
@@ -101,15 +86,12 @@ export async function harness({
     auth,
     identity,
     repos: repoList,
-    userRepos,
     userExecutors,
     envVars,
     appSlug,
     installationListing,
     orgsFor,
     workflows,
-    purger,
-    facts,
 }: {
     config?: Partial<AppConfig>;
     /** Defaults to the fixture stub, so route tests get a populated payload without a database. */
@@ -124,9 +106,7 @@ export async function harness({
     identity?: GitHubIdentityClient;
     /** Which repos this org measures. Defaults to the one the fixture PRs are stamped with. */
     repos?: readonly { owner: string; name: string }[];
-    /** Absent by default, which leaves the workspace routes answering 503. */
-    userRepos?: UserRepoStore;
-    /** Defaults to an empty in-memory store whenever userRepos is given. */
+    /** Absent by default, which leaves the executor routes answering 503. */
     userExecutors?: UserExecutorStore;
     /** Absent by default, which leaves the env routes answering 503. */
     envVars?: EnvVarStore;
@@ -146,10 +126,6 @@ export async function harness({
     orgsFor?: readonly string[];
     /** Absent by default, which leaves the workflow routes answering 503. */
     workflows?: WorkflowStore;
-    /** Absent by default, which leaves the DELETE route answering 503 — inject one to test it. */
-    purger?: Purger;
-    /** The facts cache the runtime shares with the purger; defaults to buildApp's own. */
-    facts?: FactsCache;
 } = {}) {
     const config = testConfig(overrides);
     const telemetry = telemetryOption ?? stubTelemetryClient();
@@ -161,7 +137,7 @@ export async function harness({
         telemetry,
         now: () => clock,
     });
-    const executors = userRepos ? (userExecutors ?? memoryUserExecutorStore()) : undefined;
+    const executors = userExecutors;
     // The same factory the route tests use directly — one registry shape, not two that drift.
     // `service` rides in so the runtime shares the harness's controllable clock.
     const orgs = staticRegistry({
@@ -171,10 +147,7 @@ export async function harness({
         service,
         envVars,
         workflows,
-        userRepos,
         userExecutors: executors,
-        purger,
-        facts,
         ...(orgsFor ? { orgsFor } : {}),
     });
     const app = await buildApp({

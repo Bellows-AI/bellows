@@ -289,7 +289,7 @@ interface ReviewClaimRow {
  * grants. The board decides all of it; the caller names none of it.
  */
 async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: string): Promise<Claim> {
-    const { orgId, env, executorConfig, hasWorkspaces } = ctx;
+    const { orgId, env, executorConfig } = ctx;
     const [row] = await tx<ReviewClaimRow[]>`
         select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
@@ -315,7 +315,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
         row!.id,
         {
             ...executor,
-            claimPath: workspacePathFor(orgId, hasWorkspaces, row!.created_by),
+            claimPath: workspacePathFor(orgId, row!.created_by),
             claimGates: null,
             claimServices: [],
             planRevision: null,

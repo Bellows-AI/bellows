@@ -14,6 +14,12 @@ export async function storeFor(orgs: OrgRegistry, request: FastifyRequest): Prom
     return rt?.jobs ?? null;
 }
 
+/** The caller's org's tracked repository list, absent when the org has no runtime. */
+export async function reposFor(orgs: OrgRegistry, request: FastifyRequest) {
+    const rt = await orgs.for(orgOf(request));
+    return rt?.repos ?? null;
+}
+
 /** The artifact index the caller's org writes through (070), absent when no object store was configured. */
 export async function artifactsFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));
@@ -55,12 +61,6 @@ export async function workflowsFor(orgs: OrgRegistry, request: FastifyRequest) {
 export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
     const rt = await orgs.for(orgOf(request));
     return rt?.userExecutors ?? null;
-}
-
-/** The member's selected repositories and their clone status — read at launch for the readiness check. */
-export async function userReposFor(orgs: OrgRegistry, request: FastifyRequest) {
-    const rt = await orgs.for(orgOf(request));
-    return rt?.userRepos ?? null;
 }
 
 export type BoardScanner = <T>(

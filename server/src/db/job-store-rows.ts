@@ -147,10 +147,9 @@ export function userRef(
     return id === null || login === null ? null : { id, login, name, avatarUrl };
 }
 
-/** `<orgId>/<userId>` when workspaces are on and there is an author, the same rule everywhere a
- *  job row's checkout path is derived. */
-export function workspacePathFor(orgId: string, hasWorkspaces: boolean, createdBy: string | null): string | null {
-    return hasWorkspaces && createdBy ? `${orgId}/${createdBy}` : null;
+/** `<orgId>/<userId>` when there is an author, the same rule everywhere a job row's identity path is derived. */
+export function workspacePathFor(orgId: string, createdBy: string | null): string | null {
+    return createdBy ? `${orgId}/${createdBy}` : null;
 }
 
 /**
@@ -177,7 +176,7 @@ const failureOf = (row: JobRow): Pick<Job, 'failureKind' | 'failureCause'> => ({
     failureCause: (row.failure_cause as Job['failureCause']) ?? null,
 });
 
-export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
+export function toJob(orgId: string, row: JobRow): Job {
     return {
         id: row.id,
         command: row.command,
@@ -208,7 +207,7 @@ export function toJob(orgId: string, hasWorkspaces: boolean, row: JobRow): Job {
         cancelRequestedAt: iso(row.cancel_requested_at),
         // The claim builds the same path only for jobs it hands out; every read carries it too,
         // which is what the task view's status sidebar shows.
-        workspacePath: workspacePathFor(orgId, hasWorkspaces, row.created_by),
+        workspacePath: workspacePathFor(orgId, row.created_by),
         createdAt: row.created_at.toISOString(),
         startedAt: iso(row.started_at),
         finishedAt: iso(row.finished_at),
@@ -265,7 +264,7 @@ export function toTask(row: TaskRow): TaskSummary {
     };
 }
 
-export const toJobRow = (ctx: JobStoreContext, row: JobRow): Job => toJob(ctx.orgId, ctx.hasWorkspaces, row);
+export const toJobRow = (ctx: JobStoreContext, row: JobRow): Job => toJob(ctx.orgId, row);
 
 /** One workflow successor's insert, shared by an ordinary transition and a block-wait wake (#231)
  *  — an ordinary queued job, byte-identical either way; the caller decides which row triggers it. */
@@ -385,12 +384,7 @@ export async function stopReviewsOf(
  * own settle will reclaim); one member done is what makes the settle a THREAD's close and not one
  * turn's.
  */
-export async function queueReclaimIfThreadDone(
-    tx: TransactionSql,
-    orgId: string,
-    hasWorkspaces: boolean,
-    rootJobId: string
-): Promise<void> {
+export async function queueReclaimIfThreadDone(tx: TransactionSql, orgId: string, rootJobId: string): Promise<void> {
     const [thread] = await tx<{ total: number; terminal: number }[]>`
         select count(*)::int as total,
                count(*) filter (where status in ('succeeded','failed','dead','stopped'))::int as terminal
@@ -399,7 +393,7 @@ export async function queueReclaimIfThreadDone(
     `;
     if (!thread || thread.total === 0 || thread.total !== thread.terminal) return;
 
-    const { repo, workspacePath } = await reclaimTarget(tx, orgId, hasWorkspaces, rootJobId);
+    const { repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
     // Idempotent against a row already queued (an earlier done, or a concurrent one): one tree,
     // one reclaim. The claim-ack cycle removes the row; until then a duplicate insert would only
     // re-offer an already-removed tree, so the guard is tidiness, not correctness.
@@ -417,7 +411,6 @@ export async function queueReclaimIfThreadDone(
 async function reclaimTarget(
     tx: TransactionSql,
     orgId: string,
-    hasWorkspaces: boolean,
     rootJobId: string
 ): Promise<{ repo: string | null; workspacePath: string | null }> {
     const [root] = await tx<{ repo: string | null; created_by: string | null }[]>`
@@ -426,7 +419,7 @@ async function reclaimTarget(
     `;
     return {
         repo: root?.repo ?? null,
-        workspacePath: workspacePathFor(orgId, hasWorkspaces, root?.created_by ?? null),
+        workspacePath: workspacePathFor(orgId, root?.created_by ?? null),
     };
 }
 
@@ -452,7 +445,7 @@ export const VERDICT_RECLAIM_LEASE_SECONDS = 300;
  */
 export async function issueVerdictReclaim(
     tx: TransactionSql,
-    { orgId, hasWorkspaces }: { orgId: string; hasWorkspaces: boolean },
+    { orgId }: { orgId: string },
     rootJobId: string,
     { worker, leaseToken }: { worker: string | null; leaseToken: string }
 ): Promise<string | null> {
@@ -484,7 +477,7 @@ export async function issueVerdictReclaim(
     }
     const live = await tx`select 1 from task_reclaim where org_id = ${orgId} and root_job_id = ${rootJobId}`;
     if (live.length > 0) return null;
-    const { repo, workspacePath } = await reclaimTarget(tx, orgId, hasWorkspaces, rootJobId);
+    const { repo, workspacePath } = await reclaimTarget(tx, orgId, rootJobId);
     const [inserted] = await tx<{ id: string }[]>`
         insert into task_reclaim (org_id, root_job_id, repo, workspace_path, claimed_by, claim_token, lease_expires_at)
         values (${orgId}, ${rootJobId}, ${repo}, ${workspacePath}, ${worker}, ${leaseToken}, ${lease})

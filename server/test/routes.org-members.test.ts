@@ -1,15 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import {
-    githubAuth,
-    memoryAuthStore,
-    memoryUserRepoStore,
-    signedIn,
-    staticRegistry,
-    stubTelemetryClient,
-    testConfig,
-} from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import type { MemoryAuthStore } from './helpers-auth-store.js';
 import { HTTP_BAD_REQUEST, HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_OK, trackApps } from './helpers-http.js';
 
@@ -35,7 +27,7 @@ async function boot(): Promise<{
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config, userRepos: memoryUserRepoStore(), telemetry: stubTelemetryClient() }),
+        orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
         auth,
     });
     track(instance);

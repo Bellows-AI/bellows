@@ -19,8 +19,6 @@ export interface Session {
     organization: { id: string; name: string };
     /** Every org the account could switch to — the installations GitHub reported at sign-in. */
     organizations: { id: string; name: string }[];
-    /** The member's checkout root, or null when workspaces are switched off for the deployment. */
-    workspacePath: string | null;
     /** 'none' means the server is running open, so there is no session to end and no button. */
     mode: 'github' | 'none';
 }
