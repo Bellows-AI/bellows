@@ -2,8 +2,8 @@ import { artifactCalls } from './artifact-calls.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
-import { reclaimCalls } from './reclaim-calls.js';
-import { phaseCheckpointCalls, type PhaseCheckpoint, type PhaseCheckpointWrite } from './board-phase-checkpoints.js';
+import { type Reclaim, reclaimCalls } from './reclaim-calls.js';
+import { phaseCheckpointCalls, type PhaseCheckpointBoard } from './board-phase-checkpoints.js';
 import { verdictCalls } from './board-verdict.js';
 import type { TaskRestore } from './task-restore.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
@@ -229,11 +229,7 @@ export interface BoardJob {
      * its pair, the exporter the URL and its own token.
      */
     supervisorEnv?: Record<string, string>;
-    /**
-     * The lease whose objects this attempt's group is made of, set by the LOOP once it took over a
-     * running group (#829): the group keeps the lease it was created under while the claim moves on.
-     * Unset, the group is `leaseToken`'s own. A runner addresses it through `ownGroup`.
-     */
+    /** The lease the group's objects were made under, set by the LOOP on a takeover (#829); unset: `leaseToken`'s own. */
     groupLease?: string;
     /** Set by `ownGroup` alone: the lease that holds the checkout claim when `leaseToken` names the group's. */
     claimHolder?: string;
@@ -466,23 +462,7 @@ export interface VerdictEvidence {
     gates: GatesOutcome;
 }
 
-/**
- * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
- * the tree for somebody to take down. The lease claims the row so the reclaim is mutually
- * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
- */
-export interface Reclaim {
-    /** The queue row's own id — the work order's name. */
-    id: string;
-    /** This acquisition's own token (issue #821): the ack, the renew and the checkout claim ride it. */
-    token: string;
-    /** The thread whose tree the removed job left behind. */
-    rootJobId: string;
-    /** The checkout the thread's worktree belonged to, when the removed job named one. */
-    repo: string | null;
-    workspacePath: string | null;
-    leaseExpiresAt: string;
-}
+export type { Reclaim };
 
 /** What acking a reclaim answered: consumed, or another worker already has it. */
 export type ReclaimAck = 'ok' | 'lost' | 'missing';
@@ -534,7 +514,7 @@ export interface ArtifactManifest {
     terminalCause: string | null;
 }
 
-export interface Board {
+export interface Board extends PhaseCheckpointBoard {
     /**
      * Stores one chunk of an artifact stream at its source byte offset. Authorized by the job's
      * claim sequence, not its lease, so a superseded attempt may still call it; a repeat of the
@@ -710,22 +690,6 @@ export interface Board {
         job: BoardJob,
         result: Parameters<Board['complete']>[1]
     ): Promise<LeaseState | 'conflict' | 'removed'>;
-    /**
-     * Records a post-run phase's outcome on the board under the lease (issue #829), for the run
-     * `runClaimSeq` started. Never throws: `lost` when the lease is not this attempt's, `rejected`
-     * for anything else the board did not take — the run goes on either way.
-     */
-    phaseCheckpoint(
-        job: BoardJob,
-        checkpoint: PhaseCheckpointWrite,
-        signal?: AbortSignal
-    ): Promise<'ok' | 'lost' | 'rejected'>;
-    /**
-     * The checkpoints of the run `runClaimSeq` started. Null for any answer the driver cannot fully
-     * read (non-2xx, a lost lease, a malformed row, an aborted request): an unconfirmed read is
-     * never an empty one, so the caller runs every phase again.
-     */
-    phaseCheckpoints(job: BoardJob, runClaimSeq: number, signal?: AbortSignal): Promise<PhaseCheckpoint[] | null>;
 }
 
 type Fetch = typeof globalThis.fetch;

@@ -44,7 +44,6 @@ import {
     SUPERVISOR_EXIT,
     SUPERVISOR_RELEASED_LINE,
     SUPERVISOR_SERVED_LINE,
-    SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
 import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
 import { taskVolumeIsOurs } from './docker-task-volume.js';

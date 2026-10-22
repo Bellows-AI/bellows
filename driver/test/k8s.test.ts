@@ -56,7 +56,7 @@ import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-tra
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import { ledgerOf, RunnerKilled } from '../src/k8s-kill.js';
-import { CLOSE_READ_DEADLINE_MS, REBIND_DEADLINE_MS } from '../src/runner.js';
+import { REBIND_DEADLINE_MS } from '../src/runner.js';
 import { pollRunnerJobUntilTerminal, readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s-poll.js';
 import {
     bindingBody,
@@ -7739,7 +7739,6 @@ describe('the holder a supervisor follows, on kubernetes', () => {
             );
         }
     );
-
 });
 
 describe('how a started run ends, on kubernetes (the conformance table)', () => {

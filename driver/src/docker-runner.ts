@@ -1,5 +1,5 @@
 import { JOB_LABEL } from './labels.js';
-import { assertTaskVolumeIsOurs, ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
+import { ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
 import {
     awaitSupervisor,
@@ -20,7 +20,7 @@ import {
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
-import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
+import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs, spentMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { rm, writeFile } from 'node:fs/promises';
@@ -44,12 +44,7 @@ import {
 import { reviewRunOf } from './review-step.js';
 import { checkoutDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
-import {
-    containerName,
-    parseDockerServiceExit,
-    parseDockerServicePs,
-    parseDockerStats,
-} from './docker.js';
+import { containerName, parseDockerServiceExit, parseDockerServicePs, parseDockerStats } from './docker.js';
 import {
     appendTailKept,
     composeRuntimeSample,

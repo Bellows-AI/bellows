@@ -4,7 +4,7 @@
  * and a read it did not answer are both "no checkpoint", and the caller runs the phase again.
  */
 
-import type { Board } from './board.js';
+import type { BoardJob } from './board.js';
 
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
@@ -48,7 +48,26 @@ function rowOf(raw: unknown): PhaseCheckpoint | null {
     return { phase: row.phase!, claimSeq: row.claimSeq, tree: row.tree, result: row.result };
 }
 
-export function phaseCheckpointCalls(post: Post): Pick<Board, 'phaseCheckpoint' | 'phaseCheckpoints'> {
+export interface PhaseCheckpointBoard {
+    /**
+     * Records a post-run phase's outcome on the board under the lease (issue #829), for the run
+     * `runClaimSeq` started. Never throws: `lost` when the lease is not this attempt's, `rejected`
+     * for anything else the board did not take — the run goes on either way.
+     */
+    phaseCheckpoint(
+        job: BoardJob,
+        checkpoint: PhaseCheckpointWrite,
+        signal?: AbortSignal
+    ): Promise<'ok' | 'lost' | 'rejected'>;
+    /**
+     * The checkpoints of the run `runClaimSeq` started. Null for any answer the driver cannot fully
+     * read (non-2xx, a lost lease, a malformed row, an aborted request): an unconfirmed read is
+     * never an empty one, so the caller runs every phase again.
+     */
+    phaseCheckpoints(job: BoardJob, runClaimSeq: number, signal?: AbortSignal): Promise<PhaseCheckpoint[] | null>;
+}
+
+export function phaseCheckpointCalls(post: Post): PhaseCheckpointBoard {
     return {
         async phaseCheckpoint(job, checkpoint, signal) {
             try {
