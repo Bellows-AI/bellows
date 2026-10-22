@@ -3994,6 +3994,25 @@ cap_sample() { # cap_sample <file> -> one row every 2 s, until killed: <epoch>|<
     done
 }
 
+cap_wrap() { # cap_wrap <job> -> the wrapper of the member who owns it
+    if [ "$1" = "$l1" ]; then printf cap_light; else printf cap_heavy; fi
+}
+
+cap_job() { # cap_job <h1|h2|h3|l1> -> its job id
+    case "$1" in h1) printf '%s' "$h1" ;; h2) printf '%s' "$h2" ;; h3) printf '%s' "$h3" ;; l1) printf '%s' "$l1" ;; esac
+}
+
+cap_try_release() { # cap_try_release <release file> <job> -> success once its runner stands at the barrier and the file is touched
+    local name pod
+    name="$(first_runner_job "$2")"
+    [ -n "$name" ] || return 1
+    pod="$(kubectl get pods -l "job-name=$name" -n "$NAMESPACE" --request-timeout=10s \
+        -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{end}' 2>/dev/null)"
+    [ -n "$pod" ] || return 1
+    kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$1.ready-$pod" >/dev/null 2>&1 || return 1
+    kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- touch "$1" >/dev/null 2>&1
+}
+
 cap_queued() { # cap_queued <wrapper> <job> -> success while the task is queued and has created no runner Job
     case "$("$1" job_brief "$2")" in queued\|*) ;; *) return 1 ;; esac
     [ -z "$(first_runner_job "$2")" ]
@@ -4009,7 +4028,7 @@ cap_settled() { # cap_settled <label> <wrapper> <job> <owner> <lost owner> -> th
 }
 
 cap_run() {
-    local running n h1 h2 h3 l1 h1_pod l1_pod h2_pod h3_pod h1_owner l1_owner victim='' kill_at='' took_at='' until verdict
+    local running n pending left l1_wave queued_jobs h1 h2 h3 l1 h1_pod l1_pod h2_pod h3_pod h1_owner l1_owner victim='' kill_at='' took_at='' until verdict
     local heavy light
     running="$(cap_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {
         bad 'capacity: the board starts with no running or queued task' "rows: $running"
@@ -4070,21 +4089,35 @@ cap_run() {
     kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=2 >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
 
-    # Fairness: the light member's one task runs while the heavy member still has two queued.
+    # The first wave: both replicas race for it. Polls reading the same demand at once may both serve the heavy
+    # member (docs/jobs.md), so the light member either made the first wave or must get the first slot freed.
+    until=$(($(date +%s) + 90))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(cap_running)" = 2 ] && break
+        sleep 1
+    done
+    sleep 10 # twenty polls of each replica against a full budget
     h1_pod="$(await_runner_pod "$h1")"
-    l1_pod="$(await_runner_pod "$l1")"
     [ -n "$h1_pod" ] && ok 'capacity: the first heavy task runs' ||
         bad 'capacity: the first heavy task runs' "$(cap_heavy job_brief "$h1")"
-    [ -n "$l1_pod" ] && ok 'capacity: the light member runs while the heavy member still queues' ||
-        bad 'capacity: the light member runs while the heavy member still queues' "$(cap_light job_brief "$l1")"
     running="$(cap_running)"
     [ "$running" = 2 ] && ok 'capacity: two run, the rest wait' || bad 'capacity: two run, the rest wait' "running rows: $running"
-    for n in "$h2" "$h3"; do
-        cap_queued cap_heavy "$n" && ok 'capacity: a task over the budget waits queued, with no runner Job' ||
-            bad 'capacity: a task over the budget waits queued, with no runner Job' "$(cap_heavy job_brief "$n")"
+    l1_wave=''
+    case "$(cap_light job_brief "$l1")" in running\|*) l1_wave=1 ;; esac
+    queued_jobs=''
+    for n in "$h2" "$h3" "$l1"; do
+        case "$("$(cap_wrap "$n")" job_brief "$n")" in queued\|*) ;; *) continue ;; esac
+        queued_jobs="$queued_jobs $n"
+        cap_queued "$(cap_wrap "$n")" "$n" && ok 'capacity: a task over the budget waits queued, with no runner Job' ||
+            bad 'capacity: a task over the budget waits queued, with no runner Job' "$("$(cap_wrap "$n")" job_brief "$n")"
     done
+    if [ -n "$l1_wave" ]; then
+        l1_pod="$(await_runner_pod "$l1")"
+        [ -n "$l1_pod" ] && ok 'capacity: the light member runs in the first wave' ||
+            bad 'capacity: the light member runs in the first wave' "$(cap_light job_brief "$l1")"
+    fi
     [ -z "$h1_pod" ] || await_blocked "$h1_pod" "$CAP_RELEASE-h1" >/dev/null || true
-    [ -z "$l1_pod" ] || await_blocked "$l1_pod" "$CAP_RELEASE-l1" >/dev/null || true
+    [ -z "${l1_pod:-}" ] || await_blocked "$l1_pod" "$CAP_RELEASE-l1" >/dev/null || true
 
     # The crash: the replica holding the first heavy task (its worker name is its pod name) is deleted
     # hard. Read, not assumed: an owner that is no driver pod kills nothing.
@@ -4115,25 +4148,39 @@ cap_run() {
         running="$(cap_running)"
         [ "$running" = 2 ] && ok 'capacity: a crashed owner leaves the budget full, not exceeded' ||
             bad 'capacity: a crashed owner leaves the budget full, not exceeded' "running rows: $running"
-        for n in "$h2" "$h3"; do
-            cap_queued cap_heavy "$n" && ok 'capacity: no queued task was admitted while the owner was lost' ||
-                bad 'capacity: no queued task was admitted while the owner was lost' "$(cap_heavy job_brief "$n")"
+        for n in $queued_jobs; do
+            cap_queued "$(cap_wrap "$n")" "$n" && ok 'capacity: no queued task was admitted while the owner was lost' ||
+                bad 'capacity: no queued task was admitted while the owner was lost' "$("$(cap_wrap "$n")" job_brief "$n")"
         done
     else
         bad 'capacity: the driver of the first heavy task is known' "claimed_by read '$h1_owner'"
     fi
 
-    # Drain: each freed slot goes to the member with the fewest running tasks; every task succeeds.
+    # Drain: the first slot freed goes to the light member when the first wave raced to the heavy one, and
+    # before any later heavy task is admitted; every task succeeds.
     release_stub "$CAP_RELEASE-h1"
-    h2_pod="$(await_runner_pod "$h2")"
-    [ -n "$h2_pod" ] && ok 'capacity: the freed slot admits the next heavy task' ||
-        bad 'capacity: the freed slot admits the next heavy task' "$(cap_heavy job_brief "$h2")"
-    release_stub "$CAP_RELEASE-l1"
-    h3_pod="$(await_runner_pod "$h3")"
-    [ -n "$h3_pod" ] && ok 'capacity: the next freed slot admits the last heavy task' ||
-        bad 'capacity: the next freed slot admits the last heavy task' "$(cap_heavy job_brief "$h3")"
-    release_stub "$CAP_RELEASE-h2"
-    release_stub "$CAP_RELEASE-h3"
+    if [ -n "$l1_wave" ]; then
+        h2_pod="$(await_runner_pod "$h2")"
+        [ -n "$h2_pod" ] && ok 'capacity: the freed slot admits the next heavy task' ||
+            bad 'capacity: the freed slot admits the next heavy task' "$(cap_heavy job_brief "$h2")"
+    else
+        l1_pod="$(await_runner_pod "$l1")"
+        [ -n "$l1_pod" ] && cap_queued cap_heavy "$h3" &&
+            ok 'capacity: the light member gets the next freed slot when the first wave raced to the heavy member' ||
+            bad 'capacity: the light member gets the next freed slot when the first wave raced to the heavy member' \
+                "light: $(cap_light job_brief "$l1"); last heavy: $(cap_heavy job_brief "$h3")"
+    fi
+    pending="h2 h3 l1"
+    until=$(($(date +%s) + 300))
+    while [ -n "$pending" ] && [ "$(date +%s)" -lt "$until" ]; do
+        left=''
+        for n in $pending; do
+            cap_try_release "$CAP_RELEASE-$n" "$(cap_job "$n")" || left="$left $n"
+        done
+        pending="${left# }"
+        [ -z "$pending" ] || sleep 1
+    done
+    [ -z "$pending" ] || bad 'capacity: every task ran and was released' "never ready: $pending"
     cap_settled h1 cap_heavy "$h1" "$h1_owner" "$victim"
     cap_settled h2 cap_heavy "$h2" '' "$victim"
     cap_settled h3 cap_heavy "$h3" '' "$victim"
