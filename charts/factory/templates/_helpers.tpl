@@ -78,14 +78,6 @@ out of every `kubectl get pods -o yaml` — so only this name is wired through.
 {{- end -}}
 
 {{/*
-The workspaces claim. The dashboard writes checkouts into it; no runner mounts it (a runner's
-volume is its thread's task volume, issue #775).
-*/}}
-{{- define "factory.workspaceClaim" -}}
-{{- default (printf "%s-workspaces" (include "factory.fullname" .)) .Values.workspaces.existingClaim -}}
-{{- end -}}
-
-{{/*
 A rolling restart whenever the chart-created Secret changes: env read by secretKeyRef is resolved
 once, at container start, so without this a rotated credential waits for the next unrelated roll.
 */}}
@@ -120,7 +112,7 @@ affinity:
 
 {{/*
 Every container in the chart runs unprivileged on a read-only root: the writable paths are the
-workspaces claim (dashboard) and an emptyDir at /tmp.
+an emptyDir at /tmp (the task volumes are the driver's, not this chart's).
 */}}
 {{- define "factory.containerSecurityContext" -}}
 securityContext:

@@ -1495,6 +1495,7 @@ describe.skipIf(!enabled)('the morning report', () => {
                 merged: false,
                 mergedAt: null,
                 mergeCommitSha: null,
+                updatedAt: null,
                 baseBranch: 'main',
                 headSha: 'h1',
                 targetSha: 't1',

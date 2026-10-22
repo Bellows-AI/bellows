@@ -89,6 +89,19 @@ export interface PrLifecycleStore {
         exec?: PrExec
     ): Promise<DeliveryOutcome>;
     /**
+     * Folds what the PR follower read into every open wait on the PR whose last observation
+     * (`fingerprint`, a hash of the read PR facts) differs: identical facts never wake a wait twice,
+     * and the cursor survives re-entry so activity during a continuation wakes the re-parked wait.
+     * A wait's FIRST observation only wakes it when the provider's activity stamp (second resolution)
+     * is not before `observed_since` (the wait's first entry, advanced by every fold and every
+     * claim of its deliveries, surviving re-entry); otherwise it just records the baseline. A duplicate wake is
+     * harmless and bounded; a lost one is not. Returns the waits woken.
+     */
+    foldObservedActivity(
+        activity: { repo: string; prNumber: number; activityAt: Date; fingerprint: string },
+        exec?: PrExec
+    ): Promise<number>;
+    /**
      * Atomically claims the wait's folded deliveries: the pending count returns and resets to
      * zero in the same lock, so a delivery landing DURING the claim folds on top of zero and is
      * caught by the next claim — the coalesce the block protocol relies on.
@@ -300,7 +313,8 @@ export function createPrLifecycleStore({
                     update workflow_wait set
                         pending = pending + 1,
                         last_delivery_id = ${deliveryId},
-                        last_event_at = now()
+                        last_event_at = now(),
+                        observed_since = now()
                     where org_id = ${orgId}
                       and repo = ${repo}
                       and pr_number = ${prNumber}
@@ -310,6 +324,33 @@ export function createPrLifecycleStore({
                 `;
                 return wait === undefined ? 'unmatched' : 'folded';
             }, exec);
+        },
+
+        async foldObservedActivity({ repo, prNumber, activityAt, fingerprint }, exec) {
+            await gate();
+            const rows = await conn(exec)<{ fires: boolean }[]>`
+                with hit as (
+                    select root_job_id, reason,
+                           -- A baseline (no observation yet) wakes only for activity at or after the
+                           -- observation boundary, at the provider's whole-second resolution.
+                           (observed_fingerprint is not null
+                            or date_trunc('second', observed_since) <= ${activityAt}) as fires
+                    from workflow_wait
+                    where org_id = ${orgId} and repo = ${repo} and pr_number = ${prNumber}
+                      and completed_at is null and cancelled_at is null
+                      and observed_fingerprint is distinct from ${fingerprint}
+                    for update
+                )
+                update workflow_wait w set
+                    observed_fingerprint = ${fingerprint},
+                    pending = w.pending + case when hit.fires then 1 else 0 end,
+                    last_event_at = case when hit.fires then now() else w.last_event_at end,
+                    observed_since = case when hit.fires then now() else w.observed_since end
+                from hit
+                where w.org_id = ${orgId} and w.root_job_id = hit.root_job_id and w.reason = hit.reason
+                returning hit.fires
+            `;
+            return rows.filter((row) => row.fires).length;
         },
 
         async claimReview(root, reason, exec) {
@@ -328,7 +369,7 @@ export function createPrLifecycleStore({
                 `;
                 if (!row) return { pending: 0, lastDeliveryId: null };
                 await tx`
-                    update workflow_wait set pending = 0
+                    update workflow_wait set pending = 0, observed_since = now()
                     where org_id = ${orgId} and root_job_id = ${root} and reason = ${reason}
                 `;
                 return { pending: row.pending, lastDeliveryId: row.last_delivery_id };

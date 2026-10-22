@@ -12,6 +12,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
 | Block registry and expansion compiler | `server/src/db/workflow-blocks/index.ts`, `types.ts` | `server/test/workflow-block-compiler.test.ts` |
 | Built-in blocks | `server/src/db/workflow-blocks/github-review-reconcile.ts`, `merge-conflict-autofix.ts` | `server/test/workflow-block-github-review-reconcile.test.ts`, `workflow-block-merge-conflict-autofix.test.ts` |
 | Durable waits: park, wake, poke, settle | `server/src/db/workflow-blocks/runtime.ts`, `runtime-settle.ts`, `server/src/db/pr-lifecycle-store.ts` | `server/test/workflow-block-runtime.test.ts`, `workflow-block-runtime-settle.test.ts`, `server/test-db/job-store.block-wait.test.ts` |
+| PR follower: the periodic PR read behind a lost webhook (wait wake, merged and closed PRs) | `server/src/pr-follower.ts`, `server/src/db/pr-follow-store.ts`, `server/migrations/082_pr_follow.sql`, `server/src/orgs.ts` | `server/test-db/pr-follow.test.ts` |
 | CRUD, scope, compile at create | `server/src/db/workflow-store.ts`, `server/src/routes/workflows.ts` | `server/test-db/workflow-store.test.ts`, `server/test/routes.workflows.test.ts` |
 | Review verdict markers | `server/src/db/workflow-templates.ts` | `server/test/evidence-policy.test.ts` |
 | Launch resolution, `wait/cancel`, `wait/poke` | `server/src/routes/jobs.ts`, `job-workflow-resolution.ts` | `server/test/routes.jobs.test.ts` |
@@ -39,6 +40,11 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
   `server/test/workflow-engine.next-transition.test.ts`.
 - **The publish decision rides the claim and is enforced only in `driver/src/loop-verdict.ts`** —
   `driver/test/docker.test.ts`, `k8s.test.ts`.
+- **The follower applies what the webhook would have, idempotently, under its claim**: effects run in the
+  follow row's locked transaction, what a wait observed is a per-wait fingerprint of the read (`observed_fingerprint`, surviving re-entry), a merge dedupes on
+  `pr_merge`, a PR is followed (slower once closed) while any wait or live thread needs it, and a read
+  without an explicit state is a failure that changes nothing.
+  `server/test-db/pr-follow.test.ts`.
 - **A parked wait holds no `job` row and no lease**; the per-root advisory lock and the claim-time
   cancellation fence prevent a double wake — `server/test-db/job-store.block-wait.test.ts`.
 
@@ -46,5 +52,8 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
 
 - Every declared parameter is required; `param` is a reserved node name.
 - A definition with no reachable `publish: true` node is refused at create.
-- Webhooks are the only GitHub input; a missed delivery is released by `wait/poke`.
+- A missed delivery is repaired by the PR follower within `PR_FOLLOW_INTERVAL_MS` (15 min per PR, reads shared
+  with the batch observer's rate-limit pause); `wait/poke` releases a wait sooner. Check events never fold a wait.
+- Two PR activities in one provider second that leave every field the read returns identical (a second comment,
+  say) wake a wait once, not twice; a lost webhook for the second is only repaired by the next change or `wait/poke`.
 - Neither built-in block merges or closes a pull request.

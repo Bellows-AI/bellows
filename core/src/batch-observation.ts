@@ -107,6 +107,8 @@ export interface PrFacts {
     merged: boolean;
     mergedAt: string | null;
     mergeCommitSha: string | null;
+    /** When GitHub last stamped activity on the PR (push, review, comment); null when it sent none. */
+    updatedAt: string | null;
     baseBranch: string;
     headSha: string;
     /** The target branch's tip, or null when it could not be read. */
