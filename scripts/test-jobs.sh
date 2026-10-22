@@ -2048,6 +2048,10 @@ cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read f
     timeout 10 docker exec "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1
 }
 
+cap_running() { # cap_running -> how many non-review tasks run, as the database counts them
+    cap_psql "select count(*) from job where status = 'running' and review_of is null"
+}
+
 cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board; its pid in cap_board_pid
     env DATABASE_URL="$DATABASE_URL" PORT="$1" HOST=127.0.0.1 \
         REPO_CLONE_BASE="$PLAN_BASE" \
@@ -2133,6 +2137,10 @@ cap_await_settled() { # cap_await_settled <job> <seconds> -> its final status, r
     AUTH_HEADER="$bearer" await_settled "$1" "$2"
 }
 
+cap_job() { # cap_job <h1|h2|h3|l1> -> its job id
+    case "$1" in h1) printf '%s' "$h1" ;; h2) printf '%s' "$h2" ;; h3) printf '%s' "$h3" ;; l1) printf '%s' "$l1" ;; esac
+}
+
 cap_why() { # cap_why <job> -> what the board says about it, for a check that failed
     local job_json
     job_json="$(body "$(cap_api_job "$1")")"
@@ -2168,7 +2176,7 @@ cap_sample() { # cap_sample <file> -> one row a second, until killed: <epoch>|<r
 }
 
 cap_run() {
-    local running n tok until h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
+    local running n tok until pending left l1_wave queued_jobs h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
     local h1_name="$RUN_ID-cap-h1" h2_name="$RUN_ID-cap-h2" h3_name="$RUN_ID-cap-h3" l1_name="$RUN_ID-cap-l1"
     local samples="$work/capacity.samples.log" kill_at='' took_at='' verdict
 
@@ -2240,40 +2248,46 @@ cap_run() {
     lane_extra_pids="$lane_extra_pids $cap_sampler_pid"
     lane_extra_pids="${lane_extra_pids# }"
 
-    # The first driver alone takes the first wave: polls that read the same demand at once may both serve one
-    # org (docs/jobs.md), so the light org's turn is read from a single claimer, then the second driver joins.
+    # Both drivers start together and race for the first wave: polls reading the same demand at once may both
+    # serve the heavy org (docs/jobs.md), so the light org either made the first wave or must get the first slot freed.
     disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_a_pid=$driver_pid
-    driver_pid=""
-    lane_extra_pids="$lane_extra_pids $cap_a_pid"
-    lane_extra_pids="${lane_extra_pids# }"
-
-    # Fairness: the light org's one task starts while the heavy org still has two queued.
-    cap_await_ready "$h1" "$h1_name" 90 && ok 'capacity: the first heavy task runs' ||
-        bad 'capacity: the first heavy task runs' "$(cap_why "$h1")"
-    cap_await_ready "$l1" "$l1_name" 90 && ok 'capacity: the light org runs while the heavy org still queues' ||
-        bad 'capacity: the light org runs while the heavy org still queues' "$(cap_why "$l1")"
-
-    # Competing driver: it could run two tasks itself, and the budget is already full.
     disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_b_pid=$driver_pid
     driver_pid=""
-    lane_extra_pids="$lane_extra_pids $cap_b_pid"
+    lane_extra_pids="$lane_extra_pids $cap_a_pid $cap_b_pid"
     lane_extra_pids="${lane_extra_pids# }"
-    until=$(($(date +%s) + 30))
-    while ! grep -qF 'as "cap-b"' "$work/driver.log" && [ "$(date +%s)" -lt "$until" ]; do sleep 1; done
-    sleep 10 # twenty polls of the second driver against a full budget
-    running="$(cap_psql "select count(*) from job where status = 'running' and review_of is null")"
+
+    # The first wave: four drivers' worth of capacity, a budget of two.
+    until=$(($(date +%s) + 90))
+    running=''
+    while [ "$(date +%s)" -lt "$until" ]; do
+        running="$(cap_running)"
+        [ "$running" = 2 ] && break
+        sleep 1
+    done
+    sleep 10 # twenty polls of each driver against a full budget
+    cap_await_ready "$h1" "$h1_name" 90 && ok 'capacity: the first heavy task runs' ||
+        bad 'capacity: the first heavy task runs' "$(cap_why "$h1")"
+    running="$(cap_running)"
     [ "$running" = 2 ] && ok 'capacity: two run, the rest wait' ||
         bad 'capacity: two run, the rest wait' "running rows: $running"
-    for n in "$h2" "$h3"; do
+    l1_wave=''
+    [ "$(field "$(body "$(cap_api_job "$l1")")" status)" = running ] && l1_wave=1
+    queued_jobs=''
+    for n in "$h2" "$h3" "$l1"; do
+        [ "$(field "$(body "$(cap_api_job "$n")")" status)" = queued ] || continue
+        queued_jobs="$queued_jobs $n"
         lane_use "$n"
-        [ "$(field "$(body "$(cap_api_job "$n")")" status)" = queued ] && [ "$(lane_vol_state)" = absent ] &&
-            ok 'capacity: a task over the budget waits queued, with no task volume' ||
+        [ "$(lane_vol_state)" = absent ] && ok 'capacity: a task over the budget waits queued, with no task volume' ||
             bad 'capacity: a task over the budget waits queued, with no task volume' "$(cap_why "$n"); volume $(lane_vol_state)"
     done
+    if [ -n "$l1_wave" ]; then
+        cap_await_ready "$l1" "$l1_name" 90 && ok 'capacity: the light org runs in the first wave' ||
+            bad 'capacity: the light org runs in the first wave' "$(cap_why "$l1")"
+    fi
 
     # The crash: whichever driver holds the first heavy task is killed outright. Read, not assumed: an unread owner kills nothing.
     h1_owner="$(cap_psql "select claimed_by from job where id = '$h1'")"
@@ -2295,22 +2309,41 @@ cap_run() {
         running="$(cap_psql "select count(*) from job where status = 'running' and review_of is null")"
         [ "$running" = 2 ] && ok 'capacity: a crashed owner leaves the budget full, not exceeded' ||
             bad 'capacity: a crashed owner leaves the budget full, not exceeded' "running rows: $running"
-        for n in "$h2" "$h3"; do
+        for n in $queued_jobs; do
             [ "$(field "$(body "$(cap_api_job "$n")")" status)" = queued ] &&
                 ok 'capacity: no queued task was admitted while the owner was lost' ||
                 bad 'capacity: no queued task was admitted while the owner was lost' "$(cap_why "$n")"
         done
     fi
 
-    # Drain: each freed slot goes to the org with the fewest running tasks; every task runs once.
+    # Drain: the first slot freed goes to the light org when the first wave raced to the heavy one, and
+    # before any later heavy task is admitted; every task runs once.
     cap_release "$h1" "$h1_name"
-    cap_await_ready "$h2" "$h2_name" 90 && ok 'capacity: the freed slot admits the next heavy task' ||
-        bad 'capacity: the freed slot admits the next heavy task' "$(cap_why "$h2")"
-    cap_release "$l1" "$l1_name"
-    cap_await_ready "$h3" "$h3_name" 90 && ok 'capacity: the next freed slot admits the last heavy task' ||
-        bad 'capacity: the next freed slot admits the last heavy task' "$(cap_why "$h3")"
-    cap_release "$h2" "$h2_name"
-    cap_release "$h3" "$h3_name"
+    if [ -n "$l1_wave" ]; then
+        cap_await_ready "$h2" "$h2_name" 90 && ok 'capacity: the freed slot admits the next heavy task' ||
+            bad 'capacity: the freed slot admits the next heavy task' "$(cap_why "$h2")"
+    else
+        cap_await_ready "$l1" "$l1_name" 90 && [ "$(field "$(body "$(cap_api_job "$h3")")" status)" = queued ] &&
+            ok 'capacity: the light org gets the next freed slot when the first wave raced to the heavy org' ||
+            bad 'capacity: the light org gets the next freed slot when the first wave raced to the heavy org' \
+                "light: $(cap_why "$l1"); last heavy: $(cap_why "$h3")"
+    fi
+    pending="h2 h3 l1"
+    until=$(($(date +%s) + 300))
+    while [ -n "$pending" ] && [ "$(date +%s)" -lt "$until" ]; do
+        left=''
+        for n in $pending; do
+            lane_use "$(cap_job "$n")"
+            if lane_has "$CAP_DIR/$RUN_ID-cap-$n.ready"; then
+                cap_release "$(cap_job "$n")" "$RUN_ID-cap-$n"
+            else
+                left="$left $n"
+            fi
+        done
+        pending="${left# }"
+        [ -z "$pending" ] || sleep 1
+    done
+    [ -z "$pending" ] || bad 'capacity: every task ran and was released' "never ready: $pending"
     cap_settled h1 "$h1" "$h1_name" "$h1_owner" "$victim_name"
     cap_settled h2 "$h2" "$h2_name" '' "$victim_name"
     cap_settled h3 "$h3" "$h3_name" '' "$victim_name"
