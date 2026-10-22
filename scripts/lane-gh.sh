@@ -1,11 +1,12 @@
 #!/bin/sh
 # The lane's stand-in for `gh` (issue #829): the argv driver/src/publish-pr.ts sends, answered from
-# state kept in the task's origin so it survives a killed driver and is counted from outside.
+# state kept on the task's volume so it survives a killed driver and is counted from outside.
 #   lane-gh-prs   one `<branch> <url>` line per created PR
 #   lane-gh-bases one `<branch> <base>` line per `pr edit --base`
 #   lane-gh-hold  while it exists, `pr create` touches lane-gh-hold.ready and waits for lane-gh-hold.go
 set -eu
-origin="$(git config --get remote.origin.url)"
+origin="${LANE_GH_STATE:-/task/.lane-gh}"
+mkdir -p "$origin"
 prs="$origin/lane-gh-prs"
 bases="$origin/lane-gh-bases"
 last() { # last <file> <branch> -> the second field of the branch's last line

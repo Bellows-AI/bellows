@@ -320,6 +320,12 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('lane-gh-prs');
         expect(phase).toContain('factory.claim-seq=2');
         expect(phase).toContain('label=factory.role=agent');
+        // Barriers live on the job's own task volume, which the lane reads by name and never creates.
+        expect(phase).toContain('lane_use "$k5"');
+        expect(phase).toContain('lane_origin lane_count "$DK_ORIGIN/lane-pushes.log"');
+        expect(phase).not.toContain('/workspaces');
+        expect(SCRIPT).toContain("LANE_DIR='/task/.lane-kill'");
+        expect(SCRIPT).toContain('[ "$(lane_vol_state)" = present ] || return 125');
         // An unconfirmed read is never "clean": the leftovers check fails on a docker error.
         expect(SCRIPT).toContain('lane_count() {');
         expect(SCRIPT).toContain('lane_left() {');

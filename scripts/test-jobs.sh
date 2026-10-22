@@ -504,27 +504,54 @@ LANE_MARGIN_S=40
 ADOPT_S=$((LANE_ORPHAN_S + LANE_LEASE_S + ${LANE_REBIND_GRACE_MS:-20000} / 1000 + LANE_MARGIN_S))
 
 # Barriers and counters for the driver-kill phase (issue #829). Every container of a run — setup,
-# gates, the agent, the publish steps — mounts the member's tree at /workspaces/$member_path
-# (workspacesMountArgs), so a file under $LANE_DIR is one every one of them sees; the publish's own
-# state sits in the bare origin beside it. Reads are as uid 1000, which owns the tree.
-LANE_DIR='.lane-kill'
+# gates, the agent, the publish steps — mounts the thread's task volume at /task, so a file under
+# $LANE_DIR is one every one of them sees; the publish's own state (the gh stand-in's PR list and
+# hold) sits beside it in /task/.lane-gh, the origin's push log in the bare origin on $ORIGIN_VOLUME.
+# lane_use names the volume of the job under test: the driver creates it at the claim, so a read
+# before then finds it absent, never creates it (a volume docker makes is not one the driver owns).
+LANE_DIR='/task/.lane-kill'
+LANE_GH_DIR='/task/.lane-gh'
+LANE_VOL=''
+LANE_MNT='/task'
+
+lane_use() { # lane_use <job id> -> later lane_* calls read that job's task volume (a first job: its id is its thread's root)
+    LANE_VOL="factory-task-$1-1"
+    LANE_MNT=/task
+}
+
+lane_origin() { # lane_origin <lane_* function> [arg...] -> the call, aimed at the origins volume (paths are relative to /origins)
+    local LANE_VOL="$ORIGIN_VOLUME" LANE_MNT=/origins
+    "$@"
+}
+
+lane_vol_state() { # -> present, absent, or ? when docker did not answer
+    local out
+    out="$(timeout 30 docker volume ls -q --filter "name=^$LANE_VOL\$" 2>/dev/null)" || {
+        printf '?'
+        return
+    }
+    case "$out" in '') printf absent ;; *) printf present ;; esac
+}
 
 lane_run() { # lane_run <sh script> [arg...] -> the script's own status; 124-127 mean docker or the timeout failed, not the script
-    timeout 30 docker run --rm -v "$VOLUME:/workspaces" --user 1000 -w "/workspaces/$member_path" "$IMAGE_BASE" \
+    [ "$(lane_vol_state)" = present ] || return 125
+    timeout 30 docker run --rm -v "$LANE_VOL:$LANE_MNT" --user 1000 -e HOME=/tmp -w "$LANE_MNT" "$IMAGE_BASE" \
         sh -c "$1" sh "${@:2}"
 }
 
-lane_touch() { # lane_touch <path under the member tree> -> success once the file exists
+lane_touch() { # lane_touch <path> -> success once the file exists
     lane_run 'mkdir -p "$(dirname "$1")" && : >"$1"' "$1"
 }
 
-lane_has() { # lane_has <path under the member tree> -> 0 present, 1 positively absent, 2 unconfirmed
+lane_has() { # lane_has <path> -> 0 present, 1 positively absent, 2 unconfirmed
+    case "$(lane_vol_state)" in absent) return 1 ;; present) ;; *) return 2 ;; esac
     lane_run 'test -e "$1"' "$1" >/dev/null 2>&1
     case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
 
-lane_count() { # lane_count <path under the member tree> -> its line count; 0 only when absent; ? when the read failed
+lane_count() { # lane_count <path> -> its line count; 0 only when absent; ? when the read failed
     local n
+    case "$(lane_vol_state)" in absent) printf 0; return ;; present) ;; *) printf '?'; return ;; esac
     n="$(lane_run 'if [ -e "$1" ]; then wc -l <"$1"; else echo 0; fi' "$1" 2>/dev/null)" || {
         printf '?'
         return
@@ -1640,8 +1667,7 @@ begin_phase driver-kill
 echo
 echo '# driver kill'
 
-DK_TREE="/workspaces/$member_path"
-DK_ORIGIN=".smoke-origin.git"
+DK_ORIGIN="$SMOKE_REPO.git" # under /origins on the origins volume
 
 driver_kill() { # driver_kill -> the driver gone with no drain: its lease is left to expire
     kill -9 "$driver_pid" 2>/dev/null
@@ -1699,29 +1725,31 @@ dk_count() { # dk_count <name> <path> <want> -> a check on one barrier counter, 
     [ "$got" = "$3" ] && ok "$1" || bad "$1" "$2 holds '$got' lines, want $3"
 }
 
-# The origin's plan is restored at the end, and its push log and gh stub state are started here.
+# The origin's plan is restored at the end, and its push log is started here: the hook counts the ref
+# updates the git daemon receives. The gh stand-in's own state is per task, in /task/.lane-gh.
 dk_plan_saved="$work/driver-kill.plan"
-docker run --rm -v "$VOLUME:/workspaces" --user 1000 -e HOME=/tmp "$IMAGE_BASE" sh -c '
+lane_origin lane_run '
     if git -C "$1" cat-file -e main:.bellows.yaml 2>/dev/null; then git -C "$1" show main:.bellows.yaml; fi' \
-    sh "$DK_TREE/$DK_ORIGIN" >"$dk_plan_saved" || {
+    "$DK_ORIGIN" >"$dk_plan_saved" || {
     echo 'test-jobs: could not read the origin plan to restore'
     exit 1
 }
-lane_run 'mkdir -p "$1" && chmod 0777 "$1" &&
-    printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$2/hooks/post-receive" &&
-    chmod 0755 "$2/hooks/post-receive"' "$LANE_DIR" "$DK_ORIGIN" ||
+lane_origin lane_run 'printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$1/hooks/post-receive" &&
+    chmod 0755 "$1/hooks/post-receive"' "$DK_ORIGIN" ||
     {
         echo 'test-jobs: could not prepare the driver-kill barriers'
         exit 1
     }
-D="$DK_TREE/$LANE_DIR"
+D="$LANE_DIR"
+MK="mkdir -p $D;" # every command that touches a barrier makes the directory first: the volume is born at the claim
 
 # K1. Before the agent: setup blocks. Lost before `go`, the group has nothing to take over: its
 #     supervisor ends lost (exit 75) and the next claim runs the whole attempt once.
 n="$RUN_ID-k1"
-write_bellows "$(dk_plan count "echo x >>$D/$n.gate.count" "echo x >>$D/$n.setup.count; $(lane_wait "$D/$n.go")")"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count" "$MK echo x >>$D/$n.setup.count; $(lane_wait "$D/$n.go")")"
 disruption_driver
-k1="$(create_job "echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+k1="$(create_job "$MK echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+lane_use "$k1"
 lane_await 90 "$LANE_DIR/$n.setup.count" 1 && ok 'k1: the setup is running' || bad 'k1: the setup is running' "$(lane_count "$LANE_DIR/$n.setup.count")"
 dk_count 'k1: the agent has not started' "$LANE_DIR/$n.agent.count" 0
 k1_sup="$(dk_supervisor "$k1")"
@@ -1763,9 +1791,10 @@ stop_driver
 # K2. The agent runs, its driver dies: the next driver rebinds the supervisor and takes over the live
 #     agent (no second one is ever started); the agent finishes once, in its own container.
 n="$RUN_ID-k2"
-write_bellows "$(dk_plan count "echo x >>$D/$n.gate.count")"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
 disruption_driver
-k2="$(create_job "echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+k2="$(create_job "$MK echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+lane_use "$k2"
 k2_runner="$(await_first_runner "$k2" running)"
 k2_host="$(runner_host "$k2_runner")"
 [ -n "$k2_runner" ] && await_released "$k2_runner" && lane_await_file 90 "$LANE_DIR/$n.ready" &&
@@ -1803,9 +1832,10 @@ stop_driver
 #      and the next driver, started at once, takes over the agent still running (the finished
 #      runner's adoption is node-disruption case b).
 n="$RUN_ID-k2d"
-write_bellows "$(dk_plan count "echo x >>$D/$n.gate.count")"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
 disruption_driver DRIVER_HANDOVER_MS=2000
-k2d="$(create_job "echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+k2d="$(create_job "$MK echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+lane_use "$k2d"
 k2d_runner="$(await_first_runner "$k2d" running)"
 k2d_host="$(runner_host "$k2d_runner")"
 [ -n "$k2d_runner" ] && await_released "$k2d_runner" && lane_await_file 90 "$LANE_DIR/$n.ready" &&
@@ -1846,9 +1876,10 @@ stop_driver
 #     never finished has no checkpoint and is run again under its own step, the old answer fenced;
 #     the agent is not repeated.
 n="$RUN_ID-k4"
-write_bellows "$(dk_plan hold "echo x >>$D/$n.gate.count; $(lane_wait "$D/$n.go")")"
+write_bellows "$(dk_plan hold "$MK echo x >>$D/$n.gate.count; $(lane_wait "$D/$n.go")")"
 disruption_driver
-k4="$(create_job "echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+k4="$(create_job "$MK echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+lane_use "$k4"
 lane_await 120 "$LANE_DIR/$n.gate.count" 1 && ok 'k4: the gate is running' || bad 'k4: the gate is running' "$(lane_count "$LANE_DIR/$n.gate.count")"
 driver_kill
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
@@ -1864,21 +1895,20 @@ stop_driver
 # K5. The publish: the agent commits, the gh stub holds `pr create`, the driver dies there. The next
 #     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
 n="$RUN_ID-k5"
-write_bellows "$(dk_plan count "echo x >>$D/$n.gate.count")"
-lane_run 'rm -f "$1"/lane-gh-hold.ready "$1"/lane-gh-hold.go && : >"$1"/lane-gh-hold' "$DK_ORIGIN" ||
-    bad 'k5: the gh hold is set' 'the hold file was not written'
-k5_pushes="$(lane_count "$DK_ORIGIN/lane-pushes.log")"
-k5_prs="$(lane_count "$DK_ORIGIN/lane-gh-prs")"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
+k5_pushes="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
+k5_prs=0 # the stand-in's PR list is the task's own, born with its volume
 disruption_driver
-k5="$(create_job "cd \"\$WORKDIR\" && git -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
-lane_await_file 180 "$DK_ORIGIN/lane-gh-hold.ready" && ok 'k5: the publish is at the PR' ||
-    bad 'k5: the publish is at the PR' "job: $(field "$(body "$(api GET "/api/jobs/$k5")")" status), pushes '$(lane_count "$DK_ORIGIN/lane-pushes.log")'"
+k5="$(create_job "$MK mkdir -p $LANE_GH_DIR && : >$LANE_GH_DIR/lane-gh-hold && cd \"\$WORKDIR\" && git -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
+lane_use "$k5"
+lane_await_file 180 "$LANE_GH_DIR/lane-gh-hold.ready" && ok 'k5: the publish is at the PR' ||
+    bad 'k5: the publish is at the PR' "job: $(field "$(body "$(api GET "/api/jobs/$k5")")" status), pushes '$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")'"
 driver_kill
-lane_touch "$DK_ORIGIN/lane-gh-hold.go" || bad 'k5: the hold is released' 'the touch failed'
+lane_touch "$LANE_GH_DIR/lane-gh-hold.go" || bad 'k5: the hold is released' 'the touch failed'
 disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
 dk_settled k5 "$k5" "$EXPIRED"
-k5_pushes_now="$(lane_count "$DK_ORIGIN/lane-pushes.log")"
-k5_prs_now="$(lane_count "$DK_ORIGIN/lane-gh-prs")"
+k5_pushes_now="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
+k5_prs_now="$(lane_count "$LANE_GH_DIR/lane-gh-prs")"
 case "$k5_pushes$k5_pushes_now" in *'?'*) k5_pushed='?' ;; *) k5_pushed=$((k5_pushes_now - k5_pushes)) ;; esac
 case "$k5_prs$k5_prs_now" in *'?'*) k5_opened='?' ;; *) k5_opened=$((k5_prs_now - k5_prs)) ;; esac
 # The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
@@ -1894,8 +1924,6 @@ dk_log "$k5" "resumed gates from claim 1's checkpoint" && ok 'k5: the gates are 
     bad 'k5: the gates are resumed from their checkpoint' "$(grep -F "job $k5:" "$work/driver.log" | tail -5)"
 expect_contains 'k5: the verdict carries the stub PR' "$(field "$(body "$(api GET "/api/jobs/$k5")")" output)" 'factory-smoke/demo/pull/'
 stop_driver
-lane_run 'rm -f "$1"/lane-gh-hold "$1"/lane-gh-hold.ready "$1"/lane-gh-hold.go' "$DK_ORIGIN" ||
-    bad 'k5: the gh hold is cleared' 'the hold files were not removed'
 
 # Whatever a case left, by label, one id per rm; the origin's plan goes back to what it was.
 for job in "$k1" "$k2" "$k2d" "$k4" "$k5"; do

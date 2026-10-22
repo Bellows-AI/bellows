@@ -428,26 +428,26 @@ describe('scripts/k8s-stub.sh factory-stub-commit', () => {
 
 describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
     const gh = join(ROOT, 'scripts/lane-gh.sh');
-    /** A bare origin, and a worktree whose `origin` is it: where the stub keeps its state. */
+    /** A state directory standing for /task/.lane-gh, and a working directory: where the stub keeps its state. */
     const fixture = () => {
         const root = mkdtempSync(join(tmpdir(), 'lane-gh-'));
         dirs.push(root);
-        const origin = join(root, 'origin.git');
+        const origin = join(root, 'state');
         const tree = join(root, 'tree');
-        execFileSync('git', ['init', '-q', '--bare', origin]);
-        execFileSync('git', ['init', '-q', '-b', 'main', tree]);
-        execFileSync('git', ['-C', tree, 'remote', 'add', 'origin', origin]);
+        mkdirSync(origin);
+        mkdirSync(tree);
+        const env = { ...process.env, LANE_GH_STATE: origin };
         const call = (...args: string[]) => {
             try {
                 return {
                     code: 0,
-                    out: execFileSync('sh', [gh, ...args], { cwd: tree, encoding: 'utf8', timeout: 10_000 }),
+                    out: execFileSync('sh', [gh, ...args], { cwd: tree, env, encoding: 'utf8', timeout: 10_000 }),
                 };
             } catch (e) {
                 return { code: (e as { status: number }).status, out: String((e as { stdout: Buffer }).stdout) };
             }
         };
-        return { origin, tree, call };
+        return { origin, tree, call, env };
     };
 
     it('has no PR until one is created, then answers the recorded URL and a main base', () => {
@@ -471,10 +471,11 @@ describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
     });
 
     it('holds a create at the hold file until released, and records it once', async () => {
-        const { call, origin, tree } = fixture();
+        const { call, origin, tree, env } = fixture();
         writeFileSync(join(origin, 'lane-gh-hold'), '');
         const child = spawn('sh', [gh, 'pr', 'create', '--head', 'task-2', '--title', 't', '--body', 'b'], {
             cwd: tree,
+            env,
             stdio: ['ignore', 'pipe', 'ignore'],
             detached: true,
         });
