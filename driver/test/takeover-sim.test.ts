@@ -158,3 +158,29 @@ describe.each(matrix)('takeover simulation, %s', (_name, timing) => {
         }, 40_000);
     });
 });
+
+// #928: the rebound binding reaches the supervisor only after the kubelet's Secret refresh. Where that is
+// longer than the supervisor's orphan bound it has stopped serving and wound down by then, so it never
+// polls the new endpoint: the earlier group is confirmed finished, and the claim must not wait the rebind bound.
+describe('takeover simulation, a supervisor that wound down before the rebind reached it (#928)', () => {
+    it('the supervisor stopped serving before the rebind reached it: the next claim adopts the finished runner', async () => {
+        const base = scaled(15);
+        const s = new Sim({ ...base, refreshMs: 3 * base.orphanMs });
+        try {
+            s.release();
+            const a = await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            const g = firstGroup(s);
+            await s.kill(a);
+            s.agentExits(g, 0);
+            s.expireLease();
+            await s.start('B');
+            await settled(s);
+            expect(s.brief()).toBe('succeeded|1|1');
+            expect(s.text()).toContain(ADOPTED);
+            expect([s.spawned, s.agentRuns]).toEqual([1, 1]);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
+});

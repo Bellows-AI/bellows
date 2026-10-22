@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import type { Board, BoardJob } from '../../src/board.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
 import { createLoop, type Loop } from '../../src/loop.js';
-import { type AdoptedRun, type LiveRun, ownGroup, type Runner } from '../../src/runner.js';
+import { type AdoptedRun, type LiveRun, ownGroup, type Read, type Runner } from '../../src/runner.js';
 import { createStepBroker, StepChannelClosed } from '../../src/step-control.js';
 import { orderFinish, orderGo, stepHostOf, stepRequest, submitStep } from '../../src/supervised-steps.js';
 import {
@@ -463,6 +463,7 @@ export class Sim {
                     claimSeq: earlier.claimSeq,
                     session: null,
                     startedAt: 'then',
+                    forget: () => undefined,
                 });
                 const serving = earlier.exit === null && sim.released(earlier) && !sim.served(earlier);
                 if (serving) return live();
@@ -488,6 +489,11 @@ export class Sim {
                     outcome: ok({ exitCode: report.agentExit ?? 1, output: 'adopted' }),
                     claimSeq: earlier.claimSeq,
                 };
+            },
+            async supervisorServing(group: BoardJob): Promise<Read<boolean>> {
+                const g = sim.groups.get(groupJob(group).leaseToken);
+                if (!g) return { kind: 'absent' };
+                return { kind: 'value', value: g.exit === null && !sim.served(g) };
             },
             async rebind(group: BoardJob, binding: Parameters<Runner['rebind']>[1]) {
                 sim.rebind(groupJob(group).leaseToken, bindingBody(binding));
