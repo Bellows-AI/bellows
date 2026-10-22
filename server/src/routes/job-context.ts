@@ -1,6 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { JobStore } from '../db/job-store-types.js';
+import type { ClaimRefusal, JobStore } from '../db/job-store-types.js';
 import type { OrgRegistry } from '../orgs.js';
 
 /**
@@ -66,20 +66,20 @@ export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
 export type BoardScanner = <T>(
     boards: readonly JobStore[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore) => Promise<T | null>
+    claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
 ) => Promise<T | null>;
 
 async function scanBoards<T>(
     boards: readonly JobStore[],
     order: readonly number[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore) => Promise<T | null>
+    claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
 ): Promise<T | null> {
     let failed: Error | null = null;
     for (const index of order) {
         const board = boards[index]!;
         try {
-            const claimed = await claimOf(board);
+            const claimed = await claimOf(board, { global: false });
             if (claimed !== null) return claimed;
         } catch (e) {
             failed = e as Error;
@@ -108,7 +108,7 @@ export function boardScan(): BoardScanner {
     return async <T>(
         boards: readonly JobStore[],
         log: (e: Error) => void,
-        claimOf: (board: JobStore) => Promise<T | null>
+        claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
     ): Promise<T | null> => {
         const start = turn++ % boards.length;
         const order = Array.from({ length: boards.length }, (_, i) => (start + i) % boards.length);
@@ -127,17 +127,19 @@ async function scanUnderBudget<T>(
     order: readonly number[],
     demands: readonly (Awaited<ReturnType<JobStore['demand']>> | null)[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore) => Promise<T | null>
+    claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
 ): Promise<T | null> {
     let failed: Error | null = null;
     let full = false;
     for (const index of order) {
-        if (full && !demands[index]?.takeover) continue;
+        // An unknown demand may hold a takeover, so its board is still offered one.
+        if (full && !(demands[index]?.takeover ?? true)) continue;
         const board = boards[index]!;
+        const refusal: ClaimRefusal = { global: false };
         try {
-            if (!(await board.globalRoom())) full = true;
-            const claimed = await claimOf(board);
+            const claimed = await claimOf(board, refusal);
             if (claimed !== null) return claimed;
+            if (refusal.global) full = true;
         } catch (e) {
             failed = e as Error;
             log(failed);
@@ -160,7 +162,7 @@ export function fairBoardScan(): BoardScanner {
     return async <T>(
         boards: readonly JobStore[],
         log: (e: Error) => void,
-        claimOf: (board: JobStore) => Promise<T | null>
+        claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
     ): Promise<T | null> => {
         const start = turn++ % boards.length;
         const demands = await Promise.all(

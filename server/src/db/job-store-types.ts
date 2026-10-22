@@ -822,6 +822,14 @@ export interface JobArtifactScope {
     claimSeq: number;
 }
 
+/**
+ * What a claim that returned null reports, for the cross-org scan (issue #831): `global` is set when the global
+ * admission budget refused it new work, so no later board of the same poll may admit any either.
+ */
+export interface ClaimRefusal {
+    global: boolean;
+}
+
 export interface JobStore extends PhaseCheckpointStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
@@ -1083,11 +1091,9 @@ export interface JobStore extends PhaseCheckpointStore {
      */
     restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
-    claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
+    claim(worker: string, leaseSeconds: number, refusal?: ClaimRefusal): Promise<Claim | null>;
     /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
     demand(): Promise<OrgDemand>;
-    /** Whether the global admission budget has room for another running row; true when it is unset (issue #831). */
-    globalRoom(): Promise<boolean>;
     heartbeat(
         id: string,
         leaseToken: string,

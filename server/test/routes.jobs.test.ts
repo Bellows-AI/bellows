@@ -313,9 +313,6 @@ function stubStore(
         async demand() {
             return options.demand ?? { takeover: false, running: 0, oldestWaiting: null };
         },
-        async globalRoom() {
-            return true;
-        },
         async heartbeat() {
             boom();
             const result = options.verdict ?? 'ok';
@@ -1223,6 +1220,40 @@ describe('POST /api/jobs/claim', () => {
         ]);
         const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response.json()).toEqual(claim);
+        expect(scanned).toEqual(['org-b', 'org-a']);
+    });
+
+    // A poll whose claim the global budget refused admits nothing from later boards (issue #831), but a
+    // board whose demand could not be read may hold a takeover, which needs no slot: it is still offered one.
+    it('still offers a board whose demand read failed after a claim was refused by the global budget', async () => {
+        const scanned: string[] = [];
+        const unknown = stubStore();
+        unknown.demand = async () => {
+            throw new Error('demand read failed');
+        };
+        unknown.claim = async () => {
+            scanned.push('org-a');
+            return claim;
+        };
+        const full = stubStore();
+        full.claim = async (_worker, _lease, refusal) => {
+            scanned.push('org-b');
+            if (refusal) refusal.global = true;
+            return null;
+        };
+        const known = stubStore();
+        known.claim = async () => {
+            scanned.push('org-c');
+            return null;
+        };
+        const instance = await harnessOfBoards([
+            ['org-a', unknown],
+            ['org-b', full],
+            ['org-c', known],
+        ]);
+        const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.json()).toEqual(claim);
+        // org-c has a readable demand without a takeover: skipped once the budget refused; org-a is not.
         expect(scanned).toEqual(['org-b', 'org-a']);
     });
 

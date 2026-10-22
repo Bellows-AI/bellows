@@ -69,24 +69,17 @@ function budgetsFor(
 }
 
 /**
- * Whether new work of `orgId` has room in the global and org budgets, read without a lock. Advisory:
- * it only spares the claim a reservation it would refuse; `admitInTx` decides.
+ * The first budget (global, then org) with no room for new work of `orgId`, or null when there is room, read
+ * without a lock. Advisory: it only spares the claim a reservation it would refuse; `admitInTx` decides.
  */
-export async function roomForNew(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<boolean> {
+export async function fullScope(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<AdmissionScope | null> {
     for (const budget of budgetsFor(sql, budgets, orgId, null)) {
         const [row] = await sql<{ n: number }[]>`
             select count(*)::int as n from job where ${occupying(sql)} and ${budget.where}
         `;
-        if (row!.n >= budget.limit) return false;
+        if (row!.n >= budget.limit) return budget.scope;
     }
-    return true;
-}
-
-/** Whether the global budget has room for one more running row (always, when it is unset), read without a lock. */
-export async function globalRoom(sql: Sql, budgets: AdmissionBudgets): Promise<boolean> {
-    if (budgets.global === undefined) return true;
-    const [row] = await sql<{ n: number }[]>`select count(*)::int as n from job where ${occupying(sql)}`;
-    return row!.n < budgets.global;
+    return null;
 }
 
 /** The reservation's repo filter for candidate alias `j`, advisory like `roomForNew`. */

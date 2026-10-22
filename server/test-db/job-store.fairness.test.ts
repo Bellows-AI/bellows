@@ -34,7 +34,7 @@ function replica(admission: AdmissionBudgets, wrap: (board: JobStore, orgId: str
             (e) => {
                 throw e;
             },
-            (board: JobStore) => board.claim(worker, LEASE_SECONDS)
+            (board: JobStore, refusal) => board.claim(worker, LEASE_SECONDS, refusal)
         );
 }
 
@@ -104,27 +104,27 @@ describe.skipIf(!enabled)('cross-org fairness on every replica (issue #831)', ()
         expect((await replica({})('w1'))?.id).toBe(lost);
     });
 
-    it('a poll that found the global budget full admits no new work from a later board when a slot frees mid-poll', async () => {
-        // Org A runs two rows and has one more queued; org B has one queued; the budget is two.
+    it('a poll whose claim was refused by the global budget admits no new work from a later board', async () => {
+        // Org A runs one row and has two more queued; org B has one queued; the budget is two, so the poll starts with room.
         const budget = { global: 2 } as const;
         const heavy = createJobStore({ sql, orgId: ORG_A, admission: budget });
         const first = await queued(ORG_A, 'acme/a0', 60);
         await queued(ORG_A, 'acme/a1', 59);
-        const claims = [await heavy.claim('w0', LEASE_SECONDS), await heavy.claim('w0', LEASE_SECONDS)];
-        expect(claims.map((claim) => claim?.id)).toContain(first);
-        const firstClaim = claims.find((claim) => claim?.id === first)!;
+        const firstClaim = await heavy.claim('w0', LEASE_SECONDS);
+        expect(firstClaim?.id).toBe(first);
         await queued(ORG_A, 'acme/a2', 58);
         const light = await queued(ORG_B, 'acme/b0', 1);
 
-        // Org B ranks first (fewest running). Its claim is refused, the budget being full; then the first
-        // heavy row settles before the poll reaches org A, whose board would now admit its third row.
+        // Org B ranks first (fewest running). Before its claim another driver fills the budget, so the claim is
+        // refused; then the first heavy row settles before the poll reaches org A, whose board would now admit a row.
         const poll = replica(budget, (board, orgId) =>
             orgId === ORG_B
                 ? {
                       ...board,
-                      claim: async (worker, leaseSeconds) => {
-                          const refused = await board.claim(worker, leaseSeconds);
-                          await heavy.complete(first, firstClaim.leaseToken, {
+                      claim: async (worker, leaseSeconds, refusal) => {
+                          await heavy.claim('w-other', LEASE_SECONDS);
+                          const refused = await board.claim(worker, leaseSeconds, refusal);
+                          await heavy.complete(first, firstClaim!.leaseToken, {
                               status: 'succeeded',
                               exitCode: 0,
                               output: '',
@@ -136,6 +136,7 @@ describe.skipIf(!enabled)('cross-org fairness on every replica (issue #831)', ()
         );
         expect(await poll('w1')).toBeNull();
         expect(await runningOf(ORG_A)).toBe(1);
+        expect(await runningOf(ORG_B)).toBe(0);
 
         // The next poll hands the freed slot to the org that was waiting.
         expect((await replica(budget)('w2'))?.id).toBe(light);

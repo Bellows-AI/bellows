@@ -224,7 +224,7 @@ export async function handleClaimJob(
 
     const claimFailed = (e: Error) => request.log.error({ err: e }, 'job claim failed');
     const claim = await guard(reply, claimFailed, () =>
-        firstJobClaim(boards, claimFailed, (board) => board.claim(worker, lease))
+        firstJobClaim(boards, claimFailed, (board, refusal) => board.claim(worker, lease, refusal))
     );
     if (!claim.ok) return reply;
     // 204, not 200 with a null: an idle poll is the common case and it should not have to be

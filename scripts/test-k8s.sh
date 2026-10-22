@@ -2096,17 +2096,22 @@ DRIVER_SEL="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driv
 # expired lease. kill_driver_pods [pod/<name>] deletes the driver pods hard (all of them without an
 # argument) and returns once the node reports no container of theirs left running.
 kill_driver_pods() {
-    local rows pod node out deleted=0 confirmed=0
+    local rows pod node out deleted=0 confirmed=0 read=0
     if [ -n "${1:-}" ]; then
         rows="$(bounded 30 kubectl get "$1" -n "$NAMESPACE" --request-timeout=10s \
-            -o jsonpath='{.metadata.name} {.spec.nodeName}{"\n"}' 2>/dev/null)" || rows=''
+            -o jsonpath='{.metadata.name} {.spec.nodeName}{"\n"}' 2>/dev/null)" || read=1
+        # A named pod must answer with its own name and node: a failed, empty or malformed read confirms nothing.
+        [ "$read" = 0 ] && ! printf '%s\n' "$rows" | grep -qE '^[^ ]+ [^ ]+$' && read=1
         bounded 60 kubectl delete "$1" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1 || deleted=1
     else
         rows="$(bounded 30 kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s \
-            -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}' 2>/dev/null)" || rows=''
+            -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}' 2>/dev/null)" || read=1
+        [ "$read" = 0 ] && [ -n "$rows" ] && ! printf '%s\n' "$rows" | grep -qE '^[^ ]+ [^ ]+$' && read=1
         bounded 60 kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1 || deleted=1
     fi
-    # Returns non-zero when the delete failed or the node never confirmed the containers stopped: the caller's crash check fails on that.
+    # Returns non-zero when the identity read failed, the delete failed or the node never confirmed the containers
+    # stopped: the caller's crash check fails on that.
+    [ "$read" = 0 ] || deleted=1
     [ -n "${kind_name:-}" ] || return "$deleted"
     while read -r pod node; do
         [ -n "$pod" ] || continue

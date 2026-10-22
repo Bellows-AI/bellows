@@ -10,7 +10,7 @@ import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
-import { admitInTx, awaitingTakeover, repoRoom, roomForNew } from './job-store-admission.js';
+import { admitInTx, awaitingTakeover, fullScope, repoRoom } from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
@@ -25,6 +25,7 @@ import type {
     ClaimHelperPlan,
     JobStorePrs,
     ReviewerSpec,
+    ClaimRefusal,
 } from './job-store-types.js';
 import type { ClaimCandidateRow } from './job-store-claim-row.js';
 import { claimCommand } from './follow-up-recap.js';
@@ -212,10 +213,16 @@ function claimRules({ sql, orgId }: JobStoreContext) {
  * and only from a repo with room; a takeover of a running row needs no slot and is always offered.
  * `refused` are this poll's candidates a budget already refused.
  */
-async function reserveCandidate(ctx: JobStoreContext, refused: readonly string[]): Promise<ReservedCandidate | null> {
+async function reserveCandidate(
+    ctx: JobStoreContext,
+    refused: readonly string[],
+    refusal: ClaimRefusal
+): Promise<ReservedCandidate | null> {
     const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
-    const room = await roomForNew(sql, admission, orgId);
+    const full = await fullScope(sql, admission, orgId);
+    if (full === 'global') refusal.global = true;
+    const room = full === null;
     const [reserved] = await sql<ReservedCandidate[]>`
         with picked as (
             select j.id, j.claim_deferred_until as prior_deferral from job j
@@ -280,7 +287,8 @@ async function acquireCandidate(
     ctx: JobStoreContext,
     lease: { worker: string; leaseSeconds: number },
     reserved: ReservedCandidate,
-    gates: ResolvedClaimGates
+    gates: ResolvedClaimGates,
+    refusal: ClaimRefusal
 ): Promise<Claim | typeof NEXT_CANDIDATE | typeof REFUSED> {
     const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
@@ -298,6 +306,7 @@ async function acquireCandidate(
         if (locked.status === 'queued') {
             const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
             if ('full' in admitted) {
+                if (admitted.full === 'global') refusal.global = true;
                 await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
                          where org_id = ${orgId} and id = ${reserved.id}`;
                 return REFUSED;
@@ -399,14 +408,15 @@ async function acquireCandidate(
 async function claimNextCandidate(
     ctx: JobStoreContext,
     worker: string,
-    leaseSeconds: number
+    leaseSeconds: number,
+    refusal: ClaimRefusal
 ): ReturnType<JobStore['claim']> {
     const refused: string[] = [];
     for (;;) {
-        const reserved = await reserveCandidate(ctx, refused);
+        const reserved = await reserveCandidate(ctx, refused, refusal);
         if (!reserved) return null;
         const gates = await prepareCandidate(ctx, reserved);
-        const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates);
+        const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates, refusal);
         if (claim === REFUSED) refused.push(reserved.id);
         else if (claim !== NEXT_CANDIDATE) return claim;
     }
@@ -460,7 +470,8 @@ async function assembleClaim(
 export async function claimJob(
     ctx: JobStoreContext,
     worker: string,
-    leaseSeconds: number
+    leaseSeconds: number,
+    refusal: ClaimRefusal = { global: false }
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
 
@@ -533,7 +544,7 @@ export async function claimJob(
      * the exclusion reads OTHER rows without locking them, and only the root lock makes it see a
      * same-thread claim that committed while this one waited.
      */
-    return claimNextCandidate(ctx, worker, leaseSeconds);
+    return claimNextCandidate(ctx, worker, leaseSeconds, refusal);
 }
 
 /**

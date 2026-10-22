@@ -114,7 +114,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - A reviewer profile grants connections and a budget, not a tool allowlist; snapshot refs
   (`refs/factory/review/*`) are never deleted.
 - Admission budgets count board leases, not pods; a rollout runs each replica's values. Org fairness is eventual:
-  polls reading the same demand at once may serve one org; the next free slot goes to the other. A poll that finds the global budget full admits nothing from later boards. Reclaims rotate.
+  polls reading the same demand at once may serve one org; the next free slot goes to the other. A poll whose claim the global budget refused admits nothing from later boards (takeovers aside). Reclaims rotate.
 - No priority; no per-job authorization ([repos.md](repos.md)); no service volumes, health checks,
   `depends_on` or restart policies in `.bellows.yaml`.
 - No abort for an in-flight publish; the next lease holder reads the ledger and the remote first. A custom
