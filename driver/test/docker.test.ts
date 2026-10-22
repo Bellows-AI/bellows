@@ -6800,6 +6800,56 @@ describe('docker waits for the supervisor of a started group to make contact (#8
         expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
     });
 
+    // #924, the docker counterpart of the kubernetes pod lost before first contact.
+    describe('a supervisor container lost before it made contact', () => {
+        const GONE = Object.assign(new Error('Command failed'), { stderr: 'Error: No such object: supervisor' });
+        async function lostSync(inspected: (read: number) => string | Error) {
+            const d = labelDaemon();
+            const supervised = syncSteps();
+            let reads = 0;
+            const exec = async (args: string[]) => {
+                if (args[0] === 'inspect' && args.includes(supervisorName(repoJob))) {
+                    reads += 1;
+                    const answer = inspected(reads);
+                    if (answer instanceof Error) throw answer;
+                    return { stdout: answer };
+                }
+                return d.exec(args);
+            };
+            const thrown = await settled(
+                dockerRunner(exec, { steps: contactAfter(supervised, [false]) }).syncCheckout(repoJob)
+            );
+            return { thrown, reads, supervised, d };
+        }
+
+        it.each([
+            ['removed', () => GONE],
+            ['exited', () => '{"Running":false,"Status":"exited"}'],
+        ])('is a transient refusal as soon as a supervisor seen running is %s', async (_how, after) => {
+            const { thrown, reads, supervised, d } = await lostSync((read) =>
+                read < 3 ? '{"Running":true}' : after()
+            );
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({ startupCause: 'transient', message: expect.stringContaining('was lost') });
+            expect(reads).toBeLessThanOrEqual(4);
+            expect(supervised.submitted).toEqual([]);
+            expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
+        });
+
+        it('counts no supervisor that was never seen running, and no read that did not answer', async () => {
+            for (const answer of [GONE, new Error('Cannot connect to the Docker daemon')]) {
+                const { thrown, reads } = await lostSync(() => answer);
+                expect(thrown).not.toBeInstanceOf(StartupRefused);
+                expect(thrown).toBeInstanceOf(Error);
+                expect(reads).toBeGreaterThan(100);
+            }
+            const { thrown, reads } = await lostSync((read) => (read < 3 ? '{"Running":true}' : new Error('timeout')));
+            expect(thrown).not.toBeInstanceOf(StartupRefused);
+            expect(reads).toBeGreaterThan(100);
+        });
+    });
+
     it('stops waiting for a group whose job was killed while it came up', async () => {
         const slept: number[] = [];
         const d = labelDaemon();

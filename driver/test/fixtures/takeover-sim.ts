@@ -17,7 +17,7 @@ import type { Board, BoardJob } from '../../src/board.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
 import { createLoop, type Loop } from '../../src/loop.js';
 import { type AdoptedRun, type LiveRun, ownGroup, type Runner } from '../../src/runner.js';
-import { createStepBroker } from '../../src/step-control.js';
+import { createStepBroker, StepChannelClosed } from '../../src/step-control.js';
 import { orderFinish, orderGo, stepHostOf, stepRequest, submitStep } from '../../src/supervised-steps.js';
 import {
     AGENT_MAILBOX_DIR,
@@ -28,6 +28,7 @@ import {
     SUPERVISOR_RELEASED_LINE,
     SUPERVISOR_SERVED_LINE,
 } from '../../src/supervisor-contract.js';
+import { StartupRefused } from '../../src/startup-cause.js';
 import { reportFinalized } from '../../src/termination.js';
 import { bindingBody, supervisorLiterals } from '../../src/supervisor-plan.js';
 import { config as baseConfig, job as baseJob, ok, stubBoard, stubRunner } from './loop-stubs.js';
@@ -48,6 +49,8 @@ export interface Timing {
     controlMs: number;
     /** The driver's claim poll. */
     pollMs: number;
+    /** The supervisor's own tick (`SUPERVISOR_TICK_MS`); the default is a fast one for a few runs at a time. */
+    tickMs?: number;
 }
 
 /** The kind lane's timing (lease 45, grace 20, sync 5) divided by `by`; the lease stays whole seconds. */
@@ -66,7 +69,7 @@ export const ADOPTED = 'adopted the finished runner of claim 1, whose driver was
 const never = new Promise<never>(() => {});
 export const nap = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-interface Group {
+export interface Group {
     lease: string;
     claimSeq: number;
     root: string;
@@ -75,6 +78,15 @@ interface Group {
     exit: number | null;
     done: Promise<number>;
     secretWrites: number;
+    /** The node a cluster model placed the pod on; null while it is Pending (or when no cluster is modelled). */
+    node: string | null;
+    /** The control tokens the supervisor has answered to (its own, then each holder's after a rebind). */
+    tokens: Set<string>;
+    /** Starts the supervisor: at creation without a cluster, once the pod is placed and up with one. */
+    start: () => void;
+    /** Resolves when the pod is gone (deleted, evicted, its node drained). */
+    gone: Promise<void>;
+    markGone: () => void;
 }
 
 interface Row {
@@ -91,6 +103,7 @@ interface Row {
 
 export class Driver {
     dead = false;
+    /** A driver pod gone from its node (a kill, a drain) keeps nothing: calls made after it never come back. */
     loop!: Loop;
     server?: ReturnType<typeof createGateServer>;
     constructor(
@@ -114,6 +127,16 @@ export class Sim {
     spawned = 0;
     agentRuns = 0;
     publishes = 0;
+    /** The claim of every publish step that returned (the latch was open). */
+    readonly published: number[] = [];
+    /** Every claim sequence the board handed out, in order. */
+    readonly claimSeqs: number[] = [];
+    /** What the driver itself ended (`Runner.kill`), with whether its claim still held and was unexpired. */
+    readonly driverKills: { claimSeq: number; held: boolean; unexpired: boolean }[] = [];
+    /** A cluster model: places a new group's pod (a node, or null for Pending) and starts it later. */
+    place?: (group: Group) => string | null;
+    /** A fault on one board call: the ms it takes to fail (0: at once), as a request timeout would; undefined: none. */
+    boardFault?: ((op: string) => number | undefined) | undefined;
 
     constructor(readonly t: Timing) {
         this.config = {
@@ -156,6 +179,7 @@ export class Sim {
     private take(): BoardJob {
         const r = this.row;
         r.claimSeq += 1;
+        this.claimSeqs.push(r.claimSeq);
         r.status = 'running';
         r.leaseToken = randomUUID();
         r.leaseExpiresAt = Date.now() + this.t.leaseSeconds * 1000;
@@ -170,8 +194,7 @@ export class Sim {
         };
     }
 
-    private readonly holds = (claimed: BoardJob) =>
-        this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
+    readonly holds = (claimed: BoardJob) => this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
 
     private boardImpl(): Partial<Board> {
         const r = this.row;
@@ -237,6 +260,9 @@ export class Sim {
                 if (typeof v !== 'function') return v;
                 return (...a: unknown[]) => {
                     if (d.dead) return never;
+                    const fault = this.boardFault?.(key);
+                    if (fault !== undefined)
+                        return nap(fault).then(() => Promise.reject(new Error(`board ${key}: injected fault`)));
                     const out = (v as (...x: unknown[]) => unknown)(...a);
                     Promise.resolve(out).then(
                         (r) => this.logs.push(`<${d.name} board.${key} ${JSON.stringify(r)?.slice(0, 80)}>`),
@@ -265,7 +291,7 @@ export class Sim {
         const logs: string[] = [];
         const env: Record<string, string> = {
             FACTORY_CTL_ROOT: root,
-            SUPERVISOR_TICK_MS: '20',
+            SUPERVISOR_TICK_MS: String(this.t.tickMs ?? 20),
             SUPERVISOR_AGENT_START_MS: '3600000',
             SUPERVISOR_AGENT_LOST_MS: '3600000',
             ...Object.fromEntries(supervisorLiterals(this.config, job, { exporting: false })),
@@ -283,10 +309,24 @@ export class Sim {
             exit: null,
             done: never,
             secretWrites: 0,
+            node: null,
+            tokens: new Set([job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '']),
+            start: () => undefined,
+            gone: never,
+            markGone: () => undefined,
         };
-        group.done = supervisor.supervise(env, (line) => logs.push(line)).then((code) => (group.exit = code));
+        group.gone = new Promise<void>((resolve) => (group.markGone = resolve));
+        let started = false;
+        group.start = () => {
+            if (started || this.groups.get(job.leaseToken) !== group) return;
+            started = true;
+            group.done = supervisor.supervise(env, (line) => logs.push(line)).then((code) => (group.exit = code));
+        };
         this.groups.set(job.leaseToken, group);
         this.spawned += 1;
+        // Without a cluster model the pod is up at once; with one it starts when it is placed and up.
+        if (!this.place) group.start();
+        else group.node = this.place(group);
         return group;
     }
 
@@ -295,6 +335,7 @@ export class Sim {
         const group = this.groups.get(lease);
         if (!group) return;
         group.secretWrites += 1;
+        group.tokens.add((JSON.parse(body) as { token: string }).token);
         setTimeout(() => writeFileSync(group.file, body), this.t.refreshMs);
     }
 
@@ -311,6 +352,9 @@ export class Sim {
         g.logs.push('POD DELETED');
         this.groups.delete(g.lease);
         this.deleted.push(g);
+        // The supervisor is gone with its pod: whatever waits on it, the report or a step, is released at once.
+        for (const d of this.drivers) for (const token of g.tokens) d.steps.release(token);
+        g.markGone();
     }
     readonly deleted: Group[] = [];
 
@@ -324,22 +368,54 @@ export class Sim {
         return Object.assign(base, {
             async syncCheckout(job: BoardJob) {
                 const created = !sim.groupOf(job);
-                sim.ensureGroup(job);
-                if (created) d.steps.attach(job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '');
+                const group = sim.ensureGroup(job);
+                const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '';
+                if (created) d.steps.attach(token);
+                // `awaitSupervisor` (driver/src/k8s-group.ts): a new pod is waited on until its supervisor first pulls; a
+                // pod gone before that is an infrastructure loss at once, not a wait for the bound (k8s-group.test.ts).
+                if (created) {
+                    const gone = group.gone.then(() => true);
+                    while (!d.dead && !d.steps.contacted(token)) {
+                        if (await Promise.race([gone, nap(20).then(() => false)]))
+                            throw new StartupRefused(
+                                'the runner pod was deleted before its supervisor came up (EvictionByEvictionAPI: Eviction API: evicting)',
+                                'transient'
+                            );
+                    }
+                }
                 return { ok: true, reason: null };
             },
             async run(job: BoardJob) {
-                const group = sim.ensureGroup(job);
                 const resumed = Boolean(job.groupLease);
+                // A run taken over from a pod that is gone has nothing to follow: the Job vanished under it.
+                if (resumed && !sim.groupOf(job))
+                    return ok({
+                        exitCode: 1,
+                        output: '',
+                        infraLoss:
+                            'the runner pod was deleted before it exited (EvictionByEvictionAPI: Eviction API: evicting)',
+                    });
+                const group = sim.ensureGroup(job);
                 const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '';
                 if (!resumed) {
                     await sim.goGate;
                     sim.agentRuns += 1;
                     await orderGo(host, job);
                 }
-                const report = await d.steps.awaitReport(token);
+                const reported = d.steps.awaitReport(token);
+                reported.catch(() => undefined);
+                const outcome = await Promise.race([reported, group.gone.then(() => null)]);
+                if (outcome === null) {
+                    // The pod went away under a live driver: the platform's words, as the k8s poll reads them.
+                    return ok({
+                        exitCode: 1,
+                        output: '',
+                        infraLoss:
+                            'the runner pod was deleted before it exited (EvictionByEvictionAPI: Eviction API: evicting)',
+                    });
+                }
                 return {
-                    exitCode: report.agentExit ?? 1,
+                    exitCode: outcome.agentExit ?? 1,
                     output: `agent of claim ${group.claimSeq}`,
                     timedOut: false,
                     started: true,
@@ -356,13 +432,21 @@ export class Sim {
                     prUrl: 'https://example.test/pull/1',
                     reason: null,
                 };
-                if (!own || own.exit !== null) return result;
+                // The publish is a step of the task pod: a pod that is gone serves none, and the loop reads that as a loss.
+                // A pod this claim had and lost serves none; an adopted run never had one, and the runner makes a fresh group.
+                if (!own) {
+                    if (sim.deleted.some((g) => g.lease === ownGroup(job).leaseToken))
+                        throw new StepChannelClosed('the publish');
+                    return result;
+                }
+                if (own.exit !== null) return result;
                 const wait = `echo x >> ${sim.latch}.runs; while [ ! -e ${sim.latch} ]; do sleep 0.05; done`;
                 await submitStep(
                     host,
                     job,
                     stepRequest(job, 'publish', { id: 'pr', argv: ['sh', '-c', wait], timeoutMs: 120_000 })
                 );
+                sim.published.push(job.claimSeq);
                 return result;
             },
             async adopt(job: BoardJob): Promise<AdoptedRun | LiveRun | null> {
@@ -388,7 +472,15 @@ export class Sim {
                     sim.deleteGroup(earlier);
                     return null;
                 }
-                if (earlier.exit === null) await earlier.done;
+                if (earlier.exit === null) {
+                    // `awaitFinalized`: bounded by `finalizeWaitMs` (lease + grace); a runner still up at the bound is swept.
+                    await Promise.race([earlier.done, nap(sim.config.leaseSeconds * 1000 + sim.config.rebindGraceMs)]);
+                    if (earlier.exit === null) {
+                        sim.sweptAt.push({ exit: earlier.exit });
+                        sim.deleteGroup(earlier);
+                        return null;
+                    }
+                }
                 const report = finalReportOf(earlier.logs.join('\n'));
                 // An unlaunched or lost report finalized nothing: an infrastructure loss, given back to be redone.
                 if (!report || !reportFinalized(report)) return null;
@@ -404,6 +496,11 @@ export class Sim {
                 await orderFinish(host, job).catch(() => undefined);
             },
             async kill(job: BoardJob) {
+                sim.driverKills.push({
+                    claimSeq: job.claimSeq,
+                    held: sim.holds(job),
+                    unexpired: sim.row.leaseExpiresAt > Date.now(),
+                });
                 const g = sim.groupOf(job);
                 if (g) sim.deleteGroup(g);
             },
