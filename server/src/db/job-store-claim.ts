@@ -10,7 +10,7 @@ import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
-import { admitInTx, repoRoom, roomForNew } from './job-store-admission.js';
+import { admitInTx, awaitingTakeover, repoRoom, roomForNew } from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
@@ -206,8 +206,8 @@ function claimRules({ sql, orgId }: JobStoreContext) {
  * polls (`DRIVER_POLL_MS`), and ahead of every row queued after, so one failure never demotes it
  * for good.
  *
- * A handed-over row (released by a draining driver, its runner group waiting for a new holder) comes
- * first: its takeover window is bounded, and it had a budget slot until the release (issue #831).
+ * A row awaiting its takeover — a lost attempt, or one a draining driver handed over while its runner
+ * group waits for a new holder — comes first: its takeover window is bounded (issue #831).
  * Under the admission budgets new work is offered only while the global and org budgets have room
  * and only from a repo with room; a takeover of a running row needs no slot and is always offered.
  * `refused` are this poll's candidates a budget already refused.
@@ -231,9 +231,7 @@ async function reserveCandidate(ctx: JobStoreContext, refused: readonly string[]
               and not ${stagedUnderLease(sql, 'j')}
               and j.id <> all(${refused}::uuid[])
               and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}))
-            order by (j.status = 'queued'
-                      and coalesce((j.interruptions -> -1 ->> 'claimSeq')::bigint = j.claim_seq, false)) desc,
-                     coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
+            order by ${awaitingTakeover(sql, 'j')} desc, coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
             -- Below the limit in the plan, so a row another claimer is reserving is skipped
             -- rather than counted and then discarded.

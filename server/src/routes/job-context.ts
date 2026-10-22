@@ -115,3 +115,48 @@ export function boardScan(): BoardScanner {
         return scanBoards(boards, order, log, claimOf);
     };
 }
+
+/**
+ * The job claim's scan (issue #831): the boards in the order their rows give, so every board
+ * replica and every driver sees the same priority instead of each replica's own rotation. An org
+ * whose lost attempt waits for its takeover comes first — recovery needs no budget slot, and a
+ * takeover window is bounded — then the org with the fewest running rows, then the one whose
+ * oldest waiting row queued first. Only an exact tie falls back to the rotation. A board whose
+ * demand read fails goes last, still scanned, so one unhealthy org never blocks the others.
+ */
+export function fairBoardScan(): BoardScanner {
+    let turn = 0;
+    return async <T>(
+        boards: readonly JobStore[],
+        log: (e: Error) => void,
+        claimOf: (board: JobStore) => Promise<T | null>
+    ): Promise<T | null> => {
+        const start = turn++ % boards.length;
+        const demands = await Promise.all(
+            boards.map((board) =>
+                // Through a promise, so a demand read that throws before it returns one is caught too.
+                Promise.resolve()
+                    .then(() => board.demand())
+                    .catch((e: unknown) => {
+                        log(e as Error);
+                        return null;
+                    })
+            )
+        );
+        const rank = (index: number) => {
+            const demand = demands[index];
+            if (!demand) return [2, 0, Number.POSITIVE_INFINITY];
+            const waited = demand.oldestWaiting?.getTime() ?? Number.POSITIVE_INFINITY;
+            return [demand.takeover ? 0 : 1, demand.running, waited];
+        };
+        const rotation = (index: number) => (index - start + boards.length) % boards.length;
+        const order = boards
+            .map((_, index) => index)
+            .sort((a, b) => {
+                const [ra, rb] = [rank(a), rank(b)];
+                for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
+                return rotation(a) - rotation(b);
+            });
+        return scanBoards(boards, order, log, claimOf);
+    };
+}

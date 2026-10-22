@@ -37,6 +37,7 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob } from './job-store-claim.js';
+import { orgDemand } from './job-store-admission.js';
 import { claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-reclaims.js';
 import {
     threadOf,
@@ -73,6 +74,7 @@ function workerMethods(
 ): Pick<
     JobStore,
     | 'claim'
+    | 'demand'
     | 'heartbeat'
     | 'session'
     | 'progress'
@@ -92,6 +94,11 @@ function workerMethods(
         async claim(worker, leaseSeconds) {
             await gate();
             return claimJob(ctx, worker, leaseSeconds);
+        },
+
+        async demand() {
+            await gate();
+            return orgDemand(ctx.sql, ctx.orgId);
         },
 
         async heartbeat(id, leaseToken, leaseSeconds) {

@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
-import { boardScan } from './job-context.js';
+import { boardScan, fairBoardScan } from './job-context.js';
 import {
     handleClaimJob,
     handleCreateJob,
@@ -75,7 +75,7 @@ function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
 export const jobRoutes =
     ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
-        const firstJobClaim = boardScan();
+        const firstJobClaim = fairBoardScan();
 
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreateJob(orgs, request, reply));
 

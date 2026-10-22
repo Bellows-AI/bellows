@@ -157,3 +157,41 @@ async function admitInBudget(tx: TransactionSql, budget: Budget): Promise<number
     }
     return take();
 }
+
+/**
+ * What one org's board asks of the cluster right now, read from its rows so every board replica
+ * orders the cross-org claim scan the same way (issue #831, `fairBoardScan`): whether a lost
+ * attempt waits for its takeover, how many rows run, and when its oldest waiting row queued.
+ */
+export interface OrgDemand {
+    readonly takeover: boolean;
+    readonly running: number;
+    readonly oldestWaiting: Date | null;
+}
+
+/**
+ * A row a lost or handed-over attempt left for its takeover, claimable now: running with its lease
+ * expired, or released by a draining driver (queued, its newest interruption naming its own claim),
+ * and not deferred by a failed preparation. The org that has one is scanned first and the row comes
+ * first in its org's queue (issue #831); `table` qualifies the columns for an aliased read.
+ */
+export function awaitingTakeover(sql: Sql | TransactionSql, table: string | null = null): Fragment {
+    const col = (name: string) => sql(table === null ? name : `${table}.${name}`);
+    return sql`(${col('review_of')} is null
+        and (${col('claim_deferred_until')} is null or ${col('claim_deferred_until')} <= now())
+        and ((${col('status')} = 'running' and ${col('lease_expires_at')} <= now())
+             or (${col('status')} = 'queued'
+                 and coalesce((${col('interruptions')} -> -1 ->> 'claimSeq')::bigint = ${col('claim_seq')}, false))))`;
+}
+
+export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
+    const [row] = await sql<{ takeover: boolean | null; running: number; oldest_waiting: Date | null }[]>`
+        select bool_or(${awaitingTakeover(sql)}) as takeover,
+               (count(*) filter (where ${occupying(sql)}))::int as running,
+               min(coalesce(claim_deferred_until, created_at))
+                   filter (where status = 'queued' and review_of is null) as oldest_waiting
+        from job
+        where org_id = ${orgId} and status in ('queued', 'running')
+    `;
+    return { takeover: row?.takeover ?? false, running: row?.running ?? 0, oldestWaiting: row?.oldest_waiting ?? null };
+}
