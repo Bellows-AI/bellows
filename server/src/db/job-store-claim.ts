@@ -436,9 +436,14 @@ async function acquireCandidate(
                       ${baseBranch} as base_branch
         `;
         const row = rows[0];
-        // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy:
-        // the next candidate, with nothing written here.
-        if (!row) return NEXT_CANDIDATE;
+        // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy: the
+        // next candidate, and the reservation's deferral goes back, so a holder that renewed and then
+        // crashes is recoverable at once.
+        if (!row) {
+            await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
+                     where org_id = ${orgId} and id = ${reserved.id}`;
+            return NEXT_CANDIDATE;
+        }
         probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         return assembleClaim(ctx, tx, row, { rootJobId, gates });
