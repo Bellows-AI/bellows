@@ -526,3 +526,19 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         expect(brief).toMatch(/done\n {4}kind_dump_stall "\$1"\n/);
     });
 });
+
+describe('kind lane services restart case (issue #926)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const restart = script.slice(
+        script.indexOf('begin_phase services-restart'),
+        script.indexOf('begin_phase services-crash')
+    );
+
+    // `kill 1` is dropped by the postgres image while its entrypoint (pid 1, no SIGTERM handler) still
+    // initialises the data directory, so a kill sent before the server is ready restarts nothing.
+    it('ends the postgres sidecar only once the server accepts connections', () => {
+        const ready = restart.indexOf('-- pg_isready -q -h 127.0.0.1');
+        expect(ready).toBeGreaterThan(-1);
+        expect(ready).toBeLessThan(restart.indexOf("-- sh -c 'kill 1'"));
+    });
+});
