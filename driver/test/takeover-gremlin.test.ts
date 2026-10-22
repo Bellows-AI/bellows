@@ -4,7 +4,7 @@
  * `GREMLIN_SEED=<n>` replays that one run, `GREMLIN_RUNS=<n>` raises the count for a local soak.
  */
 import { describe, expect, it } from 'vitest';
-import { runGremlin, type Verdict } from './fixtures/gremlin.js';
+import { planOf, runGremlin, type Verdict } from './fixtures/gremlin.js';
 
 const RUNS = Number(process.env.GREMLIN_RUNS ?? 200);
 const ONE = process.env.GREMLIN_SEED === undefined ? null : Number(process.env.GREMLIN_SEED);
@@ -48,5 +48,21 @@ describe('takeover gremlins', () => {
         const verdict = await Promise.race([runGremlin(118, { faults: overlap }), timeBox]);
         expect(verdict, 'the run did not end within its bound').not.toBeNull();
         expect(verdict?.violations).toEqual([]);
+    }, 60_000);
+
+    // A heartbeat that hangs for the glitch and is retried a refresh later (twice) can by itself outlast the
+    // lease, load or not: such a loss is the board's right, not an interruption nobody injected (#932).
+    it('a lease a hung heartbeat outlasts is not blamed on the product', async () => {
+        const glitch = { at: 1_300, kind: 'glitch' as const, ops: ['heartbeat'], mode: 'timeout' as const, forMs: 800 };
+        // Nothing else happens: this one only keeps the run going past the glitch.
+        const hold = { at: 6_000, kind: 'glitch' as const, ops: ['none'], mode: 'throw' as const, forMs: 10 };
+        const base = planOf(64, {});
+        const verdict = await runGremlin(64, {
+            faults: [glitch, hold],
+            timing: { ...base.timing, refreshMs: 1_400 },
+            publishAtMs: 3_000,
+            agentMs: 100,
+        });
+        expect(verdict.violations).toEqual([]);
     }, 60_000);
 });

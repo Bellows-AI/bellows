@@ -284,8 +284,19 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         clearTimeout(latch);
     }
 
-    const jittery = worstLag > (plan.timing.leaseSeconds * 1_000) / 3;
-    if (jittery) trace.push(`host lag ${worstLag}ms: unexplained lease losses are not blamed on the product`);
+    // A heartbeat that hangs for the glitch and is retried a refresh later (twice) can outlast the lease by itself.
+    const leaseMs = plan.timing.leaseSeconds * 1_000;
+    const blackout = plan.faults.some(
+        (f) =>
+            f.kind === 'glitch' &&
+            f.ops.includes('heartbeat') &&
+            2 * plan.timing.refreshMs + (f.mode === 'timeout' ? f.forMs : 0) >= leaseMs
+    );
+    const jittery = worstLag > leaseMs / 3 || blackout;
+    if (jittery)
+        trace.push(
+            `host lag ${worstLag}ms, heartbeat blackout ${blackout}: unexplained lease losses are not blamed on the product`
+        );
     const violations = check(sim, required, allowed, jittery);
     const verdict = {
         seed,
