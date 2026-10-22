@@ -10,7 +10,7 @@ import {
 
 /**
  * The accessible face of the org executor row's Delete and Make personal (issue 411), in the
- * TaskRemoveDialog/OrphanDeleteDialog shape: the shared `dialog` panel at the remove dialog's
+ * TaskRemoveDialog shape: the shared `dialog` panel at the remove dialog's
  * width, `initialFocus` on Cancel so the ownership-changing answer is never the first thing a
  * keypress reaches, and no dismissal mid-request. Presentational — the section owns the write.
  */

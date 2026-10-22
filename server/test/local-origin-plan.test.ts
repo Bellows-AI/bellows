@@ -75,6 +75,26 @@ function slowGit(stallOn: string): string {
     return bin;
 }
 
+/** A `git` that, on `stallOn`, forks a stalled child (a transport helper's shape) and records its pid. */
+function forkingGit(stallOn: string, pidFile: string): string {
+    const bin = join(tempDir('fork-git-'), 'git');
+    writeFileSync(
+        bin,
+        `#!/bin/sh\nfor a in "$@"; do if [ "$a" = ${stallOn} ]; then sleep 30 & echo $! > ${pidFile}; wait; fi; done\nexec git "$@"\n`
+    );
+    chmodSync(bin, 0o755);
+    return bin;
+}
+
+const alive = (pid: number) => {
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 const SERVICE = 'services:\n  - name: stub-svc\n    image: factory-jobs-smoke-svc\n';
 const MALFORMED = 'services:\n  - name: db\n    image: postgres\n    ports: ["5432:5432"]\n';
 
@@ -170,6 +190,17 @@ describe('the origin plan reader', () => {
 
         expect(Date.now() - started).toBeLessThan(10_000);
         expect(leftovers()).toEqual([]);
+    });
+
+    it('kills the whole git process group at the deadline, so no transport child outlives the read', async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
+        const pidFile = join(tempDir('pid-'), 'child');
+        const { reader } = readerOver(base, { timeoutMs: 700, gitBin: forkingGit('ls-remote', pidFile) });
+
+        await expect(reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+
+        const child = Number(execFileSync('cat', [pidFile], { encoding: 'utf8' }).trim());
+        await expect.poll(() => alive(child), { timeout: 2_000 }).toBe(false);
     });
 
     it('leaves no scratch directory behind: success, missing branch, outage and timeout', async () => {

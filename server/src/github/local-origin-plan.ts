@@ -1,14 +1,11 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { BELLOWS_FILE, createPlanReader, type PlanRead, type PlanReader } from '../workspace/bellows-plan.js';
 import { READ_BINDING, READ_TRANSPORT } from '@factory-ai/core';
 import { MAX_FILE_BYTES, type RepoFileRead } from './file-read.js';
 import { GitHubReadError } from './pr-read.js';
-
-const run = promisify(execFile);
 
 /** `owner/name`, each a plain path segment — a label never resolves outside the origins dir. */
 const REPO_LABEL = /^(?!\.{1,2}\/)[A-Za-z0-9_.-]+\/(?!\.{1,2}$)[A-Za-z0-9_.-]+$/;
@@ -31,11 +28,58 @@ interface GitCtx {
 /** Above `MAX_FILE_BYTES`, so an oversized file overflows (rejects) instead of being truncated. */
 const GIT_MAX_BUFFER = MAX_FILE_BYTES * 2;
 
-/** The exit status of a failed `git`, or null when it was killed, aborted or never started. */
-const exitCode = (e: unknown): number | null => {
-    const code = (e as { code?: unknown }).code;
-    return typeof code === 'number' ? code : null;
-};
+/** A finished `git`: its exit status (null when killed) and stdout. */
+interface GitExit {
+    readonly code: number | null;
+    readonly stdout: string;
+}
+
+/**
+ * Runs `git` as the leader of its own process group, so the deadline kills the transport helpers it
+ * forks (`git-remote-https`, `ssh`) along with it. Rejects on abort, a spawn failure or an
+ * oversized stdout.
+ */
+function runGroup(ctx: GitCtx, args: string[]): Promise<GitExit> {
+    return new Promise((resolve, reject) => {
+        if (ctx.signal.aborted) {
+            reject(new Error('aborted before start'));
+            return;
+        }
+        const child = spawn(ctx.bin, args, {
+            detached: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+        });
+        const chunks: Buffer[] = [];
+        let size = 0;
+        let failure: Error | null = null;
+        const killGroup = (reason: Error) => {
+            failure ??= reason;
+            try {
+                if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+            } catch {
+                // The group already exited.
+            }
+        };
+        const onAbort = () => killGroup(new Error('deadline exceeded'));
+        ctx.signal.addEventListener('abort', onAbort, { once: true });
+        child.stdout.on('data', (chunk: Buffer) => {
+            size += chunk.length;
+            if (size > GIT_MAX_BUFFER) killGroup(new Error('stdout exceeded the read cap'));
+            else chunks.push(chunk);
+        });
+        child.stderr.resume();
+        child.on('error', (e) => {
+            ctx.signal.removeEventListener('abort', onAbort);
+            reject(failure ?? e);
+        });
+        child.on('close', (code) => {
+            ctx.signal.removeEventListener('abort', onAbort);
+            if (failure) reject(failure);
+            else resolve({ code, stdout: Buffer.concat(chunks).toString('utf8') });
+        });
+    });
+}
 
 /**
  * `git args` under the read's deadline: stdout, or null when it exits with one of `absentCodes`
@@ -43,22 +87,16 @@ const exitCode = (e: unknown): number | null => {
  * another exit, an abort, a timeout, a missing binary — is an outage, never an absence.
  */
 async function git(ctx: GitCtx, args: string[], absentCodes: readonly number[] = []): Promise<string | null> {
+    const verb = args.find((a) => !a.startsWith('-')) ?? '';
+    let exit: GitExit;
     try {
-        const { stdout } = await run(ctx.bin, args, {
-            signal: ctx.signal,
-            killSignal: 'SIGKILL',
-            maxBuffer: GIT_MAX_BUFFER,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        });
-        return stdout;
+        exit = await runGroup(ctx, args);
     } catch (e) {
-        const code = exitCode(e);
-        if (code !== null && absentCodes.includes(code)) return null;
-        throw new GitHubReadError(
-            `git ${args.find((a) => !a.startsWith('-')) ?? ''}: ${(e as Error).message}`,
-            READ_TRANSPORT
-        );
+        throw new GitHubReadError(`git ${verb}: ${(e as Error).message}`, READ_TRANSPORT);
     }
+    if (exit.code === 0) return exit.stdout;
+    if (exit.code !== null && absentCodes.includes(exit.code)) return null;
+    throw new GitHubReadError(`git ${verb}: exited ${exit.code ?? 'by signal'}`, READ_TRANSPORT);
 }
 
 /** The commit at the tip of `ref` in the bare repository `gitDir` — an exact ref, never a revision expression. */

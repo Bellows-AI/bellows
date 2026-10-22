@@ -9,7 +9,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 | Validation, blockers, readiness derivation | `web/src/task-composer.ts` | `web/test/task-composer-logic.test.ts` |
 | Draft persistence and restore | `web/src/use-composer-draft.ts` | `web/test/composer-draft.test.tsx` |
 | A workflow's declared parameter fields | `web/src/components/WorkflowParameterFields.tsx` | `web/test/task-composer.render.test.tsx` |
-| The no-synced-repository dialog | `web/src/components/NoSyncedReposDialog.tsx` | `web/test/task-composer.dom.test.tsx` |
+| The no-tracked-repository banner | `web/src/panels/TaskComposer.tsx` | `web/test/task-composer.dom.test.tsx` |
 
 ## Invariants
 
