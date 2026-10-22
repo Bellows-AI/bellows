@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import Fastify from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -8,6 +7,7 @@ import type { AuthConfig } from '../src/config.js';
 import type { Job } from '../src/db/job-store-types.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import type { AppDeps } from '../src/app.js';
+import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { batchRoutes } from '../src/routes/batches.js';
 import { jobRoutes } from '../src/routes/jobs.js';
@@ -93,7 +93,7 @@ async function build(
     const app = await buildWithAuth(
         auth,
         store,
-        { jobs: jobStub(), ...(orgsFor ? { orgsFor } : {}) },
+        { jobs: jobStub(), repos: staticRepoSource([{ owner: 'acme', name: 'web' }]), ...(orgsFor ? { orgsFor } : {}) },
         {
             // The attempt-scoped pair the runner's branch reporter presents. Default: the one live
             // attempt the constants below describe; a test passes its own to model a lost lease.
@@ -342,7 +342,7 @@ describe('with github auth configured', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { command: 'echo hi' },
+            payload: { command: 'echo hi', repo: 'acme/web' },
             headers: { cookie },
         });
 
@@ -896,7 +896,7 @@ describe('AUTH_MODE=none', () => {
         const response = await server.inject({
             method: 'POST',
             url: '/api/jobs',
-            payload: { command: 'echo hi' },
+            payload: { command: 'echo hi', repo: 'acme/web' },
         });
 
         expect(response.statusCode).toBe(HTTP_CREATED);
@@ -940,33 +940,8 @@ describe('AUTH_MODE=none', () => {
             user: { login: '__local__', githubUserId: 0, avatarUrl: null },
             role: 'admin',
             mode: 'none',
-            workspacePath: null,
         });
-    });
-
-    it('reports the member workspace path once a root is configured, without creating anything', async () => {
-        const store = memoryAuthStore();
-        store.seedLocalUser('default');
-        const config = testConfig({
-            auth: { mode: 'none', ingestToken: null },
-            workspaceRoot: '/tmp/factory-settings-test',
-        });
-        const server = await buildApp({
-            config,
-            orgs: staticRegistry({ config, jobs: jobStub(), telemetry: stubTelemetryClient() }),
-            store: telemetryStoreStub(),
-            auth: store,
-        });
-        track(server);
-
-        const response = await server.inject({ method: 'GET', url: '/api/auth/me' });
-
-        expect(response.statusCode).toBe(HTTP_OK);
-        expect(response.json().workspacePath).toBe(
-            '/tmp/factory-settings-test/default/00000000-0000-4000-8000-000000000000'
-        );
-        // Read-only display: computing a path must not provision a directory. That is
-        // GET /api/workspace's job, and it is idempotent there.
-        expect(existsSync('/tmp/factory-settings-test')).toBe(false);
+        // The API server keeps no member directory, so there is no path to report.
+        expect(response.json()).not.toHaveProperty('workspacePath');
     });
 });

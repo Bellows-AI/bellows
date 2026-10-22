@@ -214,6 +214,7 @@ async function takeOver<F extends EarlierRun>(
         claimSeq: found.claimSeq,
         session: found.session,
         startedAt: found.live.startedAt,
+        forget,
     };
 }
 

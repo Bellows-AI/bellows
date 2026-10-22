@@ -38,7 +38,6 @@ beforeAll(async () => {
  */
 const queue = async (command: string) => {
     const ref = await store.create(command, null, { repo: null, executor: null });
-    if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     return ref;
 };
 describe.runIf(enabled)('attribution', () => {
@@ -72,21 +71,17 @@ describe.runIf(enabled)('attribution', () => {
         expect(claim?.workspacePath).toBeNull();
     });
 
-    it('reports no workspace path when the deployment has no workspace root', async () => {
-        /*
-         * Naming a directory that was never created would be worse than saying nothing: `docker
-         * run -w` CREATES a missing workdir, so the runner would start in an empty directory and
-         * the job would look like it ran. The driver's null check only catches that if the board
-         * is honest here.
-         */
-        const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
-        const NOWHERE_GITHUB_ID = randomGithubId();
-        const userId = await account(sql, NOWHERE_GITHUB_ID, 'nowhere');
-        await mustCreate(rootless.create('echo hi', userId, { repo: null, executor: null }));
+    it('create, follow-up and retry insert with no checkout row to lock', async () => {
+        // The per-member checkout table (user_repo) is gone: a task is queued against any repo
+        // label, with nothing to lock or read first.
+        const userId = await account(sql, randomGithubId(), 'lockless');
+        const root = await mustCreate(store.create('echo hi', userId, { repo: 'acme/web', executor: null }));
+        await sql`update job set status = 'succeeded', finished_at = now() where id = ${root.id}`;
 
-        const claim = await rootless.claim('driver-1', LEASE_SECONDS);
-        expect(claim?.userId).toBe(userId);
-        expect(claim?.workspacePath).toBeNull();
+        const followUp = await store.createFollowUp(root.id, 'again', userId);
+        expect(followUp).toMatchObject({ id: expect.any(String) });
+        await sql`update job set status = 'succeeded', finished_at = now() where id = ${(followUp as { id: string }).id}`;
+        expect(await store.createRetry(root.id, userId)).toMatchObject({ id: expect.any(String) });
     });
 
     it('carries the stacked environment on the claim, resolved for the author and repo label', async () => {
@@ -358,18 +353,5 @@ describe.runIf(enabled)('attribution', () => {
         const listed = await store.list({ limit: 10 });
         expect(listed.find((job) => job.id === id)?.workspacePath).toBe(`${ORG}/${userId}`);
         expect(listed.find((job) => job.id === unattributed.id)?.workspacePath).toBeNull();
-    });
-
-    it('reports no workspace directory on reads when the deployment has no workspace root', async () => {
-        /*
-         * The claim refuses to name a directory that was never created; the reads must not either,
-         * or the sidebar would show a path that does not exist.
-         */
-        const rootless = createJobStore({ sql, orgId: ORG, hasWorkspaces: false });
-        const UNREAD_CAT_GITHUB_ID = randomGithubId();
-        const userId = await account(sql, UNREAD_CAT_GITHUB_ID, 'unread-cat');
-        const { id } = await mustCreate(rootless.create('echo hi', userId, { repo: null, executor: null }));
-
-        expect((await rootless.get(id))?.workspacePath).toBeNull();
     });
 });

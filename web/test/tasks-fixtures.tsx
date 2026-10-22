@@ -82,7 +82,13 @@ export function question(overrides: Partial<JobQuestion> = {}): JobQuestion {
 
 export interface ComposerArgs {
     repos?: RepoOption[] | null;
+    /** Why `repos` is null, when the repositories read failed or answered with a named error. */
+    reposError?: string | null;
+    /** The workspace (executors) read has answered; false renders its loading or error screen. */
+    workspaceLoaded?: boolean;
     workspaceError?: string | null;
+    onRetryRepos?: () => void;
+    onRetryWorkspace?: () => void;
     /** The composer's combined options, scope-qualified (issue 391). */
     executors?: { name: string; type: string; scope: 'user' | 'org' }[];
     /** The poll's resolved default; defaults to the first option when any are given. */
@@ -103,8 +109,12 @@ export interface ComposerArgs {
 }
 
 export const renderComposer = ({
-    repos = [{ owner: 'acme', name: 'web', status: 'ready' }],
+    repos = [{ owner: 'acme', name: 'web' }],
+    reposError = null,
+    workspaceLoaded = true,
     workspaceError = null,
+    onRetryRepos = () => {},
+    onRetryWorkspace = () => {},
     executors = [{ name: 'main', type: 'claude-code', scope: 'user' }],
     defaultExecutor,
     workflows = null,
@@ -117,8 +127,11 @@ export const renderComposer = ({
         <MemoryRouter>
             <TaskComposer
                 repos={repos}
+                reposError={reposError}
+                onRetryRepos={onRetryRepos}
+                workspaceLoaded={workspaceLoaded}
                 workspaceError={workspaceError}
-                onRetryWorkspace={() => {}}
+                onRetryWorkspace={onRetryWorkspace}
                 executors={executors}
                 defaultExecutor={defaultExecutor ?? executors[0] ?? null}
                 workflows={workflows}

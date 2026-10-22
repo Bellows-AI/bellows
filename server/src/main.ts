@@ -11,7 +11,6 @@ import { startBatchPrObserver } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
 import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { createOrgRegistry } from './orgs.js';
-import { createFactsCache } from './workspace/facts.js';
 import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
@@ -71,11 +70,9 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     // Everything per-org is built lazily from here, on the first request that names an org.
     // The workflow definitions (027) ride the same per-org runtimes, created with the org's id.
     //
-    // One facts cache per process, handed to every org runtime: a purge invalidates exactly the
-    // cache the workspace routes read, which is only true if there is one cache.
     const artifacts = createArtifactBackend(config.artifacts);
     void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
-    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, facts: createFactsCache(), artifacts });
+    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, artifacts });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.

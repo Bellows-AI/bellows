@@ -26,8 +26,7 @@ export const bad = (reply: FastifyReply, code: string, error: string, status = 4
  * These used to be `checkWorkspaceNames` in config.ts, run at boot against ORG_REPOS. That worked
  * while an operator typed the list; it cannot now, because the list comes from a GitHub App
  * installation and a name this rejects is one nobody here can rename. So the answer moved from "the
- * deployment will not boot" to "this one repository is refused, by name" — and `user_repo_name_ck`
- * says the same thing a third time, at the row.
+ * deployment will not boot" to "this one repository is refused, by name".
  *
  * Shared with the jobs route, which applies the same rules to the repo/executor labels a task is
  * queued with — the repo labels a view, the executor names the row the claim reads the run's
@@ -64,12 +63,11 @@ export function repoReason(value: string): string | null {
 }
 
 /**
- * Every selected repo must be one the installation can actually see. Not a formality: the clone
- * uses the App's installation token, so a repository outside the installation is one this
- * deployment has no business fetching — and accepting the name would write a row that fails on
- * every retry with a 404. The env route applies the identical bargain to the ONE repo a
- * repository-scope write names, so it calls this with a one-element list; `subject` is the only
- * thing that differed between the two copies.
+ * Every named repo must be one this org tracks (the installation's list, narrowed by the
+ * allowlist). A miss while the list read has an error is NOT "unknown": the list could not be
+ * confirmed, so the answer is a 503 and never a negative verdict about the repo. The env route
+ * applies the identical bargain to the ONE repo a repository-scope write names, so it calls this
+ * with a one-element list; `subject` is the only thing that differs between callers.
  */
 export async function checkReposVisible(
     repos: OrgRuntime['repos'],
@@ -77,23 +75,21 @@ export async function checkReposVisible(
     { subject }: { subject: string }
 ): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
     const available = new Set((await repos.list()).map(fullName));
-    // An unreachable installation is refused rather than waved through. The list is empty in two
-    // very different situations — nothing is installed, or GitHub could not be asked — and only
-    // the first is a state in which "no repository matches" is true.
-    if (!available.size && repos.lastError()) {
-        return {
-            ok: false,
-            status: HTTP_UNAVAILABLE,
-            code: ERROR_CODES.UNAVAILABLE,
-            message: `Cannot check ${subject} against the GitHub App installation: ${repos.lastError()}`,
-        };
-    }
+    // The list is empty (or lacks the repo) in two very different situations — nothing is tracked,
+    // or the source could not be asked — and only the first makes "no repository matches" true.
+    const unconfirmed = (): { ok: false; status: number; code: string; message: string } => ({
+        ok: false,
+        status: HTTP_UNAVAILABLE,
+        code: ERROR_CODES.UNAVAILABLE,
+        message: `Cannot check ${subject} against the tracked repositories: ${repos.lastError()}`,
+    });
     for (const repo of selection) {
         if (available.has(`${repo.owner}/${repo.name}`)) continue;
+        if (repos.lastError()) return unconfirmed();
         return {
             ok: false,
             code: ERROR_CODES.UNKNOWN_REPO,
-            message: `"${repo.owner}/${repo.name}" is not one of the repositories this GitHub App installation can see`,
+            message: `"${repo.owner}/${repo.name}" is not a repository this board tracks`,
         };
     }
     return { ok: true };

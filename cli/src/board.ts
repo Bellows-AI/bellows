@@ -357,9 +357,9 @@ export interface BoardClient extends BatchRoutes {
      * id), keyed by question text. Never replayed: a repeat is the board's 409 `QUESTION_ANSWERED`.
      */
     answerQuestion(id: string, questionId: string, answers: Record<string, string>): Promise<QuestionRecord>;
-    /** What the org's GitHub App installation can see (`GET /api/repos`) — read-only, no sync. */
+    /** The repositories the board tracks (`GET /api/repos`) — read-only. */
     listRepos(): Promise<VisibleRepos>;
-    /** The caller's workspace read (`GET /api/workspace`): synced repos and executor profiles. */
+    /** The caller's workspace read (`GET /api/workspace`): executor profiles. */
     workspace(): Promise<WorkspaceView>;
     listSkills(): Promise<SkillView[]>;
     /** The connections the caller may select: the org's plus their own. Never a credential. */
@@ -381,17 +381,15 @@ export type AuthMe =
           mode: string;
       };
 
-/** The repository picker's read: what a member could choose to check out. */
+/** The tracked-repository read: the repositories the board runs tasks against. */
 export interface VisibleRepos {
     repos: { owner: string; name: string; private: boolean; defaultBranch: string | null; pushedAt: string | null }[];
     installation: unknown;
     meta: { fetchedAt: string | null; error: string | null };
 }
 
-/** The slice of the workspace read discovery shows: synced checkouts and executor selection metadata. */
+/** The slice of the workspace read discovery shows: executor selection metadata. */
 export interface WorkspaceView {
-    root: string | null;
-    repos: { owner: string; name: string; status: string; error: string | null }[];
     executors: { name: string; type: string; suspended?: boolean }[];
     orgExecutors: { name: string; type: string; suspended?: boolean }[];
     defaultExecutor: { scope: string; name: string } | null;

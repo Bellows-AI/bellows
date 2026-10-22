@@ -251,7 +251,6 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
 
     const executionPairs = pairs([
         ['Repository', latest.repo],
-        ['Worktree', latest.workspacePath],
         ['Executor', latest.executor ?? 'No executor selected'],
         ['Workflow', latest.workflowName],
         ['Workflow node', latest.workflowNode],

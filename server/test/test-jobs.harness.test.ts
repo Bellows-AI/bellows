@@ -16,13 +16,16 @@ const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCRIPT = readFileSync(join(ROOT, 'scripts/test-jobs.sh'), 'utf8');
 
 describe('the test-jobs harness', () => {
-    // The offline board reads a plan from the bare mirror under its workspace root (issue #799):
-    // every fixture write refreshes it, or the board plans from a commit the runner never sees.
-    it('mirrors the origin onto the board host on every .bellows.yaml write', () => {
-        const write = SCRIPT.slice(SCRIPT.indexOf('write_bellows() {'), SCRIPT.indexOf('\nwrite_bellows '));
-        expect(write).toContain('mirror="$work/workspaces/.origins/$SMOKE_REPO.git"');
-        expect(write).toMatch(/tar -C "\/origins\/\$SMOKE_REPO\.git" -cf - \. \| tar -C "\$mirror" -xf -/);
-        expect(SCRIPT).toContain('ORG_WORKSPACE_ROOT="$work/workspaces"');
+    // The offline board reads a plan over git from the smoke origin (REPO_CLONE_BASE): the daemon is up and
+    // published to loopback before any board boots, and every offline board is handed the base.
+    it('boots every offline board against the loopback-published origin', () => {
+        const origin = SCRIPT.indexOf('docker run -d --name "$ORIGIN_NAME"');
+        expect(SCRIPT.slice(origin, origin + 120)).toContain('-p 127.0.0.1::9418');
+        expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
+        expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(3);
+        expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
+        expect(SCRIPT).not.toContain('.origins');
     });
 
     it('pins the open board mode instead of inheriting a developer or compose auth mode', () => {
@@ -87,18 +90,15 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT).toContain("echo 'test-jobs: could not truncate job, workflow'");
     });
 
-    // POST /api/jobs refuses a create whose repo is not the author's ready selection (#263,
-    // 372f5630) — every check from 'queues a job' on failed with REPO_REQUIRED until the harness
-    // seeded one. The fixture is what a finished clone leaves: the ready row, and the clone.
-    it('selects a ready repository for the stand-in member before the first task', () => {
+    // POST /api/jobs refuses a create whose repo the board does not track — every check from 'queues a
+    // job' failed with UNKNOWN_REPO until the harness seeded one. Offline, the tracked list is the
+    // stored sessions' repos, so the fixture is one session_branch row.
+    it('tracks the fixture repository for the stand-in member before the first task', () => {
         const firstTask = SCRIPT.indexOf("create_job 'board only'");
-        const seeded = SCRIPT.indexOf(
-            'insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)'
-        );
+        const seeded = SCRIPT.indexOf('insert into session_branch (org_id, agent, session_id, repo, branch');
         expect(SCRIPT).toContain('member="$(body "$(api GET /api/auth/me)")"');
         expect(seeded).toBeGreaterThan(-1);
         expect(seeded).toBeLessThan(firstTask);
-        expect(SCRIPT).toContain("'ready', now())");
         expect(SCRIPT).toContain('git init -q --bare -b main "/origins/$1.git"');
         expect(SCRIPT.indexOf('docker run -d --name "$ORIGIN_NAME"')).toBeLessThan(firstTask);
     });

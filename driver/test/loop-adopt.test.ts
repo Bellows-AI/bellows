@@ -9,7 +9,7 @@ import type { BoardJob } from '../src/board.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { adoptStep, recordAdopted } from '../src/loop-adopt.js';
 import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
-import { type AdoptedRun, AdoptionBlocked, type LiveRun } from '../src/runner.js';
+import { type AdoptedRun, AdoptionBlocked, type LiveRun, type Read } from '../src/runner.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../src/supervisor-contract.js';
 import { runJob } from '../src/loop-run.js';
 import { createStepBroker } from '../src/step-control.js';
@@ -193,9 +193,19 @@ describe('taking over a live run (#829)', () => {
     afterEach(() => vi.useRealTimers());
 
     const prior = { ...job(1), leaseToken: 'lease-prior' };
-    const live: LiveRun = { live: true, prior, claimSeq: 4, session: 'sess-prior', startedAt: 'then' };
+    const forget = vi.fn();
+    const live: LiveRun = { live: true, prior, claimSeq: 4, session: 'sess-prior', startedAt: 'then', forget };
 
-    function takeover(opts: { polled?: boolean; rebind?: () => Promise<void>; session?: string | null } = {}) {
+    function takeover(
+        opts: {
+            polled?: boolean;
+            rebind?: () => Promise<void>;
+            session?: string | null;
+            serving?: () => Promise<Read<boolean>>;
+            adopts?: (AdoptedRun | LiveRun | null)[];
+        } = {}
+    ) {
+        forget.mockClear();
         vi.useFakeTimers({ toFake: ['Date'] });
         const claimed: BoardJob = {
             ...job(1),
@@ -208,14 +218,18 @@ describe('taking over a live run (#829)', () => {
                 [SUPERVISOR_ENV.exportToken]: 'tok-new-export',
             },
         };
-        const s = setup(claimed, async () => ({
-            ...live,
-            session: opts.session === undefined ? 'sess-prior' : opts.session,
-        }));
+        const adopts = [...(opts.adopts ?? [])];
+        const asked: number[] = [];
+        const s = setup(claimed, async () => {
+            asked.push(asked.length);
+            if (asked.length > 1 && adopts.length > 0) return adopts.shift() ?? null;
+            return { ...live, session: opts.session === undefined ? 'sess-prior' : opts.session };
+        });
         const { gates } = stubGateStack({}, { control: true, polled: opts.polled ?? true });
         s.ctx.rt = { ...s.ctx.rt, gates, sleep: async (ms) => void vi.setSystemTime(Date.now() + ms) };
         if (opts.rebind) (s.ctx.rt.runner as { rebind: unknown }).rebind = opts.rebind;
-        return { ...s, claimed };
+        if (opts.serving) (s.ctx.rt.runner as { supervisorServing: unknown }).supervisorServing = opts.serving;
+        return { ...s, claimed, asked };
     }
 
     it('rebinds the prior group to this claim, then owns it only after the first poll', async () => {
@@ -364,6 +378,118 @@ describe('taking over a live run (#829)', () => {
         expect(answer).toBe(STOOD_DOWN);
         expect(s.claimed.groupLease).toBeUndefined();
         expect(s.state.keepGroup).toBe(true);
+    });
+
+    describe('an earlier group found finished while the rebind is awaited (#928)', () => {
+        const ended = { outcome: ok(), claimSeq: 4 } satisfies AdoptedRun;
+
+        it.each([
+            ['stopped serving', { kind: 'value', value: false }],
+            ['confirmed gone', { kind: 'absent' }],
+        ] as [string, Read<boolean>][])(
+            'adopts the finished runner once the supervisor is %s, not at the bound',
+            async (_n, read) => {
+                const s = takeover({ polled: false, serving: async () => read, adopts: [ended] });
+                const started = Date.now();
+
+                const answer = await adoptStep(s.ctx);
+
+                expect(answer).toMatchObject({ record: 'interruption', claimSeq: 4 });
+                expect(Date.now() - started).toBeLessThan(SUPERVISOR_REBIND_DELIVERY_MS / 2);
+                expect(s.asked).toHaveLength(2);
+                expect(forget).toHaveBeenCalledTimes(1);
+                expect(s.ctx.adopted).toBe(ended);
+                expect(s.ctx.takeover).toBeUndefined();
+                expect(s.ctx.fenced).toBe(true);
+                expect(s.claimed.groupLease).toBeUndefined();
+                expect(s.state.keepGroup).toBeFalsy();
+                expect(s.state.launched).toBe(false);
+            }
+        );
+
+        it('lets the claim redo the task when the second adoption finds nothing to adopt', async () => {
+            const s = takeover({ polled: false, serving: async () => ({ kind: 'absent' }), adopts: [null] });
+
+            expect(await adoptStep(s.ctx)).toBeNull();
+            expect(forget).toHaveBeenCalledTimes(1);
+            expect(s.ctx.takeover).toBeUndefined();
+            expect(s.state.keepGroup).toBeFalsy();
+        });
+
+        it('leaves it to the lease, without a third adoption, when the second adoption answers live again', async () => {
+            const s = takeover({
+                polled: false,
+                serving: async () => ({ kind: 'value', value: false }),
+                adopts: [live],
+            });
+
+            const answer = await adoptStep(s.ctx);
+
+            expect(answer).toMatchObject({ halt: 'leave' });
+            expect(s.asked).toHaveLength(2);
+            expect(forget).toHaveBeenCalledTimes(2);
+            expect(s.claimed.groupLease).toBeUndefined();
+            expect(s.state.keepGroup).toBe(true);
+            expect(s.ctx.fenced).toBe(false);
+        });
+
+        it('keeps waiting the whole bound on reads that prove nothing, then leaves', async () => {
+            const s = takeover({
+                polled: false,
+                serving: async () => ({ kind: 'inconclusive', reason: 'the apiserver did not answer' }),
+            });
+            const started = Date.now();
+
+            const answer = await adoptStep(s.ctx);
+
+            expect(answer).toMatchObject({ halt: 'leave' });
+            expect(Date.now() - started).toBeGreaterThan(SUPERVISOR_REBIND_DELIVERY_MS - 10_000);
+            expect(s.asked).toHaveLength(1);
+            expect(forget).not.toHaveBeenCalled();
+            expect(s.state.keepGroup).toBe(true);
+        });
+
+        it("hands every probe the wait's deadline and the attempt's stand-down", async () => {
+            const bounds: { deadline: number; signal?: AbortSignal | undefined }[] = [];
+            const s = takeover({
+                polled: false,
+                serving: vi.fn(async (_group: BoardJob, bound: { deadline: number; signal?: AbortSignal }) => {
+                    bounds.push(bound);
+                    return { kind: 'value', value: true } as Read<boolean>;
+                }) as never,
+            });
+
+            await adoptStep(s.ctx);
+
+            expect(bounds.length).toBeGreaterThan(1);
+            for (const bound of bounds) {
+                expect(bound.signal).toBe(s.state.signal);
+            }
+            expect(new Set(bounds.map((bound) => bound.deadline)).size).toBe(1);
+        });
+
+        it('keeps waiting the whole bound when the probe itself throws', async () => {
+            const s = takeover({ polled: false, serving: async () => Promise.reject(new Error('boom')) });
+
+            expect(await adoptStep(s.ctx)).toMatchObject({ halt: 'leave' });
+            expect(s.asked).toHaveLength(1);
+            expect(forget).not.toHaveBeenCalled();
+        });
+
+        it('stands down when the attempt is stopped during the probe, adopting nothing again', async () => {
+            const s = takeover({
+                polled: false,
+                serving: async () => {
+                    s.state.abortNow();
+                    return { kind: 'value', value: false };
+                },
+            });
+
+            expect(await adoptStep(s.ctx)).toBe(STOOD_DOWN);
+            expect(s.asked).toHaveLength(1);
+            expect(forget).not.toHaveBeenCalled();
+            expect(s.state.keepGroup).toBe(true);
+        });
     });
 
     it('leaves a takeover it cannot deliver without a run-control endpoint', async () => {

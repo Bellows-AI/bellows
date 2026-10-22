@@ -45,6 +45,25 @@ describe('the code-only none arm', () => {
         expect(config.github).toEqual({ mode: 'none' });
         expect(() => loadConfig(app())).not.toThrow();
     });
+
+    it('takes the plan origin from REPO_CLONE_BASE, trailing slash stripped', () => {
+        const none = (extra: NodeJS.ProcessEnv) =>
+            resolveConfig({ env: app(extra), github: { mode: 'none' } }).config.github;
+
+        expect(none({ REPO_CLONE_BASE: 'git://origin:9418/' })).toEqual({
+            mode: 'none',
+            originBase: 'git://origin:9418',
+        });
+        expect(none({ REPO_CLONE_BASE: '  ' })).toEqual({ mode: 'none' });
+        // The App reads plans through the API: the variable means nothing there.
+        expect(loadConfig(app({ REPO_CLONE_BASE: 'git://origin:9418' })).github).not.toHaveProperty('originBase');
+    });
+
+    it('ignores ORG_WORKSPACE_ROOT: no throw, no field', () => {
+        const config = loadConfig(app({ ORG_WORKSPACE_ROOT: 'relative/path' }));
+
+        expect(config).not.toHaveProperty('workspaceRoot');
+    });
 });
 
 describe('the App private key', () => {

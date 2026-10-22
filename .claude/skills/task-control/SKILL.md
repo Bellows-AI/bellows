@@ -51,12 +51,10 @@ curl -s -H "authorization: Bearer $FACTORY_TOKEN" "$FACTORY_URL/api/workflows?re
 ```
 
 - `GET /api/repos` → `{ repos: [{ owner, name, ... }] }` — the installation's repos. `repo` on a
-  create is `owner/name`; the create validates its SHAPE only, so a repo that is not on this list
-  is another failure that lands at claim rather than at create.
+  create is `owner/name`; a repo that is not on this list is refused `400 UNKNOWN_REPO`.
 - `GET /api/workspace/executors` → `{ executors: [{ name, type, isDefault, ... }] }`. Pass a
-  `name` from this list, or omit `executor` entirely and let the default stand. `409` means the
-  workspace feature is off on that board and `503` that its store is unreachable — omit
-  `executor` either way; `401` means no credential arrived at all.
+  `name` from this list, or omit `executor` entirely and let the default stand. `503` means its
+  store is unreachable — omit `executor`; `401` means no credential arrived at all.
 - `GET /api/workflows?repo=owner/name` → `{ workflows }`. A create names a workflow by its
   **name**, not by an id, and parameters ride beside it as `workflowParams`.
 
@@ -70,7 +68,7 @@ npm run dev -w cli -- job create --repo owner/name --executor my-claude -- fix t
 
 `POST /api/jobs` with `{ command, repo?, executor?, workflow?, workflowParams? }` → `201 { id,
 status: "queued" }`. Refusals worth reading rather than retrying: `400 BAD_COMMAND`, `BAD_REPO`,
-`BAD_EXECUTOR`, `BAD_WORKFLOW_PARAMS`, `404 UNKNOWN_WORKFLOW`, `409 PURGE_IN_PROGRESS`.
+`BAD_EXECUTOR`, `BAD_WORKFLOW_PARAMS`, `UNKNOWN_REPO`, `404 UNKNOWN_WORKFLOW`.
 
 Keep the returned `id`. Every verb below takes it.
 
@@ -130,8 +128,7 @@ board prefixes a recap of the earlier turns. The new id is a new turn — wait o
 parent.
 
 Refusals: `409 NOT_FINISHED` (the turn is still going — wait, or stop it), `409 TASK_DONE` (the
-thread was closed; start a new task), `409 PURGE_IN_PROGRESS` (the org is being purged; nothing queues),
-`403 FORBIDDEN` (a follow-up is the author's).
+thread was closed; start a new task), `403 FORBIDDEN` (a follow-up is the author's).
 
 ## 6. Stop, done, remove
 

@@ -17,8 +17,8 @@ export const E2E_DEFAULT_EXECUTOR = { scope: 'user' as const, name: E2E_EXECUTOR
 export const E2E_EXECUTOR_ROW = { ...E2E_EXECUTOR, config: {} };
 
 /**
- * The one synced repository the composer specs launch against (issue 263). The open board has no
- * workspace root, so no real clone exists: the poll carries it, and `stubLaunch` answers the launch.
+ * The one tracked repository the composer specs launch against. The open board's repo list is
+ * whatever its database holds, so `trackRepos` stands the list in and `stubLaunch` answers the launch.
  */
 export const E2E_REPO = { owner: 'acme', name: 'web' };
 
@@ -33,8 +33,8 @@ const E2E_LAUNCHED_ID = '11111111-1111-4111-8111-111111111111';
 
 /**
  * Answers `POST /api/jobs` with the board's 201. The real board revalidates the repository against
- * the member's stored selection, and this open board has none to hold, so a launch the spec means
- * to succeed is acknowledged here instead of reaching it. The detail page the launch lands on reads
+ * its own tracked list, and this open board's is empty, so a launch the spec means to succeed is
+ * acknowledged here instead of reaching it. The detail page the launch lands on reads
  * that id's thread, which the board never stored: it is answered as a queued thread, not a 404.
  */
 export async function stubLaunch(page: Page): Promise<void> {
@@ -47,29 +47,27 @@ export async function stubLaunch(page: Page): Promise<void> {
     await page.route(`**/api/jobs/${E2E_LAUNCHED_ID}/thread*`, (route) => route.fulfill({ json: { jobs: launched } }));
 }
 
-/** A selected repository as the poll carries it, ready unless the spec says otherwise. */
-function pollRepo(repo: { owner: string; name: string; status?: string }) {
-    return {
-        status: 'ready',
-        error: null,
-        selectedAt: E2E_EXECUTOR.createdAt,
-        readyAt: E2E_EXECUTOR.createdAt,
-        branch: null,
-        lastCommit: null,
-        sizeBytes: null,
-        cacheSizeBytes: null,
-        ...repo,
-    };
+/** Serves `/api/repos` with exactly these repositories as the board's tracked list. */
+export async function trackRepos(page: Page, repos: { owner: string; name: string }[]): Promise<void> {
+    await page.route('**/api/repos', (route) =>
+        route.fulfill({
+            json: {
+                repos: repos.map((repo) => ({ ...repo, private: false, defaultBranch: 'main', pushedAt: null })),
+                installation: null,
+                meta: { fetchedAt: null, error: null },
+            },
+        })
+    );
 }
 
 /**
  * Give the page one configured executor.
  *
  * A task cannot start without one (docs/workspace.md), and the open board deliberately has no
- * ORG_WORKSPACE_ROOT — which is what keeps a picker out of the visual check — so its
- * `/api/workspace` always answers `executors: []` and Start stays dark behind "Configure an
- * executor". Only the list is replaced: the rest of the answer is the real server's. The board
- * validates a task's executor label by shape alone, so the queued task is real.
+ * executor profile, so its `/api/workspace` always answers `executors: []` and Start stays dark
+ * behind "Configure an executor". Only the lists are replaced: the rest of the answer is the real
+ * server's. The board validates a task's executor label by shape alone, so the queued task is real.
+ * The tracked list carries `E2E_REPO`.
  */
 export async function withExecutor(page: Page): Promise<void> {
     await page.route('**/api/workspace', async (route) => {
@@ -82,10 +80,10 @@ export async function withExecutor(page: Page): Promise<void> {
                 executors: [E2E_EXECUTOR],
                 orgExecutors: [],
                 defaultExecutor: E2E_DEFAULT_EXECUTOR,
-                repos: [pollRepo(E2E_REPO)],
             },
         });
     });
+    await trackRepos(page, [E2E_REPO]);
 }
 
 /** One executor profile as the mocked workspace holds it — the config-bearing list row. */
@@ -99,28 +97,25 @@ export interface MockExecutor {
 }
 
 /**
- * A workspace whose executor list the test owns. The open board has no ORG_WORKSPACE_ROOT, so its
- * executor routes refuse and the settings page offers no Add — which is exactly the page the
- * round trip must drive. This stands in a root and a mutable list, served to the poll, the
- * dialog's config read and its whole-list PUT alike; everything else is the real server's answer.
+ * A workspace whose executor list the test owns: a mutable list, served to the poll, the dialog's
+ * config read and its whole-list PUT alike; everything else is the real server's answer. `repos`,
+ * when given, is the tracked list `/api/repos` answers with.
  */
 export async function mockExecutors(
     page: Page,
     initial: MockExecutor[],
-    repos: { owner: string; name: string; status?: string }[] = []
+    repos: { owner: string; name: string }[] = []
 ): Promise<{ executors: MockExecutor[] }> {
     const held = { executors: initial };
-    const selected = repos.map(pollRepo);
+    if (repos.length > 0) await trackRepos(page, repos);
     await page.route('**/api/workspace', async (route) => {
         const response = await route.fetch();
         const body = (await response.json()) as Record<string, unknown>;
         const executors = held.executors.map(({ config: _config, ...row }) => row);
-        const withRepos = repos.length > 0 ? { repos: selected } : {};
         await route.fulfill({
             response,
             json: {
                 ...body,
-                root: '/e2e/workspace',
                 executors,
                 orgExecutors: [],
                 // The server's own fallback chain (issue 391) resolves the default to the first
@@ -128,7 +123,6 @@ export async function mockExecutors(
                 // answer a default the list no longer carries.
                 defaultExecutor:
                     held.executors.length > 0 ? { scope: 'user' as const, name: held.executors[0]!.name } : null,
-                ...withRepos,
             },
         });
     });

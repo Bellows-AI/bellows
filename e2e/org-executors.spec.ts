@@ -20,10 +20,7 @@ import { contextChip } from './executor.js';
  * The organization executor row's actions (issue 411): the overflow menu, and the confirmation that
  * now stands between a click and an org-wide, irreversible write.
  *
- * On the `auth` project, and it is the only board that can show this surface at all: the open board
- * deliberately has no ORG_WORKSPACE_ROOT, and `/api/workspace` answers a rootless deployment with
- * `orgExecutors: []`, so organization rows are invisible there however they got into the database.
- * The auth board has a real root — and its signed-in member is an admin, because the stub account
+ * On the `auth` project, which is the board whose signed-in member is an admin: the stub account
  * is the installation's FIRST member and the bootstrap rule lands admin (#410). The setRole below
  * is still test infrastructure — belt and braces over what sign-in now does, and the same
  * direct-SQL idiom as e2e/reset-db.mjs; the role is read per request through the session join, so

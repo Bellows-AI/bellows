@@ -29,37 +29,6 @@ export type CreateTarget = Parameters<JobStore['create']>[2];
 /** A created row's id; `replayed` when a repeated idempotent request found it already made. */
 export type CreatedRef = { id: string; replayed?: boolean };
 
-/**
- * The author's checkout row, locked and checked, INSIDE the job-insert transaction (issue #92).
- *
- * A checkout stamped `purging` is coming off the disk; a task must not be queued into it. Taking
- * the row's `for update` lock here — the same lock `stampPurge` holds — is what makes both orders
- * safe: an insert that commits BEFORE the stamp is visible to the stamp's unfinished-task count
- * (so the purge refuses), and an insert that arrives AFTER the stamp reads `purging` under READ
- * COMMITTED once the lock is granted (so the insert refuses). An unlocked preflight query would
- * be a stale-snapshot read that can race the stamp either way, which is why there isn't one.
- *
- * No row is no refusal: a job may be queued when the checkout row is already gone (the rows come
- * and go with a PUT), under the existing task contract — the claim may later find no checkout.
- * Command-only tasks (no repo) and authorless tasks run in no checkout and are never guarded.
- */
-async function refuseIfCheckoutPurging(
-    tx: TransactionSql,
-    orgId: string,
-    createdBy: string | null,
-    repo: string | null
-): Promise<boolean> {
-    if (!createdBy || !repo) return false;
-    const name = repo.split('/')[1];
-    if (!name) return false;
-    const rows = await tx<{ status: string }[]>`
-        select status from user_repo
-        where org_id = ${orgId} and user_id = ${createdBy} and repo_name = ${name}
-        for update
-    `;
-    return rows[0]?.status === 'purging';
-}
-
 /** A workflow column's value: the JSON when a workflow was named, SQL null otherwise. */
 const jsonOrNull = (sql: Sql, value: object | undefined) => (value ? sql.json(value as never) : null);
 
@@ -68,9 +37,7 @@ export async function createJobRow(
     command: string,
     createdBy: string | null,
     target: CreateTarget
-): Promise<CreatedRef | 'purging'> {
-    // One transaction: the checkout-row lock/check and the insert are decided together, which is
-    // the whole point — see refuseIfCheckoutPurging.
+): Promise<CreatedRef> {
     return ctx.sql.begin((tx) => insertJobInTx(tx, ctx, { command, createdBy, target }));
 }
 
@@ -82,13 +49,12 @@ export async function insertJobInTx(
     tx: TransactionSql,
     ctx: Pick<JobStoreContext, 'sql' | 'orgId'>,
     { command, createdBy, target }: { command: string; createdBy: string | null; target: CreateTarget }
-): Promise<CreatedRef | 'purging'> {
+): Promise<CreatedRef> {
     const { sql, orgId } = ctx;
     const idem = target.idempotency;
     // A repeat of a recorded request answers the row it made, before anything else is decided.
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return { id: replayed, replayed: true };
-    if (await refuseIfCheckoutPurging(tx, orgId, createdBy, target.repo)) return 'purging';
     // id and root_job_id are the SAME uuid, computed once in the select so the column can
     // be not null from insert — the root's root is itself (022). The workflow triple rides
     // the same insert when a workflow was named: workflow_id names what the task walks,
@@ -152,28 +118,22 @@ export interface FollowUpRowInput {
     idempotency?: IdempotencyInput | undefined;
 }
 
-export type FollowUpRowResult = CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden' | 'purging';
+export type FollowUpRowResult = CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden';
 
 export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
-    // One transaction for the checkout-row guard and the conditional insert, so a purge that
-    // commits between them cannot slip a follow-up into a checkout that is being deleted — the
-    // same lock both job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
     return sql.begin((tx) => followUpInTx(tx, input));
 }
 
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     const { orgId, parentId, command, createdBy, idempotency: idem } = input;
-    // The follow-up runs in the PARENT's repo's checkout, so the guard reads the parent's
-    // repo label (a finished parent's label never changes) — and the same read resolves the
-    // thread root the advisory lock below is keyed by.
+    // The read resolves the thread root the advisory lock below is keyed by.
     const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
         `;
     if (!label) return 'missing';
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return replayedFor(tx, { orgId, parentId, createdBy }, replayed);
-    if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
     // The same per-thread advisory lock the claim, remove, reopen and done take: the
     // eligibility check and the insert must be atomic with a racing done on ANY member —
     // not only on the parent row the CTE below locks — or a done could commit between the
@@ -302,7 +262,7 @@ async function threadRefusalOf(
 /**
  * createRetry's body (issue #326): queue a fresh attempt of the thread head's command in the SAME
  * thread, without resuming a session. One transaction and one conditional insert, shaped exactly
- * like the follow-up's: the checkout purge guard first, then the insert. Eligibility is the
+ * like the follow-up's. Eligibility is the
  * THREAD's, not the named row's: the `named` CTE carries only the caller's own-row predicate
  * under its `for update` lock, and the INSERT..SELECT admits the retry only when EVERY member of
  * the thread is terminal and NO member carries a done_at — the follow-up's rule. A terminal root
@@ -321,12 +281,10 @@ export async function createRetryRow(
     sql: Sql,
     input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
 ): Promise<RetryRowResult> {
-    // One transaction for the checkout-row guard and the conditional insert, the same lock both
-    // job-insert paths take (refuseIfCheckoutPurging), taken BEFORE the insert.
     return sql.begin((tx) => retryInTx(tx, input));
 }
 
-export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 /** createRetryRow's body, for a caller that already holds a transaction (the batch scheduler). */
 export async function retryInTx(
@@ -334,16 +292,13 @@ export async function retryInTx(
     input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
 ): Promise<RetryRowResult> {
     const { orgId, id, createdBy, idempotency: idem } = input;
-    // The retry runs in the thread's repo's checkout, so the guard reads the named row's
-    // repo label (a finished row's label never changes) — and the same read resolves the
-    // thread root the advisory lock below is keyed by.
+    // The read resolves the thread root the advisory lock below is keyed by.
     const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${id}
         `;
     if (!label) return 'missing';
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy }, replayed);
-    if (await refuseIfCheckoutPurging(tx, orgId, createdBy, label.repo)) return 'purging';
     // The same per-thread advisory lock the claim, remove, reopen and done take: the
     // eligibility check and the insert must be atomic with a racing done on ANY member and
     // with a claim of the head, or a done could commit between the check and the insert and
@@ -445,7 +400,7 @@ export async function markJobDone(
     id: string,
     doneBy: string | null
 ): Promise<{ status: JobStatus; doneAt: string } | 'missing' | 'conflict' | 'batch'> {
-    const { sql, orgId, hasWorkspaces } = ctx;
+    const { sql, orgId } = ctx;
     // One transaction, because done is what frees the tree now (issue #47's second half):
     // stamping done_at and queueing the worktree reclaim must be decided together, on the
     // thread AS THE DONE LANDS — the terminality read below runs on the same connection,
@@ -482,7 +437,7 @@ export async function markJobDone(
         if (!row) {
             return (await exists(sql, orgId, id)) ? 'conflict' : 'missing';
         }
-        await queueReclaimIfThreadDone(tx, orgId, hasWorkspaces, row.root_job_id);
+        await queueReclaimIfThreadDone(tx, orgId, row.root_job_id);
         return { status: row.status, doneAt: row.done_at.toISOString() };
     });
 }
@@ -691,7 +646,7 @@ export async function removeJobThread(
     id: string,
     removedBy: string | null
 ): ReturnType<JobStore['removeThread']> {
-    const { sql, orgId, hasWorkspaces, prs } = ctx;
+    const { sql, orgId, prs } = ctx;
     // Same per-thread advisory lock the claim takes, for the same serialization reason: the
     // refusal check and the delete must see every earlier claim of this thread commit, or a
     // claim could walk out with a row after the check passed and before the delete ran — a
@@ -765,7 +720,7 @@ export async function removeJobThread(
         // otherwise — and takes the tree down, acking the row when it has. Same relative
         // path the claim derives, empty labels included: a tree keyed only on the root id
         // still gets reclaimed, pointing at nothing additional is fine.
-        const workspacePath = workspacePathFor(orgId, hasWorkspaces, root.created_by);
+        const workspacePath = workspacePathFor(orgId, root.created_by);
         // One per tree: the thread's own, and each review's (its worktree is keyed by its own id).
         for (const tree of [rootJobId, ...reviews.map((review) => review.id)]) {
             await tx`

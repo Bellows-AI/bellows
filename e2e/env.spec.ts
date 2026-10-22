@@ -68,10 +68,9 @@ test.describe('environment editors', () => {
         await page.screenshot({ path: `${SHOTS}/settings-workspace-env.png`, fullPage: true });
 
         await page.goto('/settings/repos');
-        // The per-repository editor (#150) moved behind a row's Configure action (#181), and the
-        // open board's missing root keeps the checkout offer off — the dedicated root-null test
-        // below pins that posture. This leg pins only that the page renders cleanly.
-        await expect(page.getByRole('button', { name: 'Save selection' })).toBeVisible({ timeout: 60_000 });
+        // The per-repository editor (#150) moved behind a row's Configure action (#181). This leg
+        // pins only that the page renders cleanly.
+        await expect(page.getByRole('heading', { name: 'Repositories', exact: true })).toBeVisible({ timeout: 60_000 });
         const reposText = await page.locator('main').innerText();
         for (const token of FORBIDDEN) expect(reposText, `repos section contains ${token}`).not.toContain(token);
         await page.screenshot({ path: `${SHOTS}/settings-repos.png`, fullPage: true });
