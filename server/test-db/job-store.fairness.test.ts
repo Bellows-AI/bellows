@@ -216,6 +216,37 @@ describe.skipIf(!enabled)('cross-org fairness on every replica (issue #831)', ()
         expect((await board.claim('w2', LEASE_SECONDS, { takeoverOnly: true }))?.id).toBe(lost);
     });
 
+    it('a takeover-only claim whose row was released while it prepared gives the deferral back', async () => {
+        const budget = { global: 5 } as const;
+        const lost = await queued(ORG_A, 'acme/lost', 120);
+        expect((await createJobStore({ sql, orgId: ORG_A, admission: budget }).claim('w0', LEASE_SECONDS))?.id).toBe(
+            lost
+        );
+        await expireLease(sql, lost);
+        // The plan read is the claim's preparation: the old owner releases the row while it runs.
+        const preparing = createJobStore({
+            sql,
+            orgId: ORG_A,
+            admission: budget,
+            plan: {
+                readFor: async () => {
+                    await sql`update job set status = 'queued' where id = ${lost}`;
+                    return { config: null, services: [], revision: null, error: null };
+                },
+            },
+        });
+        expect(await preparing.claim('w1', LEASE_SECONDS, { takeoverOnly: true })).toBeNull();
+
+        // Nothing is left of the reservation: the next poll, with room, claims the row at once.
+        const [row] = await sql<
+            { deferred: Date | null }[]
+        >`select claim_deferred_until as deferred from job where id = ${lost}`;
+        expect(row!.deferred).toBeNull();
+        expect((await createJobStore({ sql, orgId: ORG_A, admission: budget }).claim('w2', LEASE_SECONDS))?.id).toBe(
+            lost
+        );
+    });
+
     it('with equal running, the org whose oldest task has waited longest goes first', async () => {
         await queued(ORG_A, 'acme/a0', 5);
         const older = await queued(ORG_B, 'acme/b0', 50);

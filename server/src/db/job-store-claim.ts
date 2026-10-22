@@ -275,6 +275,41 @@ async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidat
     return resolveClaimGates(skip ? undefined : planReader, { orgId, rootJobId: reserved.root_job_id }, reserved);
 }
 
+/** What a poll's earlier boards told this claim: where to report a global refusal, and whether it may admit new work. */
+type ClaimGate = { refusal: ClaimRefusal; takeoverOnly: boolean };
+
+/**
+ * New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds. A queued row is
+ * REFUSED when the claim is takeover-only (the row changed under its reservation) or a budget is full.
+ */
+async function slotsFor(
+    tx: TransactionSql,
+    ctx: JobStoreContext,
+    reserved: ReservedCandidate,
+    step: { status: string; gate: ClaimGate; probe: ReturnType<typeof startAcquire> }
+): Promise<{ slots: Fragment } | typeof REFUSED> {
+    // Wrapped: a bare fragment is a thenable, and returning it from an async function would run it as a query.
+    const { sql, orgId, admission } = ctx;
+    const { status, gate, probe } = step;
+    if (status !== 'queued') return { slots: sql`admission_slot_global, admission_slot_org, admission_slot_repo` };
+    // A refusal gives the reservation's deferral back under this row lock, so the next poll can claim the row at once.
+    const restoreDeferral = () =>
+        tx`update job set claim_deferred_until = ${reserved.prior_deferral}
+           where org_id = ${orgId} and id = ${reserved.id}`;
+    if (gate.takeoverOnly) {
+        await restoreDeferral();
+        return REFUSED;
+    }
+    const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
+    if (!('full' in admitted)) {
+        return { slots: sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int` };
+    }
+    if (admitted.full === 'global') gate.refusal.global = true;
+    await restoreDeferral();
+    probe.refused(admitted.full);
+    return REFUSED;
+}
+
 /**
  * The claim's short half: one transaction that takes the candidate's row lock, then its thread
  * root's advisory lock — the order a verdict takes them, so the two never deadlock — and claims it
@@ -293,35 +328,6 @@ async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidat
  * resolves on this transaction, so a throw rolls the half-claim back: the row is never `running`
  * with a lease nobody holds. The reservation outlives the rollback as the candidate's backoff.
  */
-/** What a poll's earlier boards told this claim: where to report a global refusal, and whether it may admit new work. */
-type ClaimGate = { refusal: ClaimRefusal; takeoverOnly: boolean };
-
-/**
- * New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds. A queued row is
- * REFUSED when the claim is takeover-only (the row changed under its reservation) or a budget is full.
- */
-async function slotsFor(
-    tx: TransactionSql,
-    ctx: JobStoreContext,
-    reserved: ReservedCandidate,
-    step: { status: string; gate: ClaimGate; probe: ReturnType<typeof startAcquire> }
-): Promise<{ slots: Fragment } | typeof REFUSED> {
-    // Wrapped: a bare fragment is a thenable, and returning it from an async function would run it as a query.
-    const { sql, orgId, admission } = ctx;
-    const { status, gate, probe } = step;
-    if (status !== 'queued') return { slots: sql`admission_slot_global, admission_slot_org, admission_slot_repo` };
-    if (gate.takeoverOnly) return REFUSED;
-    const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
-    if (!('full' in admitted)) {
-        return { slots: sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int` };
-    }
-    if (admitted.full === 'global') gate.refusal.global = true;
-    await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
-             where org_id = ${orgId} and id = ${reserved.id}`;
-    probe.refused(admitted.full);
-    return REFUSED;
-}
-
 async function acquireCandidate(
     ctx: JobStoreContext,
     lease: { worker: string; leaseSeconds: number } & ClaimGate,
@@ -344,6 +350,7 @@ async function acquireCandidate(
                        as queued_since
             from job where org_id = ${orgId} and id = ${reserved.id} for update
         `;
+        // Gone: no row is left to carry a deferral.
         if (!locked) return NEXT_CANDIDATE;
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
         probe.locked();
