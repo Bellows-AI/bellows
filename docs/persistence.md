@@ -22,6 +22,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Staged conclusions, immutable per attempt (076) | `server/migrations/076_job_conclusions.sql`, `server/src/db/job-store-conclusions.ts` | `server/test-db/job-store.conclusions.test.ts` |
 | Phase checkpoints, one row per run and phase (080) | `server/migrations/080_job_phase_checkpoints.sql`, `server/src/db/job-store-phase-checkpoints.ts` | `server/test-db/job-store.phase-checkpoints.test.ts` |
 | Admission slots on running `job` rows, unique per budget among running non-review rows (081) | `server/migrations/081_job_admission.sql`, `server/src/db/job-store-admission.ts` | `server/test-db/job-store.admission.test.ts` |
+| PR follower cadence, one row per followed PR (082; [workflows.md](workflows.md)) | `server/migrations/082_pr_follow.sql`, `server/src/db/pr-follow-store.ts` | `server/test-db/pr-follow.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
 
