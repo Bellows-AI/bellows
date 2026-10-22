@@ -96,7 +96,7 @@ const asHolderGroup = (value: unknown): ListedGroupJob | null => {
 };
 
 /**
- * Every group a checkout holder can have left: its attempt's runner group, and each reclaim group
+ * Every group a checkout holder can have left: its attempt's runner group, and each group
  * labelled as serving it (`HOLDER_LABEL`) — listed, each named by the uid it was listed under.
  * Null when the list proves nothing: the caller acts on none of them.
  */

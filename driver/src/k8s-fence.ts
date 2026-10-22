@@ -267,7 +267,7 @@ export async function releaseClaimAfterGroupEnd(
         const now = await readClaim(deps, job);
         if (now?.uid !== ends.observed.uid || now.holder !== holder) return false;
     }
-    // A recovery's claim, or a reclaim's, goes only with no reclaim group of its holder still
+    // A recovery's claim goes only with no group of its holder still
     // writing — another invocation's, or a pod outliving its Job's delete.
     if ((ends.observed || ends.holderWriters) && !(await holderWritersGone(deps, job, holder))) return false;
     if (!(await groupsEnded(deps, holder, ends.groups ?? [], groupLeaseOf(job)))) return false;

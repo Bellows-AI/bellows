@@ -484,8 +484,6 @@ export interface Runner {
      * Secret's binding key on kubernetes, a supervisor-only volume on docker. Resolves only once the
      * write is confirmed; any rejection means "maybe written", never "not written". It reads nothing,
      * revokes nothing and never consults the driver's own groups (the group may be another driver's).
-     * A caller never rebinds a reclaim group: it follows no binding, so the write would resolve
-     * with no supervisor reading it.
      */
     rebind(group: BoardJob, binding: SupervisorBinding, signal: AbortSignal): Promise<void>;
     /**

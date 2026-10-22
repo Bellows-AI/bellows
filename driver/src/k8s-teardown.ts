@@ -10,7 +10,7 @@ import type { Read } from './runner.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
 
 /**
- * The acknowledged end of one runner Job — an attempt's task group or a reclaim group (issue
+ * The acknowledged end of one runner Job — an attempt's task group (issue
  * #821). Nothing can find an attempt's Secrets once its Job is gone (the driver has no `list` on
  * secrets, and every later pass derives their names from a listed Job), so the Secrets go first,
  * each delete's answer read; a refused one leaves the Job suspended rather than deleted, its pod
@@ -220,8 +220,7 @@ const heldOf = (deps: K8sDeps): Map<string, Map<string, TeardownIdentity>> => {
 
 /**
  * Ends one runner Job, acknowledged, and records the answer against `holder` — the checkout
- * claim's holder token, which for a reclaim group is the reclaim's, never the group's own random
- * token. A later `ended` of the same Job clears an earlier `held`. Never throws.
+ * claim's holder token. A later `ended` of the same Job clears an earlier `held`. Never throws.
  */
 export async function endRunnerJob(
     deps: K8sDeps,
