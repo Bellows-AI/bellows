@@ -2887,6 +2887,24 @@ sidecar_restarts() { # sidecar_restarts <pod> <container> -> its restartCount, e
         -o jsonpath="{.status.initContainerStatuses[?(@.name==\"$2\")].restartCount}" 2>/dev/null
 }
 
+# Ends the postgres sidecar the way a crash would, but only once it serves: pid 1 is the image's
+# entrypoint until postgres is up, and it drops a SIGTERM it has no handler for. TCP, not the socket:
+# the init-time server listens on the socket alone. Bounded by wall clock (PG_READY_SECONDS) well
+# inside the stub agent's 120s lifetime: an iteration costs at most the 5s request timeout plus 1s.
+end_postgres_sidecar() { # end_postgres_sidecar <pod> -> 1 (after a FAIL) when postgres never became ready
+    local until=$(($(date +%s) + ${PG_READY_SECONDS:-30}))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        if kubectl exec "$1" -c svc-postgres -n "$NAMESPACE" --request-timeout=5s -- pg_isready -q -h 127.0.0.1 \
+            >/dev/null 2>&1; then
+            kubectl exec "$1" -c svc-postgres -n "$NAMESPACE" -- sh -c 'kill 1' >/dev/null 2>&1
+            return 0
+        fi
+        sleep 1
+    done
+    bad 'the postgres sidecar accepts connections before it is ended' "not ready within ${PG_READY_SECONDS:-30}s"
+    return 1
+}
+
 LANE_SERVICES="services:
     - name: postgres
       image: postgres:17
@@ -2939,18 +2957,7 @@ if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
 else
     ok 'the restart runner is running'
     await_blocked "$restart_pod" "$svc_release" && ok 'the restart agent is blocked at its barrier' || give_up
-    # pid 1 is the image's entrypoint until postgres is up, and it drops a SIGTERM it has no handler for.
-    # TCP, not the socket: the init-time server listens on the socket alone.
-    pg_ready=""
-    for _ in $(seq 1 120); do
-        kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" --request-timeout=10s -- pg_isready -q -h 127.0.0.1 >/dev/null 2>&1 && {
-            pg_ready=1
-            break
-        }
-        sleep 1
-    done
-    [ -n "$pg_ready" ] || bad 'the postgres sidecar accepts connections before it is ended' 'not ready within 120s'
-    kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" -- sh -c 'kill 1' >/dev/null 2>&1
+    end_postgres_sidecar "$restart_pod" || give_up
     died=""
     for _ in $(seq 1 60); do
         [ "$(sidecar_restarts "$restart_pod" svc-postgres)" -ge 1 ] 2>/dev/null && {

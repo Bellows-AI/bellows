@@ -455,6 +455,22 @@ describe('asking the board for the orphan reaper lease lookups', () => {
 describe('the heartbeat verdict', () => {
     const job = boardJob();
 
+    it('hands the caller\u2019s signal to the request, so a beat the board never answers can be abandoned', async () => {
+        let seen: AbortSignal | undefined;
+        const fetch = (async (_url: string, init: RequestInit) => {
+            seen = init.signal as AbortSignal;
+            return new Promise<Response>((_resolve, reject) =>
+                seen?.addEventListener('abort', () => reject(new Error('aborted')))
+            );
+        }) as unknown as typeof globalThis.fetch;
+        const controller = new AbortController();
+        const beating = boardOn(fetch).heartbeat(job, controller.signal);
+        controller.abort();
+
+        await expect(beating).rejects.toThrow('aborted');
+        expect(seen).toBe(controller.signal);
+    });
+
     it('carries the stop flag when the board set it on a held lease', async () => {
         const { calls, fetch } = recorder(() => Response.json({ cancelRequested: true }, { status: 200 }));
         const board = boardOn(fetch);

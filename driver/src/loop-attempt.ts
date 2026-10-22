@@ -465,7 +465,9 @@ async function beat(rt: LoopRuntime, job: BoardJob, state: JobState, complained:
     const { board, log } = rt;
     let verdict: HeartbeatVerdict | undefined;
     try {
-        verdict = await board.heartbeat(job);
+        // Bounded by a lease third (one beat period): a request the board never answers must not stall the
+        // beats past the lease. An aborted beat throws below and is inconclusive, never a verdict.
+        verdict = await board.heartbeat(job, AbortSignal.timeout(heartbeatPeriodMs(rt.config)));
         complained = false;
     } catch (e) {
         // A board that is briefly unreachable is not a lost lease. Keep working: the

@@ -529,16 +529,74 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
 
 describe('kind lane services restart case (issue #926)', () => {
     const script = readRepoFile('scripts/test-k8s.sh');
-    const restart = script.slice(
-        script.indexOf('begin_phase services-restart'),
-        script.indexOf('begin_phase services-crash')
-    );
+    const fnStart = script.indexOf('\nend_postgres_sidecar() {');
+    const fn = script.slice(fnStart, script.indexOf('\n}\n', fnStart) + 3);
+
+    // A faked `kubectl` on PATH: pg_isready fails STUB_NOT_READY times, then succeeds; every call is logged.
+    const KUBECTL_STUB = `#!/bin/sh
+echo "$*" >>"$STUB_LOG"
+case "$*" in
+*pg_isready*)
+    n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0)
+    echo $((n + 1)) >"$STUB_COUNT"
+    [ "$n" -ge "$STUB_NOT_READY" ] || exit 1
+    ;;
+esac
+`;
+    const dirs: string[] = [];
+    afterEach(() => {
+        for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const endSidecar = (notReady: number, env: Record<string, string> = {}) => {
+        const dir = mkdtempSync(join(tmpdir(), 'k8s-lane-pg-'));
+        dirs.push(dir);
+        writeFileSync(join(dir, 'kubectl'), KUBECTL_STUB);
+        chmodSync(join(dir, 'kubectl'), 0o755);
+        const harness = `NAMESPACE=ns\nbad() { echo "BAD $1"; }\n${fn}\nend_postgres_sidecar pod-x; echo "rc=$?"\n`;
+        const result = spawnSync('bash', ['-c', harness], {
+            encoding: 'utf8',
+            timeout: 30000,
+            env: {
+                ...process.env,
+                PATH: `${dir}:${process.env.PATH ?? ''}`,
+                STUB_LOG: join(dir, 'log'),
+                STUB_COUNT: join(dir, 'count'),
+                STUB_NOT_READY: String(notReady),
+                ...env,
+            },
+        });
+        const calls = readFileSync(join(dir, 'log'), 'utf8').trim().split('\n');
+        return { out: result.stdout, calls };
+    };
+
+    it('extracts the wait from the lane script', () => {
+        expect(fnStart).toBeGreaterThan(-1);
+        expect(fn).toContain('pg_isready -q -h 127.0.0.1');
+    });
 
     // `kill 1` is dropped by the postgres image while its entrypoint (pid 1, no SIGTERM handler) still
     // initialises the data directory, so a kill sent before the server is ready restarts nothing.
-    it('ends the postgres sidecar only once the server accepts connections', () => {
-        const ready = restart.indexOf('-- pg_isready -q -h 127.0.0.1');
-        expect(ready).toBeGreaterThan(-1);
-        expect(ready).toBeLessThan(restart.indexOf("-- sh -c 'kill 1'"));
+    it('ends the postgres sidecar only after pg_isready has succeeded', () => {
+        const { out, calls } = endSidecar(2);
+        expect(out).toContain('rc=0');
+        const kills = calls.flatMap((c, i) => (c.includes('kill 1') ? [i] : []));
+        expect(kills).toEqual([3]);
+        expect(calls.slice(0, 3).every((c) => c.includes('pg_isready'))).toBe(true);
+    });
+
+    it('fails the case and never ends the sidecar when postgres is not ready by the deadline', () => {
+        const { out, calls } = endSidecar(1000, { PG_READY_SECONDS: '2' });
+        expect(out).toContain('BAD the postgres sidecar accepts connections before it is ended');
+        expect(out).toContain('rc=1');
+        expect(calls.some((c) => c.includes('kill 1'))).toBe(false);
+    });
+
+    it('bounds the wait well inside the stub agent lifetime and the request timeout', () => {
+        const stub = readRepoFile('scripts/k8s-stub.sh');
+        const lifetime = Number(/FACTORY_STUB_TIMEOUT_SECONDS:-(\d+)/.exec(stub)?.[1]);
+        const deadline = Number(/PG_READY_SECONDS:-(\d+)/.exec(fn)?.[1]);
+        const request = Number(/--request-timeout=(\d+)s/.exec(fn)?.[1]);
+        expect(deadline + request + 1).toBeLessThanOrEqual(lifetime / 2);
     });
 });
