@@ -12,7 +12,7 @@ import {
     readOpencodeWithRetries,
 } from './close-read.js';
 import type { RunOutcome, RunSession, Runner } from './runner.js';
-import { adoptFinishedRunner } from './k8s-adopt.js';
+import { adoptFinishedRunner, supervisorServing } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
 import { jobPath, jobPodsPath } from './k8s-auxspec.js';
@@ -573,6 +573,7 @@ export function createKubernetesRunner(
         runReview: (caller, review, session, control) =>
             runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(deps, group, binding, signal),
+        supervisorServing: (group, bound) => supervisorServing(deps, group, bound),
         abandon: (job) => ledgerOf(deps).abandon(job),
         syncCheckout: (job: BoardJob, signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, { githubToken, signal }),

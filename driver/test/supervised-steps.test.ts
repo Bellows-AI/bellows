@@ -699,12 +699,45 @@ describe('awaitFirstContact', () => {
     it('polls until the first contact, probing between polls', async () => {
         const { slept, sleep } = noSleep();
         const probe = vi.fn(async () => undefined);
-        const h = hostOf([false, false, true]);
+        const h = hostOf([false, false, false, false, true]); // read before and after each probe
         expect(await awaitFirstContact(h.host, withToken, { sleep, signal: new AbortController().signal, probe })).toBe(
             true
         );
         expect(slept).toEqual([GROUP_UP_POLL_MS, GROUP_UP_POLL_MS]);
         expect(probe).toHaveBeenCalledTimes(2);
+    });
+
+    /** A contact flag the test flips from inside a probe, as a supervisor polling during the probe's request would. */
+    const contactDuring = () => {
+        let contacted = false;
+        const base = sink().host;
+        return {
+            host: { ...base, sink: { ...base.sink, contacted: () => contacted } },
+            land: () => {
+                contacted = true;
+            },
+        };
+    };
+
+    it('counts a contact that lands during a probe which eats the rest of the wait', async () => {
+        const { sleep } = noSleep();
+        const c = contactDuring();
+        const probe = async () => c.land();
+        expect(
+            await awaitFirstContact(c.host, withToken, { sleep, signal: new AbortController().signal, probe, ms: 1 })
+        ).toBe(true);
+    });
+
+    it('counts a contact that lands during a probe which then throws', async () => {
+        const { sleep } = noSleep();
+        const c = contactDuring();
+        const probe = async () => {
+            c.land();
+            throw new Error('the earlier supervisor stopped serving');
+        };
+        expect(
+            await awaitFirstContact(c.host, withToken, { sleep, signal: new AbortController().signal, probe, ms: 1 })
+        ).toBe(true);
     });
 
     it('hands each probe the deadline and the kill of the wait, for its requests to end by (#869)', async () => {

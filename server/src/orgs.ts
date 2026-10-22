@@ -150,6 +150,7 @@ function buildOrgStores({
         // The completion surface records the thread's publication identity in the same
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
+        admission: config.admission,
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
     // batch through the job store's own stop and closes an ended batch's threads through its Done.

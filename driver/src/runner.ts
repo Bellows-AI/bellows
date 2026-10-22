@@ -8,6 +8,7 @@
 import { createHash } from 'node:crypto';
 import type { BoardJob, ReviewClaim, ServiceStatus } from './board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
+import type { Bound } from './poll.js';
 import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
 import type { SnapshotResult } from './review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
@@ -245,6 +246,8 @@ export interface LiveRun {
     claimSeq: number;
     session: string | null;
     startedAt: string;
+    /** Drops this process's memory of the group's end; the takeover that finds the group finished calls it (#928). */
+    forget(): void;
 }
 
 /**
@@ -487,6 +490,14 @@ export interface Runner {
      */
     rebind(group: BoardJob, binding: SupervisorBinding, signal: AbortSignal): Promise<void>;
     /**
+     * Whether a PRIOR group's supervisor can still pick up a rebind (#928): `true` while it runs and has not
+     * logged `SUPERVISOR_SERVED_LINE`, `false` once it stopped serving, terminated, or its pod or Job ended, and
+     * `absent` when the group is confirmed gone. Anything unconfirmed (a failed, timed-out or malformed read) is
+     * `inconclusive`, never an end: the wait for the rebound supervisor goes on. One request per object, no retries,
+     * every one ended by `bound`.
+     */
+    supervisorServing(group: BoardJob, bound: Bound): Promise<Read<boolean>>;
+    /**
      * The attempt was abandoned — its lease lost past the launch, or a drain's handover — and its
      * group is the next holder's (#829): ends every in-process timer, interval and poll this runner
      * started for `job.leaseToken` (the run's backstop deadline, the cache watch, the verdict poll),
@@ -527,6 +538,7 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     resizeReviewer: 'group',
     runReview: 'group',
     rebind: 'attempt',
+    supervisorServing: 'attempt',
     abandon: 'group',
 };
 

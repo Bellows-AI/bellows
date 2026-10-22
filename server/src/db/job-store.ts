@@ -174,7 +174,7 @@ export { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.j
 export { CLAIM_PREPARE_SECONDS } from './job-store-claim.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
-    const { sql, orgId, ready, env, githubApp = false, plan: planReader, executorConfig, prs } = deps;
+    const { sql, orgId, ready, env, githubApp = false, plan: planReader, executorConfig, prs, admission = {} } = deps;
     const gate = async () => {
         if (ready) await ready;
     };
@@ -194,6 +194,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         waitLateral: waitLateralFragment(sql, orgId),
         publicationJoin: publicationJoinFragment(sql),
         publicationColumns: publicationColumnsFragment(sql),
+        admission,
     };
 
     return jobStoreMethods(ctx, gate);

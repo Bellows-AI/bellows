@@ -2,7 +2,7 @@ import { raceStep } from './loop-attempt.js';
 import { isAgentless } from './loop-agentless.js';
 import { releaseAbandonedAdoption } from './loop-fence.js';
 import { type AdoptedRecord, type AttemptCtx, type SetupConclusion, STOOD_DOWN } from './loop-types.js';
-import { AdoptionBlocked, type AdoptedRun, type LiveRun } from './runner.js';
+import { AdoptionBlocked, type AdoptedRun, type LiveRun, type Read } from './runner.js';
 import { awaitFirstContact, controlTokenOf } from './supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from './supervisor-contract.js';
 
@@ -13,7 +13,10 @@ import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from './supervisor-cont
  * under this claim's lease, best-effort (`recordAdopted`): the step answers it as data and
  * performs nothing, and the verdict does not wait on it.
  */
-export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | AdoptedRecord | null> {
+export async function adoptStep(
+    ctx: AttemptCtx,
+    { retaken = false }: { retaken?: boolean } = {}
+): Promise<SetupConclusion | AdoptedRecord | null> {
     const { rt, job, state } = ctx;
     if (isAgentless(job)) return null;
     const adopting = rt.runner.adopt(job, state.signal);
@@ -33,7 +36,13 @@ export async function adoptStep(ctx: AttemptCtx): Promise<SetupConclusion | Adop
     }
     const run = adoptedOut.value;
     if (!run) return null;
-    if ('live' in run) return takeOver(ctx, run);
+    if ('live' in run) {
+        if (!retaken) return takeOver(ctx, run);
+        // The group answered live again after it was found finished: not a third try, the lease decides.
+        state.keepGroup = true;
+        run.forget();
+        return { halt: 'leave', log: 'the earlier group answered live again after it ended, leaving it to the lease' };
+    }
     ctx.adopted = run;
     ctx.fenced = true;
     const reason = `adopted the finished runner of claim ${run.claimSeq}, whose driver was lost`;
@@ -49,13 +58,17 @@ export async function recordAdopted(ctx: AttemptCtx, { reason, claimSeq }: Adopt
         .catch((e: Error) => rt.log(`job ${job.id}: could not record the adopted interruption: ${e.message}`));
 }
 
+/** The wait for the rebound supervisor ended because the earlier group is confirmed finished (#928). */
+class EarlierGroupEnded extends Error {}
+
 /**
  * Takes over the agent a lost driver left RUNNING (issue #829): the supervisor's binding is rewritten
  * to this claim, and only a first poll of the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS` proves it
- * took. Until then the attempt owns nothing (`groupLease` unset, `keepGroup` set), so every way out of it
+ * took, or the earlier group is confirmed finished meanwhile (`supervisorServing`: it stopped serving, so it will
+ * never poll the new endpoint), when the claim adopts it once more as a finished runner. Until then the attempt owns nothing (`groupLease` unset, `keepGroup` set), so every way out of it
  * leaves the group to the next claim. No sync, setup or go order follows: the run carries on.
  */
-async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion | AdoptedRecord> {
+async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion | AdoptedRecord | null> {
     const { rt, job, state } = ctx;
     const leave = (why: string): SetupConclusion => ({
         halt: 'leave',
@@ -84,9 +97,28 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
             sleep: rt.sleep,
             signal: state.signal,
             ms: SUPERVISOR_REBIND_DELIVERY_MS,
+            probe: async (bound) => {
+                // A read that threw proves nothing either: keep waiting.
+                const serving = await rt.runner
+                    .supervisorServing(run.prior, bound)
+                    .catch((): Read<boolean> => ({ kind: 'inconclusive', reason: 'the probe failed' }));
+                // Only a confirmed end shortens the wait: an unconfirmed read keeps waiting for the bound.
+                if (serving.kind === 'absent' || (serving.kind === 'value' && !serving.value))
+                    throw new EarlierGroupEnded('the earlier supervisor stopped serving');
+            },
         });
     } catch (e) {
         if (state.signal.aborted) return STOOD_DOWN;
+        if (e instanceof EarlierGroupEnded) {
+            // Its end is read afresh by the adoption, which is never told what this probe saw.
+            rt.log(
+                `job ${job.id}: the earlier group ended before the rebind reached it, adopting it as a finished runner`
+            );
+            run.forget();
+            delete ctx.takeover;
+            state.keepGroup = false;
+            return adoptStep(ctx, { retaken: true });
+        }
         return leave(`could not reach the running agent: ${(e as Error).message}`);
     }
     if (state.signal.aborted) return STOOD_DOWN;

@@ -19,7 +19,7 @@ import {
     recordDockerKill,
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
-import { readSupervisorState } from './docker-group-probe.js';
+import { readSupervisorState, supervisorServing } from './docker-group-probe.js';
 import { StartupRefused } from './startup-cause.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from './supervisor-contract.js';
@@ -728,6 +728,7 @@ export function createDockerRunner(
         runReview: (caller, review, session, control) =>
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
+        supervisorServing: (group, bound) => supervisorServing(execDocker, group, bound),
         abandon: (job) => ledger.abandon(job),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),

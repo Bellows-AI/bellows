@@ -131,15 +131,18 @@ export async function awaitFirstContact(
     const found = await pollFor(
         { ms: opts.ms ?? GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep, signal, abandoned: killed },
         async (deadline) => {
-            if (signal.aborted) throw killed();
+            // pollFor has already thrown `killed` for an aborted signal before this step.
             if (host.sink.contacted(token)) return true;
             try {
                 await opts.probe?.({ deadline, signal });
             } catch (e) {
                 if (signal.aborted) throw killed();
-                throw e;
+                // A contact that landed while the probe ran outranks whatever it threw.
+                if (!host.sink.contacted(token)) throw e;
             }
             if (signal.aborted) throw killed();
+            // A probe may eat the rest of the wait: contact is looked at again after it.
+            return host.sink.contacted(token) ? true : undefined;
         }
     );
     if (signal.aborted) throw killed();

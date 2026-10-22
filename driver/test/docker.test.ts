@@ -6767,7 +6767,7 @@ describe('docker waits for the supervisor of a started group to make contact (#8
         const supervised = syncSteps();
         const submittedAtSleep: number[] = [];
         const runner = dockerRunner(labelDaemon().exec, {
-            steps: contactAfter(supervised, [false, false, true]),
+            steps: contactAfter(supervised, [false, false, false, false, true]), // read before and after each probe
             sleep: async () => void submittedAtSleep.push(supervised.submitted.length),
         });
         await runner.syncCheckout(repoJob);

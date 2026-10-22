@@ -33,6 +33,7 @@ import type {
     AdoptedRun,
     LiveRun,
     DeadService,
+    Read,
     GateSizing,
     ReviewerSizing,
     RunOutcome,
@@ -486,6 +487,10 @@ export function stubRunner(
         },
         async rebind(group: BoardJob, binding: SupervisorBinding): Promise<void> {
             runner.rebound.push({ group, binding });
+        },
+        /** A prior group's supervisor is serving until a test scripts otherwise (#928). */
+        async supervisorServing(): Promise<Read<boolean>> {
+            return { kind: 'value', value: true };
         },
         async runReview(
             caller: BoardJob,

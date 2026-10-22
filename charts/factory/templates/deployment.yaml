@@ -106,6 +106,13 @@ spec:
                       # The organizations are the App's installations, materialized at sign-in
                       # (#99) — there is no org env to set. Install the App on every account this
                       # deployment should serve.
+                      # Shared admission budgets (server/src/db/job-store-admission.ts); empty is unlimited.
+                      - name: ADMISSION_MAX_RUNNING
+                        value: {{ .Values.dashboard.admission.maxRunning | quote }}
+                      - name: ADMISSION_MAX_RUNNING_PER_ORG
+                        value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
+                      - name: ADMISSION_MAX_RUNNING_PER_REPO
+                        value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
                       {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
                       # The offline entry reads each repo's .bellows.yaml from this origin.
                       - name: REPO_CLONE_BASE
