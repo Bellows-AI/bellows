@@ -2513,9 +2513,23 @@ JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
 
+bounded() { # bounded <seconds> <command...> -> the command's status; killed, status 143, past the deadline (kubectl exec's request timeout does not bound a running stream)
+    local secs="$1" pid watcher rc
+    shift
+    "$@" <&0 &
+    pid=$!
+    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
+    watcher=$!
+    wait "$pid"
+    rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    return "$rc"
+}
+
 expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
-    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-        psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
+    bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
         postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 with expired as (
     update job set lease_expires_at = now() - interval '1 second'
@@ -3916,8 +3930,8 @@ cap_heavy_token=''
 cap_light_token=''
 
 cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read failed
-    kubectl exec -n "$NAMESPACE" --request-timeout=10s "statefulset/$STATE_RELEASE-postgres" -- \
-        psql -qtA -v ON_ERROR_STOP=1 postgres://factory:factory@127.0.0.1:5432/factory_dev -c "$1" 2>&1
+    bounded 15 kubectl exec -n "$NAMESPACE" --request-timeout=10s "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 postgres://factory:factory@127.0.0.1:5432/factory_dev -c "$1" 2>&1
 }
 
 cap_running() { # cap_running -> how many non-review tasks run, as the database counts them
@@ -3948,8 +3962,8 @@ const c = require("node:crypto");
 const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
-    out="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-        psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
+    out="$(bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
         postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 with o as (
     insert into organization (id, name) values (:'login', :'login') returning id
@@ -3976,6 +3990,19 @@ cap_executors() { # cap_executors <function wrapper> -> the member stores the ex
     while [ "$(date +%s)" -lt "$until" ]; do
         [ "$("$1" http_status PUT "$BASE/api/workspace/executors" \
             '{"executors":[{"name":"claude","type":"claude-code","config":{}}]}')" = '200' ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+cap_owner_of() { # cap_owner_of <job> -> the worker that held it when $owners was read; empty when it was not running
+    printf '%s\n' "$owners" | sed -n "s/^$1|//p"
+}
+
+cap_hold_samples() { # cap_hold_samples <file> <readable rows wanted> -> success once the sampler has them, within 180 s
+    local until=$(($(date +%s) + 180))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(grep -cE '^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$' "$1")" -ge "$2" ] && return 0
         sleep 1
     done
     return 1
@@ -4014,8 +4041,11 @@ cap_try_release() { # cap_try_release <release file> <job> -> success once its r
 }
 
 cap_queued() { # cap_queued <wrapper> <job> -> success while the task is queued and has created no runner Job
+    local created
     case "$("$1" job_brief "$2")" in queued\|*) ;; *) return 1 ;; esac
-    [ -z "$(first_runner_job "$2")" ]
+    # A lookup that failed is no proof of absence: the Jobs are listed with their status read, not through first_runner_job's pipe.
+    created="$(kubectl get jobs -l "factory.job=$2,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s -o name 2>&1)" || return 1
+    [ -z "$created" ]
 }
 
 cap_settled() { # cap_settled <label> <wrapper> <job> <owner> <lost owner> -> the checks every task shares once it ran to its end
@@ -4028,7 +4058,7 @@ cap_settled() { # cap_settled <label> <wrapper> <job> <owner> <lost owner> -> th
 }
 
 cap_run() {
-    local running n pending left l1_wave queued_jobs h1 h2 h3 l1 h1_pod l1_pod h2_pod h3_pod h1_owner l1_owner victim='' kill_at='' took_at='' until verdict
+    local running owners owners_known h2_owner h3_owner n pending left l1_wave queued_jobs h1 h2 h3 l1 h1_pod l1_pod h2_pod h3_pod h1_owner l1_owner victim='' kill_at='' took_at='' until verdict
     local heavy light
     running="$(cap_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {
         bad 'capacity: the board starts with no running or queued task' "rows: $running"
@@ -4083,7 +4113,7 @@ cap_run() {
     cap_jobs="$h1 $h2 $h3 $l1"
     ok 'capacity: the four tasks are queued'
 
-    printf 'epoch\trunning\tglobal_slots\tunslotted\n' >"$CAP_SAMPLES"
+    : >"$CAP_SAMPLES"
     cap_sample "$CAP_SAMPLES" &
     capacity_sampler_pid=$!
     kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=2 >/dev/null 2>&1
@@ -4121,17 +4151,34 @@ cap_run() {
 
     # The crash: the replica holding the first heavy task (its worker name is its pod name) is deleted
     # hard. Read, not assumed: an owner that is no driver pod kills nothing.
-    h1_owner="$(cap_psql "select claimed_by from job where id = '$h1'")"
-    l1_owner="$(cap_psql "select claimed_by from job where id = '$l1'")"
-    if [ -n "$h1_owner" ] && kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s -o name 2>/dev/null |
+    owners="$(cap_psql "select id, claimed_by from job where id in ('$h1', '$h2', '$h3', '$l1') and status = 'running' order by id")"
+    owners_known=1
+    [ "$(printf '%s\n' "$owners" | grep -c .)" = 2 ] || owners_known=''
+    for n in $(printf '%s\n' "$owners" | cut -d'|' -f2); do
+        [ -n "$n" ] || owners_known=''
+    done
+    [ -n "$owners_known" ] && ok 'capacity: the owner of every running task is known' ||
+        bad 'capacity: the owner of every running task is known' "running owners read: $owners"
+    h1_owner="$(cap_owner_of "$h1")"
+    h2_owner="$(cap_owner_of "$h2")"
+    h3_owner="$(cap_owner_of "$h3")"
+    l1_owner="$(cap_owner_of "$l1")"
+    if [ -n "$owners_known" ] && [ -n "$h1_owner" ] && kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s -o name 2>/dev/null |
         grep -qx "pod/$h1_owner"; then
         victim="$h1_owner"
         kill_driver_pods "pod/$victim"
         kill_at=$(date +%s)
-        kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
-        # Waiting the lease out would take the lane lease; its expiry is what a silent driver comes to.
+        # Waiting the lease out would take the lane lease; its expiry is what a silent driver comes to. Done at once,
+        # before the replacement rolls out; a lease that already ran out (or a claim already taken over) is read, not assumed.
         n="$(expire_claim_one "$h1")"
-        [ "$n" = 1 ] && ok 'capacity: the lost driver lease is expired' || bad 'capacity: the lost driver lease is expired' "$n"
+        if [ "$n" = 1 ]; then
+            ok 'capacity: the lost driver lease is expired'
+        elif [ "$(cap_psql "select lease_expires_at <= now() or claim_seq > 1 from job where id = '$h1'")" = t ]; then
+            ok 'capacity: the lost driver lease had already run out'
+        else
+            bad 'capacity: the lost driver lease is expired' "$n"
+        fi
+        kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
         took=''
         until=$(($(date +%s) + 300))
         while [ "$(date +%s)" -lt "$until" ]; do
@@ -4155,6 +4202,10 @@ cap_run() {
     else
         bad 'capacity: the driver of the first heavy task is known' "claimed_by read '$h1_owner'"
     fi
+
+    # Hold every barrier until the sampler has read enough rows, both through the crash and with the budget full.
+    cap_hold_samples "$CAP_SAMPLES" 20 && ok 'capacity: the sampler read enough rows before the drain' ||
+        bad 'capacity: the sampler read enough rows before the drain' "$(wc -l <"$CAP_SAMPLES") rows"
 
     # Drain: the first slot freed goes to the light member when the first wave raced to the heavy one, and
     # before any later heavy task is admitted; every task succeeds.
@@ -4182,8 +4233,8 @@ cap_run() {
     done
     [ -z "$pending" ] || bad 'capacity: every task ran and was released' "never ready: $pending"
     cap_settled h1 cap_heavy "$h1" "$h1_owner" "$victim"
-    cap_settled h2 cap_heavy "$h2" '' "$victim"
-    cap_settled h3 cap_heavy "$h3" '' "$victim"
+    cap_settled h2 cap_heavy "$h2" "$h2_owner" "$victim"
+    cap_settled h3 cap_heavy "$h3" "$h3_owner" "$victim"
     cap_settled l1 cap_light "$l1" "$l1_owner" "$victim"
 
     # The samples: the budget held on every row read, and the crash window was among them.
@@ -4197,7 +4248,9 @@ cap_run() {
     [ "$(cap_field "$verdict" over)" = 0 ] && [ "$(cap_field "$verdict" shared)" = 0 ] && [ "$(cap_field "$verdict" unslotted)" = 0 ] &&
         ok 'capacity: no sample is over the budget, shares a slot or runs without one' ||
         bad 'capacity: no sample is over the budget, shares a slot or runs without one' "$verdict"
-    [ -n "$victim" ] && [ "$(cap_field "$verdict" window)" -ge 1 ] 2>/dev/null &&
+    # A failed read inside the crash window, or a long stretch with none readable, leaves the budget unobserved: inconclusive is a failure.
+    [ -n "$victim" ] && [ "$(cap_field "$verdict" window)" -ge 1 ] && [ "$(cap_field "$verdict" windowUnreadable)" = 0 ] &&
+        [ "$(cap_field "$verdict" gap)" -le 20 ] 2>/dev/null &&
         ok 'capacity: the lost owner was sampled before the takeover' ||
         bad 'capacity: the lost owner was sampled before the takeover' "$verdict"
 }

@@ -24,7 +24,17 @@ describe('lane-capacity-samples', () => {
     it('counts clean samples and the ones inside the crash window', () => {
         const { out, status } = verdict(['100|1|1|0', '101|2|2|0', '102|2|2|0', '103|2|2|0'], '101', '102');
         expect(status).toBe(0);
-        expect(out).toEqual({ readable: 4, unreadable: 0, over: 0, shared: 0, unslotted: 0, window: 2, max: 2 });
+        expect(out).toEqual({
+            readable: 4,
+            unreadable: 0,
+            over: 0,
+            shared: 0,
+            unslotted: 0,
+            window: 2,
+            windowUnreadable: 0,
+            gap: 1,
+            max: 2,
+        });
     });
 
     it('counts a failed read apart and never as an empty database', () => {
@@ -39,5 +49,15 @@ describe('lane-capacity-samples', () => {
 
     it('takes another budget as the fourth argument', () => {
         expect(verdict(['100|3|3|0'], '0', '0', '3').out.over).toBe(0);
+    });
+
+    it('reads an empty or non-numeric column as a failed read, never as zero', () => {
+        const { out } = verdict(['100|||', '101||1|0', '102|a|1|0', '103|1|1|', '104|1|1|0|9', '105|1|1|0'], '0', '0');
+        expect(out).toMatchObject({ readable: 1, unreadable: 5, over: 0, unslotted: 0 });
+    });
+
+    it('counts failed reads inside the crash window and the longest stretch with no readable sample', () => {
+        const { out } = verdict(['100|1|1|0', '101|?', '102|?', '103|?', '120|2|2|0', '121|2|2|0'], '101', '121');
+        expect(out).toMatchObject({ window: 2, windowUnreadable: 3, gap: 20 });
     });
 });

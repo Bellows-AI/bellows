@@ -2045,7 +2045,20 @@ cap_stop() { # cap_stop <pid> -> the process gone, waited for, and no longer cle
 }
 
 cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read failed
-    timeout 10 docker exec "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1
+    timeout 10 docker exec -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1
+}
+
+cap_owner_of() { # cap_owner_of <job> -> the worker that held it when $owners was read; empty when it was not running
+    printf '%s\n' "$owners" | sed -n "s/^$1|//p"
+}
+
+cap_hold_samples() { # cap_hold_samples <file> <readable rows wanted> -> success once the sampler has them, within 120 s
+    local until=$(($(date +%s) + 120))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(grep -cE '^[0-9]+\|[0-9]+\|[0-9]+\|[0-9]+$' "$1")" -ge "$2" ] && return 0
+        sleep 1
+    done
+    return 1
 }
 
 cap_running() { # cap_running -> how many non-review tasks run, as the database counts them
@@ -2079,7 +2092,7 @@ const c = require("node:crypto");
 const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
-    out="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
+    out="$(timeout 30 docker exec -i -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
         -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" -f - 2>&1 <<'SQL'
 with o as (
     insert into organization (id, name) values (:'login', :'login') returning id
@@ -2176,7 +2189,7 @@ cap_sample() { # cap_sample <file> -> one row a second, until killed: <epoch>|<r
 }
 
 cap_run() {
-    local running n tok until pending left l1_wave queued_jobs h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
+    local running owners owners_known h2_owner h3_owner n tok until pending left l1_wave queued_jobs h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
     local h1_name="$RUN_ID-cap-h1" h2_name="$RUN_ID-cap-h2" h3_name="$RUN_ID-cap-h3" l1_name="$RUN_ID-cap-l1"
     local samples="$work/capacity.samples.log" kill_at='' took_at='' verdict
 
@@ -2290,9 +2303,20 @@ cap_run() {
     fi
 
     # The crash: whichever driver holds the first heavy task is killed outright. Read, not assumed: an unread owner kills nothing.
-    h1_owner="$(cap_psql "select claimed_by from job where id = '$h1'")"
-    l1_owner="$(cap_psql "select claimed_by from job where id = '$l1'")"
-    case "$h1_owner" in
+    # Every running task's owner is read together, once: a task's interruption is expected exactly when the killed driver held it.
+    owners="$(cap_psql "select id, claimed_by from job where id in ('$h1', '$h2', '$h3', '$l1') and status = 'running' order by id")"
+    owners_known=1
+    [ "$(printf '%s\n' "$owners" | grep -c .)" = 2 ] || owners_known=''
+    for n in $(printf '%s\n' "$owners" | cut -d'|' -f2); do
+        case "$n" in cap-a | cap-b) ;; *) owners_known='' ;; esac
+    done
+    [ -n "$owners_known" ] && ok 'capacity: the owner of every running task is known' ||
+        bad 'capacity: the owner of every running task is known' "running owners read: $owners"
+    h1_owner="$(cap_owner_of "$h1")"
+    h2_owner="$(cap_owner_of "$h2")"
+    h3_owner="$(cap_owner_of "$h3")"
+    l1_owner="$(cap_owner_of "$l1")"
+    case "${owners_known:+$h1_owner}" in
     cap-a) victim=$cap_a_pid victim_name=cap-a ;;
     cap-b) victim=$cap_b_pid victim_name=cap-b ;;
     *) bad 'capacity: the driver of the first heavy task is known' "claimed_by read '$h1_owner'" ;;
@@ -2315,6 +2339,10 @@ cap_run() {
                 bad 'capacity: no queued task was admitted while the owner was lost' "$(cap_why "$n")"
         done
     fi
+
+    # Hold every barrier until the sampler has read enough rows, both through the crash and with the budget full.
+    cap_hold_samples "$samples" 30 && ok 'capacity: the sampler read enough rows before the drain' ||
+        bad 'capacity: the sampler read enough rows before the drain' "$(wc -l <"$samples") rows"
 
     # Drain: the first slot freed goes to the light org when the first wave raced to the heavy one, and
     # before any later heavy task is admitted; every task runs once.
@@ -2345,8 +2373,8 @@ cap_run() {
     done
     [ -z "$pending" ] || bad 'capacity: every task ran and was released' "never ready: $pending"
     cap_settled h1 "$h1" "$h1_name" "$h1_owner" "$victim_name"
-    cap_settled h2 "$h2" "$h2_name" '' "$victim_name"
-    cap_settled h3 "$h3" "$h3_name" '' "$victim_name"
+    cap_settled h2 "$h2" "$h2_name" "$h2_owner" "$victim_name"
+    cap_settled h3 "$h3" "$h3_name" "$h3_owner" "$victim_name"
     cap_settled l1 "$l1" "$l1_name" "$l1_owner" "$victim_name"
 
     # The samples: the budget held on every row read, and the crash window was among them.
@@ -2359,7 +2387,9 @@ cap_run() {
     [ "$(field "$verdict" over)" = 0 ] && [ "$(field "$verdict" shared)" = 0 ] && [ "$(field "$verdict" unslotted)" = 0 ] &&
         ok 'capacity: no sample is over the budget, shares a slot or runs without one' ||
         bad 'capacity: no sample is over the budget, shares a slot or runs without one' "$verdict"
-    [ -n "$victim" ] && [ "$(field "$verdict" window)" -ge 1 ] 2>/dev/null &&
+    # A failed read inside the crash window, or a long stretch with none readable, leaves the budget unobserved: inconclusive is a failure.
+    [ -n "$victim" ] && [ "$(field "$verdict" window)" -ge 1 ] && [ "$(field "$verdict" windowUnreadable)" = 0 ] &&
+        [ "$(field "$verdict" gap)" -le 15 ] 2>/dev/null &&
         ok 'capacity: the lost owner was sampled before the takeover' ||
         bad 'capacity: the lost owner was sampled before the takeover' "$verdict"
 }
