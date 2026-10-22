@@ -1,10 +1,8 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import type { WorkspaceExecutorFull } from '../api/useWorkspace.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { ExecutorDialog } from '../components/ExecutorDialog.js';
 import { PageHeader } from '../components/PageHeader.js';
-import { WorkspaceRootBanner } from '../components/WorkspaceRootBanner.js';
 import type { ConfirmRequest } from '../panels/org-executor-confirm.js';
 import { OrgExecutorsSection } from '../panels/OrgExecutorsSection.js';
 import { PersonalExecutorRemoval } from '../panels/PersonalExecutorRemoval.js';
@@ -96,11 +94,6 @@ export function SettingsExecutorsPage() {
         void suspendExecutor(id, suspended).then((m) => m && setExecutorDialogError(m));
     };
 
-    // A deliberate configuration, not a failure (same posture as the workspace page): with no
-    // root the personal executor routes answer 409 WORKSPACE_DISABLED, so the page refuses before
-    // any dialog — the action simply never renders, and the sentence points at workspace setup.
-    const noRoot = data !== null && data.root === null;
-
     if (loading && !data) {
         return (
             <>
@@ -118,7 +111,7 @@ export function SettingsExecutorsPage() {
                 title="Executors"
                 description={EXECUTOR_SCOPE}
                 actions={
-                    data && !noRoot ? (
+                    data ? (
                         <button type="button" className="primary" onClick={() => void openExecutorDialog(null)}>
                             {ADD_LABEL}
                         </button>
@@ -136,22 +129,15 @@ export function SettingsExecutorsPage() {
                 "nothing configured" as a fact about the workspace rather than the request. */}
             {data ? (
                 <>
-                    {noRoot ? (
-                        <WorkspaceRootBanner>
-                            Personal executors are unavailable because this deployment has no workspace root. Tasks
-                            cannot run until <Link to="/settings/workspace">workspace setup</Link> is complete.
-                        </WorkspaceRootBanner>
-                    ) : (
-                        <WorkspaceExecutorsPanel
-                            executors={data.executors}
-                            defaultExecutor={data.defaultExecutor ?? null}
-                            onEdit={(name) => void openExecutorDialog(name)}
-                            onMakeDefault={makePersonalDefault}
-                            onSuspend={suspendPersonal}
-                            onRemove={(name) => setRemoving({ action: 'remove', name })}
-                            saving={saving}
-                        />
-                    )}
+                    <WorkspaceExecutorsPanel
+                        executors={data.executors}
+                        defaultExecutor={data.defaultExecutor ?? null}
+                        onEdit={(name) => void openExecutorDialog(name)}
+                        onMakeDefault={makePersonalDefault}
+                        onSuspend={suspendPersonal}
+                        onRemove={(name) => setRemoving({ action: 'remove', name })}
+                        saving={saving}
+                    />
                     <OrgExecutorsSection
                         executors={data.orgExecutors ?? []}
                         session={session}

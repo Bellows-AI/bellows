@@ -6,6 +6,7 @@ import type { IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { useTasksPage } from './TasksLayout.js';
+import { trackedRepos } from '../api/useRepos.js';
 import { DEFAULT_FILTERS, inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
 import type { InboxFilters, TaskNavigation, TaskSummary, UseTasks } from '../api/useTasks.js';
 import { countLabel } from '../nav-model.js';
@@ -79,7 +80,7 @@ const filtersUrl = (filters: InboxFilters): string => {
     return query === '' ? '/tasks' : `/tasks?${query}`;
 };
 
-/** The workspace's selected repositories, plus the currently filtered one if it has since
+/** The tracked repositories, plus the currently filtered one if it has since
  * disappeared from the configuration — a linkable URL must keep rendering its own filter. */
 function repoOptionsFor(
     workspaceRepos: readonly { owner: string; name: string }[],
@@ -447,7 +448,7 @@ function InboxTaskList({
 }
 
 export function TaskInboxPage() {
-    const { tasks, workspace } = useTasksPage();
+    const { tasks, repos } = useTasksPage();
     const [, setSearchParams] = useSearchParams();
     const filters = tasks.filters;
 
@@ -500,7 +501,7 @@ export function TaskInboxPage() {
         });
     };
 
-    const repoOptions = repoOptionsFor(workspace.data?.repos ?? [], filters.repo);
+    const repoOptions = repoOptionsFor(trackedRepos(repos).repos ?? [], filters.repo);
     const counts = tasks.navigation?.counts ?? null;
     const noTasksAtAll =
         tasks.items !== null && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;

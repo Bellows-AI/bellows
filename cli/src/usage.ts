@@ -19,7 +19,7 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows job done <id> [--force] [--json]
        bellows job reopen <id> [--json]
        bellows job remove <id> --yes [--json]
-       bellows repo list [--json]          repositories visible to the board, and which are synced
+       bellows repo list [--json]          repositories the board tracks
        bellows executor list [--json]      executor profiles by scope (--executor-scope)
        bellows skill list [--json]         skills a task may select (--skill)
        bellows connection list [--json]    managed connections you may select (--jira-connection)
