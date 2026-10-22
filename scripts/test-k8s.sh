@@ -348,11 +348,21 @@ expect_contains     'the driver role reads the runner vitals' "$rbac" \
       verbs: ['get']"
 expect_not_contains 'the driver role is never a ClusterRole' "$(cat "$work/rendered.yaml")" 'kind: ClusterRole'
 
-# The dashboard writes checkouts into the state release's claim, so an app reinstall keeps them —
-# and the app release creates no claim of its own. The driver is told how to create a thread's task
-# volume (issue #775), not which claim to mount.
-expect_contains 'the dashboard mounts the workspaces claim' "$(cat "$work/rendered.yaml")" \
+# The dashboard mounts no workspaces claim (it checks nothing out), and the app release creates none of
+# its own. The driver is told how to create a thread's task volume (issue #775), not which claim to
+# mount.
+expect_not_contains 'the dashboard mounts no workspaces claim' "$(cat "$work/rendered.yaml")" \
     "claimName: $STATE_RELEASE-workspaces"
+expect_not_contains 'the dashboard is told no workspace root' "$(cat "$work/rendered.yaml")" 'name: ORG_WORKSPACE_ROOT'
+# The offline dashboard reads plans from the origin the driver clones from; the GitHub-backed one reads
+# them through the API and is told no base.
+base_sets=(--set driver.repoCloneBase=git://origin:9418)
+offline_bases="$(render "${base_sets[@]}" | grep -c 'name: REPO_CLONE_BASE')"
+[ "$offline_bases" = 2 ] && ok 'the offline dashboard is told the plan origin' ||
+    bad 'the offline dashboard is told the plan origin' "REPO_CLONE_BASE rendered $offline_bases times, want 2"
+github_bases="$(render "${base_sets[@]}" --set dashboard.offline=false --set github.appId=1 --set github.appPrivateKey=pem | grep -c 'name: REPO_CLONE_BASE')"
+[ "$github_bases" = 1 ] && ok 'the GitHub-backed dashboard is told no plan origin' ||
+    bad 'the GitHub-backed dashboard is told no plan origin' "REPO_CLONE_BASE rendered $github_bases times, want 1"
 expect_not_contains 'the driver is told no workspaces claim' "$(cat "$work/rendered.yaml")" 'name: WORKSPACE_VOLUME'
 expect_contains 'the driver is told the task volume access mode' "$(cat "$work/rendered.yaml")" \
     'name: TASK_VOLUME_ACCESS_MODE'
@@ -1591,9 +1601,9 @@ SQL
 }
 export FACTORY_TOKEN
 
-# The member's selection (issue #263): POST /api/jobs refuses a create whose repo is not the author's
-# own ready selection. With no GitHub there is nothing to clone, so the fixture is the ready
-# user_repo row — and, for the runner's own clone (issue #775), an origin served inside the
+# The tracked repo: POST /api/jobs refuses a create whose repo the board does not track, and the
+# offline board's tracked list is its session_branch rows. With no GitHub the fixture is one such
+# row — and, for the runner's own clone (issue #775), an origin served inside the
 # cluster: a git daemon pod and Service named for REPO_CLONE_BASE (`driver.repoCloneBase` above)
 # whose `<owner>/<name>.git` is a bare repository with one commit, so every task clones and
 # publishes with no network. scripts/test-jobs.sh serves its origin the same way, from a container.
@@ -1610,14 +1620,15 @@ case "$member_user" in
     ;;
 esac
 selected="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-    psql -q -v ON_ERROR_STOP=1 -v "member=$member" -v "user=$member_user" \
+    psql -q -v ON_ERROR_STOP=1 -v "member=$member" \
     -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)
-values (:'member', :'user', :'owner', :'name', 'ready', now());
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'member', 'claude-code', 'test-k8s-fixture', :'owner' || '/' || :'name', 'main', now(), now())
+on conflict do nothing;
 SQL
-)" && ok 'the member selects a ready repository' || {
-    bad 'the member selects a ready repository' "$selected"
+)" && ok 'the board tracks the smoke repository' || {
+    bad 'the board tracks the smoke repository' "$selected"
     give_up
 }
 # One line, no double quotes or backslashes: it is interpolated into the JSON override below.
@@ -2589,10 +2600,9 @@ if selected_phase services; then
 begin_phase services
 # --- Declared services and gates in the task pod (issue #773) -----------------------------------
 #
-# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
-# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
-# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
-# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
+# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from the
+# origin over git (REPO_CLONE_BASE; server/src/github/local-origin-plan.ts), so `commit_plan`
+# commits the file — and the lane's gate scripts under lane/ — to the member's origin. The services are native
 # sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
 # `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
 # reach `postgres:5432` and `s3:9000` there by name.
@@ -2638,7 +2648,7 @@ exit 0
 SH
 )"
 
-commit_plan() { # commit_plan <label> <.bellows.yaml contents, empty to remove it> -> 0 once committed and mirrored
+commit_plan() { # commit_plan <label> <.bellows.yaml contents, empty to remove it> -> 0 once committed and pushed
     local plan reach leave script out
     plan="$(printf '%s' "$2" | base64 | tr -d '\n')"
     reach="$(printf '%s\n' "$LANE_REACH" | base64 | tr -d '\n')"
@@ -2651,20 +2661,14 @@ mkdir -p /tmp/plan/lane; echo $reach | base64 -d > /tmp/plan/lane/reach.sh; echo
 git -C /tmp/plan add -A;
 git -C /tmp/plan -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-plan-$1;
 git -C /tmp/plan push -q origin HEAD:main;
-rm -rf /workspaces/.origins/$SMOKE_REPO.git; git clone -q --bare git://$RELEASE-origin:9418/$SMOKE_REPO.git /workspaces/.origins/$SMOKE_REPO.git;
 echo committed"
     script="$(printf '%s' "$script" | tr '\n' ' ')"
     kubectl run "$RELEASE-plan-$1" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
         --overrides="$(
             cat <<EOF
 {"spec":{"automountServiceAccountToken":false,
-"volumes":[{"name":"w","persistentVolumeClaim":{"claimName":"$STATE_RELEASE-workspaces"}}],
-"initContainers":[{"name":"own","image":"alpine:3",
-"command":["sh","-c","mkdir -p /workspaces/.origins/${SMOKE_REPO%%/*} && chown -R 1000:1000 /workspaces/.origins"],
-"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}],
 "containers":[{"name":"plan","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
-"command":["sh","-c","$script"],
-"volumeMounts":[{"name":"w","mountPath":"/workspaces"}]}]}}
+"command":["sh","-c","$script"]}]}}
 EOF
         )" -- sh >/dev/null 2>&1
     kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s "pod/$RELEASE-plan-$1" \

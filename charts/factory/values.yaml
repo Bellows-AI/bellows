@@ -39,10 +39,6 @@ dashboard:
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
     port: 8080
-    # Where the checkouts are written. The runners mount the same claim at the same path — the
-    # board owns the layout and the driver owns the mount point, and the two agree because the
-    # chart sets both.
-    workspaceRoot: /workspaces
     # The code-only no-fetch entry (server/dist/offline.js): nothing is fetched or cloned and the
     # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign
     # in — it exists for scripts/test-k8s.sh --cluster, which mints its own access token.

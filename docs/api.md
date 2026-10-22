@@ -26,7 +26,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Batches: `/api/batches` ([batches.md](batches.md)) | `server/src/routes/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
-| Workspace, checkouts, personal executors (incl. `DELETE /executors/:id`, `POST /executors/:id/suspension`) | `server/src/routes/workspace.ts`, `workspace-purge.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
+| Workspace payload, personal executors (incl. `DELETE /executors/:id`, `POST /executors/:id/suspension`) | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
 | Organization executor profiles | `server/src/routes/org-executors.ts` | `server/test/routes.org-executors.test.ts` |
 | Member roster and roles | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
@@ -50,7 +50,7 @@ and by the `lint/no-shared-literals.grit` plugin.
   `server/test/auth.enforcement.test.ts`.
 - `GET /api/auth/me` answers `200 { authenticated: false }` anonymously, never `401`; a present bearer is
   still the credential there. `server/test/auth.oauth.me.test.ts`, `server/test/auth.tokens.test.ts`.
-- Job routes register only when `buildApp` is given a job store, workspace routes only with a `userRepos`
+- Job routes register only when `buildApp` is given a job store, workspace routes only with a `userExecutors`
   store. `server/src/app.ts`.
 - The organization is the credential's, never a request field; `?org=` only selects among the caller's
   memberships. `server/test/routes.stats.organization.test.ts`, [organizations.md](organizations.md).

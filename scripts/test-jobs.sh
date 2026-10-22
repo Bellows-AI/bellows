@@ -347,15 +347,6 @@ write_bellows() { # write_bellows <contents>
         echo 'test-jobs: could not commit the .bellows.yaml fixture'
         exit 1
     }
-    # The offline board has no GitHub: it reads the plan at claim time from a bare mirror under its
-    # workspace root (server/src/github/local-origin-plan.ts), so the origin is copied out of the volume.
-    local mirror="$work/workspaces/.origins/$SMOKE_REPO.git"
-    rm -rf "$mirror" && mkdir -p "$mirror" &&
-        docker run --rm -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
-            tar -C "/origins/$SMOKE_REPO.git" -cf - . | tar -C "$mirror" -xf - || {
-        echo 'test-jobs: could not mirror the origin for the board'
-        exit 1
-    }
 }
 lane_group_up() { # lane_group_up <name> <image> <control-url>
     local name="$RUN_ID-$1" image="$2" url="$3" box
@@ -557,18 +548,15 @@ docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work" >/dev
     exit 1
 }
 
-# A workspace root IS set, under $work, and it has to be: with none, the board reports a null
-# `workspacePath` on every claim and the driver fails each job rather than guessing a directory.
-# Nothing is cloned into it — clones only happen when somebody selects repositories — so this costs
-# one empty directory per job author.
-
-# Both boards boot the OFFLINE entry (server/dist/offline.js) — the same server built with the
+# Every board boots the OFFLINE entry (server/dist/offline.js) — the same server built with the
 # code-only no-fetch arm, which is what lets them run with no App credential at all and against a
-# disposable database name. It drives the whole lease protocol with no credential anywhere.
+# disposable database name. It drives the whole lease protocol with no credential anywhere. It reads
+# each repo's .bellows.yaml at claim time from the smoke origin, over git, at $PLAN_BASE
+# (REPO_CLONE_BASE; server/src/github/local-origin-plan.ts).
 
 start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
     env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
-        ORG_WORKSPACE_ROOT="$work/workspaces" \
+        REPO_CLONE_BASE="$PLAN_BASE" \
         node server/dist/offline.js >>"$work/server.log" 2>&1 &
     server_pid=$!
 
@@ -589,6 +577,35 @@ start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until i
     }
 }
 
+# The origin: the bare repository `<owner>/<name>.git` on the origin volume, one commit on main, and
+# a git daemon on the runners' network that serves it and takes pushes (a publish pushes back to it).
+# The daemon is also published to loopback: the offline board runs on the host and reads each plan
+# from it. Uid 1000 owns the repository, as the user every runner and gate container writes as.
+docker volume create "$ORIGIN_VOLUME" >/dev/null &&
+    docker network create "$NETWORK" >/dev/null &&
+    docker run --rm -u 0 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" sh -c \
+        "mkdir -p /origins/${SMOKE_REPO%%/*} && chown 1000:1000 /origins /origins/${SMOKE_REPO%%/*}" &&
+    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+        set -e
+        git init -q --bare -b main "/origins/$1.git"
+        git init -q -b main /tmp/seed
+        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
+        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$SMOKE_REPO" &&
+    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -p 127.0.0.1::9418 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
+        git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack \
+        --listen=0.0.0.0 --port=9418 /origins >/dev/null || {
+    echo 'test-jobs: could not serve the smoke origin'
+    exit 1
+}
+PLAN_BASE="git://127.0.0.1:$(docker port "$ORIGIN_NAME" 9418/tcp | head -n 1 | sed 's/.*://')"
+case "$PLAN_BASE" in
+git://127.0.0.1:[0-9]*) ;;
+*)
+    echo "test-jobs: the smoke origin published no loopback port: $PLAN_BASE"
+    exit 1
+    ;;
+esac
+
 begin_phase board-fixture
 echo "starting the board on $BASE"
 start_open_board
@@ -606,12 +623,10 @@ compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow cas
     exit 1
 }
 
-# A task runs against a checkout (issue #263, 372f5630): POST /api/jobs refuses a create whose repo
-# is not the author's own ready selection. With no GitHub there is nothing to clone, so the fixture
-# is the ready user_repo row plus an origin the runner clones from (issue #775): a bare repository
-# served by a git daemon on the runners' network, so every task clones onto its own task volume
-# with no GitHub. The author is AUTH_MODE=none's stand-in, read from /api/auth/me; the board names
-# its tree `<org>/<user id>` on every claim (asserted below).
+# A create must name a tracked repo, and an offline board's tracked list is its session_branch rows: the
+# fixture is one row for the smoke repo. The runner clones the origin (issue #775) onto its own task
+# volume. The author is AUTH_MODE=none's stand-in, read from /api/auth/me; the board names its tree
+# `<org>/<user id>` on every claim (asserted below).
 member="$(body "$(api GET /api/auth/me)")"
 member_org="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).organization.id); } catch {}' "$member")"
 member_user="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).user.id); } catch {}' "$member")"
@@ -624,33 +639,12 @@ default/????????-????-????-????-????????????) ;;
     ;;
 esac
 compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
-    "insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)
-     values ('$member_org', '$member_user', '${SMOKE_REPO%%/*}', '${SMOKE_REPO#*/}', 'ready', now())
-     on conflict (org_id, user_id, repo_owner, repo_name)
-     do update set status = 'ready', deselected_at = null, ready_at = now()" >/dev/null 2>&1 || {
+    "insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+     values ('$member_org', 'claude-code', 'test-jobs-fixture', '$SMOKE_REPO', 'main', now(), now())
+     on conflict do nothing" >/dev/null 2>&1 || {
     echo "test-jobs: could not select $SMOKE_REPO for the stand-in member"
     exit 1
 }
-# The origin: the bare repository `<owner>/<name>.git` on the origin volume, one commit on main, and
-# a git daemon on the runners' network that serves it and takes pushes (a publish pushes back to it).
-# Uid 1000 owns the repository, as the user every runner and gate container writes as.
-docker volume create "$ORIGIN_VOLUME" >/dev/null &&
-    docker network create "$NETWORK" >/dev/null &&
-    docker run --rm -u 0 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" sh -c \
-        "mkdir -p /origins/${SMOKE_REPO%%/*} && chown 1000:1000 /origins /origins/${SMOKE_REPO%%/*}" &&
-    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
-        set -e
-        git init -q --bare -b main "/origins/$1.git"
-        git init -q -b main /tmp/seed
-        git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
-        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$SMOKE_REPO" &&
-    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
-        git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack \
-        --listen=0.0.0.0 --port=9418 /origins >/dev/null || {
-    echo 'test-jobs: could not serve the smoke origin'
-    exit 1
-}
-
 expect_status 'stores the task-selectable executors' 200 PUT /api/workspace/executors \
     '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
 
@@ -946,7 +940,7 @@ echo '# github credential'
 
 MINT_PORT=$((PORT + 2))
 env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$MINT_PORT" HOST=127.0.0.1 \
-    ORG_WORKSPACE_ROOT="$work/workspaces" \
+    REPO_CLONE_BASE="$PLAN_BASE" \
     node server/dist/offline-mint.js >>"$work/mint-server.log" 2>&1 &
 mint_pid=$!
 mint_up=""
@@ -1906,7 +1900,7 @@ AUTH_PORT=$((PORT + 1))
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
 
 env DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
-    ORG_WORKSPACE_ROOT="$work/workspaces" \
+    REPO_CLONE_BASE="$PLAN_BASE" \
     AUTH_MODE=github \
     GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
     SESSION_SECRET=a-job-harness-session-secret-32-chars \
