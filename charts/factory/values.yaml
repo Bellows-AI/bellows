@@ -204,6 +204,10 @@ driver:
     # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
     # one checkout (docs/kubernetes.md).
     replicas: 1
+    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <board token>),
+    # on the pod IP. '' serves none. No Service and no scrape annotations: point a PodMonitor or a
+    # scrape config at the `metrics` container port (docs/telemetry.md).
+    metricsPort: '9464'
     # One driver serves both task-selected executor types. These values choose image locations —
     # bare repository paths the global.imageRegistry prefix composes with (a tag may be included:
     # `claude-executor:v1.2.3`; tagless reads :latest); the task's executor profile chooses which

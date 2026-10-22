@@ -560,3 +560,80 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
         expect(reaped).toEqual([]);
     });
 });
+
+describe('the reaper observer (issue #831)', () => {
+    const observed = () => {
+        const sweeps: { outcome: string; seconds: number }[] = [];
+        const scanned: { what: string; n: number }[] = [];
+        return {
+            sweeps,
+            scanned,
+            observe: {
+                sweep: (outcome: 'ok' | 'aborted' | 'error', seconds: number) => void sweeps.push({ outcome, seconds }),
+                scanned: (what: 'groups' | 'objects' | 'volume_threads', n: number) => void scanned.push({ what, n }),
+            },
+        };
+    };
+    const reaperWith = (
+        arm: ReaperArm,
+        board: ReturnType<typeof boardOf>,
+        observe: ReturnType<typeof observed>['observe']
+    ) =>
+        createReaper({
+            board,
+            arm,
+            intervalMs: 3_600_000,
+            graceMs: GRACE,
+            now: () => NOW,
+            log: () => undefined,
+            observe,
+        });
+
+    it('reports ok with what the scan found', async () => {
+        const { arm } = recordingArm();
+        arm.scan = async () => [group(), group({ jobId: JOB_B })];
+        const seen = observed();
+        await reaperWith(arm, boardOf([]), seen.observe).sweep();
+        expect(seen.sweeps.map((s) => s.outcome)).toEqual(['ok']);
+        expect(seen.sweeps[0]!.seconds).toBeGreaterThanOrEqual(0);
+        expect(seen.scanned).toContainEqual({ what: 'groups', n: 2 });
+        expect(seen.scanned).toContainEqual({ what: 'objects', n: 2 });
+    });
+
+    it('reports aborted, not ok, when the board could not prove absence', async () => {
+        const { arm } = recordingArm();
+        arm.scan = async () => [group()];
+        const seen = observed();
+        await reaperWith(arm, boardOf(null), seen.observe).sweep();
+        expect(seen.sweeps.map((s) => s.outcome)).toEqual(['aborted']);
+    });
+
+    it('reports aborted when the task volumes could not be listed', async () => {
+        const { arm } = recordingArm();
+        arm.scanVolumes = async () => null;
+        arm.reapVolumes = async () => [];
+        const seen = observed();
+        const reaper = createReaper({
+            board: boardOf([]),
+            arm,
+            intervalMs: 3_600_000,
+            graceMs: GRACE,
+            now: () => NOW,
+            log: () => undefined,
+            volumePolicy: { ttlMs: 1, boundMs: 1 },
+            observe: seen.observe,
+        });
+        await reaper.sweep();
+        expect(seen.sweeps.map((s) => s.outcome)).toEqual(['aborted']);
+    });
+
+    it('reports error when the sweep throws, still exactly once', async () => {
+        const { arm } = recordingArm();
+        arm.scan = async () => {
+            throw new Error('daemon down');
+        };
+        const seen = observed();
+        await reaperWith(arm, boardOf([]), seen.observe).sweep();
+        expect(seen.sweeps.map((s) => s.outcome)).toEqual(['error']);
+    });
+});

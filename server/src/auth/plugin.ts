@@ -43,6 +43,8 @@ declare module 'fastify' {
 /** Routes the driver reaches, and no browser ever does. */
 const WORKER_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/claim$/,
+    // The Prometheus scrape (issue #831): names no row, so no org — like the lease lookup below.
+    /^\/api\/metrics$/,
     // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, since the
     // shared secret names no org and the id list spans them.
     /^\/api\/jobs\/leases$/,

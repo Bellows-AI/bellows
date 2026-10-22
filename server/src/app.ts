@@ -5,6 +5,7 @@ import { registerAuth } from './auth/plugin.js';
 import type { AuthStore } from './auth/store.js';
 import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
+import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
 import type { ConnectionOfLease } from './db/connection-store.js';
 import type { GithubCredentialOfLease } from './db/github-credential.js';
@@ -20,6 +21,7 @@ import { envRoutes } from './routes/env.js';
 import { healthRoutes } from './routes/health.js';
 import { ingestRoutes } from './routes/ingest.js';
 import { jobRoutes } from './routes/jobs.js';
+import { prometheusRoutes } from './routes/prometheus.js';
 import { repoRoutes } from './routes/repos.js';
 import { skillRoutes } from './routes/skills.js';
 import { statsRoutes } from './routes/stats.js';
@@ -33,6 +35,8 @@ import { skillCatalog } from './skills.js';
 import { readVersion } from './version.js';
 
 const HTTP_NOT_FOUND = 404;
+const MS_PER_SECOND = 1000;
+const UNMATCHED_ROUTE = '<unmatched>';
 
 export interface AppDeps {
     config: AppConfig;
@@ -98,6 +102,11 @@ export interface AppDeps {
     version?: string;
     /** Preset ranges are a lookback from now, so the routes need the same injection point. */
     now?: () => number;
+    /**
+     * The board's Prometheus series. With it: the request histogram and `GET /api/metrics` exist;
+     * without it (the route tests) neither does. main.ts builds it once.
+     */
+    metrics?: ServerMetrics | undefined;
     /** `true` for the server's own log; a destination object is the tests' capture of every line. */
     logger?: FastifyServerOptions['logger'];
 }
@@ -167,6 +176,7 @@ export async function buildApp({
     ready,
     version = readVersion(),
     now = Date.now,
+    metrics,
     logger = false,
 }: AppDeps): Promise<FastifyInstance> {
     const app = Fastify({ logger });
@@ -177,6 +187,20 @@ export async function buildApp({
         reply.header('X-Content-Type-Options', 'nosniff');
         reply.header('Referrer-Policy', 'no-referrer');
     });
+
+    // On the root instance, before any route: a hook inside an encapsulated plugin would miss every
+    // route registered beside it. The pattern is the label, so a raw id never becomes a series.
+    if (metrics) {
+        app.addHook('onResponse', async (request, reply) => {
+            const route = request.is404 ? UNMATCHED_ROUTE : request.routeOptions.url;
+            metrics.request(
+                request.method,
+                route ?? UNMATCHED_ROUTE,
+                reply.statusCode,
+                reply.elapsedTime / MS_PER_SECOND
+            );
+        });
+    }
 
     // Before every route, so nothing can be registered ahead of the wall by accident. Without a
     // store the property is still decorated, so `request.auth` reads the same everywhere rather than
@@ -207,7 +231,8 @@ export async function buildApp({
     if (store) await app.register(ingestRoutes(store, orgs));
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
-    await app.register(jobRoutes({ orgs }));
+    await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
+    if (metrics) await app.register(prometheusRoutes(metrics));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.

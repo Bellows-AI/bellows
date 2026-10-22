@@ -4,13 +4,15 @@ import { createBoard } from './board.js';
 import { gateAdvertiseUrlFor, loadDriverConfig } from './config.js';
 import { createDockerReaper } from './docker-reaper.js';
 import { boardIdentity } from './task-volume.js';
-import { createDockerRunner } from './docker-runner.js';
+import { createDriverMetrics } from './driver-metrics.js';
+import { createDockerRunner, defaultExecDocker } from './docker-runner.js';
 import { createGateServer, createSupervisedGateManager } from './gates.js';
 import { createKubernetesReaper } from './k8s-reaper.js';
 import { createKubernetesRunner } from './k8s-runner.js';
 import { inClusterRequest } from './k8s-transport.js';
 import { createStepBroker, type SupervisorEndpoint } from './step-control.js';
 import { createLoop } from './loop.js';
+import { createMetricsServer } from './metrics-server.js';
 import type { GateStack } from './loop-types.js';
 import { createReaper } from './reaper.js';
 import { run } from './docker-runner-support.js';
@@ -36,10 +38,13 @@ if (missing.length === config.passEnv.length) {
     console.warn(`[driver] none of ${config.passEnv.join(', ')} are set; runners will have no credential`);
 }
 
+// The series every call below reports into; served only when DRIVER_METRICS_PORT is set (issue #831).
+const metrics = createDriverMetrics({ boardUrl: config.boardUrl });
 const board = createBoard({
     url: config.boardUrl,
     leaseSeconds: config.leaseSeconds,
     token: config.boardToken,
+    fetch: metrics.fetch,
 });
 // EXECUTOR picks the platform runners run on. `inClusterRequest()` is fatal here rather than on
 // the first claim: a driver asked for kubernetes outside a cluster should say so at startup.
@@ -47,7 +52,7 @@ const request = config.executor === 'kubernetes' ? inClusterRequest() : null;
 // The supervised-step channel: the broker the runners submit steps to and the gate server's control
 // endpoint serves them from (issue #771), and the endpoint a runner opens a supervisor-only token on
 // for a group with no attempt (a terminal reclaim). `gates` is bound below; both read it lazily.
-const steps = createStepBroker();
+const steps = createStepBroker(metrics.step);
 const endpoint: SupervisorEndpoint = {
     open: async () => {
         const token = randomUUID();
@@ -58,13 +63,17 @@ const endpoint: SupervisorEndpoint = {
 };
 const runner =
     config.executor === 'kubernetes'
-        ? createKubernetesRunner(config, request!, undefined, {
+        ? createKubernetesRunner(config, metrics.k8s(request!, 'runner'), undefined, {
               leases: (ids) => board.leases(ids),
               checkpoints: board,
               steps,
               endpoint,
           })
-        : createDockerRunner(config, undefined, undefined, { steps, endpoint, checkpoints: board });
+        : createDockerRunner(config, undefined, metrics.docker(defaultExecDocker, 'runner'), {
+              steps,
+              endpoint,
+              checkpoints: board,
+          });
 
 // The gate machinery is one on both executors (issue #773): every gate and the setup run in the
 // attempt's own task group, the declared image as a gate container beside the supervisor, as one
@@ -95,14 +104,15 @@ const reaper = createReaper({
     board,
     arm:
         config.executor === 'kubernetes'
-            ? createKubernetesReaper({ config, request: request! })
+            ? createKubernetesReaper({ config, request: metrics.k8s(request!, 'reaper') })
             : createDockerReaper(
-                  (args, options) => run('docker', args, { ...options, encoding: 'utf8' }),
+                  metrics.docker((args, options) => run('docker', args, { ...options, encoding: 'utf8' }), 'reaper'),
                   boardIdentity(config)
               ),
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,
     volumePolicy: { ttlMs: config.taskVolumeTtlMs, boundMs: config.taskVolumeBoundMs },
+    observe: metrics.reaper,
     log: (m) => console.log(`[driver] ${m}`),
 });
 if (config.reapIntervalMs > 0) reaper.start();
@@ -130,11 +140,24 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     });
 }
 
+// Bound before the first claim so a scrape sees the whole run, and closed after the drain below.
+const metricsServer =
+    config.metricsPort === null
+        ? null
+        : createMetricsServer({
+              host: config.gateListenHost,
+              port: config.metricsPort,
+              token: config.boardToken,
+              render: () => metrics.render(),
+          });
+if (metricsServer) console.log(`[driver] metrics on ${config.gateListenHost}:${await metricsServer.listen()}`);
+
 await loop.start();
 // The drain above lets in-flight jobs finish — including their gates, which end with their groups.
 await gates.manager.stop();
 // The ad-hoc socket holds the event loop open; without this the process never exits after a
 // graceful drain once any gated job has run.
 await gates.server.close();
+await metricsServer?.close();
 // A handed-over run's poll is still pending in this process, and is no longer this driver's.
 if (handedOver) process.exit(0);

@@ -9,6 +9,7 @@ import { createBatchStore, type BatchStore } from './db/batch-store.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
 import { createJobStore } from './db/job-store.js';
+import type { ClaimObserver } from './db/job-store-admission.js';
 import type { JobStore } from './db/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
@@ -90,6 +91,8 @@ export interface OrgRegistryDeps {
     withStores: boolean;
     /** The object store behind each org's artifact index; absent (route tests), no org has one. */
     artifacts?: ArtifactBackend;
+    /** What each org's job store reports about its claims (issue #831). */
+    claimMetrics?: ClaimObserver;
 }
 
 /**
@@ -112,7 +115,9 @@ function buildOrgStores({
     config,
     tokens,
     client,
+    claimMetrics,
 }: {
+    claimMetrics: ClaimObserver | undefined;
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
@@ -155,6 +160,7 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
         admission: config.admission,
+        ...(claimMetrics ? { metrics: claimMetrics } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
     // batch through the job store's own stop and closes an ended batch's threads through its Done.
@@ -259,7 +265,14 @@ function artifactStoreOf({
     });
 }
 
-export function createOrgRegistry({ sql, ready, config, withStores, artifacts }: OrgRegistryDeps): OrgRegistry {
+export function createOrgRegistry({
+    sql,
+    ready,
+    config,
+    withStores,
+    artifacts,
+    claimMetrics,
+}: OrgRegistryDeps): OrgRegistry {
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
@@ -306,7 +319,7 @@ export function createOrgRegistry({ sql, ready, config, withStores, artifacts }:
         };
 
         if (withStores) {
-            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client });
+            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client, claimMetrics });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
         }

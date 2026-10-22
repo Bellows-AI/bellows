@@ -9,7 +9,7 @@ import {
     type K8sRequest,
 } from './k8s-transport.js';
 import { claimPath, secretsPath } from './k8s-auxspec.js';
-import { readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { readObserved, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
 import { abortableSleep } from './poll.js';
 import { asIdentified } from './k8s-pod-shapes.js';
@@ -17,7 +17,15 @@ import { readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict, VolumeListing, VolumeThread } from './reaper.js';
+import type {
+    OrphanGroup,
+    OrphanObject,
+    ReapInconclusive,
+    ReaperArm,
+    ReapVerdict,
+    VolumeListing,
+    VolumeThread,
+} from './reaper.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
 import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, boardIdentity, generationOfName } from './task-volume.js';
 import { parseRfc3339 } from './timestamps.js';
@@ -41,7 +49,6 @@ import { parseRfc3339 } from './timestamps.js';
  */
 
 /** The two status codes a reaper delete can answer with that mean "already going away". */
-const GONE_STATUSES: readonly number[] = [HTTP_NOT_FOUND, HTTP_CONFLICT];
 
 /** Every kind the arm deletes, with its collection path — one table, not a branch per kind. */
 const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> => ({
@@ -173,7 +180,7 @@ const mergeIntoGroups = (
     }
 };
 
-const scan = async (deps: K8sDeps): Promise<OrphanGroup[]> => {
+const scan = async (deps: K8sDeps): Promise<OrphanGroup[] | null> => {
     const { config } = deps;
     const jobs = await listBySelector(
         deps,
@@ -181,7 +188,7 @@ const scan = async (deps: K8sDeps): Promise<OrphanGroup[]> => {
         'listing the jobs',
         'job'
     );
-    if (jobs === null) return [];
+    if (jobs === null) return null;
     const groups = new Map<string, OrphanGroup>();
     for (const item of jobs) {
         const found = groupKeyOf(item, 'job');
@@ -192,7 +199,7 @@ const scan = async (deps: K8sDeps): Promise<OrphanGroup[]> => {
 
 /** How one named delete landed: removed it this call, it was already going (404/409), or it
  * failed — a transport rejection or an unexpected status is the next round's problem. */
-type DeleteResult = 'removed' | 'gone' | 'failed';
+type DeleteResult = 'removed' | 'gone' | 'replaced' | 'failed';
 
 const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Promise<DeleteResult> => {
     try {
@@ -201,8 +208,8 @@ const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Pro
             : request('DELETE', path));
         // A 409 under a uid precondition is another incarnation under the name, not the listed
         // one going away: no removal, and nothing that lets the round go on to the claim.
-        if (uid && response.status === HTTP_CONFLICT) return 'failed';
-        if (response.status >= HTTP_ERROR_STATUS) return GONE_STATUSES.includes(response.status) ? 'gone' : 'failed';
+        if (uid && response.status === HTTP_CONFLICT) return 'replaced';
+        if (response.status >= HTTP_ERROR_STATUS) return response.status === HTTP_NOT_FOUND ? 'gone' : 'failed';
         return 'removed';
     } catch {
         return 'failed';
@@ -225,7 +232,7 @@ const uuidScoped = (group: OrphanGroup): group is OrphanGroup & { leaseToken: st
  * The attempt-scoped env Secrets, deleted FIRST — before the Job, and one failed
  * delete stops the round (answers false): a Secret has no ownerReferences, so once the listed
  * objects are gone no next scan can rediscover the (job, lease) pair these names are hashed
- * from. Already-gone Secrets (404/409) never hold the teardown back. The names hash the OLD
+ * from. Already-gone Secrets (404) never hold the teardown back. The names hash the OLD
  * lease token, so this ordering never reaches a replacement attempt's resources.
  */
 const reapDerivedSecrets = async (
@@ -242,12 +249,20 @@ const reapDerivedSecrets = async (
     return true;
 };
 
-const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]> => {
+const reap = async (
+    deps: K8sDeps,
+    group: OrphanGroup,
+    verdict: ReapVerdict
+): Promise<readonly string[] | ReapInconclusive> => {
     const { config, request } = deps;
     const paths = basePathOf(config);
     const removed: string[] = [];
-    if (uuidScoped(group) && !(await reapDerivedSecrets(config, request, group, removed))) return removed;
-    let failed = false;
+    if (uuidScoped(group) && !(await reapDerivedSecrets(config, request, group, removed))) {
+        return { removed, inconclusive: 'an attempt Secret delete failed' };
+    }
+    // `held` stops the round before the claim (a failed or replaced delete); `unconfirmed` is only the failed.
+    let held = false;
+    let unconfirmed: string | null = null;
     for (const object of group.objects) {
         const result = await deleteNamed(
             request,
@@ -255,7 +270,8 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
             object.uid
         );
         if (result === 'removed') removed.push(`${object.kind} ${object.name}`);
-        if (result === 'failed') failed = true;
+        if (result === 'failed') unconfirmed ??= `deleting ${object.kind} ${object.name} failed`;
+        if (result === 'failed' || result === 'replaced') held = true;
     }
     // The checkout claim is JOB-scoped — the one name a replacement attempt can hold — so only a
     // provably dead job's claim may be removed, and only once nothing of this round failed: a
@@ -265,20 +281,38 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
     // delete — anything short of that is deferred to a later round, never deleted on a maybe.
     // Answered in the log like the fleet's objects, so "is the reaper running?" stays answerable
     // from a round that only cleaned Secrets.
-    if (!uuidScoped(group) || verdict !== 'gone' || failed) return removed;
+    if (unconfirmed !== null) return { removed, inconclusive: unconfirmed };
+    if (!uuidScoped(group) || verdict !== 'gone' || held) return removed;
+    return releaseDeadClaim(deps, group, removed);
+};
+
+/** The condemned job's checkout claim, released the one confirmed way; told apart when a read proved nothing. */
+const releaseDeadClaim = async (
+    deps: K8sDeps,
+    group: OrphanGroup & { leaseToken: string },
+    removed: string[]
+): Promise<readonly string[] | ReapInconclusive> => {
+    const { config } = deps;
     const job = attemptPair(group.jobId, group.leaseToken);
-    const observed = await readClaim(deps, job);
-    if (observed === null || !JOB_ID.test(observed.holder)) return removed;
+    let inconclusive: string | null = null;
+    const onUnproven = (reason: string) => {
+        inconclusive ??= reason;
+    };
+    // A refused read, or a claim answered without its identity, proves nothing; a confirmed absence is gone.
+    const observed = await readObserved(deps, job, onUnproven);
+    if (observed === null) return inconclusive === null ? removed : { removed, inconclusive };
+    if (!JOB_ID.test(observed.holder)) return removed;
     // Only the condemned attempt's own claim — held by its lease, or by the reclaim whose derived
     // token it is: a holder that is neither is a replacement's (the task reopened since the board
     // answered), and nothing of it is touched.
     const servesHolder = group.objects.some((object) => object.holder === observed.holder);
     if (observed.holder !== group.leaseToken && !servesHolder) return removed;
     const groups = await holderGroupsOf(deps, job, observed.holder);
-    if (groups !== null && (await releaseClaimAfterGroupEnd(deps, job, { groups, observed }))) {
+    if (groups === null) return { removed, inconclusive: 'listing the holder groups proved nothing' };
+    if (await releaseClaimAfterGroupEnd(deps, job, { groups, observed, onUnproven })) {
         removed.push(`claim ${claimPath(config.k8sNamespace, job).split('/').pop()}`);
     }
-    return removed;
+    return inconclusive === null ? removed : { removed, inconclusive };
 };
 
 /** One listed task volume claim, as far as the scan reads it: its thread, its name and the incarnation. */
@@ -358,13 +392,16 @@ const scanVolumes = async (deps: K8sDeps): Promise<VolumeListing | null> => {
 };
 
 /** Deletes every listed generation, each under the uid it was listed with; one that fails is the next round's. */
-const reapVolumes = async (deps: K8sDeps, thread: VolumeThread): Promise<readonly string[]> => {
+const reapVolumes = async (deps: K8sDeps, thread: VolumeThread): Promise<readonly string[] | ReapInconclusive> => {
     const removed: string[] = [];
+    let unconfirmed: string | null = null;
     for (const volume of thread.volumes) {
         const path = `${taskVolumesPath(deps.config.k8sNamespace)}/${volume.name}`;
-        if ((await deleteNamed(deps.request, path, volume.uid)) === 'removed') removed.push(`volume ${volume.name}`);
+        const result = await deleteNamed(deps.request, path, volume.uid);
+        if (result === 'removed') removed.push(`volume ${volume.name}`);
+        if (result === 'failed') unconfirmed ??= `deleting volume ${volume.name} failed`;
     }
-    return removed;
+    return unconfirmed === null ? removed : { removed, inconclusive: unconfirmed };
 };
 
 /**

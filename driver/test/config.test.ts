@@ -494,4 +494,35 @@ describe('the driver config: no service search domain (#773)', () => {
         const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_CLUSTER_DOMAIN: 'Corp.Internal' });
         expect(config).not.toHaveProperty('k8sClusterDomain');
     });
+
+    describe('DRIVER_METRICS_PORT (issue #831)', () => {
+        it('is off unless set', () => {
+            expect(loadDriverConfig({}).metricsPort).toBeNull();
+            expect(loadDriverConfig({ DRIVER_METRICS_PORT: '' }).metricsPort).toBeNull();
+        });
+
+        it('takes a port, bound to the gate host', () => {
+            const config = loadDriverConfig({ DRIVER_METRICS_PORT: '9464', JOB_BOARD_TOKEN: 't' });
+            expect(config.metricsPort).toBe(9464);
+        });
+
+        it.each(['0', '70000', 'abc', '-1', '1.5'])('refuses %s', (port) => {
+            expect(() => loadDriverConfig({ DRIVER_METRICS_PORT: port })).toThrow(/DRIVER_METRICS_PORT/);
+        });
+
+        it('refuses a port with no board token on a non-loopback host: runners can reach it and hold no token', () => {
+            expect(() => loadDriverConfig({ DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0' })).toThrow(
+                /JOB_BOARD_TOKEN/
+            );
+        });
+
+        it.each(['127.0.0.1', 'localhost', '::1'])('allows a port with no token on loopback %s', (host) => {
+            expect(loadDriverConfig({ DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: host }).metricsPort).toBe(9464);
+        });
+
+        it('allows a non-loopback host when the token is set', () => {
+            const env = { DRIVER_METRICS_PORT: '9464', GATE_LISTEN_HOST: '0.0.0.0', JOB_BOARD_TOKEN: 't' };
+            expect(loadDriverConfig(env).metricsPort).toBe(9464);
+        });
+    });
 });

@@ -90,6 +90,15 @@ import {
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
 import { settleEnd } from './termination.js';
 
+/** The docker CLI, exported so the driver can wrap it with its metrics (issue #831). */
+export const defaultExecDocker: ExecDocker = (args, { input, ...options } = {}) => {
+    const pending = run('docker', args, { ...options, encoding: 'utf8' });
+    // A CLI that exits before reading its stdin must not crash the driver with an EPIPE.
+    pending.child.stdin?.on('error', () => undefined);
+    if (input) pending.child.stdin?.end(input);
+    return pending;
+};
+
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
  * per-attempt fences and teardowns, the spawn and event wiring. The daemon plumbing and per-step
@@ -673,13 +682,7 @@ async function dockerRun(
 export function createDockerRunner(
     config: DriverConfig,
     spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args, { input, ...options } = {}) => {
-        const pending = run('docker', args, { ...options, encoding: 'utf8' });
-        // A CLI that exits before reading its stdin must not crash the driver with an EPIPE.
-        pending.child.stdin?.on('error', () => undefined);
-        if (input) pending.child.stdin?.end(input);
-        return pending;
-    },
+    execDocker: ExecDocker = defaultExecDocker,
     extras: {
         files?: RunnerFiles;
         steps?: StepSink;

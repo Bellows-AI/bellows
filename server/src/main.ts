@@ -10,6 +10,8 @@ import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
 import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
+import { admissionOccupancy } from './db/job-store-admission.js';
+import { createServerMetrics } from './metrics.js';
 import { createOrgRegistry } from './orgs.js';
 import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
@@ -72,7 +74,13 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     //
     const artifacts = createArtifactBackend(config.artifacts);
     void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
-    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, artifacts });
+    // Prometheus series for the board (issue #831): the claim reports into them, `GET /api/metrics`
+    // serves them, and the background loops below are wrapped with `metrics.timedPass`.
+    const metrics = createServerMetrics({
+        admission: config.admission,
+        occupancy: (signal) => admissionOccupancy(sql, { signal }),
+    });
+    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, artifacts, claimMetrics: metrics.claim });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.
@@ -121,6 +129,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         githubMint: options.githubMint,
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
+        metrics,
         logger: true,
     });
 
@@ -129,9 +138,17 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     void ready.then(() => orgs.warmAll()).catch((e: Error) => console.error(`[orgs] warm failed: ${e.message}`));
 
     // Dispatch survives a missed callback or a restart: the first pass runs now, then on an interval.
-    void ready.then(() => startBatchReconciler(orgs));
+    void ready.then(() =>
+        startBatchReconciler({
+            reconcileBatches: () => metrics.timedPass('batch_reconcile', () => orgs.reconcileBatches()),
+        })
+    );
     // PR checks and mergeability are read from GitHub on a cadence; webhooks only hint (docs/batches.md).
-    void ready.then(() => startBatchPrObserver(orgs));
+    void ready.then(() =>
+        startBatchPrObserver({
+            observeBatchPrs: () => metrics.timedPass('batch_pr_observe', () => orgs.observeBatchPrs()),
+        })
+    );
 
     await app.listen({ port: config.port, host: config.host });
 }
