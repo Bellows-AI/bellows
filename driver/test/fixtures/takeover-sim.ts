@@ -145,6 +145,8 @@ export class Sim {
     expireLease = () => {
         this.row.leaseExpiresAt = Date.now() - 1000;
     };
+    /** Claims answer nothing: a replacement is absent, and the old driver's own claim poll cannot beat its heartbeat. */
+    claimsOff = false;
     release = () => writeFileSync(this.latch, 'go');
     pubRuns = () => (existsSync(`${this.latch}.runs`) ? readFileSync(`${this.latch}.runs`, 'utf8').length / 2 : 0);
     brief = () => `${this.row.status}|${this.row.interruptions.length}|${this.row.interruptions[0]?.claimSeq ?? ''}`;
@@ -176,6 +178,7 @@ export class Sim {
         const hold = (claimed: BoardJob) => (this.holds(claimed) ? ('held' as const) : ('lost' as const));
         return {
             claim: async () => {
+                if (this.claimsOff) return null;
                 if (r.status === 'queued') return this.take();
                 if (r.status !== 'running' || r.leaseExpiresAt > Date.now()) return null;
                 if (r.staged && r.staged.lease === r.leaseToken) {
@@ -388,7 +391,7 @@ export class Sim {
                 if (earlier.exit === null) await earlier.done;
                 const report = finalReportOf(earlier.logs.join('\n'));
                 // An unlaunched or lost report finalized nothing: an infrastructure loss, given back to be redone.
-                if (!reportFinalized(report)) return null;
+                if (!report || !reportFinalized(report)) return null;
                 return {
                     outcome: ok({ exitCode: report.agentExit ?? 1, output: 'adopted' }),
                     claimSeq: earlier.claimSeq,

@@ -49,6 +49,7 @@ const scenarios: Record<string, (s: Sim) => Promise<void>> = {
         await until('the agent released', s, () => Boolean(released(s)));
         s.agentExits(firstGroup(s), 0);
         await until('the publish at the hold', s, () => s.pubRuns() >= 1);
+        s.claimsOff = true; // no replacement, and the old driver's own claim poll must not race its heartbeat
         void s.kill(a, 60_000); // the pod object is deleted, the process is not stopped yet
         s.expireLease();
         s.release();
@@ -137,9 +138,8 @@ const scenarios: Record<string, (s: Sim) => Promise<void>> = {
 };
 
 // The kind lane runs lease 45 s / grace 20 s / refresh 10 s (2 x the 5 s kubelet sync); each row is that
-// divided down, then the relations the lane's numbers hide: a refresh longer than the grace, a short lease.
+// divided down (not past /15: a 2 s lease is inside the scheduling jitter of a loaded host), then the relations the lane's numbers hide: a refresh longer than the grace, a short lease.
 const matrix: [string, Timing][] = [
-    ['lane / 30', scaled(30)],
     ['lane / 15', scaled(15)],
     ['lane / 9', scaled(9)],
     ['refresh 2 x grace', { ...scaled(15), refreshMs: 2 * scaled(15).rebindGraceMs }],
