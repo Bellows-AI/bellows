@@ -15,8 +15,10 @@ import { readRepoFile } from './fixtures/repo-files.js';
  * script and rewrites that prefix: the product carries no override that exists only for tests.
  */
 const CLI_STATUS = 6;
-const EXIT_WITHIN_MS = 8_000;
-const CASE_TIMEOUT_MS = 30_000;
+// The guard ends a TERM-swallowing helper in about 3 s; the unguarded entrypoint never exits, so the
+// margin is for a saturated host, not for the guard.
+const EXIT_WITHIN_MS = 20_000;
+const CASE_TIMEOUT_MS = 45_000;
 const EXECUTABLE_MODE = 0o755;
 
 /** A node helper that idles until killed, and answers the one-shot flags the entrypoints call it with. */
