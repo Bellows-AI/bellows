@@ -1,7 +1,6 @@
 {{/*
 Names are the release name plus a fixed suffix, so the factory release's values can name them
-without sharing values with this chart: `<release>-postgres` is the database service and
-`<release>-workspaces` the claim.
+without sharing values with this chart: `<release>-postgres` is the database service.
 */}}
 {{- define "state.labels" -}}
 app.kubernetes.io/name: factory-local-state

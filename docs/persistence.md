@@ -58,6 +58,6 @@ the in-memory stores in `server/test/helpers*.ts`.
 - A data directory initialised by `timescale/timescaledb` cannot start under `postgres:17`; `docker compose down -v`
   discards it. On a local cluster: `make reset`, or `helm uninstall factory-state` then
   `kubectl delete pvc -l app.kubernetes.io/instance=factory-state,app.kubernetes.io/component=postgres` in that order
-  (the component label keeps the delete off the `factory-state-workspaces` checkouts claim).
+  (the component label scopes the delete to the database's claim).
 - **Stated limit:** the SQL, the views and the migration runner have no coverage in `npm test`; they
   are covered by `npm run test:db`, which refuses any database not named `*_test`.

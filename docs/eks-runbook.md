@@ -2,8 +2,8 @@
 
 The cloud twin of [the chart README's kind commands](../charts/factory/README.md#commands); no lane validates this
 chart against a cloud cluster. **Last walked 2026-10-01** (a production EKS cluster,
-eu-central-1, v1.34, chart `v0.0.0`, offline entry): steps 2, 3, 4 and 7's
-ingress half held; 1, 6 and 7's job half were not walked.
+eu-central-1, v1.34, chart `v0.0.0`, offline entry): steps 3, 4 and 7's
+ingress half held; 1, 2 (the EBS task volume class), 6 and 7's job half were not walked.
 
 ## 1. Cluster prerequisites
 
@@ -17,23 +17,25 @@ Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 - A tainted **runner node group**, so agent-written code never shares a node with the dashboard pod
   holding the App key.
 
-## 2. Storage: EFS under uid 1000
+## 2. Storage: an EBS class for the task volumes
 
-Prerequisites and the measured access point: [docs/kubernetes.md](kubernetes.md#the-workspaces-volume). Install
-the EFS CSI driver, create the file system with a mount target in each node availability zone, then this
-StorageClass, then set `workspaces.storageClass`:
+Prerequisites: [docs/kubernetes.md](kubernetes.md#the-task-volume). Install the EBS CSI driver add-on, create this
+StorageClass, then set `taskVolume.storageClass: ebs-gp3`:
 
 ```yaml
-provisioner: efs.csi.aws.com
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+    name: ebs-gp3
+provisioner: ebs.csi.aws.com
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
 parameters:
-    provisioningMode: efs-ap
-    fileSystemId: fs-…
-    directoryPerms: "0775"
-    uid: "1000"
-    gid: "1000"
+    type: gp3
 ```
 
-Observe: the claim binds (~16s when measured) and sign-in provisioning creates the member tree without `EACCES`.
+Observe: a task's claim binds once its first pod is scheduled. An install that predates this chart keeps its
+`<release>-workspaces` claim; delete it and its EFS file system by hand.
 
 ## 3. Images: one registry prefix
 
@@ -120,10 +122,10 @@ would be the credential instead.
 
 ## 8. Teardown
 
-Runner Jobs first — a runner pod still mounting the workspaces claim holds its delete under
-pvc-protection — then `helm uninstall`, the claim, the EFS file system and access points, the ACM
-certificate and the DNS record.
+Runner Jobs first, then `helm uninstall`, then the release's task claims — they have no owner, and the reaper
+stops with the driver: `kubectl -n <ns> delete pvc -l app.kubernetes.io/instance=<release>,factory.task-root`
+(the class's `reclaimPolicy: Delete` takes the EBS volumes with them) — then the ACM certificate and the DNS record.
 
-**Stated limit:** this catches nothing about EFS permissions, add-on enforcement or policy
+**Stated limit:** this catches nothing about EBS volume attachment, add-on enforcement or policy
 behaviour on any cluster but the one walked, and `scripts/test-k8s.sh`'s render lane only keeps the
 value shape from drifting. Gaps: [docs/executor-testing.md](executor-testing.md), "What no lane covers".

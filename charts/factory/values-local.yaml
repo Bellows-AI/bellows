@@ -25,16 +25,12 @@ dashboard:
         repository: factory-ai
         tag: latest
 
-# The database and the checkouts live in the `factory-state` release (charts/factory-local-state),
-# not this one, so uninstalling this release keeps both. These two values are that release's
-# object names: `<release>-postgres` and `<release>-workspaces`.
+# The database lives in the `factory-state` release (charts/factory-local-state), not this one, so
+# uninstalling this release keeps it. This value is that release's object name: `<release>-postgres`.
 database:
     url: postgres://factory:factory@factory-state-postgres:5432/factory_dev
     # The database pod already pulled this image onto the one node, so the wait costs no pull.
     waitImage: postgres:17
-
-workspaces:
-    existingClaim: factory-state-workspaces
 
 # The local-path provisioner of a single-node cluster serves ReadWriteOnce, not ReadWriteOncePod.
 taskVolume:

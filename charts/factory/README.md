@@ -1,6 +1,6 @@
 # The `factory` chart
 
-The Factory stack on Kubernetes: dashboard, driver, OTLP collector, and the workspaces claim. Every value is
+The Factory stack on Kubernetes: dashboard, driver, and OTLP collector. Every value is
 commented in `values.yaml`; the executor, EKS prerequisites and isolation residuals are in
 [docs/kubernetes.md](../../docs/kubernetes.md).
 
@@ -12,7 +12,7 @@ commented in `values.yaml`; the executor, EKS prerequisites and isolation residu
 | Runner RBAC and the admission fence | `templates/driver-rbac.yaml`, `templates/driver-admission.yaml` | `driver/test/k8s-admission.test.ts`, `scripts/test-k8s.sh` |
 | Runner egress | `templates/runner-networkpolicy.yaml` | `scripts/test-k8s.sh` |
 | Runner `LimitRange` defaults | `templates/limitrange.yaml` | `scripts/test-k8s.sh` |
-| Workspaces claim, PDBs, Service, Ingress, Secrets | `templates/pvc.yaml`, `templates/pdb.yaml`, `templates/service.yaml`, `templates/ingress.yaml`, `templates/secret.yaml` | `scripts/test-k8s.sh` |
+| PDBs, Service, Ingress, Secrets | `templates/pdb.yaml`, `templates/service.yaml`, `templates/ingress.yaml`, `templates/secret.yaml` | `scripts/test-k8s.sh` |
 | Local-cluster values from `.env` | `scripts/k8s-local-values.mjs`, `values-local.yaml` | `scripts/test-k8s.sh` |
 
 ## Invariants
@@ -30,13 +30,12 @@ commented in `values.yaml`; the executor, EKS prerequisites and isolation residu
 - `driver.runnerDoNotDisrupt` (default off) pins a runner's node up to `driver.jobTimeoutMs`; it does not survive
   spot interruption or `kubectl drain`.
 
-## The workspaces volume
+## The task volume
 
-`workspaces.storageClass` must serve `ReadWriteMany` with a root writable by uid 1000 — neither EKS default does.
-On EKS: the EFS CSI driver with running controller pods (a `CSIDriver` object can outlive its install), a mount
-target in every availability zone the nodes run in, and a class with `provisioningMode: efs-ap` and explicit
-`uid`/`gid` — otherwise the identity comes from the driver's allocation range. Recipe:
-[docs/kubernetes.md](../../docs/kubernetes.md#the-workspaces-volume). The chart has **never been installed on EKS**.
+`taskVolume.storageClass` names the class each thread's volume is created with; empty is the cluster default.
+On EKS: the EBS CSI driver add-on and a class with `provisioner: ebs.csi.aws.com` and
+`volumeBindingMode: WaitForFirstConsumer`. Recipe: [docs/kubernetes.md](../../docs/kubernetes.md#the-task-volume).
+The chart has **never been installed on EKS**.
 
 ## Commands
 
@@ -50,5 +49,5 @@ npm run test:k8s               # helm lint/template offline; --cluster installs 
 git tag v1.2.3 && git push origin v1.2.3   # publishes all images (docs/ci.md)
 ```
 
-The cloud walkthrough — EKS, EFS, a registry prefix, an ALB, a managed database — is
+The cloud walkthrough — EKS, EBS, a registry prefix, an ALB, a managed database — is
 [docs/eks-runbook.md](../../docs/eks-runbook.md).

@@ -1,5 +1,5 @@
-# The Factory stack on Kubernetes: the dashboard (API + SPA on one port), the workspaces volume the
-# checkouts live on, and the driver running its runners as Jobs in this namespace. The database is
+# The Factory stack on Kubernetes: the dashboard (API + SPA on one port) and the driver running
+# its runners as Jobs in this namespace, each thread on its own task volume. The database is
 # external (`database.url`).
 #
 # Every knob is an environment variable on the container it belongs to — configuration in this
@@ -116,27 +116,11 @@ database:
     # retries with backoff, rather than a pod parked in Init forever with nothing in its events.
     waitTimeoutSeconds: 300
 
-# The checkouts. Default ReadWriteMany because the dashboard pod and every runner pod share one
-# claim across nodes. Locally the claim is not this chart's at all: values-local.yaml points
-# existingClaim at the factory-local-state release, whose own claim is ReadWriteOnce because a
-# single-node provisioner cannot serve ReadWriteMany.
-#
-# storageClass empty means the cluster's default class, which must serve BOTH ReadWriteMany and a
-# volume root writable by uid 1000. EKS's default (single-AZ ReadWriteOnce EBS) is documented to
-# serve neither, and each failure is quiet: a PVC that never binds, or a member tree that is never
-# provisioned. The EFS prerequisites are in docs/kubernetes.md, "The workspaces volume" — stated
-# from AWS's documentation, never observed from here (docs/limits.md).
-workspaces:
-    storageSize: 20Gi
-    accessModes:
-        - ReadWriteMany
-    storageClass: ''
-    existingClaim: ''
-
 # The volume each root thread gets for its checkout, transcripts and caches (issue #775): one
 # claim per thread, created by the driver and mounted at /task. Not ReadWriteMany: only that
 # thread's pods mount it. ReadWriteOncePod keeps a second pod off it; a provisioner without it
-# (kind's local-path) takes ReadWriteOnce. storageClass empty is the cluster default.
+# (kind's local-path) takes ReadWriteOnce. storageClass empty is the cluster default; on EKS name an
+# EBS class (docs/kubernetes.md, "The task volume").
 taskVolume:
     storageClass: ''
     accessMode: ReadWriteOncePod
@@ -339,7 +323,7 @@ runner:
     # runner, gate, sync, reclaim, publish, helper, service — as JSON (RUNNER_NODE_SELECTOR /
     # RUNNER_TOLERATIONS / RUNNER_AFFINITY). The standard cloud shape is a tainted, IMDS-hardened
     # runner node group that nothing else schedules onto, so the App key's node never runs agent
-    # code; on EKS it is also what keeps an RWO workspaces claim on one node's AZ. Forwarded
+    # code; on EKS it is also what keeps a zonal EBS task volume within the node group's AZs. Forwarded
     # verbatim — the API server validates the shapes, and admission never constrains these fields,
     # only `nodeName`.
     #   nodeSelector: { dedicated: factory-runners }
