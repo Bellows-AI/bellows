@@ -3551,7 +3551,7 @@ if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; t
         drain_pid=''
         [ -f "$work/drain.end" ] && ok "d2: $WB is drained" || bad "d2: $WB is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
         tk_touch "$TK_D/$n.go" || bad 'd2: the barrier is released' 'the touch failed'
-        tk_settled d2 "$d2" "$POD_LOST"
+        tk_settled d2 "$d2" "$POD_LOST before it exited"
         drain_record D2 "$WB" "$t0" "$held_at" "$tk_settled_at"
     fi
 else
