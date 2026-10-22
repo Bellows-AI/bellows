@@ -9,7 +9,7 @@ import {
     type K8sRequest,
 } from './k8s-transport.js';
 import { claimPath, secretsPath } from './k8s-auxspec.js';
-import { observedOf, readClaimObject, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { readObserved, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
 import { abortableSleep } from './poll.js';
 import { asIdentified } from './k8s-pod-shapes.js';
@@ -200,7 +200,7 @@ const scan = async (deps: K8sDeps): Promise<OrphanGroup[] | null> => {
 
 /** How one named delete landed: removed it this call, it was already going (404/409), or it
  * failed — a transport rejection or an unexpected status is the next round's problem. */
-type DeleteResult = 'removed' | 'gone' | 'failed';
+type DeleteResult = 'removed' | 'gone' | 'replaced' | 'failed';
 
 const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Promise<DeleteResult> => {
     try {
@@ -209,7 +209,7 @@ const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Pro
             : request('DELETE', path));
         // A 409 under a uid precondition is another incarnation under the name, not the listed
         // one going away: no removal, and nothing that lets the round go on to the claim.
-        if (uid && response.status === HTTP_CONFLICT) return 'failed';
+        if (uid && response.status === HTTP_CONFLICT) return 'replaced';
         if (response.status >= HTTP_ERROR_STATUS) return GONE_STATUSES.includes(response.status) ? 'gone' : 'failed';
         return 'removed';
     } catch {
@@ -258,8 +258,12 @@ const reap = async (
     const { config, request } = deps;
     const paths = basePathOf(config);
     const removed: string[] = [];
-    if (uuidScoped(group) && !(await reapDerivedSecrets(config, request, group, removed))) return removed;
-    let failed = false;
+    if (uuidScoped(group) && !(await reapDerivedSecrets(config, request, group, removed))) {
+        return { removed, inconclusive: 'an attempt Secret delete failed' };
+    }
+    // `held` stops the round before the claim (a failed or replaced delete); `unconfirmed` is only the failed.
+    let held = false;
+    let unconfirmed: string | null = null;
     for (const object of group.objects) {
         const result = await deleteNamed(
             request,
@@ -267,7 +271,8 @@ const reap = async (
             object.uid
         );
         if (result === 'removed') removed.push(`${object.kind} ${object.name}`);
-        if (result === 'failed') failed = true;
+        if (result === 'failed') unconfirmed ??= `deleting ${object.kind} ${object.name} failed`;
+        if (result === 'failed' || result === 'replaced') held = true;
     }
     // The checkout claim is JOB-scoped — the one name a replacement attempt can hold — so only a
     // provably dead job's claim may be removed, and only once nothing of this round failed: a
@@ -277,7 +282,8 @@ const reap = async (
     // delete — anything short of that is deferred to a later round, never deleted on a maybe.
     // Answered in the log like the fleet's objects, so "is the reaper running?" stays answerable
     // from a round that only cleaned Secrets.
-    if (!uuidScoped(group) || verdict !== 'gone' || failed) return removed;
+    if (unconfirmed !== null) return { removed, inconclusive: unconfirmed };
+    if (!uuidScoped(group) || verdict !== 'gone' || held) return removed;
     return releaseDeadClaim(deps, group, removed);
 };
 
@@ -289,11 +295,14 @@ const releaseDeadClaim = async (
 ): Promise<readonly string[] | ReapInconclusive> => {
     const { config } = deps;
     const job = attemptPair(group.jobId, group.leaseToken);
-    const claimRead = await readClaimObject(deps, job, true);
-    // A refused read proves nothing about the claim; a confirmed absence is a claim already gone.
-    if (claimRead.kind === 'inconclusive') return { removed, inconclusive: `reading the claim: ${claimRead.reason}` };
-    const observed = observedOf(claimRead);
-    if (observed === null || !JOB_ID.test(observed.holder)) return removed;
+    let inconclusive: string | null = null;
+    const onUnproven = (reason: string) => {
+        inconclusive ??= reason;
+    };
+    // A refused read, or a claim answered without its identity, proves nothing; a confirmed absence is gone.
+    const observed = await readObserved(deps, job, onUnproven);
+    if (observed === null) return inconclusive === null ? removed : { removed, inconclusive };
+    if (!JOB_ID.test(observed.holder)) return removed;
     // Only the condemned attempt's own claim — held by its lease, or by the reclaim whose derived
     // token it is: a holder that is neither is a replacement's (the task reopened since the board
     // answered), and nothing of it is touched.
@@ -301,10 +310,6 @@ const releaseDeadClaim = async (
     if (observed.holder !== group.leaseToken && !servesHolder) return removed;
     const groups = await holderGroupsOf(deps, job, observed.holder);
     if (groups === null) return { removed, inconclusive: 'listing the holder groups proved nothing' };
-    let inconclusive: string | null = null;
-    const onUnproven = (reason: string) => {
-        inconclusive ??= reason;
-    };
     if (await releaseClaimAfterGroupEnd(deps, job, { groups, observed, onUnproven })) {
         removed.push(`claim ${claimPath(config.k8sNamespace, job).split('/').pop()}`);
     }
@@ -388,13 +393,16 @@ const scanVolumes = async (deps: K8sDeps): Promise<VolumeListing | null> => {
 };
 
 /** Deletes every listed generation, each under the uid it was listed with; one that fails is the next round's. */
-const reapVolumes = async (deps: K8sDeps, thread: VolumeThread): Promise<readonly string[]> => {
+const reapVolumes = async (deps: K8sDeps, thread: VolumeThread): Promise<readonly string[] | ReapInconclusive> => {
     const removed: string[] = [];
+    let unconfirmed: string | null = null;
     for (const volume of thread.volumes) {
         const path = `${taskVolumesPath(deps.config.k8sNamespace)}/${volume.name}`;
-        if ((await deleteNamed(deps.request, path, volume.uid)) === 'removed') removed.push(`volume ${volume.name}`);
+        const result = await deleteNamed(deps.request, path, volume.uid);
+        if (result === 'removed') removed.push(`volume ${volume.name}`);
+        if (result === 'failed') unconfirmed ??= `deleting volume ${volume.name} failed`;
     }
-    return removed;
+    return unconfirmed === null ? removed : { removed, inconclusive: unconfirmed };
 };
 
 /**

@@ -33,6 +33,7 @@ import {
     endRunnerJob,
     type GroupRef,
     holderUnconfirmed,
+    deleteClaim,
     holderQuiet,
     type IncarnationUids,
     retryUnconfirmed,
@@ -44,7 +45,6 @@ import {
     HTTP_CONFLICT,
     HTTP_ERROR_STATUS,
     HTTP_NOT_FOUND,
-    is2xx,
     isRecord,
     JOB_ID,
     readAnswer,
@@ -286,28 +286,20 @@ export async function releaseClaimAfterGroupEnd(
     if (!(await groupsEnded(deps, groups))) return false;
     const claim = await claimNow();
     if (claim?.holder !== holder || (ends.observed && claim.uid !== ends.observed.uid)) return false;
-    try {
-        const deleted = await deps.request('DELETE', claimPath(deps.config.k8sNamespace, job), {
-            apiVersion: 'v1',
-            kind: 'DeleteOptions',
-            preconditions: { uid: claim.uid },
-        });
-        return is2xx(deleted.status);
-    } catch {
-        // A leaked claim costs one takeover by the next claimant, nothing worse.
-        return false;
-    }
+    return deleteClaim(deps, job, claim.uid, unproven);
 }
 
 /** One claim read as its incarnation, telling `unproven` when the read proved nothing (a gone claim is proven). */
-async function readObserved(
+export async function readObserved(
     deps: K8sDeps,
     job: BoardJob,
     unproven: (reason: string) => void
 ): Promise<ObservedClaim | null> {
     const read = await readClaimObject(deps, job, true);
     if (read.kind === 'inconclusive') unproven(read.reason);
-    return observedOf(read);
+    const observed = observedOf(read);
+    if (read.kind === 'value' && observed === null) unproven('the claim answered without its uid or holder');
+    return observed;
 }
 
 /** The lease a taken-over attempt's group lives under (#829): `job` as the loop has it, or as `ownGroup` addresses it. */

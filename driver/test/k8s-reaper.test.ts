@@ -326,7 +326,10 @@ describe('the kubernetes reaper arm: reap', () => {
         const secret = `${secretsPath(NAMESPACE)}/${secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`;
         const { request, calls } = router([['DELETE', secret, { status: 500, body: '' }]]);
 
-        expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone')).toEqual([]);
+        expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone')).toEqual({
+            removed: [],
+            inconclusive: expect.stringContaining('Secret'),
+        });
         expect(deleteCalls(calls)).toEqual([secret]);
     });
 
@@ -350,7 +353,10 @@ describe('the kubernetes reaper arm: reap', () => {
             if (method === 'DELETE') throw new Error('connection reset');
             return { status: 200, body: JSON.stringify({ items: [] }) };
         };
-        expect(await createKubernetesReaper({ config, request: failing }).reap(group(), 'gone')).toEqual([]);
+        expect(await createKubernetesReaper({ config, request: failing }).reap(group(), 'gone')).toMatchObject({
+            removed: [],
+            inconclusive: expect.any(String),
+        });
     });
 });
 
@@ -1017,6 +1023,134 @@ describe('a sweep whose cleanup reads prove nothing (issue #831)', () => {
         const { request, calls } = refusing(refuse, nth);
         expect(await sweepOutcome(request)).toEqual(['aborted']);
         expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPath)).toBe(false);
+    });
+
+    /** The healthy router, except that `fault` may answer (or throw) in place of any call. */
+    const faulting = (fault: (method: K8sMethod, path: string, nth: number) => K8sResponse | Error | undefined) => {
+        const base = router(answers);
+        const seen = new Map<string, number>();
+        const request: K8sRequest = async (method, path, body, options) => {
+            const key = `${method} ${path}`;
+            const nth = (seen.get(key) ?? 0) + 1;
+            seen.set(key, nth);
+            const injected = fault(method, path, nth);
+            if (injected instanceof Error) throw injected;
+            return injected ?? base.request(method, path, body, options);
+        };
+        return { request, calls: base.calls };
+    };
+    const refused: K8sResponse = { status: 503, body: '' };
+
+    it.each([
+        [
+            'an attempt Secret delete answers 503',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.startsWith(secretsPath(NAMESPACE)) ? refused : undefined,
+        ],
+        [
+            'the runner Job delete answers 503',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? refused : undefined,
+        ],
+        [
+            'the runner Job delete throws',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? new Error('reset') : undefined,
+        ],
+        [
+            'the claim delete answers 503',
+            (m: K8sMethod, path: string) => (m === 'DELETE' && path === claimPath ? refused : undefined),
+        ],
+        [
+            'the claim delete throws',
+            (m: K8sMethod, path: string) => (m === 'DELETE' && path === claimPath ? new Error('reset') : undefined),
+        ],
+        [
+            'the claim answers 200 with no uid',
+            (m: K8sMethod, path: string) =>
+                m === 'GET' && path === claimPath
+                    ? { status: 200, body: JSON.stringify({ metadata: {}, data: { holder: LEASE } }) }
+                    : undefined,
+        ],
+        [
+            'the claim re-read answers 200 with no holder',
+            (m: K8sMethod, path: string, nth: number) =>
+                m === 'GET' && path === claimPath && nth === 2
+                    ? { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: {} }) }
+                    : undefined,
+        ],
+    ])('reports aborted, never ok, when %s', async (_name, fault) => {
+        const { request } = faulting(fault);
+        expect(await sweepOutcome(request)).toEqual(['aborted']);
+    });
+
+    it.each([
+        [
+            'the claim is already gone (404)',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path === claimPath ? { status: 404, body: '' } : undefined,
+        ],
+        [
+            'the Job was replaced under its name (409 on the uid precondition)',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? { status: 409, body: '' } : undefined,
+        ],
+        [
+            'the Secret is already gone (404)',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.startsWith(secretsPath(NAMESPACE)) ? { status: 404, body: '' } : undefined,
+        ],
+    ])('stays ok when %s: confirmed absence or replacement is success', async (_name, fault) => {
+        const { request } = faulting(fault);
+        expect(await sweepOutcome(request)).toEqual(['ok']);
+    });
+
+    describe('task volumes', () => {
+        const ROOT = '11111111-1111-4111-8111-111111111111';
+        const volume = `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-1`;
+        const LIST_VOLUMES = `${taskVolumesPath(NAMESPACE)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`;
+        const item = {
+            metadata: {
+                name: `factory-task-${ROOT}-1`,
+                uid: 'uid-v1',
+                creationTimestamp: '2026-01-01T00:00:00Z',
+                labels: { [TASK_ROOT_LABEL]: ROOT, [TASK_BOARD_LABEL]: boardIdentity(config) },
+            },
+        };
+        const volumeSweep = async (deleteAnswer: K8sResponse | Error) => {
+            const base = router([
+                ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [] }) }],
+                ['GET', LIST_VOLUMES, { status: 200, body: JSON.stringify({ items: [item] }) }],
+            ]);
+            const request: K8sRequest = async (method, path, body, options) => {
+                if (method === 'DELETE' && path === volume) {
+                    if (deleteAnswer instanceof Error) throw deleteAnswer;
+                    return deleteAnswer;
+                }
+                return base.request(method, path, body, options);
+            };
+            const outcomes: string[] = [];
+            await createReaper({
+                board: { leases: async () => [] },
+                arm: createKubernetesReaper({ config, request }),
+                intervalMs: 0,
+                graceMs: 0,
+                log: () => {},
+                volumePolicy: { ttlMs: 1, boundMs: 1 },
+                observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+            }).sweep();
+            return outcomes;
+        };
+
+        it('reports aborted when the volume claim delete answers 503, or throws', async () => {
+            expect(await volumeSweep({ status: 503, body: '' })).toEqual(['aborted']);
+            expect(await volumeSweep(new Error('reset'))).toEqual(['aborted']);
+        });
+
+        it('stays ok when the volume claim delete succeeds or finds it gone', async () => {
+            expect(await volumeSweep({ status: 200, body: '' })).toEqual(['ok']);
+            expect(await volumeSweep({ status: 404, body: '' })).toEqual(['ok']);
+        });
     });
 
     it('hands the arm result back as a structured inconclusive, with what it removed', async () => {

@@ -85,7 +85,7 @@ export interface ReaperArm {
      */
     scanVolumes?(): Promise<VolumeListing | null>;
     /** Deletes every generation of one thread, answering a line per volume actually removed. */
-    reapVolumes?(thread: VolumeThread): Promise<readonly string[]>;
+    reapVolumes?(thread: VolumeThread): Promise<readonly string[] | ReapInconclusive>;
 }
 
 /** A reap that could not confirm its cleanup: what it did remove, and the read that proved nothing. */
@@ -106,6 +106,8 @@ export interface VolumeThread {
 export interface VolumeListing {
     threads: VolumeThread[];
     skipped: readonly string[];
+    /** Why a volume's facts proved nothing (a refused inspect): the thread is kept, and the sweep is aborted. */
+    inconclusive?: readonly string[];
 }
 
 /** How long a task volume outlives its thread's last finalize: `ttlMs` when it is whole, `boundMs` when it is not. */
@@ -211,6 +213,30 @@ const lookupAll = async (
     return leases;
 };
 
+/** What a reap removed; an inconclusive one is logged and told to `onUnproven`, so the sweep is never ok. */
+function settleReap(
+    result: readonly string[] | ReapInconclusive,
+    what: string,
+    ctx: { log: (message: string) => void; onUnproven: () => void }
+): readonly string[] {
+    if (Array.isArray(result)) return result;
+    const { removed, inconclusive } = result as ReapInconclusive;
+    ctx.onUnproven();
+    ctx.log(`reaper: ${what} — cleanup unconfirmed: ${inconclusive}`);
+    return removed;
+}
+
+/** The listed task volume threads that name a board job, the rest logged and skipped. */
+const threadsOfVolumes = (listed: VolumeListing, log: (message: string) => void): VolumeThread[] => {
+    for (const line of listed.skipped) log(`reaper: skipping ${line}`);
+    const threads: VolumeThread[] = [];
+    for (const thread of listed.threads) {
+        if (UUID_SHAPE.test(thread.root)) threads.push(thread);
+        else log(`reaper: skipping task volumes whose root label is not a uuid: ${thread.root}`);
+    }
+    return threads;
+};
+
 /** Decides one group and reaps it, logging a line per object actually removed. */
 const reapOne = async (
     arm: ReaperArm,
@@ -227,13 +253,9 @@ const reapOne = async (
     if (verdict === null) return;
     // A live job's next claim adopts it (issue #792), or its fence sweeps it: never deleted from a scan.
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
-    const result = await arm.reap(group, verdict);
-    if (!Array.isArray(result)) {
-        ctx.onUnproven();
-        ctx.log(`reaper: job ${group.jobId} — cleanup unconfirmed: ${(result as ReapInconclusive).inconclusive}`);
-    }
-    for (const removed of Array.isArray(result) ? result : (result as ReapInconclusive).removed) {
-        ctx.log(`reaper: job ${group.jobId} lease ${group.leaseToken ?? 'none'} (${verdict}) — removed ${removed}`);
+    const removed = settleReap(await arm.reap(group, verdict), `job ${group.jobId}`, ctx);
+    for (const line of removed) {
+        ctx.log(`reaper: job ${group.jobId} lease ${group.leaseToken ?? 'none'} (${verdict}) — removed ${line}`);
     }
 };
 
@@ -265,6 +287,9 @@ export function createReaper(deps: {
     // reaped less than it could, and the series says so rather than reporting ok.
     let unproven = false;
     let timer: ReturnType<typeof setInterval> | null = null;
+    const onUnproven = () => {
+        unproven = true;
+    };
 
     /** The orphan groups: scan → ask the board in batches → decide → reap. */
     const sweepGroups = async (): Promise<void> => {
@@ -300,46 +325,46 @@ export function createReaper(deps: {
                 graceMs: deps.graceMs,
                 nowMs: now(),
                 log,
-                onUnproven: () => {
-                    unproven = true;
-                },
+                onUnproven,
             });
         }
     };
 
-    /** The listed task volume threads that name a board job, the rest logged and skipped. */
-    const threadsOfVolumes = (listed: VolumeListing): VolumeThread[] => {
-        for (const line of listed.skipped) log(`reaper: skipping ${line}`);
-        const threads: VolumeThread[] = [];
-        for (const thread of listed.threads) {
-            if (UUID_SHAPE.test(thread.root)) threads.push(thread);
-            else log(`reaper: skipping task volumes whose root label is not a uuid: ${thread.root}`);
+    /** The task volume threads and the board's answer for their roots, or null when either proved nothing. */
+    const proveVolumes = async (
+        arm: ReaperArm
+    ): Promise<{ threads: VolumeThread[]; leases: Map<string, BoardLease> } | null> => {
+        const listed = await arm.scanVolumes!();
+        if (listed === null) {
+            onUnproven();
+            log('reaper: the task volumes could not be listed — deleting none this round');
+            return null;
         }
-        return threads;
+        const threads = threadsOfVolumes(listed, log);
+        for (const line of listed.inconclusive ?? []) {
+            onUnproven();
+            log(`reaper: ${line}`);
+        }
+        deps.observe?.scanned('volume_threads', threads.length);
+        const roots = [...new Set(threads.map((thread) => thread.root))];
+        const leases = await lookupAll(deps.board, roots, log, { withThreads: true });
+        if (leases === null) {
+            onUnproven();
+            return null;
+        }
+        return { threads, leases };
     };
 
     /** The task volumes: list → ask the board about each root → decide → delete every generation of the deletable. */
     const sweepVolumes = async (): Promise<void> => {
         const { arm, volumePolicy } = deps;
         if (volumePolicy === undefined || !arm.scanVolumes || !arm.reapVolumes) return;
-        const listed = await arm.scanVolumes();
-        if (listed === null) {
-            unproven = true;
-            log('reaper: the task volumes could not be listed — deleting none this round');
-            return;
-        }
-        const threads = threadsOfVolumes(listed);
-        deps.observe?.scanned('volume_threads', threads.length);
-        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log, {
-            withThreads: true,
-        });
-        if (leases === null) {
-            unproven = true;
-            return;
-        }
-        for (const thread of threads) {
-            if (!(await deletable(thread, leases, volumePolicy))) continue;
-            for (const removed of await arm.reapVolumes(thread))
+        const proven = await proveVolumes(arm);
+        if (proven === null) return;
+        for (const thread of proven.threads) {
+            if (!(await deletable(thread, proven.leases, volumePolicy))) continue;
+            const ctx = { log, onUnproven };
+            for (const removed of settleReap(await arm.reapVolumes(thread), `thread ${thread.root}`, ctx))
                 log(`reaper: thread ${thread.root} — removed ${removed}`);
         }
     };

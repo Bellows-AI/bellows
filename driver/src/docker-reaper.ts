@@ -3,7 +3,7 @@ import { containerName } from './docker.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { alreadyGone, CONTAINER_ID, DOCKER_NAME, type ExecDocker, readDocker } from './docker-runner-support.js';
 import { Inconclusive } from './runner.js';
-import type { OrphanGroup, OrphanObject, ReaperArm, VolumeListing, VolumeThread } from './reaper.js';
+import type { OrphanGroup, OrphanObject, ReapInconclusive, ReaperArm, VolumeListing, VolumeThread } from './reaper.js';
 import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, generationOfName } from './task-volume.js';
 import { parseDockerTimestamp, parseRfc3339 } from './timestamps.js';
 
@@ -304,26 +304,36 @@ const scanTaskVolumes = async (execDocker: ExecDocker, board: string): Promise<V
         { parse: (stdout) => taskVolumeRows(stdout, board) }
     );
     if (read.kind !== 'value') return null;
+    const inconclusive: string[] = [];
     for (const thread of read.value.threads) {
         for (const volume of thread.volumes) {
-            volume.createdAtMs = await volumeCreatedAt(execDocker, volume.name).catch(() => null);
+            // Gone since the list is a null time (nothing to keep); a refused or unreadable inspect is not.
+            volume.createdAtMs = await volumeCreatedAt(execDocker, volume.name).catch((e: unknown) => {
+                inconclusive.push(`inspecting volume ${volume.name} proved nothing: ${(e as Error).message}`);
+                return null;
+            });
         }
     }
-    return read.value;
+    return inconclusive.length === 0 ? read.value : { ...read.value, inconclusive };
 };
 
 /** Removes every generation, without force: a volume a container still mounts is refused, and the next round's. */
-const reapTaskVolumes = async (execDocker: ExecDocker, thread: VolumeThread): Promise<readonly string[]> => {
+const reapTaskVolumes = async (
+    execDocker: ExecDocker,
+    thread: VolumeThread
+): Promise<readonly string[] | ReapInconclusive> => {
     const removed: string[] = [];
+    let unconfirmed: string | null = null;
     for (const volume of thread.volumes) {
         try {
             await execDocker(['volume', 'rm', volume.name]);
             removed.push(`volume ${volume.name}`);
-        } catch {
-            // In use, or already gone: either way the next round looks again.
+        } catch (e) {
+            // Already gone is success; in use, or a daemon that failed, is the next round's — and not ok.
+            if (!alreadyGone(e)) unconfirmed ??= `removing volume ${volume.name} failed: ${(e as Error).message}`;
         }
     }
-    return removed;
+    return unconfirmed === null ? removed : { removed, inconclusive: unconfirmed };
 };
 
 /** The docker arm of the orphan reaper: every group piece it finds by label, reaped on the lease lookup. */

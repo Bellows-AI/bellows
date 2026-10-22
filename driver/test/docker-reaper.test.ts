@@ -723,7 +723,11 @@ describe('the docker reaper arm: task volumes (issue #775)', () => {
             root: ROOT,
             volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }],
         });
-        expect(removed).toEqual([`volume factory-task-${ROOT}-2`]);
+        // The one it removed is reported, and so is the one it could not: the sweep is not ok.
+        expect(removed).toMatchObject({
+            removed: [`volume factory-task-${ROOT}-2`],
+            inconclusive: expect.stringContaining('in use'),
+        });
     });
 
     describe('swept with the board', () => {
@@ -800,5 +804,61 @@ describe('a sweep over the real docker arm (issue #831)', () => {
         await reaper.sweep();
         expect(outcomes).toEqual(['aborted']);
         expect(calls.filter((args) => args[0] === 'rm' || args[1] === 'rm')).toEqual([]);
+    });
+
+    describe('task volumes', () => {
+        const ROOT = '11111111-1111-4111-8111-111111111111';
+        const LS = ['volume', 'ls', '--filter', 'label=factory.task-root', '--format', '{{json .}}'];
+        const listing = JSON.stringify({
+            Name: `factory-task-${ROOT}-1`,
+            Labels: `factory.task-root=${ROOT},factory.task-generation=1,factory.task-board=${BOARD}`,
+        });
+        const volumeSweep = async (opts: { inspect?: Error; rm?: Error }) => {
+            const execDocker: ExecDocker = async (args) => {
+                if (args.join(' ') === LS.join(' ')) return { stdout: listing };
+                if (args[0] === 'volume' && args[1] === 'inspect') {
+                    if (opts.inspect) throw opts.inspect;
+                    return { stdout: '2026-01-01T00:00:00Z' };
+                }
+                if (args[0] === 'volume' && args[1] === 'rm' && opts.rm) throw opts.rm;
+                return { stdout: '' };
+            };
+            const outcomes: string[] = [];
+            await createReaper({
+                board: { leases: async () => [] },
+                arm: createDockerReaper(execDocker, BOARD),
+                intervalMs: 0,
+                graceMs: 0,
+                log: () => undefined,
+                volumePolicy: { ttlMs: 1, boundMs: 1 },
+                observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+            }).sweep();
+            return outcomes;
+        };
+
+        it('control: a healthy daemon is ok', async () => {
+            expect(await volumeSweep({})).toEqual(['ok']);
+        });
+
+        it('reports aborted when a volume inspect is refused: the creation time is unknown, not absent', async () => {
+            expect(await volumeSweep({ inspect: new Error('Cannot connect to the Docker daemon') })).toEqual([
+                'aborted',
+            ]);
+        });
+
+        it('stays ok when the volume was removed before its inspect', async () => {
+            expect(await volumeSweep({ inspect: new Error('Error: No such volume: x') })).toEqual(['ok']);
+        });
+
+        it.each([
+            ['the daemon fails', new Error('Cannot connect to the Docker daemon')],
+            ['the volume is in use', new Error('Error response from daemon: remove x: volume is in use')],
+        ])('reports aborted when removing a task volume fails because %s', async (_name, rm) => {
+            expect(await volumeSweep({ rm })).toEqual(['aborted']);
+        });
+
+        it('stays ok when the volume is already gone', async () => {
+            expect(await volumeSweep({ rm: new Error('Error: No such volume: x') })).toEqual(['ok']);
+        });
     });
 });
