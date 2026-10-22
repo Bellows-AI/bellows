@@ -161,6 +161,12 @@ export interface AppConfig {
     readonly webhookSecret: string | null;
     /** Where task artifacts are stored (070); see `artifacts/config.ts`. */
     readonly artifacts: ArtifactsConfig;
+    /**
+     * The shared admission budgets every claim enforces (issue #831): the most rows running at once
+     * across every org (ADMISSION_MAX_RUNNING), per org (ADMISSION_MAX_RUNNING_PER_ORG) and per repo
+     * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/job-store-admission.ts`.
+     */
+    readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -207,6 +213,20 @@ function int(raw: string | undefined, fallback: number, label: string): number {
         throw new Error(`${label} must be a positive integer, got "${raw}"`);
     }
     return value;
+}
+
+/** A positive integer, or undefined when unset. */
+function optionalInt(raw: string | undefined, label: string): number | undefined {
+    return raw === undefined || raw === '' ? undefined : int(raw, 0, label);
+}
+
+function loadAdmission(env: NodeJS.ProcessEnv): AppConfig['admission'] {
+    const budgets = {
+        global: optionalInt(env.ADMISSION_MAX_RUNNING, 'ADMISSION_MAX_RUNNING'),
+        org: optionalInt(env.ADMISSION_MAX_RUNNING_PER_ORG, 'ADMISSION_MAX_RUNNING_PER_ORG'),
+        repo: optionalInt(env.ADMISSION_MAX_RUNNING_PER_REPO, 'ADMISSION_MAX_RUNNING_PER_REPO'),
+    };
+    return Object.fromEntries(Object.entries(budgets).filter(([, value]) => value !== undefined));
 }
 
 const DEFAULT_PORT = 8080;
@@ -608,6 +628,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         auth: loadAuth(env, host, port),
         webhookSecret,
         artifacts: loadArtifactsConfig(env),
+        admission: loadAdmission(env),
     });
 }
 
