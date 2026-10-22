@@ -103,6 +103,11 @@ interface Row {
 
 export class Driver {
     dead = false;
+    /** Settles when the driver is killed: what waited on its calls (a handover) has nothing left to settle on. */
+    markKilled: () => void = () => {};
+    readonly killed = new Promise<void>((resolve) => {
+        this.markKilled = resolve;
+    });
     /** A driver pod gone from its node (a kill, a drain) keeps nothing: calls made after it never come back. */
     loop!: Loop;
     server?: ReturnType<typeof createGateServer>;
@@ -533,6 +538,7 @@ export class Sim {
         // `afterMs` > 0: the pod object is gone but its process runs on until the kubelet kills it.
         if (afterMs > 0) await nap(afterMs);
         d.dead = true;
+        d.markKilled();
         await d.server?.close().catch(() => undefined);
     }
 
