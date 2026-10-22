@@ -10,6 +10,7 @@ import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { admitInTx, repoRoom, roomForNew } from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
@@ -130,10 +131,15 @@ interface ReservedCandidate {
     repo: string | null;
     workflow_node: string | null;
     base_branch: string | null;
+    /** The deferral the reservation overwrote, restored when a budget refuses the candidate. */
+    prior_deferral: Date | null;
 }
 
 /** The answer an acquisition that lost its candidate gives: move to the next one. */
 const NEXT_CANDIDATE = Symbol('next candidate');
+
+/** The answer an acquisition a full budget refused gives: the candidate keeps its place, skipped this poll. */
+const REFUSED = Symbol('refused by a budget');
 
 /**
  * The claimability rules, rendered for the reservation and the acquisition alike.
@@ -199,14 +205,20 @@ function claimRules({ sql, orgId }: JobStoreContext) {
  * then, which lets healthy work past a poison candidate however long the driver sleeps between
  * polls (`DRIVER_POLL_MS`), and ahead of every row queued after, so one failure never demotes it
  * for good.
+ *
+ * A handed-over row (released by a draining driver, its runner group waiting for a new holder) comes
+ * first: its takeover window is bounded, and it had a budget slot until the release (issue #831).
+ * Under the admission budgets new work is offered only while the global and org budgets have room
+ * and only from a repo with room; a takeover of a running row needs no slot and is always offered.
+ * `refused` are this poll's candidates a budget already refused.
  */
-async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate | null> {
-    const { sql, orgId } = ctx;
+async function reserveCandidate(ctx: JobStoreContext, refused: readonly string[]): Promise<ReservedCandidate | null> {
+    const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
+    const room = await roomForNew(sql, admission, orgId);
     const [reserved] = await sql<ReservedCandidate[]>`
-        update job set claim_deferred_until = now() + make_interval(secs => ${CLAIM_PREPARE_SECONDS}::int)
-        where org_id = ${orgId} and id = (
-            select j.id from job j
+        with picked as (
+            select j.id, j.claim_deferred_until as prior_deferral from job j
             where j.org_id = ${orgId}
               and j.status in ('queued','running')
               -- A review is leased to its caller's claim in the request's own transaction (issue
@@ -217,14 +229,21 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
               and (j.claim_deferred_until is null or j.claim_deferred_until <= now())
               and ${sameThreadRunning(sql`j.id`, sql`j.root_job_id`)}
               and not ${stagedUnderLease(sql, 'j')}
-            order by coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
+              and j.id <> all(${refused}::uuid[])
+              and (j.status = 'running' or (${room}::boolean and ${repoRoom(sql, admission)}))
+            order by (j.status = 'queued'
+                      and coalesce((j.interruptions -> -1 ->> 'claimSeq')::bigint = j.claim_seq, false)) desc,
+                     coalesce(j.claim_deferred_until, j.created_at), j.created_at, j.id
             limit 1
             -- Below the limit in the plan, so a row another claimer is reserving is skipped
             -- rather than counted and then discarded.
             for update skip locked
         )
-        returning id, root_job_id, claim_seq, created_by, repo, workflow_node,
-                  ${baseBranch} as base_branch
+        update job set claim_deferred_until = now() + make_interval(secs => ${CLAIM_PREPARE_SECONDS}::int)
+        from picked
+        where job.org_id = ${orgId} and job.id = picked.id
+        returning job.id, job.root_job_id, job.claim_seq, job.created_by, job.repo, job.workflow_node,
+                  ${baseBranch} as base_branch, picked.prior_deferral
     `;
     return reserved ?? null;
 }
@@ -268,16 +287,29 @@ async function acquireCandidate(
     lease: { worker: string; leaseSeconds: number },
     reserved: ReservedCandidate,
     gates: ResolvedClaimGates
-): Promise<Claim | typeof NEXT_CANDIDATE> {
-    const { sql, orgId } = ctx;
+): Promise<Claim | typeof NEXT_CANDIDATE | typeof REFUSED> {
+    const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
     const rootJobId = reserved.root_job_id;
     return sql.begin(async (tx) => {
         // Gone (the thread was removed while this claim prepared): nothing to acquire.
-        const [locked] = await tx`select id from job where org_id = ${orgId} and id = ${reserved.id} for update`;
+        const [locked] = await tx<{ status: string }[]>`
+            select status from job where org_id = ${orgId} and id = ${reserved.id} for update
+        `;
         if (!locked) return NEXT_CANDIDATE;
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+        // New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds.
+        let slots = sql`admission_slot_global, admission_slot_org, admission_slot_repo`;
+        if (locked.status === 'queued') {
+            const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
+            if ('full' in admitted) {
+                await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
+                         where org_id = ${orgId} and id = ${reserved.id}`;
+                return REFUSED;
+            }
+            slots = sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int`;
+        }
 
         const rows = await tx<
             (ClaimCandidateRow & {
@@ -320,6 +352,7 @@ async function acquireCandidate(
                 -- the previous attempt's red report for the workflow engine to read.
                 gates            = null,
                 claim_deferred_until = null,
+                (admission_slot_global, admission_slot_org, admission_slot_repo) = row(${slots}),
                 lease_expires_at = clock_timestamp() + make_interval(secs => ${lease.leaseSeconds}::int)
             where org_id = ${orgId} and id = ${reserved.id}
               and claim_seq = ${reserved.claim_seq}
@@ -366,19 +399,22 @@ async function acquireCandidate(
  * `claim()`'s reserve-prepare-acquire loop, one candidate at a time. Returns the assembled claim,
  * or null when nothing is claimable. A candidate that moved between its reservation and its
  * acquisition falls through to the next round, exactly as a single statement skipped a row that was
- * not claimable; a preparation that throws ends the poll with the candidate deferred.
+ * not claimable; a preparation that throws ends the poll with the candidate deferred. A candidate a
+ * budget refused is skipped for the rest of the poll, its place in the queue kept.
  */
 async function claimNextCandidate(
     ctx: JobStoreContext,
     worker: string,
     leaseSeconds: number
 ): ReturnType<JobStore['claim']> {
+    const refused: string[] = [];
     for (;;) {
-        const reserved = await reserveCandidate(ctx);
+        const reserved = await reserveCandidate(ctx, refused);
         if (!reserved) return null;
         const gates = await prepareCandidate(ctx, reserved);
         const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates);
-        if (claim !== NEXT_CANDIDATE) return claim;
+        if (claim === REFUSED) refused.push(reserved.id);
+        else if (claim !== NEXT_CANDIDATE) return claim;
     }
 }
 

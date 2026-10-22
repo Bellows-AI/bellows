@@ -14,6 +14,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | `failure_cause` under a `gate`/`publish`/`helper` kind | `server/migrations/065_batch_recovery_evidence.sql`, `server/src/db/job-store-worker.ts`, `job-store-evidence.ts` | `server/test-db/job-store.test.ts` |
 | Claim, lease, fencing, `claim_seq`, settle long-poll | `server/src/db/job-store-claim.ts`, `job-store-claim-row.ts`, `job-store.ts` | `server/test-db/job-store.test.ts`, `job-store.thread-claim.test.ts`, `job-store.settle.test.ts` |
 | Interruption budget and lease expiry | `server/src/db/job-store-actions.ts`, `server/migrations/071_job_interruptions.sql` | `server/test-db/job-store.interrupt.test.ts` |
+| Shared admission budgets (`ADMISSION_MAX_RUNNING{,_PER_ORG,_PER_REPO}`): slots held by running rows, handed-over rows offered first | `server/src/db/job-store-admission.ts`, `job-store-claim.ts`, `server/migrations/081_job_admission.sql` | `server/test-db/job-store.admission.test.ts`, `server/test/config.admission.test.ts` |
 | Settle receipts per lease token | `server/src/db/job-store-receipts.ts`, `server/migrations/072_job_settle_receipts.sql` | `server/test-db/job-store.receipts.test.ts` |
 | Staged conclusion (`POST /conclusion`) | `server/src/db/job-store-conclusions.ts`, `job-store-staged.ts`, `server/migrations/076_job_conclusions.sql`, `073_job_claim_deferral.sql` | `server/test-db/job-store.conclusions.test.ts`, `job-store.claim-prep.test.ts`, `server/test/routes.job-conclusion.test.ts` |
 | Phase checkpoints: gates, post, publish outcomes an adopter resumes from (`POST /:id/phase-checkpoint`, `/phase-checkpoints`) | `server/src/db/job-store-phase-checkpoints.ts`, `server/migrations/080_job_phase_checkpoints.sql`, `driver/src/loop-phase-checkpoints.ts`, `driver/src/board-phase-checkpoints.ts` | `server/test-db/job-store.phase-checkpoints.test.ts`, `driver/test/loop-phase-checkpoints.test.ts` |
@@ -102,8 +103,6 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 
 ## Operational facts
 
-- `npm run test:db` and `scripts/test-jobs.sh` reset every table and refuse a database not ending
-  `_test` (`server/test-db/harness.ts`); `test-jobs.sh` also creates and drops stub images and a volume.
 - The CLI needs `FACTORY_URL` or `url` in `~/.bellows/settings.json` / `--config <path>` (no default;
   `cli/src/config.ts`); run it as `npm run dev -w cli -- job list`. Exit `0` means the verdict `succeeded`,
   never that a PR is ready (`cli/src/outcome.ts`).
@@ -113,7 +112,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - Ad-hoc gate runs are not evidence; under `policy: gates: required` a draft publication is refused.
 - A reviewer profile grants connections and a budget, not a tool allowlist; snapshot refs
   (`refs/factory/review/*`) are never deleted.
-- No priority or scheduling; no per-job authorization ([repos.md](repos.md)); no service volumes, health checks,
+- Admission budgets count board leases, not pods, and each replica enforces its own values during a rollout.
+- No priority; no per-job authorization ([repos.md](repos.md)); no service volumes, health checks,
   `depends_on` or restart policies in `.bellows.yaml`.
 - No abort for an in-flight publish; the next lease holder reads the ledger and the remote first. A custom
   `RUNNER_IMAGE` missing a skill's declared tool is not detected.

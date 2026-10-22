@@ -413,6 +413,13 @@ render | grep -q 'value: "7200000"' && ok 'the job timeout renders as an integer
 render | grep -A1 'name: GATE_TIMEOUT_MS' | grep -q 'value: "1800000"' && ok 'the gate timeout renders as an integer' ||
     bad 'the gate timeout renders as an integer' "$(render | grep -A1 GATE_TIMEOUT_MS)"
 
+# The shared admission budgets (issue #831) reach the dashboard: empty is unlimited, a set one is an integer.
+render | grep -A1 'name: ADMISSION_MAX_RUNNING$' | grep -q 'value: ""' && ok 'the admission budget defaults to unlimited' ||
+    bad 'the admission budget defaults to unlimited' "$(render | grep -A1 ADMISSION_MAX_RUNNING)"
+render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 'name: ADMISSION_MAX_RUNNING_PER_REPO' |
+    grep -q 'value: "3"' && ok 'a per-repo admission budget renders' ||
+    bad 'a per-repo admission budget renders' "$(render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 ADMISSION_MAX)"
+
 # Runner pod resources (issue #360): requests by default so Karpenter and the Cluster Autoscaler
 # can size for the runner fleet — a zero-request pod schedules onto any free pod slot and
 # provisions nothing. Limits only when set: a memory limit on an agent run OOM-kills a big build

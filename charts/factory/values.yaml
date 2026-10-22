@@ -47,6 +47,13 @@ dashboard:
     # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign
     # in — it exists for scripts/test-k8s.sh --cluster, which mints its own access token.
     offline: false
+    # The shared admission budgets every claim enforces, across every driver and replica (issue
+    # #831): the most tasks running at once in total, per org and per repo. Empty is unlimited.
+    # A driver's `concurrency` stays a per-process cap; these are the cluster-wide ones.
+    admission:
+        maxRunning: ''
+        maxRunningPerOrg: ''
+        maxRunningPerRepo: ''
     # The dashboard's own ServiceAccount (it ran as `default`). It carries the cloud role binding the
     # artifact store's credentials come from: annotate it with the IRSA role ARN, or bind it to a role
     # with an EKS Pod Identity association. The pod still mounts no API token (templates/deployment.yaml).

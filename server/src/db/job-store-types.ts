@@ -8,6 +8,7 @@
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { JobLeaseInfo } from './lease-types.js';
+import type { AdmissionBudgets } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -1476,6 +1477,11 @@ export interface CreateJobStoreDeps {
      * absent in the tests that predate it: a verdict then simply records no publication.
      */
     prs?: JobStorePrs;
+    /**
+     * The shared admission budgets every claim enforces (issue #831, `job-store-admission.ts`).
+     * Absent — the tests that predate it, and a deployment that sets none — means unlimited.
+     */
+    admission?: AdmissionBudgets;
 }
 
 /** The PR lifecycle store's claim-time surface — named once so a helper can take it explicitly. */
@@ -1565,4 +1571,5 @@ export interface JobStoreContext {
     publicationJoin: Fragment;
     /** The publication columns that ride beside it, comma-leading like `authorColumns`. */
     publicationColumns: Fragment;
+    admission: AdmissionBudgets;
 }

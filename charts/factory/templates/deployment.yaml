@@ -112,6 +112,13 @@ spec:
                       # there, and `workspacePath` on a claim is relative to this root.
                       - name: ORG_WORKSPACE_ROOT
                         value: {{ .Values.dashboard.workspaceRoot | quote }}
+                      # Shared admission budgets (server/src/db/job-store-admission.ts); empty is unlimited.
+                      - name: ADMISSION_MAX_RUNNING
+                        value: {{ .Values.dashboard.admission.maxRunning | quote }}
+                      - name: ADMISSION_MAX_RUNNING_PER_ORG
+                        value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
+                      - name: ADMISSION_MAX_RUNNING_PER_REPO
+                        value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
                       - name: TELEMETRY_SOURCE
                         value: {{ .Values.telemetry.source | quote }}
                       - name: TELEMETRY_TTL_SECONDS

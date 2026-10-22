@@ -51,6 +51,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
             retentionDays: 90,
             orgQuotaBytes: 0,
         },
+        admission: {},
         ...overrides,
     };
 }

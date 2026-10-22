@@ -191,6 +191,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         plan: planReader,
         executorConfig,
         prs,
+        admission = {},
     } = deps;
     const gate = async () => {
         if (ready) await ready;
@@ -212,6 +213,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         waitLateral: waitLateralFragment(sql, orgId),
         publicationJoin: publicationJoinFragment(sql),
         publicationColumns: publicationColumnsFragment(sql),
+        admission,
     };
 
     return jobStoreMethods(ctx, gate);
