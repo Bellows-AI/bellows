@@ -253,11 +253,15 @@ describe('the kubernetes reaper arm: reap', () => {
         expect(deleteCalls(calls).filter((path) => !path.startsWith(secretsPath(NAMESPACE)))).toEqual([AUX_DELETE]);
     });
 
-    it('reads 404 and 409 as the object already going away, and keeps the answer honest', async () => {
-        for (const status of [404, 409]) {
-            const { request } = router([['DELETE', AUX_DELETE, { status, body: '' }]]);
-            expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone'), String(status)).toEqual([]);
-        }
+    it('reads 404 as the object already gone, and an unconditioned 409 as a failed delete', async () => {
+        const gone = router([['DELETE', AUX_DELETE, { status: 404, body: '' }]]);
+        expect(await createKubernetesReaper({ config, request: gone.request }).reap(group(), 'gone')).toEqual([]);
+        const conflict = router([['DELETE', AUX_DELETE, { status: 409, body: '' }]]);
+        expect(await createKubernetesReaper({ config, request: conflict.request }).reap(group(), 'gone')).toMatchObject(
+            {
+                inconclusive: expect.any(String),
+            }
+        );
     });
 
     it('deletes the attempt-scoped env Secret by its derived name, and answers it to the log', async () => {
@@ -1056,6 +1060,11 @@ describe('a sweep whose cleanup reads prove nothing (issue #831)', () => {
             'the runner Job delete throws',
             (m: K8sMethod, path: string) =>
                 m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? new Error('reset') : undefined,
+        ],
+        [
+            'an attempt Secret delete answers 409 with no uid precondition',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.startsWith(secretsPath(NAMESPACE)) ? { status: 409, body: '' } : undefined,
         ],
         [
             'the claim delete answers 503',

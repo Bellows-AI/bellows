@@ -49,7 +49,6 @@ import { parseRfc3339 } from './timestamps.js';
  */
 
 /** The two status codes a reaper delete can answer with that mean "already going away". */
-const GONE_STATUSES: readonly number[] = [HTTP_NOT_FOUND, HTTP_CONFLICT];
 
 /** Every kind the arm deletes, with its collection path — one table, not a branch per kind. */
 const basePathOf = (config: DriverConfig): Record<OrphanObject['kind'], string> => ({
@@ -210,7 +209,7 @@ const deleteNamed = async (request: K8sRequest, path: string, uid?: string): Pro
         // A 409 under a uid precondition is another incarnation under the name, not the listed
         // one going away: no removal, and nothing that lets the round go on to the claim.
         if (uid && response.status === HTTP_CONFLICT) return 'replaced';
-        if (response.status >= HTTP_ERROR_STATUS) return GONE_STATUSES.includes(response.status) ? 'gone' : 'failed';
+        if (response.status >= HTTP_ERROR_STATUS) return response.status === HTTP_NOT_FOUND ? 'gone' : 'failed';
         return 'removed';
     } catch {
         return 'failed';
@@ -233,7 +232,7 @@ const uuidScoped = (group: OrphanGroup): group is OrphanGroup & { leaseToken: st
  * The attempt-scoped env Secrets, deleted FIRST — before the Job, and one failed
  * delete stops the round (answers false): a Secret has no ownerReferences, so once the listed
  * objects are gone no next scan can rediscover the (job, lease) pair these names are hashed
- * from. Already-gone Secrets (404/409) never hold the teardown back. The names hash the OLD
+ * from. Already-gone Secrets (404) never hold the teardown back. The names hash the OLD
  * lease token, so this ordering never reaches a replacement attempt's resources.
  */
 const reapDerivedSecrets = async (
