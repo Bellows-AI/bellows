@@ -830,6 +830,15 @@ export interface ClaimRefusal {
     global: boolean;
 }
 
+/**
+ * How a claim is made (issue #831). `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
+ * already, and never admits a queued row; `refusal` is where the claim reports a global budget refusal.
+ */
+export interface ClaimOptions {
+    takeoverOnly?: boolean;
+    refusal?: ClaimRefusal;
+}
+
 export interface JobStore extends PhaseCheckpointStore {
     /**
      * `createdBy` is a parameter rather than something read off the body, and the route passes the
@@ -1091,7 +1100,7 @@ export interface JobStore extends PhaseCheckpointStore {
      */
     restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
-    claim(worker: string, leaseSeconds: number, refusal?: ClaimRefusal): Promise<Claim | null>;
+    claim(worker: string, leaseSeconds: number, options?: ClaimOptions): Promise<Claim | null>;
     /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
     demand(): Promise<OrgDemand>;
     heartbeat(

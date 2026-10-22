@@ -1223,27 +1223,27 @@ describe('POST /api/jobs/claim', () => {
         expect(scanned).toEqual(['org-b', 'org-a']);
     });
 
-    // A poll whose claim the global budget refused admits nothing from later boards (issue #831), but a
-    // board whose demand could not be read may hold a takeover, which needs no slot: it is still offered one.
-    it('still offers a board whose demand read failed after a claim was refused by the global budget', async () => {
-        const scanned: string[] = [];
+    // A poll whose claim the global budget refused admits nothing from later boards (issue #831): every later
+    // board is claimed takeover-only, which needs no slot, whatever its demand read said.
+    it('claims the later boards takeover-only after a claim was refused by the global budget', async () => {
+        const modes: Record<string, boolean | undefined> = {};
         const unknown = stubStore();
         unknown.demand = async () => {
             throw new Error('demand read failed');
         };
-        unknown.claim = async () => {
-            scanned.push('org-a');
+        unknown.claim = async (_worker, _lease, options) => {
+            modes['org-a'] = options?.takeoverOnly;
             return claim;
         };
         const full = stubStore();
-        full.claim = async (_worker, _lease, refusal) => {
-            scanned.push('org-b');
-            if (refusal) refusal.global = true;
+        full.claim = async (_worker, _lease, options) => {
+            modes['org-b'] = options?.takeoverOnly;
+            if (options?.refusal) options.refusal.global = true;
             return null;
         };
         const known = stubStore();
-        known.claim = async () => {
-            scanned.push('org-c');
+        known.claim = async (_worker, _lease, options) => {
+            modes['org-c'] = options?.takeoverOnly;
             return null;
         };
         const instance = await harnessOfBoards([
@@ -1253,8 +1253,8 @@ describe('POST /api/jobs/claim', () => {
         ]);
         const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response.json()).toEqual(claim);
-        // org-c has a readable demand without a takeover: skipped once the budget refused; org-a is not.
-        expect(scanned).toEqual(['org-b', 'org-a']);
+        // org-b is scanned first and refused; org-c and the unknown-demand org-a follow takeover-only.
+        expect(modes).toEqual({ 'org-b': false, 'org-c': true, 'org-a': true });
     });
 
     // The driver polls the reclaim queue between job polls, so the two scans must not share one

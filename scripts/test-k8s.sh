@@ -4064,12 +4064,16 @@ cap_queued() { # cap_queued <wrapper> <job> -> success while the task is queued 
 }
 
 cap_settled() { # cap_settled <label> <wrapper> <job> <owner> <lost owner> -> the checks every task shares once it ran to its end
-    local want="succeeded|1|0||" got
+    local want="succeeded|1|0||" got runs
     [ -n "$5" ] && [ "$4" = "$5" ] && want="succeeded|1|1|1|$EXPIRED"
     got="$("$2" await_brief "$3" 'succeeded*' 300)"
     [ "$got" = "$want" ] && ok "capacity $1: the task succeeds with $(printf '%s' "$want" | cut -d'|' -f3) interruptions" ||
         bad "capacity $1: the task succeeds with $(printf '%s' "$want" | cut -d'|' -f3) interruptions" \
             "status|attempts|count|claimSeq|reason: $got, want $want"
+    # One persistent marker per agent execution (`<release file>.ready-<pod>`): a task restarted under recovery leaves two.
+    tk_use "$3"
+    runs="$(tk_final tk_ready "$CAP_RELEASE-$1.ready-")"
+    [ "$runs" = 1 ] && ok "capacity $1: the agent ran once" || bad "capacity $1: the agent ran once" "$runs execution markers, want 1"
 }
 
 cap_run() {

@@ -1,6 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { orgOf } from '../auth/plugin.js';
-import type { ClaimRefusal, JobStore } from '../db/job-store-types.js';
+import type { ClaimOptions, JobStore } from '../db/job-store-types.js';
 import type { OrgRegistry } from '../orgs.js';
 
 /**
@@ -66,20 +66,20 @@ export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
 export type BoardScanner = <T>(
     boards: readonly JobStore[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
+    claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
 ) => Promise<T | null>;
 
 async function scanBoards<T>(
     boards: readonly JobStore[],
     order: readonly number[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
+    claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
 ): Promise<T | null> {
     let failed: Error | null = null;
     for (const index of order) {
         const board = boards[index]!;
         try {
-            const claimed = await claimOf(board, { global: false });
+            const claimed = await claimOf(board, {});
             if (claimed !== null) return claimed;
         } catch (e) {
             failed = e as Error;
@@ -108,7 +108,7 @@ export function boardScan(): BoardScanner {
     return async <T>(
         boards: readonly JobStore[],
         log: (e: Error) => void,
-        claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
+        claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
     ): Promise<T | null> => {
         const start = turn++ % boards.length;
         const order = Array.from({ length: boards.length }, (_, i) => (start + i) % boards.length);
@@ -117,33 +117,31 @@ export function boardScan(): BoardScanner {
 }
 
 /**
- * The fair scan's walk. A poll that finds the global budget full admits no new work from a later board:
- * the order came from demand read at the start, and a slot freed meanwhile would go to whichever board
- * the scan reaches next instead of the org the order put first. A board with a takeover waiting still
- * needs no slot and is scanned.
+ * The fair scan's walk. Once any board of the poll was refused by the global budget — reported by the claim
+ * itself, also when it then threw — every later board is claimed takeover-only whatever its demand read said:
+ * the order came from demand read at the start, and a slot freed meanwhile would go to whichever board the scan
+ * reaches next instead of the org the order put first. A takeover keeps the slot its row holds, so recovery is
+ * still offered everywhere.
  */
 async function scanUnderBudget<T>(
     boards: readonly JobStore[],
     order: readonly number[],
-    demands: readonly (Awaited<ReturnType<JobStore['demand']>> | null)[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
+    claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
 ): Promise<T | null> {
     let failed: Error | null = null;
     let full = false;
     for (const index of order) {
-        // An unknown demand may hold a takeover, so its board is still offered one.
-        if (full && !(demands[index]?.takeover ?? true)) continue;
         const board = boards[index]!;
-        const refusal: ClaimRefusal = { global: false };
+        const refusal = { global: false };
         try {
-            const claimed = await claimOf(board, refusal);
+            const claimed = await claimOf(board, { takeoverOnly: full, refusal });
             if (claimed !== null) return claimed;
-            if (refusal.global) full = true;
         } catch (e) {
             failed = e as Error;
             log(failed);
         }
+        if (refusal.global) full = true;
     }
     if (failed) throw failed;
     return null;
@@ -162,7 +160,7 @@ export function fairBoardScan(): BoardScanner {
     return async <T>(
         boards: readonly JobStore[],
         log: (e: Error) => void,
-        claimOf: (board: JobStore, refusal: ClaimRefusal) => Promise<T | null>
+        claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
     ): Promise<T | null> => {
         const start = turn++ % boards.length;
         const demands = await Promise.all(
@@ -190,6 +188,6 @@ export function fairBoardScan(): BoardScanner {
                 for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
                 return rotation(a) - rotation(b);
             });
-        return scanUnderBudget(boards, order, demands, log, claimOf);
+        return scanUnderBudget(boards, order, log, claimOf);
     };
 }

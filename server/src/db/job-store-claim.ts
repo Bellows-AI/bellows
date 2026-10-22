@@ -25,6 +25,7 @@ import type {
     ClaimHelperPlan,
     JobStorePrs,
     ReviewerSpec,
+    ClaimOptions,
     ClaimRefusal,
 } from './job-store-types.js';
 import type { ClaimCandidateRow } from './job-store-claim-row.js';
@@ -216,13 +217,15 @@ function claimRules({ sql, orgId }: JobStoreContext) {
 async function reserveCandidate(
     ctx: JobStoreContext,
     refused: readonly string[],
-    refusal: ClaimRefusal
+    refusal: ClaimRefusal,
+    takeoverOnly: boolean
 ): Promise<ReservedCandidate | null> {
     const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
     const full = await fullScope(sql, admission, orgId);
     if (full === 'global') refusal.global = true;
-    const room = full === null;
+    // A takeover-only claim has no room for new work whatever the budgets say: only rows already holding a slot.
+    const room = full === null && !takeoverOnly;
     const [reserved] = await sql<ReservedCandidate[]>`
         with picked as (
             select j.id, j.claim_deferred_until as prior_deferral from job j
@@ -288,8 +291,9 @@ async function acquireCandidate(
     lease: { worker: string; leaseSeconds: number },
     reserved: ReservedCandidate,
     gates: ResolvedClaimGates,
-    refusal: ClaimRefusal
+    options: { refusal: ClaimRefusal; takeoverOnly: boolean }
 ): Promise<Claim | typeof NEXT_CANDIDATE | typeof REFUSED> {
+    const { refusal, takeoverOnly } = options;
     const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
@@ -304,6 +308,8 @@ async function acquireCandidate(
         // New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds.
         let slots = sql`admission_slot_global, admission_slot_org, admission_slot_repo`;
         if (locked.status === 'queued') {
+            // The row changed under the reservation: a takeover-only claim never admits queued work.
+            if (takeoverOnly) return REFUSED;
             const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
             if ('full' in admitted) {
                 if (admitted.full === 'global') refusal.global = true;
@@ -409,14 +415,14 @@ async function claimNextCandidate(
     ctx: JobStoreContext,
     worker: string,
     leaseSeconds: number,
-    refusal: ClaimRefusal
+    options: { refusal: ClaimRefusal; takeoverOnly: boolean }
 ): ReturnType<JobStore['claim']> {
     const refused: string[] = [];
     for (;;) {
-        const reserved = await reserveCandidate(ctx, refused, refusal);
+        const reserved = await reserveCandidate(ctx, refused, options.refusal, options.takeoverOnly);
         if (!reserved) return null;
         const gates = await prepareCandidate(ctx, reserved);
-        const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates, refusal);
+        const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates, options);
         if (claim === REFUSED) refused.push(reserved.id);
         else if (claim !== NEXT_CANDIDATE) return claim;
     }
@@ -471,7 +477,7 @@ export async function claimJob(
     ctx: JobStoreContext,
     worker: string,
     leaseSeconds: number,
-    refusal: ClaimRefusal = { global: false }
+    options: ClaimOptions = {}
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
 
@@ -544,7 +550,10 @@ export async function claimJob(
      * the exclusion reads OTHER rows without locking them, and only the root lock makes it see a
      * same-thread claim that committed while this one waited.
      */
-    return claimNextCandidate(ctx, worker, leaseSeconds, refusal);
+    return claimNextCandidate(ctx, worker, leaseSeconds, {
+        refusal: options.refusal ?? { global: false },
+        takeoverOnly: options.takeoverOnly ?? false,
+    });
 }
 
 /**
