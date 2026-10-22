@@ -236,13 +236,9 @@ async function reserveCandidate(ctx: JobStoreContext): Promise<ReservedCandidate
  * backoff.
  */
 async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidate): Promise<ResolvedClaimGates> {
-    const { sql, orgId, planReader, hasWorkspaces } = ctx;
+    const { sql, orgId, planReader } = ctx;
     const skip = reserved.workflow_node !== null && (await isCancelledContinuation(sql, orgId, reserved.id));
-    return resolveClaimGates(
-        skip ? undefined : planReader,
-        { orgId, hasWorkspaces, rootJobId: reserved.root_job_id },
-        reserved
-    );
+    return resolveClaimGates(skip ? undefined : planReader, { orgId, rootJobId: reserved.root_job_id }, reserved);
 }
 
 /**
@@ -407,10 +403,10 @@ async function assembleClaim(
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates }
 ): Promise<Claim> {
-    const { orgId, env, githubApp, executorConfig, hasWorkspaces, prs } = ctx;
+    const { orgId, env, githubApp, executorConfig, prs } = ctx;
     const { rootJobId } = prepared;
     const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
-    const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, hasWorkspaces, row.created_by) };
+    const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.created_by) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
     const command = await claimCommand(tx, orgId, rootJobId, row);
@@ -551,10 +547,10 @@ export interface ResolvedClaimEvidence {
  */
 export async function resolveClaimGates(
     planReader: CreateJobStoreDeps['plan'],
-    ctx: { orgId: string; hasWorkspaces: boolean; rootJobId: string },
+    ctx: { orgId: string; rootJobId: string },
     row: { created_by: string | null; repo: string | null; base_branch: string | null }
 ): Promise<ResolvedClaimGates> {
-    const claimPath = workspacePathFor(ctx.orgId, ctx.hasWorkspaces, row.created_by);
+    const claimPath = workspacePathFor(ctx.orgId, row.created_by);
     if (!planReader || !row.repo) {
         return {
             claimGates: null,

@@ -9,12 +9,8 @@ import type { TestUser } from './harness.js';
  * a suite with a genuinely different shape keeps its own.
  */
 
-/** Unwraps a create that must succeed — a refusal (`'purging'`) is a broken fixture, not a case. */
-export const mustCreate = (p: Promise<{ id: string } | 'purging'>): Promise<{ id: string }> =>
-    p.then((ref) => {
-        if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
-        return ref;
-    });
+/** A create that must succeed: kept as the one place a suite names it, so a refusal returning later is one edit. */
+export const mustCreate = (p: Promise<{ id: string }>): Promise<{ id: string }> => p;
 
 /**
  * Turns a slice of a uuid into a plausible github id — hex digits, parsed as base 16 — never one

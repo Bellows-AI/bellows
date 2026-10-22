@@ -154,3 +154,23 @@ describe('the tracked-repo allowlist (#125)', () => {
         expect(source.snapshotNames()).toEqual(['acme/other']);
     });
 });
+
+describe('the offline stored source reports an unconfirmed read', () => {
+    it('sets lastError when stored() fails and clears it on the next success', async () => {
+        let failing = true;
+        const source = createRepoSource({
+            stored: async () => {
+                if (failing) throw new Error('database down');
+                return ['acme/web'];
+            },
+        });
+
+        expect(await source.list()).toEqual([]);
+        expect(source.lastError()).toBe('database down');
+
+        failing = false;
+        source.invalidate();
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
+        expect(source.lastError()).toBeNull();
+    });
+});

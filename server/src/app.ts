@@ -222,7 +222,7 @@ export async function buildApp({
         githubMint,
         fetchFn,
     });
-    await app.register(workspaceRoutes({ config, orgs }));
+    await app.register(workspaceRoutes({ orgs }));
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));

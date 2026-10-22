@@ -1,19 +1,23 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { READ_TRANSPORT } from '@factory-ai/core';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createLocalPlanReader, LOCAL_ORIGINS_DIR } from '../src/github/local-origin-plan.js';
+import { createOriginPlanReader } from '../src/github/local-origin-plan.js';
 
 /*
- * The offline board's plan source (issue #799): the `none` arm has no App client, so it reads a
- * repository's `.bellows.yaml` from a bare mirror under `<workspace root>/.origins` — the one the
- * `test:jobs` lane keeps — through the same validation production uses.
+ * The offline board's plan source (issue #799, #777): the `none` arm has no App client, so it
+ * fetches a repository's `.bellows.yaml` from its git origin at `<base>/<owner>/<name>.git` — the
+ * same shape the driver clones from — through the same validation production uses. These tests
+ * stand real `file://` bare repositories in a temp dir as the origin.
  */
 const roots: string[] = [];
+const servers: Server[] = [];
 afterEach(() => {
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    for (const server of servers.splice(0)) server.close();
 });
 
 const git = (args: string[], cwd?: string) =>
@@ -23,15 +27,19 @@ const git = (args: string[], cwd?: string) =>
         env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null' },
     }).trim();
 
-/** A bare origin for `owner/name` under a fresh origins dir, with one commit per entry of `commits` on `branch`. */
-function mirror(repo: string, commits: (string | null)[], branch = 'main') {
-    const dir = mkdtempSync(join(tmpdir(), 'origins-'));
+const tempDir = (prefix: string) => {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
     roots.push(dir);
+    return dir;
+};
+
+/** A bare origin for `owner/name` under a fresh base dir, with one commit per entry of `commits` on `branch`. */
+function mirror(repo: string, commits: (string | null)[], branch = 'main') {
+    const dir = tempDir('origins-');
     const bare = join(dir, `${repo}.git`);
     mkdirSync(bare, { recursive: true });
     git(['init', '-q', '--bare', '-b', branch, bare]);
-    const tree = mkdtempSync(join(tmpdir(), 'seed-'));
-    roots.push(tree);
+    const tree = tempDir('seed-');
     git(['init', '-q', '-b', branch, tree]);
     for (const bellows of commits) {
         if (bellows !== null) {
@@ -41,49 +49,72 @@ function mirror(repo: string, commits: (string | null)[], branch = 'main') {
         git(['-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '--allow-empty', '-m', 'c'], tree);
     }
     git(['push', '-q', bare, `${branch}:${branch}`], tree);
-    return { dir, tip: git(['rev-parse', 'HEAD'], tree) };
+    return { base: `file://${dir}`, tip: git(['rev-parse', 'HEAD'], tree) };
+}
+
+/** A reader over `base` whose scratch dirs land in a directory the test can inspect afterwards. */
+function readerOver(base: string, options: { timeoutMs?: number; gitBin?: string } = {}) {
+    const tmpRoot = tempDir('plan-tmp-');
+    const leftovers = () => readdirSync(tmpRoot).filter((entry) => entry.startsWith('factory-plan-'));
+    return { reader: createOriginPlanReader(base, { tmpRoot, ...options }), leftovers };
+}
+
+/** An origin that accepts a connection and never answers: the shape of a hung network path. */
+async function silentOrigin(): Promise<string> {
+    const server = createServer(() => {});
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return `git://127.0.0.1:${(server.address() as { port: number }).port}`;
+}
+
+/** A `git` that stalls on `stallOn`'s subcommand and runs everything else for real. */
+function slowGit(stallOn: string): string {
+    const bin = join(tempDir('slow-git-'), 'git');
+    writeFileSync(bin, `#!/bin/sh\nfor a in "$@"; do [ "$a" = ${stallOn} ] && exec sleep 30; done\nexec git "$@"\n`);
+    chmodSync(bin, 0o755);
+    return bin;
 }
 
 const SERVICE = 'services:\n  - name: stub-svc\n    image: factory-jobs-smoke-svc\n';
 const MALFORMED = 'services:\n  - name: db\n    image: postgres\n    ports: ["5432:5432"]\n';
 
-describe('the local origin plan reader', () => {
-    it('reads the plan at the branch tip, pinned to its revision', async () => {
-        const { dir, tip } = mirror('acme/web', [null, SERVICE]);
+describe('the origin plan reader', () => {
+    it('reads the plan at a named branch, pinned to its revision', async () => {
+        const { base, tip } = mirror('acme/web', [null, SERVICE]);
 
-        const plan = await createLocalPlanReader(dir).read('acme/web', 'main');
+        const plan = await readerOver(base).reader.read('acme/web', 'main');
 
         expect(plan).toMatchObject({ revision: tip, error: null });
         expect(plan.services.map((service) => service.name)).toEqual(['stub-svc']);
     });
 
-    it('reads the default branch when the thread has no base branch', async () => {
-        const { dir, tip } = mirror('acme/web', [SERVICE], 'trunk');
+    it('reads the origin default branch when the thread has no base branch', async () => {
+        const { base, tip } = mirror('acme/web', [SERVICE], 'trunk');
 
-        expect(await createLocalPlanReader(dir).read('acme/web', null)).toMatchObject({ revision: tip, error: null });
+        expect(await readerOver(base).reader.read('acme/web', null)).toMatchObject({ revision: tip, error: null });
     });
 
     it('answers a malformed file with the refusal production gives', async () => {
-        const { dir } = mirror('acme/web', [MALFORMED]);
+        const { base } = mirror('acme/web', [MALFORMED]);
 
-        const plan = await createLocalPlanReader(dir).read('acme/web', 'main');
+        const plan = await readerOver(base).reader.read('acme/web', 'main');
 
         expect(plan.error).toContain('.bellows.yaml');
         expect(plan.services).toEqual([]);
     });
 
     it('refuses a file over the size the App path refuses', async () => {
-        const { dir } = mirror('acme/web', [`${SERVICE}# ${'x'.repeat(70_000)}\n`]);
+        const { base } = mirror('acme/web', [`${SERVICE}# ${'x'.repeat(70_000)}\n`]);
 
-        expect((await createLocalPlanReader(dir).read('acme/web', 'main')).error).toContain(
+        expect((await readerOver(base).reader.read('acme/web', 'main')).error).toContain(
             '.bellows.yaml is larger than 65536 bytes'
         );
     });
 
-    it('answers no plan, with the revision, for a commit without the file', async () => {
-        const { dir, tip } = mirror('acme/web', [null]);
+    it('answers no plan, with the revision, for a reachable repository without the file', async () => {
+        const { base, tip } = mirror('acme/web', [null]);
 
-        expect(await createLocalPlanReader(dir).read('acme/web', 'main')).toMatchObject({
+        expect(await readerOver(base).reader.read('acme/web', 'main')).toMatchObject({
             revision: tip,
             error: null,
             services: [],
@@ -91,85 +122,75 @@ describe('the local origin plan reader', () => {
         });
     });
 
-    it('refuses a branch the mirror does not have', async () => {
-        const { dir } = mirror('acme/web', [SERVICE]);
+    it('answers a confirmed missing branch as a refusal value, not a throw', async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
 
-        expect((await createLocalPlanReader(dir).read('acme/web', 'release')).error).toContain('acme/web');
-    });
-
-    it('refuses a revision expression as a branch name instead of resolving it', async () => {
-        const { dir } = mirror('acme/web', [SERVICE, null]);
-
-        expect(await createLocalPlanReader(dir).read('acme/web', 'main~1')).toMatchObject({
+        expect(await readerOver(base).reader.read('acme/web', 'release')).toMatchObject({
             revision: null,
             services: [],
             error: expect.stringContaining('acme/web'),
         });
     });
 
-    it('rejects as an outage when the mirror path cannot be checked', async () => {
-        const dir = mkdtempSync(join(tmpdir(), 'origins-'));
-        roots.push(dir);
-        mkdirSync(join(dir, 'acme'));
-        symlinkSync('web.git', join(dir, 'acme', 'web.git'));
+    it('refuses a revision expression as a branch name instead of resolving it', async () => {
+        const { base } = mirror('acme/web', [SERVICE, null]);
 
-        await expect(createLocalPlanReader(dir).read('acme/web', 'main')).rejects.toMatchObject({
-            kind: READ_TRANSPORT,
+        expect(await readerOver(base).reader.read('acme/web', 'main~1')).toMatchObject({
+            revision: null,
+            services: [],
+            error: expect.stringContaining('acme/web'),
         });
     });
 
-    it('rejects as an outage when git cannot read the mirror, for either branch form', async () => {
-        const { dir } = mirror('acme/web', [SERVICE]);
-        rmSync(join(dir, 'acme/web.git', 'HEAD'));
+    it('rejects as an outage for a repository the origin does not have, never "no plan"', async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
 
         for (const branch of ['main', null]) {
-            await expect(createLocalPlanReader(dir).read('acme/web', branch)).rejects.toMatchObject({
+            await expect(readerOver(base).reader.read('acme/other', branch)).rejects.toMatchObject({
                 kind: READ_TRANSPORT,
             });
         }
     });
 
-    it('rejects as an outage when the branch tip tree cannot be read', async () => {
-        const { dir, tip } = mirror('acme/web', [SERVICE]);
-        const gitDir = join(dir, 'acme/web.git');
-        const tree = git(['--git-dir', gitDir, 'rev-parse', `${tip}^{tree}`]);
-        rmSync(join(gitDir, 'objects', tree.slice(0, 2), tree.slice(2)));
+    it('rejects as an outage when the origin accepts and never answers, within the deadline', async () => {
+        const { reader } = readerOver(await silentOrigin(), { timeoutMs: 700 });
 
-        await expect(createLocalPlanReader(dir).read('acme/web', 'main')).rejects.toMatchObject({
-            kind: READ_TRANSPORT,
-        });
+        const started = Date.now();
+        await expect(reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+
+        expect(Date.now() - started).toBeLessThan(5_000);
     });
 
-    // Every other offline harness (verify:ui, the route tests) mirrors nothing: there a claim
-    // carries no plan, exactly as before the reader existed — never a refusal.
-    it('answers no plan and no refusal for a repository nothing mirrored', async () => {
-        const { dir } = mirror('acme/web', [SERVICE]);
+    it('carries the same deadline through the reads after the fetch', async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
+        const { reader, leftovers } = readerOver(base, { timeoutMs: 1_500, gitBin: slowGit('for-each-ref') });
 
-        expect(await createLocalPlanReader(dir).read('acme/other', 'main')).toMatchObject({
-            revision: null,
-            error: null,
-            services: [],
-            config: null,
-        });
+        const started = Date.now();
+        await expect(reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+
+        expect(Date.now() - started).toBeLessThan(10_000);
+        expect(leftovers()).toEqual([]);
     });
 
-    it('never resolves a repository label outside the origins dir', async () => {
-        const { dir } = mirror('acme/web', [SERVICE]);
+    it('leaves no scratch directory behind: success, missing branch, outage and timeout', async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
+        const { reader, leftovers } = readerOver(base);
+        await reader.read('acme/web', 'main');
+        await reader.read('acme/web', 'release');
+        await expect(reader.read('acme/other', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        expect(leftovers()).toEqual([]);
+
+        const hung = readerOver(await silentOrigin(), { timeoutMs: 500 });
+        await expect(hung.reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        expect(hung.leftovers()).toEqual([]);
+    });
+
+    it('refuses a bad label without spawning git', async () => {
+        // A binary that cannot start would make any spawned git an outage; the label is refused as a value first.
+        const { reader } = readerOver('file:///nowhere', { gitBin: '/nonexistent/git' });
 
         for (const repo of ['../acme/web', 'acme/../acme/web', 'acme', '/etc/passwd']) {
-            expect((await createLocalPlanReader(dir).read(repo, 'main')).error).toContain(repo);
+            expect((await reader.read(repo, 'main')).error).toContain(repo);
         }
-    });
-});
-
-describe('the offline board wiring', () => {
-    it('reads plans from the origins mirror only in the code-only none arm', () => {
-        const orgs = readFileSync(new URL('../src/orgs.ts', import.meta.url), 'utf8');
-        // The App client first; the mirror only for the none arm; the reader handed to the job store.
-        expect(orgs.replace(/\s+/g, ' ')).toContain(
-            "const planReader = client ? createPlanReader(client) : config.github.mode === 'none' && config.workspaceRoot ? createLocalPlanReader(join(config.workspaceRoot, LOCAL_ORIGINS_DIR)) : null;"
-        );
-        expect(orgs).toContain('...(planReader ? { plan: { readFor: planReader.read } } : {}),');
-        expect(LOCAL_ORIGINS_DIR).toBe('.origins');
     });
 });

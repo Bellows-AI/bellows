@@ -23,7 +23,6 @@ import {
 import type { AuthStore, Caller, InstallationRef } from '../auth/store.js';
 import type { AppConfig } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
-import { workspaceDir } from '../workspace/reconcile.js';
 import { registerOnboardingRoutes } from './auth-onboarding.js';
 import {
     HTTP_BAD_REQUEST,
@@ -232,7 +231,7 @@ async function handleGithubCallback(deps: CallbackDeps, request: FastifyRequest,
     const outcome = await resolveCallbackCallerSafely(ctx, request, reply, { decoded, returnTo, code: query.code });
     if (outcome.kind === 'handled') return reply;
 
-    await startSession(sessionDeps, request, reply, outcome.caller);
+    await startSession(sessionDeps, reply, outcome.caller);
     return reply.redirect(returnTo, HTTP_FOUND);
 }
 
@@ -384,13 +383,6 @@ export const authRoutes =
                 // the selector renders both, and POST /api/auth/org moves between them.
                 organization: caller.org,
                 organizations: await store.membershipsOf(caller.user.id),
-                // Null when workspaces are switched off — "off" is a configuration somebody chose,
-                // the same answer /api/workspace gives. Read-only: computing a path must not
-                // provision the directory, which GET /api/workspace already does idempotently.
-                workspacePath:
-                    config.workspaceRoot === null
-                        ? null
-                        : workspaceDir(config.workspaceRoot, caller.org.id, caller.user.id),
                 // So the SPA knows whether to offer a sign-out at all: under AUTH_MODE=none there is
                 // no session to end, and a button that cannot work is worse than no button.
                 mode: auth.mode,
@@ -401,7 +393,6 @@ export const authRoutes =
         const secret = auth.sessionSecret;
         const cookie = sessionCookieOptions(auth.cookieSecure, Math.floor(auth.sessionTtlMs / MS_PER_SECOND));
         const sessionDeps: SessionDeps = {
-            workspaceRoot: config.workspaceRoot,
             sessionTtlMs: auth.sessionTtlMs,
             secret,
             cookie,

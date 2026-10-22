@@ -40,7 +40,6 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         databaseUrl: 'postgres://factory:factory@127.0.0.1:5432/factory_test',
         dbPoolMax: DEFAULT_DB_POOL_MAX,
         telemetryTtlMs: DEFAULT_TELEMETRY_TTL_MS,
-        workspaceRoot: null,
         // Matches loadConfig's default. Note that this is only what the *config* says: the app is
         // built with no auth store at all unless a test passes one, so by default no hook runs.
         auth: { mode: 'none', ingestToken: null },
