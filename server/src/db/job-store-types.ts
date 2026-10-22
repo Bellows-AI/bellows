@@ -8,7 +8,7 @@
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { JobLeaseInfo } from './lease-types.js';
-import type { AdmissionBudgets } from './job-store-admission.js';
+import type { AdmissionBudgets, OrgDemand } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -1086,6 +1086,8 @@ export interface JobStore extends PhaseCheckpointStore {
     restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
+    /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
+    demand(): Promise<OrgDemand>;
     heartbeat(
         id: string,
         leaseToken: string,
@@ -1477,10 +1479,7 @@ export interface CreateJobStoreDeps {
      * absent in the tests that predate it: a verdict then simply records no publication.
      */
     prs?: JobStorePrs;
-    /**
-     * The shared admission budgets every claim enforces (issue #831, `job-store-admission.ts`).
-     * Absent — the tests that predate it, and a deployment that sets none — means unlimited.
-     */
+    /** The shared admission budgets every claim enforces (issue #831); absent is unlimited. */
     admission?: AdmissionBudgets;
 }
 
@@ -1552,7 +1551,8 @@ export interface JobStorePrs {
  * precompiled SQL fragments, and the optional collaborators. `createJobStore` builds one and each
  * method is a thin delegation to its function in the sibling `job-store-*.ts` files.
  */
-export interface JobStoreContext {
+/** `admission` is the deps' budgets, defaulted to none (unlimited). */
+export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admission'>> {
     sql: Sql;
     orgId: string;
     hasWorkspaces: boolean;
@@ -1571,5 +1571,4 @@ export interface JobStoreContext {
     publicationJoin: Fragment;
     /** The publication columns that ride beside it, comma-leading like `authorColumns`. */
     publicationColumns: Fragment;
-    admission: AdmissionBudgets;
 }

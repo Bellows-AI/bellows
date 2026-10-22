@@ -14,7 +14,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | `failure_cause` under a `gate`/`publish`/`helper` kind | `server/migrations/065_batch_recovery_evidence.sql`, `server/src/db/job-store-worker.ts`, `job-store-evidence.ts` | `server/test-db/job-store.test.ts` |
 | Claim, lease, fencing, `claim_seq`, settle long-poll | `server/src/db/job-store-claim.ts`, `job-store-claim-row.ts`, `job-store.ts` | `server/test-db/job-store.test.ts`, `job-store.thread-claim.test.ts`, `job-store.settle.test.ts` |
 | Interruption budget and lease expiry | `server/src/db/job-store-actions.ts`, `server/migrations/071_job_interruptions.sql` | `server/test-db/job-store.interrupt.test.ts` |
-| Shared admission budgets (`ADMISSION_MAX_RUNNING{,_PER_ORG,_PER_REPO}`): slots held by running rows, handed-over rows offered first | `server/src/db/job-store-admission.ts`, `job-store-claim.ts`, `server/migrations/081_job_admission.sql` | `server/test-db/job-store.admission.test.ts`, `server/test/config.admission.test.ts` |
+| Shared admission budgets (`ADMISSION_MAX_RUNNING{,_PER_ORG,_PER_REPO}`): slots held by running rows, handed-over rows offered first; cross-org claim order from rows (takeover, fewest running, oldest waiting) | `server/src/db/job-store-admission.ts`, `job-store-claim.ts`, `server/migrations/081_job_admission.sql`, `server/src/routes/job-context.ts` | `server/test-db/job-store.admission.test.ts`, `job-store.fairness.test.ts`, `server/test/config.admission.test.ts`, `routes.jobs.test.ts` |
 | Settle receipts per lease token | `server/src/db/job-store-receipts.ts`, `server/migrations/072_job_settle_receipts.sql` | `server/test-db/job-store.receipts.test.ts` |
 | Staged conclusion (`POST /conclusion`) | `server/src/db/job-store-conclusions.ts`, `job-store-staged.ts`, `server/migrations/076_job_conclusions.sql`, `073_job_claim_deferral.sql` | `server/test-db/job-store.conclusions.test.ts`, `job-store.claim-prep.test.ts`, `server/test/routes.job-conclusion.test.ts` |
 | Phase checkpoints: gates, post, publish outcomes an adopter resumes from (`POST /:id/phase-checkpoint`, `/phase-checkpoints`) | `server/src/db/job-store-phase-checkpoints.ts`, `server/migrations/080_job_phase_checkpoints.sql`, `driver/src/loop-phase-checkpoints.ts`, `driver/src/board-phase-checkpoints.ts` | `server/test-db/job-store.phase-checkpoints.test.ts`, `driver/test/loop-phase-checkpoints.test.ts` |
@@ -113,7 +113,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - Ad-hoc gate runs are not evidence; under `policy: gates: required` a draft publication is refused.
 - A reviewer profile grants connections and a budget, not a tool allowlist; snapshot refs
   (`refs/factory/review/*`) are never deleted.
-- Admission budgets count board leases, not pods, and each replica enforces its own values during a rollout.
+- Admission budgets count board leases, not pods; a rollout runs each replica's values. Org fairness is eventual:
+  polls reading the same demand at once may serve one org; the next free slot goes to the other. Reclaims rotate.
 - No priority; no per-job authorization ([repos.md](repos.md)); no service volumes, health checks,
   `depends_on` or restart policies in `.bellows.yaml`.
 - No abort for an in-flight publish; the next lease holder reads the ledger and the remote first. A custom

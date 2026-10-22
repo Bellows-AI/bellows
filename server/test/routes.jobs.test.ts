@@ -40,6 +40,7 @@ import type {
     ReviewView,
     StopResult,
 } from '../src/db/job-store-types.js';
+import type { OrgDemand } from '../src/db/job-store-admission.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
 import type { BatchStore } from '../src/db/batch-store.js';
@@ -197,6 +198,8 @@ function stubStore(
         pokeWait?: PokeWaitResult;
         reopen?: ReopenResult;
         reclaimClaim?: ReclaimClaim | null;
+        /** The org's demand on the cluster, which orders the job claim scan (issue #831). */
+        demand?: OrgDemand;
         ackReclaim?: 'ok' | 'lost' | 'missing';
         renewReclaim?: ReclaimRenewal;
         heartbeatCancelRequested?: boolean;
@@ -308,6 +311,9 @@ function stubStore(
         async claim() {
             boom();
             return options.claim ?? null;
+        },
+        async demand() {
+            return options.demand ?? { takeover: false, running: 0, oldestWaiting: null };
         },
         async heartbeat() {
             boom();
@@ -1067,6 +1073,46 @@ describe('POST /api/jobs/claim', () => {
         const second = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(first.json().command).toBe('from-a');
         expect(second.json().command).toBe('from-b');
+    });
+
+    // Every replica orders the scan from the boards' rows (issue #831): the org with fewer running
+    // tasks is offered first on every poll, never only on the poll a rotation happens to start there.
+    it('offers the board with fewer running tasks first on every poll', async () => {
+        const fromA: Claim = { ...claim, command: 'from-a' };
+        const fromB: Claim = { ...claim, command: 'from-b' };
+        const instance = await harnessOfBoards([
+            ['org-a', stubStore({ claim: fromA, demand: { takeover: false, running: 3, oldestWaiting: null } })],
+            ['org-b', stubStore({ claim: fromB, demand: { takeover: false, running: 1, oldestWaiting: null } })],
+        ]);
+        for (let poll = 0; poll < 2; poll++) {
+            const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+            expect(response.json().command).toBe('from-b');
+        }
+    });
+
+    // A board whose demand cannot be read is still scanned, after the others.
+    it('scans a board whose demand read fails last, not never', async () => {
+        const scanned: string[] = [];
+        const failing = stubStore({ claim });
+        failing.demand = async () => {
+            throw new Error('demand read failed');
+        };
+        failing.claim = async () => {
+            scanned.push('org-a');
+            return claim;
+        };
+        const healthy = stubStore();
+        healthy.claim = async () => {
+            scanned.push('org-b');
+            return null;
+        };
+        const instance = await harnessOfBoards([
+            ['org-a', failing],
+            ['org-b', healthy],
+        ]);
+        const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.json()).toEqual(claim);
+        expect(scanned).toEqual(['org-b', 'org-a']);
     });
 
     // The driver polls the reclaim queue between job polls, so the two scans must not share one
