@@ -130,12 +130,25 @@ const anotherIncarnation = (read: Read<ReadJobObject>, uids: IncarnationUids | u
 export const holderPodsPath = (namespace: string, job: BoardJob, holder: string): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`)}`;
 
+/** Whether no live pod of a group serving `holder` is listed; null when the list proves nothing. */
+export const holderWritersRead = (deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean | null> =>
+    noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods');
+
+/** Whether no live pod of a group serving `holder` is listed; an unreadable list is told to `unproven`. */
+export async function holderQuiet(
+    deps: K8sDeps,
+    job: BoardJob,
+    holder: string,
+    unproven: (reason: string) => void
+): Promise<boolean> {
+    const gone = await holderWritersRead(deps, job, holder);
+    if (gone === null) unproven('listing the holder pods proved nothing');
+    return gone === true;
+}
+
 /** Whether no live pod of a group serving `holder` is listed; an unreadable list proves nothing (false). */
 export async function holderWritersGone(deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean> {
-    return (
-        (await noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods')) ===
-        true
-    );
+    return (await holderWritersRead(deps, job, holder)) === true;
 }
 
 /** One group Job read, once: the Job, its confirmed absence, or an answer that proves nothing. */

@@ -9,7 +9,7 @@ import {
     type K8sRequest,
 } from './k8s-transport.js';
 import { claimPath, secretsPath } from './k8s-auxspec.js';
-import { readClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { observedOf, readClaimObject, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { holderGroupsOf } from './k8s-group.js';
 import { abortableSleep } from './poll.js';
 import { asIdentified } from './k8s-pod-shapes.js';
@@ -17,7 +17,15 @@ import { readTypedList } from './k8s-poll.js';
 import { finishedAgentRun, jobsPath, type ListedRunnerJob, runnerJobName, secretName } from './k8s-podspec.js';
 import { isLease, runnerSpecReadable } from './k8s-shapes.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
-import type { OrphanGroup, OrphanObject, ReaperArm, ReapVerdict, VolumeListing, VolumeThread } from './reaper.js';
+import type {
+    OrphanGroup,
+    OrphanObject,
+    ReapInconclusive,
+    ReaperArm,
+    ReapVerdict,
+    VolumeListing,
+    VolumeThread,
+} from './reaper.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
 import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, boardIdentity, generationOfName } from './task-volume.js';
 import { parseRfc3339 } from './timestamps.js';
@@ -242,7 +250,11 @@ const reapDerivedSecrets = async (
     return true;
 };
 
-const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]> => {
+const reap = async (
+    deps: K8sDeps,
+    group: OrphanGroup,
+    verdict: ReapVerdict
+): Promise<readonly string[] | ReapInconclusive> => {
     const { config, request } = deps;
     const paths = basePathOf(config);
     const removed: string[] = [];
@@ -266,8 +278,21 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
     // Answered in the log like the fleet's objects, so "is the reaper running?" stays answerable
     // from a round that only cleaned Secrets.
     if (!uuidScoped(group) || verdict !== 'gone' || failed) return removed;
+    return releaseDeadClaim(deps, group, removed);
+};
+
+/** The condemned job's checkout claim, released the one confirmed way; told apart when a read proved nothing. */
+const releaseDeadClaim = async (
+    deps: K8sDeps,
+    group: OrphanGroup & { leaseToken: string },
+    removed: string[]
+): Promise<readonly string[] | ReapInconclusive> => {
+    const { config } = deps;
     const job = attemptPair(group.jobId, group.leaseToken);
-    const observed = await readClaim(deps, job);
+    const claimRead = await readClaimObject(deps, job, true);
+    // A refused read proves nothing about the claim; a confirmed absence is a claim already gone.
+    if (claimRead.kind === 'inconclusive') return { removed, inconclusive: `reading the claim: ${claimRead.reason}` };
+    const observed = observedOf(claimRead);
     if (observed === null || !JOB_ID.test(observed.holder)) return removed;
     // Only the condemned attempt's own claim — held by its lease, or by the reclaim whose derived
     // token it is: a holder that is neither is a replacement's (the task reopened since the board
@@ -275,10 +300,15 @@ const reap = async (deps: K8sDeps, group: OrphanGroup, verdict: ReapVerdict): Pr
     const servesHolder = group.objects.some((object) => object.holder === observed.holder);
     if (observed.holder !== group.leaseToken && !servesHolder) return removed;
     const groups = await holderGroupsOf(deps, job, observed.holder);
-    if (groups !== null && (await releaseClaimAfterGroupEnd(deps, job, { groups, observed }))) {
+    if (groups === null) return { removed, inconclusive: 'listing the holder groups proved nothing' };
+    let inconclusive: string | null = null;
+    const onUnproven = (reason: string) => {
+        inconclusive ??= reason;
+    };
+    if (await releaseClaimAfterGroupEnd(deps, job, { groups, observed, onUnproven })) {
         removed.push(`claim ${claimPath(config.k8sNamespace, job).split('/').pop()}`);
     }
-    return removed;
+    return inconclusive === null ? removed : { removed, inconclusive };
 };
 
 /** One listed task volume claim, as far as the scan reads it: its thread, its name and the incarnation. */

@@ -74,7 +74,11 @@ export interface ReaperArm {
      * or a row it could not read — which the sweep reports as aborted and acts on none of.
      */
     scan(): Promise<OrphanGroup[] | null>;
-    reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]>;
+    /**
+     * What it removed, or — when a read the cleanup depended on proved nothing — what it removed and why the
+     * cleanup is unconfirmed (the sweep then reports aborted, never ok).
+     */
+    reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[] | ReapInconclusive>;
     /**
      * Every task volume of the platform (issue #775), all generations, grouped by thread root; null when
      * the listing proved nothing — a refused call or a row it could not read — and the round deletes none.
@@ -82,6 +86,12 @@ export interface ReaperArm {
     scanVolumes?(): Promise<VolumeListing | null>;
     /** Deletes every generation of one thread, answering a line per volume actually removed. */
     reapVolumes?(thread: VolumeThread): Promise<readonly string[]>;
+}
+
+/** A reap that could not confirm its cleanup: what it did remove, and the read that proved nothing. */
+export interface ReapInconclusive {
+    removed: readonly string[];
+    inconclusive: string;
 }
 
 /** One thread's task volumes, named the way their platform's delete call names them. */
@@ -205,13 +215,24 @@ const lookupAll = async (
 const reapOne = async (
     arm: ReaperArm,
     group: OrphanGroup,
-    ctx: { lease: BoardLease | undefined; graceMs: number; nowMs: number; log: (message: string) => void }
+    ctx: {
+        lease: BoardLease | undefined;
+        graceMs: number;
+        nowMs: number;
+        log: (message: string) => void;
+        onUnproven: () => void;
+    }
 ): Promise<void> => {
     const verdict = reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs);
     if (verdict === null) return;
     // A live job's next claim adopts it (issue #792), or its fence sweeps it: never deleted from a scan.
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
-    for (const removed of await arm.reap(group, verdict)) {
+    const result = await arm.reap(group, verdict);
+    if (!Array.isArray(result)) {
+        ctx.onUnproven();
+        ctx.log(`reaper: job ${group.jobId} — cleanup unconfirmed: ${(result as ReapInconclusive).inconclusive}`);
+    }
+    for (const removed of Array.isArray(result) ? result : (result as ReapInconclusive).removed) {
         ctx.log(`reaper: job ${group.jobId} lease ${group.leaseToken ?? 'none'} (${verdict}) — removed ${removed}`);
     }
 };
@@ -279,6 +300,9 @@ export function createReaper(deps: {
                 graceMs: deps.graceMs,
                 nowMs: now(),
                 log,
+                onUnproven: () => {
+                    unproven = true;
+                },
             });
         }
     };

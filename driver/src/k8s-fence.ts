@@ -33,7 +33,7 @@ import {
     endRunnerJob,
     type GroupRef,
     holderUnconfirmed,
-    holderWritersGone,
+    holderQuiet,
     type IncarnationUids,
     retryUnconfirmed,
     type TeardownIdentity,
@@ -239,7 +239,11 @@ function claimVerdict(read: Read<K8sClaim>, job: BoardJob): ClaimVerdict {
 
 /** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
 export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedClaim | null> {
-    const read = await readClaimObject(deps, job, true);
+    return observedOf(await readClaimObject(deps, job, true));
+}
+
+/** A claim read as the incarnation it names; null when gone, unreadable or unidentifiable. */
+export function observedOf(read: Read<K8sClaim>): ObservedClaim | null {
     if (read.kind !== 'value') return null;
     const uid = read.value.metadata?.uid;
     const holder = read.value.data?.holder;
@@ -259,19 +263,28 @@ export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedC
 export async function releaseClaimAfterGroupEnd(
     deps: K8sDeps,
     job: BoardJob,
-    ends: { groups?: readonly GroupRef[]; observed?: ObservedClaim; holderWriters?: boolean } = {}
+    ends: {
+        groups?: readonly GroupRef[];
+        observed?: ObservedClaim;
+        holderWriters?: boolean;
+        /** Told why an answer it depended on proved nothing (a refused read, a group not confirmed ended). */
+        onUnproven?: (reason: string) => void;
+    } = {}
 ): Promise<boolean> {
+    const unproven = ends.onUnproven ?? (() => undefined);
+    const claimNow = () => readObserved(deps, job, unproven);
     // A taken-over group is addressed by its own lease (`ownGroup`); the claim is its holder's (#829).
     const holder = ends.observed?.holder ?? job.claimHolder ?? job.leaseToken;
     if (ends.observed) {
-        const now = await readClaim(deps, job);
+        const now = await claimNow();
         if (now?.uid !== ends.observed.uid || now.holder !== holder) return false;
     }
     // A recovery's claim goes only with no group of its holder still
     // writing — another invocation's, or a pod outliving its Job's delete.
-    if ((ends.observed || ends.holderWriters) && !(await holderWritersGone(deps, job, holder))) return false;
-    if (!(await groupsEnded(deps, holder, ends.groups ?? [], groupLeaseOf(job)))) return false;
-    const claim = await readClaim(deps, job);
+    if ((ends.observed || ends.holderWriters) && !(await holderQuiet(deps, job, holder, unproven))) return false;
+    const groups = { holder, groups: ends.groups ?? [], groupLease: groupLeaseOf(job), unproven };
+    if (!(await groupsEnded(deps, groups))) return false;
+    const claim = await claimNow();
     if (claim?.holder !== holder || (ends.observed && claim.uid !== ends.observed.uid)) return false;
     try {
         const deleted = await deps.request('DELETE', claimPath(deps.config.k8sNamespace, job), {
@@ -286,6 +299,17 @@ export async function releaseClaimAfterGroupEnd(
     }
 }
 
+/** One claim read as its incarnation, telling `unproven` when the read proved nothing (a gone claim is proven). */
+async function readObserved(
+    deps: K8sDeps,
+    job: BoardJob,
+    unproven: (reason: string) => void
+): Promise<ObservedClaim | null> {
+    const read = await readClaimObject(deps, job, true);
+    if (read.kind === 'inconclusive') unproven(read.reason);
+    return observedOf(read);
+}
+
 /** The lease a taken-over attempt's group lives under (#829): `job` as the loop has it, or as `ownGroup` addresses it. */
 const groupLeaseOf = (job: BoardJob): string | undefined =>
     job.groupLease ?? (job.claimHolder ? job.leaseToken : undefined);
@@ -296,14 +320,23 @@ const groupLeaseOf = (job: BoardJob): string | undefined =>
  */
 async function groupsEnded(
     deps: K8sDeps,
-    holder: string,
-    groups: readonly GroupRef[],
-    groupLease?: string
+    {
+        holder,
+        groups,
+        groupLease,
+        unproven,
+    }: {
+        holder: string;
+        groups: readonly GroupRef[];
+        groupLease: string | undefined;
+        unproven: (reason: string) => void;
+    }
 ): Promise<boolean> {
     let held = false;
     for (const group of groups) {
         const end = await endRunnerJob(deps, group, holder);
         if (end !== 'ended') held = true;
+        if (end === 'held') unproven(`group ${group.jobName} was not confirmed ended`);
     }
     const live =
         deps.groups?.has(holder) === true || (groupLease !== undefined && deps.groups?.has(groupLease) === true);
