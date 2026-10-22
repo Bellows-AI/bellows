@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -10,7 +11,7 @@ import { describe, expect, it } from 'vitest';
  */
 
 const read = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8');
-const here = (path: string): string => new URL(path, import.meta.url).pathname;
+const here = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
 
 const kubernetes = read('../../docs/kubernetes.md');
 const runbook = read('../../docs/eks-runbook.md');
