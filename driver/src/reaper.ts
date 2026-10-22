@@ -1,4 +1,11 @@
 import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board.js';
+import { secondsSince } from './prometheus.js';
+
+/** What the reaper reports about each sweep (issue #831). */
+export interface ReaperObserver {
+    sweep(outcome: 'ok' | 'aborted' | 'error', seconds: number): void;
+    scanned(what: 'groups' | 'objects' | 'volume_threads', count: number): void;
+}
 
 /**
  * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
@@ -219,6 +226,8 @@ export function createReaper(deps: {
     now?: () => number;
     /** Sweeps task volumes (issue #775) when set and the arm lists them. */
     volumePolicy?: VolumePolicy;
+    /** Reports each sweep (issue #831): its outcome and duration, and what it scanned. */
+    observe?: ReaperObserver;
 }): {
     sweep(): Promise<void>;
     start(): void;
@@ -227,11 +236,19 @@ export function createReaper(deps: {
     const log = deps.log ?? ((message: string) => console.log(`[driver] ${message}`));
     const now = deps.now ?? (() => Date.now());
     let sweeping = false;
+    // Set when a lookup, listing or re-read the sweep depended on was not proven: the round then
+    // reaped less than it could, and the series says so rather than reporting ok.
+    let unproven = false;
     let timer: ReturnType<typeof setInterval> | null = null;
 
     /** The orphan groups: scan → ask the board in batches → decide → reap. */
     const sweepGroups = async (): Promise<void> => {
         const groups = await deps.arm.scan();
+        deps.observe?.scanned('groups', groups.length);
+        deps.observe?.scanned(
+            'objects',
+            groups.reduce((n, group) => n + group.objects.length, 0)
+        );
         // A labelled object whose factory.job is not a uuid can never be a board job — a
         // foreign object, another tool's pod, a manual leftover. Asking the board about it
         // would 400 the WHOLE batch and disable the reaper for as long as the object lives,
@@ -243,7 +260,10 @@ export function createReaper(deps: {
         }
         const ids = [...new Set(reapable.map((group) => group.jobId))];
         const leases = await lookupAll(deps.board, ids, log);
-        if (leases === null) return;
+        if (leases === null) {
+            unproven = true;
+            return;
+        }
         for (const group of reapable) {
             await reapOne(deps.arm, group, {
                 lease: leases.get(group.jobId),
@@ -271,14 +291,19 @@ export function createReaper(deps: {
         if (volumePolicy === undefined || !arm.scanVolumes || !arm.reapVolumes) return;
         const listed = await arm.scanVolumes();
         if (listed === null) {
+            unproven = true;
             log('reaper: the task volumes could not be listed — deleting none this round');
             return;
         }
         const threads = threadsOfVolumes(listed);
+        deps.observe?.scanned('volume_threads', threads.length);
         const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log, {
             withThreads: true,
         });
-        if (leases === null) return;
+        if (leases === null) {
+            unproven = true;
+            return;
+        }
         for (const thread of threads) {
             if (!(await deletable(thread, leases, volumePolicy))) continue;
             for (const removed of await arm.reapVolumes(thread))
@@ -302,19 +327,26 @@ export function createReaper(deps: {
             withThreads: true,
             consequence: `keeping thread ${thread.root} this round`,
         });
+        if (fresh === null) unproven = true;
         return fresh !== null && volumeVerdict(fresh.get(thread.root), thread.volumes, now(), policy) === 'delete';
     };
 
     const sweep = async (): Promise<void> => {
         if (sweeping) return;
         sweeping = true;
+        unproven = false;
+        const start = performance.now();
+        let outcome: 'ok' | 'aborted' | 'error' = 'ok';
         try {
             await sweepGroups();
             await sweepVolumes();
+            if (unproven) outcome = 'aborted';
         } catch (e) {
+            outcome = 'error';
             log(`reaper: sweep failed, the next round retries: ${(e as Error).message}`);
         } finally {
             sweeping = false;
+            deps.observe?.sweep(outcome, secondsSince(start));
         }
     };
 

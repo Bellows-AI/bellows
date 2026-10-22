@@ -145,6 +145,12 @@ export interface DriverConfig {
      */
     gateListenHost: string;
     /**
+     * The port of the driver's own scrape listener (`GET /metrics`, on `gateListenHost`, behind the
+     * board token); null serves none. Refused without a token on a non-loopback host — runners can
+     * reach the driver pod on any port and hold no board token.
+     */
+    metricsPort: number | null;
+    /**
      * The URL the runner is told to reach the gate server by, when loopback will not do — the
      * driver in a container, the runner on the host network, or any split like that. Null builds
      * `http://host.docker.internal:<port>` from the bound port, which the runner reaches through
@@ -354,6 +360,22 @@ function int(raw: string | undefined, label: string, fallback: number, bounds: {
         throw new Error(`${label} must be an integer ${bounds.min}..${bounds.max}, got "${raw}"`);
     }
     return value;
+}
+
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
+const MAX_PORT = 65_535;
+
+/** DRIVER_METRICS_PORT: unset serves no scrape; a port off loopback needs the board token to guard it. */
+function metricsPortOf(env: NodeJS.ProcessEnv, host: string, token: string): number | null {
+    const raw = (env.DRIVER_METRICS_PORT ?? '').trim();
+    if (raw === '') return null;
+    const port = int(raw, 'DRIVER_METRICS_PORT', 0, { min: 1, max: MAX_PORT });
+    if (token === '' && !LOOPBACK_HOSTS.includes(host)) {
+        throw new Error(
+            `DRIVER_METRICS_PORT needs JOB_BOARD_TOKEN when GATE_LISTEN_HOST is "${host}": runners can reach the port and hold no token`
+        );
+    }
+    return port;
 }
 
 function flag(raw: string | undefined, fallback = false): boolean {
@@ -658,10 +680,12 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     assertCacheWatchSupported(cacheWatch, executor);
 
     const network = (env.RUNNER_NETWORK ?? '').trim() || null;
+    const boardToken = (env.JOB_BOARD_TOKEN ?? '').trim();
+    const gateHost = text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1');
 
     return {
         boardUrl,
-        boardToken: (env.JOB_BOARD_TOKEN ?? '').trim(),
+        boardToken,
         worker: text(env.DRIVER_WORKER, 'DRIVER_WORKER', `driver-${process.pid}`),
         executorImages: {
             [CLAUDE_CODE]: text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
@@ -698,7 +722,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
         imagePullPolicy: pullPolicyRaw,
         imagePullSecrets: nameList(env.RUNNER_IMAGE_PULL_SECRETS),
         runnerDoNotDisrupt: flag(env.RUNNER_DO_NOT_DISRUPT),
-        gateListenHost: text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1'),
+        gateListenHost: gateHost,
+        metricsPort: metricsPortOf(env, gateHost, boardToken),
         gateAdvertiseUrl: (env.GATE_ADVERTISE_URL ?? '').trim() || null,
         heartbeatFile: optionalText(env.DRIVER_HEARTBEAT_FILE),
         gateTimeoutMs: int(env.GATE_TIMEOUT_MS, 'GATE_TIMEOUT_MS', DEFAULT_GATE_TIMEOUT_MS, {

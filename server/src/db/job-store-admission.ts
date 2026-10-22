@@ -195,3 +195,46 @@ export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
     `;
     return { takeover: row?.takeover ?? false, running: row?.running ?? 0, oldestWaiting: row?.oldest_waiting ?? null };
 }
+
+/** How much runs now, cluster-wide: the global count and the busiest org and repo (never which). */
+export interface AdmissionOccupancy {
+    readonly global: number;
+    readonly orgMax: number;
+    readonly repoMax: number;
+}
+
+/** A scrape never waits on a lock for longer than this; the read then fails and its samples are omitted. */
+export const OCCUPANCY_TIMEOUT_MS = 2000;
+
+export async function admissionOccupancy(sql: Sql, timeoutMs = OCCUPANCY_TIMEOUT_MS): Promise<AdmissionOccupancy> {
+    return sql.begin(async (tx) => {
+        await tx`select set_config('statement_timeout', ${String(timeoutMs)}, true)`;
+        const [row] = await tx<{ global: number; org_max: number; repo_max: number }[]>`
+            with running as (
+                select org_id, repo from job where ${occupying(tx)}
+            )
+            select (select count(*) from running)::int as global,
+                   coalesce((select max(n) from (select count(*) n from running group by org_id) o), 0)::int as org_max,
+                   coalesce((select max(n) from (select count(*) n from running where repo is not null
+                                                 group by org_id, repo) r), 0)::int as repo_max
+        `;
+        return { global: row!.global, orgMax: row!.org_max, repoMax: row!.repo_max };
+    });
+}
+
+/** What the claim reports about itself (issue #831): `metrics.ts` turns these into series. No method takes an id. */
+/** A row waiting for its first claim (`new`) or for the takeover of an attempt that was lost (`takeover`). */
+export type ClaimWaitKind = 'new' | 'takeover';
+
+export interface ClaimObserver {
+    /** A candidate a full budget refused, by the scope that was full. */
+    refusal(scope: AdmissionScope): void;
+    /** Queued to claimed, in seconds. */
+    wait(kind: ClaimWaitKind, seconds: number): void;
+    /** The acquisition's row lock and root advisory lock, round trips included. */
+    lockWait(seconds: number): void;
+    /** The whole acquisition transaction. */
+    acquire(seconds: number): void;
+    /** The settle passes a claim runs before it looks for a candidate. */
+    sweep(seconds: number): void;
+}

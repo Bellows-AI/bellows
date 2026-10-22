@@ -526,3 +526,67 @@ describe('the whole channel against the real supervisor', () => {
         expect(await c.done).toBe(0);
     });
 });
+
+describe('the step broker observer (issue #831)', () => {
+    const observing = () => {
+        const seen: { kind: string; outcome: string; seconds: number }[] = [];
+        const broker = createStepBroker((kind, outcome, seconds) => void seen.push({ kind, outcome, seconds }));
+        broker.open('t');
+        return { seen, broker };
+    };
+    const settled = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    it.each([
+        ['ok', result()],
+        ['failed', failed('boom')],
+        ['timed_out', { exitCode: null, stdout: '', stderr: '', timedOut: true }],
+    ] as const)('observes an answered step as %s, under its kind', async (outcome, answer) => {
+        const { seen, broker } = observing();
+        const pending = broker.submit('t', step('s1', { kind: 'sync' }));
+        await broker.next('t', 0, never);
+        broker.settle('t', 's1', 'i-1', answer);
+        await pending;
+        await settled();
+        expect(seen).toEqual([{ kind: 'sync', outcome, seconds: expect.any(Number) }]);
+    });
+
+    it('observes a joined duplicate once, not twice', async () => {
+        const { seen, broker } = observing();
+        const first = broker.submit('t', step('s1'));
+        const joined = broker.submit('t', step('s1'));
+        await broker.next('t', 0, never);
+        broker.settle('t', 's1', 'i-1', result());
+        await Promise.all([first, joined]);
+        await settled();
+        expect(seen).toHaveLength(1);
+    });
+
+    it('observes a step whose answer never came as undelivered', async () => {
+        vi.useFakeTimers();
+        try {
+            const { seen, broker } = observing();
+            const lost = broker.submit('t', step('s1', { timeoutMs: 1_000 }));
+            const caught = expect(lost).rejects.toBeInstanceOf(StepTimedOut);
+            await vi.advanceTimersByTimeAsync(1_000 + STEP_ANSWER_GRACE_MS);
+            await caught;
+            expect(seen.map((s) => s.outcome)).toEqual(['undelivered']);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('observes a step on a channel that closed as closed', async () => {
+        const { seen, broker } = observing();
+        const pending = broker.submit('t', step('s1'));
+        broker.close('t');
+        await expect(pending).rejects.toBeInstanceOf(StepChannelClosed);
+        await settled();
+        expect(seen.map((s) => s.outcome)).toEqual(['closed']);
+    });
+
+    it('observes nothing for a submit the channel refused up front', async () => {
+        const { seen, broker } = observing();
+        await expect(broker.submit('unknown', step('s1'))).rejects.toBeInstanceOf(StepChannelClosed);
+        expect(seen).toEqual([]);
+    });
+});

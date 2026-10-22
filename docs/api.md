@@ -36,6 +36,7 @@ codes, query parameters and error codes are read there, never restated here.
 
 Error codes have one home, `core/src/error-codes.ts`, pinned by `core/test/error-codes.test.ts`
 and by the `lint/no-shared-literals.grit` plugin.
+| Prometheus scrape (`GET /api/metrics`, worker credential only) | `server/src/routes/prometheus.ts`, `server/src/auth/plugin.ts` | `server/test/routes.prometheus.test.ts`, `server/test/auth.enforcement.test.ts` |
 
 ## Invariants
 
