@@ -305,13 +305,16 @@ async function slotsFor(
     ctx: JobStoreContext,
     reserved: ReservedCandidate,
     step: { status: string; gate: ClaimGate; probe: ReturnType<typeof startAcquire> }
-): Promise<Fragment | typeof REFUSED> {
+): Promise<{ slots: Fragment } | typeof REFUSED> {
+    // Wrapped: a bare fragment is a thenable, and returning it from an async function would run it as a query.
     const { sql, orgId, admission } = ctx;
     const { status, gate, probe } = step;
-    if (status !== 'queued') return sql`admission_slot_global, admission_slot_org, admission_slot_repo`;
+    if (status !== 'queued') return { slots: sql`admission_slot_global, admission_slot_org, admission_slot_repo` };
     if (gate.takeoverOnly) return REFUSED;
     const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
-    if (!('full' in admitted)) return sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int`;
+    if (!('full' in admitted)) {
+        return { slots: sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int` };
+    }
     if (admitted.full === 'global') gate.refusal.global = true;
     await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
              where org_id = ${orgId} and id = ${reserved.id}`;
@@ -344,8 +347,9 @@ async function acquireCandidate(
         if (!locked) return NEXT_CANDIDATE;
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
         probe.locked();
-        const slots = await slotsFor(tx, ctx, reserved, { status: locked.status, gate: lease, probe });
-        if (slots === REFUSED) return REFUSED;
+        const admission = await slotsFor(tx, ctx, reserved, { status: locked.status, gate: lease, probe });
+        if (admission === REFUSED) return REFUSED;
+        const { slots } = admission;
 
         const rows = await tx<
             (ClaimCandidateRow & {
