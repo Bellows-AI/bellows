@@ -25,7 +25,7 @@ export const BATCH_OBSERVE_TICK_MS = 5000;
 /** Provider calls in flight at once, per organization. */
 export const OBSERVER_CONCURRENCY = 4;
 /** Batches of claims one tick may work through, so a large backlog cannot starve the next tick. */
-const MAX_ROUNDS_PER_TICK = 50;
+export const MAX_ROUNDS_PER_TICK = 50;
 
 export interface PrReader {
     readPullRequest(repo: string, number: number): Promise<PrFacts>;
@@ -43,6 +43,8 @@ export interface BatchPrObserverDeps {
     reconcile: (batchId: string) => Promise<unknown>;
     now?: (() => Date) | undefined;
     concurrency?: number | undefined;
+    /** The org's rate-limit pause, shared with the PR follower; the observer's own when absent. */
+    pause?: ReadPause | undefined;
 }
 
 export interface BatchPrObserver {
@@ -58,7 +60,7 @@ export interface BatchPrObserver {
 const DELIVERY_ID_LIMIT = 64;
 
 /** The `pr_merge.delivery_id` of a merge the board saw itself; GitHub's own deliveries are GUIDs. */
-const observedMergeId = (facts: PrFacts): string =>
+export const observedMergeId = (facts: PrFacts): string =>
     `observed:${facts.mergeCommitSha ?? facts.number}`.slice(0, DELIVERY_ID_LIMIT);
 
 const failure = (error: GitHubReadError): ObservationResult => ({
@@ -68,17 +70,52 @@ const failure = (error: GitHubReadError): ObservationResult => ({
     retryAfterMs: error.retryAfterMs,
 });
 
+/**
+ * One provider read as a result: the facts, or the kind of failure. A non-provider error is a
+ * transport failure, so no read ever escapes as an answer; the PR follower reads through this too.
+ */
+export async function readFacts(reader: PrReader, repo: string, number: number): Promise<ObservationResult> {
+    try {
+        return { kind: 'facts', facts: await reader.readPullRequest(repo, number) };
+    } catch (e) {
+        if (e instanceof GitHubReadError) return failure(e);
+        return failure(new GitHubReadError((e as Error).message, READ_TRANSPORT));
+    }
+}
+
+/**
+ * Installation-level throttling: a rate limit pauses every read of the org, not one PR's. One pause
+ * is shared by the batch observer and the PR follower, which read through the same installation.
+ */
+export interface ReadPause {
+    /** Whether reads may go out now. */
+    open(): boolean;
+    /** Learns from a result: a rate-limited read pauses for the provider's Retry-After (or the backoff). */
+    note(result: ObservationResult): void;
+}
+
+export function createReadPause(now?: (() => Date) | undefined): ReadPause {
+    const clock = (): Date => (now ? now() : new Date());
+    let pausedUntil = 0;
+    return {
+        open: () => clock().getTime() >= pausedUntil,
+        note(result) {
+            if (result.kind !== 'error' || result.error !== READ_RATE_LIMITED) return;
+            const pause = nextObservationDelayMs({ ok: false, failures: 1, retryAfterMs: result.retryAfterMs });
+            pausedUntil = Math.max(pausedUntil, clock().getTime() + pause);
+        },
+    };
+}
+
 export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserver {
     const { sql, orgId, ready, reader, recordMerge, reconcile } = deps;
     const now = deps.now;
     const concurrency = deps.concurrency ?? OBSERVER_CONCURRENCY;
     const store = { sql, orgId, now };
-    const clock = (): Date => (now ? now() : new Date());
     const gate = async () => {
         if (ready) await ready;
     };
-    // Installation-level throttling: a rate limit pauses every read of this org, not one PR's.
-    let pausedUntil = 0;
+    const pause = deps.pause ?? createReadPause(now);
 
     const read = async (claim: ObservationClaim): Promise<ObservationResult> => {
         // The recorded PR must be in the plan's own repository; a number alone identifies nothing.
@@ -90,20 +127,12 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
                 retryAfterMs: null,
             };
         }
-        try {
-            return { kind: 'facts', facts: await reader!.readPullRequest(claim.repo, claim.prNumber) };
-        } catch (e) {
-            if (e instanceof GitHubReadError) return failure(e);
-            return failure(new GitHubReadError((e as Error).message, READ_TRANSPORT));
-        }
+        return readFacts(reader!, claim.repo, claim.prNumber);
     };
 
     const observeOne = async (claim: ObservationClaim): Promise<boolean> => {
         const result = await read(claim);
-        if (result.kind === 'error' && result.error === READ_RATE_LIMITED) {
-            const pause = nextObservationDelayMs({ ok: false, failures: 1, retryAfterMs: result.retryAfterMs });
-            pausedUntil = Math.max(pausedUntil, clock().getTime() + pause);
-        }
+        pause.note(result);
         const committed = await commitObservation(store, claim, result);
         if (committed.status === 'superseded') return false;
         // Facts about another PR were downgraded to a binding error at commit; never record their merge.
@@ -131,7 +160,7 @@ export function createBatchPrObserver(deps: BatchPrObserverDeps): BatchPrObserve
             await gate();
             if (!reader) return 0;
             let committed = 0;
-            for (let round = 0; round < MAX_ROUNDS_PER_TICK && clock().getTime() >= pausedUntil; round += 1) {
+            for (let round = 0; round < MAX_ROUNDS_PER_TICK && pause.open(); round += 1) {
                 const claims = await claimDue(store, concurrency);
                 if (claims.length === 0) break;
                 const outcomes = await Promise.all(

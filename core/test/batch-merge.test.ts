@@ -19,6 +19,7 @@ const facts = (extra: Partial<PrFacts> = {}): PrFacts => ({
     merged: false,
     mergedAt: null,
     mergeCommitSha: null,
+    updatedAt: null,
     baseBranch: 'main',
     headSha: 'h1',
     targetSha: 't1',

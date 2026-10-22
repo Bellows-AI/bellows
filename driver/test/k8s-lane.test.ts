@@ -466,14 +466,14 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(drain).toContain('uncordon');
         expect(drain).toContain('make cleanup CLUSTER=');
         expect(cleanup).toContain('uncordon');
-        expect(cleanup).toContain('kubectl delete pv');
     });
 
-    it('puts the workspaces on a shared volume only when the cluster carries the drain layout', () => {
+    it('keeps the shared node label as the drain-layout marker and provisions no shared volume', () => {
         expect(script).toContain('factory.lane/shared');
-        expect(script).toContain('factory-lane-shared');
-        expect(script).toContain('ReadWriteMany');
-        expect(script).toContain('/factory-shared/$RELEASE');
+        for (const gone of ['factory-lane-shared', 'shared_pv', 'SHARED_SETS']) {
+            expect(script).not.toContain(gone);
+        }
+        expect(script).not.toMatch(/kubectl delete pv\b(?!c)/);
     });
 });
 

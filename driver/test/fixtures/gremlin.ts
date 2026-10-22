@@ -216,7 +216,9 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
             if (f.kind === 'handover') {
                 say(`driver ${d.name} drains (handover) at row claim ${sim.row.claimSeq} ${sim.row.status}`);
                 if (sim.row.status === 'running') allowed.add(sim.row.claimSeq);
-                await d.loop.handover('the driver is draining');
+                // A kill of this driver meanwhile (a host too loaded to space the faults) ends the wait: its calls never return.
+                await Promise.race([d.loop.handover('the driver is draining'), d.killed]);
+                if (d.dead) return;
             } else if (sim.row.status === 'running') {
                 required.add(sim.row.claimSeq);
             }
@@ -282,8 +284,17 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         clearTimeout(latch);
     }
 
-    const jittery = worstLag > (plan.timing.leaseSeconds * 1_000) / 3;
-    if (jittery) trace.push(`host lag ${worstLag}ms: unexplained lease losses are not blamed on the product`);
+    // A heartbeat call that hangs for the glitch (its own cadence is a third of the lease, twice that in setup)
+    // delays the next beat past what the lease leaves, so the board may rightly reclaim it.
+    const leaseMs = plan.timing.leaseSeconds * 1_000;
+    const blackout = plan.faults.some(
+        (f) => f.kind === 'glitch' && f.mode === 'timeout' && f.ops.includes('heartbeat')
+    );
+    const jittery = worstLag > leaseMs / 3 || blackout;
+    if (jittery)
+        trace.push(
+            `host lag ${worstLag}ms, heartbeat blackout ${blackout}: unexplained lease losses are not blamed on the product`
+        );
     const violations = check(sim, required, allowed, jittery);
     const verdict = {
         seed,

@@ -1172,6 +1172,41 @@ describe('the poll loop', () => {
         expect(logs.filter((message) => message.includes('heartbeat failed, continuing'))).toHaveLength(1);
     });
 
+    // The stop rides the heartbeat answer and nothing else (docs/architecture.md, "Polling is the
+    // authority"): an answer lost in transit costs one beat, never the stop.
+    it('acts on a stop raised while a heartbeat answer was lost at the next beat', async () => {
+        const options: { cancelRequested?: boolean } = {};
+        const board = stubBoard([job(1)], options);
+        const rawHeartbeat = board.board.heartbeat.bind(board.board);
+        let calls = 0;
+        board.board.heartbeat = async (claimed) => {
+            calls += 1;
+            if (calls === 1) {
+                options.cancelRequested = true;
+                throw new Error('answer lost');
+            }
+            return rawHeartbeat(claimed);
+        };
+        let finish = () => {};
+        const runner = stubRunner(
+            () =>
+                new Promise<RunOutcome>((resolve) => {
+                    finish = () => resolve(ok());
+                })
+        );
+
+        const started = drive({ ...board, runner, log: () => {} });
+        while (calls < 2) await sleep();
+        // Let the second beat land its verdict before the run is allowed to end.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        finish();
+        await started;
+
+        expect(runner.killed).toEqual([job(1).id]);
+        expect(board.board.suspended).toEqual([job(1).id]);
+        expect(board.board.completed).toEqual([]);
+    });
+
     // The park is the follow-up's launching pad, and a stopped opencode run's session id is
     // learned only at close (the scrape) — so it must be reported BEFORE the park lands, while
     // the row still runs under this lease. After it, the row is terminal, the report is refused,

@@ -68,11 +68,11 @@ runners: runners-build
 # workloads — no install, no port-forward, release and data kept. K8S_PORT defaults to 8081
 # so it can sit beside a running dev stack on 8080, the same reasoning as BAKED_PORT.
 #
-# State lives in its own release, `factory-state` (charts/factory-local-state): the database and
-# the workspaces claim. Production runs no database in the cluster; locally this release stands in
+# State lives in its own release, `factory-state` (charts/factory-local-state): the database.
+# Production runs no database in the cluster; locally this release stands in
 # for the managed one, and values-local.yaml names its objects. `make stop` uninstalls only the app
 # release and reaps the runner Jobs (created at runtime by the driver, so not the release's) —
-# database and checkouts survive, and the next `make start` picks them up. `make reset` is `stop`
+# the database survives, and the next `make start` picks them up. `make reset` is `stop`
 # plus the state release and its claims: an empty database next start. `make cluster` creates the
 # kind cluster with the local registry scripts/test-k8s.sh pushes to (scripts/kind-cluster.sh);
 # `make cleanup` deletes the cluster, and the registry with the last one. Two state releases are the thing `make start` will not upgrade — one
@@ -195,9 +195,7 @@ stop:
 	helm uninstall $(K8S_RELEASE) || true
 	kubectl delete jobs -l factory.job,app.kubernetes.io/instance=$(K8S_RELEASE) || true
 
-# `stop` first, and not only for the order of the words: a runner pod still mounting the
-# workspaces claim holds it under pvc-protection, and the claim delete waits for that — it would
-# block forever on a pod whose delete had not been issued yet.
+# `stop` first, so nothing is still using the state when it goes.
 # The claim delete is not belt-and-braces: the database's claim belongs to a StatefulSet's
 # volumeClaimTemplate, which helm does not delete with the release, so this line is the only thing
 # that removes the data. It selects by label because the minted name is `data-<release>-postgres-0`.
