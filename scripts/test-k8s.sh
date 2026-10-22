@@ -2886,7 +2886,7 @@ sidecar_restarts() { # sidecar_restarts <pod> <container> -> its restartCount, e
 # the init-time server listens on the socket alone. Bounded by wall clock (PG_READY_SECONDS) well
 # inside the stub agent's 120s lifetime: an iteration costs at most the 5s request timeout plus 1s.
 end_postgres_sidecar() { # end_postgres_sidecar <pod> -> 1 (after a FAIL) when postgres never became ready
-    local until=$(($(date +%s) + ${PG_READY_SECONDS:-40}))
+    local until=$(($(date +%s) + ${PG_READY_SECONDS:-30}))
     while [ "$(date +%s)" -lt "$until" ]; do
         if kubectl exec "$1" -c svc-postgres -n "$NAMESPACE" --request-timeout=5s -- pg_isready -q -h 127.0.0.1 \
             >/dev/null 2>&1; then
@@ -2895,7 +2895,7 @@ end_postgres_sidecar() { # end_postgres_sidecar <pod> -> 1 (after a FAIL) when p
         fi
         sleep 1
     done
-    bad 'the postgres sidecar accepts connections before it is ended' "not ready within ${PG_READY_SECONDS:-40}s"
+    bad 'the postgres sidecar accepts connections before it is ended' "not ready within ${PG_READY_SECONDS:-30}s"
     return 1
 }
 

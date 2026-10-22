@@ -302,6 +302,23 @@ describe('a review the board leased in-band (issue #774)', () => {
         expect(t.board.completed[0]).toMatchObject({ id: REVIEW.id, status: 'succeeded' });
     });
 
+    it('hands each review beat a deadline signal, so a beat the board never answers is retried', async () => {
+        const signals: (AbortSignal | undefined)[] = [];
+        const t = supervising({
+            runReview: async () => {
+                await until(() => signals.length >= 1);
+                return STEP();
+            },
+        });
+        t.board.heartbeat = async (_job, signal) => {
+            signals.push(signal);
+            return { result: 'held', cancelRequested: false };
+        };
+        t.start();
+        await t.settled();
+        expect(signals[0]).toBeInstanceOf(AbortSignal);
+    });
+
     it('fails the review row with `timeout` when the step times out, leaving the caller untouched', async () => {
         const t = supervising({
             runReview: async () => STEP({ exitCode: 124, timedOut: true, stdout: '', stderr: 'budget' }),

@@ -7,6 +7,7 @@ import type { ReviewRelay, ReviewVerdict } from './review-control.js';
 import { OUTPUT_LIMIT, tailBytes } from './runner.js';
 import { reviewBudgetMs } from './review-step.js';
 import { pickSession } from './runner-plan.js';
+import { heartbeatPeriodMs } from './supervisor-plan.js';
 import { stepLost } from './step-control.js';
 import type { ReviewExporter } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
@@ -232,11 +233,13 @@ async function beatReview(
     while (!over) {
         await Promise.race([rt.sleep(every), ended]);
         if (over) return;
-        const verdict = await rt.board.heartbeat(review).catch((e: Error) => {
-            // A beat that errors or times out is retried on the next one, within the lease.
-            rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
-            return null;
-        });
+        const verdict = await rt.board
+            .heartbeat(review, AbortSignal.timeout(heartbeatPeriodMs(rt.config)))
+            .catch((e: Error) => {
+                // A beat that errors or times out is retried on the next one, within the lease.
+                rt.log(`review ${review.id}: the heartbeat failed: ${e.message}`);
+                return null;
+            });
         if (verdict === null) continue;
         if (verdict === 'lost' || verdict === 'removed') stop.abort();
         else if (verdict.cancelRequested) {
