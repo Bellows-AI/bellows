@@ -9,6 +9,7 @@ import {
     E2E_REPO,
     mockExecutors,
     stubLaunch,
+    trackRepos,
     withExecutor,
 } from './executor.js';
 
@@ -93,6 +94,35 @@ test.describe('the guided task composer', () => {
         await prompt.fill(Array.from({ length: 80 }, (_, i) => `line ${i + 1}`).join('\n'));
         expect((await prompt.boundingBox())!.height).toBeLessThanOrEqual(900 / 2 + 1);
         expect(problems.join('\n')).toBe('');
+    });
+
+    test('with no tracked repository Start stays dark and the banner points at Repositories', async ({ page }) => {
+        await trackRepos(page, []);
+        await page.goto('/tasks/new');
+        await page.getByLabel('What should the agent do?').fill('tidy the changelog');
+
+        const banner = page.locator('.composer .banner-bad');
+        await expect(banner).toContainText('No repositories tracked');
+        await expect(banner).toContainText('Track a repository in Settings to run a task.');
+        await expect(banner.getByRole('link', { name: 'Go to Repositories' })).toHaveAttribute(
+            'href',
+            /^\/settings\/repos\?return=/
+        );
+        await expect(page.getByRole('button', { name: 'Start task' })).toBeDisabled();
+    });
+
+    test('a failed repository read says so and Retry loads the list', async ({ page }) => {
+        let failures = 1;
+        await page.route('**/api/repos', (route) => {
+            if (failures-- > 0) return route.fulfill({ status: 503, json: { error: 'Repositories unavailable' } });
+            return route.fallback();
+        });
+        await page.goto('/tasks/new');
+
+        await expect(page.getByText('Repositories unavailable')).toBeVisible();
+        await expect(page.getByText('No repositories tracked')).toHaveCount(0);
+        await page.getByRole('button', { name: 'Retry' }).click();
+        await expect(contextChip(page, 'Repository')).toHaveText(`${E2E_REPO.owner}/${E2E_REPO.name}`);
     });
 
     test('a fresh composer opens without a red banner, counts the request, and blocks it past the limit', async ({

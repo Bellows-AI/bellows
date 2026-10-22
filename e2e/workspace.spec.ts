@@ -3,20 +3,17 @@ import type { Page } from '@playwright/test';
 import { throughSignIn } from './signin.js';
 
 /**
- * The workspace section of Settings, the repositories section its selection moved to (#181), and
- * the one failure that shows up only in production.
+ * The workspace section of Settings, the repositories section that lists the tracked repositories
+ * (#181, #777), and the one failure that shows up only in production.
  *
  * On the `auth` project, because every route here needs a signed-in member — and because the
  * `chromium` project is the visual regression check for the dashboard and should not churn over
  * this.
  *
- * The auth server runs with a real ORG_WORKSPACE_ROOT under artifacts/, so this drives real
- * provisioning: a directory is created on disk by the sign-in callback. It does NOT drive a clone —
- * the server here is the offline entry, with no GitHub App credential; the stored fallback reports
- * the seed's one repository (SEED_REPO, scoped to the caller's org) but nothing is selected, so
- * the workspace page pins its empty-checkout sentence. Cloning, checkout statuses and the
- * dirty-detail switch dialog need a credential or a second seeded repository, and stay with a
- * credentialed run. The repositories page's selection guard and the executor dialog are
+ * The server here is the offline entry, with no GitHub App credential; the stored fallback
+ * reports the seed's one repository (SEED_REPO, scoped to the caller's org) as the tracked list.
+ * The board keeps no checkouts, so neither page carries checkout state. The repositories page's
+ * Configure switch dialog and the executor dialog are
  * web/test/repository-selection.dom.test.tsx's and web/test/executor-dialog.dom.test.tsx's.
  */
 
@@ -52,23 +49,30 @@ test('reloading /settings/workspace directly serves the app rather than a 404', 
     await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
     await expect(page.locator('.sidenav')).toBeVisible();
 });
-test('the workspace page links to the repositories page for checkout management', async ({ page }) => {
+test('the workspace page carries no checkout state; the repositories page lists what the board tracks', async ({
+    page,
+}) => {
     await signedIn(page);
     await page.goto('/settings/workspace');
-
-    // Root provisioning happens at sign-in, so the management link is present — a deployment with
-    // no ORG_WORKSPACE_ROOT drops it and states the operator copy instead, which the open board
-    // renders in its screenshots.
-    const link = page.getByRole('link', { name: 'Manage repository checkouts' });
-    await expect(link).toBeVisible();
-    await expect(page.getByText('Nothing checked out yet')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Select repositories' })).toHaveCount(0);
-
-    // The link IS the way in: selection lives on the repositories page now, not in a modal here.
-    await link.click();
-    await expect(page).toHaveURL(/\/settings\/repos$/);
-
+    await expect(page.getByRole('heading', { name: 'Workspace', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'My workspace' }).first()).toBeVisible({ timeout: 60_000 });
+    const workspaceText = await page.locator('main').innerText();
+    for (const gone of ['Manage repository checkouts', 'Nothing checked out', 'workspace root', 'ORG_WORKSPACE_ROOT']) {
+        expect(workspaceText, gone).not.toContain(gone);
+    }
     await page.screenshot({ path: `${SHOTS}/settings-workspace.png`, fullPage: true });
+
+    await page.goto('/settings/repos');
+    const tracked = page.getByRole('region', { name: 'Tracked repositories' });
+    await expect(tracked).toBeVisible();
+    await expect(tracked.getByRole('button', { name: 'Configure' }).first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: 'Save selection' })).toHaveCount(0);
+    await expect(page.getByRole('checkbox')).toHaveCount(0);
+    const reposText = await page.locator('main').innerText();
+    for (const gone of ['Checkout status', 'Last commit', 'ORG_WORKSPACE_ROOT', 'Not checked out']) {
+        expect(reposText, gone).not.toContain(gone);
+    }
+    await page.screenshot({ path: `${SHOTS}/settings-repos-tracked.png`, fullPage: true });
 });
 
 test('no settings action word wraps at 1024px', async ({ page }) => {
@@ -101,8 +105,8 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
         expect(await wrapped(), path).toEqual([]);
     }
 
-    // The repositories page with its detail open: the table's Configure, the selection bar's
-    // save and the repository editor's footer all share the narrowed width.
+    // The repositories page with its detail open: the table's Configure and the repository
+    // editor's footer share the narrowed width.
     await page.goto('/settings/repos');
     await page.getByRole('button', { name: 'Configure' }).click();
     await expect(page.getByRole('heading', { name: /^Selected repository:/ })).toBeVisible({ timeout: 60_000 });
@@ -111,8 +115,8 @@ test('no settings action word wraps at 1024px', async ({ page }) => {
 });
 
 test('the workspace section renders nothing malformed', async ({ page }) => {
-    // The null-not-zero contract, in the browser this time: a repo with no checkout must render an
-    // em dash and never a placeholder that leaked out of a formatter.
+    // The null-not-zero contract, in the browser this time: no page may render a placeholder that
+    // leaked out of a formatter.
     const errors: string[] = [];
     page.on('console', (message) => {
         // Nothing is exempt, including the pre-sign-in session probe: /api/auth/me answers

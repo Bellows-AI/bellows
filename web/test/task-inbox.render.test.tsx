@@ -12,6 +12,7 @@ import { TaskInboxPage } from '../src/pages/TaskInboxPage.js';
  */
 
 const emptyWorkspace = { data: null, loading: true, error: null, refresh: () => {} };
+const emptyRepos = { data: null, loading: true, error: null as string | null, refresh: () => {} };
 
 const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary> = {}) => ({
     id: '11111111-1111-4111-8111-111111111111',
@@ -43,7 +44,7 @@ interface InboxTasks extends Partial<UseTasks> {
     items?: UseTasks['items'];
 }
 
-const renderInbox = (tasks: InboxTasks, path = '/tasks') => {
+const renderInbox = (tasks: InboxTasks, path = '/tasks', repos: typeof emptyRepos = emptyRepos) => {
     const fake = {
         retry: () => {},
         loadMore: () => {},
@@ -60,8 +61,11 @@ const renderInbox = (tasks: InboxTasks, path = '/tasks') => {
     return renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
             <Routes>
-                <Route element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace }} />}>
-                    <Route path="tasks" element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace }} />}>
+                <Route element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace, repos }} />}>
+                    <Route
+                        path="tasks"
+                        element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace, repos }} />}
+                    >
                         <Route index element={<TaskInboxPage />} />
                         <Route path="new" element={<div id="composer-slot">composer slot</div>} />
                     </Route>
@@ -501,37 +505,47 @@ describe('TaskInboxPage filters', () => {
         expect(html).toContain('Oldest');
     });
 
-    it('offers the workspace repositories in the repo select, and keeps a vanished filter selectable', () => {
-        const workspace = {
-            data: {
-                root: null,
-                repos: [{ owner: 'acme', name: 'web' }],
-                orphaned: [],
-                checkoutTotalBytes: 0,
-                executors: [],
-            },
-            loading: false,
-            error: null,
-            refresh: () => {},
-        };
-        const tasks: InboxTasks = {
+    describe('the repo select reads the tracked list', () => {
+        const filtered: InboxTasks = {
             navigation: null,
             items: null,
             nextCursor: null,
             initial: true,
             filters: { state: 'attention', q: null, repo: 'acme/gone', author: null, sort: 'newest' },
         };
-        const html = renderToStaticMarkup(
-            <MemoryRouter initialEntries={['/tasks?repo=acme%2Fgone']}>
-                <Routes>
-                    <Route element={<Outlet context={{ tasks: tasks as UseTasks, workspace }} />}>
-                        <Route path="tasks" index element={<TaskInboxPage />} />
-                    </Route>
-                </Routes>
-            </MemoryRouter>
-        );
-        expect(html).toContain('acme/web');
-        expect(html).toContain('acme/gone');
+        const renderWith = (repos: object) =>
+            renderToStaticMarkup(
+                <MemoryRouter initialEntries={['/tasks?repo=acme%2Fgone']}>
+                    <Routes>
+                        <Route
+                            element={
+                                <Outlet context={{ tasks: filtered as UseTasks, workspace: emptyWorkspace, repos }} />
+                            }
+                        >
+                            <Route path="tasks" index element={<TaskInboxPage />} />
+                        </Route>
+                    </Routes>
+                </MemoryRouter>
+            );
+        const reposRead = (over: object) => ({ data: null, loading: false, error: null, refresh: () => {}, ...over });
+        const tracked = (error: string | null) => ({
+            repos: [{ owner: 'acme', name: 'web', private: false, defaultBranch: 'main', pushedAt: null }],
+            installation: null,
+            meta: { fetchedAt: null, error },
+        });
+
+        it('offers the tracked repositories, and keeps a vanished filter selectable', () => {
+            const html = renderWith(reposRead({ data: tracked(null) }));
+            expect(html).toContain('acme/web');
+            expect(html).toContain('acme/gone');
+        });
+
+        it('offers only the active filter after a failed read, and claims nothing about the list', () => {
+            const html = renderWith(reposRead({ error: 'Request failed (503)' }));
+            expect(html).not.toContain('acme/web');
+            expect(html).toContain('acme/gone');
+            expect(html).not.toContain('No repositories');
+        });
     });
 });
 
@@ -555,5 +569,21 @@ describe('the inbox sweep', () => {
         for (const forbidden of ['NaN', 'undefined', 'Infinity', '[object Object]']) {
             expect(html).not.toContain(forbidden);
         }
+    });
+});
+
+describe('repository filter state', () => {
+    it('says why the repository list is unavailable and offers a retry', () => {
+        const html = renderInbox({ items: [] }, '/tasks', {
+            ...emptyRepos,
+            loading: false,
+            error: 'repo read failed',
+        });
+        expect(html).toContain('repo read failed');
+        expect(html).toContain('Retry');
+    });
+
+    it('says the repository list is loading', () => {
+        expect(renderInbox({ items: [] })).toContain('Loading repositories');
     });
 });

@@ -17,7 +17,6 @@ const session = memberSession({
         { id: 'bellows', name: 'Bellows AI' },
         { id: '888888', name: 'other-org' },
     ],
-    workspacePath: '/workspaces/bellows/00000000-0000-4000-8000-000000000001',
 });
 
 /** The stand-in account AUTH_MODE=none attributes everything to. */
@@ -33,7 +32,6 @@ const local: Session = {
     role: 'admin',
     membership: { invitedAt: null, claimedAt: null },
     account: { createdAt: null, lastLoginAt: null },
-    workspacePath: null,
     mode: 'none',
 };
 
@@ -45,7 +43,9 @@ describe('IdentityPanel', () => {
         expect(html).toContain('4242');
         expect(html).toContain('admin');
         expect(html).toContain('2026-01-16 10:00');
-        expect(html).toContain('<code>/workspaces/bellows/00000000-0000-4000-8000-000000000001</code>');
+        // The session carries no checkout path: the board has no filesystem workspace to name.
+        expect(html).not.toContain('<dt>Workspace</dt>');
+        expect(html).not.toContain('/workspaces/');
     });
 
     it('never emits a placeholder value for an absent field', () => {

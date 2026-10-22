@@ -214,7 +214,6 @@ const LANE_TOUCH_TARGETS: Record<string, string[]> = {
         '.repo-search input',
         '.repo-search button',
         '.repo-table button',
-        '.repo-save',
         '.settings-actions button',
         '.unsaved-actions button',
         '.env-add',

@@ -7,56 +7,25 @@ import type { VisibleRepos, WorkspaceView } from './board.js';
 
 export interface RepoRow {
     repo: string;
-    /** The App installation can see it — a member could choose to check it out. */
-    visible: boolean;
-    /** It is in the caller's workspace selection, whatever state its checkout is in. */
-    synced: boolean;
-    private: boolean | null;
+    private: boolean;
     defaultBranch: string | null;
-    syncStatus: string | null;
-    syncError: string | null;
 }
 
 export interface RepoDiscovery {
     repos: RepoRow[];
-    /** False when the deployment has no workspace root: nothing can be synced, and `synced` is all false. */
-    workspaceEnabled: boolean;
-    /** The board's named reason the visible list may be stale or empty, else null. */
+    /** The board's named reason the list may be stale or empty, else null. */
     error: string | null;
     fetchedAt: string | null;
 }
 
-/** Visible repos first, then synced ones the installation no longer shows — both are worth naming. */
-export function repoDiscovery(visible: VisibleRepos, workspace: WorkspaceView): RepoDiscovery {
-    const synced = new Map(workspace.repos.map((repo) => [`${repo.owner}/${repo.name}`, repo]));
-    const rows: RepoRow[] = visible.repos.map((repo) => {
-        const full = `${repo.owner}/${repo.name}`;
-        const sync = synced.get(full);
-        synced.delete(full);
-        return {
-            repo: full,
-            visible: true,
-            synced: sync !== undefined,
+/** The repositories the board tracks, as the board lists them. */
+export function repoDiscovery(visible: VisibleRepos): RepoDiscovery {
+    return {
+        repos: visible.repos.map((repo) => ({
+            repo: `${repo.owner}/${repo.name}`,
             private: repo.private,
             defaultBranch: repo.defaultBranch,
-            syncStatus: sync?.status ?? null,
-            syncError: sync?.error ?? null,
-        };
-    });
-    for (const [full, sync] of synced) {
-        rows.push({
-            repo: full,
-            visible: false,
-            synced: true,
-            private: null,
-            defaultBranch: null,
-            syncStatus: sync.status,
-            syncError: sync.error,
-        });
-    }
-    return {
-        repos: rows,
-        workspaceEnabled: workspace.root !== null,
+        })),
         error: visible.meta.error,
         fetchedAt: visible.meta.fetchedAt,
     };

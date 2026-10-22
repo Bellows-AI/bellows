@@ -5,36 +5,6 @@ import { usePersonalExecutorWrites } from './usePersonalExecutorWrites.js';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
-export type CloneStatus = 'queued' | 'cloning' | 'ready' | 'failed' | 'purging';
-
-export interface WorkspaceRepo {
-    owner: string;
-    name: string;
-    status: CloneStatus;
-    /** Why a clone failed, in git's own words. Null unless `status` is 'failed'. */
-    error: string | null;
-    selectedAt: string;
-    readyAt: string | null;
-    /**
-     * On-disk facts. All three are null until the checkout exists AND has been measured — never
-     * zero. A repository that is still cloning has no size, and `0 B` would be a claim.
-     */
-    branch: string | null;
-    lastCommit: { sha: string; at: string; headline: string } | null;
-    sizeBytes: number | null;
-    /** The repo's package cache (`.bellows.yaml` `environment.cache`); null when unmeasured. */
-    cacheSizeBytes: number | null;
-}
-
-/** A deselected checkout that is still on disk (issue #92): measurable, and manually deletable. */
-export interface OrphanedRepo {
-    owner: string;
-    name: string;
-    status: CloneStatus;
-    error: string | null;
-    sizeBytes: number | null;
-}
-
 export interface WorkspaceExecutor {
     /** The row's id: the by-id remove and suspend routes address it (issue 440). */
     id: string;
@@ -76,17 +46,6 @@ export interface WorkspaceExecutorFull extends WorkspaceExecutor {
 }
 
 export interface WorkspacePayload {
-    /** Null when this deployment has no workspace root, which is a supported way to run. */
-    root: string | null;
-    repos: WorkspaceRepo[];
-    /** Deselected, still on disk. Now with sizes, and with a delete of one's own. */
-    orphaned: OrphanedRepo[];
-    /**
-     * The member's checkout usage: selected and orphaned clones summed. Null until every
-     * INCLUDED checkout has a measurement — a partial sum would read as the whole truth. The
-     * driver's `.worktrees/` and other workspace files are not checkouts and are not counted.
-     */
-    checkoutTotalBytes: number | null;
     executors: WorkspaceExecutor[];
     /** The organization's profiles, selection metadata only (issue 391). */
     orgExecutors: OrgExecutor[];
@@ -102,7 +61,6 @@ export interface UseWorkspace {
     loading: boolean;
     error: string | null;
     saving: boolean;
-    save: (repos: { owner: string; name: string }[]) => Promise<string | null>;
     saveExecutors: (
         executors: { name: string; type: string; config: object; gateFixRounds: number; suspended?: boolean }[]
     ) => Promise<string | null>;
@@ -115,8 +73,6 @@ export interface UseWorkspace {
      * name, either scope, without touching the shared profile or anyone else's default.
      */
     setDefaultExecutor: (scope: ExecutorScope, name: string) => Promise<string | null>;
-    /** Deletes ONE orphaned checkout from disk, after its confirmation (issue #92). */
-    purge: (owner: string, name: string) => Promise<string | null>;
     /**
      * The whole executor list with configs — the read the dialog opens with. Never part of the
      * poll: the payload holds the credentials the member pasted, so it is fetched once per dialog
@@ -148,57 +104,6 @@ async function putJson(
     } catch (e) {
         return { ok: false as const, error: (e as Error).message };
     }
-}
-
-/**
- * Whether the poll can stand down: every repo settled AND no checkout being deleted. A `purging`
- * orphan keeps the poll armed — the UI shows "Deleting…" until the row either comes back `failed`
- * or disappears, and disappearance IS the completion.
- */
-export const payloadSettled = (data: WorkspacePayload | null): boolean =>
-    !data ||
-    (data.repos.every((repo) => repo.status === 'ready' || repo.status === 'failed') &&
-        data.orphaned.every((orphan) => orphan.status !== 'purging'));
-
-const POLL_BACKOFF_FAST_WINDOW_MS = 60_000;
-const POLL_BACKOFF_FAST_DELAY_MS = 2_000;
-const POLL_BACKOFF_SLOW_WINDOW_MS = 300_000;
-const POLL_BACKOFF_SLOW_DELAY_MS = 5_000;
-const POLL_BACKOFF_MAX_DELAY_MS = 15_000;
-const HTTP_STATUS_NO_CONTENT = 204;
-
-/**
- * How long to wait before polling again, given how long we have been waiting already.
- *
- * A pure function, and exported, so the offline suite can assert the shape of the back-off without
- * fake timers. Two seconds matches the dashboard while somebody is watching a clone start; a clone
- * that has been running for five minutes is a big repository, and asking every two seconds for the
- * next twenty minutes is a query per member per tick for a value that changes once.
- */
-export function pollDelay(elapsedMs: number): number {
-    if (elapsedMs < POLL_BACKOFF_FAST_WINDOW_MS) return POLL_BACKOFF_FAST_DELAY_MS;
-    if (elapsedMs < POLL_BACKOFF_SLOW_WINDOW_MS) return POLL_BACKOFF_SLOW_DELAY_MS;
-    return POLL_BACKOFF_MAX_DELAY_MS;
-}
-
-/**
- * Re-arms the poll unless every repo has settled, in which case the back-off clock resets so the
- * next `save()` starts counting from zero rather than picking up wherever the last run left off.
- */
-function scheduleNextPoll(
-    body: WorkspacePayload,
-    waitingSince: { current: number | null },
-    scheduleTimeout: (delay: number) => void
-): void {
-    if (payloadSettled(body)) {
-        waitingSince.current = null;
-        return;
-    }
-    waitingSince.current ??= Date.now();
-    // Nothing to see while the tab is hidden, and a background tab polling forever is the most
-    // common way a dashboard becomes somebody's battery complaint.
-    const delay = document.hidden ? POLL_BACKOFF_MAX_DELAY_MS : pollDelay(Date.now() - waitingSince.current);
-    scheduleTimeout(delay);
 }
 
 /**
@@ -277,72 +182,30 @@ export const putDefaultExecutor = async (
     }
 };
 
-/**
- * Deletes one orphaned checkout from disk (issue #92). 202 (removal running) and 204 (nothing to
- * remove) are both success: the poll decides what the member sees — "Deleting…", the failure, or
- * the row gone. A refusal (selected, still cloning, tasks in flight, already deleting) is the
- * dialog's error message.
- */
-export const purgeOrphan = async (
-    owner: string,
-    name: string
-): Promise<{ ok: true } | { ok: false; error: string }> => {
-    try {
-        const response = await fetch(`/api/workspace/repos/${owner}/${name}`, { method: 'DELETE' });
-        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-            reportUnauthenticated();
-            return { ok: false as const, error: 'Your session expired' };
-        }
-        if (!response.ok && response.status !== HTTP_STATUS_NO_CONTENT) {
-            return { ok: false as const, error: (await refusalOf(response, 'Could not delete the checkout')).error };
-        }
-        return { ok: true as const };
-    } catch (e) {
-        return { ok: false as const, error: (e as Error).message };
-    }
-};
-
 export function useWorkspace(): UseWorkspace {
     const [data, setData] = useState<WorkspacePayload | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
-    const timer = useRef<number | null>(null);
-    /** When the current run of unsettled polling began, for the back-off above. */
-    const waitingSince = useRef<number | null>(null);
-
     const poll = useCallback(async (signal: AbortSignal) => {
-        // A timer that fired between the abort and this call would otherwise start a fetch nothing
-        // can stop.
-        if (signal.aborted) return;
         try {
             const response = await fetch('/api/workspace', { signal });
 
-            // Handed to the gate rather than rendered as a banner, for the reason useStats gives:
-            // every later poll would 401 too, so a banner would never clear.
+            // Handed to the gate rather than rendered as a banner, for the reason useStats gives.
             if (response.status === HTTP_STATUS_UNAUTHORIZED) {
                 reportUnauthenticated();
                 setLoading(false);
                 return;
             }
             if (!response.ok) {
-                // Deliberately does not clear `data`: what is on screen is still the last true
-                // answer, and blanking the page on one failed poll is worse than being stale.
+                // Deliberately does not clear `data`: what is on screen is still the last true answer.
                 setError((await refusalOf(response)).error);
                 setLoading(false);
                 return;
             }
-
-            const body = (await response.json()) as WorkspacePayload;
-            setData(body);
+            setData((await response.json()) as WorkspacePayload);
             setError(null);
             setLoading(false);
-
-            // This list only changes when the member acts, and they act through `save`, which
-            // re-arms the poll itself — so a settled answer stops the chain entirely.
-            scheduleNextPoll(body, waitingSince, (delay) => {
-                timer.current = window.setTimeout(() => void poll(signal), delay);
-            });
         } catch (e) {
             if (signal.aborted) return;
             setError((e as Error).message);
@@ -350,19 +213,11 @@ export function useWorkspace(): UseWorkspace {
         }
     }, []);
 
-    /*
-     * One live polling chain, enforced by aborting the previous one.
-     *
-     * `refresh()` used to start a poll without cancelling the fetch already in flight. Both chains
-     * would then complete and both would call `setTimeout`, but only the last id landed in
-     * `timer.current` — so the other became an orphan that polled every two seconds until the page
-     * was closed. `save()` calls `refresh()`, which made every save that raced a tick permanently
-     * double the request rate.
-     */
+    // One read at a time: a newer read aborts the one in flight. No timers — the lists change only
+    // when the member writes, and every write re-reads.
     const controller = useRef<AbortController | null>(null);
     const start = useCallback(() => {
         controller.current?.abort();
-        if (timer.current !== null) window.clearTimeout(timer.current);
         const own = new AbortController();
         controller.current = own;
         void poll(own.signal);
@@ -372,28 +227,8 @@ export function useWorkspace(): UseWorkspace {
         start();
         return () => {
             controller.current?.abort();
-            if (timer.current !== null) window.clearTimeout(timer.current);
         };
     }, [start]);
-
-    /** Returns an error message, or null on success. The dialog shows it in place. */
-    const save = useCallback(
-        async (repos: { owner: string; name: string }[]): Promise<string | null> => {
-            setSaving(true);
-            try {
-                const result = await putJson('/api/workspace/repos', { repos }, 'Could not save the selection');
-                if (!result.ok) return result.error;
-                // 202: the clones have not started yet. Re-arm the poll immediately so the page
-                // shows them go from queued to cloning rather than waiting out a back-off.
-                waitingSince.current = Date.now();
-                start();
-                return null;
-            } finally {
-                setSaving(false);
-            }
-        },
-        [start]
-    );
 
     /**
      * The executor PUT is not asynchronous — nothing clones — so no re-arm timing is needed.
@@ -430,35 +265,15 @@ export function useWorkspace(): UseWorkspace {
         [start]
     );
 
-    /**
-     * The manual purge. The answer is 202 or 204 and the row does the talking from here — the
-     * poll rides through `purging` ("Deleting…") to `failed` or disappearance, which is the
-     * completion the page shows.
-     */
-    const purge = useCallback(
-        async (owner: string, name: string): Promise<string | null> => {
-            const result = await purgeOrphan(owner, name);
-            if (result.ok) {
-                waitingSince.current = Date.now();
-                start();
-                return null;
-            }
-            return result.error;
-        },
-        [start]
-    );
-
     return {
         data,
         loading,
         error,
         saving,
-        save,
         saveExecutors,
         removeExecutor,
         suspendExecutor,
         setDefaultExecutor,
-        purge,
         listExecutorConfigs,
         refresh: start,
     };

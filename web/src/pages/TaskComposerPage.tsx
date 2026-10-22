@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { QueueTaskInput } from '../api/useTasks.js';
+import { trackedRepos } from '../api/useRepos.js';
 import { useComposerDraftStore } from '../composer-draft.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { TaskComposer, TaskComposerSkeleton } from '../panels/TaskComposer.js';
@@ -25,11 +26,12 @@ import { useTasksPage } from './TasksLayout.js';
  * hides the workflow chip and its parameters — every task runs in objective mode.
  */
 export function TaskComposerPage() {
-    const { tasks, workspace, sessionLoading } = useTasksPage();
+    const { tasks, workspace, repos, sessionLoading } = useTasksPage();
     const draftStore = useComposerDraftStore();
     const navigate = useNavigate();
     const [sending, setSending] = useState(false);
     const [actionError, setActionError] = useState<string | null>(null);
+    const tracked = trackedRepos(repos);
 
     const send = async (input: QueueTaskInput): Promise<string | null> => {
         setActionError(null);
@@ -55,7 +57,10 @@ export function TaskComposerPage() {
                 <TaskComposerSkeleton />
             ) : (
                 <TaskComposer
-                    repos={workspace.data?.repos.map(({ owner, name, status }) => ({ owner, name, status })) ?? null}
+                    repos={tracked.repos}
+                    reposError={tracked.error}
+                    onRetryRepos={repos.refresh}
+                    workspaceLoaded={workspace.data !== null}
                     workspaceError={workspace.error}
                     onRetryWorkspace={workspace.refresh}
                     executors={composerExecutorOptions(

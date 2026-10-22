@@ -33,16 +33,17 @@ function ShellStub() {
 let seen: {
     shellTasks: UseTasks | undefined;
     workspace: unknown;
+    repos: unknown;
     env: unknown;
     guard: ReturnType<typeof useUnsavedChanges> | undefined;
-} = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
+} = { shellTasks: undefined, workspace: undefined, repos: undefined, env: undefined, guard: undefined };
 
 /** Reads both contexts the way the settings pages do. */
 function Probe() {
     const shell = useShell();
     const page = useSettingsPage();
     const guard = useUnsavedChanges();
-    seen = { shellTasks: shell.tasks, workspace: page.workspace, env: page.env, guard };
+    seen = { shellTasks: shell.tasks, workspace: page.workspace, repos: page.repos, env: page.env, guard };
     return null;
 }
 
@@ -65,28 +66,30 @@ function settingsRouter() {
 }
 
 describe('settings area wiring', () => {
-    it("publishes the shell context AND both polls to the area's pages", () => {
-        seen = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
+    it("publishes the shell context AND the three reads to the area's pages", () => {
+        seen = { shellTasks: undefined, workspace: undefined, repos: undefined, env: undefined, guard: undefined };
         renderToStaticMarkup(<RouterProvider router={settingsRouter()} />);
         // Identity, not a lookalike: the page must see the very poll instance the shell owns.
         expect(seen.shellTasks).toBe(fakeTasks);
-        // Both configuration polls are present alongside it, one instance for the whole tree.
+        // The configuration reads are present alongside it, one instance for the whole tree.
         expect(seen.workspace).toBeTruthy();
+        expect(seen.repos).toBeTruthy();
         expect(seen.env as UseEnv | undefined).toBeTruthy();
         expect(seen.workspace as UseWorkspace | undefined).toBeTruthy();
     });
 
-    it('keeps the layout the one owner of both configuration polls', () => {
-        // Exactly one useWorkspace() and one useEnv() call: a second instance would double the
-        // request rate and fork the pages' view of the data.
+    it('keeps the layout the one owner of the configuration reads', () => {
+        // Exactly one useWorkspace(), useRepos() and useEnv() call: a second instance would double
+        // the request rate and fork the pages' view of the data.
         const source = readFileSync(fileURLToPath(new URL('../src/pages/SettingsLayout.tsx', import.meta.url)), 'utf8');
         expect(source.match(/useWorkspace\(/g) ?? []).toHaveLength(1);
+        expect(source.match(/useRepos\(/g) ?? []).toHaveLength(1);
         expect(source.match(/useEnv\(/g) ?? []).toHaveLength(1);
     });
 
     it('starts no repository or executor-config request from the overview (#180)', () => {
-        // The overview derives everything from the polls the layout already owns: repository
-        // facts come from the workspace payload, and the executor-config read carries
+        // The overview derives everything from the reads the layout already owns: repository
+        // facts come from the layout's /api/repos read, and the executor-config read carries
         // credentials — it belongs to the dialog that opens with it, never to a page render.
         const source = readFileSync(
             fileURLToPath(new URL('../src/pages/SettingsOverviewPage.tsx', import.meta.url)),
@@ -101,7 +104,7 @@ describe('settings area wiring', () => {
         // The guard is the layout's own context, deliberately NOT on the outlet context: the
         // polls keep the shape they always had (issue 182). The layout must be mounted inside a
         // data router, because its useBlocker throws without one — this mount is the pin.
-        seen = { shellTasks: undefined, workspace: undefined, env: undefined, guard: undefined };
+        seen = { shellTasks: undefined, workspace: undefined, repos: undefined, env: undefined, guard: undefined };
         renderToStaticMarkup(<RouterProvider router={settingsRouter()} />);
         expect(seen.guard).toBeTruthy();
         expect(typeof seen.guard?.registerDraft).toBe('function');

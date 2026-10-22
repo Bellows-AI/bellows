@@ -22,29 +22,6 @@ export function duration(hours: number | null | undefined): string {
     return `${num(hours / 24, 1)}d`;
 }
 
-/** Disk sizes step in powers of 1024. */
-const BYTES_PER_UNIT = 1024;
-
-/**
- * A checkout's size on disk.
- *
- * Null is an em dash like everything else here, and it matters more than usual: a repository that
- * is still cloning has no size, and `0 B` would read as an empty repository rather than as one
- * nobody has measured. Powers of 1024, because this is disk.
- */
-export function bytes(value: number | null | undefined): string {
-    if (value === null || value === undefined) return '—';
-    if (value < BYTES_PER_UNIT) return `${Math.round(value)} B`;
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    let size = value / BYTES_PER_UNIT;
-    let unit = 0;
-    while (size >= BYTES_PER_UNIT && unit < units.length - 1) {
-        size /= BYTES_PER_UNIT;
-        unit += 1;
-    }
-    return `${num(size, size < 10 ? 1 : 0)} ${units[unit]}`;
-}
-
 /** Just the day. A commit's time of day is noise in a table of repositories. */
 export function commitDate(iso: string | null | undefined): string {
     if (!iso) return '—';

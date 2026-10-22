@@ -109,7 +109,6 @@ export const OPEN_BOARD_SESSION: Session = {
     account: { createdAt: null, lastLoginAt: null },
     organization: { id: 'local', name: 'Local' },
     organizations: [],
-    workspacePath: null,
     mode: 'none',
 };
 

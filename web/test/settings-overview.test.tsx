@@ -3,20 +3,20 @@ import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { EnvPayload, UseEnv } from '../src/api/useEnv.js';
 import type { Session } from '../src/api/useSession.js';
-import type { WorkspacePayload, UseWorkspace, WorkspaceRepo } from '../src/api/useWorkspace.js';
+import type { InstallationRepo, ReposPayload, UseRepos } from '../src/api/useRepos.js';
+import type { WorkspacePayload, UseWorkspace } from '../src/api/useWorkspace.js';
 import { SettingsOverviewPage } from '../src/pages/SettingsOverviewPage.js';
 import { deriveReadiness } from '../src/settings/readiness.js';
 import { expectNoPlaceholder, memberSession } from './fixtures.js';
-import { rootlessWorkspace } from './settings-board.js';
 
 /**
  * The configuration overview's pure derivation (issue 180): five ordered readiness items computed
  * from exactly what SettingsLayout already polls — the session, the shared workspace poll and the
  * shared environment read. Presentation-neutral on purpose: no JSX, no fetches, no color words;
- * the page renders what this returns. The precedence rules the issue pins — failed repositories
- * outrank in-progress ones, a missing root outranks empty arrays, initial loading never reports
- * zero, and stale data stays visible with its error rendered separately — are pinned here, at the
- * only level where every branch can be reached without a browser.
+ * the page renders what this returns. The precedence rules the issue pins — a failed or errored
+ * repositories read is never an empty list, initial loading never reports zero, and stale data
+ * stays visible with its error rendered separately — are pinned here, at the only level where
+ * every branch can be reached without a browser.
  */
 
 const session: Pick<Session, 'organization' | 'role'> = {
@@ -25,28 +25,25 @@ const session: Pick<Session, 'organization' | 'role'> = {
 };
 
 const workspaceData = (over: Partial<WorkspacePayload> = {}): WorkspacePayload => ({
-    root: '/workspaces/octocat',
-    repos: [],
-    orphaned: [],
-    checkoutTotalBytes: 0,
     executors: [],
     orgExecutors: [],
     defaultExecutor: null,
     ...over,
 });
 
-const repo = (over: Partial<WorkspaceRepo>): WorkspaceRepo => ({
+const repo = (name: string): InstallationRepo => ({
     owner: 'acme',
-    name: 'web',
-    status: 'ready' as const,
-    error: null,
-    selectedAt: '2026-01-01T00:00:00Z',
-    readyAt: '2026-01-01T00:01:00Z',
-    branch: 'main',
-    lastCommit: null,
-    sizeBytes: 1024,
-    cacheSizeBytes: null,
-    ...over,
+    name,
+    private: true,
+    defaultBranch: 'main',
+    pushedAt: null,
+});
+
+/** The `/api/repos` answer the overview reads: the tracked list, and `meta.error` when GitHub failed. */
+const reposData = (names: string[] = [], error: string | null = null): ReposPayload => ({
+    repos: names.map(repo),
+    installation: null,
+    meta: { fetchedAt: '2026-01-01T00:00:00Z', error },
 });
 
 const envRow = (over: { name: string; isSecret?: boolean }) => ({
@@ -62,11 +59,13 @@ const input = (
     over: {
         session?: Pick<Session, 'organization' | 'role'> | null;
         workspace?: { data?: WorkspacePayload | null; loading?: boolean; error?: string | null };
+        repos?: { data?: ReposPayload | null; loading?: boolean; error?: string | null };
         environment?: { data?: EnvPayload | null; loading?: boolean; error?: string | null };
     } = {}
 ) => ({
     session: over.session === undefined ? session : over.session,
     workspace: { data: null, loading: false, error: null, ...over.workspace },
+    repos: { data: null, loading: false, error: null, ...over.repos },
     environment: { data: null, loading: false, error: null, ...over.environment },
 });
 
@@ -98,6 +97,7 @@ describe('deriveReadiness — loading never reports zero', () => {
                 input({
                     session: null,
                     workspace: { loading: true },
+                    repos: { loading: true },
                     environment: { loading: true },
                 })
             )
@@ -126,115 +126,83 @@ describe('deriveReadiness — initial failure versus stale data', () => {
         expect(items.get('workspace')?.status).toBe('Workspace status unavailable');
         expect(items.get('workspace')?.tone).toBe('attention');
         expect(JSON.stringify(items.get('workspace')?.facts)).toContain('The workspace request failed');
-        expect(items.get('repositories')?.status).toBe('Repository status unavailable');
         expect(items.get('executors')?.status).toBe('Executor status unavailable');
+    });
+
+    it('reports repositories unavailable, with the named error, when the first read fails', () => {
+        const items = byId(...deriveReadiness(input({ repos: { data: null, error: 'Repositories request failed' } })));
+        expect(items.get('repositories')?.status).toBe('Repository status unavailable');
+        expect(items.get('repositories')?.tone).toBe('attention');
+        expect(JSON.stringify(items.get('repositories')?.facts)).toContain('Repositories request failed');
     });
 
     it('keeps deriving from stale data when a later poll fails — the error is not the item', () => {
         const items = byId(
             ...deriveReadiness(
                 input({
-                    workspace: {
-                        data: workspaceData({ repos: [repo({ status: 'ready', name: 'web' })] }),
-                        error: 'poll failed',
-                    },
+                    workspace: { data: workspaceData(), error: 'poll failed' },
+                    repos: { data: reposData(['web']), error: 'refresh failed' },
                 })
             )
         );
         expect(items.get('workspace')?.status).toBe('Workspace available');
-        expect(items.get('repositories')?.status).toBe('1 repository ready');
+        expect(items.get('repositories')?.status).toBe('1 repository tracked');
         expect(JSON.stringify(items.get('workspace')?.facts)).not.toContain('poll failed');
+        expect(JSON.stringify(items.get('repositories')?.facts)).not.toContain('refresh failed');
     });
 });
 
-describe('deriveReadiness — root null blocks tasks', () => {
-    const items = byId(...deriveReadiness(input({ workspace: { data: workspaceData({ root: null }) } })));
-
-    it('says the workspace is not configured and tasks cannot run', () => {
-        expect(items.get('workspace')?.status).toBe('Workspace is not configured; tasks cannot run');
-        expect(items.get('workspace')?.tone).toBe('attention');
-        expect(items.get('workspace')?.action).toEqual({ label: 'Review workspace setup', to: '/settings/workspace' });
-    });
-
-    it('roots the repository item at the missing root, outranking the empty selection', () => {
-        expect(items.get('repositories')?.status).toBe('Repository checkouts require a workspace root');
-        expect(items.get('repositories')?.action).toEqual({
-            label: 'Review workspace setup',
-            to: '/settings/workspace',
-        });
-    });
-
-    it('makes executors unavailable without calling the empty list an error', () => {
-        expect(items.get('executors')?.status).toBe('Personal executors are unavailable');
-        expect(items.get('executors')?.tone).toBe('attention');
-        expect(JSON.stringify(items.get('executors')?.facts)).toContain('Tasks cannot run');
-        expect(items.get('executors')?.action).toEqual({ label: 'Review workspace setup', to: '/settings/workspace' });
-    });
-});
-
-describe('deriveReadiness — repositories by repo state', () => {
-    it('failed repositories outrank queued and cloning ones, carrying names and reasons', () => {
-        const items = byId(
-            ...deriveReadiness(
-                input({
-                    workspace: {
-                        data: workspaceData({
-                            repos: [
-                                repo({ name: 'web', status: 'ready' }),
-                                { ...repo({ name: 'api' }), status: 'failed', error: 'authentication failed' },
-                                repo({ name: 'cli', status: 'cloning' }),
-                            ],
-                        }),
-                    },
-                })
-            )
-        );
-        expect(items.get('repositories')?.status).toBe('1 repository needs attention');
-        expect(items.get('repositories')?.tone).toBe('attention');
-        expect(JSON.stringify(items.get('repositories')?.facts)).toContain('acme/api — authentication failed');
-        expect(items.get('repositories')?.action).toEqual({ label: 'Review repository status', to: '/settings/repos' });
-    });
-
-    it('reports setup while clones are queued or cloning and none failed', () => {
-        const items = byId(
-            ...deriveReadiness(
-                input({
-                    workspace: {
-                        data: workspaceData({
-                            repos: [repo({ name: 'web', status: 'queued' }), repo({ name: 'api', status: 'cloning' })],
-                        }),
-                    },
-                })
-            )
-        );
-        expect(items.get('repositories')?.status).toBe('Setting up 2 repositories');
-        expect(items.get('repositories')?.tone).toBe('pending');
-        expect(items.get('repositories')?.action).toEqual({ label: 'Review repository status', to: '/settings/repos' });
-    });
-
-    it('reads an empty selection with a root as a neutral not-yet-chosen state', () => {
+describe('deriveReadiness — the workspace item has no root', () => {
+    it('is available once the poll answers, with no path fact', () => {
         const items = byId(...deriveReadiness(input({ workspace: { data: workspaceData() } })));
-        expect(items.get('repositories')?.status).toBe('No repositories enabled for your workspace');
-        expect(items.get('repositories')?.tone).toBe('info');
-        expect(items.get('repositories')?.action).toEqual({ label: 'Choose repositories', to: '/settings/repos' });
+        expect(items.get('workspace')?.status).toBe('Workspace available');
+        expect(items.get('workspace')?.tone).toBe('ok');
+        expect(items.get('workspace')?.facts).toEqual([]);
+        expect(items.get('workspace')?.action).toEqual({ label: 'Open workspace settings', to: '/settings/workspace' });
     });
 
-    it('counts ready repositories as ready', () => {
-        const items = byId(
-            ...deriveReadiness(
-                input({
-                    workspace: { data: workspaceData({ repos: [repo({ name: 'web' }), repo({ name: 'api' })] }) },
-                })
-            )
-        );
-        expect(items.get('repositories')?.status).toBe('2 repositories ready');
+    it('never calls the executors unavailable for a missing root', () => {
+        const items = byId(...deriveReadiness(input({ workspace: { data: workspaceData() } })));
+        expect(items.get('executors')?.tone).not.toBe('attention');
+        expect(JSON.stringify(items)).not.toMatch(/workspace root|Tasks cannot run/);
+    });
+});
+
+describe('deriveReadiness — repositories come from the tracked list', () => {
+    it('counts tracked repositories, with no clone state to report', () => {
+        const items = byId(...deriveReadiness(input({ repos: { data: reposData(['web', 'api']) } })));
+        expect(items.get('repositories')?.status).toBe('2 repositories tracked');
         expect(items.get('repositories')?.tone).toBe('ok');
         expect(items.get('repositories')?.action).toEqual({ label: 'Review repositories', to: '/settings/repos' });
+    });
+
+    it('agrees the count for one repository', () => {
+        const items = byId(...deriveReadiness(input({ repos: { data: reposData(['web']) } })));
+        expect(items.get('repositories')?.status).toBe('1 repository tracked');
+    });
+
+    it('reads a confirmed empty list as a neutral state', () => {
+        const items = byId(...deriveReadiness(input({ repos: { data: reposData() } })));
+        expect(items.get('repositories')?.status).toBe('No repositories tracked');
+        expect(items.get('repositories')?.tone).toBe('info');
+        expect(items.get('repositories')?.action).toEqual({ label: 'Review repositories', to: '/settings/repos' });
+    });
+
+    it('never reads an empty list that carries meta.error as "no repositories tracked"', () => {
+        const items = byId(...deriveReadiness(input({ repos: { data: reposData([], 'GitHub is unreachable') } })));
+        expect(items.get('repositories')?.status).toBe('Repository status unavailable');
+        expect(items.get('repositories')?.tone).toBe('attention');
+        expect(JSON.stringify(items.get('repositories')?.facts)).toContain('GitHub is unreachable');
+    });
+
+    it('keeps the last good rows when meta.error rides beside them', () => {
+        const items = byId(...deriveReadiness(input({ repos: { data: reposData(['web'], 'GitHub is unreachable') } })));
+        expect(items.get('repositories')?.status).toBe('1 repository tracked');
     });
 });
 
 describe('deriveReadiness — executors', () => {
-    it('reads zero rows with a root as the deployment default, not an error', () => {
+    it('reads zero rows as the deployment default, not an error', () => {
         const items = byId(...deriveReadiness(input({ workspace: { data: workspaceData() } })));
         expect(items.get('executors')?.status).toBe('Using the deployment default');
         expect(items.get('executors')?.tone).toBe('info');
@@ -378,7 +346,6 @@ describe('deriveReadiness — organization identity', () => {
 
 const fullSession = memberSession({
     user: { githubUserId: 1 },
-    workspacePath: '/workspaces/octocat',
     mode: 'none',
 });
 
@@ -392,6 +359,13 @@ const idleWorkspace = {
     listExecutorConfigs: async () => null,
 } as unknown as UseWorkspace;
 
+const idleRepos = {
+    data: null,
+    loading: true,
+    error: null,
+    refresh: () => {},
+} as unknown as UseRepos;
+
 const idleEnv = {
     data: null,
     loading: true,
@@ -404,7 +378,12 @@ const idleEnv = {
 } as unknown as UseEnv;
 
 const renderOverview = (
-    overrides: { session?: Session | null; workspace?: Partial<UseWorkspace>; env?: Partial<UseEnv> } = {}
+    overrides: {
+        session?: Session | null;
+        workspace?: Partial<UseWorkspace>;
+        repos?: Partial<UseRepos>;
+        env?: Partial<UseEnv>;
+    } = {}
 ): string =>
     renderToStaticMarkup(
         <MemoryRouter initialEntries={['/settings']}>
@@ -416,6 +395,7 @@ const renderOverview = (
                                 session: overrides.session === undefined ? fullSession : overrides.session,
                                 sessionLoading: false,
                                 workspace: { ...idleWorkspace, ...overrides.workspace },
+                                repos: { ...idleRepos, ...overrides.repos },
                                 env: { ...idleEnv, ...overrides.env },
                             }}
                         />
@@ -483,10 +463,6 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces/octocat',
-                    repos: [repo({ name: 'web' })],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [
                         {
                             id: 'e-fast',
@@ -501,6 +477,7 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
                     defaultExecutor: { scope: 'user', name: 'fast-box' },
                 },
             },
+            repos: { loading: false, data: reposData(['web']) },
             env: { loading: false, data: emptyEnv },
         });
         expect(html).toContain('href="/settings/organization"');
@@ -509,7 +486,7 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         expect(html).toContain('href="/settings/repos"');
         expect(html).toContain('href="/settings/executors"');
         expect(html).toContain('Workspace available');
-        expect(html).toContain('1 repository ready');
+        expect(html).toContain('1 repository tracked');
         expect(html).toContain('1 personal executor available');
         expect(html).toContain('No custom environment values');
     });
@@ -520,41 +497,28 @@ describe('SettingsOverviewPage (render) — readiness states', () => {
         const answered = render({
             workspace: {
                 loading: false,
-                data: {
-                    root: '/workspaces/octocat',
-                    repos: [repo({ name: 'web' })],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
+                data: workspaceData(),
             },
+            repos: { loading: false, data: reposData(['web']) },
             env: { loading: false, data: emptyEnv },
         });
         expect(answered).toContain('<p class="readiness-status pill pill-ok">Workspace available</p>');
         expect(answered).toContain('<p class="readiness-status pill">No custom environment values</p>');
         expect(answered).toContain('<li class="readiness-item">');
-        const rootless = render({
-            workspace: rootlessWorkspace(0),
-            env: { loading: false, data: emptyEnv },
-        });
-        expect(rootless).toContain(
-            '<p class="readiness-status pill pill-bad">Workspace is not configured; tasks cannot run</p>'
-        );
         expect(render({ session: null })).toContain(
             '<p class="readiness-status pill pill-warn">Checking workspace…</p>'
         );
     });
 
-    it('sends a missing root to the workspace setup page, never a generic fix', () => {
+    it('says a failed repositories read is unavailable, never "no repositories tracked"', () => {
         const html = render({
-            workspace: rootlessWorkspace(0),
+            workspace: { loading: false, data: workspaceData() },
+            repos: { loading: false, data: null, error: 'the repositories read failed' },
             env: { loading: false, data: emptyEnv },
         });
-        expect(html).toContain('Workspace is not configured; tasks cannot run');
-        const MIN_WORKSPACE_LINKS = 3;
-        expect((html.match(/href="\/settings\/workspace"/g) ?? []).length).toBeGreaterThanOrEqual(MIN_WORKSPACE_LINKS);
+        expect(html).toContain('Repository status unavailable');
+        expect(html).toContain('the repositories read failed');
+        expect(html).not.toContain('No repositories tracked');
     });
 
     it('renders a later poll failure as a separate status line under the last-good items', () => {

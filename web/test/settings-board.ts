@@ -3,7 +3,7 @@ import type { ConnectionView } from '../src/api/connections.js';
 import type { OrgExecutorFull } from '../src/api/orgExecutors.js';
 import type { InstallationRepo } from '../src/api/useRepos.js';
 import type { Session } from '../src/api/useSession.js';
-import type { WorkspaceExecutorFull, WorkspacePayload, WorkspaceRepo } from '../src/api/useWorkspace.js';
+import type { WorkspaceExecutorFull, WorkspacePayload } from '../src/api/useWorkspace.js';
 import type { FetchCall, FetchHandler, FetchReply } from './dom.js';
 
 /**
@@ -14,9 +14,7 @@ import type { FetchCall, FetchHandler, FetchReply } from './dom.js';
 
 export interface SettingsBoard {
     role: Role;
-    root: string | null;
     installationRepos: InstallationRepo[];
-    repos: WorkspaceRepo[];
     executors: WorkspaceExecutorFull[];
     orgExecutors: (OrgExecutorFull & { suspended: boolean })[];
     connections: ConnectionView[];
@@ -29,9 +27,7 @@ const id = () => `00000000-0000-4000-8000-${(++nextId).toString().padStart(12, '
 export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsBoard {
     return {
         role: ADMIN_ROLE,
-        root: '/workspaces/e2e',
         installationRepos: [],
-        repos: [],
         executors: [],
         orgExecutors: [],
         connections: [],
@@ -39,20 +35,10 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
     };
 }
 
-/** A loaded workspace read on a deployment with no workspace root: nothing checked out, nothing selected. */
-export const rootlessWorkspace = (
-    checkoutTotalBytes: number | null = null
-): { loading: false; data: WorkspacePayload } => ({
+/** A loaded workspace read with nothing configured: no executors of either scope. */
+export const emptyWorkspace = (): { loading: false; data: WorkspacePayload } => ({
     loading: false,
-    data: {
-        root: null,
-        repos: [],
-        orphaned: [],
-        checkoutTotalBytes,
-        executors: [],
-        orgExecutors: [],
-        defaultExecutor: null,
-    },
+    data: { executors: [], orgExecutors: [], defaultExecutor: null },
 });
 
 export const installationRepo = (owner: string, name: string): InstallationRepo => ({
@@ -104,7 +90,6 @@ function session(board: SettingsBoard): Session {
         account: { createdAt: AT, lastLoginAt: AT },
         organization: { id: 'org1', name: 'Bellows-AI' },
         organizations: [{ id: 'org1', name: 'Bellows-AI' }],
-        workspacePath: board.root,
         mode: 'github',
     };
 }
@@ -119,10 +104,6 @@ function defaultExecutor(board: SettingsBoard) {
 
 function workspace(board: SettingsBoard) {
     return {
-        root: board.root,
-        repos: board.repos,
-        orphaned: [],
-        checkoutTotalBytes: null,
         executors: board.executors.map(({ config: _config, ...row }) => row),
         orgExecutors: board.orgExecutors.map(({ name, type, createdAt, suspended }) => ({
             name,

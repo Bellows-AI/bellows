@@ -107,9 +107,7 @@ export default defineConfig({
             use: { ...devices['Desktop Chrome'] },
         },
         {
-            // These specs need a signed-in member, and workspace.spec.ts also needs a server with a
-            // real ORG_WORKSPACE_ROOT — which the open board deliberately does not have, so that a
-            // picker never appears in the visual check.
+            // These specs need a signed-in member, which the open board never has.
             name: 'auth',
             testMatch: AUTH_SPECS,
             use: { ...devices['Desktop Chrome'], baseURL: `http://127.0.0.1:${AUTH_PORT}` },
@@ -181,12 +179,6 @@ export default defineConfig({
                 GITHUB_OAUTH_USER_URL: `http://127.0.0.1:${IDP_PORT}/user`,
                 // First sign-in materializes the installation the stub reports as the member's
                 // organization — the half of the flow most worth driving in a browser (#99).
-                // A REAL workspace root, so signing in provisions a real directory and the
-                // Workspace page has something to report. Under artifacts/ and never under $HOME:
-                // this run creates directories, and it must not do that anywhere a developer
-                // keeps work. The open board above deliberately has none, which is what keeps a
-                // picker from ever appearing in the visual check.
-                ORG_WORKSPACE_ROOT: `${root}artifacts/e2e-workspaces`,
                 // The seed's stored-repo rows land under these orgs (same ids the stub IdP
                 // reports as installations), so the repositories page's org-scoped stored
                 // fallback offers the seeded repository to the signed-in member.
