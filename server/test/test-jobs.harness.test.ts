@@ -297,6 +297,30 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('upstream:0');
     });
 
+    // Issue #831: two drivers on two boards under one shared admission budget, one of them killed.
+    it('the capacity phase runs two boards and two drivers under one shared budget, kills one, and samples the rows', () => {
+        const start = SCRIPT.indexOf("echo '# capacity'");
+        expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# run deadline'"));
+        expect(start).toBeLessThan(SCRIPT.indexOf("echo '# review'"));
+        const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# review'"));
+        expect(phase).toContain('ADMISSION_MAX_RUNNING=2');
+        expect(phase).toContain('AUTH_MODE=github');
+        expect(phase).toContain('DRIVER_WORKER=cap-a');
+        expect(phase).toContain('DRIVER_WORKER=cap-b');
+        expect(phase).toContain('kill -9');
+        expect(phase).toContain('claimed_by');
+        expect(phase).toContain('admission_slot_global');
+        expect(phase).toContain('"$TOOK_OVER"');
+        // The sampler reads under a timeout; an unreadable sample is counted apart, never zero.
+        expect(phase).toContain('timeout 10');
+        expect(phase).toContain('lane_extra_pids');
+        // driver_kill() stays inside the driver-kill phase (its pin above); the dk_ helpers sit at file scope.
+        expect(SCRIPT.indexOf('\ndk_log() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\ndk_clean() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\ndk_count() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\ndk_await_log() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+    });
+
     // Issue #829: a driver killed at each step of a run, on real containers, finishes the task once.
     it('the driver-kill phase kills a real driver at setup, agent, gates and publish, then finishes once', () => {
         const start = SCRIPT.indexOf("echo '# driver kill'");

@@ -22,7 +22,7 @@ while [ "$#" -gt 0 ]; do
         shift
         PHASE="${1:-}"
         case "$PHASE" in
-        all|board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
+        all|board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
         *) echo 'test-jobs: invalid --phase (see --help)'; exit 2 ;;
         esac
         ;;
@@ -36,7 +36,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2] [--watch-stalls]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill'
+        echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill, capacity'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
@@ -98,6 +98,7 @@ compose_pid=""
 supervisor_log_pid=""
 db_created=""
 lane_worker_pids=''
+lane_extra_pids='' # processes a phase starts beyond the one board and driver, for cleanup() to kill
 lane_worker_name=main
 # Preflight before creating or removing any shared lane resource.
 for tool in docker node timeout; do
@@ -198,6 +199,10 @@ cleanup() {
     local result=$?
     begin_phase cleanup
     for pid in $lane_worker_pids; do kill -TERM "$pid" 2>/dev/null || true; done
+    for pid in $lane_extra_pids; do
+        kill "$pid" 2>/dev/null
+        wait "$pid" 2>/dev/null
+    done
     for marker in "$work"/*.endpoint "$work"/*.group; do
         [ -f "$marker" ] || continue
         worker="${marker##*/}"
@@ -597,6 +602,36 @@ lane_left() { # lane_left <job id> -> success only when docker answered both rea
         printf 'containers: %s volumes: %s' "$(printf '%s' "$c" | tr '\n' ' ')" "$(printf '%s' "$v" | tr '\n' ' ')"
         return 1
     }
+}
+
+# The driver-log and leftovers checks the driver-kill and capacity phases share (issues #829, #831).
+dk_log() { # dk_log <job id> <text> -> success once the driver log carries the line
+    grep -qF "job $1: $2" "$work/driver.log"
+}
+
+dk_await_log() { # dk_await_log <job id> <text> <seconds>
+    local until=$(($(date +%s) + $3))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        dk_log "$1" "$2" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+dk_clean() { # dk_clean <job id> -> success once, within 60 s, docker answered and nothing of the job was left
+    local until=$(($(date +%s) + 60)) left=""
+    while [ "$(date +%s)" -lt "$until" ]; do
+        left="$(lane_left "$1")" && return 0
+        sleep 2
+    done
+    printf '%s' "$left"
+    return 1
+}
+
+dk_count() { # dk_count <name> <path> <want> -> a check on one barrier counter, exact
+    local got
+    got="$(lane_count "$2")"
+    [ "$got" = "$3" ] && ok "$1" || bad "$1" "$2 holds '$got' lines, want $3"
 }
 
 lane_group_up() { # lane_group_up <name> <image> <control-url>
@@ -1255,7 +1290,7 @@ mint_pid=""
 fi
 
 if selected_phase services || selected_phase orphan-reaper || selected_phase node-disruption ||
-    selected_phase driver-kill || selected_phase run-deadline; then
+    selected_phase driver-kill || selected_phase run-deadline || selected_phase capacity; then
 begin_phase service-fixture
 mkdir -p "$work/svc"
 printf '%s\n' \
@@ -1681,29 +1716,6 @@ dk_plan() { # dk_plan <gate name> <gate command> [setup command] -> a .bellows.y
     printf "    gates:\n        - name: %s\n          command: '%s'\n" "$1" "$2"
 }
 
-dk_log() { # dk_log <job id> <text> -> success once the driver log carries the line
-    grep -qF "job $1: $2" "$work/driver.log"
-}
-
-dk_await_log() { # dk_await_log <job id> <text> <seconds>
-    local until=$(($(date +%s) + $3))
-    while [ "$(date +%s)" -lt "$until" ]; do
-        dk_log "$1" "$2" && return 0
-        sleep 1
-    done
-    return 1
-}
-
-dk_clean() { # dk_clean <job id> -> success once, within 60 s, docker answered and nothing of the job was left
-    local until=$(($(date +%s) + 60)) left=""
-    while [ "$(date +%s)" -lt "$until" ]; do
-        left="$(lane_left "$1")" && return 0
-        sleep 2
-    done
-    printf '%s' "$left"
-    return 1
-}
-
 dk_supervisor() { # dk_supervisor <job id> [docker ps filter] -> the job's supervisor container id
     docker ps -aq --filter "label=factory.job=$1" --filter 'label=factory.role=supervisor' ${2:+--filter "$2"}
 }
@@ -1717,12 +1729,6 @@ dk_settled() { # dk_settled <name> <job id> <interruption> -> the checks every c
         bad "$1: one interruption records claim 1" "count|claimSeq|reason: $(interruptions_of "$body_json")"
     left="$(dk_clean "$2")" && ok "$1: nothing of the job is left" ||
         bad "$1: nothing of the job is left" "$left"
-}
-
-dk_count() { # dk_count <name> <path> <want> -> a check on one barrier counter, exact
-    local got
-    got="$(lane_count "$2")"
-    [ "$got" = "$3" ] && ok "$1" || bad "$1" "$2 holds '$got' lines, want $3"
 }
 
 # The origin's plan is restored at the end, and its push log is started here: the hook counts the ref
@@ -2000,6 +2006,328 @@ docker ps -aq --filter "label=factory.job=$overdue" |
     while IFS= read -r container_id; do
         [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
     done
+
+fi
+
+if selected_phase capacity; then
+begin_phase capacity
+# --- Competing drivers under one shared budget (issue #831) -----------------------------------
+#
+# Two AUTH_MODE=github boards and two drivers share one database and one admission budget
+# (ADMISSION_MAX_RUNNING=2) while their own concurrency (2 + 2) would admit four. A heavy org queues
+# three tasks before a light org queues one: the light task must start while the heavy org still
+# waits, and the budget must hold on every row a once-a-second sampler reads. Then the driver that
+# holds the first heavy task is killed (-9): its lease expires, its rows keep their slots until the
+# survivor takes the running agent over, and no queued task is admitted past the budget meanwhile.
+# Draining the barriers hands the freed slots on in turn, and every task runs exactly once.
+
+echo
+echo '# capacity'
+
+CAP_DIR='/task/.lane-cap'
+CAP_MK="mkdir -p $CAP_DIR;" # the volume is born at the claim: every command makes the directory first
+CAP_LIGHT_PORT=$((PORT + 1))
+CAP_TOKEN="cap-$(openssl rand -hex 16)" # the boards' and drivers' shared worker secret, 32+ characters
+cap_pg=''
+cap_a_pid=''
+cap_b_pid=''
+cap_board_pid=''
+cap_sampler_pid=''
+
+cap_forget() { # cap_forget <pid> -> drops a stopped process from the list cleanup() kills
+    local keep='' p
+    for p in $lane_extra_pids; do [ "$p" = "$1" ] || keep="$keep $p"; done
+    lane_extra_pids="${keep# }"
+}
+
+cap_stop() { # cap_stop <pid> -> the process gone, waited for, and no longer cleanup()'s to kill
+    [ -n "$1" ] || return 0
+    kill "$1" 2>/dev/null
+    wait "$1" 2>/dev/null
+    cap_forget "$1"
+}
+
+cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read failed
+    timeout 10 docker exec "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1
+}
+
+cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board; its pid in cap_board_pid
+    env DATABASE_URL="$DATABASE_URL" PORT="$1" HOST=127.0.0.1 \
+        REPO_CLONE_BASE="$PLAN_BASE" \
+        AUTH_MODE=github \
+        GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
+        SESSION_SECRET=a-job-harness-session-secret-32-chars \
+        JOB_BOARD_TOKEN="$CAP_TOKEN" ADMISSION_MAX_RUNNING=2 \
+        node server/dist/offline.js >>"$2" 2>&1 &
+    cap_board_pid=$!
+}
+
+cap_up() { # cap_up <port> -> success once that board answers migrated, within 40 s
+    local until=$(($(date +%s) + 40))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(status "$(BASE="http://127.0.0.1:$1" api GET /api/ready)")" = '200' ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+cap_mint() { # cap_mint <login> -> CAP_MEMBER_TOKEN and CAP_MEMBER_USER of a new org member tracking $SMOKE_REPO; non-zero with psql's answer
+    local hash out
+    read -r CAP_MEMBER_TOKEN hash < <(node -e '
+const c = require("node:crypto");
+const t = "fat_" + c.randomBytes(32).toString("base64url");
+process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
+')
+    out="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
+        -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" -f - 2>&1 <<'SQL'
+with o as (
+    insert into organization (id, name) values (:'login', :'login') returning id
+), u as (
+    insert into app_user (github_user_id, github_login)
+    values ((1000000000 + floor(random() * 1000000000000))::bigint, :'login') returning id
+), m as (
+    insert into org_membership (org_id, github_login, user_id, role, claimed_at)
+    select o.id, :'login', u.id, 'member', now() from o, u
+)
+insert into access_token (org_id, kind, user_id, created_by, label, token_hash)
+select o.id, 'personal', u.id, u.id, 'test-jobs', decode(:'hash', 'hex') from o, u;
+insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+values (:'login', 'claude-code', 'test-jobs-capacity', :'owner' || '/' || :'name', 'main', now(), now());
+select user_id from org_membership where org_id = :'login';
+SQL
+    )" || {
+        printf '%s' "$out"
+        return 1
+    }
+    CAP_MEMBER_USER="$out"
+    case "$CAP_MEMBER_USER" in
+    ????????-????-????-????-????????????) ;;
+    *)
+        printf '%s' "no user id: $out"
+        return 1
+        ;;
+    esac
+}
+
+cap_command() { # cap_command <name> -> a stub task that records its run, marks itself ready and holds until released
+    printf '%s echo x >>%s/%s.ran; : >%s/%s.ready; %s; echo "ran in $HOSTNAME"' \
+        "$CAP_MK" "$CAP_DIR" "$1" "$CAP_DIR" "$1" "$(lane_wait "$CAP_DIR/$1.go")"
+}
+
+cap_await_ready() { # cap_await_ready <job> <name> <seconds> -> success once the task's stub started
+    lane_use "$1"
+    lane_await_file "$3" "$CAP_DIR/$2.ready"
+}
+
+cap_release() { # cap_release <job> <name> -> the task's barrier opened
+    lane_use "$1"
+    lane_touch "$CAP_DIR/$2.go" || bad "capacity: $2's barrier is released" 'the touch failed'
+}
+
+cap_why() { # cap_why <job> -> what the board says about it, for a check that failed
+    local job_json
+    job_json="$(body "$(api GET "/api/jobs/$1")")"
+    printf 'status %s, output: %s' "$(field "$job_json" status)" "$(field "$job_json" output)"
+}
+
+cap_settled() { # cap_settled <label> <job> <name> <owner> <lost owner> -> the checks every task shares once it ran to its end
+    local job_json left
+    expect_contains "capacity $1: the task succeeds" "$(await_settled "$2" "$ADOPT_S")" succeeded
+    job_json="$(body "$(api GET "/api/jobs/$2")")"
+    expect_field "capacity $1: no attempt is spent" "$job_json" attempts 1
+    # Only a task the killed driver held records an interruption, and exactly one.
+    if [ -n "$5" ] && [ "$4" = "$5" ]; then
+        [ "$(interruptions_of "$job_json")" = "1|1|$EXPIRED" ] && ok "capacity $1: one interruption records the lost lease" ||
+            bad "capacity $1: one interruption records the lost lease" "count|claimSeq|reason: $(interruptions_of "$job_json")"
+    else
+        [ "$(interruptions_of "$job_json")" = '0||' ] && ok "capacity $1: no interruption" ||
+            bad "capacity $1: no interruption" "count|claimSeq|reason: $(interruptions_of "$job_json")"
+    fi
+    lane_use "$2"
+    dk_count "capacity $1: the task ran once" "$CAP_DIR/$3.ran" 1
+    left="$(dk_clean "$2")" && ok "capacity $1: nothing of the task is left" ||
+        bad "capacity $1: nothing of the task is left" "$left"
+}
+
+cap_sample() { # cap_sample <file> -> one row a second, until killed: <epoch>|<running>|<distinct global slots>|<running without one>, <epoch>|? when the read failed
+    local row
+    while sleep 1; do
+        row="$(cap_psql "select count(*) || '|' || count(distinct admission_slot_global) || '|' || count(*) filter (where admission_slot_global is null) from job where status = 'running' and review_of is null")" ||
+            row='?'
+        printf '%s|%s\n' "$(date +%s)" "$row" >>"$1"
+    done
+}
+
+cap_run() {
+    local running n tok h1 h2 h3 l1 heavy light heavy_token light_token h1_owner l1_owner victim='' victim_name=''
+    local h1_name="$RUN_ID-cap-h1" h2_name="$RUN_ID-cap-h2" h3_name="$RUN_ID-cap-h3" l1_name="$RUN_ID-cap-l1"
+    local samples="$work/capacity.samples.log" kill_at='' took_at='' verdict
+
+    # The budget counts every running row on the database: a leftover one is not this phase's to count around.
+    cap_pg="$(compose ps -q postgres | sed -n 1p)"
+    [ -n "$cap_pg" ] || {
+        bad 'capacity: the postgres container is found' 'compose ps -q postgres answered nothing'
+        return 1
+    }
+    running="$(cap_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {
+        bad 'capacity: the board starts with no running or queued task' "rows: $running"
+        return 1
+    }
+
+    # The open board hands its port pair to the two shared-budget boards, and gets it back at the end.
+    kill "$server_pid" 2>/dev/null
+    wait "$server_pid" 2>/dev/null
+    server_pid=""
+    cap_board "$PORT" "$work/capacity-board-a.log"
+    server_pid=$cap_board_pid
+    cap_up "$PORT" || {
+        bad 'capacity: the first board came up' "$(tail -5 "$work/capacity-board-a.log")"
+        return 1
+    }
+    cap_board "$CAP_LIGHT_PORT" "$work/capacity-board-b.log"
+    lane_extra_pids="$lane_extra_pids $cap_board_pid"
+    lane_extra_pids="${lane_extra_pids# }"
+    cap_up "$CAP_LIGHT_PORT" && ok 'capacity: two boards share one budget' || {
+        bad 'capacity: two boards share one budget' "$(tail -5 "$work/capacity-board-b.log")"
+        return 1
+    }
+
+    # Two tenants of uneven demand: the heavy org queues three tasks, the light one a single task.
+    heavy="cap-heavy-$(openssl rand -hex 4)"
+    light="cap-light-$(openssl rand -hex 4)"
+    cap_mint "$heavy" >"$work/capacity-mint.log" || {
+        bad 'capacity: the heavy member is minted' "$(cat "$work/capacity-mint.log")"
+        return 1
+    }
+    heavy_token="$CAP_MEMBER_TOKEN"
+    cap_mint "$light" >"$work/capacity-mint.log" || {
+        bad 'capacity: the light member is minted' "$(cat "$work/capacity-mint.log")"
+        return 1
+    }
+    light_token="$CAP_MEMBER_TOKEN"
+    ok 'capacity: two tenants are minted'
+    for tok in "$heavy_token" "$light_token"; do
+        AUTH_HEADER="Bearer $tok" expect_status 'capacity: the member stores the task executor' 200 PUT /api/workspace/executors \
+            '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
+    done
+
+    # Queued before any driver exists, so the order the claim picks them in is the claim's own.
+    h1="$(AUTH_HEADER="Bearer $heavy_token" create_job "$(cap_command "$h1_name")")"
+    h2="$(AUTH_HEADER="Bearer $heavy_token" create_job "$(cap_command "$h2_name")")"
+    h3="$(AUTH_HEADER="Bearer $heavy_token" create_job "$(cap_command "$h3_name")")"
+    l1="$(AUTH_HEADER="Bearer $light_token" BASE="http://127.0.0.1:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
+    [ -n "$h1" ] && [ -n "$h2" ] && [ -n "$h3" ] && [ -n "$l1" ] || {
+        bad 'capacity: the four tasks are queued' "h1 '$h1' h2 '$h2' h3 '$h3' l1 '$l1'"
+        return 1
+    }
+    printf '%s\n' "$h1" "$h2" "$h3" "$l1" >"$work/capacity-jobs"
+    ok 'capacity: the four tasks are queued'
+
+    # What the budget did to the running rows, once a second, from before the first claim to the last settle.
+    : >"$samples"
+    cap_sample "$samples" &
+    cap_sampler_pid=$!
+    lane_extra_pids="$lane_extra_pids $cap_sampler_pid"
+    lane_extra_pids="${lane_extra_pids# }"
+
+    # Each driver would run two tasks alone: four against a budget of two.
+    disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+        DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+    cap_a_pid=$driver_pid
+    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+        DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+    cap_b_pid=$driver_pid
+    driver_pid=""
+    lane_extra_pids="$lane_extra_pids $cap_a_pid $cap_b_pid"
+    lane_extra_pids="${lane_extra_pids# }"
+
+    # Fairness: the light org's one task starts while the heavy org still has two queued.
+    cap_await_ready "$h1" "$h1_name" 90 && ok 'capacity: the first heavy task runs' ||
+        bad 'capacity: the first heavy task runs' "$(cap_why "$h1")"
+    cap_await_ready "$l1" "$l1_name" 90 && ok 'capacity: the light org runs while the heavy org still queues' ||
+        bad 'capacity: the light org runs while the heavy org still queues' "$(cap_why "$l1")"
+    running="$(cap_psql "select count(*) from job where status = 'running' and review_of is null")"
+    [ "$running" = 2 ] && ok 'capacity: two run, the rest wait' ||
+        bad 'capacity: two run, the rest wait' "running rows: $running"
+    for n in "$h2" "$h3"; do
+        lane_use "$n"
+        [ "$(field "$(body "$(api GET "/api/jobs/$n")")" status)" = queued ] && [ "$(lane_vol_state)" = absent ] &&
+            ok 'capacity: a task over the budget waits queued, with no task volume' ||
+            bad 'capacity: a task over the budget waits queued, with no task volume' "$(cap_why "$n"); volume $(lane_vol_state)"
+    done
+
+    # The crash: whichever driver holds the first heavy task is killed outright. Read, not assumed: an unread owner kills nothing.
+    h1_owner="$(cap_psql "select claimed_by from job where id = '$h1'")"
+    l1_owner="$(cap_psql "select claimed_by from job where id = '$l1'")"
+    case "$h1_owner" in
+    cap-a) victim=$cap_a_pid victim_name=cap-a ;;
+    cap-b) victim=$cap_b_pid victim_name=cap-b ;;
+    *) bad 'capacity: the driver of the first heavy task is known' "claimed_by read '$h1_owner'" ;;
+    esac
+    if [ -n "$victim" ]; then
+        kill -9 "$victim" 2>/dev/null
+        wait "$victim" 2>/dev/null
+        cap_forget "$victim"
+        kill_at=$(date +%s)
+        dk_await_log "$h1" "$TOOK_OVER" "$ADOPT_S" && ok 'capacity: the surviving driver takes over the lost task' ||
+            bad 'capacity: the surviving driver takes over the lost task' "$(grep -F "job $h1:" "$work/driver.log" | tail -5)"
+        took_at=$(date +%s)
+        # The lost rows kept their slots until now, so nothing over the budget was admitted meanwhile.
+        running="$(cap_psql "select count(*) from job where status = 'running' and review_of is null")"
+        [ "$running" = 2 ] && ok 'capacity: a crashed owner leaves the budget full, not exceeded' ||
+            bad 'capacity: a crashed owner leaves the budget full, not exceeded' "running rows: $running"
+        for n in "$h2" "$h3"; do
+            [ "$(field "$(body "$(api GET "/api/jobs/$n")")" status)" = queued ] &&
+                ok 'capacity: no queued task was admitted while the owner was lost' ||
+                bad 'capacity: no queued task was admitted while the owner was lost' "$(cap_why "$n")"
+        done
+    fi
+
+    # Drain: each freed slot goes to the org with the fewest running tasks; every task runs once.
+    cap_release "$h1" "$h1_name"
+    cap_await_ready "$h2" "$h2_name" 90 && ok 'capacity: the freed slot admits the next heavy task' ||
+        bad 'capacity: the freed slot admits the next heavy task' "$(cap_why "$h2")"
+    cap_release "$l1" "$l1_name"
+    cap_await_ready "$h3" "$h3_name" 90 && ok 'capacity: the next freed slot admits the last heavy task' ||
+        bad 'capacity: the next freed slot admits the last heavy task' "$(cap_why "$h3")"
+    cap_release "$h2" "$h2_name"
+    cap_release "$h3" "$h3_name"
+    cap_settled h1 "$h1" "$h1_name" "$h1_owner" "$victim_name"
+    cap_settled h2 "$h2" "$h2_name" '' "$victim_name"
+    cap_settled h3 "$h3" "$h3_name" '' "$victim_name"
+    cap_settled l1 "$l1" "$l1_name" "$l1_owner" "$victim_name"
+
+    # The samples: the budget held on every row read, and the crash window was among them.
+    cap_stop "$cap_sampler_pid"
+    cap_sampler_pid=''
+    verdict="$(node "$REPO/scripts/lane-capacity-samples.mjs" "$samples" "${kill_at:-0}" "${took_at:-0}")"
+    echo "capacity: samples $verdict"
+    [ "$(field "$verdict" readable)" -ge 30 ] 2>/dev/null && ok 'capacity: enough rows were read to mean it' ||
+        bad 'capacity: enough rows were read to mean it' "$verdict"
+    [ "$(field "$verdict" over)" = 0 ] && [ "$(field "$verdict" shared)" = 0 ] && [ "$(field "$verdict" unslotted)" = 0 ] &&
+        ok 'capacity: no sample is over the budget, shares a slot or runs without one' ||
+        bad 'capacity: no sample is over the budget, shares a slot or runs without one' "$verdict"
+    [ -n "$victim" ] && [ "$(field "$verdict" window)" -ge 1 ] 2>/dev/null &&
+        ok 'capacity: the lost owner was sampled before the takeover' ||
+        bad 'capacity: the lost owner was sampled before the takeover' "$verdict"
+}
+
+cap_run
+# Every path ends here: the processes are gone, the containers of the four tasks removed, and the open board is back.
+cap_stop "$cap_sampler_pid"
+cap_stop "$cap_a_pid"
+cap_stop "$cap_b_pid"
+for job in $(cat "$work/capacity-jobs" 2>/dev/null); do
+    docker ps -aq --filter "label=factory.job=$job" |
+        while IFS= read -r container_id; do
+            [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
+        done
+done
+kill "$server_pid" 2>/dev/null
+wait "$server_pid" 2>/dev/null
+server_pid=""
+for pid in $lane_extra_pids; do cap_stop "$pid"; done
+start_open_board
 
 fi
 

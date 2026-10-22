@@ -34,7 +34,7 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|takeover|control|drain]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|capacity|drain]');
     });
 });
 
@@ -423,7 +423,9 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
             script.indexOf('if selected_phase control; then')
         );
         expect(script).not.toMatch(/selected_phase drain/);
-        expect(script).toMatch(/all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|drain\)/);
+        expect(script).toMatch(
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|capacity\|drain\)/
+        );
     });
 
     it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {
@@ -524,5 +526,41 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         expect(dump).toContain(`$\{TIMINGS_FILE%.tsv}.stall-$1.log`);
         const brief = script.slice(script.indexOf('\nawait_brief() {'), script.indexOf('\nDRIVER_DEPLOY='));
         expect(brief).toMatch(/done\n {4}kind_dump_stall "\$1"\n/);
+    });
+});
+
+describe('kind lane capacity phase (issue #831)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    const capacity = script.slice(
+        script.indexOf('if selected_phase capacity; then'),
+        script.lastIndexOf("printf '\\n%d passed")
+    );
+
+    it('runs in all, after control, and is not the drain phase', () => {
+        expect(script.indexOf('if selected_phase capacity; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase control; then')
+        );
+        expect(script).not.toMatch(/selected_phase drain/);
+    });
+
+    it('runs two driver replicas under one shared budget, kills one and samples the rows', () => {
+        expect(capacity).toContain('ADMISSION_MAX_RUNNING=2');
+        expect(capacity).toContain('--replicas=2');
+        expect(capacity).toContain('kill_driver_pods');
+        expect(capacity).toContain('expire_claim_one');
+        expect(capacity).toContain('claimed_by');
+        expect(capacity).toContain('admission_slot_global');
+        expect(capacity).toContain('.capacity.tsv');
+        expect(capacity).toContain('--request-timeout');
+        expect(capacity).toContain('job $h1: $TOOK_OVER');
+    });
+
+    it('restores the budget, the board connection and the driver replica count on every path', () => {
+        expect(capacity).toContain('ADMISSION_MAX_RUNNING=');
+        expect(capacity).toMatch(/ADMISSION_MAX_RUNNING= /);
+        expect(capacity).toContain('--replicas=1');
+        expect(capacity).toContain('start_port_forward');
+        expect(cleanup).toMatch(/kill "\$capacity_sampler_pid"/);
     });
 });

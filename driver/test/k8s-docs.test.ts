@@ -285,6 +285,18 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(limitsDocs)).toContain('.recovery.tsv');
     });
 
+    // Issue #831: competing drivers under one shared budget are proven in both executors' lanes, and the one
+    // thing they cannot run (two dashboard replicas on a cluster) is a stated limit.
+    it('records the capacity phases and the two-dashboard-replica limit', () => {
+        expect(prose(testingDocs)).toContain(
+            'Its capacity phase runs two `AUTH_MODE=github` boards and two drivers under `ADMISSION_MAX_RUNNING=2`, kills the driver holding the first heavy task and samples the running rows every second'
+        );
+        expect(prose(testingDocs)).toContain(
+            'Its capacity phase runs two driver replicas under `ADMISSION_MAX_RUNNING=2`, deletes the pod holding the first heavy task and samples the running rows every two seconds into `.capacity.tsv`'
+        );
+        expect(prose(testingDocs)).toContain('**Two dashboard replicas on a cluster.** The chart pins one');
+    });
+
     // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the
     // read-fault suites are the enforcement, so the sentences naming them are pinned.
     it('states that an unconfirmed read is inconclusive and names its enforcement', () => {
