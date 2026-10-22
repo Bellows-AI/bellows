@@ -1,0 +1,48 @@
+# The multi-node kind cluster `make cluster LAYOUT=drain` creates (scripts/kind-cluster.sh), for the
+# node-drain recovery figure of scripts/test-k8s.sh --phase drain (issue #829). One control-plane,
+# schedulable so the board, the database and the collector have a node that is never drained, and
+# three workers. All four nodes carry the lane's shared label and bind-mount one host directory
+# (@SHARED@, rendered by the script into a per-cluster path) at /factory-shared: the lane's static
+# workspaces volume (ReadWriteMany) lives there, so the board on the control plane and a task pod on
+# any worker see one tree, and a task keeps its checkout when its pod is rescheduled. The kubelet syncs
+# pods every 5 s, as in scripts/kind-cluster.yaml.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+    - |-
+      [plugins."io.containerd.grpc.v1.cri".registry]
+        config_path = "/etc/containerd/certs.d"
+kubeadmConfigPatches:
+    - |
+      kind: KubeletConfiguration
+      syncFrequency: 5s
+nodes:
+    - role: control-plane
+      labels:
+          factory.lane/shared: "true"
+      extraMounts:
+          - hostPath: @SHARED@
+            containerPath: /factory-shared
+      kubeadmConfigPatches:
+          - |
+            kind: InitConfiguration
+            nodeRegistration:
+              taints: []
+    - role: worker
+      labels:
+          factory.lane/shared: "true"
+      extraMounts:
+          - hostPath: @SHARED@
+            containerPath: /factory-shared
+    - role: worker
+      labels:
+          factory.lane/shared: "true"
+      extraMounts:
+          - hostPath: @SHARED@
+            containerPath: /factory-shared
+    - role: worker
+      labels:
+          factory.lane/shared: "true"
+      extraMounts:
+          - hostPath: @SHARED@
+            containerPath: /factory-shared

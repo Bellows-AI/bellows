@@ -120,10 +120,11 @@ async function takeOverStaleClaim(deps: K8sDeps, job: BoardJob, path: string): P
     // An answer that is no claim proves nothing about the holder: it is never released on it.
     if (read.kind === 'inconclusive') throw new Error(read.reason);
     const claim = read.value;
-    if (claim.data?.holder === job.leaseToken) {
+    const holder = job.claimHolder ?? job.leaseToken;
+    if (claim.data?.holder === holder) {
         // Our own claim, kept because a group of ours could not be confirmed ended (issue #821): a
         // retry under the same holder — a reclaim offered again — may not start beside it.
-        if (!(await retryUnconfirmed(deps, job.leaseToken))) {
+        if (!(await retryUnconfirmed(deps, holder))) {
             throw new Error(
                 `job ${job.id} stands down: a group of this holder could not be confirmed ended, ` +
                     'so the checkout claim it keeps is not taken again'
@@ -233,7 +234,7 @@ function claimVerdict(read: Read<K8sClaim>, job: BoardJob): ClaimVerdict {
     if (read.kind === 'inconclusive') return { unconfirmed: read.reason };
     const holder = read.value.data?.holder;
     if (!holder) return { unconfirmed: `${CLAIM_READ} answered a claim with no holder` };
-    return holder === job.leaseToken ? 'ours' : 'taken';
+    return holder === (job.claimHolder ?? job.leaseToken) ? 'ours' : 'taken';
 }
 
 /** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
@@ -260,15 +261,16 @@ export async function releaseClaimAfterGroupEnd(
     job: BoardJob,
     ends: { groups?: readonly GroupRef[]; observed?: ObservedClaim; holderWriters?: boolean } = {}
 ): Promise<boolean> {
-    const holder = ends.observed?.holder ?? job.leaseToken;
+    // A taken-over group is addressed by its own lease (`ownGroup`); the claim is its holder's (#829).
+    const holder = ends.observed?.holder ?? job.claimHolder ?? job.leaseToken;
     if (ends.observed) {
         const now = await readClaim(deps, job);
         if (now?.uid !== ends.observed.uid || now.holder !== holder) return false;
     }
-    // A recovery's claim, or a reclaim's, goes only with no reclaim group of its holder still
+    // A recovery's claim goes only with no group of its holder still
     // writing — another invocation's, or a pod outliving its Job's delete.
     if ((ends.observed || ends.holderWriters) && !(await holderWritersGone(deps, job, holder))) return false;
-    if (!(await groupsEnded(deps, holder, ends.groups ?? []))) return false;
+    if (!(await groupsEnded(deps, holder, ends.groups ?? [], groupLeaseOf(job)))) return false;
     const claim = await readClaim(deps, job);
     if (claim?.holder !== holder || (ends.observed && claim.uid !== ends.observed.uid)) return false;
     try {
@@ -284,14 +286,28 @@ export async function releaseClaimAfterGroupEnd(
     }
 }
 
-/** Ends `groups` under `holder`; true only when every group of the holder is confirmed ended and none is live here. */
-async function groupsEnded(deps: K8sDeps, holder: string, groups: readonly GroupRef[]): Promise<boolean> {
+/** The lease a taken-over attempt's group lives under (#829): `job` as the loop has it, or as `ownGroup` addresses it. */
+const groupLeaseOf = (job: BoardJob): string | undefined =>
+    job.groupLease ?? (job.claimHolder ? job.leaseToken : undefined);
+
+/**
+ * Ends `groups` under `holder`; true only when every group of the holder is confirmed ended and none is live here —
+ * a taken-over group is recorded under its own lease (`groupLease`), the claim under its holder's.
+ */
+async function groupsEnded(
+    deps: K8sDeps,
+    holder: string,
+    groups: readonly GroupRef[],
+    groupLease?: string
+): Promise<boolean> {
     let held = false;
     for (const group of groups) {
         const end = await endRunnerJob(deps, group, holder);
         if (end !== 'ended') held = true;
     }
-    return !held && !deps.groups?.has(holder) && !holderUnconfirmed(deps, holder);
+    const live =
+        deps.groups?.has(holder) === true || (groupLease !== undefined && deps.groups?.has(groupLease) === true);
+    return !held && !live && !holderUnconfirmed(deps, holder);
 }
 
 /** One kind's leftover objects — a job or a pod — the sweep found by label, with the leases they carry. */
@@ -329,12 +345,13 @@ type SweptItem = ListedRunnerJob & {
 function spared(deps: K8sDeps, { job, kind, kept }: SweepScope, item: SweptItem): boolean {
     const adopted = deps.adopted?.get(job.leaseToken);
     const lease = item.metadata.labels?.[LEASE_LABEL];
+    const live = adoptedLive(deps, job);
     // The adopted Job's lease, spec and ended status are readable (`sweepEntry`): this reads the evidence, never its absence.
     if (
         adopted !== undefined &&
         item.metadata.name === adopted &&
         lease !== undefined &&
-        finishedAgentRun(item, { ...job, leaseToken: lease })
+        (live || finishedAgentRun(item, { ...job, leaseToken: lease }))
     ) {
         kept.jobs.add(adopted);
         kept.leases.add(lease);
@@ -359,6 +376,18 @@ function namedItemsOf(deps: K8sDeps, scope: SweepScope, items: SweptItem[]): Omi
     return found;
 }
 
+/**
+ * Whether the run this attempt adopted is a LIVE group it took over (#829): still running, so the
+ * sweep spares it on its name and lease, not on a status that shows it ended.
+ */
+function adoptedLive(deps: K8sDeps, job: BoardJob): boolean {
+    const adopted = deps.adopted?.get(job.leaseToken);
+    if (adopted === undefined) return false;
+    return [...(deps.groups ?? [])].some(
+        ([lease, group]) => group.resumed === true && runnerName({ ...job, leaseToken: lease }) === adopted
+    );
+}
+
 /** A Job status that shows the run ended: the adopted run is a finished one, and only that status proves it. */
 const endedStatus = (status: unknown): boolean => isRecord(status) && jobOutcome(status) !== 'pending';
 
@@ -371,7 +400,7 @@ const endedStatus = (status: unknown): boolean => isRecord(status) && jobOutcome
  * lease nor a `job-name` cannot say whether it is that run's, so its listing proves nothing.
  */
 const sweepEntry =
-    (adopted: string | undefined, kind: string) =>
+    (adopted: string | undefined, kind: string, live: boolean) =>
     (value: unknown): SweptItem | null => {
         const item = asIdentified<SweptItem>(value);
         if (item === null) return null;
@@ -380,7 +409,7 @@ const sweepEntry =
         const unowned = lease === undefined && !nonEmpty(item.metadata.labels?.['job-name']);
         if (adopted !== undefined && kind === 'pod' && unowned) return null;
         const isAdopted = adopted !== undefined && item.metadata.name === adopted;
-        return isAdopted && (lease === undefined || !validRunnerSpec(item.spec) || !endedStatus(item.status))
+        return isAdopted && (lease === undefined || !validRunnerSpec(item.spec) || !(live || endedStatus(item.status)))
             ? null
             : item;
     };
@@ -397,7 +426,7 @@ async function probeOneFleetKind(
     kept: KeptRuns
 ): Promise<{ fleet: SweepFleet | null; inconclusive: boolean }> {
     const read = await readTypedList<SweptItem>(deps, selectorPath, `listing the leftover ${kind}s`, {
-        entry: sweepEntry(deps.adopted?.get(job.leaseToken), kind),
+        entry: sweepEntry(deps.adopted?.get(job.leaseToken), kind, adoptedLive(deps, job)),
         once: true,
     });
     // A kind answering nothing at all has nothing of this job in it.

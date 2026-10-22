@@ -34,7 +34,7 @@ const TOOL_HOME = '/home/factory-tool';
 const AGENT_OUT_MAILBOX = '/factory/out';
 const STICKY_SHARED_MODE = 0o1777;
 /** Never passed to a tool: the CLI's own shell override, and the run-control token (control-proxy.cjs). */
-const WITHHELD = ['CLAUDE_CODE_SHELL', 'BELLOWS_CONTROL_TOKEN'];
+const WITHHELD = ['CLAUDE_CODE_SHELL'];
 const SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT', 'SIGKILL'];
 /** `sh`'s "cannot execute": the command never started, and nothing ran as the CLI uid instead. */
 const REFUSED_EXIT = 126;

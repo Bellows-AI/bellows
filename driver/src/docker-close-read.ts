@@ -32,12 +32,19 @@ import {
     readUtf8,
 } from './docker-runner-support.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
+import { finalizeWaitMs } from './supervisor-plan.js';
 import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from './adopt-skeleton.js';
 import type { KillLedger } from './kill-ledger.js';
-import { type FinalReport, finalReportOf, SUPERVISOR_EXIT, SUPERVISOR_WINDDOWN_MS } from './supervisor-contract.js';
+import {
+    type FinalReport,
+    finalReportOf,
+    SUPERVISOR_EXIT,
+    SUPERVISOR_RELEASED_LINE,
+    SUPERVISOR_SERVED_LINE,
+} from './supervisor-contract.js';
 import { containerName, opencodeSessionReadoutArgs, containerHardeningArgs } from './docker.js';
 import { taskVolumeIsOurs } from './docker-task-volume.js';
 import { taskMountArgs } from './task-volume.js';
@@ -49,6 +56,7 @@ import {
     CLOSE_READ_DEADLINE_MS,
     Inconclusive,
     type KeptLog,
+    type LiveRun,
     type RunOutcome,
     type RunSession,
     reportTail,
@@ -232,7 +240,8 @@ export async function tickCacheWatch(
 
 /** The fields of each listed container the adoption reads, tab-separated. */
 const ADOPT_LABELS = [LEASE_LABEL, CLAIM_SEQ_MARK, SESSION_MARK, COMMAND_MARK];
-const ADOPT_FORMAT = ADOPT_LABELS.reduce((format, label) => `${format}\t{{.Label "${label}"}}`, '{{.Names}}');
+// The state is the last field: one listing branches on it, so a runner that exits between two reads is never in neither.
+const ADOPT_FORMAT = `${ADOPT_LABELS.reduce((format, label) => `${format}\t{{.Label "${label}"}}`, '{{.Names}}')}\t{{.State}}`;
 
 /**
  * A listed container's discovery labels (#869). A label it carries must be well formed — a lease, a
@@ -241,8 +250,8 @@ const ADOPT_FORMAT = ADOPT_LABELS.reduce((format, label) => `${format}\t{{.Label
  * label the one its name spells, a claim sequence and a command mark. A container with neither
  * label is no runner. Throws when the listing cannot be trusted; true for the runner of `job`.
  */
-function isRunnerRow(job: BoardJob, [name, lease, seq, , command]: string[]): boolean {
-    const label = `listing the exited earlier runners: ${name}`;
+function isRunnerRow(job: BoardJob, [name, lease, seq, , command]: string[], what: string): boolean {
+    const label = `listing the ${what} earlier runners: ${name}`;
     if ((lease !== '' && !UUID_SHAPE.test(lease!)) || (seq !== '' && !isSeq(seq))) {
         throw new Error(`${label} carries a malformed lease or claim sequence`);
     }
@@ -254,23 +263,31 @@ function isRunnerRow(job: BoardJob, [name, lease, seq, , command]: string[]): bo
     return true;
 }
 
-/** Every EXITED runner container of this job's claims (the skeleton picks the newest earlier one). */
-async function exitedRunners(execDocker: ExecDocker, job: BoardJob): Promise<DockerEarlier[]> {
-    // A listing that is refused or is no rows of five fields throws: it is never "no earlier run",
-    // which would hand the exited run to a fresh run's fence to remove unread (#869).
+/**
+ * Every runner container of this job's claims, from ONE listing (the skeleton picks the newest earlier
+ * one): the EXITED ones are runs to read, the RUNNING ones are released groups to take over (#829) — a
+ * runner container exists only after the supervisor's `go` released the agent. Two listings by status
+ * would miss a runner that exits between them, and a missed run is a fresh run's fence removing it unread.
+ */
+async function earlierRunners(execDocker: ExecDocker, job: BoardJob): Promise<DockerEarlier[]> {
+    // A listing that is refused or is no rows of six fields throws: it is never "no earlier run",
+    // which would hand the earlier run to a fresh run's fence to remove unread (#869).
+    const what = 'listing the earlier runners';
     const listed = await readDocker(
         execDocker,
-        ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--filter', 'status=exited', '--format', ADOPT_FORMAT],
-        'listing the exited earlier runners',
-        { parse: tabRows(ADOPT_LABELS.length + 1) }
+        ['ps', '-a', '--filter', `label=${JOB_LABEL}=${job.id}`, '--format', ADOPT_FORMAT],
+        what,
+        { parse: tabRows(ADOPT_LABELS.length + 2) }
     );
     if (listed.kind !== 'value') {
-        throw new Error(listed.kind === 'inconclusive' ? listed.reason : 'listing the exited earlier runners: absent');
+        throw new Error(listed.kind === 'inconclusive' ? listed.reason : `${what}: absent`);
     }
     const runners: DockerEarlier[] = [];
     for (const row of listed.value) {
-        const [name = '', lease = '', seq = '', session = '', command = ''] = row;
-        if (!isRunnerRow(job, [name, lease, seq, session, command])) continue;
+        const [name = '', lease = '', seq = '', session = '', command = '', state = ''] = row;
+        // Only a runner that exited or runs is an earlier run; anything else is not one yet or not any more.
+        if (state !== 'exited' && state !== 'running') continue;
+        if (!isRunnerRow(job, [name, lease, seq, session, command], state)) continue;
         // A queued task's command edited since the run (after a handover) makes that run not its own:
         // another valid mark, unlike an unreadable one (thrown above).
         runners.push({
@@ -279,14 +296,86 @@ async function exitedRunners(execDocker: ExecDocker, job: BoardJob): Promise<Doc
             commandMark: command,
             session: session || null,
             supervisorExit: null,
+            running: state === 'running',
         });
     }
     return runners;
 }
 
+/**
+ * A running runner container is a released group (the agent starts after `go`): live only when its
+ * supervisor runs too. A supervisor that is not up, or an inspect that cannot be read, proves nothing
+ * of the group and blocks the adoption — redoing would sweep an agent that may still be writing (#829).
+ */
+async function liveRunner(
+    execDocker: ExecDocker,
+    found: DockerEarlier,
+    signal: AbortSignal | undefined
+): Promise<DockerEarlier> {
+    const bounded = boundedExec(execDocker, { deadline: Date.now() + CLOSE_READ_DEADLINE_MS, signal });
+    const inspect = async (name: string): Promise<{ Running?: unknown; StartedAt?: unknown }> => {
+        let state: unknown;
+        try {
+            state = JSON.parse((await bounded(['inspect', '--format', '{{json .State}}', name])).stdout);
+        } catch (e) {
+            throw new AdoptionBlocked(`the running earlier runner ${name} could not be read: ${(e as Error).message}`);
+        }
+        return (state ?? {}) as { Running?: unknown; StartedAt?: unknown };
+    };
+    if ((await inspect(supervisorName(found.prior))).Running !== true) {
+        throw new AdoptionBlocked('the supervisor of the running earlier runner is not running');
+    }
+    const { StartedAt } = await inspect(containerName(found.prior));
+    return { ...found, live: { startedAt: typeof StartedAt === 'string' ? StartedAt : '' } };
+}
+
+const stateOf = (read: string): { Running?: unknown; StartedAt?: unknown } => {
+    const state: unknown = JSON.parse(read);
+    return (state ?? {}) as { Running?: unknown; StartedAt?: unknown };
+};
+
+/**
+ * An exited runner whose supervisor positively still serves the driver's steps — running, the release
+ * logged, `SUPERVISOR_SERVED_LINE` not — is a released group to take over, like a running one (#829).
+ * Any read that does not say so (a stopped supervisor, a refused or garbled inspect, a log the daemon
+ * would not serve) leaves the exited run to the finalize wait: never taken over, never redone. An
+ * attempt stood down meanwhile, or a daemon silent for the whole read deadline, ends the admission.
+ */
+async function exitedServing(
+    execDocker: ExecDocker,
+    found: DockerEarlier,
+    signal: AbortSignal | undefined
+): Promise<DockerEarlier> {
+    const deadline = Date.now() + CLOSE_READ_DEADLINE_MS;
+    const bounded = boundedExec(execDocker, { deadline, signal });
+    try {
+        const supervisor = stateOf(
+            (await bounded(['inspect', '--format', '{{json .State}}', supervisorName(found.prior)])).stdout
+        );
+        if (supervisor.Running !== true) return found;
+        const lines = (await bounded(['logs', supervisorName(found.prior)])).stdout.split('\n').map((l) => l.trim());
+        if (!lines.includes(SUPERVISOR_RELEASED_LINE) || lines.includes(SUPERVISOR_SERVED_LINE)) return found;
+        const runner = stateOf(
+            (await bounded(['inspect', '--format', '{{json .State}}', containerName(found.prior)])).stdout
+        );
+        return { ...found, live: { startedAt: typeof runner.StartedAt === 'string' ? runner.StartedAt : '' } };
+    } catch (e) {
+        if (signal?.aborted) throw e;
+        // A daemon that stalled the whole deadline would stall the finalize wait's reads as long again.
+        if (Date.now() >= deadline) {
+            throw new AdoptionBlocked(
+                `the exited runner's supervisor could not be read in time: ${(e as Error).message}`
+            );
+        }
+        return found;
+    }
+}
+
 /** An exited earlier runner; `supervisorExit` is how its supervisor ended, once waited for. */
 interface DockerEarlier extends EarlierRun {
     supervisorExit: number | null;
+    /** Listed running: a released group's agent, which admission proves live or blocks (#829). */
+    running: boolean;
 }
 
 /**
@@ -362,7 +451,11 @@ async function readSupervisorReport(execDocker: ExecDocker, prior: BoardJob): Pr
  * before its verdict lands leaves it for the next to adopt, and the reaper takes it once the job is
  * terminal. A timeout the dead driver enforced reads as the exit it caused: the deadline died with it.
  */
-export function dockerAdopt(deps: AdoptDeps, job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | null> {
+export function dockerAdopt(
+    deps: AdoptDeps,
+    job: BoardJob,
+    signal?: AbortSignal
+): Promise<AdoptedRun | LiveRun | null> {
     // The supplied stand-down and the attempt's kill end every request, pause and stream of the adoption.
     return adoptEarlierRun(dockerAdoption(deps), deps.adopted, job, anyOf(signal, deps.ledger.signal(job)));
 }
@@ -380,6 +473,8 @@ interface AdoptDeps {
     ledger: KillLedger;
     fence: (job: BoardJob, signal: AbortSignal) => Promise<void>;
     adopted: Map<string, string>;
+    /** The attempt groups this runner knows, by lease; a taken-over group is recorded under the prior lease (#829). */
+    groups: Map<string, { startedAt: string; session: RunSession | null; resumed?: boolean }>;
 }
 
 /** What differs in docker's adoption: its listing, the supervisor's wait, the reads of the exited run, the fence. */
@@ -389,7 +484,9 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // A daemon that could not say is no "nothing to adopt": a fresh run's fence would remove a
         // finalizing group unread once it answers again (#824).
         pacing: { attempts: DISCOVERY_ATTEMPTS, retryMs: DISCOVERY_RETRY_MS, sleep: deps.sleep },
-        list: (job, bound) => exitedRunners(boundedExec(execDocker, bound), job),
+        list: (job, bound) => earlierRunners(boundedExec(execDocker, bound), job),
+        admit: (found, _job, signal) =>
+            found.running ? liveRunner(execDocker, found, signal) : exitedServing(execDocker, found, signal),
         begin: async () => undefined,
         // The agent's exit is not the run's end: its supervisor may still be draining the exporter and
         // finalizing (the dead driver never waited for it). Waited out, bounded — never swept unread —
@@ -399,7 +496,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
             const supervisorExit = await waitSupervisorExit(
                 execDocker,
                 found.prior,
-                SUPERVISOR_WINDDOWN_MS,
+                finalizeWaitMs(config),
                 signal
             ).catch((e: Error) => {
                 throw new AdoptionBlocked(`the earlier supervisor could not be waited for: ${e.message}`);
@@ -437,7 +534,7 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
                         output: reportTail(full.content),
                         fullLog: full.content,
                         logTruncated: full.truncated,
-                        startedAt: state.StartedAt ?? new Date(0).toISOString(),
+                        startedAt: state.StartedAt ?? '',
                     };
                 },
             };
@@ -455,5 +552,16 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         // fails leaves the run to the lease, and the next claim reads it again.
         sweep: (_found, job, signal) => deps.fence(job, anyOf(signal)),
         rollback: async () => undefined,
+        // Docker keeps no map of the group's claim to forget: the runner addresses it by the prior lease alone.
+        adoptLive: ({ prior, session, live }) => {
+            deps.groups.set(prior.leaseToken, {
+                startedAt: live?.startedAt ?? '',
+                session: session ? { id: session, resume: true } : null,
+                resumed: true,
+            });
+            return () => {
+                deps.groups.delete(prior.leaseToken);
+            };
+        },
     };
 }

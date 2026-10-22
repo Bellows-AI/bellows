@@ -65,17 +65,20 @@ describe('openRunControl', () => {
         expect(questions).toBeDefined();
         expect(publisher).toBeDefined();
         expect(reviewer).toMatchObject({ request: expect.any(Function), read: expect.any(Function) });
-        // Three tokens of one lease: the agent's rides its env beside the endpoint, the supervisor's
-        // and the exporter's only the supervisor-side env — never the agent's.
+        // Three tokens of one lease: the agent's rides the supervisor-side env with the supervisor's
+        // and the exporter's — the agent's own env holds none of them.
         expect(new Set([token, agentToken, exporterToken]).size).toBe(3);
-        expect(job.gateEnv).toMatchObject({ [CONTROL_URL_ENV]: 'http://driver:9099', [CONTROL_TOKEN_ENV]: agentToken });
+        expect(job.gateEnv ?? {}).not.toHaveProperty(CONTROL_URL_ENV);
+        expect(job.gateEnv ?? {}).not.toHaveProperty(CONTROL_TOKEN_ENV);
         expect(job.supervisorEnv).toEqual({
             [SUPERVISOR_ENV.controlUrl]: 'http://driver:9099',
             [SUPERVISOR_ENV.controlToken]: token,
+            [SUPERVISOR_ENV.agentToken]: agentToken,
             [SUPERVISOR_ENV.exportToken]: exporterToken,
         });
-        expect(JSON.stringify(job.gateEnv)).not.toContain(token);
-        expect(JSON.stringify(job.gateEnv)).not.toContain(exporterToken);
+        expect(JSON.stringify(job.gateEnv ?? {})).not.toContain(token);
+        expect(JSON.stringify(job.gateEnv ?? {})).not.toContain(exporterToken);
+        expect(JSON.stringify(job.gateEnv ?? {})).not.toContain(agentToken);
         expect(state.control).toBe(token);
     });
 });
@@ -479,7 +482,7 @@ describe('concurrency 1: a caller that waits on its review', () => {
         const runner = stubRunner(
             async (running) => {
                 if (running.id !== caller.id) return ok();
-                const relay = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '')?.reviewer;
+                const relay = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '')?.reviewer;
                 if (!relay) throw new Error('no reviewer relay on the control entry');
                 await relay.request('sec-1', 'security');
                 // A bounded wait on the board's own word, on a clock of macrotasks.

@@ -228,13 +228,59 @@ describe('the test-jobs harness', () => {
         expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# orphan reaper'"));
         expect(start).toBeLessThan(SCRIPT.indexOf("echo '# workflows'"));
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
-        expect(phase).toContain('--filter "label=factory.claim-seq=1"');
+        // The helpers both recovery phases use sit at file scope (issue #829).
+        expect(SCRIPT).toContain('--filter "label=factory.claim-seq=1"');
         expect(phase).toContain('kill -9 "$driver_pid"');
         expect(phase).toContain('kill -TERM "$driver_pid"');
         expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
-        expect(phase).toContain("'the driver was drained'");
-        expect(phase).toContain("'adopted the finished runner of claim 1, whose driver was lost'");
+        expect(SCRIPT).toContain("DRAINED='the driver was drained'");
+        expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
+        expect(phase).toContain('grep -qF "job $killed: $TOOK_OVER"');
+        expect(phase).toContain('supervisor_served "$drained" 60');
+        // The lane drivers shorten the takeover grace and the drain, so a waited-out bound or a
+        // stuck run costs seconds, not minutes, and a run that never settles dumps its containers.
+        expect(SCRIPT).toContain(`DRIVER_REBIND_GRACE_MS="$\{LANE_REBIND_GRACE_MS:-20000}"`);
+        expect(SCRIPT).toContain(`DRIVER_HANDOVER_MS="$\{LANE_HANDOVER_MS:-5000}"`);
+        expect(SCRIPT).toMatch(/done\n {4}dump_stall "\$id"\n/);
+        expect(SCRIPT).toContain("'supervisor: stopped serving the steps'");
+        expect(SCRIPT).toContain("ADOPTED='adopted the finished runner of claim 1, whose driver was lost'");
         expect(phase).toContain('attempts 1');
+    });
+
+    // Issue #829: the recovery waits are the derived bound plus a margin, not the longest bound a
+    // default lease could ever produce (the old 150 s outlasted the lane's 30 s orphan bound five times).
+    it('the recovery waits derive from the lane lease, and a taken-over agent is awaited the same bound', () => {
+        expect(SCRIPT).toContain('LANE_LEASE_S=10');
+        expect(SCRIPT).toContain('DRIVER_LEASE_SECONDS="$LANE_LEASE_S"');
+        expect(SCRIPT).toMatch(
+            /\nADOPT_S=\$\(\(LANE_ORPHAN_S \+ LANE_LEASE_S \+ \$\{LANE_REBIND_GRACE_MS:-20000\} \/ 1000 \+ LANE_MARGIN_S\)\)\n/
+        );
+        expect(SCRIPT).toContain('LANE_ORPHAN_S=30');
+        expect(SCRIPT).not.toContain('ADOPT_S=150');
+        const adopt = SCRIPT.match(/LANE_MARGIN_S=(\d+)/);
+        expect(Number(adopt?.[1])).toBeLessThanOrEqual(40);
+        expect(SCRIPT).toContain('dk_await_log "$k2" "$TOOK_OVER" "$ADOPT_S"');
+        expect(SCRIPT).toContain('dk_await_log "$k2d" "$TOOK_OVER" "$ADOPT_S"');
+        expect(SCRIPT).not.toMatch(/dk_await_log "\$\w+" "\$TOOK_OVER" 120/);
+    });
+
+    // Issue #829: a run reports its slow and unended attempts, and can watch for stalled containers while it runs.
+    it('reports the slow attempts at the end and watches for stalled containers only on request', () => {
+        const cleanup = SCRIPT.slice(SCRIPT.indexOf('\ncleanup() {'), SCRIPT.indexOf('\ntrap cleanup EXIT'));
+        expect(cleanup).toContain(`node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "$\{LANE_SLOW_S:-30}"`);
+        expect(cleanup).toContain('>"$work/slow-jobs.txt"');
+        expect(cleanup).toContain('"$work"/slow-jobs.txt');
+        expect(cleanup).toContain('[ -n "$stall_watch_pid" ] && kill "$stall_watch_pid"');
+        expect(cleanup.indexOf('lane-slow-jobs.mjs')).toBeLessThan(cleanup.indexOf('rm -rf "$work"'));
+        expect(SCRIPT).toContain('--watch-stalls) WATCH_STALLS=1 ;;');
+        expect(SCRIPT).toContain(`WATCH_STALLS="$\{LANE_WATCH_STALLS:-0}"`);
+        const watcher = SCRIPT.slice(SCRIPT.indexOf('\nwatch_stalls() {'), SCRIPT.indexOf('\ncleanup() {'));
+        expect(watcher).toContain('LANE_STALL_S:-120');
+        expect(watcher).toContain('timeout 10 docker ps -q --filter "label=factory.job=$job"');
+        expect(watcher).toContain('cat "$work/created-jobs"');
+        expect(watcher).toContain('"$work/stalls/$c.log"');
+        expect(watcher).toContain('dump_container "$c"');
+        expect(SCRIPT).toMatch(/\[ "\$WATCH_STALLS" = 1 \] && \{\n {4}watch_stalls &\n {4}stall_watch_pid=\$!\n\}/);
     });
 
     // Issue #822: an expired lease is the lost attempt's interruption, at max_attempts 1, and a
@@ -242,13 +288,50 @@ describe('the test-jobs harness', () => {
     it('the node-disruption phase recovers an expiry at the last attempt, and a runner lost with its driver', () => {
         const start = SCRIPT.indexOf("echo '# node disruption'");
         const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# workflows'"));
-        expect(phase).toContain("EXPIRED='the lease expired: its driver went silent'");
+        expect(SCRIPT).toContain("EXPIRED='the lease expired: its driver went silent'");
         // The cap is checked, not assumed (driver/test/lane-last-attempt.test.ts).
         expect(phase).toContain('capped="$(last_attempt "$killed")" && ok');
         expect(phase).toContain('capped="$(last_attempt "$lost")" && ok');
         expect(phase).toContain('docker ps -aq --filter "label=factory.job=$lost" |');
         expect(phase).toContain('"job $lost: attempt 1 resuming session $lost_session"');
         expect(phase).toContain('upstream:0');
+    });
+
+    // Issue #829: a driver killed at each step of a run, on real containers, finishes the task once.
+    it('the driver-kill phase kills a real driver at setup, agent, gates and publish, then finishes once', () => {
+        const start = SCRIPT.indexOf("echo '# driver kill'");
+        expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(start).toBeLessThan(SCRIPT.indexOf("echo '# run deadline'"));
+        const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# run deadline'"));
+        expect(phase).toContain('kill -9 "$driver_pid"');
+        expect(phase).toContain('kill -TERM "$driver_pid"');
+        expect(phase).toContain('DRIVER_REAP_INTERVAL_MS=2000');
+        expect(phase).toContain('DRIVER_REAP_GRACE_MS=1000');
+        expect(phase).toContain('DRIVER_HANDOVER_MS=2000');
+        expect(SCRIPT).toContain("TOOK_OVER='took over the running agent of claim 1, whose driver was lost'");
+        expect(phase).toContain('supervisor: rebound to claim 2');
+        expect(phase).toContain("resumed gates from claim 1's checkpoint");
+        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        expect(phase).toContain('dk_log "$k4" "$TOOK_OVER"');
+        expect(phase).toContain('dk_log "$k5" "$TOOK_OVER"');
+        expect(phase).toContain('dk_log "$k4" "$ADOPTED" && bad \'k4: the finished runner was not waited out\'');
+        expect(phase).toContain('dk_log "$k5" "$ADOPTED" && bad \'k5: the finished runner was not waited out\'');
+        expect(phase).toContain('lane-pushes.log');
+        expect(phase).toContain('lane-gh-prs');
+        expect(phase).toContain('factory.claim-seq=2');
+        expect(phase).toContain('label=factory.role=agent');
+        // Barriers live on the job's own task volume, which the lane reads by name and never creates.
+        expect(phase).toContain('lane_use "$k5"');
+        expect(phase).toContain('lane_origin lane_count "$DK_ORIGIN/lane-pushes.log"');
+        expect(phase).not.toContain('/workspaces');
+        expect(SCRIPT).toContain("LANE_DIR='/task/.lane-kill'");
+        expect(SCRIPT).toContain('[ "$(lane_vol_state)" = present ] || return 125');
+        // An unconfirmed read is never "clean": the leftovers check fails on a docker error.
+        expect(SCRIPT).toContain('lane_count() {');
+        expect(SCRIPT).toContain('lane_left() {');
+        // The shared recovery helpers sit at file scope, where node-disruption and this phase both see them.
+        expect(SCRIPT.indexOf('\ndisruption_driver() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\nawait_released() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
     });
 
     it('the orphan runner is removed one id at a time, not as one newline-joined argument', () => {

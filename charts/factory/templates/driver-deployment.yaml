@@ -162,6 +162,9 @@ spec:
                       # #792): their leases go back as interruptions and their runners stay up.
                       - name: DRIVER_HANDOVER_MS
                         value: {{ mul (max 0 (sub (int $.Values.driver.terminationGracePeriodSeconds) 60)) 1000 | quote }}
+                      # What a released run's group waits for a newer holder on top of the lease (#829).
+                      - name: DRIVER_REBIND_GRACE_MS
+                        value: {{ $.Values.driver.rebindGraceMs | quote }}
                       # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port; the
                       # runner reaches it at THIS pod's IP, the driver appending the bound port. A
                       # Service name would resolve to every driver replica — and, during a rollout,

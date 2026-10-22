@@ -2,7 +2,8 @@ import { artifactCalls } from './artifact-calls.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
-import { reclaimCalls } from './reclaim-calls.js';
+import { type Reclaim, reclaimCalls } from './reclaim-calls.js';
+import { phaseCheckpointCalls, type PhaseCheckpointBoard } from './board-phase-checkpoints.js';
 import { verdictCalls } from './board-verdict.js';
 import type { TaskRestore } from './task-restore.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
@@ -228,6 +229,10 @@ export interface BoardJob {
      * its pair, the exporter the URL and its own token.
      */
     supervisorEnv?: Record<string, string>;
+    /** The lease the group's objects were made under, set by the LOOP on a takeover (#829); unset: `leaseToken`'s own. */
+    groupLease?: string;
+    /** Set by `ownGroup` alone: the lease that holds the checkout claim when `leaseToken` names the group's. */
+    claimHolder?: string;
     /**
      * How long this attempt's `environment.setup` ran before the agent started (issue #733) — set
      * by the LOOP, never by the board; the runner's deadline is the run budget less it.
@@ -457,23 +462,7 @@ export interface VerdictEvidence {
     gates: GatesOutcome;
 }
 
-/**
- * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
- * the tree for somebody to take down. The lease claims the row so the reclaim is mutually
- * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
- */
-export interface Reclaim {
-    /** The queue row's own id — the work order's name. */
-    id: string;
-    /** This acquisition's own token (issue #821): the ack, the renew and the checkout claim ride it. */
-    token: string;
-    /** The thread whose tree the removed job left behind. */
-    rootJobId: string;
-    /** The checkout the thread's worktree belonged to, when the removed job named one. */
-    repo: string | null;
-    workspacePath: string | null;
-    leaseExpiresAt: string;
-}
+export type { Reclaim };
 
 /** What acking a reclaim answered: consumed, or another worker already has it. */
 export type ReclaimAck = 'ok' | 'lost' | 'missing';
@@ -525,7 +514,7 @@ export interface ArtifactManifest {
     terminalCause: string | null;
 }
 
-export interface Board {
+export interface Board extends PhaseCheckpointBoard {
     /**
      * Stores one chunk of an artifact stream at its source byte offset. Authorized by the job's
      * claim sequence, not its lease, so a superseded attempt may still call it; a repeat of the
@@ -971,6 +960,7 @@ export function createBoard({
         ...reviewCalls(post),
 
         ...verdictCalls(post, leaseSeconds),
+        ...phaseCheckpointCalls(post),
         ...artifactCalls({ url, token, fetch }),
         ...checkpointCalls(post),
         ...githubCredentialCall({ url, fetch }),

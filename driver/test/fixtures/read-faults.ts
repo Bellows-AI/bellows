@@ -449,6 +449,7 @@ export function freshJob(over: Partial<BoardJob> = {}): BoardJob {
         supervisorEnv: {
             SUPERVISOR_CONTROL_URL: 'http://driver:7000',
             SUPERVISOR_CONTROL_TOKEN: randomUUID(),
+            SUPERVISOR_AGENT_TOKEN: randomUUID(),
             SUPERVISOR_EXPORT_TOKEN: randomUUID(),
         },
         ...over,

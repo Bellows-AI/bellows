@@ -4,18 +4,20 @@
  * fence when the attempt stood down while the adoption was still reading. The adoption through the
  * claim loop is `loop.test.ts`.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { adoptStep, recordAdopted } from '../src/loop-adopt.js';
 import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
-import { type AdoptedRun, AdoptionBlocked } from '../src/runner.js';
+import { type AdoptedRun, AdoptionBlocked, type LiveRun } from '../src/runner.js';
+import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../src/supervisor-contract.js';
 import { runJob } from '../src/loop-run.js';
-import { job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+import { createStepBroker } from '../src/step-control.js';
+import { job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 const adopted: AdoptedRun = { outcome: ok(), claimSeq: 4 };
 
-function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>) {
+function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | LiveRun | null>) {
     const board = stubBoard([]).board;
     const runner = stubRunner(async () => ok(), { adopt });
     const released: string[] = [];
@@ -36,6 +38,10 @@ function setup(claimed: BoardJob, adopt: (j: BoardJob, signal?: AbortSignal) => 
     };
     return { ctx, board, released, logs, state };
 }
+
+const until = async (done: () => boolean) => {
+    while (!done()) await tick();
+};
 
 const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -180,5 +186,261 @@ describe('recordAdopted', () => {
         expect(s.logs.some((m) => m.includes('could not record the adopted interruption: board unreachable'))).toBe(
             true
         );
+    });
+});
+
+describe('taking over a live run (#829)', () => {
+    afterEach(() => vi.useRealTimers());
+
+    const prior = { ...job(1), leaseToken: 'lease-prior' };
+    const live: LiveRun = { live: true, prior, claimSeq: 4, session: 'sess-prior', startedAt: 'then' };
+
+    function takeover(opts: { polled?: boolean; rebind?: () => Promise<void>; session?: string | null } = {}) {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        const claimed: BoardJob = {
+            ...job(1),
+            claimSeq: 5,
+            leaseToken: 'lease-new',
+            supervisorEnv: {
+                [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/',
+                [SUPERVISOR_ENV.controlToken]: 'tok-new',
+                [SUPERVISOR_ENV.agentToken]: 'tok-new-agent',
+                [SUPERVISOR_ENV.exportToken]: 'tok-new-export',
+            },
+        };
+        const s = setup(claimed, async () => ({
+            ...live,
+            session: opts.session === undefined ? 'sess-prior' : opts.session,
+        }));
+        const { gates } = stubGateStack({}, { control: true, polled: opts.polled ?? true });
+        s.ctx.rt = { ...s.ctx.rt, gates, sleep: async (ms) => void vi.setSystemTime(Date.now() + ms) };
+        if (opts.rebind) (s.ctx.rt.runner as { rebind: unknown }).rebind = opts.rebind;
+        return { ...s, claimed };
+    }
+
+    it('rebinds the prior group to this claim, then owns it only after the first poll', async () => {
+        const s = takeover();
+
+        const answer = await adoptStep(s.ctx);
+
+        const runner = s.ctx.rt.runner as unknown as { rebound: { group: BoardJob; binding: unknown }[] };
+        expect(runner.rebound).toEqual([
+            {
+                group: live.prior,
+                binding: {
+                    claimSeq: 5,
+                    url: 'http://driver:1/',
+                    token: 'tok-new',
+                    agentToken: 'tok-new-agent',
+                    exportToken: 'tok-new-export',
+                },
+            },
+        ]);
+        expect(answer).toMatchObject({ record: 'interruption', claimSeq: 4 });
+        expect(s.claimed.groupLease).toBe('lease-prior');
+        expect(s.ctx.takeover).toMatchObject({ live: true, claimSeq: 4 });
+        expect(s.ctx.adopted).toBeUndefined();
+        expect(s.ctx.fenced).toBe(true);
+        expect(s.state.keepGroup).toBeFalsy();
+        expect(s.ctx.session).toEqual({ id: 'sess-prior', resume: true });
+        expect(s.board.interrupted).toEqual([]);
+    });
+
+    it('counts a confirmed takeover as launched, so every exit before the launch retains the group', async () => {
+        const s = takeover();
+
+        await adoptStep(s.ctx);
+
+        expect(s.state.launched).toBe(true);
+    });
+
+    /**
+     * Runs a taken-over attempt through `runJob`, flipping the board's heartbeat the moment the
+     * supervisor confirms the new endpoint — after the takeover counts as launched, before the launch.
+     */
+    async function takeoverThenBeat(beat: 'lost' | 'stop') {
+        let confirmed = false;
+        let verdicts = 0;
+        const board = stubBoard([]).board;
+        const held = board.heartbeat.bind(board);
+        board.heartbeat = async (...args) => {
+            if (!confirmed) return held(...args);
+            verdicts += 1;
+            return beat === 'lost' ? 'lost' : { result: 'held', cancelRequested: true };
+        };
+        // The step after the confirmation reports the interruption: hold it until a beat landed the verdict.
+        const interrupt = board.interrupt.bind(board);
+        board.interrupt = async (...args) => {
+            await until(() => verdicts > 0);
+            return interrupt(...args);
+        };
+        const { stack, gates } = stubGateStack({}, { control: true, polled: true });
+        const polled = gates.server.controlPolled;
+        gates.server.controlPolled = (token) => {
+            const answer = polled(token);
+            if (answer) confirmed = true;
+            return answer;
+        };
+        const runner = stubRunner(async () => ok(), { adopt: async () => live });
+        const released: string[] = [];
+        (runner as { releaseFence?: (j: BoardJob) => Promise<void> }).releaseFence = async (j) => {
+            released.push(j.id);
+        };
+        await runJob(stubRuntime(board, runner, { gates }), { ...job(1), claimSeq: 5, leaseToken: 'lease-new' });
+        return { board, runner, released, stack };
+    }
+
+    it('retains a taken-over group whose lease is lost before the launch: no finish, no fence release, no hand-back', async () => {
+        const t = await takeoverThenBeat('lost');
+
+        expect(t.runner.finished).toEqual([]);
+        expect(t.released).toEqual([]);
+        expect(t.runner.killed).toEqual([]);
+        expect(t.board.interrupted).toEqual([expect.objectContaining({ claimSeq: 4 })]);
+        expect(t.board.suspended).toEqual([]);
+        expect(t.board.completed).toEqual([]);
+    });
+
+    it('stops a taken-over agent on a Stop before the launch, the way a launched run is stopped', async () => {
+        const t = await takeoverThenBeat('stop');
+
+        expect(t.stack.killsRaised).toEqual(t.stack.controlOpened);
+        expect(t.runner.killed).toEqual([job(1).id]);
+        expect(t.board.completed).toEqual([]);
+    });
+
+    it('does not count an unconfirmed takeover as launched', async () => {
+        const s = takeover({ polled: false });
+
+        await adoptStep(s.ctx);
+
+        expect(s.state.launched).toBe(false);
+    });
+
+    it('runs a session-less (opencode) takeover with a null session', async () => {
+        const s = takeover({ session: null });
+
+        await adoptStep(s.ctx);
+
+        expect(s.ctx.session).toBeNull();
+        expect(s.claimed.groupLease).toBe('lease-prior');
+    });
+
+    it('leaves the group to the lease when the rebind is rejected, owning nothing', async () => {
+        const s = takeover({ rebind: async () => Promise.reject(new Error('binding refused')) });
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ halt: 'leave' });
+        expect(s.claimed.groupLease).toBeUndefined();
+        expect(s.state.keepGroup).toBe(true);
+        expect(s.ctx.fenced).toBe(false);
+    });
+
+    it('leaves the group to the lease when the supervisor never polls within the delivery bound', async () => {
+        const s = takeover({ polled: false });
+        const started = Date.now();
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toMatchObject({ halt: 'leave' });
+        expect(Date.now() - started).toBeGreaterThan(SUPERVISOR_REBIND_DELIVERY_MS - 10_000);
+        expect(s.claimed.groupLease).toBeUndefined();
+        expect(s.state.keepGroup).toBe(true);
+    });
+
+    it('stands down mid-delivery keeping the group, never owning it', async () => {
+        const s = takeover({ polled: false });
+        s.ctx.rt = {
+            ...s.ctx.rt,
+            sleep: async (ms) => {
+                vi.setSystemTime(Date.now() + ms);
+                s.state.abortNow();
+            },
+        };
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toBe(STOOD_DOWN);
+        expect(s.claimed.groupLease).toBeUndefined();
+        expect(s.state.keepGroup).toBe(true);
+    });
+
+    it('leaves a takeover it cannot deliver without a run-control endpoint', async () => {
+        const s = takeover();
+        const { gates: _gates, ...withoutGates } = s.ctx.rt;
+        s.ctx.rt = withoutGates;
+
+        expect(await adoptStep(s.ctx)).toMatchObject({ halt: 'leave' });
+        expect(s.claimed.groupLease).toBeUndefined();
+    });
+
+    it('runs the taken-over agent through runJob: no sync, no new session, the run resumes under the prior lease', async () => {
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        const board = stubBoard([]).board;
+        const runs: { job: BoardJob; session: unknown }[] = [];
+        const runner = stubRunner(
+            async (j, session) => {
+                runs.push({ job: j, session });
+                return ok();
+            },
+            { adopt: async () => live }
+        );
+
+        await runJob(stubRuntime(board, runner, { gates }), { ...job(1), claimSeq: 5, leaseToken: 'lease-new' });
+
+        expect(runner.synced).toEqual([]);
+        expect(board.sessions).toEqual([]);
+        expect(runs).toHaveLength(1);
+        expect(runs[0]?.job.groupLease).toBe('lease-prior');
+        expect(runs[0]?.session).toEqual({ id: 'sess-prior', resume: true });
+        expect(board.interrupted).toEqual([expect.objectContaining({ release: false, claimSeq: 4 })]);
+    });
+
+    // The agent exited, its supervisor served on: the report reached this holder's endpoint before the loop's
+    // first contact check. The takeover reads it as contact and the run is over at once.
+    it('carries a report buffered before first contact into the verdict, re-attaching nothing', async () => {
+        const broker = createStepBroker();
+        const buffered = {
+            id: 'r1',
+            outcome: 'success',
+            cause: null,
+            agentExit: 0,
+            agentEnd: 'exited',
+            drained: true,
+            serving: true,
+        };
+        const attached: string[] = [];
+        const { gates } = stubGateStack({}, { control: true });
+        // The supervisor's report lands on the loop's token before the loop first looks for contact.
+        gates.server.controlPolled = (t) => {
+            if (!broker.has(t)) {
+                broker.open(t);
+                broker.attach(t);
+                expect(broker.report(t, buffered)).toBe('accepted');
+                const attach = broker.attach.bind(broker);
+                broker.attach = (a) => {
+                    attached.push(a);
+                    attach(a);
+                };
+            }
+            return broker.contacted(t);
+        };
+        let verdict: unknown;
+        const board = stubBoard([]).board;
+        const runner = stubRunner(
+            async (j) => {
+                verdict = await broker.awaitReport(j.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '');
+                return ok();
+            },
+            { adopt: async () => live }
+        );
+        const rt = stubRuntime(board, runner, { gates });
+
+        await runJob(rt, { ...job(1), claimSeq: 5, leaseToken: 'lease-new' });
+
+        expect(verdict).toEqual(buffered);
+        expect(attached).toEqual([]);
+        expect(runner.synced).toEqual([]);
     });
 });

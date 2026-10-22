@@ -1075,3 +1075,82 @@ describe('cancelling a gate', () => {
         await server.close();
     });
 });
+
+describe('the gate server: departing a token (#829)', () => {
+    /** An attempt of three tokens, and another attempt beside it. */
+    async function departable() {
+        const server = createGateServer({ host: '127.0.0.1', manager: idle });
+        server.openControl('sup', undefined, { publish: async () => 'unsupported' });
+        server.grantAgent('sup', 'agent');
+        server.grantExporter('sup', 'exp');
+        server.openControl('other');
+        const port = await server.listen();
+        const call = (token: string, method: string, path: string) =>
+            fetch(`http://127.0.0.1:${port}${path}`, { method, headers: { authorization: `Bearer ${token}` } });
+        return { server, port, call };
+    }
+
+    it('hangs up on every route of a departed attempt, whichever token calls: no answer, never a 401', async () => {
+        const { server, call } = await departable();
+        server.departControl('sup', 60_000);
+
+        for (const [token, method, path] of [
+            ['sup', 'GET', '/control'],
+            ['sup', 'GET', '/step?wait=0'],
+            ['sup', 'POST', '/step/s-1'],
+            ['sup', 'POST', '/report'],
+            ['sup', 'POST', '/question'],
+            ['agent', 'POST', '/publish'],
+            ['agent', 'POST', '/review'],
+            ['exp', 'GET', '/export/chunk'],
+            ['sup', 'GET', '/anything-else'],
+        ] as const) {
+            await expect(call(token, method, path), `${token} ${method} ${path}`).rejects.toThrow();
+        }
+        await server.close();
+    });
+
+    it('keeps serving the other attempts of the server', async () => {
+        const { server, call } = await departable();
+        server.departControl('sup', 60_000);
+
+        expect((await call('other', 'GET', '/control')).status).toBe(OK_STATUS);
+        await server.close();
+    });
+
+    it('answers a long poll already in flight at the departure as an empty poll, not as a closed token', async () => {
+        const { server, call } = await departable();
+        const polling = call('sup', 'GET', '/step?wait=30000');
+        await until(() => server.controlPolled('sup'));
+        server.departControl('sup', 60_000);
+
+        const answer = await polling;
+        expect(answer.status).toBe(OK_STATUS);
+        expect(await answer.json()).toEqual({});
+        await server.close();
+    });
+
+    it('answers 401 as an unknown token once the departure bound passes, and not before', async () => {
+        const { server, call } = await departable();
+        server.departControl('sup', 150);
+
+        await expect(call('sup', 'GET', '/control')).rejects.toThrow();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect((await call('sup', 'GET', '/control')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await call('agent', 'POST', '/publish')).status).toBe(UNAUTHORIZED_STATUS);
+        await server.close();
+    });
+
+    it('forgets the earlier batch after its own bound when the control token departs again', async () => {
+        const { server, call } = await departable();
+        server.departControl('sup', 150);
+        server.departControl('sup', 60_000);
+
+        await new Promise((resolve) => setTimeout(resolve, 300));
+
+        expect((await call('agent', 'POST', '/publish')).status).toBe(UNAUTHORIZED_STATUS);
+        expect((await call('exp', 'GET', '/export/chunk')).status).toBe(UNAUTHORIZED_STATUS);
+        await expect(call('sup', 'GET', '/control')).rejects.toThrow();
+        await server.close();
+    });
+});

@@ -3,10 +3,10 @@ import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { pollFor } from './poll.js';
+import { anyOf, pollFor } from './poll.js';
 import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import { asPod, asStartupPod, validCounters } from './k8s-pod-shapes.js';
-import { ledgerOf, RunnerKilled, vanishedRunner } from './k8s-kill.js';
+import { ledgerOf, RunnerAbandoned, RunnerKilled, vanishedRunner } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
     containerFailure,
@@ -564,9 +564,17 @@ export async function pollRunnerJobUntilTerminal(
     // No bound of its own, on purpose: the kubelet's activeDeadlineSeconds and the run deadline
     // (run-deadline.ts, whose kill aborts the ledger signal) bound it.
     // Every request and pause of the poll ends on the kill, not at the next poll.
-    const live = withSignal(deps, ledgerOf(deps).signal(job));
+    // An abandoned attempt (#829) ends the poll too: the group is the next holder's, not this loop's to read.
+    const live = withSignal(deps, anyOf(ledgerOf(deps).signal(job), ledgerOf(deps).abandoned(job)));
     const polled = await pollFor<{ timedOut: boolean; jobSucceeded: boolean }>(
-        { ...waitOf(live, Infinity), everyMs: POLL_MS, abandoned: () => new RunnerKilled(runnerName(job)) },
+        {
+            ...waitOf(live, Infinity),
+            everyMs: POLL_MS,
+            abandoned: () =>
+                ledgerOf(deps).was(job).stopped
+                    ? new RunnerKilled(runnerName(job))
+                    : new RunnerAbandoned(runnerName(job)),
+        },
         async () => {
             const result = await readUnlessKilled(live, job);
             if (result.kind === 'notFound') {

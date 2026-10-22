@@ -24,7 +24,8 @@ import {
     type K8sRequestOptions,
 } from '../src/k8s-transport.js';
 import { AdoptionBlocked, Inconclusive } from '../src/runner.js';
-import { KILL_WINDDOWN_MS, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
+import { KILL_WINDDOWN_MS } from '../src/supervisor-contract.js';
+import { finalizeWaitMs } from '../src/supervisor-plan.js';
 
 const NS = 'factory';
 const job: BoardJob = {
@@ -243,7 +244,7 @@ describe('awaitFinalized', () => {
 
         expect(await awaitFinalized(world.deps, job, new AbortController().signal)).toBeNull();
 
-        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / SLOW_MS) + 1);
+        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(finalizeWaitMs(world.deps.config) / SLOW_MS) + 1);
         expect(timed(world.seen)).toBe(true);
     });
 
@@ -254,7 +255,7 @@ describe('awaitFinalized', () => {
             AdoptionBlocked
         );
 
-        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / SLOW_MS) + 1);
+        expect(world.seen.length).toBeLessThanOrEqual(Math.ceil(finalizeWaitMs(world.deps.config) / SLOW_MS) + 1);
     });
 
     it('gives the pod read after a finished Job the time left, not a fresh request timeout', async () => {

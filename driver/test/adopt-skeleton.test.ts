@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from '../src/adopt-skeleton.js';
-import { AdoptionBlocked, commandMark, Inconclusive, type RunOutcome } from '../src/runner.js';
+import { AdoptionBlocked, commandMark, Inconclusive, type RunOutcome, type AdoptedRun } from '../src/runner.js';
 import type { EndEvidence } from '../src/termination.js';
 import { boardJob } from './fixtures/board-job.js';
 
@@ -62,6 +62,7 @@ function fake(listed: Earlier[], over: Partial<AdoptPrimitives<Earlier>> = {}): 
         recordKey: (found) => found.name,
         sweep: async () => void steps.push('sweep'),
         rollback: async () => void steps.push('rollback'),
+        adoptLive: () => () => void steps.push('unlive'),
         ...over,
     };
     return { steps, p };
@@ -77,7 +78,7 @@ describe('adoptEarlierRun', () => {
         });
         const run = await adoptEarlierRun(p, adopted, job);
         expect(run?.claimSeq).toBe(3);
-        expect(run?.outcome).toMatchObject({
+        expect((run as AdoptedRun | null)?.outcome).toMatchObject({
             exitCode: 0,
             output: 'out',
             fullLog: 'log',
@@ -121,7 +122,7 @@ describe('adoptEarlierRun', () => {
 
     it('takes the session of the earlier run when the close-time readout found none', async () => {
         const { p } = fake([earlier(2, { session: 'sess-2' })]);
-        expect((await adoptEarlierRun(p, new Map(), job))?.outcome.sessionId).toBe('sess-2');
+        expect(((await adoptEarlierRun(p, new Map(), job)) as AdoptedRun | null)?.outcome.sessionId).toBe('sess-2');
     });
 
     it('keeps the session the close-time readout found', async () => {
@@ -130,7 +131,7 @@ describe('adoptEarlierRun', () => {
                 outcome.sessionId = 'sess-read';
             },
         });
-        expect((await adoptEarlierRun(p, new Map(), job))?.outcome.sessionId).toBe('sess-read');
+        expect(((await adoptEarlierRun(p, new Map(), job)) as AdoptedRun | null)?.outcome.sessionId).toBe('sess-read');
     });
 
     describe('a run that is gone', () => {
@@ -194,7 +195,7 @@ describe('adoptEarlierRun', () => {
                     }),
                 }),
             });
-            expect((await adoptEarlierRun(p, new Map(), job))?.outcome.timedOut).toBe(true);
+            expect(((await adoptEarlierRun(p, new Map(), job)) as AdoptedRun | null)?.outcome.timedOut).toBe(true);
         });
     });
 

@@ -10,13 +10,23 @@ import {
     statSync,
     writeFileSync,
 } from 'node:fs';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
+import {
+    type ClientRequest,
+    createServer,
+    type IncomingHttpHeaders,
+    request as httpRequest,
+    type IncomingMessage,
+    type Server,
+    type ServerResponse,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
+import { bindingBody } from '../src/supervisor-plan.js';
 import {
     AGENT_MAILBOX_DIR,
     GATE_CANCEL_GRACE_MS,
@@ -69,6 +79,8 @@ interface SupervisorModule {
 const supervisor = createRequire(import.meta.url)('../src/scripts/supervisor.cjs') as SupervisorModule;
 
 const TOKEN = 'tok-supervisor-secret';
+const AGENT_TOKEN = 'tok-agent-secret';
+const EXPORT_TOKEN = 'tok-export-secret';
 
 describe('the lifecycle machine', () => {
     it('walks prepare -> setup -> execute -> verify -> publish -> finalize -> report, and only that way', () => {
@@ -163,6 +175,25 @@ interface Driver {
     /** Whether the driver orders `finish` as soon as the supervisor reports; off, the supervisor keeps serving. */
     autoFinish: boolean;
     order(step: QueuedStep): void;
+    /** The bearer token this driver accepts. */
+    token: string;
+    /** Every request it received, whatever the route. */
+    calls: number;
+    /** While set, a step pull waits for it before the queue is read: a holder that hands its step late. */
+    hold: Promise<void> | null;
+    /** How many step pulls are waiting on `hold`. */
+    held: number;
+    /** While set, every request is dropped unanswered: a driver that is gone. */
+    silent: boolean;
+    /** While set, the supervisor's own routes are dropped but the relayed ones answer: a driver only the agent reaches. */
+    silentControl: boolean;
+    /** The agent's and the exporter's bearer tokens this driver accepts on the relayed routes. */
+    agentToken: string;
+    exportToken: string;
+    /** Every relayed request (`/publish`, `/review`, `/export`) it received, and whether its connection has closed. */
+    seen: { method: string; url: string; authorization: string; body: Buffer; closed: boolean }[];
+    /** Replaces the default relayed answer; the request has already been recorded in `seen`. */
+    relayAnswer: ((response: ServerResponse, entry: Driver['seen'][number]) => void | Promise<void>) | null;
 }
 
 interface Report {
@@ -198,10 +229,38 @@ const readBody = (request: IncomingMessage): Promise<string> =>
         request.on('end', () => resolve(text));
     });
 
+const readBytes = (request: IncomingMessage): Promise<Buffer> =>
+    new Promise((resolve) => {
+        const parts: Buffer[] = [];
+        request.on('data', (chunk: Buffer) => parts.push(chunk));
+        request.on('end', () => resolve(Buffer.concat(parts)));
+        request.on('close', () => resolve(Buffer.concat(parts)));
+    });
+
 /** The driver's run-control endpoint as the supervisor sees it: `/control`, and the question routes. */
-async function startDriver({ release = true }: { release?: boolean } = {}): Promise<Driver> {
+async function startDriver({
+    release = true,
+    token = TOKEN,
+    agentToken = AGENT_TOKEN,
+    exportToken = EXPORT_TOKEN,
+}: {
+    release?: boolean;
+    token?: string;
+    agentToken?: string;
+    exportToken?: string;
+} = {}): Promise<Driver> {
     const driver: Driver = {
         url: '',
+        token,
+        calls: 0,
+        hold: null,
+        held: 0,
+        silent: false,
+        silentControl: false,
+        agentToken,
+        exportToken,
+        seen: [],
+        relayAnswer: null,
         stop: false,
         kill: false,
         cancel: [],
@@ -222,12 +281,40 @@ async function startDriver({ release = true }: { release?: boolean } = {}): Prom
                 response.writeHead(status, { 'content-type': 'application/json' });
                 response.end(JSON.stringify(body));
             };
-            if (driver.closed || request.headers.authorization !== `Bearer ${TOKEN}`) return send(401, {});
+            driver.calls += 1;
+            if (driver.silent) return request.socket.destroy();
+            if (/^\/(publish|review|export)(\/|\?|$)/.test(request.url ?? '')) {
+                const entry = {
+                    method: request.method ?? '',
+                    url: request.url ?? '',
+                    authorization: request.headers.authorization ?? '',
+                    body: await readBytes(request),
+                    closed: false,
+                };
+                request.socket.on('close', () => (entry.closed = true));
+                driver.seen.push(entry);
+                if (driver.relayAnswer) return void (await driver.relayAnswer(response, entry));
+                const want = (request.url ?? '').startsWith('/export') ? driver.exportToken : driver.agentToken;
+                if (entry.authorization !== `Bearer ${want}`) return send(401, {});
+                return send(200, {
+                    echoed: entry.url,
+                    bytes: entry.body.length,
+                    sha: createHash('sha256').update(entry.body).digest('hex'),
+                });
+            }
+            if (driver.silentControl) return request.socket.destroy();
+            if (driver.closed || request.headers.authorization !== `Bearer ${driver.token}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
                 const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
                 return send(200, { stop: driver.stop, kill: driver.kill, ...cancel });
             }
             if (request.method === 'GET' && request.url?.startsWith('/step?')) {
+                if (driver.hold) {
+                    driver.held += 1;
+                    await driver.hold;
+                }
+                // A pull held across a close answers as the closed driver does.
+                if (driver.closed) return send(401, {});
                 const next = driver.queue.shift();
                 if (next) return send(200, { step: next });
                 await new Promise((resolve) => setTimeout(resolve, 20));
@@ -1540,5 +1627,846 @@ describe('what crosses the mailboxes', () => {
     it('names no Kubernetes API in the supervisor, which has none to reach', () => {
         const source = read('driver/src/scripts/supervisor.cjs');
         expect(source).not.toMatch(/serviceaccount|KUBERNETES_SERVICE|\/api\/v1|kubectl/i);
+    });
+});
+
+describe('the supervisor run: following a newer holder (issue #829)', () => {
+    const NEWER_TOKEN = 'tok-newer-holder-secret';
+
+    /** A supervisor of claim 1 that reads its binding file, and the writer of that file. */
+    function bound(driver: Driver, env: Record<string, string> = {}) {
+        const dir = mkdtempSync(join(tmpdir(), 'binding-'));
+        dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        const supervised = run(driver, { SUPERVISOR_CLAIM_SEQ: '1', SUPERVISOR_BINDING_FILE: file, ...env });
+        return {
+            supervised,
+            file,
+            name: (next: Driver, claimSeq: number) =>
+                writeFileSync(
+                    file,
+                    bindingBody({
+                        claimSeq,
+                        url: next.url,
+                        token: next.token,
+                        agentToken: next.agentToken,
+                        exportToken: next.exportToken,
+                    })
+                ),
+            rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
+        };
+    }
+
+    it('follows a strictly newer holder: the report and the finish go to it, not to the old one', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the rebind', rebound);
+        expect(supervised.logs).toContain('supervisor: rebound to claim 2');
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.reports).toHaveLength(1);
+        expect(old.reports).toHaveLength(0);
+    });
+
+    it('does not log the accepted binding as ignored on later polls', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the rebind', rebound);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        const after = supervised.logs.slice(supervised.logs.indexOf('supervisor: rebound to claim 2') + 1);
+        expect(after).not.toContain('supervisor: ignored a binding that names no newer holder');
+    });
+
+    it('refuses a holder that is not newer: an equal claim under another token, and an older one', async () => {
+        const [old, other] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(other, 1);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        name(other, 0);
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(other.calls).toBe(0);
+        expect(old.reports).toHaveLength(1);
+        expect(supervised.logs.some((line) => line.startsWith('supervisor: rebound'))).toBe(false);
+    });
+
+    const NAMED = (
+        claimSeq: string,
+        url: string,
+        token: string,
+        relay = { agent: AGENT_TOKEN, export: EXPORT_TOKEN }
+    ) =>
+        `{"claimSeq":${claimSeq},"url":${JSON.stringify(url)},"token":${JSON.stringify(token)},"agentToken":${JSON.stringify(relay.agent)},"exportToken":${JSON.stringify(relay.export)}}`;
+    it.each([
+        ['an empty file', () => ''],
+        ['a partial write', () => '{"claimSeq":2,"url":"http://127'],
+        ['a claim sequence that is a string', (u: string) => NAMED('"2"', u, NEWER_TOKEN)],
+        ['a negative claim sequence', (u: string) => NAMED('-1', u, NEWER_TOKEN)],
+        ['a claim sequence past any number', (u: string) => NAMED('1e309', u, NEWER_TOKEN)],
+        ['a claim sequence of huge digits', (u: string) => NAMED('99999999999999999999', u, NEWER_TOKEN)],
+        ['a url that is not http', () => NAMED('2', 'ftp://127.0.0.1:1', NEWER_TOKEN)],
+        ['no token', (u: string) => NAMED('2', u, '')],
+        ['a token with whitespace', (u: string) => NAMED('2', u, 'tok en')],
+        ['no agent token', (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: '', export: EXPORT_TOKEN })],
+        [
+            'an agent token with whitespace',
+            (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: 'tok en', export: EXPORT_TOKEN }),
+        ],
+        ['no export token', (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: AGENT_TOKEN, export: '' })],
+        [
+            'an export token with whitespace',
+            (u: string) => NAMED('2', u, NEWER_TOKEN, { agent: AGENT_TOKEN, export: 'tok en' }),
+        ],
+        [
+            'a binding that names no relay tokens at all',
+            (u: string) => `{"claimSeq":2,"url":${JSON.stringify(u)},"token":"${NEWER_TOKEN}"}`,
+        ],
+        ['an array', () => '[]'],
+    ])('keeps the holder it has through %s', async (_what, content) => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, file } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        writeFileSync(file, content(next.url));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.calls).toBe(0);
+        expect(old.reports).toHaveLength(1);
+        expect(supervised.logs.join('\n')).not.toContain(NEWER_TOKEN);
+        expect(supervised.logs.join('\n')).not.toContain(next.url);
+    });
+
+    it('keeps the holder it has when the binding is not a readable file', async () => {
+        const old = await startDriver();
+        const { supervised, file } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        mkdirSync(file);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(old.reports).toHaveLength(1);
+    });
+
+    it('never runs a step the old holder hands over after the rebind', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const marker = join(mkdtempSync(join(tmpdir(), 'marker-')), 'ran');
+        dirs.push(join(marker, '..'));
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        let release = () => {};
+        old.hold = new Promise<void>((resolve) => (release = resolve));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        old.order(
+            step('late-1', 'probe', ['node', '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x')`])
+        );
+        name(next, 2);
+        await until('the rebind', rebound);
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(existsSync(marker)).toBe(false);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(old.answers.has('late-1')).toBe(false);
+    });
+
+    it('keeps the result of a call the old holder handed before the rebind in the ledger only', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.order(step('slow-1', 'probe', ['node', '-e', 'setTimeout(() => {}, 400)']));
+        const { supervised, name, rebound } = bound(old);
+        await until('the call to be running', () => {
+            try {
+                return supervised.ledger('slow-1').invocations['i-1']?.state === 'running';
+            } catch {
+                return false;
+            }
+        });
+        name(next, 2);
+        await until('the rebind', rebound);
+        await until('the call to be done', () => supervised.ledger('slow-1').invocations['i-1']?.state === 'done');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(old.answers.has('slow-1')).toBe(false);
+        expect(next.answers.has('slow-1')).toBe(false);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+    });
+
+    it('delivers the report it already delivered again to the new holder, under the same id', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name } = bound(old);
+        supervised.agentExits(0);
+        await until('the report at the old holder', () => old.reports.length === 1);
+        name(next, 2);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.reports[0]!.id).toBe(old.reports[0]!.id);
+    });
+
+    it('keeps the report unacknowledged on its volume at a rebind: the new holder has not taken it', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        next.silent = true;
+        const { supervised, name, rebound } = bound(old);
+        supervised.agentExits(0);
+        await until('the old holder to acknowledge', () => old.reports.length === 1 && supervised.kept().acknowledged);
+        name(next, 2);
+        await until('the rebind', rebound);
+        expect(supervised.kept().acknowledged).toBe(false);
+        next.silent = false;
+        await supervised.done;
+    });
+
+    it('ignores the old holder answering 401 to a request in flight across the rebind', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name, rebound } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        // A step pull of the old holder is in flight across the rebind and answers 401 after it.
+        let release = () => {};
+        old.hold = new Promise<void>((resolve) => (release = resolve));
+        await until('a step pull held at the old holder', () => old.held > 0);
+        name(next, 2);
+        await until('the rebind', rebound);
+        old.closed = true;
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(supervised.report()).toMatchObject({ outcome: 'completed' });
+        expect(next.reports).toHaveLength(1);
+    });
+
+    it('posts a question still pending to the new holder', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name } = bound(old);
+        supervised.agentAsks('q-1');
+        await until('the question at the old holder', () => old.posted.length === 1);
+        name(next, 2);
+        await until('the question at the new holder', () => next.posted.length === 1);
+        expect(next.posted[0]!.id).toBe('q-1');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('follows no holder without a claim sequence of its own', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const dir = mkdtempSync(join(tmpdir(), 'binding-'));
+        dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        writeFileSync(file, JSON.stringify({ claimSeq: 2, url: next.url, token: next.token }));
+        const supervised = run(old, { SUPERVISOR_BINDING_FILE: file });
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+        expect(next.calls).toBe(0);
+    });
+
+    it('restarts the orphan bound at a rebind, and keeps it against the new holder', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        old.autoFinish = false;
+        const { supervised, name } = bound(old, { SUPERVISOR_ORPHAN_MS: '1000' });
+        let finished = false;
+        void supervised.done.then(() => (finished = true));
+        supervised.agentExits(0);
+        await until('the report at the old holder', () => old.reports.length === 1);
+        old.silent = true;
+        next.silent = true;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        name(next, 2);
+        // Past the bound counted from the old holder's last word, inside the one counted from the rebind.
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        expect(finished).toBe(false);
+        await supervised.done;
+    });
+
+    it('notices a rebind within a second', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+        const { supervised, name } = bound(old);
+        await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+        name(next, 2);
+        await until('the new holder to be called', () => next.calls > 0, 1_000);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    describe('waiting for a newer holder (#829 S3)', () => {
+        const ORPHAN = { SUPERVISOR_ORPHAN_MS: '300' };
+        const TAKEOVER = { ...ORPHAN, SUPERVISOR_TAKEOVER_MS: '3000' };
+        const lag = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        it('lets a released group outlive the orphan bound after its agent ends, and follow a holder named within the takeover bound', async () => {
+            const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+            old.autoFinish = false;
+            const { supervised, name, rebound } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            let finished = false;
+            void supervised.done.then(() => (finished = true));
+            await lag(1000);
+            expect(finished).toBe(false);
+            expect(old.reports).toHaveLength(0);
+            name(next, 2);
+            await until('the rebind', rebound);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(next.reports).toHaveLength(1);
+            expect(old.reports).toHaveLength(0);
+        });
+
+        // Characterization: an unreleased group (no `go` ever ordered) keeps the short bound and is redone.
+        it('keeps the orphan bound for a group never released: it exits lost and is redone', async () => {
+            const old = await startDriver({ release: false });
+            old.silent = true;
+            const { supervised } = bound(old, TAKEOVER);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.lost);
+            expect(supervised.saw(MAILBOX_FILES.go)).toBe(false);
+        });
+
+        it('finalizes at the takeover bound when no holder comes', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, { ...ORPHAN, SUPERVISOR_TAKEOVER_MS: '1200' });
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            const ended = Date.now();
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(Date.now() - ended).toBeGreaterThanOrEqual(1100);
+            expect(supervised.report()).toMatchObject({ outcome: 'completed', agentExit: 0 });
+        });
+
+        // Characterization: without a binding file nothing can name a holder, so the short bound stands.
+        it('keeps the orphan bound after the release when no binding file is configured', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const supervised = run(old, { ...TAKEOVER });
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            const ended = Date.now();
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(Date.now() - ended).toBeLessThan(2000);
+        });
+
+        it('logs the release once, on the first go only', async () => {
+            const old = await startDriver();
+            const { supervised } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.order(ORDER_GO);
+            await lag(200);
+            supervised.agentExits(0);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === 'supervisor: released the agent')).toHaveLength(1);
+        });
+
+        it('never logs a release for a refused go', async () => {
+            const old = await startDriver({ release: false });
+            old.stop = true;
+            const supervised = run(old);
+            await until('the stop', () => supervised.saw(MAILBOX_FILES.stop));
+            old.order(ORDER_GO);
+            await supervised.done;
+            expect(supervised.logs).not.toContain('supervisor: released the agent');
+        });
+
+        it('never logs a release for an agentless group', async () => {
+            const old = await startDriver({ release: false });
+            const supervised = run(old, { SUPERVISOR_AGENTLESS: '1' });
+            old.order(ORDER_FINISH);
+            await supervised.done;
+            expect(supervised.logs).not.toContain('supervisor: released the agent');
+        });
+
+        const SERVED = 'supervisor: stopped serving the steps';
+
+        it('logs that it stopped serving the steps once, after the driver orders the end', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            supervised.agentExits(0);
+            await until('the report', () => old.reports.length === 1);
+            await lag(200);
+            expect(supervised.logs).not.toContain(SERVED);
+            old.order(ORDER_FINISH);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === SERVED)).toHaveLength(1);
+        });
+
+        it('logs that it stopped serving when the takeover bound passes with no holder', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, { ...ORPHAN, SUPERVISOR_TAKEOVER_MS: '1200' });
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            supervised.agentExits(0);
+            await lag(500);
+            expect(supervised.logs).not.toContain(SERVED);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === SERVED)).toHaveLength(1);
+        });
+
+        it('logs that it stopped serving before the departure report of a kill', async () => {
+            const old = await startDriver();
+            old.autoFinish = false;
+            const { supervised } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.kill = true;
+            await until('the kill order', () => supervised.saw(MAILBOX_FILES.kill));
+            supervised.agentExits(143);
+            await supervised.done;
+            expect(supervised.logs.filter((line) => line === SERVED)).toHaveLength(1);
+        });
+
+        it('does not log it while the steps are served after the agent exits, or before the release', async () => {
+            const old = await startDriver({ release: false });
+            old.autoFinish = false;
+            const { supervised } = bound(old, TAKEOVER);
+            await lag(300);
+            expect(supervised.logs).not.toContain(SERVED);
+            old.order(ORDER_GO);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            supervised.agentExits(0);
+            await until('the report', () => old.reports.length === 1);
+            await lag(300);
+            expect(supervised.logs).not.toContain(SERVED);
+            old.order(ORDER_FINISH);
+            await supervised.done;
+        });
+
+        it('replays a gate that landed while a second invocation of it waited in the lane: the request is posted once', async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 400 }));
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+            await until('the gate to be taken', () => loop.seen.length === 1);
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('both answers', () => driver.answerBodies.length === 3);
+            expect(loop.seen).toHaveLength(1);
+            // The first body is the release's.
+            const [first, second] = driver.answerBodies.slice(1).map((body) => JSON.parse(body) as StepAnswer);
+            expect(first).toMatchObject({ invocation: 'i-1', exitCode: 0 });
+            expect(second).toMatchObject({ invocation: 'i-2', exitCode: 0, stdout: 'passed', replayed: true });
+            expect(supervised.ledger('gate-1').invocations['i-1']?.state).toBe('done');
+            supervised.agentExits(0);
+            await supervised.done;
+        });
+
+        // The first call's settle rewrites the ledger from its own entry: the waiting call's `running` record must survive.
+        it('keeps the running record of a gate call that waited in the lane while it runs', async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            let holds = 0;
+            const loop = fakeGateLoop(supervised.box.gate, () => ({
+                exitCode: 3,
+                output: 'failing',
+                holdMs: holds++ === 0 ? 300 : 3_000,
+            }));
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+            await until('the gate to be taken', () => loop.seen.length === 1);
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('the second call to run the gate', () => loop.seen.length === 2);
+            expect(supervised.ledger('gate-1').invocations['i-2']).toMatchObject({ state: 'running' });
+            supervised.agentExits(0);
+            await supervised.done;
+        });
+
+        // Characterization: a second invocation after a FAILED first call runs the gate again.
+        it('runs the second invocation of a gate whose first call failed', async () => {
+            const driver = await startDriver();
+            const supervised = run(driver, GATED);
+            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 3, output: 'failing', holdMs: 300 }));
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
+            await until('the gate to be taken', () => loop.seen.length === 1);
+            driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            await until('both answers', () => driver.answerBodies.length === 3);
+            expect(loop.seen).toHaveLength(2);
+            supervised.agentExits(0);
+            await supervised.done;
+        });
+
+        // Characterization: a driver that hangs up (a departed old holder) gives no 401, so the agent is kept.
+        it('keeps the agent when the old holder hangs up, and still follows the binding', async () => {
+            const [old, next] = [await startDriver(), await startDriver({ token: NEWER_TOKEN })];
+            old.autoFinish = false;
+            const { supervised, name, rebound } = bound(old, TAKEOVER);
+            await until('the agent to be released', () => supervised.saw(MAILBOX_FILES.go));
+            old.silent = true;
+            await lag(500);
+            expect(supervised.saw(MAILBOX_FILES.kill)).toBe(false);
+            name(next, 2);
+            await until('the rebind', rebound);
+            supervised.agentExits(0);
+            expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+            expect(next.reports).toHaveLength(1);
+        });
+    });
+});
+
+interface Relayed {
+    status: number;
+    headers: IncomingHttpHeaders;
+    body: Buffer;
+}
+
+/** One request to a relay socket; a hang-up (no answer at all) rejects, an answer of any status resolves. */
+const viaSocket = (
+    socketPath: string,
+    method: string,
+    url: string,
+    {
+        body,
+        headers = {},
+        onRequest,
+    }: {
+        body?: Buffer | string | undefined;
+        headers?: Record<string, string>;
+        onRequest?: (request: ClientRequest) => void;
+    } = {}
+): Promise<Relayed> =>
+    new Promise((resolve, reject) => {
+        const request = httpRequest(
+            {
+                socketPath,
+                method,
+                path: url,
+                headers:
+                    body === undefined ? headers : { 'content-length': String(Buffer.byteLength(body)), ...headers },
+            },
+            (response) => {
+                const parts: Buffer[] = [];
+                response.on('data', (chunk: Buffer) => parts.push(chunk));
+                response.on('error', reject);
+                response.on('close', () =>
+                    response.complete
+                        ? resolve({
+                              status: response.statusCode ?? 0,
+                              headers: response.headers,
+                              body: Buffer.concat(parts),
+                          })
+                        : reject(new Error('the answer was cut off'))
+                );
+            }
+        );
+        request.on('error', reject);
+        // A refused oversize body (413) closes the socket while the body is still being written: the
+        // late EPIPE lands on the socket after the answer settled this promise.
+        request.on('socket', (socket) => socket.on('error', () => {}));
+        onRequest?.(request);
+        request.end(body);
+    });
+
+describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
+    const SEEN_LATER = 'tok-newer-agent-secret';
+    const relayed = (driver: Driver | null, env: Record<string, string> = {}) =>
+        run(driver, {
+            SUPERVISOR_AGENT_TOKEN: AGENT_TOKEN,
+            SUPERVISOR_EXPORT_TOKEN: EXPORT_TOKEN,
+            SUPERVISOR_EXPORTS: '1',
+            ...env,
+        });
+    const socketsOf = (supervised: ReturnType<typeof run>) => ({
+        agent: join(supervised.agent.out, 'control.sock'),
+        export: join(supervised.box.export, 'control.sock'),
+    });
+    const ready = async (supervised: ReturnType<typeof run>) => {
+        await until('the relays', () => Object.values(socketsOf(supervised)).every((socket) => existsSync(socket)));
+        return socketsOf(supervised);
+    };
+    const finish = async (supervised: ReturnType<typeof run>) => {
+        supervised.exporterDone();
+        supervised.agentExits(0);
+        expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
+    };
+    const named = (driver: Driver, claimSeq: number, file: string) =>
+        writeFileSync(
+            file,
+            bindingBody({
+                claimSeq,
+                url: driver.url,
+                token: driver.token,
+                agentToken: driver.agentToken,
+                exportToken: driver.exportToken,
+            })
+        );
+    /** A supervisor of claim 1 following a binding file. */
+    const bound = (driver: Driver, env: Record<string, string> = {}) => {
+        const dir = mkdtempSync(join(tmpdir(), 'binding-'));
+        dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        const supervised = relayed(driver, { SUPERVISOR_CLAIM_SEQ: '1', SUPERVISOR_BINDING_FILE: file, ...env });
+        return {
+            supervised,
+            name: (next: Driver, claimSeq: number) => named(next, claimSeq, file),
+            rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
+        };
+    };
+
+    it.each([
+        ['POST', '/publish', '{}'],
+        ['POST', '/review', '{"profile":"a"}'],
+        ['GET', '/review/key-1', undefined],
+    ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const { agent } = await ready(supervised);
+        const answer = await viaSocket(agent, method, url, { body });
+        expect(answer.status).toBe(200);
+        expect(JSON.parse(answer.body.toString())).toMatchObject({ echoed: url, bytes: Buffer.byteLength(body ?? '') });
+        expect(driver.seen).toEqual([expect.objectContaining({ method, url, authorization: `Bearer ${AGENT_TOKEN}` })]);
+        await finish(supervised);
+        const text = [...supervised.logs, answer.body.toString()].join('\n');
+        expect(text).not.toContain(AGENT_TOKEN);
+        expect(text).not.toContain(EXPORT_TOKEN);
+    });
+
+    it('relays the export routes under the export token: a binary chunk past a MiB with its query, the manifest, the state', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const { export: socket } = await ready(supervised);
+        const chunk = Buffer.alloc(3 * 1024 * 1024 + 7, 0xff);
+        const query = '/export/chunk?session=s%201&offset=1048576';
+        const answer = await viaSocket(socket, 'PUT', query, { body: chunk });
+        expect(JSON.parse(answer.body.toString())).toMatchObject({
+            echoed: query,
+            bytes: chunk.length,
+            sha: createHash('sha256').update(chunk).digest('hex'),
+        });
+        expect((await viaSocket(socket, 'PUT', '/export/manifest', { body: '{"a":1}' })).status).toBe(200);
+        expect((await viaSocket(socket, 'POST', '/export/state', { body: '{"b":2}' })).status).toBe(200);
+        expect(driver.seen.map((entry) => entry.authorization)).toEqual(new Array(3).fill(`Bearer ${EXPORT_TOKEN}`));
+        await finish(supervised);
+    });
+
+    it.each([
+        ['agent', 'DELETE', '/publish'],
+        ['agent', 'GET', '/publish'],
+        ['agent', 'POST', '/question'],
+        ['agent', 'GET', '/control'],
+        ['agent', 'GET', '/step?wait=1'],
+        ['agent', 'POST', '/report'],
+        ['agent', 'GET', '/review/../control'],
+        ['agent', 'PUT', '/export/chunk?session=s&offset=0'],
+        ['agent', 'POST', '/review?x=1'],
+        ['export', 'POST', '/publish'],
+        ['export', 'GET', '/control'],
+        ['export', 'GET', '/export/chunk?session=s&offset=0'],
+        ['export', 'PUT', '/export/state'],
+        ['export', 'PUT', '/export/chunk/../../control'],
+        ['export', 'POST', '/report'],
+    ] as const)(
+        'refuses what the %s role may not call (%s %s) without reaching the driver',
+        async (role, method, url) => {
+            const driver = await startDriver();
+            const supervised = relayed(driver);
+            const sockets = await ready(supervised);
+            const answer = await viaSocket(sockets[role], method, url, { body: method === 'GET' ? undefined : '{}' });
+            expect(answer.status).toBe(404);
+            expect(driver.seen).toEqual([]);
+            await finish(supervised);
+        }
+    );
+
+    it('serves each relay on a socket only its owner may use', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        for (const socket of Object.values(sockets)) expect(statSync(socket).mode & 0o777).toBe(0o600);
+        await finish(supervised);
+    });
+
+    it('serves no relay without the tokens (a reclaimed group), and no agent relay for an agentless one', async () => {
+        const reclaim = await startDriver();
+        const bare = run(reclaim, { SUPERVISOR_EXPORTS: '1' });
+        await until('the agent to be released', () => bare.saw(MAILBOX_FILES.go));
+        expect(Object.values(socketsOf(bare)).some((socket) => existsSync(socket))).toBe(false);
+        bare.exporterDone();
+        bare.agentExits(0);
+        await bare.done;
+        const agentless = relayed(await startDriver(), { SUPERVISOR_AGENTLESS: '1' });
+        await until('the export relay', () => existsSync(socketsOf(agentless).export));
+        expect(existsSync(socketsOf(agentless).agent)).toBe(false);
+        agentless.exporterDone();
+        await agentless.done;
+    });
+
+    it('serves no export relay for a run that exports nothing', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver, { SUPERVISOR_EXPORTS: '0' });
+        await until('the agent relay', () => existsSync(socketsOf(supervised).agent));
+        expect(existsSync(socketsOf(supervised).export)).toBe(false);
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('relays to the new holder, under its tokens, after a rebind', async () => {
+        const next = await startDriver({ token: 'tok-next', agentToken: SEEN_LATER, exportToken: 'tok-next-export' });
+        const old = await startDriver();
+        old.autoFinish = false;
+        const { supervised, name, rebound } = bound(old);
+        const sockets = await ready(supervised);
+        await viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' });
+        name(next, 2);
+        await until('the rebind', rebound);
+        await viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' });
+        await viaSocket(sockets.export, 'POST', '/export/state', { body: '{}' });
+        expect(old.seen).toHaveLength(1);
+        expect(next.seen.map((entry) => entry.authorization)).toEqual([
+            `Bearer ${SEEN_LATER}`,
+            'Bearer tok-next-export',
+        ]);
+        await finish(supervised);
+        expect(supervised.logs.join('\n')).not.toContain(SEEN_LATER);
+    });
+
+    it('hangs up on a request in flight across a rebind, never lets the late old answer through, and lands the retry on the new holder', async () => {
+        const [old, next] = [await startDriver(), await startDriver({ token: 'tok-next' })];
+        old.autoFinish = false;
+        let release = () => {};
+        const late = new Promise<void>((resolve) => (release = resolve));
+        old.relayAnswer = async (response) => {
+            await late;
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end('{"from":"old"}');
+        };
+        const { supervised, name, rebound } = bound(old);
+        const sockets = await ready(supervised);
+        const inFlight = viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' });
+        const outcome = inFlight.then(
+            (answer) => answer,
+            (error: Error) => error
+        );
+        await until('the request to reach the old holder', () => old.seen.length === 1);
+        name(next, 2);
+        await until('the rebind', rebound);
+        expect(await outcome).toBeInstanceOf(Error);
+        release();
+        expect((await viaSocket(sockets.agent, 'POST', '/publish', { body: '{}' })).body.toString()).toContain(
+            '"echoed"'
+        );
+        expect(next.seen).toHaveLength(1);
+        await finish(supervised);
+    });
+
+    describe('a holder that does not answer', () => {
+        it.each([
+            [
+                'is gone',
+                (driver: Driver) => {
+                    driver.silent = true;
+                },
+            ],
+            [
+                'answers a head and dies mid-body',
+                (driver: Driver) => {
+                    driver.relayAnswer = (response) => {
+                        response.writeHead(200, { 'content-type': 'application/json', 'content-length': '100' });
+                        response.write('{"half":');
+                        setTimeout(() => response.socket?.destroy(), 20);
+                    };
+                },
+            ],
+            [
+                'never answers (the relay timeout)',
+                (driver: Driver) => {
+                    driver.relayAnswer = () => new Promise<void>(() => {});
+                },
+            ],
+        ])('hangs up on a holder that %s: no answer is made up, a 502 least of all', async (_what, silence) => {
+            const driver = await startDriver();
+            const supervised = relayed(driver, { SUPERVISOR_RELAY_TIMEOUT_MS: '300' });
+            const sockets = await ready(supervised);
+            silence(driver);
+            for (const [socket, url] of [
+                [sockets.agent, '/publish'],
+                [sockets.export, '/export/state'],
+            ] as [string, string][]) {
+                await expect(viaSocket(socket, 'POST', url, { body: '{}' })).rejects.toBeInstanceOf(Error);
+            }
+            driver.silent = false;
+            driver.relayAnswer = null;
+            await finish(supervised);
+        });
+    });
+
+    it('aborts the upstream request when the client hangs up', async () => {
+        const driver = await startDriver();
+        driver.relayAnswer = () => new Promise<void>(() => {});
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        let request: ClientRequest | undefined;
+        const gone = viaSocket(sockets.agent, 'POST', '/publish', {
+            body: '{}',
+            onRequest: (r) => {
+                request = r;
+            },
+        }).catch(() => 'hung up');
+        await until('the request to reach the driver', () => driver.seen.length === 1);
+        request?.destroy();
+        expect(await gone).toBe('hung up');
+        await until('the upstream request to close', () => driver.seen[0]?.closed === true);
+        driver.relayAnswer = null;
+        await finish(supervised);
+    });
+
+    it('answers 503 past the in-flight cap and 413 past a body cap, the driver untouched by the refused ones', async () => {
+        const driver = await startDriver();
+        driver.relayAnswer = () => new Promise<void>(() => {});
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        const requests = Array.from({ length: 2 }, () =>
+            viaSocket(sockets.export, 'POST', '/export/state', { body: '{}' }).catch(() => 0)
+        );
+        await until('both export slots to be taken', () => driver.seen.length === 2);
+        expect((await viaSocket(sockets.export, 'POST', '/export/state', { body: '{}' })).status).toBe(503);
+        expect(driver.seen).toHaveLength(2);
+        const over = await viaSocket(sockets.agent, 'POST', '/publish', { body: Buffer.alloc(1024 * 1024 + 1) });
+        expect(over.status).toBe(413);
+        const manifest = await viaSocket(sockets.export, 'PUT', '/export/manifest', { body: Buffer.alloc(4097) });
+        expect([413, 503]).toContain(manifest.status);
+        expect(driver.seen).toHaveLength(2);
+        driver.relayAnswer = null;
+        for (const server of servers) server.closeAllConnections();
+        await Promise.all(requests);
+        await finish(supervised);
+    });
+
+    it('does not count a relayed answer as the driver being there: the orphan bound still fires', async () => {
+        const driver = await startDriver({ release: false });
+        driver.silentControl = true;
+        const supervised = relayed(driver, { SUPERVISOR_ORPHAN_MS: '400' });
+        const { agent } = await ready(supervised);
+        const until400 = Date.now() + 800;
+        const outcome = Promise.race([
+            supervised.done,
+            new Promise<'still serving'>((r) => setTimeout(() => r('still serving'), 3_000)),
+        ]);
+        while (Date.now() < until400) {
+            await viaSocket(agent, 'POST', '/publish', { body: '{}' }).catch(() => null);
+            await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        expect(await outcome).toBe(SUPERVISOR_EXIT.lost);
+    });
+
+    it('closes the relays when the run ends', async () => {
+        const driver = await startDriver();
+        const supervised = relayed(driver);
+        const sockets = await ready(supervised);
+        await finish(supervised);
+        for (const socket of Object.values(sockets)) {
+            await expect(viaSocket(socket, 'POST', '/publish', { body: '{}' })).rejects.toMatchObject({
+                code: expect.stringMatching(/ENOENT|ECONNREFUSED/),
+            });
+        }
     });
 });

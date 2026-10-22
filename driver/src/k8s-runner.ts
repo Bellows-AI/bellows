@@ -1,6 +1,6 @@
 import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
-import { composeRuntimeSample } from './runner.js';
+import { composeRuntimeSample, onOwnGroup } from './runner.js';
 import {
     mergeOpencodeOutcome,
     opencodeReadFailed,
@@ -14,7 +14,7 @@ import {
 import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
-import { killedOutcome, ledgerOf, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
+import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
 import { jobPath, jobPodsPath } from './k8s-auxspec.js';
 import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { removeTaskVolumes } from './k8s-task-volume.js';
@@ -30,6 +30,7 @@ import {
     startServiceFleet,
 } from './k8s-services.js';
 import { groupServices } from './services.js';
+import { rebindGroup } from './k8s-binding.js';
 import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGroup } from './k8s-gate.js';
 import {
     expectOk,
@@ -372,7 +373,7 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     // thrown like any refused runner Job, never a run that silently loses its record. The declared
     // services are the pod's own sidecars (issue #773), waited ready by the loop's setup
     // (`startServices`) before its gate environment, and reached on the pod's loopback by name.
-    const { startedAt } = await ensureGroup(deps, job, session);
+    const { startedAt, resumed } = await ensureGroup(deps, job, session);
 
     // The agent waits on the supervisor's release; the order hands the supervisor what is left of
     // the run budget. The agent's end does not end the pod: the supervisor has the exporter drain,
@@ -386,9 +387,10 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
         },
         () => undefined
     );
+    // A group taken over from a lost driver (#829) was released by it: the agent already runs, in the
+    // sizing and under the order its first driver gave, and nothing here creates or releases it.
     // The agent's run is the gate sidecar's idle phase: its requests come down until the verify.
-    await resizeGateSidecar(deps, job, 'idle');
-    await orderGo(host, job);
+    if (!resumed) await resizeGateSidecar(deps, job, 'idle').then(() => orderGo(host, job));
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
     try {
@@ -396,7 +398,8 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
     } catch (e) {
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
         // resolves exit 137), where a rejection would be left to the lease.
-        if (e instanceof RunnerKilled) return killedOutcome();
+        // An abandoned attempt's outcome is ignored (`abandonOnHandover`): its Job is the next holder's.
+        if (e instanceof RunnerKilled || e instanceof RunnerAbandoned) return killedOutcome();
         // The run cannot be read to its end — the Job vanished, or the cluster refused: nothing
         // more is asked of the group but `finish`, and nothing left may make it wait.
         releaseSteps(host, job);
@@ -543,7 +546,7 @@ export function createKubernetesRunner(
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
     };
-    return {
+    return onOwnGroup({
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
@@ -569,6 +572,8 @@ export function createKubernetesRunner(
         resizeReviewer: (job, phase) => resizeReviewerSidecar(deps, job, phase),
         runReview: (caller, review, session, control) =>
             runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
+        rebind: (group, binding, signal) => rebindGroup(deps, group, binding, signal),
+        abandon: (job) => ledgerOf(deps).abandon(job),
         syncCheckout: (job: BoardJob, signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
             syncCheckout(deps, job, session ?? null, { githubToken, signal }),
         finish: (job: BoardJob) => finishGroup(deps, job),
@@ -579,5 +584,5 @@ export function createKubernetesRunner(
         releaseFence: async (job: BoardJob) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
-    };
+    });
 }

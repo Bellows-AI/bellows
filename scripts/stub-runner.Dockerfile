@@ -13,8 +13,10 @@ COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/
 COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
-RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash \
-    && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory \
+# The publish's `gh` (issue #829): the lane's stand-in, its state kept in the task's origin.
+COPY lane-gh.sh /usr/local/bin/gh
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/gh \
+    && mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review /factory/binding && chown -R node:node /factory \
     && chmod 0700 /factory/in /factory/out \
     && mkdir -p /task && chown node:node /task
 # The reviewer container runs the executor entrypoint by path; the stub answers as a scripted reviewer.

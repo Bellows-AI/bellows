@@ -37,11 +37,11 @@ while [ "$#" -gt 0 ]; do
         phase_requested=1
         shift
         PHASE="${1:-}"
-        case "$PHASE" in all|smoke|admission|workspace|recovery|services|control) ;; *) echo 'invalid --phase'; exit 2 ;; esac
+        case "$PHASE" in all|smoke|admission|workspace|recovery|services|takeover|control|drain) ;; *) echo 'invalid --phase'; exit 2 ;; esac
         ;;
     --help)
-        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|control] | --netpol]'
-        echo 'All cluster phases run smoke prerequisites. The default cluster phase is all.'
+        echo 'Usage: scripts/test-k8s.sh [--cluster [--phase all|smoke|admission|workspace|recovery|services|takeover|control|drain] | --netpol]'
+        echo 'All cluster phases run smoke prerequisites. The default cluster phase is all, which leaves out drain: it needs a LAYOUT=drain cluster.'
         echo 'TIMINGS_FILE overrides artifacts/k8s/<release>.tsv (includes cleanup).'
         exit 0
         ;;
@@ -94,6 +94,11 @@ DRIVER_REPO="$LANE_REGISTRY/factory-driver"
 DASH_REF="$DASH_REPO:$RELEASE"
 DRIVER_REF="$DRIVER_REPO:$RELEASE"
 STUB_REF="$LANE_REGISTRY/echo-executor:$RELEASE"
+# The lane's database image, mirrored through the registry like the collector. Alpine, not the state
+# chart's Debian default: a fresh node unpacks a third fewer bytes, and the lane's database is new
+# every run, so the musl collation never meets a volume initialised under glibc.
+POSTGRES_IMAGE=postgres:17-alpine
+POSTGRES_REF="$LANE_REGISTRY/$POSTGRES_IMAGE"
 
 pass=0
 fail=0
@@ -219,6 +224,21 @@ cleanup() {
         kubectl wait --for=delete pvc -l "app.kubernetes.io/instance=$STATE_RELEASE" \
             -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     fi
+    # A drain still running in the background would re-cordon what is uncordoned next: it goes first.
+    if [ -n "${drain_pid:-}" ]; then
+        kill "$drain_pid" >/dev/null 2>&1
+        wait "$drain_pid" >/dev/null 2>&1
+    fi
+    # Nodes this run cordoned or drained go back to scheduling, then the shared volume and its directory go.
+    for node in $(cat "${cordoned_file:-/dev/null}" 2>/dev/null); do
+        kubectl uncordon "$node" --request-timeout=20s >/dev/null 2>&1
+    done
+    if [ -n "${shared_pv:-}" ]; then
+        kubectl delete pv "$shared_pv" --ignore-not-found --wait=false >/dev/null 2>&1
+        for node in ${shared_names:-}; do
+            docker exec "$node" rm -rf "/factory-shared/$RELEASE" >/dev/null 2>&1
+        done
+    fi
     rm -rf "$work"
     end_phase
     printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
@@ -312,7 +332,7 @@ expect_contains     'the driver role grants the runner calls' "$rbac" \
 # the driver writes values it was handed and never reads one back.
 expect_contains     'the driver role manages the per-job env Secret' "$rbac" \
     "resources: ['secrets']
-      verbs: ['create', 'delete']"
+      verbs: ['create', 'delete', 'patch']"
 # The checkout claim that makes the re-claim fence atomic: POSTed to take the checkout, read to
 # order the contenders, deleted to release or take over. `get` is safe on ConfigMaps and would not be on secrets — the claim carries no secret
 # material.
@@ -547,6 +567,7 @@ expect_contains 'the dashboard image defaults to the appVersion tag' "$gh" "imag
 expect_contains 'the driver image defaults to the appVersion tag'    "$gh" "image: factory-driver:$app_version"
 expect_not_contains 'no chart image is untagged or :latest'           "$gh" 'opentelemetry-collector-contrib:latest'
 COLLECTOR_IMAGE="$(awk '$1 == "image:" && /opentelemetry-collector-contrib/ { print $2; exit }' "$work/rendered.yaml")"
+COLLECTOR_REF="$LANE_REGISTRY/$COLLECTOR_IMAGE"
 case "$COLLECTOR_IMAGE" in
 *:[0-9]*) ok 'the collector image is pinned to a version' ;;
 *) bad 'the collector image is pinned to a version' "got '$COLLECTOR_IMAGE'" ;;
@@ -580,6 +601,7 @@ expect_contains 'the driver has a liveness probe'      "$gh_driver" 'livenessPro
 expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_HEARTBEAT_FILE'
 expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
 expect_contains 'the driver hands over a minute before SIGKILL' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "540000"'
+expect_contains 'the driver gives a released group the default rebind grace' "$(grep -A1 'name: DRIVER_REBIND_GRACE_MS' <<<"$gh_driver")" 'value: "240000"'
 
 # Selectors hold only name/instance/component: they are immutable, so a chart-version label in
 # one would make every upgrade an apiserver refusal.
@@ -816,6 +838,14 @@ expect_contains 'the admission policy holds a claim finalizers fixed on update' 
 expect_contains 'the admission policy holds a claim ownerReferences fixed on update' "$admission" \
     '(!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)'
 expect_not_contains 'the admission policy admits no checkout claim update' "$admission" 'factory.revoked'
+# The Role's namespace-wide secrets `patch` (#829) reaches only a per-attempt Secret, and only its
+# binding key: labels, type and owner kept, no other data key changed.
+expect_contains 'the admission policy matches secret updates' "$admission" "operations: ['UPDATE']
+              resources: ['secrets']"
+expect_contains 'the admission policy lets a Secret update change only its binding' "$admission" \
+    "k == 'binding.json'"
+expect_contains 'the admission policy words the Secret binding refusal' "$admission" \
+    'an attempt Secret update changes only its binding'
 expect_contains 'the admission policy denies' "$admission" 'validationActions: [Deny]'
 expect_not_contains 'the admission policy never admits the dashboard Secret' "$admission" "$RELEASE-factory-dashboard"
 expect_contains 'the admission policy refuses subPathExpr on task volume mounts' "$admission" '!has(m.subPathExpr)'
@@ -1315,6 +1345,11 @@ kind-*)
     # The images reach the node through the cluster's local registry, so a cluster without it is
     # refused before the build rather than after.
     sh scripts/kind-cluster.sh check "$kind_name" || exit 1
+    # The kubelet's pod sync bounds how fast a rebound Secret reaches the supervisor. An unset (0s) or
+    # unreadable value is the kubelet's one-minute default, never a fast sync.
+    sync="$(docker exec "$kind_name-control-plane" sed -n 's/^syncFrequency: *\([0-9][0-9]*\)s$/\1/p' \
+        /var/lib/kubelet/config.yaml 2>/dev/null)"
+    case "$sync" in '' | 0) KUBELET_SYNC_S=60 ;; *) KUBELET_SYNC_S="$sync" ;; esac
     ;;
 *)
     echo "test-k8s: refusing to run the cluster phase against '$context'."
@@ -1350,7 +1385,7 @@ begin_phase images
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
 cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
-    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
+    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
 cp docker/claude-executor/github-credential.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
 printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
@@ -1370,7 +1405,9 @@ driver_build=''
         docker build -q -t "$STUB_IMAGE" -f "$work/stub.Dockerfile" "$work"
 } >"$work/stub-build.log" 2>&1 &
 stub_build=$!
-docker image inspect "$COLLECTOR_IMAGE" >/dev/null 2>&1 || docker pull -q "$COLLECTOR_IMAGE" >"$work/collector-pull.log" 2>&1 &
+for image in "$COLLECTOR_IMAGE" "$POSTGRES_IMAGE"; do
+    docker image inspect "$image" >/dev/null 2>&1 || docker pull -q "$image" || exit 1
+done >"$work/collector-pull.log" 2>&1 &
 collector_pull=$!
 wait "$stub_build" || { tail -30 "$work/stub-build.log"; build_failed=1; }
 stub_build=''
@@ -1392,20 +1429,93 @@ push_ref() { # push_ref <image> <ref>
 push_ref "$DASH_IMAGE" "$DASH_REF"
 push_ref "$DRIVER_IMAGE" "$DRIVER_REF"
 push_ref "$STUB_IMAGE" "$STUB_REF"
-# The collector is a pinned upstream image, not rebuilt: kind skips it once the node holds it.
-kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name" >/dev/null || {
-    echo "test-k8s: could not load $COLLECTOR_IMAGE into the kind cluster $kind_name"
-    exit 1
-}
+# The pinned upstream images go through the registry too: side-loading imports a whole copy into
+# every node, and a node pulling from the registry fetches only the layers it lacks.
+push_ref "$COLLECTOR_IMAGE" "$COLLECTOR_REF"
+push_ref "$POSTGRES_IMAGE" "$POSTGRES_REF"
 
 echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
 deploy_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-helm install "$STATE_RELEASE" charts/factory-local-state -n "$NAMESPACE" >/dev/null || {
+# A cluster made with LAYOUT=drain (scripts/kind-cluster-drain.yaml) carries nodes, the control plane too,
+# that share one host directory, labelled factory.lane/shared: the workspaces then live on a static ReadWriteMany volume over
+# it, so a task pod can move between those nodes (issue #829). Any other cluster keeps the claim the
+# state chart makes. An unreadable node list refuses the run: it is never "no such nodes".
+SHARED_SETS=()
+shared_nodes="$(kubectl get nodes -l factory.lane/shared=true -o name --request-timeout=10s)" || {
+    echo 'test-k8s: could not list the cluster nodes'
+    exit 1
+}
+cordoned_file="$work/cordoned"
+: >"$cordoned_file"
+lane_cordon() { # lane_cordon <node> -> cordoned and recorded, so cleanup uncordons it whatever happens
+    kubectl cordon "$1" --request-timeout=20s >/dev/null && echo "$1" >>"$cordoned_file"
+}
+lane_uncordon() { # lane_uncordon <node> -> schedulable again and dropped from the record
+    kubectl uncordon "$1" --request-timeout=20s >/dev/null && {
+        grep -vx "$1" "$cordoned_file" >"$cordoned_file.next" || true
+        mv "$cordoned_file.next" "$cordoned_file"
+    }
+}
+if [ -n "$shared_nodes" ]; then
+    shared_names="${shared_nodes//node\//}"
+    for node in $shared_names; do
+        docker exec "$node" sh -c 'mkdir -p "$1" && chown 1000:1000 "$1"' sh "/factory-shared/$RELEASE" || {
+            echo "test-k8s: could not prepare /factory-shared/$RELEASE on $node"
+            exit 1
+        }
+    done
+    kubectl apply -f - >/dev/null <<EOF || {
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+    name: $RELEASE-shared
+spec:
+    capacity:
+        storage: 20Gi
+    accessModes: [ReadWriteMany]
+    persistentVolumeReclaimPolicy: Retain
+    storageClassName: factory-lane-shared
+    hostPath:
+        path: /factory-shared/$RELEASE
+        type: DirectoryOrCreate
+EOF
+        echo 'test-k8s: could not create the shared workspaces volume'
+        exit 1
+    }
+    shared_pv="$RELEASE-shared"
+    # State and app land on the control plane: a drain case moves the driver and the runner, never the board.
+    workers="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name --request-timeout=10s)" || {
+        echo 'test-k8s: could not list the worker nodes'
+        exit 1
+    }
+    for node in $workers; do
+        lane_cordon "${node#node/}" || {
+            echo "test-k8s: could not cordon $node"
+            exit 1
+        }
+    done
+    SHARED_SETS=(--set workspaces.storageClass=factory-lane-shared --set 'workspaces.accessModes[0]=ReadWriteMany')
+fi
+helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHARED_SETS[@]}"} \
+    --set "postgres.image=$POSTGRES_REF" -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install of the state chart failed'
     exit 1
 }
 state_installed=1
+# The lease outlasts the orphan bound (a lost driver's group ends inside it) plus one heartbeat period
+# (a third of the lease): L >= 30 + L/3, so 45 s. Below it the group's end can land after the lease's.
+LANE_LEASE_S=45
+# A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes
+# at the default one-minute sync, docs/kubernetes.md): the grace outlasts two syncs, or the group ends
+# before it can follow the new holder. scripts/kind-cluster.yaml syncs every 5 s: the 30 s floor below.
+LANE_REBIND_GRACE_S=$((2 * ${KUBELET_SYNC_S:-60} + 10))
+# Measured on the kind lane: a 5 s sync (a 20 s grace) leaves the hard-kill case's rebind undelivered
+# (the supervisor ends before it polls the new endpoint, three runs in three), a 30 s grace delivers it.
+[ "$LANE_REBIND_GRACE_S" -ge 30 ] || LANE_REBIND_GRACE_S=30
+LANE_MARGIN_S=40
+# A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
+LANE_ORPHAN_S=30
 # Fresh throwaway secrets per run; the board token is what the driver presents on every claim, so a
 # job that comes back succeeded proves it end to end. The origin is the port-forward's below.
 PORT=18080
@@ -1416,9 +1526,12 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "driver.image.repository=$DRIVER_REPO" --set-string "driver.image.tag=$RELEASE" \
     --set "driver.executorImages.claudeCode=$STUB_REF" \
     --set "driver.executorImages.opencode=$STUB_REF" \
+    --set "collector.image.repository=$LANE_REGISTRY/${COLLECTOR_IMAGE%:*}" \
+    --set "database.waitImage=$POSTGRES_REF" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set "driver.repoCloneBase=git://$RELEASE-origin:9418" \
-    --set-string driver.leaseSeconds=120 --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.leaseSeconds="$LANE_LEASE_S" --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
     exit 1
@@ -1441,6 +1554,10 @@ kubectl wait --for=condition=available \
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
+# The workers were cordoned only so the board landed on the control plane.
+for node in $(cat "$cordoned_file"); do
+    lane_uncordon "$node" || bad "$node is schedulable again" 'kubectl uncordon failed'
+done
 
 # Through the dashboard, so the assertion is the user's own path: queue, then poll the board.
 begin_phase smoke
@@ -1627,10 +1744,15 @@ git -C /tmp/seed -c user.name=test-k8s -c user.email=test-k8s@localhost commit -
 git -C /tmp/seed push -q /origins/$SMOKE_REPO.git main;
 exec git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack --listen=0.0.0.0 --port=9418 /origins"
 origin_script="$(printf '%s' "$origin_script" | tr '\n' ' ')"
+# On the multi-node layout the origin sits with the board on the control plane: a drain case moves the
+# driver and the runner, and a bare pod on a drained node is neither evicted nor kept (emptyDir).
+origin_place=''
+[ "${#SHARED_SETS[@]}" -eq 0 ] || origin_place='"nodeSelector":{"node-role.kubernetes.io/control-plane":""},
+"tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}],'
 kubectl run "$RELEASE-origin" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
     --overrides="$(
         cat <<EOF
-{"spec":{"automountServiceAccountToken":false,
+{"spec":{$origin_place"automountServiceAccountToken":false,
 "volumes":[{"name":"o","emptyDir":{}}],
 "containers":[{"name":"origin","image":"$STUB_REF","imagePullPolicy":"IfNotPresent",
 "command":["sh","-c","$origin_script"],
@@ -1942,6 +2064,21 @@ fetch(process.argv[1], { headers }).then(async (r) => process.stdout.write(Strin
 ' "$BASE/api/jobs/$1"
 }
 
+kind_dump_stall() { # kind_dump_stall <id> — what a job that never settled was still running, once per job
+    # Pods and Jobs of the job with their nodes, a describe (events included) and every container's
+    # log tail, beside the timings: a stall names its own stuck pod instead of costing a re-run.
+    # Diagnostics only; a kubectl error lands in the dump as text and is never a verdict.
+    local file="${TIMINGS_FILE%.tsv}.stall-$1.log" sel="factory.job=$1,app.kubernetes.io/instance=$RELEASE"
+    [ -e "$file" ] && return 0
+    {
+        echo "== job $1 at $(date -u +%T)"
+        kubectl get pods,jobs -l "$sel" -n "$NAMESPACE" -o wide --request-timeout=10s 2>&1
+        kubectl describe pods -l "$sel" -n "$NAMESPACE" --request-timeout=10s 2>&1
+        kubectl logs --all-containers --tail=40 -l "$sel" -n "$NAMESPACE" --request-timeout=10s 2>&1
+    } >"$file" 2>&1
+    echo "test-k8s: job $1 did not settle; its pods: $file" >&2
+}
+
 await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; returns 0 once it matched
     # Wall-clock seconds, not polls: each poll's request may itself take up to its own timeout.
     local until=$(($(date +%s) + $3)) b=""
@@ -1951,12 +2088,39 @@ await_brief() { # await_brief <id> <case pattern> <seconds> -> the last brief; r
         case "$b" in $2) printf '%s' "$b"; return 0 ;; esac
         sleep 1
     done
+    kind_dump_stall "$1"
     printf '%s' "$b"
     return 1
 }
 
 DRIVER_DEPLOY="deployment/$RELEASE-factory-driver"
 DRIVER_SEL="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driver"
+
+# A forced delete removes the pod object at once, but the kubelet still stops the driver's containers on
+# its node afterwards; a driver process that outlives the delete can still complete the job under its
+# expired lease. kill_driver_pods [pod/<name>] deletes the driver pods hard (all of them without an
+# argument) and returns once the node reports no container of theirs left running.
+kill_driver_pods() {
+    local rows pod node out
+    if [ -n "${1:-}" ]; then
+        rows="$(kubectl get "$1" -n "$NAMESPACE" --request-timeout=10s \
+            -o jsonpath='{.metadata.name} {.spec.nodeName}{"\n"}' 2>/dev/null)" || rows=''
+        kubectl delete "$1" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    else
+        rows="$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s \
+            -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}' 2>/dev/null)" || rows=''
+        kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    fi
+    [ -n "${kind_name:-}" ] || return 0
+    while read -r pod node; do
+        [ -n "$pod" ] || continue
+        for _ in $(seq 1 60); do
+            out="$(docker exec "$node" crictl ps -q --state running --label "io.kubernetes.pod.name=$pod" 2>/dev/null)" &&
+                [ -z "$out" ] && break
+            sleep 1
+        done
+    done <<<"$rows"
+}
 driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --request-timeout=20s 2>/dev/null; }
 
 if selected_phase admission; then
@@ -2048,6 +2212,51 @@ expect_contains 'the policy refuses a claim that is not a task volume' "$task_ot
     'named for their labelled thread root and generation'
 deleted="$(kubectl delete secret "$RELEASE-factory-dashboard" --as="$DRIVER_SA" -n "$NAMESPACE" --dry-run=server 2>&1)"
 expect_contains 'the policy refuses deleting an unlabelled Secret' "$deleted" 'only objects labelled factory.job'
+
+# The holder binding (#829): a per-attempt Secret's binding key is the one thing the driver may
+# update on a Secret.
+PROBE_ENV="factory-job-00000000-0000-4000-8000-000000000829-env"
+kubectl create secret generic "$PROBE_ENV" -n "$NAMESPACE" --from-literal=KEEP=1 >/dev/null
+kubectl label secret "$PROBE_ENV" -n "$NAMESPACE" factory.job=admission-probe >/dev/null
+# The driver has no `get` on Secrets and `kubectl patch` reads the object first, so the merge patch
+# goes straight to the apiserver through an impersonating proxy, as the driver's own PATCH does.
+as_driver_secret() {
+    local plog pid port out
+    plog="$(mktemp)"
+    kubectl proxy --port=0 --as="$DRIVER_SA" >"$plog" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 100); do grep -q 'Starting to serve' "$plog" && break; sleep 0.1; done
+    port="$(sed -n 's/.*127\.0\.0\.1:\([0-9]*\).*/\1/p' "$plog")"
+    out="$(curl -sS -w '\n%{http_code}' -X PATCH -H 'Content-Type: application/merge-patch+json' -d "$2" \
+        "http://127.0.0.1:$port/api/v1/namespaces/$NAMESPACE/secrets/$1?dryRun=All" 2>&1)"
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
+    rm -f "$plog"
+    case "${out##*$'\n'}" in
+        2??) echo "secret/$1 patched (server dry run)" ;;
+        *) echo "$out" ;;
+    esac
+}
+bound="$(as_driver_secret "$PROBE_ENV" '{"data":{"binding.json":"e30="}}')"
+expect_contains 'the policy admits a binding patch on an attempt Secret' "$bound" 'patched'
+other_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":"eA=="}}')"
+expect_contains 'the policy refuses a Secret patch of another key' "$other_key" 'changes only its binding'
+relabelled_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"labels":{"factory.lease":"thief"}}}')"
+expect_contains 'the policy refuses relabelling an attempt Secret' "$relabelled_secret" 'changes only its binding'
+retyped_secret="$(as_driver_secret "$PROBE_ENV" '{"type":"kubernetes.io/basic-auth"}')"
+# A Secret's type is immutable in the apiserver itself, which refuses the change before admission runs.
+expect_contains 'the apiserver refuses retyping an attempt Secret' "$retyped_secret" 'field is immutable'
+reowned_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","name":"thief","uid":"00000000-0000-0000-0000-000000000000"}]}}')"
+expect_contains 'the policy refuses re-owning an attempt Secret' "$reowned_secret" 'changes only its binding'
+dropped_key="$(as_driver_secret "$PROBE_ENV" '{"data":{"KEEP":null}}')"
+expect_contains 'the policy refuses deleting an existing Secret data key' "$dropped_key" 'changes only its binding'
+immutable_secret="$(as_driver_secret "$PROBE_ENV" '{"immutable":true}')"
+expect_contains 'the policy refuses freezing an attempt Secret' "$immutable_secret" 'changes only its binding'
+finalized_secret="$(as_driver_secret "$PROBE_ENV" '{"metadata":{"finalizers":["factory/probe"]}}')"
+expect_contains 'the policy refuses adding a finalizer to an attempt Secret' "$finalized_secret" 'changes only its binding'
+dashboard_patch="$(as_driver_secret "$RELEASE-factory-dashboard" '{"data":{"binding.json":"e30="}}')"
+expect_contains 'the policy refuses patching the dashboard Secret' "$dashboard_patch" 'only objects labelled factory.job'
+kubectl delete secret "$PROBE_ENV" -n "$NAMESPACE" >/dev/null
 
 # Issue #382, the half that cannot be asserted by rendering. Phase one proved the CEL is in the
 # document; this proves a real apiserver COMPILES it and refuses on it. The distinction matters
@@ -2266,30 +2475,51 @@ kubectl delete pod fs-seed fs-probe -n "$NAMESPACE" --ignore-not-found --wait=fa
 # --- Node disruption (issue #796) ---------------------------------------------------------------
 fi
 
-if selected_phase recovery; then
-#
-# Infrastructure loss interrupts a task, it never loses one — on a real apiserver. The release was
-# installed with a 120s lease and a 70s drain grace, so the chart's handover (grace minus 60s) is
-# 10s. a: the driver pod deleted hard while its runner runs to the end — the replacement driver
-# adopts the finished runner Job, and its reaper spares that Job while the job is live. b: the
-# driver drained (scaled to 0) — the handover queues the job with an interruption and leaves the
-# runner running; the driver scaled back adopts it. c: the runner pod deleted mid-run (an eviction
-# stand-in) — an interruption, then the next attempt, in its session. d: the driver pod and its
-# runner Job deleted together — a replacement runner redoes the attempt in the lost session, on the
-# restored tree. e: the driver lost after its agent exited, while the supervisor still finalizes —
-# the surviving replica's claim waits that out and adopts the run, never sweeps it (issue #824).
-# Each job refunds its interrupted attempt and records exactly one interruption; an expired lease
-# is that interruption (issue #822). Only this release's objects are touched, by label.
-
-echo
-echo '# node disruption'
-
+# What the recovery and takeover phases share: the interruption reasons the board records, and the lease expiry
+# that stands in for waiting a dead driver's lease out.
 ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
+TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
+# A released group waits takeoverBoundMs (the lease plus the rebind grace, driver/src/supervisor-plan.ts)
+# for a new holder, so a runner handed over by a lost or drained driver finishes only past it; the wait
+# is derived from the lane's lease and grace, plus a margin for the run itself.
+HANDOVER_S=$((LANE_LEASE_S + LANE_REBIND_GRACE_S + LANE_MARGIN_S))
+ORPHANED_S=$((LANE_ORPHAN_S + HANDOVER_S))
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
 JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
+
+expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
+    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+        psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
+        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+with expired as (
+    update job set lease_expires_at = now() - interval '1 second'
+    where id = :'job' and status = 'running' and claim_seq = 1 and lease_expires_at > now()
+    returning id
+)
+select count(*) from expired;
+SQL
+}
+
+if selected_phase recovery; then
+#
+# Infrastructure loss interrupts a task, it never loses one — on a real apiserver. The release was
+# installed with the lane lease (LANE_LEASE_S) and a 70s drain grace, so the chart's handover (grace minus 60s) is
+# 10s. a: the driver pod deleted hard while its runner runs — the replacement driver's reaper
+# spares the live runner Job, and once the lease ran out the replacement takes the run over. b: the
+# driver drained (scaled to 0) — the handover queues the job with an interruption and leaves the
+# runner running; the driver scaled back adopts it. c: the runner pod deleted mid-run (an eviction
+# stand-in) — an interruption, then the next attempt, in its session. d: the driver pod and its
+# runner Job deleted together — a replacement runner redoes the attempt in the lost session, on the
+# restored tree. e: the driver lost after its agent exited, while the supervisor still finalizes —
+# the surviving replica's claim takes the group over, never sweeps it or waits it out (issues #824, #829).
+# Each job refunds its interrupted attempt and records exactly one interruption; an expired lease
+# is that interruption (issue #822). Only this release's objects are touched, by label.
+
+echo
+echo '# node disruption'
 
 job_session() { # job_session <id>
     node -e "$JS_HEADERS"'
@@ -2312,19 +2542,6 @@ SQL
     }
 }
 
-expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
-    kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
-        psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
-        postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with expired as (
-    update job set lease_expires_at = now() - interval '1 second'
-    where id = :'job' and status = 'running' and claim_seq = 1 and lease_expires_at > now()
-    returning id
-)
-select count(*) from expired;
-SQL
-}
-
 advance_origin() { # advance_origin -> success once the origin's main has a new `lane-upstream` commit
     local out
     out="$(kubectl exec "$RELEASE-origin" -n "$NAMESPACE" -- sh -c "set -e; rm -rf /tmp/up; git clone -q /origins/$SMOKE_REPO.git /tmp/up; git -C /tmp/up -c user.name=test-k8s -c user.email=test-k8s@localhost commit -q --allow-empty -m lane-upstream; git -C /tmp/up push -q origin HEAD:main; echo advanced" 2>&1 || true)"
@@ -2344,8 +2561,9 @@ final_release="/task/.lane-finalizing"
 
 # a. The hard kill: a lease expiry. A forced delete is no SIGKILL — the kubelet still
 #    sends SIGTERM and kills ~2s later — so this is no drain only while the 10s handover outlasts
-#    that. The 120s lease keeps the job live, under the dead driver's claim, through the reaper check.
-#    At max_attempts 1: the claim records the expiry as claim 1's interruption and adopts.
+#    that. The lane lease (LANE_LEASE_S) keeps the job live, under the dead driver's claim, through the reaper check, which
+#    runs while the agent is blocked; the lease then ends naturally and claim 2 takes the run over.
+#    At max_attempts 1: the claim records the expiry as claim 1's interruption and takes over.
 begin_phase recovery-hard-kill
 hard="$(queue_job "factory-stub-wait-$hard_release hard kill")"
 if [ -n "$hard" ]; then
@@ -2359,34 +2577,42 @@ else
     ok 'the hard-kill runner is running'
     await_blocked "$hard_pod" "$hard_release" && ok 'the hard-kill agent is blocked at its barrier' || give_up
     hard_job="$(first_runner_job "$hard")"
-    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    hard_sup_log="${TIMINGS_FILE%.tsv}.hard-kill.supervisor.log"
+    kubectl logs -f "$hard_pod" -c supervisor -n "$NAMESPACE" >"$hard_sup_log" 2>&1 &
+    hard_sup_pid=$!
+    kill_driver_pods
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
-    release_stub "$hard_release"
-    await_job_complete "$hard_job" 60 && ok 'the runner of a deleted driver runs to its end' ||
-        bad 'the runner of a deleted driver runs to its end' "$(kubectl get job "$hard_job" -n "$NAMESPACE" 2>&1)"
-    # Two and more 3s reaper rounds of the replacement driver while the job is still live under the
-    # dead driver's lease: the finished runner Job is unread, and stays.
+    # Two and more 3s reaper rounds of the replacement driver while the agent is still blocked at its
+    # barrier under the dead driver's live lease: the live runner Job is no orphan, and stays.
     sleep 8
     hard_live="$(job_brief "$hard")"
     case "$hard_live" in
-    running*) ok 'the job is still live after the runner finished' ;;
-    *) bad 'the job is still live after the runner finished' "$hard_live (the window closed before the reaper check)" ;;
+    running*) ok 'the job is still running under the dead driver lease' ;;
+    *) bad 'the job is still running under the dead driver lease' "$hard_live (the lease ran out before the reaper check)" ;;
     esac
-    kubectl get job "$hard_job" -n "$NAMESPACE" >/dev/null 2>&1 && ok 'the reaper spares the unread finished runner Job' ||
-        bad 'the reaper spares the unread finished runner Job' 'the runner Job is gone before its adoption'
+    kubectl get job "$hard_job" -n "$NAMESPACE" >/dev/null 2>&1 && ok 'the reaper spares the live runner Job' ||
+        bad 'the reaper spares the live runner Job' 'the runner Job is gone while its agent runs'
     expect_not_contains 'the reaper logs nothing for the live job' "$(driver_logs)" "reaper: job $hard"
-    # The live-lease window above is the proof. Expire only this dead driver's claim after it,
-    # instead of spending the remaining lease budget idle; reclaim still uses the real board SQL.
-    expired="$(expire_claim_one "$hard")"
-    [ "$expired" = 1 ] && ok 'the dead driver lease is expired after the reaper observation' || {
-        bad 'the dead driver lease is expired after the reaper observation' "$expired"
-        give_up
-    }
+    # The lease then runs out on its own: the runner finishes only past it, and claim 2 takes it over.
+    release_stub "$hard_release"
+    # The adopting driver deletes the finished Job, which can win the race against Complete: a Job gone
+    # with the board row's attempt ended is the same end.
+    if await_job_complete "$hard_job" "$ORPHANED_S"; then
+        ok 'the runner of a deleted driver runs to its end'
+    elif ! kubectl get job "$hard_job" -n "$NAMESPACE" >/dev/null 2>&1 &&
+        case "$(await_brief "$hard" 'succeeded*' 60)" in succeeded*) true ;; *) false ;; esac; then
+        ok 'the runner of a deleted driver runs to its end'
+    else
+        bad 'the runner of a deleted driver runs to its end' "$(kubectl get job "$hard_job" -n "$NAMESPACE" 2>&1)"
+    fi
     hard_end="$(await_brief "$hard" 'succeeded*' 240)"
     [ "$hard_end" = "succeeded|1|1|1|$EXPIRED" ] && ok 'the replacement driver adopts the run: one attempt, one interruption' ||
-        bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end"
+        bad 'the replacement driver adopts the run: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $hard_end
+$(driver_logs | grep -F "job $hard" | tail -15)
+supervisor: $(tail -20 "$hard_sup_log")"
+    kill "$hard_sup_pid" 2>/dev/null
     expect_contains 'the adopted output is the first runner pod output' "$(job_output "$hard")" "released in $hard_pod"
-    expect_contains 'the replacement driver logs the adoption' "$(driver_logs)" "job $hard: $ADOPTED"
+    expect_contains 'the replacement driver logs the takeover' "$(driver_logs)" "job $hard: $TOOK_OVER"
 fi
 
 # b. The drain: SIGTERM, and the handover 10s in. Scaled to 0, so no driver claims the queued job
@@ -2409,7 +2635,7 @@ else
         ok 'the handed-over runner pod is left running' ||
         bad 'the handed-over runner pod is left running' "$(kubectl get pod "$drained_pod" -n "$NAMESPACE" 2>&1)"
     release_stub "$drain_release"
-    await_job_complete "$drained_job" 90 && ok 'the handed-over runner Job completes on its own' ||
+    await_job_complete "$drained_job" "$HANDOVER_S" && ok 'the handed-over runner Job completes on its own' ||
         bad 'the handed-over runner Job completes on its own' "$(kubectl get job "$drained_job" -n "$NAMESPACE" 2>&1)"
 fi
 # Scaled back whatever happened above: the case after this one needs a driver.
@@ -2438,7 +2664,7 @@ else
     evicted_mid="$(await_brief "$evicted" "*|1|1|$POD_LOST*" 45)"
     took=$(($(date +%s) - deleted_at))
     case "$evicted_mid" in
-    *"|1|1|$POD_LOST"*) [ "$took" -lt 30 ] && ok "a deleted runner pod is an interruption (${took}s, inside the 120s lease)" ||
+    *"|1|1|$POD_LOST"*) [ "$took" -lt 30 ] && ok "a deleted runner pod is an interruption (${took}s, inside the ${LANE_LEASE_S}s lease)" ||
         bad 'a deleted runner pod is an interruption inside the lease' "took ${took}s: $evicted_mid" ;;
     *) bad 'a deleted runner pod is an interruption inside the lease' "status|attempts|count|claimSeq|reason: $evicted_mid" ;;
     esac
@@ -2477,7 +2703,7 @@ else
     # is already synced, and only a replacement that re-synced would move onto this commit.
     advance_origin && ok 'the origin moves after the first runner synced its tree' ||
         bad 'the origin moves after the first runner synced its tree' 'the advance pod did not push'
-    kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kill_driver_pods
     kubectl delete job "$lost_job" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     # A force-deleted driver lives on for a moment, and may see its runner Job deleted and hand the
@@ -2493,7 +2719,8 @@ else
         bad "the lost driver's attempt is released, by its lease or its own report" "$expired"
     lost_end="$(await_brief "$lost" 'succeeded*' 240)"
     case "$lost_end" in
-    "succeeded|1|1|1|$lost_reason"*) ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ;;
+    # Either release is the one interruption: the dying driver's report can land even after the expiry hit.
+    "succeeded|1|1|1|$EXPIRED"* | "succeeded|1|1|1|$JOB_LOST"*) ok 'a replacement runner redoes the lost attempt: one attempt, one interruption' ;;
     *) bad 'a replacement runner redoes the lost attempt: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $lost_end" ;;
     esac
     lost_out="$(job_output "$lost")"
@@ -2507,7 +2734,7 @@ fi
 
 # e. The driver lost between its agent's exit and its supervisor's end (issue #824). The pod-IP step
 #    channel refuses once the driver is gone, so the supervisor serves on until its orphan bound
-#    (30s under the 120s lease) and only then reports and ends. A second replica is already up; the
+#    (30s, inside the lane lease) and only then reports and ends. A second replica is already up; the
 #    dead driver's claim is expired inside that bound, so the survivor claims a Job whose agent
 #    exited and whose supervisor still runs — the group it must wait out, never sweep.
 begin_phase recovery-finalizing
@@ -2533,7 +2760,7 @@ else
         bad 'the driver holding the finalizing job is found' 'no driver pod logged the job'
         give_up
     }
-    kubectl delete "$final_driver" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+    kill_driver_pods "$final_driver"
     release_stub "$final_release"
     agent_exit=''
     for _ in $(seq 1 20); do
@@ -2550,12 +2777,12 @@ else
         bad 'the lost driver lease is expired while the supervisor finalizes' "$expired"
     final_end="$(await_brief "$final" 'succeeded*' 240)"
     [ "$final_end" = "succeeded|1|1|1|$EXPIRED" ] &&
-        ok 'the surviving driver waits the supervisor out and adopts the run: one attempt, one interruption' ||
-        bad 'the surviving driver waits the supervisor out and adopts the run: one attempt, one interruption' \
+        ok 'the surviving driver takes over the run: one attempt, one interruption' ||
+        bad 'the surviving driver takes over the run: one attempt, one interruption' \
             "status|attempts|count|claimSeq|reason: $final_end"
     expect_contains 'the adopted output is the finalizing runner pod output' "$(job_output "$final")" \
         "released in $final_pod"
-    expect_contains 'the surviving driver logs the adoption' "$(driver_logs)" "job $final: $ADOPTED"
+    expect_contains 'the surviving driver logs the takeover' "$(driver_logs)" "job $final: $TOOK_OVER"
 fi
 kubectl scale "$DRIVER_DEPLOY" -n "$NAMESPACE" --replicas=1 >/dev/null 2>&1
 kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
@@ -2585,21 +2812,8 @@ for job in $hard $drained $evicted $lost $final $unpullable; do
 done
 fi
 
-if selected_phase services; then
-begin_phase services
-# --- Declared services and gates in the task pod (issue #773) -----------------------------------
-#
-# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
-# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
-# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
-# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
-# sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
-# `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
-# reach `postgres:5432` and `s3:9000` there by name.
-
-echo
-echo '# declared services'
-
+# The plan committer the services and takeover phases share (issues #773, #829): a plan, or none, lands
+# in the member's origin and its mirror.
 # The gate scripts every plan commits beside it. reach.sh: both names on 127.0.0.1, then a TCP
 # connect to each, retried while a service still boots. leave.sh: a background write the gate loop's
 # `kill -KILL -1` must stop before the next gate runs (the `isolated` gate checks it never landed).
@@ -2676,6 +2890,22 @@ EOF
     *) printf '%s' "$out" >&2; return 1 ;;
     esac
 }
+
+if selected_phase services; then
+begin_phase services
+# --- Declared services and gates in the task pod (issue #773) -----------------------------------
+#
+# The first lane with a `.bellows.yaml` plan. The offline board reads a plan at claim time from a
+# bare mirror under its workspace root (server/src/github/local-origin-plan.ts), so `commit_plan`
+# commits the file — and the lane's gate scripts under lane/ — to the member's origin, which every
+# startup sync fetches, and mirrors that origin to `.origins/<repo>.git`. The services are native
+# sidecars of the task pod, named on its loopback by hostAliases: the agent (the stub's
+# `factory-stub-services`) and the gate container (lane/reach.sh, the stub image as the gate image)
+# reach `postgres:5432` and `s3:9000` there by name.
+
+echo
+echo '# declared services'
+
 
 sidecar_restarts() { # sidecar_restarts <pod> <container> -> its restartCount, empty when unread
     kubectl get pod "$1" -n "$NAMESPACE" \
@@ -2856,9 +3086,16 @@ else
     idle_mem="$(reviewer_field "$review_idle_pod" .resources.requests.memory)"
     [ -n "$idle_cpu" ] && [ -n "$idle_mem" ] && ok "the reviewer sidecar idles at a request of $idle_cpu / $idle_mem" ||
         bad 'the pod carries a reviewer sidecar with a request' "pod containers: $(kubectl get pod "$review_idle_pod" -n "$NAMESPACE" -o jsonpath='{.spec.initContainers[*].name}')"
-    # Usage, when the cluster has a metrics API; the request is the number that is always known.
-    sleep 20
-    idle_top="$(kubectl top pod "$review_idle_pod" -n "$NAMESPACE" --containers 2>&1 | awk '$2 == "reviewer" { print $3 " / " $4 }')"
+    # Usage, when the cluster has a metrics API; the request is the number that is always known. A
+    # scrape takes up to 20 s to carry the pod, so poll that long, and not at all without the API.
+    idle_top=''
+    for _ in $(seq 1 20); do
+        top_out="$(kubectl top pod "$review_idle_pod" -n "$NAMESPACE" --containers 2>&1)"
+        idle_top="$(awk '$2 == "reviewer" { print $3 " / " $4 }' <<<"$top_out")"
+        [ -n "$idle_top" ] && break
+        case "$top_out" in *'Metrics API not available'*) break ;; esac
+        sleep 1
+    done
     echo "MEASURED reviewer idle request: ${idle_cpu:-?} cpu / ${idle_mem:-?} memory; usage: ${idle_top:-no metrics API}"
     release_stub "$review_idle_release"
 fi
@@ -2901,6 +3138,556 @@ for job in $reached $restarted $crashed $ghost $ghost_gate $review_idle $review_
     kubectl delete jobs -l "factory.job=$job,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
         --ignore-not-found --wait=false >/dev/null 2>&1
 done
+fi
+
+# The takeover and drain phases share these (issue #829).
+# Barriers are flat files at /task/.lane-kill-<case>.* on the job's own task volume (issue #775): a
+# volume only the pods of its thread mount, so they are reached through whichever of the job's pods
+# mounts /task — the origin's state and push log through the origin pod. The stub gh keeps its PR list
+# and hold in /task/.lane-gh.
+TK_D="/task/.lane-kill-"
+TK_GH="/task/.lane-gh"
+TK_REPO="/origins/$SMOKE_REPO.git"
+TK_JOB=''
+
+tk_use() { # tk_use <job id> -> later tk_* reads and writes go to that job's task volume (a first job: its id is its thread's root)
+    TK_JOB="$1"
+}
+
+tk_reader() { # tk_reader <argv...> -> the command in a one-shot pod that mounts the job's task volume, for when none of its pods stands
+    local pod="$RELEASE-tk-read" script out
+    kubectl get pvc "factory-task-$TK_JOB-1" -n "$NAMESPACE" --request-timeout=10s >/dev/null 2>&1 || return 1
+    kubectl delete pod "$pod" -n "$NAMESPACE" --ignore-not-found --wait=true >/dev/null 2>&1
+    script="$(node -e 'process.stdout.write(JSON.stringify({ spec: {
+        automountServiceAccountToken: false,
+        securityContext: { seccompProfile: { type: "RuntimeDefault" } },
+        volumes: [{ name: "task", persistentVolumeClaim: { claimName: process.argv[1] } }],
+        containers: [{ name: "tk-read", image: process.argv[2], imagePullPolicy: "IfNotPresent",
+            securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } },
+            command: process.argv.slice(3), volumeMounts: [{ name: "task", mountPath: "/task" }] }] } }))' \
+        "factory-task-$TK_JOB-1" "$STUB_REF" "$@")" || return 1
+    kubectl run "$pod" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --overrides="$script" >/dev/null 2>&1 || return 1
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded --timeout=120s "pod/$pod" -n "$NAMESPACE" >/dev/null 2>&1
+    out="$(kubectl logs "$pod" -n "$NAMESPACE" 2>/dev/null)"
+    kubectl delete pod "$pod" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1
+    printf '%s' "$out"
+}
+
+tk_exec() { # tk_exec <argv...> -> runs in a container of the job's that mounts /task; TK_FALLBACK=1 lets a reader pod stand in
+    local pod container out
+    for pod in $(kubectl get pods -l "factory.job=$TK_JOB,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" \
+        --request-timeout=10s --field-selector=status.phase=Running -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+        for container in $(kubectl get pod "$pod" -n "$NAMESPACE" --request-timeout=10s \
+            -o jsonpath='{.spec.containers[*].name}' 2>/dev/null); do
+            out="$(kubectl exec "$pod" -c "$container" -n "$NAMESPACE" --request-timeout=10s -- sh -c \
+                'case "$(cat /proc/mounts)" in *" /task "*) echo TKMOUNT; "$@" ;; esac' sh "$@" 2>/dev/null)"
+            case "$out" in TKMOUNT*)
+                printf '%s' "${out#TKMOUNT}" | sed '1{/^$/d;}'
+                return 0
+                ;;
+            esac
+        done
+    done
+    [ -n "${TK_FALLBACK:-}" ] && tk_reader sh -c 'exec "$@"' sh "$@"
+}
+
+tk_final() { # tk_final <tk_* function> [arg...] -> the read after the job settled: its pods are gone, so a reader pod mounts the volume
+    local TK_FALLBACK=1
+    "$@"
+}
+
+tk_count() { # tk_count <path> -> its line count; 0 only when absent; ? when the read failed
+    local out
+    out="$(tk_exec sh -c 'if [ -e "$1" ]; then wc -l <"$1" | tr -d " "; else echo 0; fi' sh "$1" 2>/dev/null)" &&
+        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+}
+
+tk_ready() { # tk_ready <path prefix> -> how many files start with it; ? when the read failed
+    local out
+    out="$(tk_exec sh -c 'ls -1d "$1"* 2>/dev/null | wc -l | tr -d " "' sh "$1" 2>/dev/null)" &&
+        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+}
+
+tk_touch() { # tk_touch <path> -> success once the file exists; retried while no pod of the job stands
+    local until=$(($(date +%s) + 90)) out
+    while [ "$(date +%s)" -lt "$until" ]; do
+        # A directory made here is shared with the publish step, which runs as another user.
+        out="$(tk_exec sh -c 'd="$(dirname "$1")"; mkdir -p "$d"; [ "$d" = /task ] || chmod 0777 "$d" 2>/dev/null; touch "$1" && echo touched' sh "$1" 2>/dev/null)"
+        case "$out" in *touched*) return 0 ;; esac
+        sleep 2
+    done
+    return 1
+}
+
+tk_origin() { # tk_origin <argv...> -> runs in the origin pod, which serves the bare repository
+    kubectl exec "$RELEASE-origin" -n "$NAMESPACE" --request-timeout=10s -- "$@"
+}
+
+tk_origin_count() { # tk_origin_count <path> -> its line count; 0 only when absent; ? when the read failed
+    local out
+    out="$(tk_origin sh -c 'if [ -e "$1" ]; then wc -l <"$1" | tr -d " "; else echo 0; fi' sh "$1" 2>/dev/null)" &&
+        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+}
+
+tk_await() { # tk_await <path> <want> <seconds> -> success once the file holds at least <want> lines
+    local until=$(($(date +%s) + $3)) got
+    while [ "$(date +%s)" -lt "$until" ]; do
+        got="$(tk_count "$1")"
+        case "$got" in '' | '?' | *[!0-9]*) ;; *) [ "$got" -ge "$2" ] && return 0 ;; esac
+        sleep 1
+    done
+    return 1
+}
+
+tk_wait() { # tk_wait <path> -> shell text that blocks (at most 300 s) until the file exists
+    printf 'i=0; while [ ! -e %s ] && [ $i -lt 300 ]; do i=$((i+1)); sleep 1; done' "$1"
+}
+
+tk_plan() { # tk_plan <gate command> [setup command] -> a .bellows.yaml with one gate on the stub image
+    printf 'environment:\n    image: %s\n' "$STUB_REF"
+    [ -z "${2:-}" ] || printf "    setup: '%s'\n" "$2"
+    printf "    gates:\n        - name: hold\n          command: '%s'\n" "$1"
+}
+
+tk_left() { # tk_left <job id> -> success only when kubectl answered and the job has no Job or pod
+    local out
+    out="$(kubectl get jobs,pods -l "factory.job=$1,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s -o name 2>"$work/tk-left.err")" || {
+        printf '%s' "$(cat "$work/tk-left.err")"
+        return 1
+    }
+    [ -z "$out" ] || {
+        printf '%s' "$out"
+        return 1
+    }
+}
+
+tk_claim_jobs() { # tk_claim_jobs <job id> <claim seq> -> the runner Jobs of that claim; non-zero when kubectl did not answer
+    kubectl get jobs -l "factory.job=$1,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.annotations.factory\.claim-seq}{"\n"}{end}' |
+        awk -v seq="$2" '$2 == seq { print $1 }'
+}
+
+tk_supervisor_exit() { # tk_supervisor_exit <job id> <claim seq> <seconds> -> the supervisor container's exit code; ? when never read
+    local until=$(($(date +%s) + $3)) job code=''
+    while [ "$(date +%s)" -lt "$until" ]; do
+        # A kubectl error leaves the code empty and the loop polling: an unread pod is never an exit code.
+        if job="$(tk_claim_jobs "$1" "$2")" && [ -n "$job" ]; then
+            code="$(kubectl get pods -l "job-name=$job" -n "$NAMESPACE" --request-timeout=10s \
+                -o jsonpath='{.items[0].status.containerStatuses[?(@.name=="supervisor")].state.terminated.exitCode}' 2>/dev/null)" &&
+                [ -n "$code" ] && break
+        fi
+        code=''
+        sleep 2
+    done
+    printf '%s' "${code:-?}"
+}
+
+tk_exit='' # the exit code of the lost driver's supervisor, set by tk_kill when asked to wait for it
+tk_kill() { # tk_kill <job id> [wait] -> the driver pod gone with no drain, a replacement up, the dead claim's lease expired
+    # `wait`: the lost claim-1 supervisor is given the time to end on its own orphan bound first. The expiry
+    # lets the next claim sweep a group that never released its agent, and a swept supervisor dies by SIGKILL
+    # (137) before it can end lost (75) (`driver/test/takeover-sim.test.ts`, t1).
+    local expired
+    tk_exit=''
+    kill_driver_pods
+    kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1 ||
+        { bad "$1: the replacement driver is rolled out" "$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" 2>&1)"; give_up; }
+    [ "${2:-}" = wait ] && tk_exit="$(tk_supervisor_exit "$1" 1 120)"
+    expired="$(expire_claim_one "$1")"
+    [ "$expired" = 1 ] && ok "$1: the dead driver's lease is expired" || {
+        bad "$1: the dead driver's lease is expired" "$expired"
+        give_up
+    }
+}
+
+tk_settled_at='' # the second the brief first read succeeded, set by tk_settled; empty when it never did
+tk_settled() { # tk_settled <name> <job id> <interruption> -> the checks every case shares once the job ran to its end
+    local brief left clean until=$(($(date +%s) + 120))
+    tk_settled_at=''
+    brief="$(await_brief "$2" 'succeeded*' 240)"
+    # An interruption may carry the pod's own words after the stated cause: "<cause> (<reason>: <message>)".
+    case "$brief" in
+    "succeeded|1|1|1|$3" | "succeeded|1|1|1|$3 ("*")") tk_settled_at=$(date +%s) ;;
+    esac
+    [ -n "$tk_settled_at" ] && ok "$1: the next claim finishes the task once, with one interruption" ||
+        bad "$1: the next claim finishes the task once, with one interruption" "status|attempts|count|claimSeq|reason: $brief"
+    clean=''
+    while :; do
+        if left="$(tk_left "$2")"; then
+            clean=1
+            break
+        fi
+        [ "$(date +%s)" -lt "$until" ] || break
+        sleep 2
+    done
+    [ -n "$clean" ] && ok "$1: nothing of the job is left" || bad "$1: nothing of the job is left" "${left:-unconfirmed}"
+}
+
+tk_check() { # tk_check <name> <got> <want>
+    [ "$2" = "$3" ] && ok "$1" || bad "$1" "got '$2', want '$3'"
+}
+
+tk_prepare() { # tk_prepare -> the origin's push log hook exists; the lane stops when it cannot
+    # The origin keeps a push log (a hook): its daemon user owns the repository, so nothing else need write it.
+    tk_origin sh -c 'printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$1/hooks/post-receive" &&
+        chmod 0755 "$1/hooks/post-receive"' sh "$TK_REPO" >/dev/null 2>&1 &&
+        ok 'the origin push log is prepared' || {
+        bad 'the origin push log is prepared' 'the origin pod could not write its repository'
+        give_up
+    }
+}
+
+if selected_phase takeover; then
+begin_phase takeover
+# --- Driver killed at each step of a run (issue #829) -------------------------------------------
+#
+# The driver pod is deleted hard at one step of a run — while its setup blocks, while the agent
+# runs, while a gate runs, while the publish waits at the PR — and the lease is expired as waiting it
+# out would. The replacement driver finishes the task once: counted from outside by barrier files
+# under the member tree (`.lane-kill/`, mounted at the same path in the task pod's supervisor, gate
+# sidecar, setup Job and the dashboard), the origin's push log and the stub gh's PR list. A driver
+# lost after the publish has nothing left to repeat, and the finalizing step is recovery case e.
+
+echo
+echo '# driver takeover'
+
+tk_prepare  # the origin push log exists before the first case
+
+# T1. Before the agent: setup blocks. Lost before `go`, the group has nothing to take over; the next
+#     claim runs the whole attempt once.
+begin_phase takeover-setup
+n="$RELEASE-t1"
+commit_plan takeover-setup "$(tk_plan "echo x >>$TK_D$n.gate.count" "echo x >>$TK_D$n.setup.count; $(tk_wait "$TK_D$n.go")")" ||
+    bad 'the setup plan is committed' 'the plan pod did not commit'
+t1="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+tk_use "$t1"
+if [ -z "$t1" ]; then
+    bad 'the setup job is queued' 'the board refused it'
+else
+    tk_await "$TK_D$n.setup.count" 1 240 && ok 't1: the setup is running' || bad 't1: the setup is running' "$(tk_count "$TK_D$n.setup.count")"
+    tk_check 't1: the agent has not started' "$(tk_ready "$TK_D$n.agent.ready-")" 0
+    tk_kill "$t1" wait
+    tk_check 't1: the supervisor of the lost driver ends lost (exit 75)' "$tk_exit" 75
+    await_brief "$t1" "*|1|1|$EXPIRED" 120 >/dev/null && ok 't1: the next claim records the interruption' ||
+        bad 't1: the next claim records the interruption' "$(job_brief "$t1")"
+    tk_touch "$TK_D$n.go" || bad 't1: the barrier is released' 'the touch failed'
+    tk_settled t1 "$t1" "$EXPIRED"
+    tk_check 't1: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
+    tk_check 't1: the gate ran once' "$(tk_final tk_count "$TK_D$n.gate.count")" 1
+fi
+
+# T2. The agent runs, its driver dies: the next driver rebinds the supervisor and takes over the live
+#     agent (no second runner Job is ever created); the agent finishes once, in its own pod.
+begin_phase takeover-agent
+n="$RELEASE-t2"
+commit_plan takeover-agent "$(tk_plan "echo x >>$TK_D$n.gate.count")" || bad 'the agent plan is committed' 'the plan pod did not commit'
+t2="$(queue_job "factory-stub-patient factory-stub-wait-$TK_D$n.go")"
+tk_use "$t2"
+t2_pod="$(await_runner_pod "$t2")"
+if [ -z "$t2" ] || [ -z "$t2_pod" ]; then
+    bad 't2: the agent is running' "job '$t2': $(job_brief "$t2")"
+else
+    await_blocked "$t2_pod" "$TK_D$n.go" && ok 't2: the agent is running' || give_up
+    tk_kill "$t2"
+    took=""
+    until=$(($(date +%s) + 240))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        case "$(driver_logs)" in *"job $t2: $TOOK_OVER"*)
+            took=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ -n "$took" ] && ok 't2: the next driver takes over the running agent' ||
+        bad 't2: the next driver takes over the running agent' "$(driver_logs | grep -F "job $t2:" | tail -5)"
+    # The new binding reaches the supervisor through a mounted Secret: the kubelet refreshes it within a minute or two.
+    rebound=""
+    until=$(($(date +%s) + 300))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        sup_logs="$(kubectl logs "$t2_pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s 2>/dev/null)"
+        case "$sup_logs" in *'supervisor: rebound to claim 2'*)
+            rebound=1
+            break
+            ;;
+        esac
+        sleep 2
+    done
+    [ -n "$rebound" ] && ok 't2: the supervisor rebinds to claim 2' ||
+        bad 't2: the supervisor rebinds to claim 2' "$(printf '%s' "$sup_logs" | tail -5)"
+    second="$(tk_claim_jobs "$t2" 2)" && [ -z "$second" ] && ok 't2: no second runner is started' ||
+        bad 't2: no second runner is started' "claim 2 Jobs: '$second'"
+    tk_touch "$TK_D$n.go" || bad 't2: the barrier is released' 'the touch failed'
+    tk_settled t2 "$t2" "$EXPIRED"
+    tk_check 't2: the agent ran once' "$(tk_final tk_ready "$TK_D$n.go.ready-")" 1
+    tk_check 't2: the gate ran once' "$(tk_final tk_count "$TK_D$n.gate.count")" 1
+fi
+
+# T4. The gates: killed while a gate runs. The agent has exited but its supervisor still serves, so the
+#     next claim takes the group over (it does not wait out the finished runner); the gate that never
+#     finished has no checkpoint and is run again under its own step; the agent is not repeated.
+begin_phase takeover-gates
+n="$RELEASE-t4"
+commit_plan takeover-gates "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
+t4="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+tk_use "$t4"
+if [ -z "$t4" ]; then
+    bad 'the gate job is queued' 'the board refused it'
+else
+    tk_await "$TK_D$n.gate.count" 1 300 && ok 't4: the gate is running' || bad 't4: the gate is running' "$(tk_count "$TK_D$n.gate.count")"
+    tk_kill "$t4"
+    await_brief "$t4" "*|1|1|$EXPIRED" 120 >/dev/null && ok 't4: the next claim records the interruption' ||
+        bad 't4: the next claim records the interruption' "$(job_brief "$t4")"
+    tk_touch "$TK_D$n.go" || bad 't4: the barrier is released' 'the touch failed'
+    tk_settled t4 "$t4" "$EXPIRED"
+    tk_check 't4: the gate ran again, once' "$(tk_final tk_count "$TK_D$n.gate.count")" 2
+    tk_check 't4: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
+    expect_contains 't4: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t4: $TOOK_OVER"
+    expect_not_contains 't4: the finished runner was not waited out' "$(driver_logs)" "job $t4: $ADOPTED"
+fi
+
+# T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next
+#     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
+begin_phase takeover-publish
+n="$RELEASE-t5"
+commit_plan takeover-publish "$(tk_plan "echo x >>$TK_D$n.gate.count")" || bad 'the publish plan is committed' 'the plan pod did not commit'
+t5_pushes="$(tk_origin_count "$TK_REPO/lane-pushes.log")"
+t5_prs=0 # the stub gh's PR list is the task's own, born with its volume
+t5="$(queue_job "factory-stub-commit factory-stub-wait-$TK_D$n.agent")"
+tk_use "$t5"
+if [ -z "$t5" ]; then
+    bad 'the publish job is queued' 'the board refused it'
+else
+    # The hold lives on the task's volume, which exists once the agent stands at its barrier: set it there, then release the agent.
+    at_barrier=""
+    until=$(($(date +%s) + 300))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(tk_ready "$TK_D$n.agent.ready-")" = 1 ] && {
+            at_barrier=1
+            break
+        }
+        sleep 2
+    done
+    tk_touch "$TK_GH/lane-gh-hold" && tk_touch "$TK_D$n.agent" || bad 't5: the gh hold is set' "the hold or the release was not written (agent at its barrier: '$at_barrier')"
+    held=""
+    until=$(($(date +%s) + 300))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        [ "$(tk_exec sh -c 'test -e "$1" && echo yes' sh "$TK_GH/lane-gh-hold.ready")" = yes ] && {
+            held=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$held" ] && ok 't5: the publish is at the PR' || bad 't5: the publish is at the PR' "job: $(job_brief "$t5"): $(job_output "$t5" | tail -c 600)"
+    tk_kill "$t5"
+    tk_touch "$TK_GH/lane-gh-hold.go" || bad 't5: the hold is released' 'the touch failed'
+    tk_settled t5 "$t5" "$EXPIRED"
+    t5_pushes_now="$(tk_origin_count "$TK_REPO/lane-pushes.log")"
+    t5_prs_now="$(tk_final tk_count "$TK_GH/lane-gh-prs")"
+    case "$t5_pushes$t5_pushes_now" in *'?'*) t5_pushed='?' ;; *) t5_pushed=$((t5_pushes_now - t5_pushes)) ;; esac
+    case "$t5_prs$t5_prs_now" in *'?'*) t5_opened='?' ;; *) t5_opened=$((t5_prs_now - t5_prs)) ;; esac
+    # The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
+    # counts updates; the PR count is the check against a duplicate publication.
+    tk_check 't5: the branch ref is updated once' "$t5_pushed" 1
+    tk_check 't5: one PR is opened' "$t5_opened" 1
+    tk_check 't5: the gate ran once' "$(tk_final tk_count "$TK_D$n.gate.count")" 1
+    tk_check 't5: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
+    expect_contains 't5: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t5: $TOOK_OVER"
+    expect_not_contains 't5: the finished runner was not waited out' "$(driver_logs)" "job $t5: $ADOPTED"
+    expect_contains 't5: the gates are resumed from their checkpoint' "$(driver_logs)" "job $t5: resumed gates from claim 1's checkpoint"
+    expect_contains 't5: the verdict carries the stub PR' "$(job_output "$t5")" 'factory-smoke/demo/pull/'
+fi
+
+# The origin and its mirror carry no plan again: a later phase runs as it always did.
+commit_plan takeover-restore '' && ok 'the plan is removed again' || bad 'the plan is removed again' 'the plan pod did not commit'
+fi
+
+if [ "$PHASE" = drain ]; then
+begin_phase drain
+# --- Node drain on a multi-node cluster (issue #829) --------------------------------------------
+#
+# Explicit only: it needs a cluster made with `make cluster LAYOUT=drain` (a control plane and three
+# workers that share the workspaces volume), so no other phase includes it. D1 drains the node the
+# driver runs on while a runner holds a barrier elsewhere: the replacement driver takes the running
+# agent over. D2 drains the node the runner runs on while the driver survives: the replacement
+# runner resumes the attempt. Each case times, from the start of `kubectl drain`, how long until the
+# task is held again and until it is settled, into <timings>.recovery.tsv. Seconds at `date +%s`
+# resolution on one machine: a sample, not a bound (docs/limits.md).
+
+echo
+echo '# node drain'
+
+RECOVERY_TSV="${TIMINGS_FILE%.tsv}.recovery.tsv"
+printf 'case\tnode\tdrain_s\theld_s\tsettled_s\n' >"$RECOVERY_TSV" || exit 1
+
+drain_refuse() { # drain_refuse <what is wrong> -> the lane stops with the way to a cluster that fits
+    echo "test-k8s: the drain phase needs a LAYOUT=drain cluster: $1"
+    echo "make cleanup CLUSTER=$kind_name; make cluster CLUSTER=$kind_name LAYOUT=drain"
+    exit 1
+}
+
+all_nodes="$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' --request-timeout=10s)" ||
+    drain_refuse 'the node list could not be read'
+drain_workers="$(kubectl get nodes -l 'factory.lane/shared=true,!node-role.kubernetes.io/control-plane' --request-timeout=10s \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.unschedulable}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}')" ||
+    drain_refuse 'the worker list could not be read'
+drain_workers="$(printf '%s\n' "$drain_workers" | awk -F'\t' '$2 == "" && $3 == "True" { print $1 }')"
+[ "$(printf '%s\n' "$drain_workers" | grep -c .)" -ge 3 ] || drain_refuse 'fewer than three Ready, schedulable workers share the volume'
+WA="$(printf '%s\n' "$drain_workers" | sed -n 1p)"
+WB="$(printf '%s\n' "$drain_workers" | sed -n 2p)"
+WC="$(printf '%s\n' "$drain_workers" | sed -n 3p)"
+on_workers="$(kubectl get pods -n "$NAMESPACE" --request-timeout=10s \
+    -l "app.kubernetes.io/instance in ($RELEASE,$STATE_RELEASE),app.kubernetes.io/component in (dashboard,postgres,collector)" \
+    -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}')" || drain_refuse 'the board pods could not be read'
+case "$on_workers" in *"$WA"* | *"$WB"* | *"$WC"*) drain_refuse "the board or the database runs on a worker: $on_workers" ;; esac
+
+drain_isolate() { # drain_isolate <node>... -> the named nodes schedulable, every other node cordoned
+    local node k keep
+    for node in $all_nodes; do
+        keep=''
+        for k in "$@"; do [ "$k" = "$node" ] && keep=1; done
+        if [ -n "$keep" ]; then lane_uncordon "$node" || return 1; else lane_cordon "$node" || return 1; fi
+    done
+}
+
+driver_node() { # driver_node -> the node of the running driver pod; non-zero when unread or none
+    local at
+    at="$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s --field-selector=status.phase=Running \
+        -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.deletionTimestamp}{"\n"}{end}')" || return 1
+    # A terminating pod is still Running: only one that is not being deleted is the driver.
+    at="$(printf '%s\n' "$at" | awk -F'\t' '$2 == "" && $1 != "" { print $1; exit }')"
+    [ -n "$at" ] || return 1
+    printf '%s' "$at"
+}
+
+drain_place_driver() { # drain_place_driver <node> -> the driver runs on that node, the only schedulable one
+    drain_isolate "$1" || return 1
+    [ "$(driver_node)" = "$1" ] && return 0
+    kubectl rollout restart "$DRIVER_DEPLOY" -n "$NAMESPACE" --request-timeout=20s >/dev/null &&
+        kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=180s >/dev/null || return 1
+    [ "$(driver_node)" = "$1" ]
+}
+
+pod_node() { # pod_node <pod> -> its node, empty when unread
+    kubectl get pod "$1" -n "$NAMESPACE" --request-timeout=10s -o jsonpath='{.spec.nodeName}' 2>/dev/null
+}
+
+drain_start() { # drain_start <node> -> drains it in the background; <work>/drain.end holds the second it succeeded
+    rm -f "$work/drain.end" "$work/drain.log"
+    lane_cordon "$1" || return 1
+    (
+        if kubectl drain "$1" --ignore-daemonsets --delete-emptydir-data --timeout=180s >"$work/drain.log" 2>&1; then
+            date +%s >"$work/drain.end"
+        fi
+    ) &
+    drain_pid=$!
+}
+
+drain_record() { # drain_record <case> <node> <t0> <held at> <settled at> -> one row; ? where an event was not observed
+    local drained held=? settled=?
+    drained="$(cat "$work/drain.end" 2>/dev/null)"
+    if [ -n "$drained" ]; then drained=$((drained - $3)); else drained='?'; fi
+    [ -n "$4" ] && held=$(($4 - $3))
+    [ -n "$5" ] && settled=$(($5 - $3))
+    [ "$held" != '?' ] && [ "$settled" != '?' ] || bad "$1: the recovery was measured" "held '${4:-}', settled '${5:-}'"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$drained" "$held" "$settled" >>"$RECOVERY_TSV"
+}
+
+drain_restore() { # drain_restore -> every node schedulable again
+    local node
+    for node in $all_nodes; do lane_uncordon "$node" || bad "$node is schedulable again" 'kubectl uncordon failed'; done
+}
+
+tk_prepare
+
+# D1. The driver's node is drained while the runner holds its barrier on another node.
+begin_phase drain-driver
+n="$RELEASE-d1"
+if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; then
+    ok "d1: the driver runs on $WA and the runner is placed on $WB"
+    d1="$(queue_job "factory-stub-patient factory-stub-wait-$TK_D$n.go")"
+    tk_use "$d1"
+    d1_pod="$(await_runner_pod "$d1")"
+    if [ -z "$d1" ] || [ -z "$d1_pod" ]; then
+        bad 'd1: the runner is running' "job '$d1': $(job_brief "$d1")"
+    else
+        await_blocked "$d1_pod" "$TK_D$n.go" && ok 'd1: the agent is running' || give_up
+        tk_check "d1: the runner pod is on $WB" "$(pod_node "$d1_pod")" "$WB"
+        # The replacement driver may land on any node but the drained one.
+        drain_isolate "$WB" "$WC" || bad 'd1: the other workers are schedulable' 'kubectl uncordon failed'
+        t0=$(date +%s)
+        drain_start "$WA" || bad 'd1: the drain starts' "$(cat "$work/drain.log" 2>/dev/null)"
+        held_at=''
+        until=$((t0 + 300))
+        while [ "$(date +%s)" -lt "$until" ]; do
+            case "$(driver_logs)" in *"job $d1: $TOOK_OVER"*)
+                held_at=$(date +%s)
+                break
+                ;;
+            esac
+            sleep 1
+        done
+        [ -n "$held_at" ] && ok 'd1: the replacement driver takes over the running agent' ||
+            bad 'd1: the replacement driver takes over the running agent' "$(driver_logs | grep -F "job $d1:" | tail -5)"
+        wait "$drain_pid" 2>/dev/null
+        drain_pid=''
+        [ -f "$work/drain.end" ] && ok "d1: $WA is drained" || bad "d1: $WA is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
+        tk_touch "$TK_D$n.go" || bad 'd1: the barrier is released' 'the touch failed'
+        tk_settled d1 "$d1" "$DRAINED"
+        tk_check 'd1: the agent ran once' "$(tk_final tk_ready "$TK_D$n.go.ready-")" 1
+        drain_record D1 "$WA" "$t0" "$held_at" "$tk_settled_at"
+    fi
+else
+    bad 'd1: the driver runs on the first worker' "driver on '$(driver_node)'"
+fi
+drain_restore
+
+# D2. The runner's node is drained while the driver survives elsewhere.
+begin_phase drain-runner
+n="$RELEASE-d2"
+if drain_place_driver "$WA" && drain_isolate "$WA" "$WB" && lane_cordon "$WA"; then
+    ok "d2: the driver runs on $WA and the runner is placed on $WB"
+    d2="$(queue_job "factory-stub-patient factory-stub-wait-$TK_D$n.go")"
+    tk_use "$d2"
+    d2_pod="$(await_runner_pod "$d2")"
+    if [ -z "$d2" ] || [ -z "$d2_pod" ]; then
+        bad 'd2: the runner is running' "job '$d2': $(job_brief "$d2")"
+    else
+        await_blocked "$d2_pod" "$TK_D$n.go" && ok 'd2: the agent is running' || give_up
+        tk_check "d2: the runner pod is on $WB" "$(pod_node "$d2_pod")" "$WB"
+        # The replacement runner may land on any node but the drained one and the control plane.
+        drain_isolate "$WA" "$WC" || bad 'd2: the other workers are schedulable' 'kubectl uncordon failed'
+        t0=$(date +%s)
+        drain_start "$WB" || bad 'd2: the drain starts' "$(cat "$work/drain.log" 2>/dev/null)"
+        held_at=''
+        until=$((t0 + 300))
+        returned=''
+        while [ "$(date +%s)" -lt "$until" ]; do
+            # The task volume is bound to the node it was provisioned on (kind's local-path), so the replacement
+            # runner can only resume where the volume is: the drained node returns once the drain is done.
+            [ -z "$returned" ] && [ -f "$work/drain.end" ] && lane_uncordon "$WB" && returned=1
+            second="$(tk_claim_jobs "$d2" 2)" && [ -n "$second" ] &&
+                [ "$(kubectl get pods -l "job-name=$second" -n "$NAMESPACE" --request-timeout=10s \
+                    -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{end}' 2>/dev/null)" != '' ] &&
+                [ "$(tk_ready "$TK_D$n.go.ready-")" = 2 ] && {
+                held_at=$(date +%s)
+                break
+            }
+            sleep 1
+        done
+        [ -n "$held_at" ] && ok 'd2: the replacement runner holds the barrier again' ||
+            bad 'd2: the replacement runner holds the barrier again' "job: $(job_brief "$d2"), markers: $(tk_ready "$TK_D$n.go.ready-")"
+        wait "$drain_pid" 2>/dev/null
+        drain_pid=''
+        [ -f "$work/drain.end" ] && ok "d2: $WB is drained" || bad "d2: $WB is drained" "$(tail -5 "$work/drain.log" 2>/dev/null)"
+        tk_touch "$TK_D$n.go" || bad 'd2: the barrier is released' 'the touch failed'
+        tk_settled d2 "$d2" "$POD_LOST before it exited"
+        drain_record D2 "$WB" "$t0" "$held_at" "$tk_settled_at"
+    fi
+else
+    bad 'd2: the driver runs on the first worker' "driver on '$(driver_node)'"
+fi
+drain_restore
 fi
 
 if selected_phase control; then

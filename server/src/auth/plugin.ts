@@ -46,14 +46,14 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // The orphan reaper's batched lease lookup (issue #301): org-less like the claim, since the
     // shared secret names no org and the id list spans them.
     /^\/api\/jobs\/leases$/,
-    /^\/api\/reclaims\/claim$/,
+    /^\/api\/reclaims\/(claim|holds)$/,
     /^\/api\/reclaims\/[^/]+\/(ack|renew)$/,
     // `stop`, `follow-up`, `retry`, `done`, `reopen` and `remove` are person actions: the driver
     // is told to stop through the heartbeat it already holds, and the board secret moving or
     // deleting the audit rows of jobs it never held would be the thread-read hole again.
     // to stop through the heartbeat it already holds, and the board secret moving or deleting
     // the audit rows of jobs it never held would be the thread-read hole again.
-    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|interrupt|complete|conclusion|output|gates|question|review|review-read)$/,
+    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|interrupt|complete|conclusion|phase-checkpoints?|output|gates|question|review|review-read)$/,
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
     // request authorizes the attempt (job-handlers-artifacts.ts), and no lease is consulted.
     /^\/api\/jobs\/[^/]+\/artifact\/(chunk|manifest)$/,

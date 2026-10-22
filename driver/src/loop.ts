@@ -37,14 +37,26 @@ export interface LoopDeps {
     stopGraceMs?: number;
 }
 
-/** The production sleep; `until` settling ends it early and clears its timer, so nothing outlives its caller. */
-export const wait = (ms: number, until?: Promise<unknown>) =>
-    new Promise<void>((resolve) => {
+/**
+ * The production sleep; `until` settling ends it early and clears its timer, so nothing outlives its caller.
+ * An aborting `until` signal rejects it instead, as the poll's `Sleep` contract has it (`poll.ts`).
+ */
+export const wait = (ms: number, until?: Promise<unknown> | AbortSignal) =>
+    new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, ms);
         const stop = () => {
             clearTimeout(timer);
             resolve();
         };
+        if (until instanceof AbortSignal) {
+            const abort = () => {
+                clearTimeout(timer);
+                reject(until.reason);
+            };
+            if (until.aborted) abort();
+            else until.addEventListener('abort', abort, { once: true });
+            return;
+        }
         until?.then(stop, stop);
     });
 

@@ -356,6 +356,20 @@ describe('the images ship the cooperative Stop', () => {
         expect(entrypoint).toContain('$CTL_PID');
     });
 
+    // #829: a helper TERMed between its fork and exec swallows the signal, so no helper is reaped by
+    // a bare `wait` — the behaviour is pinned on the lane stub in lane-stubs.test.ts.
+    it.each([
+        ['claude', ['REPORTER_PID', 'CTL_PID', 'PROXY_PID', 'PROGRESS_PID']],
+        ['opencode', ['REPORTER_PID', 'WATCHER_PID', 'CTL_PID', 'PROXY_PID']],
+    ])('the %s entrypoint stops every helper through the TERM-again guard', (name, helpers) => {
+        const entrypoint = read(`docker/${name}-executor/entrypoint.sh`);
+        expect(entrypoint).toContain('kill -KILL "$1" 2>/dev/null');
+        for (const pid of helpers) {
+            expect(entrypoint).toContain(`stop_helper "$${pid}"`);
+            expect(entrypoint).not.toMatch(new RegExp(`wait "\\$${pid}"`));
+        }
+    });
+
     // The supervisor learns the agent is over from this file, written last; the runtime's own exit
     // status stays the verdict.
     it.each(['claude', 'opencode'])(
@@ -371,7 +385,7 @@ describe('the images ship the cooperative Stop', () => {
     it.each(['claude', 'opencode'])('the %s image bakes the mailbox mount points node-owned', (name) => {
         const dockerfile = read(`docker/${name}-executor/Dockerfile`);
         expect(dockerfile).toContain(
-            'RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review && chown -R node:node /factory'
+            'RUN mkdir -p /factory/in /factory/out /factory/export /factory/supervisor /factory/gate /factory/review /factory/binding && chown -R node:node /factory'
         );
     });
 });

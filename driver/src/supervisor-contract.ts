@@ -151,6 +151,7 @@ export const MAILBOX_FILES = {
     go: 'go',
     steps: 'steps',
     report: 'report.json',
+    relay: 'control.sock',
 } as const;
 
 /**
@@ -162,6 +163,13 @@ export const AGENT_MAILBOX_DIR = 'agent';
 /** The agent's side of `in` (`FACTORY_CTL_IN`) and of `out` (`FACTORY_CTL_OUT`). */
 export const AGENT_IN = `${MAILBOXES.in.path}/${AGENT_MAILBOX_DIR}`;
 export const AGENT_OUT = `${MAILBOXES.out.path}/${AGENT_MAILBOX_DIR}`;
+/**
+ * The supervisor's relays (`serveRelay` of supervisor.cjs): an owner-only unix socket per role, each in
+ * a directory only that role mounts. The agent's proxy reaches the holder through the first, the
+ * exporter through the second; neither holds a token, the supervisor attaches the role's.
+ */
+export const AGENT_RELAY_SOCKET = `${AGENT_OUT}/${MAILBOX_FILES.relay}`;
+export const EXPORT_RELAY_SOCKET = `${MAILBOXES.export.path}/${MAILBOX_FILES.relay}`;
 
 /**
  * The marker the supervisor writes in the agent's read-only mailbox when the driver releases the
@@ -266,6 +274,10 @@ export interface SupervisorReport {
 
 /** The line the supervisor logs its final report on, last thing before it exits; `REPORT_PREFIX` of supervisor.cjs. */
 export const SUPERVISOR_REPORT_PREFIX = 'FACTORY_SUPERVISOR_REPORT ';
+/** Logged once when the agent is released; `RELEASED_LINE` of supervisor.cjs. */
+export const SUPERVISOR_RELEASED_LINE = 'supervisor: released the agent';
+/** Logged once when the group stops serving the driver's steps; `SERVED_LINE` of supervisor.cjs. */
+export const SUPERVISOR_SERVED_LINE = 'supervisor: stopped serving the steps';
 
 /** The final report as the supervisor logged it: what a claim adopting its group reads back (issue #824). */
 export type FinalReport = Pick<SupervisorReport, 'outcome' | 'cause' | 'agentExit' | 'agentEnd' | 'drained'>;
@@ -318,6 +330,15 @@ export const SUPERVISOR_ORPHAN_LEASE_SHARE = 4;
 export const SUPERVISOR_ORPHAN_MIN_MS = 30_000;
 export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
 /**
+ * What a released group (its agent went) waits for a newer holder on top of the lease (#829): the
+ * next claim must find the group, learn it is released and write its binding, which a driver that
+ * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this. The
+ * default of DRIVER_REBIND_GRACE_MS (driver/src/config.ts).
+ */
+export const SUPERVISOR_REBIND_GRACE_MS = 240_000;
+/** What a taken-over run's supervisor has, after its rebind is written, to first poll the new endpoint (#829). */
+export const SUPERVISOR_REBIND_DELIVERY_MS = 150_000;
+/**
  * What the kubelet's (or docker's) backstop allows on top of the run budget for the steps a task
  * group serves before and after its agent — the sync, the gates, the helpers, the publish. The
  * driver ends the group itself well before; this only bounds a group the driver forgot.
@@ -334,21 +355,27 @@ export const SUPERVISOR_EXIT = { finalized: 0, deadline: 124, failed: 70, lost: 
 export const DRIVER_LOST_LOSS = 'the task supervisor lost its driver before the agent was released';
 
 /**
- * The supervisor's environment names. Only the supervisor container carries the control pair; the
- * transcript exporter's own token (`exportToken`) rides into the exporter alone.
+ * The supervisor's environment names. Only the supervisor container carries the control pair and the
+ * two tokens it relays under — the agent's (`agentToken`) and the transcript exporter's
+ * (`exportToken`): the agent's proxy and the exporter reach the holder through its sockets and hold none.
  */
 export const SUPERVISOR_ENV = {
     controlUrl: 'SUPERVISOR_CONTROL_URL',
     controlToken: 'SUPERVISOR_CONTROL_TOKEN',
+    agentToken: 'SUPERVISOR_AGENT_TOKEN',
     exportToken: 'SUPERVISOR_EXPORT_TOKEN',
     controlMs: 'SUPERVISOR_CONTROL_MS',
     deadlineMs: 'SUPERVISOR_DEADLINE_MS',
     drainMs: 'SUPERVISOR_DRAIN_MS',
     orphanMs: 'SUPERVISOR_ORPHAN_MS',
+    takeoverMs: 'SUPERVISOR_TAKEOVER_MS',
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',
     gate: 'SUPERVISOR_GATE',
     reviewer: 'SUPERVISOR_REVIEWER',
+    // The claim this supervisor's binding belongs to, and the file a newer holder names itself in.
+    claimSeq: 'SUPERVISOR_CLAIM_SEQ',
+    bindingFile: 'SUPERVISOR_BINDING_FILE',
     /** The attempt's checkpoint at finalize (issue #775): the script by content, and the tree it works on. */
     checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
     checkpointCheckout: 'SUPERVISOR_CHECKPOINT_CHECKOUT',
@@ -359,10 +386,23 @@ export const SUPERVISOR_ENV = {
     checkpointMs: 'SUPERVISOR_CHECKPOINT_MS',
 } as const;
 
-/** The names that carry the supervisor's and the exporter's credentials: the agent container never receives one. */
+/** Where a newer holder names itself to a live supervisor: a file only the supervisor container mounts. */
+export const SUPERVISOR_BINDING = { volume: 'ctl-binding', dir: `${CTL_ROOT}/binding`, file: 'binding.json' } as const;
+export const SUPERVISOR_BINDING_PATH = `${SUPERVISOR_BINDING.dir}/${SUPERVISOR_BINDING.file}`;
+/** What the binding file holds: a supervisor follows it only to a strictly newer `claimSeq`. */
+export interface SupervisorBinding {
+    claimSeq: number;
+    url: string;
+    token: string;
+    agentToken: string;
+    exportToken: string;
+}
+
+/** The names that carry the run-control credentials: only the supervisor container receives one. */
 export const SUPERVISOR_CREDENTIAL_NAMES: readonly string[] = [
     SUPERVISOR_ENV.controlUrl,
     SUPERVISOR_ENV.controlToken,
+    SUPERVISOR_ENV.agentToken,
     SUPERVISOR_ENV.exportToken,
 ];
 

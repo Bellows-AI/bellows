@@ -1,4 +1,22 @@
-import type { Board, Reclaim } from './board.js';
+import type { Board } from './board.js';
+
+/**
+ * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left
+ * the tree for somebody to take down. The lease claims the row so the reclaim is mutually
+ * exclusive with a live attempt's startup sync; the row is deleted when the work is acked.
+ */
+export interface Reclaim {
+    /** The queue row's own id — the work order's name. */
+    id: string;
+    /** This acquisition's own token (issue #821): the ack, the renew and the checkout claim ride it. */
+    token: string;
+    /** The thread whose tree the removed job left behind. */
+    rootJobId: string;
+    /** The checkout the thread's worktree belonged to, when the removed job named one. */
+    repo: string | null;
+    workspacePath: string | null;
+    leaseExpiresAt: string;
+}
 
 /** The board's POST as `createBoard` hands it out: a 409 is always an answer, a 404 when asked for. */
 type Post = (

@@ -229,6 +229,10 @@ driver:
     concurrency: '2'
     pollMs: '5000'
     leaseSeconds: '300'
+    # What a run's group whose agent went waits for a newer holder, beyond the lease, before it ends
+    # (DRIVER_REBIND_GRACE_MS, issue #829): the next claim must find the group and bind it. A lane
+    # that compresses time shortens it; production keeps the default.
+    rebindGraceMs: '240000'
     jobTimeoutMs: '7200000'
     # The wall-clock cap on ONE gate run — the gate Job's activeDeadlineSeconds. A gate that
     # outlives it fails with exit 124. A declared gate that installs dependencies into a fresh

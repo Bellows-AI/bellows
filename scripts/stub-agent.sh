@@ -59,6 +59,24 @@ on_term() {
 # and leave the command running.
 trap on_term TERM INT
 
+# Stops one helper and reaps it. A helper TERMed while still between its fork and exec runs this
+# shell's handler and swallows the signal, so a guard sends TERM again and then KILL; a bare `wait`
+# held PID 1, and the run, forever.
+stop_helper() {
+    [ -n "$1" ] || return 0
+    kill -TERM "$1" 2>/dev/null || true
+    (
+        sleep 1
+        kill -TERM "$1" 2>/dev/null
+        sleep 2
+        kill -KILL "$1" 2>/dev/null
+    ) &
+    _guard=$!
+    wait "$1" 2>/dev/null || true
+    kill -KILL "$_guard" 2>/dev/null || true
+    wait "$_guard" 2>/dev/null || true
+}
+
 node "$(dirname "$0")/ctl-agent.cjs" >/dev/null 2>&1 &
 CTL_PID=$!
 # The subshell clears the inherited trap before it execs, so a TERM landing in that sliver kills
@@ -81,8 +99,7 @@ while :; do
     kill -0 "$CHILD_PID" 2>/dev/null || break
 done
 
-kill -TERM "$CTL_PID" 2>/dev/null || true
-wait "$CTL_PID" 2>/dev/null || true
+stop_helper "$CTL_PID"
 if [ -n "${FACTORY_CTL_OUT:-}" ]; then
     printf '%s\n' "$STATUS" > "$FACTORY_CTL_OUT/agent.exit.tmp" 2>/dev/null \
         && mv "$FACTORY_CTL_OUT/agent.exit.tmp" "$FACTORY_CTL_OUT/agent.exit" 2>/dev/null || true

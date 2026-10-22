@@ -38,6 +38,7 @@ import {
     stripAnsi,
     tailBytes,
     tailKept,
+    type AdoptedRun,
 } from '../src/runner.js';
 import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
 import {
@@ -90,11 +91,13 @@ import {
     SUPERVISOR_ENV,
     SUPERVISOR_EXIT,
     SUPERVISOR_REPORT_PREFIX,
+    SUPERVISOR_WINDDOWN_MS,
     type StepKind,
     type StepRequest,
     type StepResult,
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
+import { finalizeWaitMs, takeoverBoundMs } from '../src/supervisor-plan.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js';
 import {
@@ -601,17 +604,11 @@ describe("the board's environment", () => {
         );
     });
 
-    // Issue #442: the run-control channel the loop mints per attempt rides the env file, after the
-    // claim lines — and a member cannot mint it for themselves.
-    it('writes the run-control channel after the claim lines, and drops a member-set one', () => {
-        const controlled = {
-            ...envJob,
-            env: { MY_TOKEN: 'board-secret', BELLOWS_CONTROL_TOKEN: 'member-forged' },
-            gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:41000', BELLOWS_CONTROL_TOKEN: 'minted' },
-        };
-        expect(envFileBody(controlled)).toBe(
-            'MY_TOKEN=board-secret\nBELLOWS_CONTROL_URL=http://driver:41000\nBELLOWS_CONTROL_TOKEN=minted\n'
-        );
+    // The run-control pair is never minted into the env file (the supervisor's relays carry it), and a
+    // member cannot set it for themselves.
+    it('drops a member-set run-control name from the env file', () => {
+        const forged = { ...envJob, env: { MY_TOKEN: 'board-secret', BELLOWS_CONTROL_TOKEN: 'member-forged' } };
+        expect(envFileBody(forged)).toBe('MY_TOKEN=board-secret\n');
     });
 
     it('never forwards a name the runner itself claims', () => {
@@ -1413,6 +1410,17 @@ function fakeChild(stdout: string, stderr: string, code: number | null): ChildPr
     process.nextTick(() => child.emit('close', code));
     return child;
 }
+
+/** The adoption's listing of the job's runners (#829): the one `ps` whose format opens with the container name. */
+const isAdoptListing = (args: string[]): boolean =>
+    args[0] === 'ps' && (args[args.indexOf('--format') + 1] ?? '').startsWith('{{.Names}}');
+/** Rows of that listing as the daemon answers them: each ends in the container's state. */
+const withState = (rows: string, state: string): string =>
+    rows
+        .split('\n')
+        .filter((row) => row !== '')
+        .map((row) => `${row}\t${state}\n`)
+        .join('');
 
 /** A child whose stdout arrives as exactly these byte chunks and ends, in one tick, before it exits `code`. */
 function chunkedChild(chunks: Buffer[], code = 0): ChildProcess {
@@ -5006,7 +5014,7 @@ describe('every container the driver runs is hardened (#382)', () => {
             'the task supervisor of an agentless group',
             () => supervisorCreateArgs(config(), repoJob, { exporting: false, agentless: true }, '/tmp/supervisor.env'),
         ],
-        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START, '/tmp/export.env')],
+        ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START)],
         [
             'a declared service',
             () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] }, supervisorName(job)),
@@ -5356,13 +5364,25 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
      * The daemon, and the `docker logs` read the adoption streams through spawn — its argv recorded
      * among the daemon calls, in order, its child printing `log` and exiting `logExit`.
      */
-    const daemon = (ps: string, supervisorExit = '0', log: string | Buffer[] = 'did the work\n', logExit = 0) => {
+    const daemon = (
+        ps: string,
+        supervisorExit = '0',
+        log: string | Buffer[] = 'did the work\n',
+        { logExit = 0, running = '' }: { logExit?: number; running?: string | Error } = {}
+    ) => {
         const calls: string[][] = [];
         const exec = (args: string[]) => {
             calls.push(args);
+            // The adoption's ONE listing of the job's runners (#829): the exited ones the test gave as `ps`, the
+            // still-running ones as `running` (none unless a test lists one), each row ending in its state.
+            if (isAdoptListing(args)) {
+                return running instanceof Error
+                    ? Promise.reject(running)
+                    : Promise.resolve({ stdout: `${withState(ps, 'exited')}${withState(running, 'running')}` });
+            }
             // The earlier attempt's supervisor: finalized (0) unless a test says how it ended.
             if (args[0] === 'wait') return Promise.resolve({ stdout: `${supervisorExit}\n` });
-            if (args[0] === 'ps') return Promise.resolve({ stdout: args.includes('status=exited') ? ps : FENCE_PS });
+            if (args[0] === 'ps') return Promise.resolve({ stdout: FENCE_PS });
             if (args[0] === 'volume' && args[1] === 'ls') return Promise.resolve({ stdout: FENCE_VOLUMES });
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
             if (args[0] === 'volume' && args[1] === 'inspect') {
@@ -5410,6 +5430,27 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
                   })
                 : base(args);
 
+    it('never misses a runner that exits while the earlier runners are listed: one listing, whatever the state', async () => {
+        const { exec: base, calls, logs } = daemon('', '0', 'did the work\n');
+        // The runner runs at the first listing and has exited by the next: a status filter would see it in neither.
+        let listings = 0;
+        const row = `${containerName(job)}\t${job.leaseToken}\t1\t${SESSION}\t${commandMark(job.command)}\n`;
+        const exec = (args: string[]) => {
+            if (!isAdoptListing(args)) return base(args);
+            listings += 1;
+            const filtered = args.find((arg) => arg.startsWith('status='));
+            const state = listings === 1 ? 'running' : 'exited';
+            return Promise.resolve({
+                stdout: !filtered || filtered === `status=${state}` ? withState(row, state) : '',
+            });
+        };
+
+        await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+
+        expect(listings).toBe(1);
+        expect(calls.some((args) => args[0] === 'rm')).toBe(false);
+    });
+
     // Issue #821 (D1): the read run is the evidence a later claim adopts again if this one is lost
     // before its verdict lands — kept, like the kubernetes Job the adoption spares, until the
     // reaper takes it once the job is terminal. Every older attempt's leftover goes, read first.
@@ -5422,8 +5463,13 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
         });
-        expect(adopted!.outcome.output).toContain('did the work');
-        expect(calls[0]).toEqual(expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`, 'status=exited']));
+        expect((adopted as AdoptedRun).outcome.output).toContain('did the work');
+        // ONE listing of the job's runners, whatever state each is in: a runner that exits between two never goes unseen.
+        expect(calls.filter(isAdoptListing)).toEqual([
+            expect.arrayContaining(['ps', '-a', `label=factory.job=${job.id}`]),
+        ]);
+        expect(calls[0]).toSatisfy(isAdoptListing);
+        expect(calls.some((args) => args.some((arg) => arg.startsWith('status=')))).toBe(false);
         const read = calls.findIndex((args) => args[0] === 'logs');
         const swept = calls.findIndex((args) => args[0] === 'rm' && args.includes('a5a5a5a5a5a5'));
         expect(read).toBeGreaterThanOrEqual(0);
@@ -5439,7 +5485,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         calls.length = 0;
         await runner.probeTree(adopter, new AbortController().signal).catch(() => null);
 
-        expect(calls.some((args) => args[0] === 'ps' && !args.includes('status=exited'))).toBe(true);
+        expect(calls.some((args) => args[0] === 'ps' && !isAdoptListing(args))).toBe(true);
         expect(removals(calls)).not.toContain('a4a4a4a4a4a4');
         expect(removals(calls)).not.toContain('a3a3a3a3a3a3');
         expect(removals(calls)).not.toContain('read-mailbox');
@@ -5465,7 +5511,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, timedOut: false } });
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // Issue #796: a run read but never swept is no adoption — and, like the kubernetes twin, the
@@ -5590,10 +5636,40 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.timedOut).toBe(true);
+        expect((adopted as AdoptedRun | null)?.outcome.timedOut).toBe(true);
         const waited = calls.findIndex((args) => args[0] === 'wait');
         expect(waited).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'logs')).toBeGreaterThan(waited);
+    });
+
+    // #829 S3: a released group's supervisor may wait the takeover grace for a holder before it finalizes.
+    it('waits for the earlier attempt’s supervisor the wind-down and the takeover grace', async () => {
+        const { exec: base, logs } = daemon(listing());
+        const timeouts: (number | undefined)[] = [];
+        const exec = (args: string[], options?: { timeout?: number }) => {
+            if (args[0] === 'wait') timeouts.push(options?.timeout);
+            return base(args);
+        };
+
+        await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+        expect(timeouts).toEqual([finalizeWaitMs(loadDriverConfig({}))]);
+    });
+
+    // The wait scales with the lease it must outlast: a fixed one ends before a long lease's takeover bound.
+    it('waits for the earlier supervisor longer at a long lease', async () => {
+        const { exec: base, logs } = daemon(listing());
+        const timeouts: (number | undefined)[] = [];
+        const exec = (args: string[], options?: { timeout?: number }) => {
+            if (args[0] === 'wait') timeouts.push(options?.timeout);
+            return base(args);
+        };
+        const env = { DRIVER_LEASE_SECONDS: '3600' };
+
+        await dockerRunner(exec, { spawn: logs, env }).adopt(adopter);
+
+        expect(timeouts).toEqual([finalizeWaitMs(loadDriverConfig(env))]);
+        expect(timeouts[0]).toBeGreaterThan(takeoverBoundMs(loadDriverConfig(env)));
     });
 
     // A killed supervisor with no recorded reason is a supervisor lost — also where a record the
@@ -5633,7 +5709,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const adopted = await dockerRunner(withReport(base, {}), { spawn: logs }).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true } });
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     /** The daemon of `daemon`, refusing the earlier supervisor's `docker logs` with `stderr`. */
@@ -5665,7 +5741,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const { exec: base, calls, logs } = daemon(listing());
         const standDown = new AbortController();
         const exec = (args: string[]) => {
-            if (args[0] === 'ps' && !args.includes('status=exited')) standDown.abort();
+            if (args[0] === 'ps' && !isAdoptListing(args)) standDown.abort();
             return base(args);
         };
 
@@ -5691,7 +5767,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
     const refusingDiscovery = (base: (args: string[]) => Promise<{ stdout: string }>, refusals: number) => {
         let left = refusals;
         return (args: string[]) =>
-            args[0] === 'ps' && args.includes('status=exited') && left-- > 0
+            isAdoptListing(args) && left-- > 0
                 ? Promise.reject(new Error('Cannot connect to the Docker daemon'))
                 : base(args);
     };
@@ -5771,7 +5847,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         const events: string[] = [];
         const listed = refusingDiscovery(base, 1);
         const exec = (args: string[]) => {
-            if (args[0] === 'ps' && args.includes('status=exited')) events.push('ps');
+            if (isAdoptListing(args)) events.push('ps');
             return listed(args);
         };
         const sleep = async (ms: number) => {
@@ -5788,7 +5864,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         let listings = 0;
         const listed = refusingDiscovery(base, 1);
         const exec = (args: string[]) => {
-            if (args[0] === 'ps' && args.includes('status=exited')) listings += 1;
+            if (isAdoptListing(args)) listings += 1;
             return listed(args);
         };
         const sleep = (_ms: number, signal?: AbortSignal) => {
@@ -5878,8 +5954,8 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ started: true, ...fields });
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ started: true, ...fields });
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
         // The record is the earlier attempt's, kept with the read run for a later adoption (#821).
         expect(calls.some((args) => args[0] === 'rm' && args.includes('a4a4a4a4a4a4'))).toBe(false);
     });
@@ -5890,7 +5966,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
     });
 
     // A full spool rides a supervised stop, so its record never explains how the supervisor ended:
@@ -5921,8 +5997,10 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     it('reads no stop from a supervisor that logged no report', async () => {
@@ -5930,7 +6008,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBeUndefined();
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBeUndefined();
     });
 
     // A queued task's command can be edited after a handover: a run of the old command is not its run.
@@ -5959,10 +6037,12 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome.logTruncated).toBe(true);
-        expect(adopted?.outcome.fullLog?.endsWith(line)).toBe(true);
-        expect(Buffer.byteLength(adopted?.outcome.fullLog ?? '')).toBeLessThanOrEqual(ARTIFACT_LIMIT);
-        expect(Buffer.byteLength(adopted?.outcome.output ?? '')).toBeLessThanOrEqual(16 * 1024);
+        expect((adopted as AdoptedRun | null)?.outcome.logTruncated).toBe(true);
+        expect((adopted as AdoptedRun | null)?.outcome.fullLog?.endsWith(line)).toBe(true);
+        expect(Buffer.byteLength((adopted as AdoptedRun | null)?.outcome.fullLog ?? '')).toBeLessThanOrEqual(
+            ARTIFACT_LIMIT
+        );
+        expect(Buffer.byteLength((adopted as AdoptedRun | null)?.outcome.output ?? '')).toBeLessThanOrEqual(16 * 1024);
         const read = calls.findIndex((args) => args[0] === 'logs');
         expect(read).toBeGreaterThanOrEqual(0);
         expect(calls.findIndex((args) => args[0] === 'rm')).toBeGreaterThan(read);
@@ -5973,7 +6053,10 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ fullLog: 'did the work\n', logTruncated: false });
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({
+            fullLog: 'did the work\n',
+            logTruncated: false,
+        });
     });
 
     it('decodes a multibyte character split across two log chunks once, whole — below and above the cap', async () => {
@@ -5982,7 +6065,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
             const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-            expectWholeEuro(adopted?.outcome, truncated);
+            expectWholeEuro((adopted as AdoptedRun | null)?.outcome, truncated);
         }
     });
 
@@ -5991,11 +6074,11 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
 
         const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ fullLog: 'ok\uFFFD', logTruncated: false });
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ fullLog: 'ok\uFFFD', logTruncated: false });
     });
 
     it('rejects an adoption whose log read failed, and removes nothing', async () => {
-        const { exec, calls, logs } = daemon(listing(), '0', 'Error: No such container\n', 1);
+        const { exec, calls, logs } = daemon(listing(), '0', 'Error: No such container\n', { logExit: 1 });
 
         await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toThrow(/docker logs/);
         expect(calls.some((args) => args[0] === 'rm')).toBe(false);
@@ -6072,6 +6155,348 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         expect(await dockerRunner(exec, { spawn: logs }).adopt(continuing)).toMatchObject({
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, sessionId: SESSION },
+        });
+    });
+
+    // #829: a released group's agent still runs (its runner container is up): taken over, not read.
+    describe('a live run (#829)', () => {
+        const supervisorUp = (up: boolean | 'garbled') => (args: string[]) => {
+            if (args[0] !== 'inspect') return;
+            if (args.includes(supervisorName(job))) {
+                return Promise.resolve({
+                    stdout:
+                        up === 'garbled' ? 'not json' : `{"Status":"${up ? 'running' : 'exited'}","Running":${up}}\n`,
+                });
+            }
+            return Promise.resolve({
+                stdout: '{"Status":"running","Running":true,"StartedAt":"2026-10-01T00:00:00Z"}\n',
+            });
+        };
+        const liveDaemon = (up: boolean | 'garbled' = true, running: string | Error = listing()) => {
+            const { exec: base, calls, logs } = daemon('', '0', 'did the work\n', { running });
+            const inspect = supervisorUp(up);
+            const exec = (args: string[]) => inspect(args) ?? base(args);
+            return { exec, calls, logs };
+        };
+
+        it('answers a running runner whose supervisor runs as live, recording the group and sweeping only the older', async () => {
+            const { exec, calls, logs } = liveDaemon();
+
+            const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+            expect(adopted).toMatchObject({
+                live: true,
+                claimSeq: 1,
+                session: SESSION,
+                startedAt: '2026-10-01T00:00:00Z',
+                prior: { id: job.id, leaseToken: job.leaseToken },
+            });
+            // The live run's own objects stay; the older attempt's go.
+            expect(removals(calls)).toEqual(['a5a5a5a5a5a5', 'older-mailbox']);
+            expect(calls.some((args) => args[0] === 'logs')).toBe(false);
+            expect(calls.some((args) => args[0] === 'wait')).toBe(false);
+        });
+
+        it('follows the live runner of the prior lease on a resumed run: no create, no env, no start, no go order', async () => {
+            const { exec, calls, logs } = liveDaemon();
+            const runner = dockerRunner(exec, { spawn: logs });
+            const live = await runner.adopt(adopter);
+            expect(live).toMatchObject({ live: true });
+            calls.length = 0;
+            const taken: BoardJob = {
+                ...adopter,
+                groupLease: job.leaseToken,
+                supervisorEnv: { SUPERVISOR_CONTROL_TOKEN: 'tok-new', SUPERVISOR_CONTROL_URL: 'http://driver/' },
+            };
+
+            const outcome = await runner.run(taken, { id: SESSION, resume: true });
+
+            // The followed log ended and the bounded `docker wait` said how the runner exited.
+            expect(outcome).toMatchObject({ exitCode: 0 });
+            expect(calls.some((args) => args[0] === 'wait')).toBe(true);
+
+            const named = containerName({ ...job, leaseToken: job.leaseToken });
+            // The very first daemon call is the follow: nothing was created, copied or started before it.
+            expect(calls[0]).toEqual(['logs', '-f', named]);
+            for (const args of calls) {
+                expect(args[0]).not.toMatch(/^(create|start|cp)$/);
+                expect(args.join(' ')).not.toContain(containerName(adopter));
+            }
+        });
+
+        /** A `docker logs -f` held open until the test closes it, remembering the signal it was spawned with. */
+        const heldFollow = () => {
+            const seen: { signal: AbortSignal | undefined; close: (code: number | null) => void }[] = [];
+            const spawnHeld = ((_command: string, args: string[], options?: { signal?: AbortSignal }) => {
+                const child = new EventEmitter() as ChildProcess;
+                child.stdout = new EventEmitter() as Readable;
+                child.stderr = new EventEmitter() as Readable;
+                const entry = {
+                    signal: options?.signal,
+                    close: (code: number | null) => void child.emit('close', code),
+                };
+                options?.signal?.addEventListener('abort', () => entry.close(null));
+                if (args[0] === 'logs' && args[1] === '-f') seen.push(entry);
+                else process.nextTick(() => child.emit('close', 0));
+                return child;
+            }) as unknown as typeof spawn;
+            return { seen, spawnHeld };
+        };
+        const takenJob = (): BoardJob => ({
+            ...adopter,
+            groupLease: job.leaseToken,
+            supervisorEnv: { SUPERVISOR_CONTROL_TOKEN: 'tok-new', SUPERVISOR_CONTROL_URL: 'http://driver/' },
+        });
+
+        it('keeps the followed log open through a kill, then reads the exit like a started run', async () => {
+            const { exec } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(
+                (args) =>
+                    args[0] === 'wait' && !args.includes(supervisorName(job))
+                        ? Promise.resolve({ stdout: '137\n' })
+                        : exec(args),
+                { spawn: spawnHeld }
+            );
+            await runner.adopt(adopter);
+            const taken = takenJob();
+            const running = runner.run(taken, { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            await runner.kill(taken);
+
+            // The kill ends the container, not the stream: the log closes by itself, as `start -a` does.
+            expect(seen[0]?.signal?.aborted).toBe(false);
+            seen[0]?.close(0);
+            await expect(running).resolves.toMatchObject({ exitCode: 137 });
+        });
+
+        it('keeps the followed log open through a Stop, then reads the exit like a started run', async () => {
+            const { exec, calls } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(
+                (args) =>
+                    args[0] === 'wait' && !args.includes(supervisorName(job))
+                        ? Promise.resolve({ stdout: '143\n' })
+                        : exec(args),
+                { spawn: spawnHeld }
+            );
+            await runner.adopt(adopter);
+            const taken = takenJob();
+            const running = runner.run(taken, { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            await runner.stopAgent(taken);
+
+            // The Stop ends the agent, not the stream: the log closes by itself and the exit is read from the runner.
+            expect(seen[0]?.signal?.aborted).toBe(false);
+            expect(calls.some((args) => args[0] === 'ps' && args.includes('label=factory.role=agent'))).toBe(true);
+            seen[0]?.close(0);
+            await expect(running).resolves.toMatchObject({ exitCode: 143, timedOut: false });
+        });
+
+        it('times a resumed run out when its budget and wind-down have passed with the runner still up', async () => {
+            vitest.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            try {
+                const { exec } = liveDaemon(true, listing());
+                const { seen, spawnHeld } = heldFollow();
+                const runner = dockerRunner(exec, { spawn: spawnHeld });
+                const live = await runner.adopt(adopter);
+                expect(live).toMatchObject({ live: true, startedAt: '2026-10-01T00:00:00Z' });
+                // The run started a budget ago: only the wind-down is left on its backstop.
+                vitest.setSystemTime(Date.parse('2026-10-01T00:00:00Z') + 24 * 60 * 60 * 1000);
+                const running = runner.run(takenJob(), { id: SESSION, resume: true });
+                await vitest.advanceTimersByTimeAsync(0);
+                expect(seen).toHaveLength(1);
+
+                await vitest.advanceTimersByTimeAsync(SUPERVISOR_WINDDOWN_MS + 1_000);
+                seen[0]?.close(0);
+
+                await expect(running).resolves.toMatchObject({ timedOut: true });
+            } finally {
+                vitest.useRealTimers();
+            }
+        });
+
+        it('counts nothing spent when the runner start cannot be read: the backstop keeps the whole budget', async () => {
+            vitest.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+            try {
+                const { exec } = liveDaemon(true, listing());
+                const { seen, spawnHeld } = heldFollow();
+                const runner = dockerRunner(
+                    (args) =>
+                        args[0] === 'inspect' && !args.includes(supervisorName(job))
+                            ? Promise.resolve({ stdout: '{"Status":"running","Running":true}\n' })
+                            : exec(args),
+                    { spawn: spawnHeld }
+                );
+                const live = await runner.adopt(adopter);
+                expect(live).toMatchObject({ live: true, startedAt: '' });
+                const running = runner.run(takenJob(), { id: SESSION, resume: true });
+                await vitest.advanceTimersByTimeAsync(0);
+                expect(seen).toHaveLength(1);
+
+                // Past the wind-down alone, which is all a start read as the epoch would leave.
+                await vitest.advanceTimersByTimeAsync(SUPERVISOR_WINDDOWN_MS + 1_000);
+                seen[0]?.close(0);
+
+                await expect(running).resolves.toMatchObject({ timedOut: false });
+            } finally {
+                vitest.useRealTimers();
+            }
+        });
+
+        it('hangs up on the followed log only when the attempt is abandoned', async () => {
+            const { exec } = liveDaemon(true, listing());
+            const { seen, spawnHeld } = heldFollow();
+            const runner = dockerRunner(exec, { spawn: spawnHeld });
+            await runner.adopt(adopter);
+            const taken = takenJob();
+            const running = runner.run(taken, { id: SESSION, resume: true });
+            await vitest.waitFor(() => expect(seen).toHaveLength(1));
+
+            runner.abandon(taken);
+
+            expect(seen[0]?.signal?.aborted).toBe(true);
+            await expect(running).rejects.toThrow(/ended with a signal/);
+        });
+
+        it('answers nothing for a group no runner container runs (created, never started)', async () => {
+            const { exec, calls, logs } = liveDaemon(true, '');
+
+            expect(await dockerRunner(exec, { spawn: logs }).adopt(adopter)).toBeNull();
+            expect(removals(calls)).toEqual([]);
+        });
+
+        it.each([
+            ['refused', new Error('the daemon answered 503')],
+            ['garbled', 'a\tb\n'],
+        ])('blocks the attempt when the running listing is %s', async (_label, running) => {
+            const { exec, calls, logs } = liveDaemon(true, running);
+
+            await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
+            expect(removals(calls)).toEqual([]);
+        });
+
+        it.each([
+            ['stopped', false],
+            ['unreadable', 'garbled' as const],
+        ])(
+            'blocks the attempt, removing nothing, when the supervisor of a running runner is %s',
+            async (_label, up) => {
+                const { exec, calls, logs } = liveDaemon(up);
+
+                await expect(dockerRunner(exec, { spawn: logs }).adopt(adopter)).rejects.toBeInstanceOf(
+                    AdoptionBlocked
+                );
+                expect(removals(calls)).toEqual([]);
+            }
+        );
+
+        describe('whose runner exited while its supervisor still serves the steps', () => {
+            const RELEASED = 'supervisor: released the agent';
+            const SERVED = 'supervisor: stopped serving the steps';
+            /** An exited runner whose supervisor answers `inspect` and `logs` as given (a string, or a rejection). */
+            const exitedDaemon = (
+                inspect: string | Error = '{"Status":"running","Running":true}\n',
+                log: string | Error = `serving\n${RELEASED}\n`
+            ) => {
+                const { exec: base, calls, logs } = daemon(listing(), '0', 'did the work\n');
+                const exec = (args: string[]) => {
+                    const forSupervisor = args.includes(supervisorName(job));
+                    if (args[0] === 'inspect' && forSupervisor) {
+                        calls.push(args);
+                        return inspect instanceof Error
+                            ? Promise.reject(inspect)
+                            : Promise.resolve({ stdout: inspect });
+                    }
+                    if (args[0] === 'logs' && forSupervisor && !args.includes('--tail')) {
+                        calls.push(args);
+                        return log instanceof Error ? Promise.reject(log) : Promise.resolve({ stdout: log });
+                    }
+                    return base(args);
+                };
+                return { exec, calls, logs };
+            };
+            const waitedForSupervisor = (calls: string[][]) =>
+                calls.some((args) => args[0] === 'wait' && args.includes(supervisorName(job)));
+
+            it('is taken over as live: no wait for the supervisor, the live run spared, only the older swept', async () => {
+                const { exec, calls, logs } = exitedDaemon();
+
+                const adopted = await dockerRunner(exec, { spawn: logs }).adopt(adopter);
+
+                expect(adopted).toMatchObject({
+                    live: true,
+                    claimSeq: 1,
+                    session: SESSION,
+                    prior: { id: job.id, leaseToken: job.leaseToken },
+                });
+                expect(waitedForSupervisor(calls)).toBe(false);
+                expect(removals(calls)).toEqual(['a5a5a5a5a5a5', 'older-mailbox']);
+            });
+
+            // Characterization: the followed log of an exited container closes at once; the bounded wait says
+            // how it exited, and nothing is created, started or ordered.
+            it('follows the exited runner of the prior lease to its exit, creating nothing', async () => {
+                const { exec, calls, logs } = exitedDaemon();
+                const runner = dockerRunner(exec, { spawn: logs });
+                expect(await runner.adopt(adopter)).toMatchObject({ live: true });
+                calls.length = 0;
+                const taken: BoardJob = {
+                    ...adopter,
+                    groupLease: job.leaseToken,
+                    supervisorEnv: { SUPERVISOR_CONTROL_TOKEN: 'tok-new', SUPERVISOR_CONTROL_URL: 'http://driver/' },
+                };
+
+                const outcome = await runner.run(taken, { id: SESSION, resume: true });
+
+                expect(outcome).toMatchObject({ exitCode: 0, timedOut: false });
+                expect(calls[0]).toEqual(['logs', '-f', containerName(job)]);
+                expect(calls.some((args) => args[0] === 'wait')).toBe(true);
+                for (const args of calls) expect(args[0]).not.toMatch(/^(create|start|cp)$/);
+            });
+
+            // Characterization: the finalize wait stands for everything but a proven, still-serving supervisor.
+            it.each([
+                ['has logged that it stopped serving', `${RELEASED}\n${SERVED}\n`, undefined],
+                ['never logged the release', 'serving\n', undefined],
+                ['is stopped', `${RELEASED}\n`, '{"Status":"exited","Running":false}\n'],
+                ['cannot be inspected', `${RELEASED}\n`, new Error('docker inspect exited 1')],
+                ['answers an inspect that is not JSON', `${RELEASED}\n`, 'not json'],
+                ['has a log the daemon refuses', new Error('docker logs exited 1'), undefined],
+            ])('waits for the supervisor, taking nothing over, when it %s', async (_label, log, inspect) => {
+                const { exec, calls, logs } = exitedDaemon(inspect, log);
+
+                const adopted = await dockerRunner(exec, { spawn: logs })
+                    .adopt(adopter)
+                    .catch((e: unknown) => e);
+
+                expect((adopted as { live?: boolean } | null)?.live).not.toBe(true);
+                expect(waitedForSupervisor(calls)).toBe(true);
+            });
+
+            // A daemon silent for the whole read deadline would stall the finalize wait's reads as long again.
+            it('blocks the attempt, removing nothing, when the supervisor reads outlast the read deadline', async () => {
+                vitest.useFakeTimers();
+                try {
+                    const { exec: base, calls, logs } = exitedDaemon();
+                    const exec = (args: string[], options?: { timeout?: number }) =>
+                        args[0] === 'inspect' && args.includes(supervisorName(job))
+                            ? hangsUntilTimeout(options)
+                            : base(args);
+                    const adopting = dockerRunner(exec, { spawn: logs })
+                        .adopt(adopter)
+                        .catch((e: unknown) => e);
+
+                    await vitest.advanceTimersByTimeAsync(CLOSE_READ_DEADLINE_MS + 1_000);
+
+                    expect(await adopting).toBeInstanceOf(AdoptionBlocked);
+                    expect(removals(calls)).toEqual([]);
+                } finally {
+                    vitest.useRealTimers();
+                }
+            });
         });
     });
 });
@@ -6185,7 +6610,7 @@ describe('what a closed run leaves for the next claim, on docker (the retention 
         const exec = (async (args: string[]) => {
             if (args[0] === 'rm') removed = true;
             if (args[0] === 'wait') return { stdout: '0\n' };
-            if (args[0] === 'ps' && args.includes('status=exited')) return { stdout: removed ? '' : listed };
+            if (isAdoptListing(args)) return { stdout: removed ? '' : withState(listed, 'exited') };
             if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease')))
                 return { stdout: 'a0a0a0a0a001\n' };
             if (args[0] === 'volume' && args[1] === 'inspect') {

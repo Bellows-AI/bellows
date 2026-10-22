@@ -13,11 +13,13 @@ import {
     RUN_CONTROL_POLL_MS,
     SUPERVISOR_CHECKPOINT_MS,
     SUPERVISOR_DRAIN_MS,
+    SUPERVISOR_BINDING_PATH,
     SUPERVISOR_ENV,
     SUPERVISOR_ORPHAN_LEASE_SHARE,
     SUPERVISOR_ORPHAN_MAX_MS,
     SUPERVISOR_ORPHAN_MIN_MS,
     SUPERVISOR_STEPS_MS,
+    type SupervisorBinding,
     SUPERVISOR_WINDDOWN_MS,
 } from './supervisor-contract.js';
 
@@ -30,6 +32,8 @@ import {
  */
 
 const MS_PER_SECOND = 1000;
+const MIN_HEARTBEAT_PERIOD_MS = 1_000;
+const HEARTBEAT_PERIOD_DIVISOR = 3;
 
 /** How long a group whose driver stopped answering keeps going: a share of the lease, so it ends inside it. */
 export const orphanBoundMs = (config: DriverConfig): number =>
@@ -37,6 +41,23 @@ export const orphanBoundMs = (config: DriverConfig): number =>
         SUPERVISOR_ORPHAN_MAX_MS,
         Math.max(SUPERVISOR_ORPHAN_MIN_MS, (config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_ORPHAN_LEASE_SHARE)
     );
+
+/** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it (#829). */
+export const takeoverBoundMs = (config: DriverConfig): number =>
+    config.leaseSeconds * MS_PER_SECOND + config.rebindGraceMs;
+
+/** The pace a lease is renewed at while the driver holds it: a third of the lease, never under a second. */
+export const heartbeatPeriodMs = (config: DriverConfig): number =>
+    Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / HEARTBEAT_PERIOD_DIVISOR));
+
+/**
+ * How long the next claim waits for the supervisor of a group it adopts to end (#829): a lost driver
+ * still alive keeps contact until its next heartbeat learns the lease is gone (`heartbeatPeriodMs`),
+ * the released group then waits `takeoverBoundMs` from that contact, and the wind-down (drain and
+ * report) follows. It scales with the lease like the bounds it outlasts.
+ */
+export const finalizeWaitMs = (config: DriverConfig): number =>
+    SUPERVISOR_WINDDOWN_MS + heartbeatPeriodMs(config) + takeoverBoundMs(config);
 
 /**
  * The declared gate image of the attempt's group (issue #773), or null when the group runs no gate
@@ -63,6 +84,9 @@ export function supervisorLiterals(
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],
         [SUPERVISOR_ENV.orphanMs, String(orphanBoundMs(config))],
+        [SUPERVISOR_ENV.claimSeq, String(job.claimSeq)],
+        [SUPERVISOR_ENV.bindingFile, SUPERVISOR_BINDING_PATH],
+        [SUPERVISOR_ENV.takeoverMs, String(takeoverBoundMs(config))],
         ...(group.exporting ? ([[SUPERVISOR_ENV.exports, '1']] as [string, string][]) : []),
         ...(group.agentless ? ([[SUPERVISOR_ENV.agentless, '1']] as [string, string][]) : []),
         ...(group.gated ? ([[SUPERVISOR_ENV.gate, '1']] as [string, string][]) : []),
@@ -102,23 +126,60 @@ export const agentMailboxEnv = (): [string, string][] => [
     ['FACTORY_CTL_GO', GO_MARKER],
 ];
 
-/** The names of the supervisor's control pair this attempt carries; none when it has no control endpoint. */
+/** The names of the supervisor's control pair and relay tokens this attempt carries; none when it has no control endpoint. */
 export function supervisorControlNames(job: BoardJob): string[] {
-    return [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].filter((name) => job.supervisorEnv?.[name]);
+    return [
+        SUPERVISOR_ENV.controlUrl,
+        SUPERVISOR_ENV.controlToken,
+        SUPERVISOR_ENV.agentToken,
+        SUPERVISOR_ENV.exportToken,
+    ].filter((name) => job.supervisorEnv?.[name]);
 }
+
+/** How much of its budget a run started at `startedAt` has spent; none when the stamp does not parse. */
+export const spentMs = (startedAt: string): number => {
+    const started = Date.parse(startedAt);
+    return Number.isNaN(started) ? 0 : Math.max(0, Date.now() - started);
+};
 
 /**
  * The agent phase's backstop: the run budget plus the wind-down. The supervisor ends the agent at
  * the budget itself and reports within the wind-down; the docker driver's timer only ends a group
- * whose supervisor stopped doing that.
+ * whose supervisor stopped doing that. A taken-over run (#829) has spent `elapsedMs` of the budget already.
  */
-export const agentBackstopMs = (config: DriverConfig, job: BoardJob): number =>
-    runTimeoutMs(config, job) + SUPERVISOR_WINDDOWN_MS;
+export const agentBackstopMs = (config: DriverConfig, job: BoardJob, elapsedMs = 0): number =>
+    Math.max(0, runTimeoutMs(config, job) - elapsedMs) + SUPERVISOR_WINDDOWN_MS;
 
 /**
  * The backstop deadline of the whole group (the kubelet's, on the Job): the agent phase's plus the
  * steps the group serves before and after the agent — the sync, the gates, the helpers, the
- * publish. The driver ends the group itself long before; this only ends one it forgot.
+ * publish, and the bound a released group waits for a newer holder after its agent went (#829). The
+ * driver ends the group itself long before; this only ends one it forgot.
  */
 export const backstopMs = (config: DriverConfig, job: BoardJob): number =>
-    agentBackstopMs(config, job) + SUPERVISOR_STEPS_MS;
+    agentBackstopMs(config, job) + SUPERVISOR_STEPS_MS + takeoverBoundMs(config);
+
+const BINDING_TOKEN = /^\S{1,256}$/;
+
+/**
+ * The binding file's text: the supervisor follows a binding by the rules of `newerBinding`
+ * (`scripts/supervisor.cjs`), so a body it would ignore is refused here, with a message that
+ * names neither the url nor the token.
+ */
+export function bindingBody(binding: SupervisorBinding): string {
+    const { claimSeq, url, token, agentToken, exportToken } = binding;
+    let protocol = '';
+    try {
+        protocol = new URL(url).protocol;
+    } catch {
+        // an unparseable url is refused below
+    }
+    if (!Number.isSafeInteger(claimSeq) || claimSeq < 0) {
+        throw new Error('the holder binding has no valid claim sequence');
+    }
+    if (protocol !== 'http:' && protocol !== 'https:') throw new Error('the holder binding has no valid board url');
+    if (!BINDING_TOKEN.test(token)) throw new Error('the holder binding has no valid token');
+    if (!BINDING_TOKEN.test(agentToken)) throw new Error('the holder binding has no valid agent token');
+    if (!BINDING_TOKEN.test(exportToken)) throw new Error('the holder binding has no valid export token');
+    return JSON.stringify({ claimSeq, url, token, agentToken, exportToken });
+}

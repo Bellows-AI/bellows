@@ -71,8 +71,11 @@ const ID_HASH_CHARS = 16;
 
 const hash16 = (value: string): string => createHash('sha256').update(value).digest('hex').slice(0, ID_HASH_CHARS);
 
-/** The attempt, as a step id's scope: job and lease, so a step of a superseded attempt never names a live one. */
-const attemptKey = (job: BoardJob): string => hash16(`${job.id}|${job.leaseToken}`);
+/**
+ * The attempt, as a step id's scope: job and the lease its group was made under (#829), so a step of a
+ * superseded attempt never names a live one.
+ */
+const attemptKey = (job: BoardJob): string => hash16(`${job.id}|${job.groupLease ?? job.leaseToken}`);
 
 /** The supervisor's control token for the attempt: its channel's key, held by no other container. */
 export function controlTokenOf(job: BoardJob): string {
@@ -117,16 +120,16 @@ export const GROUP_UP_POLL_MS = 2_000;
  * else: over a contact, over the bound, and over whatever the `probe` threw.
  */
 export async function awaitFirstContact(
-    host: Pick<StepHost, 'sink'>,
+    host: { sink: Pick<StepSink, 'contacted'> },
     job: BoardJob,
-    opts: { sleep: Sleep; signal: AbortSignal; probe?: (bound: Bound) => Promise<void> }
+    opts: { sleep: Sleep; signal: AbortSignal; probe?: (bound: Bound) => Promise<void>; ms?: number }
 ): Promise<boolean> {
     const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken];
     if (!token) return true;
     const killed = (): Error => new Error(`job ${job.id}: killed while its task group came up`);
     const { signal } = opts;
     const found = await pollFor(
-        { ms: GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep, signal, abandoned: killed },
+        { ms: opts.ms ?? GROUP_UP_WAIT_MS, everyMs: GROUP_UP_POLL_MS, sleep: opts.sleep, signal, abandoned: killed },
         async (deadline) => {
             if (signal.aborted) throw killed();
             if (host.sink.contacted(token)) return true;

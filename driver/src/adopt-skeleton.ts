@@ -5,6 +5,7 @@ import {
     adoptionAbandoned,
     commandMark,
     Inconclusive,
+    type LiveRun,
     type RunOutcome,
 } from './runner.js';
 import { type Bound, pollFor, type Sleep } from './poll.js';
@@ -17,6 +18,8 @@ export interface EarlierRun {
     /** The command mark it was created under; another valid mark is another command's run. */
     commandMark: string | undefined;
     session: string | null;
+    /** Set by `admit` for a released group whose agent still runs (#829): taken over, never read as an end. */
+    live?: { startedAt: string };
 }
 
 /** What the earlier run's exit and log say, read only once its end is known to be a run to adopt. */
@@ -65,6 +68,8 @@ export interface AdoptPrimitives<F extends EarlierRun> {
     sweep(found: F, job: BoardJob, signal: AbortSignal | undefined): Promise<void>;
     /** Gives back what `begin` took. */
     rollback(job: BoardJob): Promise<void>;
+    /** A live run taken over: this driver's memory of its group, recorded under the prior lease; answers the undo. */
+    adoptLive(found: F): () => void;
 }
 
 /** A throw that stands the attempt down to its lease: already blocked, an unproven read, or anything else, prefixed. */
@@ -139,7 +144,7 @@ export async function adoptEarlierRun<F extends EarlierRun>(
     adopted: Map<string, string>,
     job: BoardJob,
     signal?: AbortSignal
-): Promise<AdoptedRun | null> {
+): Promise<AdoptedRun | LiveRun | null> {
     const first = await newestEarlier(p, job, signal);
     if (!first) return null;
     let rolledBack = false;
@@ -147,6 +152,8 @@ export async function adoptEarlierRun<F extends EarlierRun>(
         // A takeover of a stale claim deletes it: never once the attempt stood down.
         if (signal?.aborted) throw adoptionAbandoned();
         await p.begin(job, signal);
+        if (first.live)
+            return await takeOver(p, adopted, first as F & { live: { startedAt: string } }, { job, signal });
         const found = await p.awaitEnd(first, job, signal);
         if (!found) {
             rolledBack = true;
@@ -170,11 +177,44 @@ export async function adoptEarlierRun<F extends EarlierRun>(
         return { outcome, claimSeq: found.claimSeq };
     } catch (e) {
         adopted.delete(job.leaseToken);
-        // A rollback that fails must not replace the error being classified, nor run twice.
-        if (!rolledBack) await p.rollback(job).catch(() => undefined);
+        // A rollback that fails must not replace the error being classified, nor run twice. A live
+        // group still writes the tree: its claim stays this attempt's for the next claim to order against.
+        if (!rolledBack && !first.live) await p.rollback(job).catch(() => undefined);
         if (signal?.aborted || e instanceof AdoptionBlocked) throw e;
         throw blockedUnless(e, 'the earlier run could not be adopted');
     }
+}
+
+/**
+ * A released group still running (#829): nothing of it is read or waited for. The claim is confirmed,
+ * everything older swept (the group is spared as an adopted run is), and only then is it recorded as
+ * this driver's to step into. The caller rebinds its supervisor.
+ */
+async function takeOver<F extends EarlierRun>(
+    p: AdoptPrimitives<F>,
+    adopted: Map<string, string>,
+    found: F & { live: { startedAt: string } },
+    { job, signal }: { job: BoardJob; signal: AbortSignal | undefined }
+): Promise<LiveRun> {
+    await p.confirmOwnership(found, job, signal);
+    adopted.set(job.leaseToken, p.recordKey(found));
+    // Recorded before the sweep, which spares the live group by it; forgotten when the sweep fails.
+    const forget = p.adoptLive(found);
+    try {
+        await p.sweep(found, job, signal);
+        // Nothing is deleted once the attempt stood down, whatever the run it took.
+        if (signal?.aborted) throw adoptionAbandoned();
+    } catch (e) {
+        forget();
+        throw e;
+    }
+    return {
+        live: true,
+        prior: found.prior,
+        claimSeq: found.claimSeq,
+        session: found.session,
+        startedAt: found.live.startedAt,
+    };
 }
 
 async function giveBack<F extends EarlierRun>(p: AdoptPrimitives<F>, job: BoardJob): Promise<null> {

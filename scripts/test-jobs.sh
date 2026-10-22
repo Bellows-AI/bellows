@@ -15,13 +15,14 @@ cd "$REPO" || exit 1
 
 PHASE=all
 CLI_WORKERS=2
+WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --phase)
         shift
         PHASE="${1:-}"
         case "$PHASE" in
-        all|board|driver|github-credential|services|orphan-reaper|node-disruption|run-deadline|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
+        all|board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
         *) echo 'test-jobs: invalid --phase (see --help)'; exit 2 ;;
         esac
         ;;
@@ -30,14 +31,17 @@ while [ "$#" -gt 0 ]; do
         CLI_WORKERS="${1:-}"
         case "$CLI_WORKERS" in 1|2) ;; *) echo 'test-jobs: --cli-workers must be 1 or 2'; exit 2 ;; esac
         ;;
+    --watch-stalls) WATCH_STALLS=1 ;;
     --help)
-        echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2]'
+        echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2] [--watch-stalls]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, ask-user-question, question-round-trip'
+        echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
+        echo '--watch-stalls (or LANE_WATCH_STALLS=1) dumps every job container alive past LANE_STALL_S (default 120) seconds.'
+        echo 'The run ends with a slow-jobs summary of attempts past LANE_SLOW_S (default 30) seconds, beside the timings.'
         exit 0
         ;;
     *) echo "test-jobs: unknown argument: $1"; exit 2 ;;
@@ -88,6 +92,7 @@ pass=0
 fail=0
 server_pid=""
 driver_pid=""
+stall_watch_pid=""
 mint_pid=""
 compose_pid=""
 supervisor_log_pid=""
@@ -168,6 +173,27 @@ bad() {
     fail=$((fail + 1))
 }
 
+watch_stalls() { # background: dump each job container alive past LANE_STALL_S once, into $work/stalls (--watch-stalls)
+    local limit="${LANE_STALL_S:-120}" c started age
+    mkdir -p "$work/stalls"
+    while sleep 10; do
+        # Only this run's own jobs: the daemon is shared with other lanes.
+        for c in $(for job in $(cat "$work/created-jobs" 2>/dev/null); do
+            timeout 10 docker ps -q --filter "label=factory.job=$job" 2>/dev/null
+        done); do
+            [ -e "$work/stalls/$c.log" ] && continue
+            started="$(timeout 10 docker inspect --format '{{.State.StartedAt}}' "$c" 2>/dev/null)" || continue
+            case "$started" in '' | 0001-*) continue ;; esac # never started: not a stall
+            age="$(node -e 'const t = Date.parse(process.argv[1]); if (Number.isFinite(t)) process.stdout.write(String(Math.floor((Date.now() - t) / 1000)));' "$started" 2>/dev/null)" || continue
+            [ -n "$age" ] && [ "$age" -ge "$limit" ] || continue
+            {
+                echo "== alive ${age}s at $(date -u +%T)"
+                dump_container "$c"
+            } >"$work/stalls/$c.log" 2>&1
+        done
+    done
+}
+
 cleanup() {
     local result=$?
     begin_phase cleanup
@@ -177,6 +203,7 @@ cleanup() {
         worker="${marker##*/}"
         lane_resources_cleanup "${worker%.*}"
     done
+    [ -n "$stall_watch_pid" ] && kill "$stall_watch_pid" 2>/dev/null
     [ -n "$driver_pid" ] && kill "$driver_pid" 2>/dev/null
     [ -n "$supervisor_log_pid" ] && kill "$supervisor_log_pid" 2>/dev/null
     [ -n "$compose_pid" ] && kill "$compose_pid" 2>/dev/null
@@ -204,7 +231,12 @@ cleanup() {
         docker volume rm "$ORIGIN_VOLUME" >/dev/null 2>&1
         docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     fi
-    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv; do
+    # Which attempts held a slot past LANE_SLOW_S, and which never ended (issue #829); a report, never a verdict.
+    if [ -f "$work/driver.log" ]; then
+        node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "${LANE_SLOW_S:-30}" >"$work/slow-jobs.txt" 2>&1 || true
+        [ -s "$work/slow-jobs.txt" ] && printf '[slow-jobs] %s\n' "$(tail -n 1 "$work/slow-jobs.txt")"
+    fi
+    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt "$work"/stalls/*; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
     done
     rm -rf "$work"
@@ -217,6 +249,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+[ "$WATCH_STALLS" = 1 ] && {
+    watch_stalls &
+    stall_watch_pid=$!
+}
 
 # --- HTTP, in node, so the script needs neither curl nor jq ----------------------------------
 
@@ -298,6 +334,27 @@ settled() { # settled <id> -> status once it is no longer queued/running, empty 
     esac
 }
 
+dump_container() { # dump_container <container> — its state, process tree and log tail; diagnostics only, never a verdict
+    echo "== $(timeout 10 docker inspect --format '{{.Name}} {{json .State}}' "$1" 2>&1)"
+    timeout 10 docker top "$1" -o pid,ppid,stat,etime,args 2>&1
+    timeout 10 docker logs --tail 40 "$1" 2>&1
+}
+
+dump_stall() { # dump_stall <job-id> — what a job that never settled was still running, for the log
+    # Every container of the job with its state, process tree and log tail: a stall names its own
+    # stuck process instead of costing a re-run to catch it live. Diagnostics only; never a verdict.
+    local file="$work/stall-$1.log" c
+    {
+        echo "== job $1 at $(date -u +%T)"
+        timeout 10 docker ps -a --filter "label=factory.job=$1" \
+            --format '{{.Names}} {{.Status}} {{.Label "factory.role"}} {{.Label "factory.claim-seq"}}' 2>&1
+        for c in $(timeout 10 docker ps -aq --filter "label=factory.job=$1" 2>/dev/null); do
+            dump_container "$c"
+        done
+    } >"$file" 2>&1
+    echo "test-jobs: job $1 did not settle; its containers: $file" >&2
+}
+
 await_settled() { # await_settled <id> [seconds] -> final status, or empty on timeout
     # Wall-clock seconds, not polls: each poll's request may itself take up to its own timeout.
     local id="$1" until=$(($(date +%s) + ${2:-60})) s=""
@@ -309,6 +366,7 @@ await_settled() { # await_settled <id> [seconds] -> final status, or empty on ti
         }
         sleep 1
     done
+    dump_stall "$id"
     printf ''
 }
 
@@ -321,6 +379,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES] [DRIVER_CONCURRENCY]
         RUNNER_SERVICES="${2:-0}" \
         REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY="${3:-2}" DRIVER_LEASE_SECONDS=60 \
+        DRIVER_HANDOVER_MS="${LANE_HANDOVER_MS:-5000}" DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
     driver_pid=$!
 }
@@ -357,6 +416,189 @@ write_bellows() { # write_bellows <contents>
         exit 1
     }
 }
+# The recovery helpers the node-disruption and driver-kill phases share (issues #796, #829).
+disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
+    env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
+        RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
+        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS="$LANE_LEASE_S" \
+        DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" "$@" \
+        node driver/dist/index.js >>"$work/driver.log" 2>&1 &
+    driver_pid=$!
+}
+
+supervisor_served() { # supervisor_served <job-id> <seconds> -> 0 once its supervisor logged it stopped serving; an unreadable log is not a pass
+    local i=0 sup logs
+    while [ "$i" -lt "$2" ]; do
+        sup="$(docker ps -aq --filter "label=factory.job=$1" --filter 'label=factory.role=supervisor' | sed -n 1p)"
+        if [ -n "$sup" ] && logs="$(docker logs "$sup" 2>&1)"; then
+            printf '%s' "$logs" | grep -qF 'supervisor: stopped serving the steps' && return 0
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+first_runner() { # first_runner <job-id> [docker ps filter] -> the claim-1 runner container's id
+    docker ps -aq --filter "label=factory.job=$1" --filter "label=factory.claim-seq=1" ${2:+--filter "$2"}
+}
+
+await_first_runner() { # await_first_runner <job-id> <status> [seconds] -> the container id, empty on timeout
+    local i=0 c=""
+    while [ "$i" -lt "${3:-60}" ]; do
+        c="$(first_runner "$1" "status=$2")"
+        [ -n "$c" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+    printf '%s' "$c"
+}
+
+runner_host() { # runner_host <runner container> -> the $HOSTNAME its commands see
+    # The agent joins its supervisor's network namespace (issue #773), and with it the supervisor's
+    # hostname: the short id of the container named by its network mode, not its own.
+    docker inspect -f '{{.HostConfig.NetworkMode}}' "$1" 2>/dev/null | sed 's/^container://' | cut -c1-12
+}
+
+await_released() { # await_released <runner container> -> success once the supervisor released its agent (`go`)
+    # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
+    local i=0
+    while [ "$i" -lt 60 ]; do
+        # As the agent uid: the agent container runs as root without DAC_OVERRIDE (issue #814).
+        docker exec --user 1000 "$1" sh -c 'test -f /factory/in/agent/go' >/dev/null 2>&1 && return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the first>|<reason of the first>"
+    node -e 'try { const l = JSON.parse(process.argv[1] || "{}").interruptions ?? []; process.stdout.write(`${l.length}|${l[0]?.claimSeq ?? ""}|${l[0]?.reason ?? ""}`); } catch { process.stdout.write("?||"); }' \
+        "$1"
+}
+
+last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expiry spending it would retire it dead
+    # Non-zero, printing what psql answered, unless the update returned that job: a cap that did not land proves nothing.
+    local capped
+    capped="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
+        -c "update job set max_attempts = 1 where id = '$1' returning id" 2>&1)"
+    [ "$capped" = "$1" ] || {
+        printf '%s' "${capped:-no job row changed}"
+        return 1
+    }
+}
+
+ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
+TOOK_OVER='took over the running agent of claim 1, whose driver was lost'
+DRAINED='the driver was drained'
+# The interruption the next claim records for an attempt whose lease expired (issue #822).
+EXPIRED='the lease expired: its driver went silent'
+# The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to
+# order its `finish` that is orphanBoundMs after its last answered call (a quarter of the lease,
+# floored at SUPERVISOR_ORPHAN_MIN_MS: 30 s at the lane's lease, driver/src/supervisor-plan.ts), then
+# the lease the adopting claim waits out and the rebind grace it gives a released group, plus a margin
+# for the run itself and its publish.
+LANE_LEASE_S=10
+LANE_ORPHAN_S=30
+LANE_MARGIN_S=40
+ADOPT_S=$((LANE_ORPHAN_S + LANE_LEASE_S + ${LANE_REBIND_GRACE_MS:-20000} / 1000 + LANE_MARGIN_S))
+
+# Barriers and counters for the driver-kill phase (issue #829). Every container of a run — setup,
+# gates, the agent, the publish steps — mounts the thread's task volume at /task, so a file under
+# $LANE_DIR is one every one of them sees; the publish's own state (the gh stand-in's PR list and
+# hold) sits beside it in /task/.lane-gh, the origin's push log in the bare origin on $ORIGIN_VOLUME.
+# lane_use names the volume of the job under test: the driver creates it at the claim, so a read
+# before then finds it absent, never creates it (a volume docker makes is not one the driver owns).
+LANE_DIR='/task/.lane-kill'
+LANE_GH_DIR='/task/.lane-gh'
+LANE_VOL=''
+LANE_MNT='/task'
+
+lane_use() { # lane_use <job id> -> later lane_* calls read that job's task volume (a first job: its id is its thread's root)
+    LANE_VOL="factory-task-$1-1"
+    LANE_MNT=/task
+}
+
+lane_origin() { # lane_origin <lane_* function> [arg...] -> the call, aimed at the origins volume (paths are relative to /origins)
+    local LANE_VOL="$ORIGIN_VOLUME" LANE_MNT=/origins
+    "$@"
+}
+
+lane_vol_state() { # -> present, absent, or ? when docker did not answer
+    local out
+    out="$(timeout 30 docker volume ls -q --filter "name=^$LANE_VOL\$" 2>/dev/null)" || {
+        printf '?'
+        return
+    }
+    case "$out" in '') printf absent ;; *) printf present ;; esac
+}
+
+lane_run() { # lane_run <sh script> [arg...] -> the script's own status; 124-127 mean docker or the timeout failed, not the script
+    [ "$(lane_vol_state)" = present ] || return 125
+    timeout 30 docker run --rm -v "$LANE_VOL:$LANE_MNT" --user 1000 -e HOME=/tmp -w "$LANE_MNT" "$IMAGE_BASE" \
+        sh -c "$1" sh "${@:2}"
+}
+
+lane_touch() { # lane_touch <path> -> success once the file exists
+    lane_run 'mkdir -p "$(dirname "$1")" && : >"$1"' "$1"
+}
+
+lane_has() { # lane_has <path> -> 0 present, 1 positively absent, 2 unconfirmed
+    case "$(lane_vol_state)" in absent) return 1 ;; present) ;; *) return 2 ;; esac
+    lane_run 'test -e "$1"' "$1" >/dev/null 2>&1
+    case "$?" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
+}
+
+lane_count() { # lane_count <path> -> its line count; 0 only when absent; ? when the read failed
+    local n
+    case "$(lane_vol_state)" in absent) printf 0; return ;; present) ;; *) printf '?'; return ;; esac
+    n="$(lane_run 'if [ -e "$1" ]; then wc -l <"$1"; else echo 0; fi' "$1" 2>/dev/null)" || {
+        printf '?'
+        return
+    }
+    n="$(printf '%s' "$n" | tr -d ' \n')"
+    case "$n" in '' | *[!0-9]*) printf '?' ;; *) printf '%s' "$n" ;; esac
+}
+
+lane_await() { # lane_await <seconds> <path> <want> -> success once the file holds at least <want> lines
+    local until=$(($(date +%s) + $1)) n=""
+    while [ "$(date +%s)" -lt "$until" ]; do
+        n="$(lane_count "$2")"
+        [ "$n" != '?' ] && [ "$n" -ge "$3" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+lane_await_file() { # lane_await_file <seconds> <path> -> success once the file exists
+    local until=$(($(date +%s) + $1))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        lane_has "$2" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+lane_wait() { # lane_wait <path> -> shell text that blocks (at most 300 s) until the file exists
+    printf 't=$(($(date +%%s)+300)); while [ ! -e %s ] && [ "$(date +%%s)" -lt "$t" ]; do sleep 1; done' "$1"
+}
+
+lane_left() { # lane_left <job id> -> success only when docker answered both reads and the job has no container or volume
+    local c v
+    c="$(timeout 30 docker ps -aq --filter "label=factory.job=$1" 2>&1)" || {
+        printf 'docker ps failed: %s' "$c"
+        return 1
+    }
+    v="$(timeout 30 docker volume ls -q --filter "label=factory.job=$1" 2>&1)" || {
+        printf 'docker volume ls failed: %s' "$v"
+        return 1
+    }
+    [ -z "$c$v" ] || {
+        printf 'containers: %s volumes: %s' "$(printf '%s' "$c" | tr '\n' ' ')" "$(printf '%s' "$v" | tr '\n' ' ')"
+        return 1
+    }
+}
+
 lane_group_up() { # lane_group_up <name> <image> <control-url>
     local name="$RUN_ID-$1" image="$2" url="$3" box
     printf '%s\n' "$name" >"$work/$lane_worker_name.group"
@@ -541,7 +783,7 @@ echo 'building the stub runner images'
 # scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount points: the task
 # supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real entrypoints honor.
 cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
-    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/stub-runner.Dockerfile "$work/"
+    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
 printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo $FACTORY_ENV_PROBE; echo $SECRET_PROBE; echo ${CLAUDE_CODE_CONFIG_CONTENT:-none}; echo \\"$@\\"; for last; do :; done; echo \\"$last\\"","sh"]\n' "$IMAGE_BASE" >"$work/Dockerfile.ok"
 printf 'FROM %s\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","-c","echo boom >&2; exit 3"]\n' "$IMAGE_BASE" >"$work/Dockerfile.fail"
 # Issue #814: an agent whose one tool signals everything its uid may, through the CLI's shell.
@@ -1013,7 +1255,7 @@ mint_pid=""
 fi
 
 if selected_phase services || selected_phase orphan-reaper || selected_phase node-disruption ||
-    selected_phase run-deadline; then
+    selected_phase driver-kill || selected_phase run-deadline; then
 begin_phase service-fixture
 mkdir -p "$work/svc"
 printf '%s\n' \
@@ -1254,72 +1496,6 @@ begin_phase node-disruption
 echo
 echo '# node disruption'
 
-disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
-    env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
-        RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
-        DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=10 "$@" \
-        node driver/dist/index.js >>"$work/driver.log" 2>&1 &
-    driver_pid=$!
-}
-
-first_runner() { # first_runner <job-id> [docker ps filter] -> the claim-1 runner container's id
-    docker ps -aq --filter "label=factory.job=$1" --filter "label=factory.claim-seq=1" ${2:+--filter "$2"}
-}
-
-await_first_runner() { # await_first_runner <job-id> <status> [seconds] -> the container id, empty on timeout
-    local i=0 c=""
-    while [ "$i" -lt "${3:-60}" ]; do
-        c="$(first_runner "$1" "status=$2")"
-        [ -n "$c" ] && break
-        sleep 1
-        i=$((i + 1))
-    done
-    printf '%s' "$c"
-}
-
-runner_host() { # runner_host <runner container> -> the $HOSTNAME its commands see
-    # The agent joins its supervisor's network namespace (issue #773), and with it the supervisor's
-    # hostname: the short id of the container named by its network mode, not its own.
-    docker inspect -f '{{.HostConfig.NetworkMode}}' "$1" 2>/dev/null | sed 's/^container://' | cut -c1-12
-}
-
-await_released() { # await_released <runner container> -> success once the supervisor released its agent (`go`)
-    # A driver lost before `go` leaves nothing to adopt: the group ends lost (supervisor exit 75) and the run is redone.
-    local i=0
-    while [ "$i" -lt 60 ]; do
-        # As the agent uid: the agent container runs as root without DAC_OVERRIDE (issue #814).
-        docker exec --user 1000 "$1" sh -c 'test -f /factory/in/agent/go' >/dev/null 2>&1 && return 0
-        sleep 1
-        i=$((i + 1))
-    done
-    return 1
-}
-
-interruptions_of() { # interruptions_of <job json> -> "<count>|<claimSeq of the first>|<reason of the first>"
-    node -e 'try { const l = JSON.parse(process.argv[1] || "{}").interruptions ?? []; process.stdout.write(`${l.length}|${l[0]?.claimSeq ?? ""}|${l[0]?.reason ?? ""}`); } catch { process.stdout.write("?||"); }' \
-        "$1"
-}
-
-last_attempt() { # last_attempt <id> -> the job allowed one attempt, so an expiry spending it would retire it dead
-    # Non-zero, printing what psql answered, unless the update returned that job: a cap that did not land proves nothing.
-    local capped
-    capped="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
-        -c "update job set max_attempts = 1 where id = '$1' returning id" 2>&1)"
-    [ "$capped" = "$1" ] || {
-        printf '%s' "${capped:-no job row changed}"
-        return 1
-    }
-}
-
-ADOPTED='adopted the finished runner of claim 1, whose driver was lost'
-DRAINED='the driver was drained'
-# The interruption the next claim records for an attempt whose lease expired (issue #822).
-EXPIRED='the lease expired: its driver went silent'
-# The adopting claim settles only once the lost driver's supervisor exits, and with no driver left to
-# order its `finish` that is SUPERVISOR_ORPHAN_MS (90s, driver/src/scripts/supervisor.cjs) after its
-# last answered call — the documented bound (driver/src/supervisor-contract.ts), plus the claim.
-ADOPT_S=150
-
 # a. The hard kill: no drain, no handover, the lease left to expire. The runner runs to its end
 #    while no driver watches it; the next driver's claim (2) records the expiry as claim 1's
 #    interruption and adopts it — at max_attempts 1, where an expiry used to retire the job dead.
@@ -1340,8 +1516,8 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$killed_runner" 2>/dev/null)" = '0' ] &&
     ok 'the runner of a killed driver runs to its end' ||
     bad 'the runner of a killed driver runs to its end' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
-# Issue #824: the next claim takes the group between its agent's exit and its supervisor's end —
-# the orphaned supervisor serves on until its bound — and waits it out rather than sweeping it.
+# Issues #824, #829: the next claim finds the group between its agent's exit and its supervisor's end —
+# the orphaned supervisor serves on until its bound — and takes it over rather than sweeping it.
 [ -n "$(docker ps -q --filter "label=factory.job=$killed" --filter 'label=factory.role=supervisor' --filter status=running)" ] &&
     ok 'its supervisor still finalizes when the next driver starts' ||
     bad 'its supervisor still finalizes when the next driver starts' "$(docker ps -a --filter "label=factory.job=$killed" --format '{{.Names}} {{.Status}}')"
@@ -1354,8 +1530,8 @@ expect_field 'the killed attempt is refunded' "$killed_body" attempts 1
 killed_int="$(interruptions_of "$killed_body")"
 [ "$killed_int" = "1|1|$EXPIRED" ] && ok 'one interruption records the expiry of claim 1' ||
     bad 'one interruption records the expiry of claim 1' "count|claimSeq|reason: $killed_int"
-grep -qF "job $killed: $ADOPTED" "$work/driver.log" && ok 'the driver logs the adoption' ||
-    bad 'the driver logs the adoption' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
+grep -qF "job $killed: $TOOK_OVER" "$work/driver.log" && ok 'the driver logs the takeover' ||
+    bad 'the driver logs the takeover' "$(grep -F "job $killed:" "$work/driver.log" | tail -5)"
 reaped=""
 for _ in $(seq 1 30); do
     [ -z "$(first_runner "$killed")" ] && {
@@ -1370,7 +1546,9 @@ stop_driver
 
 # b. The handover: SIGTERM, and a drain that outlasts DRIVER_HANDOVER_MS hands the run back as an
 #    interruption — queued at once — and leaves its runner alive. The next driver is started only
-#    once that runner exited: a claim of a STILL-running runner sweeps it (docs/kubernetes.md).
+#    once that runner exited AND its released supervisor stopped serving (past the takeover bound,
+#    the lease plus SUPERVISOR_REBIND_GRACE_MS), which is what proves the adoption of a FINISHED
+#    runner; a group whose supervisor still serves is taken over (case a, driver-kill K2/K4).
 disruption_driver DRIVER_HANDOVER_MS=2000
 drained="$(create_job 'sleep 12; echo "ran in $HOSTNAME"')"
 drained_runner="$(await_first_runner "$drained" running)"
@@ -1397,6 +1575,8 @@ driver_pid=""
     [ "$(docker inspect -f '{{.State.ExitCode}}' "$drained_runner" 2>/dev/null)" = '0' ] &&
     ok 'the handed-over runner exits 0 on its own' ||
     bad 'the handed-over runner exits 0 on its own' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
+supervisor_served "$drained" 60 && ok 'the released supervisor stopped serving the steps' ||
+    bad 'the released supervisor stopped serving the steps' "$(docker ps -a --filter "label=factory.job=$drained" --format '{{.Names}} {{.Status}}')"
 disruption_driver
 expect_contains 'the next claim adopts the handed-over run' "$(await_settled "$drained" "$ADOPT_S")" succeeded
 drained_body="$(body "$(api GET "/api/jobs/$drained")")"
@@ -1470,6 +1650,289 @@ for job in "$killed" "$drained" "$lost"; do
             [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
         done
 done
+
+fi
+
+if selected_phase driver-kill; then
+begin_phase driver-kill
+# --- Driver killed at each step of a run (issue #829) ----------------------------------------
+#
+# A driver that vanishes at any step of a run costs the task an interruption, never the task: the
+# next claim finishes it once. Each case kills a real driver at one step — before the agent starts
+# (setup), while it runs (agent), during its gates, during the publish — starts the next one, and
+# counts from outside what ran: barrier counters under the member tree, the origin's push log and
+# the stub gh's PR list. The finalizing step is node-disruption's case a. A driver lost after the
+# publish has nothing left to repeat, so no case stands there.
+
+echo
+echo '# driver kill'
+
+DK_ORIGIN="$SMOKE_REPO.git" # under /origins on the origins volume
+
+driver_kill() { # driver_kill -> the driver gone with no drain: its lease is left to expire
+    kill -9 "$driver_pid" 2>/dev/null
+    wait "$driver_pid" 2>/dev/null
+    driver_pid=""
+}
+
+dk_plan() { # dk_plan <gate name> <gate command> [setup command] -> a .bellows.yaml with one gate on the stub image
+    printf 'environment:\n    image: %s\n' "$IMAGE_BASE"
+    [ -z "${3:-}" ] || printf "    setup: '%s'\n" "$3"
+    printf "    gates:\n        - name: %s\n          command: '%s'\n" "$1" "$2"
+}
+
+dk_log() { # dk_log <job id> <text> -> success once the driver log carries the line
+    grep -qF "job $1: $2" "$work/driver.log"
+}
+
+dk_await_log() { # dk_await_log <job id> <text> <seconds>
+    local until=$(($(date +%s) + $3))
+    while [ "$(date +%s)" -lt "$until" ]; do
+        dk_log "$1" "$2" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+dk_clean() { # dk_clean <job id> -> success once, within 60 s, docker answered and nothing of the job was left
+    local until=$(($(date +%s) + 60)) left=""
+    while [ "$(date +%s)" -lt "$until" ]; do
+        left="$(lane_left "$1")" && return 0
+        sleep 2
+    done
+    printf '%s' "$left"
+    return 1
+}
+
+dk_supervisor() { # dk_supervisor <job id> [docker ps filter] -> the job's supervisor container id
+    docker ps -aq --filter "label=factory.job=$1" --filter 'label=factory.role=supervisor' ${2:+--filter "$2"}
+}
+
+dk_settled() { # dk_settled <name> <job id> <interruption> -> the checks every case shares once the job ran to its end
+    local body_json left
+    expect_contains "$1: the next claim finishes the task" "$(await_settled "$2" "$ADOPT_S")" succeeded
+    body_json="$(body "$(api GET "/api/jobs/$2")")"
+    expect_field "$1: the killed attempt is refunded" "$body_json" attempts 1
+    [ "$(interruptions_of "$body_json")" = "1|1|$3" ] && ok "$1: one interruption records claim 1" ||
+        bad "$1: one interruption records claim 1" "count|claimSeq|reason: $(interruptions_of "$body_json")"
+    left="$(dk_clean "$2")" && ok "$1: nothing of the job is left" ||
+        bad "$1: nothing of the job is left" "$left"
+}
+
+dk_count() { # dk_count <name> <path> <want> -> a check on one barrier counter, exact
+    local got
+    got="$(lane_count "$2")"
+    [ "$got" = "$3" ] && ok "$1" || bad "$1" "$2 holds '$got' lines, want $3"
+}
+
+# The origin's plan is restored at the end, and its push log is started here: the hook counts the ref
+# updates the git daemon receives. The gh stand-in's own state is per task, in /task/.lane-gh.
+dk_plan_saved="$work/driver-kill.plan"
+lane_origin lane_run '
+    if git -C "$1" cat-file -e main:.bellows.yaml 2>/dev/null; then git -C "$1" show main:.bellows.yaml; fi' \
+    "$DK_ORIGIN" >"$dk_plan_saved" || {
+    echo 'test-jobs: could not read the origin plan to restore'
+    exit 1
+}
+lane_origin lane_run 'printf "%s\n" "#!/bin/sh" "while read old new ref; do echo \"\$ref\" >>lane-pushes.log; done" >"$1/hooks/post-receive" &&
+    chmod 0755 "$1/hooks/post-receive"' "$DK_ORIGIN" ||
+    {
+        echo 'test-jobs: could not prepare the driver-kill barriers'
+        exit 1
+    }
+D="$LANE_DIR"
+MK="mkdir -p $D;" # every command that touches a barrier makes the directory first: the volume is born at the claim
+
+# K1. Before the agent: setup blocks. Lost before `go`, the group has nothing to take over: its
+#     supervisor ends lost (exit 75) and the next claim runs the whole attempt once.
+n="$RUN_ID-k1"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count" "$MK echo x >>$D/$n.setup.count; $(lane_wait "$D/$n.go")")"
+disruption_driver
+k1="$(create_job "$MK echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+lane_use "$k1"
+lane_await 90 "$LANE_DIR/$n.setup.count" 1 && ok 'k1: the setup is running' || bad 'k1: the setup is running' "$(lane_count "$LANE_DIR/$n.setup.count")"
+dk_count 'k1: the agent has not started' "$LANE_DIR/$n.agent.count" 0
+k1_sup="$(dk_supervisor "$k1")"
+driver_kill
+k1_ended=""
+for _ in $(seq 1 75); do
+    [ -n "$(dk_supervisor "$k1" status=exited)" ] && {
+        k1_ended=1
+        break
+    }
+    sleep 2
+done
+[ -n "$k1_ended" ] && [ "$(docker inspect -f '{{.State.ExitCode}}' "$k1_sup" 2>/dev/null)" = 75 ] &&
+    ok 'k1: the supervisor of the lost driver ends lost (exit 75)' ||
+    bad 'k1: the supervisor of the lost driver ends lost (exit 75)' "$(docker ps -a --filter "label=factory.job=$k1" --format '{{.Names}} {{.Status}}')"
+disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+lane_touch "$LANE_DIR/$n.go" || bad 'k1: the barrier is released' 'the touch failed'
+# Claim 2's agent container is read while the job runs: the settled job leaves none of it.
+k1_agent2=''
+k1_host2=''
+k1_until=$(($(date +%s) + ADOPT_S))
+while [ -z "$k1_host2" ] && [ "$(date +%s)" -lt "$k1_until" ]; do
+    k1_agent2="$(docker ps -aq --filter "label=factory.job=$k1" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent' | sed -n 1p)"
+    [ -n "$k1_agent2" ] && k1_host2="$(runner_host "$k1_agent2")"
+    [ -n "$k1_host2" ] || sleep 0.2
+done
+dk_settled k1 "$k1" "$EXPIRED"
+dk_count 'k1: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+k1_out="$(field "$(body "$(api GET "/api/jobs/$k1")")" output)"
+if [ -n "$k1_agent2" ] && [ -n "$k1_host2" ]; then
+    expect_contains 'k1: the agent ran in a container of claim 2' "$k1_out" "ran in $k1_host2"
+else
+    bad 'k1: the agent ran in a container of claim 2' "claim-2 agent '$k1_agent2', host '$k1_host2'"
+fi
+dk_log "$k1" "$TOOK_OVER" && bad 'k1: nothing was taken over' 'the driver logged a takeover' || ok 'k1: nothing was taken over'
+dk_log "$k1" "$ADOPTED" && bad 'k1: nothing was adopted' 'the driver logged an adoption' || ok 'k1: nothing was adopted'
+stop_driver
+
+# K2. The agent runs, its driver dies: the next driver rebinds the supervisor and takes over the live
+#     agent (no second one is ever started); the agent finishes once, in its own container.
+n="$RUN_ID-k2"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
+disruption_driver
+k2="$(create_job "$MK echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+lane_use "$k2"
+k2_runner="$(await_first_runner "$k2" running)"
+k2_host="$(runner_host "$k2_runner")"
+[ -n "$k2_runner" ] && await_released "$k2_runner" && lane_await_file 90 "$LANE_DIR/$n.ready" &&
+    ok 'k2: the agent is running' || bad 'k2: the agent is running' "runner '$k2_runner'"
+driver_kill
+disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+dk_await_log "$k2" "$TOOK_OVER" "$ADOPT_S" && ok 'k2: the next driver takes over the running agent' ||
+    bad 'k2: the next driver takes over the running agent' "$(grep -F "job $k2:" "$work/driver.log" | tail -5)"
+k2_sup="$(dk_supervisor "$k2")"
+rebound=""
+for _ in $(seq 1 30); do
+    # Captured first: under pipefail a grep -q that quits early would fail the pipe.
+    k2_logs="$(docker logs "$k2_sup" 2>&1)"
+    case "$k2_logs" in *'supervisor: rebound to claim 2'*)
+        rebound=1
+        break
+        ;;
+    esac
+    sleep 1
+done
+[ -n "$rebound" ] && ok 'k2: the supervisor rebinds to claim 2' || bad 'k2: the supervisor rebinds to claim 2' "$(printf '%s' "$k2_logs" | tail -5)"
+sleep 5
+# A failed docker ps is not an empty list: it fails the case with docker's own words.
+k2_second="$(docker ps -aq --filter "label=factory.job=$k2" --filter 'label=factory.claim-seq=2' --filter 'label=factory.role=agent' 2>&1)" &&
+    [ -z "$k2_second" ] && ok 'k2: no second agent is started' ||
+    bad 'k2: no second agent is started' "a claim-2 agent container exists, or docker failed: $k2_second"
+lane_touch "$LANE_DIR/$n.go" || bad 'k2: the barrier is released' 'the touch failed'
+dk_settled k2 "$k2" "$EXPIRED"
+expect_contains 'k2: the output names the container of claim 1' "$(field "$(body "$(api GET "/api/jobs/$k2")")" output)" "ran in ${k2_host:-unknown}"
+dk_count 'k2: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+dk_count 'k2: the gates ran once' "$LANE_DIR/$n.gate.count" 1
+stop_driver
+
+# K2d. The same, by a drain: SIGTERM past DRIVER_HANDOVER_MS hands the run back as an interruption
+#      and the next driver, started at once, takes over the agent still running (the finished
+#      runner's adoption is node-disruption case b).
+n="$RUN_ID-k2d"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
+disruption_driver DRIVER_HANDOVER_MS=2000
+k2d="$(create_job "$MK echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+lane_use "$k2d"
+k2d_runner="$(await_first_runner "$k2d" running)"
+k2d_host="$(runner_host "$k2d_runner")"
+[ -n "$k2d_runner" ] && await_released "$k2d_runner" && lane_await_file 90 "$LANE_DIR/$n.ready" &&
+    ok 'k2d: the agent is running' || bad 'k2d: the agent is running' "runner '$k2d_runner'"
+kill -TERM "$driver_pid" 2>/dev/null
+k2d_handed=""
+for _ in $(seq 1 8); do
+    sleep 1
+    k2d_body="$(body "$(api GET "/api/jobs/$k2d")")"
+    [ "$(field "$k2d_body" status)|$(interruptions_of "$k2d_body")" = "queued|1|1|$DRAINED" ] && {
+        k2d_handed=1
+        break
+    }
+done
+[ -n "$k2d_handed" ] && ok 'k2d: the drained driver hands its run back' || bad 'k2d: the drained driver hands its run back' "$(interruptions_of "$k2d_body")"
+# A drained driver ends on its own; one that does not within the deadline is killed, never waited on forever.
+for _ in $(seq 1 60); do
+    kill -0 "$driver_pid" 2>/dev/null || break
+    sleep 1
+done
+if kill -0 "$driver_pid" 2>/dev/null; then
+    bad 'k2d: the drained driver exits' 'still running 60s after SIGTERM'
+    kill -KILL "$driver_pid" 2>/dev/null
+fi
+wait "$driver_pid" 2>/dev/null
+driver_pid=""
+disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+dk_await_log "$k2d" "$TOOK_OVER" "$ADOPT_S" && ok 'k2d: the next driver takes over the running agent' ||
+    bad 'k2d: the next driver takes over the running agent' "$(grep -F "job $k2d:" "$work/driver.log" | tail -5)"
+lane_touch "$LANE_DIR/$n.go" || bad 'k2d: the barrier is released' 'the touch failed'
+dk_settled k2d "$k2d" "$DRAINED"
+expect_contains 'k2d: the output names the container of claim 1' "$(field "$(body "$(api GET "/api/jobs/$k2d")")" output)" "ran in ${k2d_host:-unknown}"
+dk_count 'k2d: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+stop_driver
+
+# K4. The gates: killed while a gate runs. The agent has exited but its supervisor still serves, so
+#     the next claim takes the group over (it does not wait out the finished runner); the gate that
+#     never finished has no checkpoint and is run again under its own step, the old answer fenced;
+#     the agent is not repeated.
+n="$RUN_ID-k4"
+write_bellows "$(dk_plan hold "$MK echo x >>$D/$n.gate.count; $(lane_wait "$D/$n.go")")"
+disruption_driver
+k4="$(create_job "$MK echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+lane_use "$k4"
+lane_await 120 "$LANE_DIR/$n.gate.count" 1 && ok 'k4: the gate is running' || bad 'k4: the gate is running' "$(lane_count "$LANE_DIR/$n.gate.count")"
+driver_kill
+disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+lane_touch "$LANE_DIR/$n.go" || bad 'k4: the barrier is released' 'the touch failed'
+dk_settled k4 "$k4" "$EXPIRED"
+dk_count 'k4: the gate ran again, once' "$LANE_DIR/$n.gate.count" 2
+dk_count 'k4: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+dk_log "$k4" "$TOOK_OVER" && ok 'k4: the next driver takes over the group whose agent exited' ||
+    bad 'k4: the next driver takes over the group whose agent exited' "$(grep -F "job $k4:" "$work/driver.log" | tail -5)"
+dk_log "$k4" "$ADOPTED" && bad 'k4: the finished runner was not waited out' 'the driver logged an adoption' || ok 'k4: the finished runner was not waited out'
+stop_driver
+
+# K5. The publish: the agent commits, the gh stub holds `pr create`, the driver dies there. The next
+#     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
+n="$RUN_ID-k5"
+write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
+k5_pushes="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
+k5_prs=0 # the stand-in's PR list is the task's own, born with its volume
+disruption_driver
+k5="$(create_job "$MK mkdir -p $LANE_GH_DIR && : >$LANE_GH_DIR/lane-gh-hold && cd \"\$WORKDIR\" && git -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
+lane_use "$k5"
+lane_await_file 180 "$LANE_GH_DIR/lane-gh-hold.ready" && ok 'k5: the publish is at the PR' ||
+    bad 'k5: the publish is at the PR' "job: $(field "$(body "$(api GET "/api/jobs/$k5")")" status), pushes '$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")'"
+driver_kill
+lane_touch "$LANE_GH_DIR/lane-gh-hold.go" || bad 'k5: the hold is released' 'the touch failed'
+disruption_driver DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+dk_settled k5 "$k5" "$EXPIRED"
+k5_pushes_now="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
+k5_prs_now="$(lane_count "$LANE_GH_DIR/lane-gh-prs")"
+case "$k5_pushes$k5_pushes_now" in *'?'*) k5_pushed='?' ;; *) k5_pushed=$((k5_pushes_now - k5_pushes)) ;; esac
+case "$k5_prs$k5_prs_now" in *'?'*) k5_opened='?' ;; *) k5_opened=$((k5_prs_now - k5_prs)) ;; esac
+# The origin's post-receive hook logs ref updates: a no-op push of the same commit fires none, so this
+# counts updates; the PR count below is the check against a duplicate publication.
+[ "$k5_pushed" = 1 ] && ok 'k5: the branch ref is updated once' || bad 'k5: the branch ref is updated once' "ref updates added: $k5_pushed"
+[ "$k5_opened" = 1 ] && ok 'k5: one PR is opened' || bad 'k5: one PR is opened' "PRs added: $k5_opened"
+dk_count 'k5: the gates ran once' "$LANE_DIR/$n.gate.count" 1
+dk_count 'k5: the agent ran once' "$LANE_DIR/$n.agent.count" 1
+dk_log "$k5" "$TOOK_OVER" && ok 'k5: the next driver takes over the group whose agent exited' ||
+    bad 'k5: the next driver takes over the group whose agent exited' "$(grep -F "job $k5:" "$work/driver.log" | tail -5)"
+dk_log "$k5" "$ADOPTED" && bad 'k5: the finished runner was not waited out' 'the driver logged an adoption' || ok 'k5: the finished runner was not waited out'
+dk_log "$k5" "resumed gates from claim 1's checkpoint" && ok 'k5: the gates are resumed from their checkpoint' ||
+    bad 'k5: the gates are resumed from their checkpoint' "$(grep -F "job $k5:" "$work/driver.log" | tail -5)"
+expect_contains 'k5: the verdict carries the stub PR' "$(field "$(body "$(api GET "/api/jobs/$k5")")" output)" 'factory-smoke/demo/pull/'
+stop_driver
+
+# Whatever a case left, by label, one id per rm; the origin's plan goes back to what it was.
+for job in "$k1" "$k2" "$k2d" "$k4" "$k5"; do
+    docker ps -aq --filter "label=factory.job=$job" |
+        while IFS= read -r container_id; do
+            [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
+        done
+done
+write_bellows "$(cat "$dk_plan_saved")"
 
 fi
 
@@ -1557,12 +2020,18 @@ echo '# review'
 
 mkdir -p "$work/review"
 cat >"$work/review/review-caller.cjs" <<'CALLER'
-const base = (process.env.BELLOWS_CONTROL_URL || '').replace(/\/$/, '');
-const headers = { authorization: `Bearer ${process.env.BELLOWS_CONTROL_TOKEN}`, 'content-type': 'application/json' };
-const call = async (method, path, body) => {
-    const r = await fetch(base + path, { method, headers, body });
-    return { status: r.status, text: await r.text() };
-};
+const http = require('node:http');
+const socketPath = `${process.env.FACTORY_CTL_OUT}/control.sock`;
+const call = (method, path, body) =>
+    new Promise((resolve, reject) => {
+        const req = http.request({ socketPath, method, path, headers: { 'content-type': 'application/json' } }, (res) => {
+            let text = '';
+            res.on('data', (c) => (text += c));
+            res.on('end', () => resolve({ status: res.statusCode, text }));
+        });
+        req.on('error', reject);
+        req.end(body);
+    });
 const ask = (key) => call('POST', '/review', JSON.stringify({ key, profile: 'audit' }));
 (async () => {
     console.log('first=' + (await ask('rv-a')).status);

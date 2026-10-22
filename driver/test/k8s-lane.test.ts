@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
 import { REPO_ROOT, readRepoFile } from './fixtures/repo-files.js';
 
 describe('kind lane argument validation', () => {
@@ -33,7 +34,7 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|control]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|drain]');
     });
 });
 
@@ -265,9 +266,20 @@ describe('kind lane image load', () => {
             expect(load).toContain(`push_ref "$${image}" "$${ref}"`);
         }
         expect(load).toContain('docker push');
-        // Only the collector, a pinned upstream image kind skips when the node holds it, is side-loaded.
-        expect(load.match(/kind load /g)).toHaveLength(1);
-        expect(load).toContain('kind load docker-image "$COLLECTOR_IMAGE" --name "$kind_name"');
+    });
+
+    it('mirrors the pinned upstream images through the registry instead of side-loading them', () => {
+        // kind load imports a whole copy into every node; the registry hands a node only what it lacks.
+        expect(load).not.toContain('kind load');
+        expect(script).toContain('COLLECTOR_REF="$LANE_REGISTRY/$COLLECTOR_IMAGE"');
+        expect(script).toContain('POSTGRES_REF="$LANE_REGISTRY/$POSTGRES_IMAGE"');
+        // Two thirds of the Debian image: a fresh node unpacks fewer bytes before the database starts.
+        expect(script).toContain('POSTGRES_IMAGE=postgres:17-alpine');
+        expect(load).toContain('push_ref "$COLLECTOR_IMAGE" "$COLLECTOR_REF"');
+        expect(load).toContain('push_ref "$POSTGRES_IMAGE" "$POSTGRES_REF"');
+        expect(script).toContain(`--set "collector.image.repository=$LANE_REGISTRY/$\{COLLECTOR_IMAGE%:*}"`);
+        expect(script).toContain('--set "postgres.image=$POSTGRES_REF"');
+        expect(script).toContain('--set "database.waitImage=$POSTGRES_REF"');
     });
 
     it('refuses a cluster without the registry before building anything', () => {
@@ -391,5 +403,126 @@ describe('kind lane timing evidence', () => {
             /kill "\$runner_log_pid"/
         );
         expect(cleanup).toMatch(/kill "\$runner_log_pid"/);
+    });
+});
+
+describe('kind lane takeover and drain phases (issue #829)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    const takeover = script.slice(
+        script.indexOf('if selected_phase takeover; then'),
+        script.indexOf('if selected_phase control; then')
+    );
+    const drain = script.slice(script.indexOf('if [ "$PHASE" = drain ]; then'));
+
+    it('runs takeover in all, between services and control, and drain only when asked for', () => {
+        expect(script.indexOf('if selected_phase takeover; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase services; then')
+        );
+        expect(script.indexOf('if selected_phase takeover; then')).toBeLessThan(
+            script.indexOf('if selected_phase control; then')
+        );
+        expect(script).not.toMatch(/selected_phase drain/);
+        expect(script).toMatch(/all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|drain\)/);
+    });
+
+    it('kills the driver pod at setup, agent, gates and publish, counting from outside the pods', () => {
+        expect(script).toContain('.lane-kill');
+        for (const step of ['t1', 't2', 't4', 't5']) {
+            expect(takeover).toContain(`-${step}"`);
+        }
+        expect(script).toContain('kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force');
+        expect(takeover).toContain('tk_kill');
+        expect(script).toContain('expired="$(expire_claim_one "$1")"');
+        expect(takeover).toContain('factory-stub-commit');
+        expect(takeover).toContain('lane-gh-hold');
+        // Barriers sit on the job's own task volume, reached through its pods, never the dashboard's claim.
+        expect(script).toContain('TK_D="/task/.lane-kill-"');
+        expect(takeover).toContain('tk_use "$t5"');
+        expect(script).not.toContain('/workspaces/$member_path');
+        expect(takeover).toContain('supervisor: rebound to claim 2');
+        expect(takeover).toContain("resumed gates from claim 1's checkpoint");
+        // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).
+        for (const step of ['t4', 't5']) {
+            expect(takeover).toContain(`"$(driver_logs)" "job $${step}: $TOOK_OVER"`);
+            expect(takeover).toContain(`expect_not_contains '${step}: the finished runner was not waited out'`);
+        }
+        expect(takeover).toContain("commit_plan takeover-restore ''");
+    });
+
+    it('reads nothing unconfirmed as empty, and leaves nothing of a settled job', () => {
+        expect(script).toMatch(/tk_count\(\) \{[^}]*printf '\?'/);
+        expect(script).toMatch(
+            /kubectl get jobs,pods -l "factory\.job=\$1,app\.kubernetes\.io\/instance=\$RELEASE"[^\n]*--request-timeout=10s/
+        );
+    });
+
+    it('drains the driver node and the runner node, times them, and uncordons', () => {
+        expect(drain).toContain('kubectl drain');
+        expect(drain).toContain('--ignore-daemonsets');
+        expect(drain).toContain('.recovery.tsv');
+        expect(drain).toContain('uncordon');
+        expect(drain).toContain('make cleanup CLUSTER=');
+        expect(cleanup).toContain('uncordon');
+        expect(cleanup).toContain('kubectl delete pv');
+    });
+
+    it('puts the workspaces on a shared volume only when the cluster carries the drain layout', () => {
+        expect(script).toContain('factory.lane/shared');
+        expect(script).toContain('factory-lane-shared');
+        expect(script).toContain('ReadWriteMany');
+        expect(script).toContain('/factory-shared/$RELEASE');
+    });
+});
+
+describe('kind lane compressed timers and stall evidence (issue #829)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const install = script.slice(script.indexOf(`helm install "$RELEASE" charts/factory "$\{LOCAL_SETS[@]}"`));
+    const installCall = install.slice(0, install.indexOf('>/dev/null'));
+
+    it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
+        expect(script).toContain('LANE_LEASE_S=45');
+        expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
+        // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
+        expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
+        // A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind
+        // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.
+        expect(script).toContain(`LANE_REBIND_GRACE_S=$((2 * $\{KUBELET_SYNC_S:-60} + 10))`);
+        expect(installCall).toContain('--set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))"');
+    });
+
+    it('waits out a handed-over runner for the takeover bound (lease plus rebind grace), and expects the takeover', () => {
+        expect(script).toContain('HANDOVER_S=$((LANE_LEASE_S + LANE_REBIND_GRACE_S + LANE_MARGIN_S))');
+        expect(script).toContain('ORPHANED_S=$((LANE_ORPHAN_S + HANDOVER_S))');
+        expect(script).toContain('await_job_complete "$hard_job" "$ORPHANED_S"');
+        expect(script).toContain('await_job_complete "$drained_job" "$HANDOVER_S"');
+        expect(script).toContain('"job $hard: $TOOK_OVER"');
+        // The hard kill's Job may be deleted by the adopter before Complete is seen: gone plus a succeeded row is the end.
+        expect(script).toContain('case "$(await_brief "$hard" \'succeeded*\' 60)" in succeeded*)');
+        expect(script).toContain('"job $drained: $ADOPTED"');
+    });
+
+    it('renders DRIVER_REBIND_GRACE_MS from a chart value whose default is the driver default', () => {
+        const values = readRepoFile('charts/factory/values.yaml');
+        const template = readRepoFile('charts/factory/templates/driver-deployment.yaml');
+        expect(template).toContain('- name: DRIVER_REBIND_GRACE_MS');
+        expect(template).toContain('value: {{ $.Values.driver.rebindGraceMs | quote }}');
+        expect(values).toContain(`    rebindGraceMs: '${SUPERVISOR_REBIND_GRACE_MS}'`);
+        expect(script).toContain(`'value: "${SUPERVISOR_REBIND_GRACE_MS}"'`);
+    });
+
+    it('dumps a job that never settled: pods and Jobs, a describe and every container log, each bounded', () => {
+        const dump = script.slice(script.indexOf('kind_dump_stall() {'), script.indexOf('\nawait_brief() {'));
+        expect(dump).toContain('sel="factory.job=$1,app.kubernetes.io/instance=$RELEASE"');
+        expect(dump).toContain('kubectl get pods,jobs -l "$sel"');
+        expect(dump).toContain('-o wide');
+        expect(dump).toContain('kubectl describe pods');
+        expect(dump).toContain('kubectl logs --all-containers --tail=40 -l "$sel"');
+        for (const call of dump.split('\n').filter((l) => /^\s+kubectl /.test(l))) {
+            expect(call).toContain('--request-timeout=10s');
+        }
+        expect(dump).toContain(`$\{TIMINGS_FILE%.tsv}.stall-$1.log`);
+        const brief = script.slice(script.indexOf('\nawait_brief() {'), script.indexOf('\nDRIVER_DEPLOY='));
+        expect(brief).toMatch(/done\n {4}kind_dump_stall "\$1"\n/);
     });
 });

@@ -156,6 +156,19 @@ describe('settleEnd', () => {
         expect(settleEnd({ ...END, report: lost, vanished: VANISHED }).infraLoss).toBe(VANISHED);
     });
 
+    it('takes a finalized SIGTERM kill nobody on the driver side recorded as an interruption, never a failure', () => {
+        const evicted = { ...REPORT, outcome: 'failed', cause: 'agent_killed', agentExit: 143 };
+        expect(settleEnd({ ...END, report: evicted }).infraLoss).toMatch(/SIGTERM/);
+        // an OOM kill (137), a driver kill, a recorded reason or the budget each stay a verdict
+        expect(settleEnd({ ...END, report: { ...evicted, agentExit: 137 } }).infraLoss).toBeNull();
+        expect(settleEnd({ ...END, report: evicted, driverKilledHard: true }).infraLoss).toBeNull();
+        expect(
+            settleEnd({ ...END, report: evicted, kills: [{ reason: 'cache_lost', detail: '' }] }).infraLoss
+        ).toBeNull();
+        expect(settleEnd({ ...END, report: evicted, budgetEnded: true }).infraLoss).toBeNull();
+        expect(settleEnd({ ...END, report: { ...evicted, outcome: 'cancelled' } }).infraLoss).toBeNull();
+    });
+
     it('takes a report of a lost agent as a loss on its own: the supervisor may log it and exit 0', () => {
         const lost = { ...REPORT, outcome: 'lost', agentExit: null, agentEnd: 'lost' };
         expect(settleEnd({ ...END, report: lost }).infraLoss).toMatch(/lost the agent/);
