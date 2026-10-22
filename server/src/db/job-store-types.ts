@@ -8,7 +8,7 @@
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { JobLeaseInfo } from './lease-types.js';
-import type { AdmissionBudgets, OrgDemand } from './job-store-admission.js';
+import type { AdmissionBudgets, ClaimObserver, OrgDemand } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -1488,6 +1488,8 @@ export interface CreateJobStoreDeps {
     prs?: JobStorePrs;
     /** The shared admission budgets every claim enforces (issue #831); absent is unlimited. */
     admission?: AdmissionBudgets;
+    /** What the claim reports about itself (issue #831); absent in the tests that predate it. */
+    metrics?: ClaimObserver;
 }
 
 /** The PR lifecycle store's claim-time surface — named once so a helper can take it explicitly. */
@@ -1567,6 +1569,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;
+    metrics: ClaimObserver | undefined;
     wallTick: Fragment;
     authorJoin: Fragment;
     authorColumns: Fragment;

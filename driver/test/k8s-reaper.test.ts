@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
+import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
 import { configmapsPath, podsPath, secretsPath } from '../src/k8s-auxspec.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s-reaper.js';
+import { holderPodsPath } from '../src/k8s-teardown.js';
 import { taskVolumesPath } from '../src/k8s-task-volume.js';
 import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, boardIdentity } from '../src/task-volume.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
@@ -127,7 +128,7 @@ describe('the kubernetes reaper arm: scan', () => {
     it('dates a row by an RFC3339 timestamp with a fraction and an offset', async () => {
         const items = [auxJob('p', JOB, LEASE, '2026-09-01T02:00:00.5+02:00')];
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
-        const groups = await createKubernetesReaper({ config, request }).scan();
+        const groups = (await createKubernetesReaper({ config, request }).scan())!;
         expect(groups.map((g) => g.createdAtMs)).toEqual([Date.parse('2026-09-01T00:00:00.500Z')]);
     });
 
@@ -206,7 +207,7 @@ describe('the kubernetes reaper arm: scan', () => {
         // other rows could read as out of its grace (#869).
         const items = [auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'), row];
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
-        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toBeNull();
     });
 
     // #869 round 2: a Job named as a runner whose spec is unreadable cannot be said to run no agent.
@@ -227,17 +228,17 @@ describe('the kubernetes reaper arm: scan', () => {
             status: { succeeded: 1 },
         };
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [runnerJob] }) }]]);
-        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toBeNull();
     });
 
     it('answers nothing when the Jobs cannot be read — inconclusive reaps nothing', async () => {
         const refused = router([['GET', LIST_JOBS, { status: 403, body: '{}' }]]);
-        await expect(createKubernetesReaper({ config, request: refused.request }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request: refused.request }).scan()).resolves.toBeNull();
 
         const throwing: K8sRequest = async () => {
             throw new Error('connection reset');
         };
-        await expect(createKubernetesReaper({ config, request: throwing }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request: throwing }).scan()).resolves.toBeNull();
     });
 });
 
@@ -252,11 +253,15 @@ describe('the kubernetes reaper arm: reap', () => {
         expect(deleteCalls(calls).filter((path) => !path.startsWith(secretsPath(NAMESPACE)))).toEqual([AUX_DELETE]);
     });
 
-    it('reads 404 and 409 as the object already going away, and keeps the answer honest', async () => {
-        for (const status of [404, 409]) {
-            const { request } = router([['DELETE', AUX_DELETE, { status, body: '' }]]);
-            expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone'), String(status)).toEqual([]);
-        }
+    it('reads 404 as the object already gone, and an unconditioned 409 as a failed delete', async () => {
+        const gone = router([['DELETE', AUX_DELETE, { status: 404, body: '' }]]);
+        expect(await createKubernetesReaper({ config, request: gone.request }).reap(group(), 'gone')).toEqual([]);
+        const conflict = router([['DELETE', AUX_DELETE, { status: 409, body: '' }]]);
+        expect(await createKubernetesReaper({ config, request: conflict.request }).reap(group(), 'gone')).toMatchObject(
+            {
+                inconclusive: expect.any(String),
+            }
+        );
     });
 
     it('deletes the attempt-scoped env Secret by its derived name, and answers it to the log', async () => {
@@ -325,7 +330,10 @@ describe('the kubernetes reaper arm: reap', () => {
         const secret = `${secretsPath(NAMESPACE)}/${secretName({ id: JOB, leaseToken: LEASE } as unknown as BoardJob)}`;
         const { request, calls } = router([['DELETE', secret, { status: 500, body: '' }]]);
 
-        expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone')).toEqual([]);
+        expect(await createKubernetesReaper({ config, request }).reap(group(), 'gone')).toEqual({
+            removed: [],
+            inconclusive: expect.stringContaining('Secret'),
+        });
         expect(deleteCalls(calls)).toEqual([secret]);
     });
 
@@ -349,7 +357,10 @@ describe('the kubernetes reaper arm: reap', () => {
             if (method === 'DELETE') throw new Error('connection reset');
             return { status: 200, body: JSON.stringify({ items: [] }) };
         };
-        expect(await createKubernetesReaper({ config, request: failing }).reap(group(), 'gone')).toEqual([]);
+        expect(await createKubernetesReaper({ config, request: failing }).reap(group(), 'gone')).toMatchObject({
+            removed: [],
+            inconclusive: expect.any(String),
+        });
     });
 });
 
@@ -375,12 +386,14 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     it('marks a finished runner Job unread on the scan, and a running one not', async () => {
         const running = { ...finishedRunner, status: { active: 1 } };
         const arm = createKubernetesReaper({ config, request: router(lists([finishedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([
+        expect((await arm.scan())![0]!.objects).toEqual([
             { kind: 'job', name: runnerJob, uid: 'uid-1', unread: true, runner: true },
         ]);
 
         const live = createKubernetesReaper({ config, request: router(lists([running])).request });
-        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
+        expect((await live.scan())![0]!.objects).toEqual([
+            { kind: 'job', name: runnerJob, uid: 'uid-1', runner: true },
+        ]);
     });
 
     // A supervisor-only group's Job (an agentless node, the group an adoption made) ran no agent:
@@ -391,7 +404,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
             spec: { template: { spec: { containers: [{ name: 'supervisor' }] } } },
         };
         const arm = createKubernetesReaper({ config, request: router(lists([supervisorOnly])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
+        expect((await arm.scan())![0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     it('never deletes an unread finished runner of a job that is still live', async () => {
@@ -539,7 +552,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
 
     it('never marks a suspended runner Job unread', async () => {
         const arm = createKubernetesReaper({ config, request: router(lists([suspendedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
+        expect((await arm.scan())![0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     it('reaps a suspended runner of a terminal job Secret first, then the Job', async () => {
@@ -921,5 +934,246 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
             }).sweep();
             expect(deleteCalls(calls)).toEqual([]);
         });
+    });
+});
+
+describe('a sweep over the real kubernetes arm (issue #831)', () => {
+    it('is aborted, never ok, when the Job list fails but the volume list is proven', async () => {
+        const LIST_VOLUMES = `${taskVolumesPath(NAMESPACE)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`;
+        const { request, calls } = router([
+            ['GET', LIST_JOBS, { status: 503, body: '' }],
+            ['GET', LIST_VOLUMES, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ]);
+        const outcomes: string[] = [];
+        const reaper = createReaper({
+            board: { leases: async () => [] },
+            arm: createKubernetesReaper({ config, request }),
+            intervalMs: 3_600_000,
+            graceMs: 0,
+            log: () => undefined,
+            volumePolicy: { ttlMs: 1, boundMs: 1 },
+            observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+        });
+        await reaper.sweep();
+        expect(outcomes).toEqual(['aborted']);
+        expect(calls.filter((call) => call.method !== 'GET')).toEqual([]);
+    });
+});
+
+describe('a sweep whose cleanup reads prove nothing (issue #831)', () => {
+    const pair = { id: JOB, leaseToken: LEASE } as BoardJob;
+    const runnerJob = runnerJobName(pair);
+    const claimPath = `${configmapsPath(NAMESPACE)}/factory-job-${JOB}-claim`;
+    const holderGroups = `${jobsPath(NAMESPACE)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${JOB},${HOLDER_LABEL}=${LEASE}`)}`;
+    const listed = {
+        metadata: {
+            name: runnerJob,
+            uid: 'uid-1',
+            labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE },
+            creationTimestamp: '2026-10-01T00:00:00Z',
+        },
+        spec: {
+            suspend: true,
+            template: { spec: { containers: [{ name: SUPERVISOR_CONTAINER }, { name: AGENT_CONTAINER }] } },
+        },
+        status: { failed: 1 },
+    };
+    const claim: K8sResponse = {
+        status: 200,
+        body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: { holder: LEASE } }),
+    };
+    const answers: readonly (readonly [K8sMethod, string, K8sResponse])[] = [
+        ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [listed] }) }],
+        ['GET', claimPath, claim],
+        ['DELETE', claimPath, { status: 200, body: '' }],
+    ];
+    /** The healthy router, except that the `nth` (1-based) GET of a path matching `refuse` answers 503. */
+    const refusing = (refuse: (path: string) => boolean, nth = 1) => {
+        const base = router(answers);
+        let seen = 0;
+        const request: K8sRequest = async (method, path, body, options) => {
+            if (method === 'GET' && refuse(path) && ++seen >= nth) return { status: 503, body: '' };
+            return base.request(method, path, body, options);
+        };
+        return { request, calls: base.calls };
+    };
+    const sweepOutcome = async (request: K8sRequest): Promise<string[]> => {
+        const outcomes: string[] = [];
+        await createReaper({
+            board: { leases: async () => [{ id: JOB, status: 'failed', leaseToken: null }] },
+            arm: createKubernetesReaper({ config, request, sleep: async () => {} }),
+            intervalMs: 0,
+            graceMs: 0,
+            log: () => {},
+            observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+        }).sweep();
+        return outcomes;
+    };
+
+    it('control: with every read answering, the claim is released and the sweep is ok', async () => {
+        const { request, calls } = refusing(() => false);
+        expect(await sweepOutcome(request)).toEqual(['ok']);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPath)).toBe(true);
+    });
+
+    it.each([
+        ['the claim read', (path: string) => path === claimPath, 1],
+        ['the holder group list', (path: string) => path === holderGroups, 1],
+        ['the holder pod list', (path: string) => path === holderPodsPath(NAMESPACE, pair, LEASE), 1],
+        ['the claim re-read before the groups end', (path: string) => path === claimPath, 2],
+        ['the claim re-read before the delete', (path: string) => path === claimPath, 3],
+        ['the holder group Job read', (path: string) => path.includes(`/jobs/${runnerJob}`), 1],
+    ])('reports aborted, never ok, when %s answers 503, and deletes no claim', async (_name, refuse, nth) => {
+        const { request, calls } = refusing(refuse, nth);
+        expect(await sweepOutcome(request)).toEqual(['aborted']);
+        expect(calls.some((call) => call.method === 'DELETE' && call.path === claimPath)).toBe(false);
+    });
+
+    /** The healthy router, except that `fault` may answer (or throw) in place of any call. */
+    const faulting = (fault: (method: K8sMethod, path: string, nth: number) => K8sResponse | Error | undefined) => {
+        const base = router(answers);
+        const seen = new Map<string, number>();
+        const request: K8sRequest = async (method, path, body, options) => {
+            const key = `${method} ${path}`;
+            const nth = (seen.get(key) ?? 0) + 1;
+            seen.set(key, nth);
+            const injected = fault(method, path, nth);
+            if (injected instanceof Error) throw injected;
+            return injected ?? base.request(method, path, body, options);
+        };
+        return { request, calls: base.calls };
+    };
+    const refused: K8sResponse = { status: 503, body: '' };
+
+    it.each([
+        [
+            'an attempt Secret delete answers 503',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.startsWith(secretsPath(NAMESPACE)) ? refused : undefined,
+        ],
+        [
+            'the runner Job delete answers 503',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? refused : undefined,
+        ],
+        [
+            'the runner Job delete throws',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? new Error('reset') : undefined,
+        ],
+        [
+            'an attempt Secret delete answers 409 with no uid precondition',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.startsWith(secretsPath(NAMESPACE)) ? { status: 409, body: '' } : undefined,
+        ],
+        [
+            'the claim delete answers 503',
+            (m: K8sMethod, path: string) => (m === 'DELETE' && path === claimPath ? refused : undefined),
+        ],
+        [
+            'the claim delete throws',
+            (m: K8sMethod, path: string) => (m === 'DELETE' && path === claimPath ? new Error('reset') : undefined),
+        ],
+        [
+            'the claim answers 200 with no uid',
+            (m: K8sMethod, path: string) =>
+                m === 'GET' && path === claimPath
+                    ? { status: 200, body: JSON.stringify({ metadata: {}, data: { holder: LEASE } }) }
+                    : undefined,
+        ],
+        [
+            'the claim re-read answers 200 with no holder',
+            (m: K8sMethod, path: string, nth: number) =>
+                m === 'GET' && path === claimPath && nth === 2
+                    ? { status: 200, body: JSON.stringify({ metadata: { uid: 'claim-uid-1' }, data: {} }) }
+                    : undefined,
+        ],
+    ])('reports aborted, never ok, when %s', async (_name, fault) => {
+        const { request } = faulting(fault);
+        expect(await sweepOutcome(request)).toEqual(['aborted']);
+    });
+
+    it.each([
+        [
+            'the claim is already gone (404)',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path === claimPath ? { status: 404, body: '' } : undefined,
+        ],
+        [
+            'the Job was replaced under its name (409 on the uid precondition)',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.includes(`/jobs/${runnerJob}`) ? { status: 409, body: '' } : undefined,
+        ],
+        [
+            'the Secret is already gone (404)',
+            (m: K8sMethod, path: string) =>
+                m === 'DELETE' && path.startsWith(secretsPath(NAMESPACE)) ? { status: 404, body: '' } : undefined,
+        ],
+    ])('stays ok when %s: confirmed absence or replacement is success', async (_name, fault) => {
+        const { request } = faulting(fault);
+        expect(await sweepOutcome(request)).toEqual(['ok']);
+    });
+
+    describe('task volumes', () => {
+        const ROOT = '11111111-1111-4111-8111-111111111111';
+        const volume = `${taskVolumesPath(NAMESPACE)}/factory-task-${ROOT}-1`;
+        const LIST_VOLUMES = `${taskVolumesPath(NAMESPACE)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`;
+        const item = {
+            metadata: {
+                name: `factory-task-${ROOT}-1`,
+                uid: 'uid-v1',
+                creationTimestamp: '2026-01-01T00:00:00Z',
+                labels: { [TASK_ROOT_LABEL]: ROOT, [TASK_BOARD_LABEL]: boardIdentity(config) },
+            },
+        };
+        const volumeSweep = async (deleteAnswer: K8sResponse | Error) => {
+            const base = router([
+                ['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [] }) }],
+                ['GET', LIST_VOLUMES, { status: 200, body: JSON.stringify({ items: [item] }) }],
+            ]);
+            const request: K8sRequest = async (method, path, body, options) => {
+                if (method === 'DELETE' && path === volume) {
+                    if (deleteAnswer instanceof Error) throw deleteAnswer;
+                    return deleteAnswer;
+                }
+                return base.request(method, path, body, options);
+            };
+            const outcomes: string[] = [];
+            await createReaper({
+                board: { leases: async () => [] },
+                arm: createKubernetesReaper({ config, request }),
+                intervalMs: 0,
+                graceMs: 0,
+                log: () => {},
+                volumePolicy: { ttlMs: 1, boundMs: 1 },
+                observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+            }).sweep();
+            return outcomes;
+        };
+
+        it('reports aborted when the volume claim delete answers 503, or throws', async () => {
+            expect(await volumeSweep({ status: 503, body: '' })).toEqual(['aborted']);
+            expect(await volumeSweep(new Error('reset'))).toEqual(['aborted']);
+        });
+
+        it('stays ok when the volume claim delete succeeds or finds it gone', async () => {
+            expect(await volumeSweep({ status: 200, body: '' })).toEqual(['ok']);
+            expect(await volumeSweep({ status: 404, body: '' })).toEqual(['ok']);
+        });
+    });
+
+    it('hands the arm result back as a structured inconclusive, with what it removed', async () => {
+        const { request } = refusing((path) => path === claimPath);
+        const result = await createKubernetesReaper({ config, request }).reap(
+            {
+                jobId: JOB,
+                leaseToken: LEASE,
+                createdAtMs: 0,
+                objects: [{ kind: 'job', name: runnerJob, uid: 'uid-1' }],
+            },
+            'gone'
+        );
+        expect(Array.isArray(result)).toBe(false);
+        expect(result).toMatchObject({ inconclusive: expect.stringContaining('claim') });
     });
 });

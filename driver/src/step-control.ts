@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import { readBody } from './http.js';
 import { parseJsonObject } from './json-parse.js';
+import { secondsSince } from './prometheus.js';
 import {
     STEP_ANSWER_GRACE_MS,
     STEP_OUTPUT_LIMIT_BYTES,
@@ -210,7 +211,27 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, what
     });
 }
 
-export function createStepBroker(): StepBroker {
+/** Reports one step's end: its kind, how it ended and how long it took from submission. */
+export type StepObserver = (kind: StepRequest['kind'], outcome: StepOutcome, seconds: number) => void;
+
+export type StepOutcome = 'ok' | 'failed' | 'timed_out' | 'undelivered' | 'closed';
+
+const outcomeOf = (result: StepResult): StepOutcome => {
+    if (result.timedOut) return 'timed_out';
+    return result.exitCode === 0 ? 'ok' : 'failed';
+};
+
+/** Observes a NEW waiter's end once; a duplicate that joins it is never observed again. */
+function observeWaiter(promise: Promise<StepResult>, kind: StepRequest['kind'], observe: StepObserver): void {
+    const start = performance.now();
+    const seconds = () => secondsSince(start);
+    promise.then(
+        (result) => observe(kind, outcomeOf(result), seconds()),
+        (error: Error) => observe(kind, error instanceof StepTimedOut ? 'undelivered' : 'closed', seconds())
+    );
+}
+
+export function createStepBroker(observe?: StepObserver): StepBroker {
     const slots = new Map<string, Slot>();
 
     const submit = (token: string, step: StepRequest, signal?: AbortSignal): Promise<StepResult> => {
@@ -228,6 +249,7 @@ export function createStepBroker(): StepBroker {
         });
         // A waiter nobody joins after its caller gave up must not become an unhandled rejection.
         promise.catch(() => undefined);
+        if (observe) observeWaiter(promise, step.kind, observe);
         const lost = setTimeout(() => {
             // The step leaves the queue too: a redelivery of the same call is queued afresh.
             slot.waiters.delete(key);

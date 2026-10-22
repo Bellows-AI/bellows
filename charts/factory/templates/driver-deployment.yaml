@@ -179,6 +179,12 @@ spec:
                         value: http://$(POD_IP)
                       - name: GATE_LISTEN_HOST
                         value: 0.0.0.0
+                      {{- with $.Values.driver.metricsPort }}
+                      # The scrape listener (GET /metrics), behind the board token above; the driver
+                      # refuses to boot with a port, no token and this bind (issue #831).
+                      - name: DRIVER_METRICS_PORT
+                        value: {{ . | quote }}
+                      {{- end }}
                       # Touched every 10s by a timer; the liveness probe below reads its age.
                       - name: DRIVER_HEARTBEAT_FILE
                         value: /tmp/heartbeat
@@ -258,8 +264,14 @@ spec:
                       {{- toYaml . | nindent 22 }}
                   {{- end }}
                   {{- include "factory.containerSecurityContext" $ | nindent 18 }}
-                  # The driver serves no HTTP of its own, so liveness is the heartbeat file's age:
-                  # a wedged event loop stops the timer, a long drain does not.
+                  {{- with $.Values.driver.metricsPort }}
+                  ports:
+                      - name: metrics
+                        containerPort: {{ . }}
+                  {{- end }}
+                  # Liveness is the heartbeat file's age, not an HTTP probe (the scrape listener above
+                  # is optional and answers only the board token): a wedged event loop stops the
+                  # timer, a long drain does not.
                   livenessProbe:
                       exec:
                           command:

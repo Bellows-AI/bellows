@@ -1,5 +1,5 @@
 import type { BoardJob } from './board.js';
-import { jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
+import { claimPath, jobPath, podsPath, secretsPath } from './k8s-auxspec.js';
 import { secretName } from './k8s-podspec.js';
 import { asPod } from './k8s-pod-shapes.js';
 import { asJob, jobOutcome, type ReadJobObject, readTyped, readTypedList } from './k8s-poll.js';
@@ -130,12 +130,25 @@ const anotherIncarnation = (read: Read<ReadJobObject>, uids: IncarnationUids | u
 export const holderPodsPath = (namespace: string, job: BoardJob, holder: string): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`)}`;
 
+/** Whether no live pod of a group serving `holder` is listed; null when the list proves nothing. */
+export const holderWritersRead = (deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean | null> =>
+    noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods');
+
+/** Whether no live pod of a group serving `holder` is listed; an unreadable list is told to `unproven`. */
+export async function holderQuiet(
+    deps: K8sDeps,
+    job: BoardJob,
+    holder: string,
+    unproven: (reason: string) => void
+): Promise<boolean> {
+    const gone = await holderWritersRead(deps, job, holder);
+    if (gone === null) unproven('listing the holder pods proved nothing');
+    return gone === true;
+}
+
 /** Whether no live pod of a group serving `holder` is listed; an unreadable list proves nothing (false). */
 export async function holderWritersGone(deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean> {
-    return (
-        (await noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods')) ===
-        true
-    );
+    return (await holderWritersRead(deps, job, holder)) === true;
 }
 
 /** One group Job read, once: the Job, its confirmed absence, or an answer that proves nothing. */
@@ -263,4 +276,30 @@ export async function retryUnconfirmed(deps: K8sDeps, holder: string): Promise<b
         await endRunnerJob(deps, { ...identity, keep: jobOver(read, true) }, holder);
     }
     return !holderUnconfirmed(deps, holder);
+}
+
+/**
+ * Deletes the checkout claim under the uid precondition: true when removed. Gone (404) or replaced (409) is a
+ * settled claim; any other refusal, or a throw, is told to `unproven` (a leaked claim costs one takeover).
+ */
+export async function deleteClaim(
+    deps: K8sDeps,
+    job: BoardJob,
+    uid: string,
+    unproven: (reason: string) => void
+): Promise<boolean> {
+    try {
+        const { status } = await deps.request('DELETE', claimPath(deps.config.k8sNamespace, job), {
+            apiVersion: 'v1',
+            kind: 'DeleteOptions',
+            preconditions: { uid },
+        });
+        if (!is2xx(status) && status !== HTTP_NOT_FOUND && status !== HTTP_CONFLICT) {
+            unproven(`deleting the claim answered ${status}`);
+        }
+        return is2xx(status);
+    } catch {
+        unproven('deleting the claim failed');
+        return false;
+    }
 }

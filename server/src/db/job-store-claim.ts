@@ -16,6 +16,8 @@ import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
 import { commitStagedConclusions } from './job-store-conclusions.js';
 import { stagedUnderLease } from './job-store-staged.js';
+import { secondsSince } from '../prometheus.js';
+import { startAcquire } from './job-store-claim-probe.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import type {
     JobStoreContext,
@@ -298,13 +300,21 @@ async function acquireCandidate(
     const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
     const rootJobId = reserved.root_job_id;
-    return sql.begin(async (tx) => {
-        // Gone (the thread was removed while this claim prepared): nothing to acquire.
-        const [locked] = await tx<{ status: string }[]>`
-            select status from job where org_id = ${orgId} and id = ${reserved.id} for update
+    const probe = startAcquire(ctx.metrics);
+    const result = await sql.begin(async (tx) => {
+        // Gone (the thread was removed while this claim prepared): nothing to acquire. `queued_since`
+        // is where queued-to-claimed starts: the later of the row's creation, its release to the queue
+        // and the end of the deferral the reservation overwrote. The wait itself is read at the
+        // acquisition (`queue_age`), after the locks, so the lock wait is part of it.
+        const [locked] = await tx<{ status: string; queued_since: Date }[]>`
+            select status,
+                   greatest(created_at, lease_expires_at, coalesce(${reserved.prior_deferral}::timestamptz, created_at))
+                       as queued_since
+            from job where org_id = ${orgId} and id = ${reserved.id} for update
         `;
         if (!locked) return NEXT_CANDIDATE;
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+        probe.locked();
         // New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds.
         let slots = sql`admission_slot_global, admission_slot_org, admission_slot_repo`;
         if (locked.status === 'queued') {
@@ -315,6 +325,7 @@ async function acquireCandidate(
                 if (admitted.full === 'global') refusal.global = true;
                 await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
                          where org_id = ${orgId} and id = ${reserved.id}`;
+                probe.refused(admitted.full);
                 return REFUSED;
             }
             slots = sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int`;
@@ -323,6 +334,7 @@ async function acquireCandidate(
         const rows = await tx<
             (ClaimCandidateRow & {
                 executor_scope: string | null;
+                queue_age: number;
             })[]
         >`
             update job set
@@ -380,6 +392,7 @@ async function acquireCandidate(
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
+                      extract(epoch from clock_timestamp() - ${locked.queued_since}::timestamptz)::float8 as queue_age,
                       -- Continues the superseded attempt in its session: the newest interruption names
                       -- the pre-update claim_seq — a takeover's, recorded above, or a handover's.
                       (session_id is not null
@@ -399,9 +412,13 @@ async function acquireCandidate(
         // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy:
         // the next candidate, with nothing written here.
         if (!row) return NEXT_CANDIDATE;
+        probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         return assembleClaim(ctx, tx, row, { rootJobId, gates });
     });
+    // Only a transaction that resolved reports: a throw above rolled back and observed nothing.
+    probe.done(result !== NEXT_CANDIDATE && result !== REFUSED);
+    return result;
 }
 
 /**
@@ -480,6 +497,7 @@ export async function claimJob(
     options: ClaimOptions = {}
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
+    const sweepStart = performance.now();
 
     // An expired attempt that staged its conclusion is committed before anything else reads the
     // board (issue #821): no stop settle, retirement, takeover or remote read may come first, and a
@@ -539,6 +557,7 @@ export async function claimJob(
     // The dead retirement commits on its own for the same reason (issue #822): a preparation that
     // keeps failing must not keep an exhausted row `running` across every poll.
     await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
+    ctx.metrics?.sweep(secondsSince(sweepStart));
 
     /*
      * Reserve, prepare, acquire (issue #822). The plan read — the claim's one remote call, tens of
