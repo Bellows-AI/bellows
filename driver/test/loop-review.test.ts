@@ -302,21 +302,28 @@ describe('a review the board leased in-band (issue #774)', () => {
         expect(t.board.completed[0]).toMatchObject({ id: REVIEW.id, status: 'succeeded' });
     });
 
-    it('hands each review beat a deadline signal, so a beat the board never answers is retried', async () => {
+    it('abandons a review beat the board never answers at its deadline and beats again, the review staying active', async () => {
         const signals: (AbortSignal | undefined)[] = [];
         const t = supervising({
-            runReview: async () => {
-                await until(() => signals.length >= 1);
+            runReview: async (_c, _r, _s, { signal }) => {
+                const began = Date.now();
+                while (signals.length < 2 && Date.now() - began < 4000) await new Promise((r) => setTimeout(r, 20));
+                expect(signal?.aborted).toBe(false);
                 return STEP();
             },
         });
-        t.board.heartbeat = async (_job, signal) => {
+        t.rt.config = { ...t.rt.config, leaseSeconds: 3 };
+        t.board.heartbeat = (_job, signal) => {
             signals.push(signal);
-            return { result: 'held', cancelRequested: false };
+            if (signals.length > 1) return Promise.resolve({ result: 'held', cancelRequested: false });
+            return new Promise((_resolve, reject) =>
+                signal?.addEventListener('abort', () => reject(new Error('aborted')))
+            );
         };
         t.start();
         await t.settled();
-        expect(signals[0]).toBeInstanceOf(AbortSignal);
+        expect(signals.length).toBeGreaterThanOrEqual(2);
+        expect(t.board.completed[0]).toMatchObject({ id: REVIEW.id, status: 'succeeded' });
     });
 
     it('fails the review row with `timeout` when the step times out, leaving the caller untouched', async () => {
