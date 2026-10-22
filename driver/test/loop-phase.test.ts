@@ -157,3 +157,44 @@ describe('the heartbeat while the attempt concludes', () => {
         expect(beats()).toBe(0);
     });
 });
+
+describe('a heartbeat request the board never answers (issue #926)', () => {
+    // The lease outlives a missed beat, not a beat that never ends: the next one must go out inside the lease.
+    function hanging(answered: unknown) {
+        const state = newJobState();
+        transition(state, 'launched');
+        const signals: (AbortSignal | undefined)[] = [];
+        const logs: string[] = [];
+        const rt = {
+            config: { ...config(), leaseSeconds: 3 },
+            sleep,
+            log: (line: string) => logs.push(line),
+            runner: { kill: vi.fn(async () => {}), stopAgent: vi.fn(async () => {}) },
+            board: {
+                heartbeat: (_job: BoardJob, signal?: AbortSignal) => {
+                    signals.push(signal);
+                    if (signals.length > 1) return Promise.resolve(answered);
+                    return new Promise((_resolve, reject) =>
+                        signal?.addEventListener('abort', () => reject(new Error('aborted')))
+                    );
+                },
+            },
+        } as unknown as LoopRuntime;
+        return { state, rt, signals, logs };
+    }
+
+    it('is abandoned at a deadline inside the lease and the next beat goes out, killing nothing', async () => {
+        const { state, rt, signals, logs } = hanging({ result: 'held', cancelRequested: false });
+        const beat = heartbeat(rt, job(1) as BoardJob, state);
+        const started = Date.now();
+        while (signals.length < 2 && Date.now() - started < 3000) await sleep();
+
+        expect(signals.length).toBeGreaterThanOrEqual(2);
+        expect(Date.now() - started).toBeLessThan(3000);
+        expect(rt.runner.kill).not.toHaveBeenCalled();
+        expect(logs.join('\n')).toContain('heartbeat failed, continuing');
+        transition(state, 'ended');
+        state.wake();
+        await beat;
+    });
+});
