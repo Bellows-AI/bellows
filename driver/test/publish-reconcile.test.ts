@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { type PublishStep, publishCheckout } from '../src/publish.js';
+import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 
 /**
  * Publication reconciliation (issue #771): a publish is a chain of effects on a remote, and each can
@@ -219,5 +220,20 @@ describe('publication reconciliation after an uncertain response', () => {
         const result = await publishCheckout(JOB, undefined, failing);
         expect(result).toMatchObject({ ok: false, cause: 'denied' });
         expect(w.state.prCreates).toBe(0);
+    });
+
+    // #925: a lost supervisor is no verdict on the publish; the caller records the attempt's interruption.
+    it.each([
+        ['channel closed', () => new StepChannelClosed('the publish')],
+        ['answer never came', () => new StepTimedOut('the publish')],
+    ])('rethrows a step lost mid-publish (%s) instead of answering a failure', async (_name, lost) => {
+        const w = world();
+        const losing = async (step: PublishStep) => {
+            if (step.label === 'git push') throw lost();
+            return w.run(step);
+        };
+        await expect(publishCheckout(JOB, undefined, losing)).rejects.toSatisfy(
+            (e) => e instanceof StepChannelClosed || e instanceof StepTimedOut
+        );
     });
 });

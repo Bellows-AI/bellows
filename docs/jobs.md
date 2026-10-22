@@ -91,6 +91,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
   drains to the next step boundary instead. `driver/test/loop.test.ts`.
 - **Every resource an attempt creates is scoped by its lease token**, so no sweep touches a sibling
   attempt — `driver/src/labels.ts`, `driver/test/docker.test.ts`.
+- **A supervisor lost under a publish is an interruption, never `publishFailed`** (`stepLost` is rethrown by `publishCheckout` and `publishBranch`, ended in `loop-post-run.ts`) — `driver/test/publish-reconcile.test.ts`, `loop.test.ts`.
 - **The publish decision is made in `driver/src/loop-verdict.ts` and `loop-publish.ts` only** —
   `driver/test/docker.test.ts`, `k8s.test.ts`.
 - **A decided verdict is staged, then completed, and only then is the attempt torn down**; it is retried on

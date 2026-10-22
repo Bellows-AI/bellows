@@ -19,6 +19,8 @@ import {
     recordDockerKill,
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
+import { readSupervisorState } from './docker-group-probe.js';
+import { StartupRefused } from './startup-cause.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs, spentMs } from './supervisor-plan.js';
@@ -80,6 +82,7 @@ import {
     startJobServices,
     type RunnerFiles,
     attemptExec,
+    boundedExec,
     type Spawn,
     type ExecDocker,
     readUtf8,
@@ -213,9 +216,24 @@ const attemptExecOf = (deps: RunnerDeps, job: BoardJob): ExecDocker =>
 
 /** Waits for the supervisor of a started group to pull; a plain error at the bound, no proof of why. */
 async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
+    const exec = attemptExecOf(deps, job);
+    let seenRunning = false;
     const up = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
         signal: deps.ledger.signal(job),
+        // A supervisor seen running and then confirmed over or removed is an infrastructure loss now, not at
+        // the bound (#924, the kubernetes pod lost before first contact). A read that did not answer, and a
+        // container never seen running, prove nothing.
+        probe: async (bound) => {
+            const state = await readSupervisorState(boundedExec(exec, bound), job);
+            if (state === 'running') seenRunning = true;
+            else if (state === 'gone' && seenRunning) {
+                throw new StartupRefused(
+                    `the task supervisor ${supervisorName(job)} was lost before it made contact`,
+                    'transient'
+                );
+            }
+        },
     });
     if (!up) {
         throw new Error(`the task supervisor ${supervisorName(job)} never came up within ${GROUP_UP_WAIT_MS}ms`);

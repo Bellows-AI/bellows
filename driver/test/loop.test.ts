@@ -6552,6 +6552,33 @@ describe('a lost supervisor under the gates and the setup', () => {
     });
 });
 
+// Issue #925: the supervisor lost while the end-of-run publish ran is the attempt's loss, never a failed publish.
+describe('a lost supervisor under the end-of-run publish', () => {
+    it('interrupts the attempt instead of failing it, and reports no verdict', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        runner.publishGit = async () => {
+            throw new StepChannelClosed('its step was answered: the task group ended or was taken away');
+        };
+        await drive({ ...board, runner });
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            { id: job(1).id, reason: expect.stringContaining('infrastructure loss'), release: true },
+        ]);
+    });
+
+    it('still fails an attempt whose publish threw for any other reason', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        runner.publishGit = async () => {
+            throw new Error('git exploded');
+        };
+        await drive({ ...board, runner });
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
+    });
+});
+
 // Issue #773 (D6): the gate container is sized for verify before the setup and the declared gates;
 // a resize is best-effort and never what decides whether they run.
 describe('the gate container resize around the setup and the gates', () => {

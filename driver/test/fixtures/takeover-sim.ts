@@ -136,7 +136,7 @@ export class Sim {
     /** A cluster model: places a new group's pod (a node, or null for Pending) and starts it later. */
     place?: (group: Group) => string | null;
     /** A fault on one board call: the ms it takes to fail (0: at once), as a request timeout would; undefined: none. */
-    boardFault?: (op: string) => number | undefined;
+    boardFault?: ((op: string) => number | undefined) | undefined;
 
     constructor(readonly t: Timing) {
         this.config = {
@@ -194,8 +194,7 @@ export class Sim {
         };
     }
 
-    readonly holds = (claimed: BoardJob) =>
-        this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
+    readonly holds = (claimed: BoardJob) => this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
 
     private boardImpl(): Partial<Board> {
         const r = this.row;
@@ -393,7 +392,8 @@ export class Sim {
                     return ok({
                         exitCode: 1,
                         output: '',
-                        infraLoss: 'the runner pod was deleted before it exited (EvictionByEvictionAPI: Eviction API: evicting)',
+                        infraLoss:
+                            'the runner pod was deleted before it exited (EvictionByEvictionAPI: Eviction API: evicting)',
                     });
                 const group = sim.ensureGroup(job);
                 const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '';
@@ -410,7 +410,8 @@ export class Sim {
                     return ok({
                         exitCode: 1,
                         output: '',
-                        infraLoss: 'the runner pod was deleted before it exited (EvictionByEvictionAPI: Eviction API: evicting)',
+                        infraLoss:
+                            'the runner pod was deleted before it exited (EvictionByEvictionAPI: Eviction API: evicting)',
                     });
                 }
                 return {
@@ -432,7 +433,12 @@ export class Sim {
                     reason: null,
                 };
                 // The publish is a step of the task pod: a pod that is gone serves none, and the loop reads that as a loss.
-                if (!own) throw new StepChannelClosed('the publish');
+                // A pod this claim had and lost serves none; an adopted run never had one, and the runner makes a fresh group.
+                if (!own) {
+                    if (sim.deleted.some((g) => g.lease === ownGroup(job).leaseToken))
+                        throw new StepChannelClosed('the publish');
+                    return result;
+                }
                 if (own.exit !== null) return result;
                 const wait = `echo x >> ${sim.latch}.runs; while [ ! -e ${sim.latch} ]; do sleep 0.05; done`;
                 await submitStep(

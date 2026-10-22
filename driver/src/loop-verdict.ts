@@ -22,6 +22,7 @@ import {
     statusOf,
 } from './loop-ledger.js';
 import { end } from './loop-conclusion.js';
+import { stepLost } from './step-control.js';
 import type { AttemptCtx, LoopRuntime, VerdictBody } from './loop-types.js';
 import { type PublishOptions, type PublishResult, publishFailed } from './publish.js';
 import type { DeadService, RunOutcome } from './runner.js';
@@ -54,7 +55,8 @@ export function publishOptionsOf(mode: 'publish' | 'draft', revision: string | n
 }
 
 /**
- * Pushes the branch and opens the PR. Deliberately NOT raced against the stand-down and not
+ * Pushes the branch and opens the PR. A lost supervisor (`stepLost`) is thrown, never a failed publish:
+ * the caller hands the attempt back as an interruption (#925). Deliberately NOT raced against the stand-down and not
  * abortable: a push already in flight is not a thing the driver can take back, and half a push is
  * worse than a fenced one. The caller fences before asking for the token instead (issue #472).
  */
@@ -64,9 +66,10 @@ export async function publishBranch(
     githubToken: string | null,
     options?: PublishOptions
 ): Promise<PublishResult> {
-    return rt.runner
-        .publishGit(job, githubToken ?? undefined, options)
-        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));
+    return rt.runner.publishGit(job, githubToken ?? undefined, options).catch((e: Error) => {
+        if (stepLost(e)) throw e;
+        return publishFailed(`the publish threw: ${e.message}`, 'unknown');
+    });
 }
 
 /** The publication identity to ride the verdict, only when the publish really happened and landed. */
