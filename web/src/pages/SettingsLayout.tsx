@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Outlet, useBlocker, useOutletContext } from 'react-router-dom';
+import { Outlet, useBlocker, useLocation, useOutletContext } from 'react-router-dom';
 import { useEnv } from '../api/useEnv.js';
 import type { UseEnv } from '../api/useEnv.js';
+import { type UseRepos, useRepos } from '../api/useRepos.js';
 import { useWorkspace } from '../api/useWorkspace.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import { useShell } from '../components/AppShell.js';
@@ -17,11 +18,10 @@ import type { GuardApi, UnsavedDraft } from '../components/UnsavedChangesDialog.
 /**
  * The layout route of the settings area: `/settings` and everything under it.
  *
- * It owns the two configuration polls the four sections share. The workspace poll feeds the
- * workspace page (root, repos, orphaned checkouts) AND the executors page (the rows and the
- * whole-list PUT), so it must be ONE instance above both; the environment poll feeds the org,
- * workspace and per-repository editors, and its after-save refetch exists to keep the repository
- * select's options tracking the store. Navigating between the sections refetches nothing, and
+ * It owns the configuration reads the sections share. The workspace read feeds the executors
+ * page (the rows and the whole-list PUT) and the overview, so it must be ONE instance above both;
+ * the repository read feeds the repositories page, the overview and the environment editors; the
+ * environment read feeds the org, workspace and per-repository editors. Navigating between the sections refetches nothing, and
  * leaving the area unmounts both — the same route-scoping by mount that TasksLayout gives
  * `/tasks*`, and the reason the sidenav can stay poll-free.
  *
@@ -40,6 +40,7 @@ import type { GuardApi, UnsavedDraft } from '../components/UnsavedChangesDialog.
  */
 export interface SettingsPageContext extends ShellContext {
     workspace: UseWorkspace;
+    repos: UseRepos;
     env: UseEnv;
 }
 
@@ -56,7 +57,21 @@ type PendingGuard =
 export function SettingsLayout() {
     const shell = useShell();
     const workspace = useWorkspace();
+    const repos = useRepos(true);
     const env = useEnv();
+
+    // No settings page owns a retry for the repository read, so moving between the sections is
+    // the retry: a read that failed (or came back with GitHub's own error) is asked again on
+    // each in-area navigation, and a confirmed read is left alone.
+    const { pathname } = useLocation();
+    const lastPathname = useRef(pathname);
+    const repoReadFailed = repos.error !== null || repos.data?.meta.error != null;
+    const refreshRepos = repos.refresh;
+    useEffect(() => {
+        if (lastPathname.current === pathname) return;
+        lastPathname.current = pathname;
+        if (repoReadFailed) refreshRepos();
+    }, [pathname, repoReadFailed, refreshRepos]);
 
     // The registry of mounted editors' drafts. Registration follows the dirty flag (the editor's
     // hook re-registers when it flips), so `dirtyIds` recomputes exactly when dirtiness does,
@@ -131,7 +146,7 @@ export function SettingsLayout() {
         setPending(null);
     };
 
-    const context: SettingsPageContext = { ...shell, workspace, env };
+    const context: SettingsPageContext = { ...shell, workspace, repos, env };
     return (
         <UnsavedChangesProvider api={api}>
             <Outlet context={context} />

@@ -16,7 +16,7 @@ import { ADMIN_ROLE } from '@factory-ai/core';
  * is, because a page of dashes with no explanation reads as broken.
  */
 export function IdentityPanel({ session }: { session: Session }) {
-    const { user, role, membership, account, workspacePath, mode } = session;
+    const { user, role, membership, account, mode } = session;
     const local = mode === 'none' || user.githubUserId === 0;
     return (
         <div className="identity">
@@ -61,7 +61,6 @@ export function IdentityPanel({ session }: { session: Session }) {
                     ['Member since', taskTime(membership.claimedAt)],
                     ['Account created', taskTime(account.createdAt)],
                     ['Last sign-in', taskTime(account.lastLoginAt)],
-                    ['Workspace', workspacePath === null ? '—' : <code>{workspacePath}</code>],
                 ]}
             />
         </div>

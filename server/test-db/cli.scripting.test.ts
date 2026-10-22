@@ -12,7 +12,6 @@ import { hashToken } from '../src/auth/session.js';
 import { createAuthStore } from '../src/auth/store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/job-store-org-resolvers.js';
 import { createOrgRegistry } from '../src/orgs.js';
-import { createFactsCache } from '../src/workspace/facts.js';
 import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
@@ -67,17 +66,17 @@ beforeEach(async () => {
         label: 'cli scripting',
         tokenHash: hashToken(token),
     });
-    // What a finished clone leaves: the board refuses a create whose repo is not the caller's ready checkout.
+    // The board refuses a create whose repo it does not track; offline the tracked list is the stored sessions' repos.
     const name = `repo-${randomUUID().slice(0, 8)}`;
     repo = `cli-owner/${name}`;
-    await sql`insert into user_repo (org_id, user_id, repo_owner, repo_name, status)
-              values (${orgId}, ${caller.user.id}, 'cli-owner', ${name}, 'ready')`;
+    await sql`insert into session_branch (org_id, agent, session_id, repo, branch, first_seen, last_seen)
+              values (${orgId}, 'claude-code', ${`cli-${randomUUID()}`}, ${repo}, 'main', now(), now())`;
 
     const ready = Promise.resolve();
     const config = testConfig({ auth: githubAuth() });
     app = await buildApp({
         config,
-        orgs: createOrgRegistry({ sql, ready, config, withStores: true, facts: createFactsCache() }),
+        orgs: createOrgRegistry({ sql, ready, config, withStores: true }),
         auth,
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),

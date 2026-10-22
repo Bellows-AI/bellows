@@ -24,6 +24,20 @@ export interface UseRepos {
     data: ReposPayload | null;
     loading: boolean;
     error: string | null;
+    /** Reads the list again, e.g. from a Retry button. */
+    refresh: () => void;
+}
+
+/** What a page lists as tracked: a confirmed list, or unknown with the reason (null while loading). */
+export function trackedRepos(read: Pick<UseRepos, 'data' | 'error'>): {
+    repos: { owner: string; name: string }[] | null;
+    error: string | null;
+} {
+    if (read.data === null) return { repos: null, error: read.error };
+    if (read.data.repos.length === 0 && read.data.meta.error !== null) {
+        return { repos: null, error: read.data.meta.error };
+    }
+    return { repos: read.data.repos.map(({ owner, name }) => ({ owner, name })), error: null };
 }
 
 /**
@@ -36,7 +50,9 @@ export interface UseRepos {
 export function useRepos(enabled: boolean): UseRepos {
     const [data, setData] = useState<ReposPayload | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState(enabled);
+    const [attempt, setAttempt] = useState(0);
+    const refresh = useCallback(() => setAttempt((n) => n + 1), []);
 
     const load = useCallback(async (signal: AbortSignal) => {
         setLoading(true);
@@ -65,7 +81,7 @@ export function useRepos(enabled: boolean): UseRepos {
         const controller = new AbortController();
         void load(controller.signal);
         return () => controller.abort();
-    }, [enabled, load]);
+    }, [enabled, load, attempt]);
 
-    return { data, loading, error };
+    return { data, loading, error, refresh };
 }

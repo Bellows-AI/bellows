@@ -169,29 +169,12 @@ function workerMethods(
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
- *
- * `hasWorkspaces` is bound the same way, and it decides whether a claim reports a `workspacePath`
- * at all. Without a configured workspace root no directory was ever created, so naming one would
- * hand the driver a path that does not exist — and `docker run -w` silently CREATES a missing
- * workdir, so the runner would start in an empty directory rather than failing the job. That is
- * exactly the case the driver's null check exists to catch, and it only reaches it if the board is
- * honest here.
  */
 export { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 export { CLAIM_PREPARE_SECONDS } from './job-store-claim.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
-    const {
-        sql,
-        orgId,
-        hasWorkspaces = true,
-        ready,
-        env,
-        githubApp = false,
-        plan: planReader,
-        executorConfig,
-        prs,
-    } = deps;
+    const { sql, orgId, ready, env, githubApp = false, plan: planReader, executorConfig, prs } = deps;
     const gate = async () => {
         if (ready) await ready;
     };
@@ -199,7 +182,6 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
     const ctx: JobStoreContext = {
         sql,
         orgId,
-        hasWorkspaces,
         env,
         githubApp,
         planReader,

@@ -1,4 +1,4 @@
-import type { ConnectionView, SkillView, WorkspaceView } from './board.js';
+import type { ConnectionView, SkillView, VisibleRepos, WorkspaceView } from './board.js';
 import type { CliConfig } from './config.js';
 
 /**
@@ -61,27 +61,32 @@ export interface Preflight {
 /** The board's selector for a managed Jira connection on a skill requirement (`GET /api/skills`). */
 const JIRA_SELECTOR = 'jiraConnection';
 
-function repoCheck(repo: string | undefined, workspace: WorkspaceView): PreflightCheck {
+/** `visible` is null when the board's tracked list could not be read: the repo is then unverified, never blocked. */
+function repoCheck(repo: string | undefined, visible: VisibleRepos | null): PreflightCheck {
     const name = repo ?? null;
-    if (workspace.root === null) {
-        return { subject: 'repo', name, status: 'unverified', detail: 'workspaces are off on this board' };
-    }
     if (repo === undefined) {
         return {
             subject: 'repo',
             name,
             status: 'blocked',
-            detail: 'pass --repo: a task runs against a synced repository',
+            detail: 'pass --repo: a task runs against a tracked repository',
         };
     }
-    const row = workspace.repos.find((candidate) => `${candidate.owner}/${candidate.name}` === repo);
-    if (!row)
-        return { subject: 'repo', name, status: 'blocked', detail: `${repo} is not in your selected repositories` };
-    if (row.status !== 'ready') {
-        const error = row.error ? `: ${row.error}` : '';
-        return { subject: 'repo', name, status: 'blocked', detail: `${repo} is ${row.status}, not synced yet${error}` };
+    if (visible === null) {
+        return { subject: 'repo', name, status: 'unverified', detail: 'the tracked repositories could not be read' };
     }
-    return { subject: 'repo', name, status: 'ok', detail: 'synced and ready' };
+    if (visible.repos.some((candidate) => `${candidate.owner}/${candidate.name}` === repo)) {
+        return { subject: 'repo', name, status: 'ok', detail: 'tracked by this board' };
+    }
+    if (visible.meta.error !== null) {
+        return {
+            subject: 'repo',
+            name,
+            status: 'unverified',
+            detail: `${repo} is not in the tracked list, which may be stale: ${visible.meta.error}`,
+        };
+    }
+    return { subject: 'repo', name, status: 'blocked', detail: `${repo} is not tracked by this board` };
 }
 
 function executorCheck(selection: PreflightSelection, workspace: WorkspaceView): PreflightCheck {
@@ -145,10 +150,16 @@ function connectionCheck(id: string, connections: readonly ConnectionView[]): Pr
 
 export function preflightChecks(
     selection: PreflightSelection,
-    reads: { workspace: WorkspaceView; skills: readonly SkillView[]; connections: readonly ConnectionView[] }
+    reads: {
+        workspace: WorkspaceView;
+        /** Null when the list was not read or could not be. */
+        repos: VisibleRepos | null;
+        skills: readonly SkillView[];
+        connections: readonly ConnectionView[];
+    }
 ): Preflight {
     const checks = [
-        repoCheck(selection.repo, reads.workspace),
+        repoCheck(selection.repo, reads.repos),
         executorCheck(selection, reads.workspace),
         ...skillChecks(selection, reads.skills),
         ...(selection.jiraConnection === undefined

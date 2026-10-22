@@ -459,7 +459,7 @@ function noArguments(args: readonly string[], verb: string): void {
 async function runRepoList(args: readonly string[], io: RunIo): Promise<CommandResult> {
     noArguments(args, 'repo list');
     const client = boardFor(io);
-    const discovery = repoDiscovery(await client.listRepos(), await client.workspace());
+    const discovery = repoDiscovery(await client.listRepos());
     return ok(discovery, renderRepos(discovery));
 }
 

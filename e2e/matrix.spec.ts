@@ -535,7 +535,6 @@ const POLLED = [
     '.updated-at',
     '.usage-groups',
     '.toolbar-coverage',
-    '.repo-toolbar-count',
     '.task-verification-counts',
     '.chat-runtime',
     '.task-clock',

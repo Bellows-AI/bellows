@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { LOCAL_ORG_ID } from '../src/config.js';
-import { staticRepoSource } from '../src/github/repo-source.js';
+import { type RepoSource, type StaticRepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import { validateWaitQuery } from '../src/routes/job-field-validation.js';
@@ -182,8 +182,6 @@ function stubStore(
         retry?: RetryRefusal;
         /** What the store answers a queued-command edit with; ok echoes the new command back. */
         edit?: EditCommandResult;
-        /** What the store answers a create with; 'purging' is the manual purge's refusal (#92). */
-        create?: 'purging';
         /** The store recognizes the request's key: it answers the row already made (#589). */
         replayed?: boolean;
         /** The store finds the request's key already used for a different request (#589). */
@@ -279,7 +277,7 @@ function stubStore(
             stub.commands.push(command);
             stub.idempotencies.push(target?.idempotency);
             reuse();
-            return options.create ?? { id: ID, ...(options.replayed ? { replayed: true } : {}) };
+            return { id: ID, ...(options.replayed ? { replayed: true } : {}) };
         },
         async createFollowUp(parentId, command, createdBy, idempotency) {
             boom();
@@ -488,11 +486,19 @@ function stubStore(
     return stub;
 }
 
-async function harnessWith(jobs?: StoreStub, workflows?: WorkflowStore, telemetry = stubTelemetryClient()) {
+/** The repository every create in this file targets: the board tracks it unless a test says otherwise. */
+const TRACKED = { owner: 'acme', name: 'web' };
+
+async function harnessWith(
+    jobs?: StoreStub,
+    workflows?: WorkflowStore,
+    telemetry = stubTelemetryClient(),
+    repos: RepoSource = staticRepoSource([TRACKED, { owner: 'owner', name: 'name' }])
+) {
     const config = testConfig();
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config, jobs, workflows, telemetry }),
+        orgs: staticRegistry({ config, jobs, workflows, telemetry, repos }),
     });
     track(instance);
     return instance;
@@ -550,28 +556,11 @@ describe('POST /api/jobs', () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, '/api/jobs', { command: 'claude -p "fix the build"' });
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'claude -p "fix the build"' });
 
         expect(response.statusCode).toBe(201);
         expect(response.json()).toEqual({ id: ID, status: 'queued' });
         expect(store.commands).toEqual(['claude -p "fix the build"']);
-    });
-
-    it('refuses with PURGE_IN_PROGRESS when the author\u2019s checkout row is being deleted', async () => {
-        // The manual purge (issue #92): the insert transaction takes the author's checkout row's
-        // lock and refuses when it reads `purging` — a task cannot be queued into a checkout that
-        // is coming off the disk.
-        const store = stubStore({ create: 'purging' });
-        const instance = await harnessWith(store);
-
-        const response = await post(instance, '/api/jobs', {
-            command: 'claude -p "fix the build"',
-            repo: 'acme/web',
-            executor: 'main',
-        });
-
-        expect(response.statusCode).toBe(409);
-        expect(response.json().code).toBe('PURGE_IN_PROGRESS');
     });
 
     it.each([
@@ -610,34 +599,118 @@ describe('POST /api/jobs', () => {
         ]);
     });
 
-    it('records no repository and no executor when the body has none', async () => {
+    it('records no executor when the body has none', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi' });
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi' });
 
         expect(response.statusCode).toBe(201);
         expect(store.created).toEqual([
-            { command: 'echo hi', createdBy: null, repo: null, executor: null, executorScope: 'user' },
+            { command: 'echo hi', createdBy: null, repo: 'acme/web', executor: null, executorScope: 'user' },
         ]);
     });
 
-    // Absent and explicit null are the same "not given" — JSON null is what a client that clears
-    // a dropdown sends.
-    it('takes an explicit null as not given', async () => {
+    // Absent and explicit null are the same "not given" for the executor — JSON null is what a
+    // client that clears a dropdown sends.
+    it('takes an explicit null executor as not given', async () => {
         const store = stubStore();
         const instance = await harnessWith(store);
 
         const response = await post(instance, '/api/jobs', {
             command: 'echo hi',
-            repo: null,
+            repo: 'acme/web',
             executor: null,
         });
 
         expect(response.statusCode).toBe(201);
         expect(store.created).toEqual([
-            { command: 'echo hi', createdBy: null, repo: null, executor: null, executorScope: 'user' },
+            { command: 'echo hi', createdBy: null, repo: 'acme/web', executor: null, executorScope: 'user' },
         ]);
+    });
+
+    it.each([
+        ['absent', { command: 'echo hi' }],
+        ['null', { command: 'echo hi', repo: null }],
+    ])('refuses a create whose repo is %s with 400 BAD_REPO, queueing nothing', async (_label, payload) => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', payload);
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_REPO');
+        expect(response.json().error).toContain('repo is required');
+        expect(store.created).toEqual([]);
+    });
+
+    it('queues a create on a tracked repository with no selection row (201)', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.created).toHaveLength(1);
+    });
+
+    it('refuses a create on an untracked repository with 400 UNKNOWN_REPO, writing nothing', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/other' });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('UNKNOWN_REPO');
+        expect(store.created).toEqual([]);
+    });
+
+    it('answers 503, never UNKNOWN_REPO, while the repo list read has failed and the list is empty', async () => {
+        const store = stubStore();
+        const repos = { ...staticRepoSource([]), lastError: () => 'database down' };
+        const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+        expect(store.created).toEqual([]);
+    });
+
+    it('answers 503, not UNKNOWN_REPO, for a repo missing from a stale list while lastError is set', async () => {
+        const store = stubStore();
+        const repos = { ...staticRepoSource([TRACKED]), lastError: () => 'refresh failed' };
+        const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/other' });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.json().code).toBe('UNAVAILABLE');
+        expect(store.created).toEqual([]);
+    });
+
+    it('accepts a repo that became visible after the cached read: one invalidate, then 201', async () => {
+        const store = stubStore();
+        const base = staticRepoSource([TRACKED]);
+        let fresh = false;
+        const visible = [
+            { ...TRACKED, private: false, defaultBranch: null, pushedAt: null },
+            { owner: 'acme', name: 'late', private: false, defaultBranch: null, pushedAt: null },
+        ];
+        const repos: StaticRepoSource = {
+            ...base,
+            list: async () => (fresh ? visible : base.snapshot()),
+            invalidate: () => {
+                fresh = true;
+                base.invalidate();
+            },
+        };
+        const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
+
+        const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/late' });
+
+        expect(response.statusCode).toBe(201);
+        expect(base.invalidations()).toBe(1);
     });
 
     it('stamps the organization scope beside the executor label (issue 391)', async () => {
@@ -645,6 +718,7 @@ describe('POST /api/jobs', () => {
         const instance = await harnessWith(store);
 
         const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
             command: 'echo hi',
             executor: 'team-runner',
             executorScope: 'org',
@@ -655,7 +729,7 @@ describe('POST /api/jobs', () => {
             {
                 command: 'echo hi',
                 createdBy: null,
-                repo: null,
+                repo: 'acme/web',
                 executor: 'team-runner',
                 executorScope: 'org',
             },
@@ -667,7 +741,12 @@ describe('POST /api/jobs', () => {
         ['a non-string scope', 7],
     ])('refuses %s as executorScope', async (_label, executorScope) => {
         const instance = await harnessWith(stubStore());
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', executor: 'x', executorScope });
+        const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'echo hi',
+            executor: 'x',
+            executorScope,
+        });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_EXECUTOR_SCOPE');
     });
@@ -694,7 +773,7 @@ describe('POST /api/jobs', () => {
         ['a non-string executor', 7],
     ])('refuses %s', async (_label, executor) => {
         const instance = await harnessWith(stubStore());
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', executor });
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', executor });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_EXECUTOR');
     });
@@ -752,7 +831,11 @@ describe('POST /api/jobs workflow resolution', () => {
         const workflows = stubWorkflows();
         const instance = await harnessWith(jobs, workflows);
 
-        const response = await post(instance, '/api/jobs', { command: 'fix it', workflow: 'fix-issue' });
+        const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'fix it',
+            workflow: 'fix-issue',
+        });
 
         expect(response.statusCode).toBe(201);
         expect(workflows.calls.findByName).toEqual(['fix-issue']);
@@ -769,7 +852,7 @@ describe('POST /api/jobs workflow resolution', () => {
         const workflows = stubWorkflows({ found: null });
         const instance = await harnessWith(jobs, workflows);
 
-        const response = await post(instance, '/api/jobs', { command: 'fix it', workflow: 'ghost' });
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'fix it', workflow: 'ghost' });
 
         expect(response.statusCode).toBe(404);
         expect(response.json().code).toBe('UNKNOWN_WORKFLOW');
@@ -796,6 +879,7 @@ describe('POST /api/jobs workflow resolution', () => {
         const instance = await harnessWith(jobs, stubWorkflows());
 
         const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
             command: 'echo hi',
             defaultWorkflow: { reviewReconciliation: true, mergeConflictAutofix: true },
         });
@@ -811,7 +895,11 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', skills: ['github', 'jira'] });
+        const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'echo hi',
+            skills: ['github', 'jira'],
+        });
 
         expect(response.statusCode).toBe(201);
         expect(jobs.skillSelections).toEqual([['github', 'jira']]);
@@ -821,8 +909,8 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
 
-        await post(instance, '/api/jobs', { command: 'echo hi' });
-        await post(instance, '/api/jobs', { command: 'echo hi', skills: null });
+        await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi' });
+        await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', skills: null });
 
         expect(jobs.skillSelections).toEqual([[], []]);
     });
@@ -831,7 +919,11 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', skills: ['github', 'ghost'] });
+        const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'echo hi',
+            skills: ['github', 'ghost'],
+        });
 
         expect(response.statusCode).toBe(404);
         expect(response.json().code).toBe('UNKNOWN_SKILL');
@@ -850,7 +942,7 @@ describe('POST /api/jobs skill selection', () => {
         const jobs = stubStore();
         const instance = await harnessWith(jobs, stubWorkflows());
 
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', skills });
+        const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi', skills });
 
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_SKILLS');
@@ -884,7 +976,11 @@ describe('POST /api/jobs workflow parameters', () => {
     it('refuses a missing required param with BAD_WORKFLOW_PARAMS and queues nothing', async () => {
         const { jobs, instance } = await boot();
         // Exactly the issue's repro: "fix the bug" with fix-issue selected used to launch.
-        const response = await post(instance, '/api/jobs', { command: 'fix the login bug', workflow: 'fix-issue' });
+        const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'fix the login bug',
+            workflow: 'fix-issue',
+        });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
         expect(jobs.created).toEqual([]);
@@ -893,6 +989,7 @@ describe('POST /api/jobs workflow parameters', () => {
     it('refuses a malformed param value with BAD_WORKFLOW_PARAMS', async () => {
         const { jobs, instance } = await boot();
         const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
             command: 'fix the login bug',
             workflow: 'fix-issue',
             workflowParams: { issue: '42' },
@@ -906,7 +1003,11 @@ describe('POST /api/jobs workflow parameters', () => {
         const jobs = stubStore();
         const workflows = stubWorkflows({ found: null });
         const instance = await harnessWith(jobs, workflows);
-        const response = await post(instance, '/api/jobs', { command: 'echo hi', workflowParams: { issue: '#42' } });
+        const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'echo hi',
+            workflowParams: { issue: '#42' },
+        });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_WORKFLOW_PARAMS');
         expect(jobs.created).toEqual([]);
@@ -915,6 +1016,7 @@ describe('POST /api/jobs workflow parameters', () => {
     it('builds the root command from the entry prompt, carrying the param and the member command', async () => {
         const { jobs, instance } = await boot();
         const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
             command: 'fix the login bug',
             workflow: 'fix-issue',
             workflowParams: { issue: '#127' },
@@ -932,6 +1034,7 @@ describe('POST /api/jobs workflow parameters', () => {
         const instance = await harnessWith(jobs, workflows);
 
         const forged = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
             command: 'fix the login bug',
             workflow: 'fix-issue',
             workflowParams: { issue: '#127' },
@@ -943,7 +1046,11 @@ describe('POST /api/jobs workflow parameters', () => {
 
         // A body naming no workflow ignores a client-supplied workflowName entirely: objective
         // mode, no workflow target at all.
-        const ghost = await post(instance, '/api/jobs', { command: 'echo hi', workflowName: 'ghost' });
+        const ghost = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
+            command: 'echo hi',
+            workflowName: 'ghost',
+        });
         expect(ghost.statusCode).toBe(201);
         expect(jobs.workflowTargets).toHaveLength(1);
     });
@@ -961,6 +1068,7 @@ describe('POST /api/jobs workflow parameters', () => {
         const instance = await harnessWith(jobs, workflows);
         // The raw command is under the cap; the filled entry prompt is not.
         const response = await post(instance, '/api/jobs', {
+            repo: 'acme/web',
             command: 'x'.repeat(16_384),
             workflow: 'fix-issue',
         });
@@ -1914,7 +2022,12 @@ describe('lifecycle actor attribution', () => {
         const store = stubStore();
         const instance = await buildApp({
             config,
-            orgs: staticRegistry({ config, jobs: store, telemetry: stubTelemetryClient() }),
+            orgs: staticRegistry({
+                config,
+                jobs: store,
+                telemetry: stubTelemetryClient(),
+                repos: staticRepoSource([TRACKED]),
+            }),
             auth,
         });
         track(instance);
@@ -1932,14 +2045,14 @@ describe('lifecycle actor attribution', () => {
     it('create records the signed-in caller as the author', async () => {
         const { instance, store, caller, cookie } = await signedInHarness();
 
-        const response = await postAs(instance, '/api/jobs', cookie, { command: 'echo hi' });
+        const response = await postAs(instance, '/api/jobs', cookie, { command: 'echo hi', repo: 'acme/web' });
 
         expect(response.statusCode).toBe(201);
         expect(store.created).toEqual([
             {
                 command: 'echo hi',
                 createdBy: caller.user.id,
-                repo: null,
+                repo: 'acme/web',
                 executor: null,
                 executorScope: 'user',
             },
@@ -2208,10 +2321,20 @@ describe('POST /api/jobs/:id/follow-up', () => {
         expect(store.followUps).toEqual([{ parentId: ID, command: 'again', createdBy: null }]);
     });
 
+    // Create checks the tracked list; a follow-up inherits the root's repo and is not re-checked.
+    it('queues a follow-up on a thread whose repo has left the tracked list (201)', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store, undefined, stubTelemetryClient(), staticRepoSource([]));
+
+        const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.followUps).toHaveLength(1);
+    });
+
     it.each([
         ['a parent that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],
-        ['a checkout that is being deleted', 'purging', 'PURGE_IN_PROGRESS'],
     ])('answers 409 for %s', async (_label, verdict, code) => {
         const instance = await harnessWith(stubStore({ followUp: verdict as FollowUpRefusal }));
         const response = await post(instance, `/api/jobs/${ID}/follow-up`, { command: 'again' });
@@ -2234,10 +2357,19 @@ describe('POST /api/jobs/:id/retry', () => {
         expect(store.retries).toEqual([{ id: ID, createdBy: null }]);
     });
 
+    it('queues a retry on a thread whose repo has left the tracked list (201)', async () => {
+        const store = stubStore();
+        const instance = await harnessWith(store, undefined, stubTelemetryClient(), staticRepoSource([]));
+
+        const response = await post(instance, `/api/jobs/${ID}/retry`, {});
+
+        expect(response.statusCode).toBe(201);
+        expect(store.retries).toHaveLength(1);
+    });
+
     it.each([
         ['a task that is still moving', 'not_finished', 'NOT_FINISHED'],
         ['a task the user has marked done', 'task_done', 'TASK_DONE'],
-        ['a checkout that is being deleted', 'purging', 'PURGE_IN_PROGRESS'],
     ])('answers 409 for %s', async (_label, verdict, code) => {
         const instance = await harnessWith(stubStore({ retry: verdict as RetryRefusal }));
         const response = await post(instance, `/api/jobs/${ID}/retry`, {});
@@ -3092,7 +3224,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
 // answers unavailable rather than pretending the command was queued.
 it('answers 503 when the org runtime has no job store', async () => {
     const instance = await harnessWith();
-    const response = await post(instance, '/api/jobs', { command: 'echo hi' });
+    const response = await post(instance, '/api/jobs', { repo: 'acme/web', command: 'echo hi' });
     expect(response.statusCode).toBe(503);
     expect(response.json().code).toBe('JOBS_UNAVAILABLE');
 });
@@ -3399,7 +3531,7 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
         instance.inject({ method: 'POST', url, payload: payload as object, headers: { 'idempotency-key': key } });
 
     const CASES = [
-        ['create', '/api/jobs', { command: 'echo hi' }],
+        ['create', '/api/jobs', { command: 'echo hi', repo: 'acme/web' }],
         ['follow-up', `/api/jobs/${ID}/follow-up`, { command: 'again' }],
         ['retry', `/api/jobs/${ID}/retry`, {}],
     ] as const;
@@ -3452,7 +3584,7 @@ describe('Idempotency-Key on create, follow-up and retry (#589)', () => {
     ])('refuses a key that is %s before touching the store', async (_label, key) => {
         const store = stubStore();
         const instance = await harnessWith(store);
-        const response = await keyed(instance, '/api/jobs', { command: 'echo hi' }, key);
+        const response = await keyed(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' }, key);
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_IDEMPOTENCY_KEY');
         expect(store.created).toEqual([]);
@@ -3632,7 +3764,7 @@ describe('error-path mapping', () => {
 
     // A down store answers 503, so the caller retries.
     it.each<[string, Request, string | null]>([
-        ['a create', POST('/api/jobs', { command: 'echo hi' }), 'UNAVAILABLE'],
+        ['a create', POST('/api/jobs', { command: 'echo hi', repo: 'acme/web' }), 'UNAVAILABLE'],
         ['a stop', POST(`${JOB}/stop`, {}), 'UNAVAILABLE'],
         ['a removal', POST(`${JOB}/remove`, {}), 'UNAVAILABLE'],
         ['a reopen', POST(`${JOB}/reopen`, {}), 'UNAVAILABLE'],

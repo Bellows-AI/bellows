@@ -183,98 +183,14 @@
     }
 
     /* The repository setup page (issue 181, recomposed on concept 06 by issue 282): the header's
-       scope context, the four summary cards, a labeled search row, the selection bar, the
-       full-width table, and the selected repository's detail below it — the DOM order is the
+       scope context, a labeled search row, the full-width table of tracked repositories, and
+       the selected repository's environment detail below it — the DOM order is the
        reading order at every width. */
     .repo-scope {
         background: var(--surface-raised);
         border: 1px solid var(--line);
         border-radius: var(--radius-xl);
         padding: 12px 16px;
-    }
-
-    .repo-cards {
-        display: grid;
-        gap: 16px;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        list-style: none;
-        margin: 0;
-        padding: 0;
-    }
-
-    @media (max-width: 900px) {
-        .repo-cards {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-    }
-
-    @media (max-width: 640px) {
-        .repo-cards {
-            grid-template-columns: minmax(0, 1fr);
-        }
-    }
-
-    /* Top-aligned, so the four labels share a line whatever a caption adds below its figure. */
-    .repo-card {
-        align-items: flex-start;
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-xl);
-        display: flex;
-        gap: 12px;
-        min-width: 0;
-        padding: 16px;
-    }
-
-    /* The card's glyph on its lamp's wash — decoration beside the words, never the message. */
-    .repo-card-disc {
-        align-items: center;
-        border-radius: 50%;
-        display: inline-flex;
-        flex: none;
-        height: 40px;
-        justify-content: center;
-        width: 40px;
-    }
-
-    .repo-card-disc-accent {
-        background: var(--accent-wash);
-        color: var(--accent);
-    }
-
-    .repo-card-disc-ok {
-        background: var(--ok-wash);
-        color: var(--lamp-run);
-    }
-
-    .repo-card-disc-warn {
-        background: var(--warn-wash);
-        color: var(--lamp-wait);
-    }
-
-    .repo-card-disc-bad {
-        background: var(--bad-wash);
-        color: var(--lamp-stop);
-    }
-
-    .repo-card-label,
-    .repo-card-caption {
-        color: var(--ink-muted);
-        font-size: 13px;
-        line-height: 18px;
-        margin: 0;
-    }
-
-    .repo-card-label {
-        font-weight: 500;
-    }
-
-    .repo-card-value {
-        font-size: 28px;
-        font-variant-numeric: tabular-nums;
-        font-weight: 600;
-        line-height: 34px;
-        margin: 0;
     }
 
     .repo-search {
@@ -295,25 +211,6 @@
         min-width: 12ch;
     }
 
-    /* The selection bar (concept 06): the count and ceiling sentence, and Save selection at the
-       trailing edge; it wraps under the sentence rather than squeezing the label. */
-    .repo-toolbar {
-        align-items: center;
-        border-top: 1px solid var(--line);
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        justify-content: space-between;
-        margin: 12px 0;
-        padding-top: 12px;
-    }
-
-    .repo-toolbar-count {
-        color: var(--ink-muted);
-        font-size: 13px;
-        margin: 0;
-    }
-
     /* An unmeasured fact, in words: quieter than a measurement, never a zero. */
     .repo-na {
         color: var(--ink-muted);
@@ -321,36 +218,11 @@
         font-size: 13px;
     }
 
-    /* The selected repository: checkout facts beside its environment scope and editor once the
-       width holds both, stacked (facts first) below that. */
-    .repo-detail-body {
-        display: grid;
-        gap: 24px;
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    .repo-detail-body h3 {
-        margin: 0 0 8px;
-    }
-
-    /* The facts read label → value at every width, not spread across a stacked full row. */
-    .repo-detail-body .kv {
-        grid-template-columns: max-content minmax(0, 1fr);
-    }
-
-    @media (min-width: 1100px) {
-        .repo-detail-body {
-            align-items: start;
-            grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-        }
-    }
-
-    /* The repository table (issue 223): fixed, sized columns so Repository, Checkout status and
-       Configure all fit at common desktop widths instead of the shared `.data` nowrap pushing
-       Configure past the panel edge. Column order mirrors the <thead> in RepositorySetup.tsx:
-       Enabled, Repository, Checkout status, Branch, Last commit, Size, Configure. */
+    /* The repository table (issue 223): fixed, sized columns so Repository, Branch and Configure
+       all fit at common desktop widths instead of the shared `.data` nowrap pushing Configure past
+       the panel edge. Column order mirrors the <thead> in RepositorySetup.tsx. */
     table.repo-table {
-        min-width: 800px;
+        min-width: 480px;
         table-layout: fixed;
     }
 
@@ -364,29 +236,9 @@
         white-space: normal;
     }
 
-    table.repo-table th:nth-child(1),
-    table.repo-table td:nth-child(1) {
-        width: 76px;
-    }
-
-    table.repo-table th:nth-child(3),
-    table.repo-table td:nth-child(3) {
-        width: 150px;
-    }
-
-    table.repo-table th:nth-child(4),
-    table.repo-table td:nth-child(4) {
-        width: 110px;
-    }
-
-    table.repo-table th:nth-child(5),
-    table.repo-table td:nth-child(5) {
-        width: 110px;
-    }
-
-    table.repo-table th:nth-child(6),
-    table.repo-table td:nth-child(6) {
-        width: 110px;
+    table.repo-table th:nth-child(2),
+    table.repo-table td:nth-child(2) {
+        width: 160px;
     }
 
     /* Configure stays reachable without hunting for it: pinned to the wrap's trailing edge, with
@@ -449,11 +301,7 @@
            same as a class), so the cascade's source order — this rule comes later — decides
            instead of the pins winning on specificity alone, same trap the env editor's own
            narrow-width reset already avoids for its first/last-child pins. */
-        table.repo-table td:nth-child(1),
-        table.repo-table td:nth-child(3),
-        table.repo-table td:nth-child(4),
-        table.repo-table td:nth-child(5),
-        table.repo-table td:nth-child(6) {
+        table.repo-table td:nth-child(2) {
             width: auto;
         }
 
@@ -524,7 +372,6 @@
 
     /* Action words never wrap (acceptance at 1024px): a button grows, its label stays whole. */
     .settings-actions button,
-    .repo-toolbar button,
     .repo-table button {
         white-space: nowrap;
     }
@@ -815,7 +662,6 @@
         .repo-search input,
         .repo-search button,
         .repo-table button,
-        .repo-save,
         .settings-actions button,
         .unsaved-actions button,
         .env-add,

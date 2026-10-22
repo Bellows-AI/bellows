@@ -249,7 +249,7 @@ async function materializeOnboarding(
             await ctx.store.replaceTrackedRepos(orgId, names);
             rewroteAllowlist.push(orgId);
         }
-        await startSession(ctx.sessionDeps, request, reply, caller);
+        await startSession(ctx.sessionDeps, reply, caller);
         await refreshOrgRepoCaches(ctx.orgs, orgIds);
         return caller;
     } catch (e) {

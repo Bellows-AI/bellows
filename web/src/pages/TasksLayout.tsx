@@ -1,4 +1,5 @@
 import { Outlet, useOutletContext } from 'react-router-dom';
+import { type UseRepos, useRepos } from '../api/useRepos.js';
 import { useWorkspace } from '../api/useWorkspace.js';
 import type { UseWorkspace } from '../api/useWorkspace.js';
 import { useShell } from '../components/AppShell.js';
@@ -19,6 +20,7 @@ import type { ShellContext } from '../components/AppShell.js';
  */
 export interface TasksPageContext extends ShellContext {
     workspace: UseWorkspace;
+    repos: UseRepos;
 }
 
 /** Typed access to what this layout route publishes. */
@@ -29,6 +31,7 @@ export function useTasksPage(): TasksPageContext {
 export function TasksLayout() {
     const shell = useShell();
     const workspace = useWorkspace();
-    const context: TasksPageContext = { ...shell, workspace };
+    const repos = useRepos(true);
+    const context: TasksPageContext = { ...shell, workspace, repos };
     return <Outlet context={context} />;
 }
