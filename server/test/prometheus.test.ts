@@ -57,6 +57,18 @@ describe('prometheus exposition', () => {
         expect(text).toContain('x_read_failures_total{source="occupancy"} 1');
     });
 
+    it('bounds a scrape-time read that never returns: omits it, aborts its signal, counts the failure', async () => {
+        const registry = createRegistry({ failures: 'x_read_failures_total', readDeadlineMs: 20 });
+        let seen: AbortSignal | undefined;
+        registry.collect('stuck', (signal) => {
+            seen = signal;
+            return new Promise(() => undefined);
+        });
+        const text = await registry.render();
+        expect(text).toContain('x_read_failures_total{source="stuck"} 1');
+        expect(seen?.aborted).toBe(true);
+    });
+
     it('timed observes exactly once on success and on failure, and rethrows', async () => {
         const registry = createRegistry();
         const h = registry.histogram('t_seconds', 'x', ['outcome'], [1]);

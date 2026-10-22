@@ -39,7 +39,7 @@ if (missing.length === config.passEnv.length) {
 }
 
 // The series every call below reports into; served only when DRIVER_METRICS_PORT is set (issue #831).
-const metrics = createDriverMetrics();
+const metrics = createDriverMetrics({ boardUrl: config.boardUrl });
 const board = createBoard({
     url: config.boardUrl,
     leaseSeconds: config.leaseSeconds,

@@ -213,15 +213,16 @@ const volumeCreatedAt = async (execDocker: ExecDocker, name: string): Promise<nu
     return read.kind === 'absent' ? null : read.value;
 };
 
-const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[]> => {
+const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[] | null> => {
     const groups: Groups = new Map();
     try {
         await scanScope(execDocker, SERVICE_LABEL, groups);
         await scanScope(execDocker, ROLE_LABEL, groups);
         await scanVolumes(execDocker, groups);
     } catch {
-        // Any one list refused: the round reaps nothing rather than a group missing its pieces.
-        return [];
+        // Any one list refused: the round reaps nothing rather than a group missing its pieces, and
+        // says so (null), so an empty scan is never read as "nothing is orphaned".
+        return null;
     }
     return [...groups.values()];
 };

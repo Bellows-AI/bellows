@@ -7,16 +7,46 @@ const LABEL_VALUES = /="([^"]*)"/g;
 
 const labelValues = (text: string): string[] => [...text.matchAll(LABEL_VALUES)].map((m) => m[1]!);
 
-describe('endpoint normalisation', () => {
+const BOARD = 'http://board:8080';
+
+describe('endpoint normalisation: a finite allowlist relative to the board base', () => {
     it.each([
-        [`http://board:8080/api/jobs/${UUID}/heartbeat`, '/api/jobs/:id/heartbeat'],
-        [`http://board:8080/api/jobs/${UUID}/heartbeat?leaseSeconds=30`, '/api/jobs/:id/heartbeat'],
-        ['http://board:8080/api/jobs/claim', '/api/jobs/claim'],
-        [`/api/reclaims/${UUID}/ack`, '/api/reclaims/:id/ack'],
-        ['http://board/api/jobs/12345/complete', '/api/jobs/:id/complete'],
+        [`${BOARD}/api/jobs/${UUID}/heartbeat`, '/api/jobs/:id/heartbeat'],
+        [`${BOARD}/api/jobs/${UUID}/heartbeat?leaseSeconds=30`, '/api/jobs/:id/heartbeat'],
+        [`${BOARD}/api/jobs/claim`, '/api/jobs/claim'],
+        [`${BOARD}/api/jobs/leases`, '/api/jobs/leases'],
+        [`${BOARD}/api/reclaims/${UUID}/ack`, '/api/reclaims/:id/ack'],
+        [`${BOARD}/api/jobs/${UUID.toUpperCase()}/artifact/chunk?n=1`, '/api/jobs/:id/artifact/chunk'],
+        [`${BOARD}/api/jobs/abc123/checkpoint/chunk`, '/api/jobs/:id/checkpoint/chunk'],
+        // Not on the list: folded, whatever the segments look like.
+        [`${BOARD}/api/jobs/12345/not-an-endpoint`, 'other'],
+        [`${BOARD}/api/private-org/secret-name`, 'other'],
+        [`${BOARD}/api/jobs/${UUID}/heartbeat/extra`, 'other'],
+        [`${BOARD}/elsewhere`, 'other'],
         ['not a url at all', 'other'],
     ])('%s -> %s', (url, expected) => {
-        expect(endpointOf(url)).toBe(expected);
+        expect(endpointOf(url, BOARD)).toBe(expected);
+    });
+
+    it('strips a base path first, so a path-prefixed board never puts the prefix in a label', () => {
+        const base = 'http://board/api/private-org';
+        expect(endpointOf(`${base}/api/jobs/claim`, base)).toBe('/api/jobs/claim');
+        expect(endpointOf(`${base}/api/jobs/${UUID}/complete`, base)).toBe('/api/jobs/:id/complete');
+        expect(endpointOf('http://board/api/jobs/claim', base)).toBe('other');
+    });
+
+    it('never lets a lowercase id or an unlisted segment reach a label', async () => {
+        const base = 'http://board/api/private-org';
+        const metrics = createDriverMetrics({
+            boardUrl: base,
+            fetch: async () => new Response('', { status: 200 }),
+        });
+        await metrics.fetch(`${base}/api/jobs/claim`);
+        await metrics.fetch(`${base}/api/jobs/deadbeefdeadbeef/surprise`);
+        const text = await metrics.render();
+        expect(text).toContain('endpoint="/api/jobs/claim"');
+        expect(text).not.toContain('private-org');
+        expect(text).not.toContain('deadbeef');
     });
 });
 
@@ -69,8 +99,8 @@ describe('status class', () => {
 describe('the board fetch wrapper', () => {
     it('observes a response by endpoint and status class, and hands the response back untouched', async () => {
         const response = new Response('{}', { status: 409 });
-        const metrics = createDriverMetrics({ fetch: async () => response });
-        expect(await metrics.fetch(`http://board/api/jobs/${UUID}/heartbeat`, { method: 'POST' })).toBe(response);
+        const metrics = createDriverMetrics({ boardUrl: BOARD, fetch: async () => response });
+        expect(await metrics.fetch(`${BOARD}/api/jobs/${UUID}/heartbeat`, { method: 'POST' })).toBe(response);
         const text = await metrics.render();
         expect(text).toContain(
             'factory_driver_board_request_duration_seconds_count{endpoint="/api/jobs/:id/heartbeat",status_class="4xx"} 1'
@@ -81,11 +111,12 @@ describe('the board fetch wrapper', () => {
     it('records a thrown fetch as error exactly once and rethrows it', async () => {
         const failure = new TypeError('fetch failed');
         const metrics = createDriverMetrics({
+            boardUrl: BOARD,
             fetch: async () => {
                 throw failure;
             },
         });
-        await expect(metrics.fetch('http://board/api/jobs/claim')).rejects.toBe(failure);
+        await expect(metrics.fetch(`${BOARD}/api/jobs/claim`)).rejects.toBe(failure);
         const text = await metrics.render();
         expect(text).toContain('endpoint="/api/jobs/claim",status_class="error"} 1');
     });
@@ -99,7 +130,7 @@ describe('the kubernetes request wrapper', () => {
             seen.push(args);
             return reply;
         };
-        const metrics = createDriverMetrics();
+        const metrics = createDriverMetrics({ boardUrl: BOARD });
         const options = { signal: new AbortController().signal, timeoutMs: 5 };
         const body = { a: 1 };
         const wrapped = metrics.k8s(inner, 'runner');
@@ -117,7 +148,7 @@ describe('the kubernetes request wrapper', () => {
 
     it('records a rejection once as error and rethrows it', async () => {
         const failure = new Error('socket hang up');
-        const metrics = createDriverMetrics();
+        const metrics = createDriverMetrics({ boardUrl: BOARD });
         const wrapped = metrics.k8s(async () => {
             throw failure;
         }, 'reaper');
@@ -127,7 +158,7 @@ describe('the kubernetes request wrapper', () => {
     });
 
     it('records an aborted call as error', async () => {
-        const metrics = createDriverMetrics();
+        const metrics = createDriverMetrics({ boardUrl: BOARD });
         const controller = new AbortController();
         controller.abort();
         const wrapped = metrics.k8s(async (_m, _p, _b, options) => {
@@ -145,7 +176,7 @@ describe('the docker exec wrapper', () => {
     it('counts a command by outcome with a closed vocabulary and forwards its result and options', async () => {
         const options = { timeout: 5 };
         let forwarded: unknown;
-        const metrics = createDriverMetrics();
+        const metrics = createDriverMetrics({ boardUrl: BOARD });
         const wrapped = metrics.docker(async (_args, o) => {
             forwarded = o;
             return { stdout: 'ok' };
@@ -165,7 +196,7 @@ describe('the docker exec wrapper', () => {
 
 describe('the step and reaper observers', () => {
     it('exposes step durations by kind and outcome and the reaper sweep series', async () => {
-        const metrics = createDriverMetrics();
+        const metrics = createDriverMetrics({ boardUrl: BOARD });
         metrics.step('sync', 'ok', 1.5);
         metrics.reaper.sweep('aborted', 0.2);
         metrics.reaper.scanned('groups', 3);

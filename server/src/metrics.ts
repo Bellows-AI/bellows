@@ -35,7 +35,9 @@ export interface ServerMetricsDeps {
     /** The configured budgets, exported as limits. */
     admission: AdmissionBudgets;
     /** One bounded read of what runs now; a rejection omits the occupancy samples. */
-    occupancy: () => Promise<AdmissionOccupancy>;
+    occupancy: (signal: AbortSignal) => Promise<AdmissionOccupancy>;
+    /** The whole scrape-time read's deadline, connection wait included; defaults to the registry's. */
+    readDeadlineMs?: number;
 }
 
 const STATUS_CLASS_DIVISOR = 100;
@@ -68,11 +70,14 @@ const occupancyFamilies = (read: AdmissionOccupancy): GaugeFamily[] => [
 /** The limits need no read, so they survive a failed occupancy read; the occupancy samples do not. */
 function registerAdmission(registry: Registry, deps: ServerMetricsDeps): void {
     registry.collect('admission_limits', async () => [limitFamily(deps.admission)]);
-    registry.collect('admission', async () => occupancyFamilies(await deps.occupancy()));
+    registry.collect('admission', async (signal) => occupancyFamilies(await deps.occupancy(signal)));
 }
 
 export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
-    const registry = createRegistry({ failures: 'factory_metrics_read_failures_total' });
+    const registry = createRegistry({
+        failures: 'factory_metrics_read_failures_total',
+        ...(deps.readDeadlineMs === undefined ? {} : { readDeadlineMs: deps.readDeadlineMs }),
+    });
     const http = registry.histogram(
         'factory_http_request_duration_seconds',
         'Board HTTP request duration; the rate of a route is its _count.',

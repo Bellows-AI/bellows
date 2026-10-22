@@ -76,7 +76,10 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     void prepareArtifactBackend(artifacts, (m) => console.log(`[artifacts] ${m}`));
     // Prometheus series for the board (issue #831): the claim reports into them, `GET /api/metrics`
     // serves them, and the background loops below are wrapped with `metrics.timedPass`.
-    const metrics = createServerMetrics({ admission: config.admission, occupancy: () => admissionOccupancy(sql) });
+    const metrics = createServerMetrics({
+        admission: config.admission,
+        occupancy: (signal) => admissionOccupancy(sql, { signal }),
+    });
     const orgs = createOrgRegistry({ sql, ready, config, withStores: true, artifacts, claimMetrics: metrics.claim });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is

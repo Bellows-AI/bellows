@@ -31,10 +31,10 @@ export interface Registry {
     counter(name: string, help: string, labelNames?: readonly string[]): Counter;
     histogram(name: string, help: string, labelNames: readonly string[], buckets: readonly number[]): Histogram;
     /**
-     * Gauges read per scrape. A read that throws omits its samples — never a zero — and counts a
-     * failure under `source`.
+     * Gauges read per scrape. A read that throws, or outlives the registry's deadline (its `signal`
+     * aborts then), omits its samples — never a zero — and counts a failure under `source`.
      */
-    collect(source: string, read: () => Promise<readonly GaugeFamily[]>): void;
+    collect(source: string, read: (signal: AbortSignal) => Promise<readonly GaugeFamily[]>): void;
     render(): Promise<string>;
 }
 
@@ -132,9 +132,28 @@ function gaugeLines(family: GaugeFamily): string[] {
     return [...header(family.name, family.help, 'gauge'), ...samples];
 }
 
-export function createRegistry(options: { failures?: string } = {}): Registry {
+const DEFAULT_READ_DEADLINE_MS = 2000;
+
+/** `read` raced against a deadline that also aborts its signal, so a read stuck on a connection is let go. */
+async function readWithin<T>(read: (signal: AbortSignal) => Promise<T>, deadlineMs: number): Promise<T> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error(`the read outlived its ${deadlineMs} ms deadline`));
+        }, deadlineMs);
+    });
+    try {
+        return await Promise.race([read(controller.signal), expired]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+export function createRegistry(options: { failures?: string; readDeadlineMs?: number } = {}): Registry {
     const families: Family[] = [];
-    const sources: { source: string; read: () => Promise<readonly GaugeFamily[]> }[] = [];
+    const sources: { source: string; read: (signal: AbortSignal) => Promise<readonly GaugeFamily[]> }[] = [];
     const failures = counterFamily(
         options.failures ?? 'metrics_read_failures_total',
         'Scrape-time reads that failed; their samples are omitted, never reported as zero.',
@@ -156,7 +175,8 @@ export function createRegistry(options: { failures?: string } = {}): Registry {
             const gauges: string[] = [];
             for (const { source, read } of sources) {
                 try {
-                    for (const family of await read()) gauges.push(...gaugeLines(family));
+                    for (const family of await readWithin(read, options.readDeadlineMs ?? DEFAULT_READ_DEADLINE_MS))
+                        gauges.push(...gaugeLines(family));
                 } catch {
                     failures.inc({ source });
                 }

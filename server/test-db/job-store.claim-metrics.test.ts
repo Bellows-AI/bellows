@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
+import { createServerMetrics } from '../src/metrics.js';
 import { createJobStore } from '../src/db/job-store.js';
 import {
     admissionLockKey,
@@ -130,6 +131,51 @@ describe.skipIf(!enabled)('claim observations', () => {
     });
 });
 
+describe.skipIf(!enabled)('claim wait includes the root lock wait', () => {
+    it('reports queued-to-claimed at acquisition, after a lock held by another claimer for ~2 s', async () => {
+        const { seen, metrics } = observer();
+        const id = await waiting(0);
+        const holder = await sql.reserve();
+        const HELD_MS = 2000;
+        try {
+            await holder`select pg_advisory_lock(hashtextextended(${id}::text, 0))`;
+            const claiming = storeWith(metrics).claim('w1', LEASE_SECONDS);
+            await new Promise((resolve) => setTimeout(resolve, HELD_MS));
+            await holder`select pg_advisory_unlock_all()`;
+            expect((await claiming)?.id).toBe(id);
+        } finally {
+            await holder`select pg_advisory_unlock_all()`;
+            holder.release();
+        }
+        expect(seen.waits).toHaveLength(1);
+        expect(seen.waits[0]!.seconds).toBeGreaterThanOrEqual(HELD_MS / 1000 - 0.2);
+        expect(seen.lockWaits[0]!).toBeGreaterThanOrEqual(HELD_MS / 1000 - 0.2);
+    });
+});
+
+describe.skipIf(!enabled)('a scrape while the pool is exhausted', () => {
+    it('returns within its deadline, without occupancy samples, counting the failure', async () => {
+        const pool = postgres(process.env.DATABASE_URL!, { max: 1 });
+        const held = await pool.reserve();
+        try {
+            const metrics = createServerMetrics({
+                admission: { global: 8 },
+                occupancy: (signal) => admissionOccupancy(pool, { signal }),
+                readDeadlineMs: 300,
+            });
+            const started = Date.now();
+            const text = await metrics.render();
+            expect(Date.now() - started).toBeLessThan(3000);
+            expect(text).not.toContain('factory_admission_running{');
+            expect(text).toContain('factory_metrics_read_failures_total{source="admission"} 1');
+            expect(text).toContain('factory_admission_limit{scope="global"} 8');
+        } finally {
+            held.release();
+            await pool.end({ timeout: 2 });
+        }
+    });
+});
+
 describe.skipIf(!enabled)('admission occupancy', () => {
     const running = (org: string, repo: string | null, extra: Partial<Parameters<typeof craftJob>[1]> = {}) =>
         craftJob({ sql, org, author: '' }, { author: null, repo, status: 'running', lease: 'live', ...extra });
@@ -158,7 +204,7 @@ describe.skipIf(!enabled)('admission occupancy', () => {
         try {
             await holder`begin`;
             await holder`lock table job in access exclusive mode`;
-            await expect(admissionOccupancy(sql, 200)).rejects.toThrow(/statement timeout/);
+            await expect(admissionOccupancy(sql, { timeoutMs: 200 })).rejects.toThrow(/statement timeout/);
         } finally {
             await holder`rollback`;
             holder.release();

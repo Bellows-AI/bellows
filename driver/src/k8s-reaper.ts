@@ -173,7 +173,7 @@ const mergeIntoGroups = (
     }
 };
 
-const scan = async (deps: K8sDeps): Promise<OrphanGroup[]> => {
+const scan = async (deps: K8sDeps): Promise<OrphanGroup[] | null> => {
     const { config } = deps;
     const jobs = await listBySelector(
         deps,
@@ -181,7 +181,7 @@ const scan = async (deps: K8sDeps): Promise<OrphanGroup[]> => {
         'listing the jobs',
         'job'
     );
-    if (jobs === null) return [];
+    if (jobs === null) return null;
     const groups = new Map<string, OrphanGroup>();
     for (const item of jobs) {
         const found = groupKeyOf(item, 'job');

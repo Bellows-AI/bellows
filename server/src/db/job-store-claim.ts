@@ -290,20 +290,19 @@ async function acquireCandidate(
     const rootJobId = reserved.root_job_id;
     const probe = startAcquire(ctx.metrics);
     const result = await sql.begin(async (tx) => {
-        // Gone (the thread was removed while this claim prepared): nothing to acquire. The age is
-        // queued-to-claimed for the series: from the later of the row's creation, its release to the
-        // queue and the end of the deferral the reservation overwrote.
-        const [locked] = await tx<{ status: string; age: number }[]>`
+        // Gone (the thread was removed while this claim prepared): nothing to acquire. `queued_since`
+        // is where queued-to-claimed starts: the later of the row's creation, its release to the queue
+        // and the end of the deferral the reservation overwrote. The wait itself is read at the
+        // acquisition (`queue_age`), after the locks, so the lock wait is part of it.
+        const [locked] = await tx<{ status: string; queued_since: Date }[]>`
             select status,
-                   extract(epoch from clock_timestamp() - greatest(
-                       created_at, lease_expires_at, coalesce(${reserved.prior_deferral}::timestamptz, created_at)
-                   ))::float8 as age
+                   greatest(created_at, lease_expires_at, coalesce(${reserved.prior_deferral}::timestamptz, created_at))
+                       as queued_since
             from job where org_id = ${orgId} and id = ${reserved.id} for update
         `;
         if (!locked) return NEXT_CANDIDATE;
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
         probe.locked();
-        probe.aged(locked.status === 'queued' ? 'new' : 'takeover', locked.age);
         // New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds.
         let slots = sql`admission_slot_global, admission_slot_org, admission_slot_repo`;
         if (locked.status === 'queued') {
@@ -320,6 +319,7 @@ async function acquireCandidate(
         const rows = await tx<
             (ClaimCandidateRow & {
                 executor_scope: string | null;
+                queue_age: number;
             })[]
         >`
             update job set
@@ -377,6 +377,7 @@ async function acquireCandidate(
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
+                      extract(epoch from clock_timestamp() - ${locked.queued_since}::timestamptz)::float8 as queue_age,
                       -- Continues the superseded attempt in its session: the newest interruption names
                       -- the pre-update claim_seq — a takeover's, recorded above, or a handover's.
                       (session_id is not null
@@ -396,6 +397,7 @@ async function acquireCandidate(
         // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy:
         // the next candidate, with nothing written here.
         if (!row) return NEXT_CANDIDATE;
+        probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         return assembleClaim(ctx, tx, row, { rootJobId, gates });
     });

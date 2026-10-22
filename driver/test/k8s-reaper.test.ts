@@ -127,7 +127,7 @@ describe('the kubernetes reaper arm: scan', () => {
     it('dates a row by an RFC3339 timestamp with a fraction and an offset', async () => {
         const items = [auxJob('p', JOB, LEASE, '2026-09-01T02:00:00.5+02:00')];
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
-        const groups = await createKubernetesReaper({ config, request }).scan();
+        const groups = (await createKubernetesReaper({ config, request }).scan())!;
         expect(groups.map((g) => g.createdAtMs)).toEqual([Date.parse('2026-09-01T00:00:00.500Z')]);
     });
 
@@ -206,7 +206,7 @@ describe('the kubernetes reaper arm: scan', () => {
         // other rows could read as out of its grace (#869).
         const items = [auxJob('good', JOB, LEASE, '2026-09-01T00:00:00Z'), row];
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items }) }]]);
-        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toBeNull();
     });
 
     // #869 round 2: a Job named as a runner whose spec is unreadable cannot be said to run no agent.
@@ -227,17 +227,17 @@ describe('the kubernetes reaper arm: scan', () => {
             status: { succeeded: 1 },
         };
         const { request } = router([['GET', LIST_JOBS, { status: 200, body: JSON.stringify({ items: [runnerJob] }) }]]);
-        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request }).scan()).resolves.toBeNull();
     });
 
     it('answers nothing when the Jobs cannot be read — inconclusive reaps nothing', async () => {
         const refused = router([['GET', LIST_JOBS, { status: 403, body: '{}' }]]);
-        await expect(createKubernetesReaper({ config, request: refused.request }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request: refused.request }).scan()).resolves.toBeNull();
 
         const throwing: K8sRequest = async () => {
             throw new Error('connection reset');
         };
-        await expect(createKubernetesReaper({ config, request: throwing }).scan()).resolves.toEqual([]);
+        await expect(createKubernetesReaper({ config, request: throwing }).scan()).resolves.toBeNull();
     });
 });
 
@@ -375,12 +375,14 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
     it('marks a finished runner Job unread on the scan, and a running one not', async () => {
         const running = { ...finishedRunner, status: { active: 1 } };
         const arm = createKubernetesReaper({ config, request: router(lists([finishedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([
+        expect((await arm.scan())![0]!.objects).toEqual([
             { kind: 'job', name: runnerJob, uid: 'uid-1', unread: true, runner: true },
         ]);
 
         const live = createKubernetesReaper({ config, request: router(lists([running])).request });
-        expect((await live.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
+        expect((await live.scan())![0]!.objects).toEqual([
+            { kind: 'job', name: runnerJob, uid: 'uid-1', runner: true },
+        ]);
     });
 
     // A supervisor-only group's Job (an agentless node, the group an adoption made) ran no agent:
@@ -391,7 +393,7 @@ describe('the kubernetes reaper arm: an unread finished runner', () => {
             spec: { template: { spec: { containers: [{ name: 'supervisor' }] } } },
         };
         const arm = createKubernetesReaper({ config, request: router(lists([supervisorOnly])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
+        expect((await arm.scan())![0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     it('never deletes an unread finished runner of a job that is still live', async () => {
@@ -539,7 +541,7 @@ describe('the kubernetes reaper arm: suspended runners and confirmed claims (#82
 
     it('never marks a suspended runner Job unread', async () => {
         const arm = createKubernetesReaper({ config, request: router(lists([suspendedRunner])).request });
-        expect((await arm.scan())[0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
+        expect((await arm.scan())![0]!.objects).toEqual([{ kind: 'job', name: runnerJob, uid: 'uid-1', runner: true }]);
     });
 
     it('reaps a suspended runner of a terminal job Secret first, then the Job', async () => {
@@ -921,5 +923,28 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
             }).sweep();
             expect(deleteCalls(calls)).toEqual([]);
         });
+    });
+});
+
+describe('a sweep over the real kubernetes arm (issue #831)', () => {
+    it('is aborted, never ok, when the Job list fails but the volume list is proven', async () => {
+        const LIST_VOLUMES = `${taskVolumesPath(NAMESPACE)}?labelSelector=${encodeURIComponent(TASK_ROOT_LABEL)}`;
+        const { request, calls } = router([
+            ['GET', LIST_JOBS, { status: 503, body: '' }],
+            ['GET', LIST_VOLUMES, { status: 200, body: JSON.stringify({ items: [] }) }],
+        ]);
+        const outcomes: string[] = [];
+        const reaper = createReaper({
+            board: { leases: async () => [] },
+            arm: createKubernetesReaper({ config, request }),
+            intervalMs: 3_600_000,
+            graceMs: 0,
+            log: () => undefined,
+            volumePolicy: { ttlMs: 1, boundMs: 1 },
+            observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+        });
+        await reaper.sweep();
+        expect(outcomes).toEqual(['aborted']);
+        expect(calls.filter((call) => call.method !== 'GET')).toEqual([]);
     });
 });

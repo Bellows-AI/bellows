@@ -167,7 +167,7 @@ describe('the docker reaper arm: scan', () => {
         };
         const arm = createDockerReaper(execDocker, BOARD);
 
-        await expect(arm.scan()).resolves.toEqual([]);
+        await expect(arm.scan()).resolves.toBeNull();
     });
 });
 
@@ -333,7 +333,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group(LEASE, 'exited');
         const { execDocker } = daemon(g.containers, g.volumes);
 
-        const groups = await createDockerReaper(execDocker, BOARD).scan();
+        const groups = (await createDockerReaper(execDocker, BOARD).scan())!;
 
         expect(groups).toEqual([
             {
@@ -354,7 +354,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group(LEASE, 'running');
         const { execDocker } = daemon(g.containers, g.volumes);
 
-        const [only] = await createDockerReaper(execDocker, BOARD).scan();
+        const [only] = (await createDockerReaper(execDocker, BOARD).scan())!;
 
         expect(only?.objects.some((object) => object.unread)).toBe(false);
     });
@@ -368,7 +368,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group();
         const { execDocker } = daemon(g.containers, g.volumes, refuse);
 
-        await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toBeNull();
     });
 
     it.each(['0', '2026-02-31T00:00:00Z', '2026-09-01', '2026-09-01 00:00:00 +0000 UTC', ''])(
@@ -379,7 +379,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             const execDocker: ExecDocker = async (args) =>
                 args[0] === 'volume' && args[1] === 'inspect' ? { stdout: createdAt } : base(args);
 
-            await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toEqual([]);
+            await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toBeNull();
         }
     );
 
@@ -417,7 +417,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             return execDocker(args);
         };
 
-        await expect(createDockerReaper(recording, BOARD).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(recording, BOARD).scan()).resolves.toBeNull();
         await createReaper({
             board: { leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never },
             arm: createDockerReaper(recording, BOARD),
@@ -457,7 +457,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group();
         const { execDocker } = daemon([...g.containers, row], g.volumes);
 
-        await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toBeNull();
     });
 
     it.each([
@@ -469,7 +469,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const garbled: ExecDocker = async (args) =>
             args[0] === 'volume' && args[1] === 'inspect' ? { stdout: answer } : execDocker(args);
 
-        await expect(createDockerReaper(garbled, BOARD).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(garbled, BOARD).scan()).resolves.toBeNull();
     });
 
     it('tolerates a volume removed between the list and its inspect, still reaping the rest', async () => {
@@ -483,7 +483,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             return execDocker(args);
         };
 
-        const [only] = await createDockerReaper(racing, BOARD).scan();
+        const [only] = (await createDockerReaper(racing, BOARD).scan())!;
 
         expect(only?.objects).toEqual([
             { kind: 'container', name: hexId(`sup-${LEASE}`), runner: true },
@@ -776,5 +776,29 @@ describe('the docker reaper arm: task volumes (issue #775)', () => {
         it('removes nothing when the volume list is refused', async () => {
             expect(await sweep(factsOf(), 500, new Error('daemon down'))).toEqual([]);
         });
+    });
+});
+
+describe('a sweep over the real docker arm (issue #831)', () => {
+    it('is aborted, never ok, when the container list is refused but the volume list is proven', async () => {
+        const calls: string[][] = [];
+        const execDocker: ExecDocker = async (args) => {
+            calls.push(args);
+            if (args[0] === 'ps') throw new Error('cannot connect to the Docker daemon');
+            return { stdout: '' };
+        };
+        const outcomes: string[] = [];
+        const reaper = createReaper({
+            board: { leases: async () => [] },
+            arm: createDockerReaper(execDocker, BOARD),
+            intervalMs: 3_600_000,
+            graceMs: 0,
+            log: () => undefined,
+            volumePolicy: { ttlMs: 1, boundMs: 1 },
+            observe: { sweep: (outcome) => void outcomes.push(outcome), scanned: () => undefined },
+        });
+        await reaper.sweep();
+        expect(outcomes).toEqual(['aborted']);
+        expect(calls.filter((args) => args[0] === 'rm' || args[1] === 'rm')).toEqual([]);
     });
 });

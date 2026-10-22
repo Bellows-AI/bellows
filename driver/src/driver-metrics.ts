@@ -24,28 +24,71 @@ export interface DriverMetrics {
     reaper: ReaperObserver;
 }
 
-const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
-const WORD = /^[a-z][a-z-]*$/;
 const OTHER = 'other';
 const HTTP_CLASS_DIVISOR = 100;
 const HTTP_BUCKETS = buckets('0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10 30 60');
 const STEP_BUCKETS = buckets('0.1 0.5 1 5 15 30 60 300 900 1800 3600 7200');
 const SWEEP_BUCKETS = buckets('0.01 0.05 0.1 0.5 1 5 15 60 300');
 
-/** `/api/jobs/<uuid>/heartbeat?x=1` as `/api/jobs/:id/heartbeat`: ids and the query never reach a label. */
-export function endpointOf(url: string): string {
-    let path: string;
+/**
+ * The endpoints the driver calls on the board, relative to the board base: a segment `:id` is any one
+ * segment (a job, lease or reclaim id). Only a match is a label value; everything else is `other`.
+ */
+const JOB_ACTIONS = [
+    'heartbeat',
+    'session',
+    'suspend',
+    'interrupt',
+    'complete',
+    'conclusion',
+    'phase-checkpoint',
+    'phase-checkpoints',
+    'output',
+    'gates',
+    'question',
+    'review',
+    'review-read',
+    'checkpoint',
+    'checkpoint/chunk',
+    'transcripts',
+    'transcripts/chunk',
+    'artifact/chunk',
+    'artifact/manifest',
+    'credentials/github',
+    'done',
+];
+const ENDPOINTS: readonly (readonly string[])[] = [
+    '/api/jobs/claim',
+    '/api/jobs/leases',
+    '/api/reclaims/claim',
+    '/api/reclaims/holds',
+    '/api/reclaims/:id/ack',
+    '/api/reclaims/:id/renew',
+    '/api/sessions/branch',
+    ...JOB_ACTIONS.map((action) => `/api/jobs/:id/${action}`),
+].map((pattern) => pattern.split('/'));
+
+/**
+ * `<board base>/api/jobs/<id>/heartbeat?x=1` as `/api/jobs/:id/heartbeat`: the base path (a board behind a
+ * prefix) is removed first, and a URL outside the allowlist is `other`, so neither an id of any shape
+ * nor the deployment's own path ever reaches a label.
+ */
+export function endpointOf(url: string, boardUrl: string): string {
+    let segments: string[];
     try {
-        path = new URL(url, 'http://board.invalid').pathname;
+        const base = new URL(boardUrl).pathname.replace(/\/+$/, '');
+        const path = new URL(url).pathname;
+        if (path !== base && !path.startsWith(`${base}/`)) return OTHER;
+        segments = path.slice(base.length).split('/');
     } catch {
         return OTHER;
     }
-    if (!path.startsWith('/api/')) return OTHER;
-    return path
-        .replace(UUID, ':id')
-        .split('/')
-        .map((segment) => (segment === '' || segment === ':id' || WORD.test(segment) ? segment : ':id'))
-        .join('/');
+    const hit = ENDPOINTS.find(
+        (pattern) =>
+            pattern.length === segments.length &&
+            pattern.every((part, i) => (part === ':id' ? segments[i] !== '' : part === segments[i]))
+    );
+    return hit ? hit.join('/') : OTHER;
 }
 
 /** Path segments before `namespaces` (`apis/<group>/<version>`, `api/<version>`) and up to the resource. */
@@ -161,7 +204,7 @@ function instruments(registry: Registry) {
     };
 }
 
-export function createDriverMetrics(deps: { fetch?: typeof globalThis.fetch } = {}): DriverMetrics {
+export function createDriverMetrics(deps: { boardUrl: string; fetch?: typeof globalThis.fetch }): DriverMetrics {
     const registry = createRegistry();
     const m = instruments(registry);
     const underlying = deps.fetch ?? globalThis.fetch;
@@ -174,7 +217,8 @@ export function createDriverMetrics(deps: { fetch?: typeof globalThis.fetch } = 
                 (status, seconds) =>
                     m.board.observe(seconds, {
                         endpoint: endpointOf(
-                            typeof input === 'string' || input instanceof URL ? String(input) : input.url
+                            typeof input === 'string' || input instanceof URL ? String(input) : input.url,
+                            deps.boardUrl
                         ),
                         status_class: statusClassOf(status),
                     })

@@ -69,7 +69,11 @@ export type ReapVerdict = 'gone' | 'superseded';
  * whole loop is periodic and idempotent.
  */
 export interface ReaperArm {
-    scan(): Promise<OrphanGroup[]>;
+    /**
+     * Every orphan-candidate group of the platform; null when the listing proved nothing — a refused call
+     * or a row it could not read — which the sweep reports as aborted and acts on none of.
+     */
+    scan(): Promise<OrphanGroup[] | null>;
     reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]>;
     /**
      * Every task volume of the platform (issue #775), all generations, grouped by thread root; null when
@@ -244,6 +248,11 @@ export function createReaper(deps: {
     /** The orphan groups: scan → ask the board in batches → decide → reap. */
     const sweepGroups = async (): Promise<void> => {
         const groups = await deps.arm.scan();
+        if (groups === null) {
+            unproven = true;
+            log('reaper: the groups could not be listed — reaping nothing this round');
+            return;
+        }
         deps.observe?.scanned('groups', groups.length);
         deps.observe?.scanned(
             'objects',

@@ -206,8 +206,16 @@ export interface AdmissionOccupancy {
 /** A scrape never waits on a lock for longer than this; the read then fails and its samples are omitted. */
 export const OCCUPANCY_TIMEOUT_MS = 2000;
 
-export async function admissionOccupancy(sql: Sql, timeoutMs = OCCUPANCY_TIMEOUT_MS): Promise<AdmissionOccupancy> {
+/**
+ * `signal` is the caller's deadline over the WHOLE read: `sql.begin` waits for a pool connection
+ * without limit, so a read that was let go while it waited does nothing when its turn comes.
+ */
+export async function admissionOccupancy(
+    sql: Sql,
+    { signal, timeoutMs = OCCUPANCY_TIMEOUT_MS }: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<AdmissionOccupancy> {
     return sql.begin(async (tx) => {
+        signal?.throwIfAborted();
         await tx`select set_config('statement_timeout', ${String(timeoutMs)}, true)`;
         const [row] = await tx<{ global: number; org_max: number; repo_max: number }[]>`
             with running as (
