@@ -299,6 +299,19 @@ describe('the kind recovery stub barrier', () => {
         expect(child.stdout()).not.toContain('released in');
     });
 
+    // Issue #829: an agent that only leaves its ready file, so a lane counts its runs without holding it.
+    it('passes straight through, leaving its ready file', async () => {
+        const box = sandbox();
+        const child = run(
+            box.wrapper,
+            ['sh', join(ROOT, 'scripts/k8s-stub.sh'), `factory-stub-pass-${box.outDir}/case.agent`],
+            { HOSTNAME: 'only' }
+        );
+        expect(await child.exited).toBe(0);
+        expect(existsSync(`${box.outDir}/case.agent.ready-only`)).toBe(true);
+        expect(child.stdout()).toContain('passed in only');
+    });
+
     // Issue #829: a takeover case holds the agent past the 120 s a plain wait allows.
     it('waits past the plain deadline when it is patient', async () => {
         const box = sandbox();

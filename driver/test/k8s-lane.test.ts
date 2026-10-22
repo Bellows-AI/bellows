@@ -436,6 +436,10 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         expect(script).toContain('expired="$(expire_claim_one "$1")"');
         expect(takeover).toContain('factory-stub-commit');
         expect(takeover).toContain('lane-gh-hold');
+        // Barriers sit on the job's own task volume, reached through its pods, never the dashboard's claim.
+        expect(script).toContain('TK_D="/task/.lane-kill-"');
+        expect(takeover).toContain('tk_use "$t5"');
+        expect(script).not.toContain('/workspaces/$member_path');
         expect(takeover).toContain('supervisor: rebound to claim 2');
         expect(takeover).toContain("resumed gates from claim 1's checkpoint");
         // A group whose agent exited while its supervisor serves is taken over, never waited out (#829).

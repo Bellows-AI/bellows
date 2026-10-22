@@ -120,6 +120,15 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         echo 'agent survived'
         break
         ;;
+    *factory-stub-pass-*)
+        # The pass of an agent that must not wait (issue #829): its ready file, so a lane counts the runs.
+        release="${arg##*factory-stub-pass-}"
+        release="${release%%[!a-zA-Z0-9_./-]*}"
+        [ -n "$release" ] || exit 1
+        : > "$release.ready-${HOSTNAME:-stub}"
+        echo "passed in ${HOSTNAME:-stub}"
+        break
+        ;;
     *factory-stub-wait-*)
         release="${arg##*factory-stub-wait-}"
         release="${release%%[!a-zA-Z0-9_./-]*}"
