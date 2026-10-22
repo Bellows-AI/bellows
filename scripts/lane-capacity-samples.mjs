@@ -1,6 +1,6 @@
 // What the capacity phases' sampler read (issue #831).
 //
-//   node scripts/lane-capacity-samples.mjs <samples> <kill epoch> <takeover epoch> [budget]
+//   node scripts/lane-capacity-samples.mjs <samples> <kill epoch> <takeover epoch> [budget] [end epoch]
 //
 // Each line is `<epoch>|<running>|<distinct global slots>|<running without one>`, or `<epoch>|?` when the
 // read failed. A line is readable only when it holds exactly four non-empty digit columns: an empty or
@@ -8,10 +8,11 @@
 // samples, samples over the budget (default 2), samples where the running rows did not hold distinct slots,
 // samples with a running row holding none, readable samples between the kill and the takeover (`window`),
 // failed reads in that window (`windowUnreadable`), and the longest stretch in seconds between two readable
-// samples (`gap`), so a run of failed reads cannot hide behind a clean count.
+// samples (`gap`), counting the stretch before the first readable one and the one after the last up to the end
+// epoch (default: the last line's), so a run of failed reads cannot hide behind a clean count.
 import { readFileSync } from 'node:fs';
 
-const [, , file, killAt, tookAt, budget = '2'] = process.argv;
+const [, , file, killAt, tookAt, budget = '2', endAt] = process.argv;
 const out = { readable: 0, unreadable: 0, over: 0, shared: 0, unslotted: 0, window: 0, windowUnreadable: 0, gap: 0, max: 0 };
 let text = '';
 try {
@@ -20,8 +21,15 @@ try {
     // an unreadable file reports no samples, which the lane's coverage check fails
 }
 let lastReadable = null;
+let firstReadable = null;
+let firstRow = null;
+let lastRow = null;
 for (const line of text.split('\n').filter(Boolean)) {
     const columns = line.split('|');
+    if (/^\d+$/.test(columns[0] ?? '')) {
+        firstRow ??= Number(columns[0]);
+        lastRow = Number(columns[0]);
+    }
     const inWindow = /^\d+$/.test(columns[0] ?? '') && Number(columns[0]) >= Number(killAt) && Number(columns[0]) <= Number(tookAt);
     if (columns.length !== 4 || !columns.every((column) => /^\d+$/.test(column))) {
         out.unreadable++;
@@ -36,6 +44,10 @@ for (const line of text.split('\n').filter(Boolean)) {
     if (unslotted !== 0) out.unslotted++;
     if (inWindow) out.window++;
     if (lastReadable !== null) out.gap = Math.max(out.gap, t - lastReadable);
+    firstReadable ??= t;
     lastReadable = t;
+}
+if (firstRow !== null) {
+    out.gap = Math.max(out.gap, (firstReadable ?? lastRow) - firstRow, (endAt === undefined ? lastRow : Number(endAt)) - (lastReadable ?? firstRow));
 }
 process.stdout.write(JSON.stringify(out));

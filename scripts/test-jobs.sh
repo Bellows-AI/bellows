@@ -2048,6 +2048,33 @@ cap_psql() { # cap_psql <sql> -> the answer, unaligned; non-zero when the read f
     timeout 10 docker exec -e PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' "$cap_pg" psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 -c "$1" 2>&1
 }
 
+cap_status() { # cap_status <job> -> its status once the board answered, retried for 30 s; non-zero when it never did
+    local until=$(($(date +%s) + 30)) status
+    while [ "$(date +%s)" -lt "$until" ]; do
+        status="$(field "$(body "$(cap_api_job "$1")")" status)"
+        [ -n "$status" ] && {
+            printf '%s' "$status"
+            return 0
+        }
+        sleep 1
+    done
+    return 1
+}
+
+cap_deadline() { # cap_deadline <seconds> <command...> -> the command's status; killed, status 143, past the deadline (for shell functions timeout cannot run)
+    local pid watcher rc secs="$1"
+    shift
+    "$@" &
+    pid=$!
+    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
+    watcher=$!
+    wait "$pid"
+    rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    return "$rc"
+}
+
 cap_owner_of() { # cap_owner_of <job> -> the worker that held it when $owners was read; empty when it was not running
     printf '%s\n' "$owners" | sed -n "s/^$1|//p"
 }
@@ -2189,12 +2216,12 @@ cap_sample() { # cap_sample <file> -> one row a second, until killed: <epoch>|<r
 }
 
 cap_run() {
-    local running owners owners_known h2_owner h3_owner n tok until pending left l1_wave queued_jobs h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
+    local state running owners owners_known h2_owner h3_owner n tok until pending left l1_wave queued_jobs h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
     local h1_name="$RUN_ID-cap-h1" h2_name="$RUN_ID-cap-h2" h3_name="$RUN_ID-cap-h3" l1_name="$RUN_ID-cap-l1"
     local samples="$work/capacity.samples.log" kill_at='' took_at='' verdict
 
     # The budget counts every running row on the database: a leftover one is not this phase's to count around.
-    cap_pg="$(compose ps -q postgres | sed -n 1p)"
+    cap_pg="$(cap_deadline 30 compose ps -q postgres | sed -n 1p)"
     [ -n "$cap_pg" ] || {
         bad 'capacity: the postgres container is found' 'compose ps -q postgres answered nothing'
         return 1
@@ -2288,10 +2315,21 @@ cap_run() {
     [ "$running" = 2 ] && ok 'capacity: two run, the rest wait' ||
         bad 'capacity: two run, the rest wait' "running rows: $running"
     l1_wave=''
-    [ "$(field "$(body "$(cap_api_job "$l1")")" status)" = running ] && l1_wave=1
     queued_jobs=''
     for n in "$h2" "$h3" "$l1"; do
-        [ "$(field "$(body "$(cap_api_job "$n")")" status)" = queued ] || continue
+        # A status that was never confirmed is no evidence either way: it fails, it does not drop the task from the checks.
+        state="$(cap_status "$n")" || {
+            bad 'capacity: the status of every task is confirmed' "no answer for $n: $(cap_why "$n")"
+            continue
+        }
+        case "$state" in
+        running) [ "$n" != "$l1" ] || l1_wave=1; continue ;;
+        queued) ;;
+        *)
+            bad 'capacity: a task not in the first wave is queued' "$n is $state"
+            continue
+            ;;
+        esac
         queued_jobs="$queued_jobs $n"
         lane_use "$n"
         [ "$(lane_vol_state)" = absent ] && ok 'capacity: a task over the budget waits queued, with no task volume' ||
@@ -2380,16 +2418,17 @@ cap_run() {
     # The samples: the budget held on every row read, and the crash window was among them.
     cap_stop "$cap_sampler_pid"
     cap_sampler_pid=''
-    verdict="$(node "$REPO/scripts/lane-capacity-samples.mjs" "$samples" "${kill_at:-0}" "${took_at:-0}")"
+    verdict="$(node "$REPO/scripts/lane-capacity-samples.mjs" "$samples" "${kill_at:-0}" "${took_at:-0}" 2 "$(date +%s)")"
     echo "capacity: samples $verdict"
     [ "$(field "$verdict" readable)" -ge 30 ] 2>/dev/null && ok 'capacity: enough rows were read to mean it' ||
         bad 'capacity: enough rows were read to mean it' "$verdict"
     [ "$(field "$verdict" over)" = 0 ] && [ "$(field "$verdict" shared)" = 0 ] && [ "$(field "$verdict" unslotted)" = 0 ] &&
         ok 'capacity: no sample is over the budget, shares a slot or runs without one' ||
         bad 'capacity: no sample is over the budget, shares a slot or runs without one' "$verdict"
+    # One failed read costs its 10 s command deadline plus the tick: three of those are the longest stretch left unobserved.
     # A failed read inside the crash window, or a long stretch with none readable, leaves the budget unobserved: inconclusive is a failure.
     [ -n "$victim" ] && [ "$(field "$verdict" window)" -ge 1 ] && [ "$(field "$verdict" windowUnreadable)" = 0 ] &&
-        [ "$(field "$verdict" gap)" -le 15 ] 2>/dev/null &&
+        [ "$(field "$verdict" gap)" -le 30 ] 2>/dev/null &&
         ok 'capacity: the lost owner was sampled before the takeover' ||
         bad 'capacity: the lost owner was sampled before the takeover' "$verdict"
 }
@@ -2400,10 +2439,12 @@ cap_stop "$cap_sampler_pid"
 cap_stop "$cap_a_pid"
 cap_stop "$cap_b_pid"
 for job in $(cat "$work/capacity-jobs" 2>/dev/null); do
-    docker ps -aq --filter "label=factory.job=$job" |
-        while IFS= read -r container_id; do
-            [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
-        done
+    leftovers="$(timeout 30 docker ps -aq --filter "label=factory.job=$job")" ||
+        bad 'capacity: the containers of a task are listed for removal' "docker ps failed for $job"
+    for container_id in $leftovers; do
+        timeout 60 docker rm -f "$container_id" >/dev/null 2>&1 ||
+            bad 'capacity: a leftover container is removed' "$container_id of $job"
+    done
 done
 kill "$server_pid" 2>/dev/null
 wait "$server_pid" 2>/dev/null

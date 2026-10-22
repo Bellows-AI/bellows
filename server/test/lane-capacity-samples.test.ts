@@ -60,4 +60,13 @@ describe('lane-capacity-samples', () => {
         const { out } = verdict(['100|1|1|0', '101|?', '102|?', '103|?', '120|2|2|0', '121|2|2|0'], '101', '121');
         expect(out).toMatchObject({ window: 2, windowUnreadable: 3, gap: 20 });
     });
+
+    it('counts a failed stretch at either end of the run, and up to the end epoch, in the gap', () => {
+        const trailing = Array.from({ length: 30 }, (_, i) => `${100 + i}|1|1|0`).concat(
+            Array.from({ length: 120 }, (_, i) => `${130 + i}|?`)
+        );
+        expect(verdict(trailing, '0', '0').out.gap).toBe(120);
+        expect(verdict(['100|?', '101|?', '160|1|1|0', '161|1|1|0'], '0', '0').out.gap).toBe(60);
+        expect(verdict(['100|1|1|0', '101|1|1|0'], '0', '0', '2', '200').out.gap).toBe(99);
+    });
 });
