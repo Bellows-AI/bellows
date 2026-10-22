@@ -171,6 +171,9 @@ export function createOriginPlanReader(
                 await git(ctx, ['init', '-q', '--bare', gitDir]);
                 const ref = await resolveRef(ctx, url, baseBranch);
                 if (ref !== null) {
+                    // A blobless fetch from a named remote makes it a promisor: only the plan blob is
+                    // downloaded later, on demand, by `ls-tree -l` / `cat-file`.
+                    await git(ctx, ['--git-dir', gitDir, 'remote', 'add', 'origin', url]);
                     await git(ctx, [
                         '--git-dir',
                         gitDir,
@@ -179,7 +182,8 @@ export function createOriginPlanReader(
                         '--depth',
                         '1',
                         '--no-tags',
-                        url,
+                        '--filter=blob:none',
+                        'origin',
                         `+${ref}:${ref}`,
                     ]);
                 }

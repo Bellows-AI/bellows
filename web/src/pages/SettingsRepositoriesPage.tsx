@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { UseRepos } from '../api/useRepos.js';
+import { trackedRepos, type UseRepos } from '../api/useRepos.js';
 import type { EnvVarView, UseEnv } from '../api/useEnv.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { KeyValues } from '../components/KeyValues.js';
@@ -144,7 +144,7 @@ export function SettingsRepositoriesPage() {
                 onSearch={setSearch}
                 configured={configured}
                 onConfigure={(key) => void configure(key)}
-                loaded={repos.data !== null}
+                loaded={trackedRepos(repos).repos !== null}
             />
             <RepositoryConfigDetail repo={configured && owner && name ? { owner, name } : null} headingRef={headingRef}>
                 {configured && owner && name ? (

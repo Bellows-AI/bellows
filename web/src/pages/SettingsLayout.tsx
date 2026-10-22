@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Outlet, useBlocker, useOutletContext } from 'react-router-dom';
+import { Outlet, useBlocker, useLocation, useOutletContext } from 'react-router-dom';
 import { useEnv } from '../api/useEnv.js';
 import type { UseEnv } from '../api/useEnv.js';
 import { type UseRepos, useRepos } from '../api/useRepos.js';
@@ -59,6 +59,19 @@ export function SettingsLayout() {
     const workspace = useWorkspace();
     const repos = useRepos(true);
     const env = useEnv();
+
+    // No settings page owns a retry for the repository read, so moving between the sections is
+    // the retry: a read that failed (or came back with GitHub's own error) is asked again on
+    // each in-area navigation, and a confirmed read is left alone.
+    const { pathname } = useLocation();
+    const lastPathname = useRef(pathname);
+    const repoReadFailed = repos.error !== null || repos.data?.meta.error != null;
+    const refreshRepos = repos.refresh;
+    useEffect(() => {
+        if (lastPathname.current === pathname) return;
+        lastPathname.current = pathname;
+        if (repoReadFailed) refreshRepos();
+    }, [pathname, repoReadFailed, refreshRepos]);
 
     // The registry of mounted editors' drafts. Registration follows the dirty flag (the editor's
     // hook re-registers when it flips), so `dirtyIds` recomputes exactly when dirtiness does,

@@ -140,10 +140,12 @@ function InboxCountCards({ counts }: { counts: TaskNavigation['counts'] }) {
 function InboxFilterBar({
     filters,
     repoOptions,
+    repoRead,
     onSubmit,
 }: {
     filters: InboxFilters;
     repoOptions: readonly { owner: string; name: string }[];
+    repoRead: { loading: boolean; error: string | null; onRetry: () => void };
     onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
     // Minted, not literal: a component owns no id, and three hard-coded ones become three
@@ -193,6 +195,15 @@ function InboxFilterBar({
                         </option>
                     ))}
                 </select>
+                {repoRead.error !== null && (
+                    <span className="status error" role="alert">
+                        Repositories unavailable: {repoRead.error}{' '}
+                        <button type="button" onClick={repoRead.onRetry}>
+                            Retry
+                        </button>
+                    </span>
+                )}
+                {repoRead.error === null && repoRead.loading && <span className="muted">Loading repositories…</span>}
                 <label htmlFor={`${fieldId}-author`}>Author</label>
                 <input
                     className="field"
@@ -501,7 +512,8 @@ export function TaskInboxPage() {
         });
     };
 
-    const repoOptions = repoOptionsFor(trackedRepos(repos).repos ?? [], filters.repo);
+    const tracked = trackedRepos(repos);
+    const repoOptions = repoOptionsFor(tracked.repos ?? [], filters.repo);
     const counts = tasks.navigation?.counts ?? null;
     const noTasksAtAll =
         tasks.items !== null && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;
@@ -524,7 +536,12 @@ export function TaskInboxPage() {
 
             {counts !== null ? <InboxCountCards counts={counts} /> : null}
 
-            <InboxFilterBar filters={filters} repoOptions={repoOptions} onSubmit={submit} />
+            <InboxFilterBar
+                filters={filters}
+                repoOptions={repoOptions}
+                repoRead={{ loading: repos.loading, error: tracked.error, onRetry: repos.refresh }}
+                onSubmit={submit}
+            />
 
             <InboxChips filters={filters} />
 

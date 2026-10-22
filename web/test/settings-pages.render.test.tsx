@@ -444,6 +444,18 @@ describe('Settings repositories page', () => {
         expect(html).not.toContain('An admin configures repository environment');
     });
 
+    it('does not claim the App is installed nowhere when the first repository read failed', () => {
+        // The server answers 200 with `repos: []` and `meta.error` when it could not read the list:
+        // an unconfirmed read, never the verdict "no repositories".
+        const html = render('/settings/repos', {
+            repos: {
+                loading: false,
+                data: { repos: [], installation: null, meta: { fetchedAt: null, error: 'GitHub is unreachable' } },
+            },
+        });
+        expect(html).not.toContain('not installed on any repositories');
+    });
+
     it('renders no repository editor after a failed environment read', () => {
         const html = render('/settings/repos', {
             env: { loading: false, error: 'The environment request failed' },

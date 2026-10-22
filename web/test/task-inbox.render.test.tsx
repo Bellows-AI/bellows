@@ -12,7 +12,7 @@ import { TaskInboxPage } from '../src/pages/TaskInboxPage.js';
  */
 
 const emptyWorkspace = { data: null, loading: true, error: null, refresh: () => {} };
-const emptyRepos = { data: null, loading: true, error: null, refresh: () => {} };
+const emptyRepos = { data: null, loading: true, error: null as string | null, refresh: () => {} };
 
 const taskSummary = (over: Partial<import('../src/api/useTasks.js').TaskSummary> = {}) => ({
     id: '11111111-1111-4111-8111-111111111111',
@@ -44,7 +44,7 @@ interface InboxTasks extends Partial<UseTasks> {
     items?: UseTasks['items'];
 }
 
-const renderInbox = (tasks: InboxTasks, path = '/tasks') => {
+const renderInbox = (tasks: InboxTasks, path = '/tasks', repos: typeof emptyRepos = emptyRepos) => {
     const fake = {
         retry: () => {},
         loadMore: () => {},
@@ -61,10 +61,10 @@ const renderInbox = (tasks: InboxTasks, path = '/tasks') => {
     return renderToStaticMarkup(
         <MemoryRouter initialEntries={[path]}>
             <Routes>
-                <Route element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace, repos: emptyRepos }} />}>
+                <Route element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace, repos }} />}>
                     <Route
                         path="tasks"
-                        element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace, repos: emptyRepos }} />}
+                        element={<Outlet context={{ tasks: fake, workspace: emptyWorkspace, repos }} />}
                     >
                         <Route index element={<TaskInboxPage />} />
                         <Route path="new" element={<div id="composer-slot">composer slot</div>} />
@@ -569,5 +569,21 @@ describe('the inbox sweep', () => {
         for (const forbidden of ['NaN', 'undefined', 'Infinity', '[object Object]']) {
             expect(html).not.toContain(forbidden);
         }
+    });
+});
+
+describe('repository filter state', () => {
+    it('says why the repository list is unavailable and offers a retry', () => {
+        const html = renderInbox({ items: [] }, '/tasks', {
+            ...emptyRepos,
+            loading: false,
+            error: 'repo read failed',
+        });
+        expect(html).toContain('repo read failed');
+        expect(html).toContain('Retry');
+    });
+
+    it('says the repository list is loading', () => {
+        expect(renderInbox({ items: [] })).toContain('Loading repositories');
     });
 });

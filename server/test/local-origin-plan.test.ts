@@ -221,6 +221,33 @@ describe('the origin plan reader', () => {
         expect(hung.leftovers()).toEqual([]);
     });
 
+    it("fetches the plan blob only, leaving the repository's other blobs behind", async () => {
+        const { base } = mirror('acme/web', [SERVICE]);
+        const bare = join(base.replace('file://', ''), 'acme/web.git');
+        git(['config', 'uploadpack.allowFilter', 'true'], bare);
+        git(['config', 'uploadpack.allowAnySHA1InWant', 'true'], bare);
+        const tree = tempDir('seed-big-');
+        git(['clone', '-q', bare, tree]);
+        writeFileSync(join(tree, 'big.bin'), 'x'.repeat(100_000));
+        git(['add', 'big.bin'], tree);
+        git(['-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'big'], tree);
+        git(['push', '-q', 'origin', 'HEAD:main'], tree);
+        // At `cat-file` time the scratch repository lists what it lacks (`?<oid>`): the unrelated blob.
+        const missing = join(tempDir('missing-'), 'missing');
+        const bin = join(tempDir('spy-git-'), 'git');
+        writeFileSync(
+            bin,
+            `#!/bin/sh\nif [ "$3" = cat-file ]; then git --git-dir "$2" rev-list --objects --missing=print --all > ${missing}; fi\nexec git "$@"\n`
+        );
+        chmodSync(bin, 0o755);
+
+        const plan = await readerOver(base, { gitBin: bin }).reader.read('acme/web', 'main');
+
+        expect(plan.error).toBeNull();
+        expect(plan.services.map((service) => service.name)).toEqual(['stub-svc']);
+        expect(readFileSync(missing, 'utf8')).toMatch(/^\?/m);
+    });
+
     it('refuses a bad label without spawning git', async () => {
         // A binary that cannot start would make any spawned git an outage; the label is refused as a value first.
         const { reader } = readerOver('file:///nowhere', { gitBin: '/nonexistent/git' });
