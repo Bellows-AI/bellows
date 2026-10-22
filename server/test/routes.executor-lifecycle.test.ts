@@ -57,7 +57,7 @@ async function boot() {
     // exercising the executor refusal rather than the repository's.
     const repos = memoryUserRepoStore();
     await repos.select(member.user.id, [READY_REPO]);
-    await repos.markReady(member.user.id, READY_REPO);
+    repos.seedReady(member.user.id, READY_REPO);
     const queued: { command: string; executor: string | null; scope: string | undefined }[] = [];
     const jobs = {
         async create(command: string, _by: string | null, target?: { executor?: string; executorScope?: string }) {
@@ -401,7 +401,7 @@ describe('POST /api/jobs against an unsynced repository (issue 263)', () => {
         const target = { owner: 'acme', name: 'api' };
         await b.repos.select(b.memberId, [READY_REPO, target]);
         if (status === 'cloning') b.repos.strand(b.memberId, target);
-        if (status === 'failed') await b.repos.markFailed(b.memberId, target, 'boom');
+        if (status === 'failed') await b.repos.markFailed((await b.repos.claimPending(1))[0]!, 'boom');
 
         const response = await launch(b, { repo: 'acme/api' });
         expect(response.statusCode).toBe(HTTP_CONFLICT);

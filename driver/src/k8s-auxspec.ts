@@ -91,7 +91,7 @@ export const jobsSelectorPath = (namespace: string, job: BoardJob): string => by
  * because the protocol needs `get`, and granting `get` on secrets would expose every attempt's env
  * values; this object carries a holder token and a claim sequence, both already known to the driver.
  *
- * Keyed by the JOB id and never the thread root, even though worktreeDir keys the TREE by root:
+ * Keyed by the JOB id and never the thread root, even though checkoutDir keys the TREE by root:
  * the board serializes claims per thread root server-side (a separate fix), so cross-row
  * exclusion happens there — and a root-scoped claim NAME would break the attempt-ordered
  * stale-holder takeover across follow-up rows, where a leaked row-1 claim carrying attempt 3

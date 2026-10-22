@@ -18,6 +18,14 @@ const chartValues = readFileSync(join(ROOT, 'charts/factory/values.yaml'), 'utf8
 const agentsDoc = readFileSync(join(ROOT, 'AGENTS.md'), 'utf8');
 const chartReadme = readFileSync(join(ROOT, 'charts/factory/README.md'), 'utf8');
 
+describe('the volume-affinity loss record', () => {
+    // Issue #775: a limit that tells a docker reader to stop looking.
+    it('states the kubernetes-only unschedulable-volume recovery and that docker has no analogue', () => {
+        expect(kubernetesDocs).toContain('factory.task-unschedulable');
+        expect(kubernetesDocs).toContain('docker has no zones, so no analogue');
+    });
+});
+
 describe('the EKS prerequisites record', () => {
     it('states the node and add-on prerequisites in docs/kubernetes.md', () => {
         expect(kubernetesDocs).toContain('EKS prerequisites');
@@ -107,12 +115,10 @@ describe('the executor isolation record (#382)', () => {
         expect(securityDocs).toContain('user: "uid:gid"');
     });
 
-    // The workspace claim the issue is most explicit about: do NOT advertise task isolation.
-    it('states that same-member tasks SHARE the workspace subtree', () => {
-        expect(workspaceDocs).toContain('not a task boundary');
-        expect(workspaceDocs).toContain('same member shares that subtree');
-        // And that the narrower mount is a design, not a parameter — the issue's own instruction.
-        expect(workspaceDocs).toContain('deliberately does not touch mount code');
+    // The task volume is a thread boundary, and the member subtree is no longer mounted by a runner.
+    it('states that a runner mounts its thread task volume, never the member subtree', () => {
+        expect(workspaceDocs).toContain('A runner never mounts the member subtree.');
+        expect(workspaceDocs).toContain('Each root thread has its own task volume');
     });
 
     it('states the deployment assumptions, each of which is silent when absent', () => {

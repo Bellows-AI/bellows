@@ -6,11 +6,9 @@ import {
     handleGates,
     handleHeartbeat,
     handleLeases,
-    handleReclaimHolds,
     handleOutput,
     handleSession,
     handleSuspend,
-    handleRequeue,
     handleInterrupt,
     handleConclusion,
 } from './job-handlers-worker.js';
@@ -44,14 +42,13 @@ import {
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
 import { phaseCheckpointRoutes } from './job-handlers-phase-checkpoints.js';
+import { registerRestoreRoutes } from './job-handlers-restore.js';
 import { BODY_LIMIT, CONCLUSION_BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
 
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
-    /** The workspaces root the dashboard mounts; null or absent where tasks have no member tree. */
-    workspaceRoot?: string | null;
 }
 
 /** The worktree-reclaim queue's routes: the driver's claim, ack and renew, and the reaper's holds lookup (issue #829). */
@@ -59,9 +56,6 @@ function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
     const firstReclaimClaim = boardScan();
     app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)
-    );
-    app.post('/api/reclaims/holds', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-        handleReclaimHolds(orgs, request, reply)
     );
     app.post('/api/reclaims/:id/ack', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
         handleReclaimsAck(orgs, request, reply)
@@ -79,7 +73,7 @@ function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
  * the repo's line-count ceiling. See docs/jobs.md for the protocol these routes implement.
  */
 export const jobRoutes =
-    ({ orgs, workspaceRoot = null }: JobRouteDeps): FastifyPluginAsync =>
+    ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const firstJobClaim = boardScan();
 
@@ -88,7 +82,7 @@ export const jobRoutes =
         // POST, not GET: claiming mutates. The worker id is required — it is the only thing that
         // says which container is holding a job when one has to be found and killed.
         app.post('/api/jobs/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleClaimJob({ orgs, firstJobClaim, workspaceRoot }, request, reply)
+            handleClaimJob({ orgs, firstJobClaim }, request, reply)
         );
         // The orphan reaper's batched lease lookup (issue #301). Static segment, registered
         // beside /claim — it wins over /api/jobs/:id the same way the claim route already does.
@@ -109,9 +103,6 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/suspend', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleSuspend(orgs, request, reply)
-        );
-        app.post('/api/jobs/:id/requeue', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleRequeue(orgs, request, reply)
         );
         app.post('/api/jobs/:id/interrupt', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleInterrupt(orgs, request, reply)
@@ -174,6 +165,8 @@ export const jobRoutes =
         app.post('/api/jobs/:id/review-read', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleReviewRead(orgs, request, reply)
         );
+        // The restore reads (issue #775), under the live lease: the thread's checkpoint and raw transcripts.
+        registerRestoreRoutes(app, orgs);
         // Artifact uploads (070), authorized by claim sequence rather than the lease. A child scope,
         // so the raw-bytes parser reaches only the chunk route.
         void app.register(async (scope) => {

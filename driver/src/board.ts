@@ -1,9 +1,11 @@
 import { artifactCalls } from './artifact-calls.js';
+import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from './github-credential-call.js';
 import { reclaimCalls } from './reclaim-calls.js';
 import { phaseCheckpointCalls, type PhaseCheckpoint, type PhaseCheckpointWrite } from './board-phase-checkpoints.js';
 import { verdictCalls } from './board-verdict.js';
+import type { TaskRestore } from './task-restore.js';
 import type { EvidencePolicy, GatesOutcome, ReviewEvidence } from './evidence-policy.js';
 import { type ExecutorType, isExecutorType } from './executors.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, LEASE_LOST_CODE, NOT_FOUND_CODE } from './http.js';
@@ -155,6 +157,13 @@ export interface BoardJob {
      */
     rootJobId?: string | null;
     /**
+     * The generation of the thread's task volume this attempt runs on, and the restore still owed to it
+     * (issue #775). Set by the driver's runner once the claim has found, adopted or created the volume,
+     * never read off the wire.
+     */
+    taskGeneration?: number | undefined;
+    taskRestore?: TaskRestore | undefined;
+    /**
      * The branch the run bases its checkout and its PR on — a batch task's target branch. Absent
      * outside a batch, where the remote default (`origin/HEAD`) is the base. Copied from the
      * board's claim, never imported; read through `baseBranchOf`, which drops a malformed value.
@@ -289,7 +298,42 @@ export interface BoardLease {
     id: string;
     status: BoardJobStatus;
     leaseToken: string | null;
+    /** On a thread's ROOT row only (issue #775): what its task volume is decided on. */
+    thread?: BoardThreadFacts;
 }
+
+/**
+ * The facts the orphan reaper decides a task volume on (issue #775), copied from the server's
+ * `JobThreadFacts` rather than imported. `lastFinalizedAt` is when the thread's newest attempt
+ * finalized (null while it has not); `artifactsComplete` is false while that attempt has an artifact
+ * stream still pending; `checkpoint` is `complete` only when the root's pointer names that attempt whole.
+ */
+export interface BoardThreadFacts {
+    live: boolean;
+    lastFinalizedAt: string | null;
+    artifactsComplete: boolean;
+    checkpoint: 'complete' | 'truncated' | 'none';
+    checkpointFinalizedAt: string | null;
+}
+
+const CHECKPOINT_STATES: readonly string[] = ['complete', 'truncated', 'none'];
+
+const isTimeOrNull = (value: unknown): boolean =>
+    value === null || (typeof value === 'string' && !Number.isNaN(Date.parse(value)));
+
+/** Whether a row's `thread` is fully readable: every field present and well-shaped. */
+const isThreadFacts = (value: unknown): value is BoardThreadFacts => {
+    const thread = value as Partial<BoardThreadFacts> | null;
+    return (
+        typeof thread === 'object' &&
+        thread !== null &&
+        typeof thread.live === 'boolean' &&
+        typeof thread.artifactsComplete === 'boolean' &&
+        CHECKPOINT_STATES.includes(thread.checkpoint as string) &&
+        isTimeOrNull(thread.lastFinalizedAt) &&
+        isTimeOrNull(thread.checkpointFinalizedAt)
+    );
+};
 
 /**
  * How many job ids one `POST /api/jobs/leases` may carry — the same bound the server's route
@@ -400,6 +444,7 @@ export type FailureKind =
     | 'services'
     | 'config'
     | 'policy'
+    | 'checkpoint_unrestorable'
     | 'runner_error';
 
 /**
@@ -502,6 +547,21 @@ export interface Board {
         ref: ArtifactStreamRef,
         manifest: ArtifactManifest
     ): Promise<'stored' | 'duplicate' | 'conflict' | 'rejected'>;
+    /**
+     * What the board holds as the thread's checkpoint (issue #775), read under the live lease. Throws
+     * on a lease the board no longer honours and on an answer it cannot read: never a guess.
+     */
+    checkpoint(job: BoardJob): Promise<CheckpointRead>;
+    /** One chunk of that checkpoint's stream, its sha256 verified; null when the board has no such chunk. */
+    checkpointChunk(job: BoardJob, offset: number): Promise<{ bytes: Uint8Array; sha256: string } | null>;
+    /** The thread's raw Claude transcript streams (issue #775), read under the live lease like `checkpoint`. */
+    transcripts(job: BoardJob): Promise<TranscriptStream[]>;
+    /** One chunk of one such stream, its sha256 verified; null when the board has no such chunk. */
+    transcriptChunk(
+        job: BoardJob,
+        ref: TranscriptRef,
+        offset: number
+    ): Promise<{ bytes: Uint8Array; sha256: string } | null>;
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
     heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
@@ -565,12 +625,6 @@ export interface Board {
     /** Parks the job: its container is gone, but it is not finished and keeps its session. */
     suspend(job: BoardJob): Promise<LeaseState>;
     /**
-     * Hands a pre-run claim back after checkout contention (issue #559): the board requeues it with
-     * its attempt refunded and its next claim deferred — or settles it stopped when a Stop got
-     * there first. `lost` when the lease is no longer this attempt's.
-     */
-    requeue(job: BoardJob): Promise<LeaseState>;
-    /**
      * Records an attempt the infrastructure interrupted (issue #792), with its attempt refunded:
      * `release` hands the claim back claimable at once, else this claim adopted the attempt
      * `claimSeq` names and keeps its lease. `exhausted` once the job's interruption budget is
@@ -585,14 +639,7 @@ export interface Board {
      * refused, failed, or malformed answer — means "the board cannot answer", and the reaper
      * reaps nothing on it: absence must be proven, never guessed.
      */
-    leases(ids: readonly string[]): Promise<BoardLease[] | null>;
-    /**
-     * Which of these reclaim acquisition tokens the board still holds (issue #829): a reclaim
-     * group is labelled with its acquisition token, and the reaper spares one the board holds.
-     * An empty set is the board's positive "nothing is held"; null — refused, failed or
-     * malformed — means it cannot answer, and the reaper reaps nothing on it.
-     */
-    reclaimHolds(tokens: readonly string[]): Promise<Set<string> | null>;
+    leases(ids: readonly string[], withThreads?: boolean): Promise<BoardLease[] | null>;
     /**
      * Reports the verdict. `contextTokens` / `contextCostUsd` ride beside it when the runner
      * scraped them out of the session database — the context the run reached and what it cost,
@@ -696,7 +743,8 @@ const isLeaseRow = (row: unknown): row is BoardLease => {
         typeof lease?.id === 'string' &&
         UUID_SHAPE.test(lease.id) &&
         BOARD_JOB_STATUSES.includes(lease.status as BoardJobStatus) &&
-        (lease.leaseToken === null || (typeof lease.leaseToken === 'string' && UUID_SHAPE.test(lease.leaseToken)))
+        (lease.leaseToken === null || (typeof lease.leaseToken === 'string' && UUID_SHAPE.test(lease.leaseToken))) &&
+        (!('thread' in lease) || isThreadFacts(lease.thread))
     );
 };
 
@@ -714,10 +762,11 @@ const parseLeaseRows = (rows: unknown[]): BoardLease[] | null =>
  */
 const bestEffortLeases = async (
     post: (path: string, body: unknown, allow404?: boolean) => Promise<Response>,
-    ids: readonly string[]
+    ids: readonly string[],
+    withThreads: boolean
 ): Promise<BoardLease[] | null> => {
     try {
-        const response = await post('/api/jobs/leases', { ids: [...ids] });
+        const response = await post('/api/jobs/leases', { ids: [...ids], ...(withThreads ? { threads: true } : {}) });
         if (!response.ok) return null;
         const bodyJson = (await response.json()) as { jobs?: unknown };
         return Array.isArray(bodyJson.jobs) ? parseLeaseRows(bodyJson.jobs) : null;
@@ -949,6 +998,7 @@ export function createBoard({
         ...verdictCalls(post, leaseSeconds),
         ...phaseCheckpointCalls(post),
         ...artifactCalls({ url, token, fetch }),
+        ...checkpointCalls(post),
         ...githubCredentialCall({ url, fetch }),
 
         ...reclaimCalls(post, leaseSeconds),
@@ -983,12 +1033,6 @@ export function createBoard({
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async requeue(job) {
-            // 404: the thread was removed behind the requeue — nothing left to hand back.
-            const response = await post(`/api/jobs/${job.id}/requeue`, { leaseToken: job.leaseToken }, true);
-            return response.status === HTTP_CONFLICT ? 'lost' : 'held';
-        },
-
         async interrupt(job, interruption) {
             const response = await post(
                 `/api/jobs/${job.id}/interrupt`,
@@ -1001,8 +1045,8 @@ export function createBoard({
             return answer.code === 'INTERRUPTIONS_EXHAUSTED' ? 'exhausted' : 'lost';
         },
 
-        async leases(ids) {
-            return bestEffortLeases(post, ids);
+        async leases(ids, withThreads = false) {
+            return bestEffortLeases(post, ids, withThreads);
         },
     };
 }

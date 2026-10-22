@@ -111,7 +111,7 @@ spec:
                       # The runner group's scheduling knobs (issue #361), forwarded as JSON onto
                       # every pod the driver specs — runner, gate, sync, reclaim, publish, helper,
                       # service. The tainted node group agent code lands on and the chart's own
-                      # pods never touch; unset, pods schedule wherever the workspaces claim can
+                      # pods never touch; unset, pods schedule wherever the task volume can
                       # attach. The driver parses JSON at boot, fatal on a bad shape.
                       - name: RUNNER_NODE_SELECTOR
                         value: {{ toJson . | quote }}
@@ -124,11 +124,23 @@ spec:
                       - name: RUNNER_AFFINITY
                         value: {{ toJson . | quote }}
                       {{- end }}
-                      # The claim the checkouts live on — the same one the dashboard writes to.
-                      - name: WORKSPACE_VOLUME
-                        value: {{ include "factory.workspaceClaim" $ | quote }}
-                      - name: WORKSPACE_MOUNT
-                        value: {{ $.Values.dashboard.workspaceRoot | quote }}
+                      # The claim each thread's task volume is created with (issue #775).
+                      {{- with $.Values.taskVolume.storageClass }}
+                      - name: TASK_VOLUME_STORAGE_CLASS
+                        value: {{ . | quote }}
+                      {{- end }}
+                      - name: TASK_VOLUME_ACCESS_MODE
+                        value: {{ $.Values.taskVolume.accessMode | quote }}
+                      - name: TASK_VOLUME_SIZE
+                        value: {{ $.Values.taskVolume.size | quote }}
+                      - name: TASK_VOLUME_TTL_MS
+                        value: {{ $.Values.taskVolume.ttlMs | quote }}
+                      - name: TASK_VOLUME_BOUND_MS
+                        value: {{ $.Values.taskVolume.boundMs | quote }}
+                      {{- with $.Values.driver.repoCloneBase }}
+                      - name: REPO_CLONE_BASE
+                        value: {{ . | quote }}
+                      {{- end }}
                       - name: DRIVER_CONCURRENCY
                         value: {{ $.Values.driver.concurrency | quote }}
                       - name: DRIVER_POLL_MS

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { loadDriverConfig } from '../src/config.js';
 import { type PublishStep, publishCheckout } from '../src/publish.js';
 
 /**
@@ -123,7 +122,7 @@ function world(options: { dirty?: boolean } = {}) {
     return { state, run };
 }
 
-const publish = (w: ReturnType<typeof world>) => publishCheckout(loadDriverConfig({}), JOB, undefined, w.run);
+const publish = (w: ReturnType<typeof world>) => publishCheckout(JOB, undefined, w.run);
 
 describe('publication reconciliation after an uncertain response', () => {
     it('does not push twice when the push landed and its answer was lost', async () => {
@@ -217,7 +216,7 @@ describe('publication reconciliation after an uncertain response', () => {
                 throw new Error('git push: remote: Permission to Bellows-AI/factory.git denied');
             return w.run(step);
         };
-        const result = await publishCheckout(loadDriverConfig({}), JOB, undefined, failing);
+        const result = await publishCheckout(JOB, undefined, failing);
         expect(result).toMatchObject({ ok: false, cause: 'denied' });
         expect(w.state.prCreates).toBe(0);
     });

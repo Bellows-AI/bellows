@@ -9,7 +9,7 @@ import { down } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from './board.js';
 import type { RunOutcome } from './runner.js';
-import { SYNC_FAILURE_KINDS, TRANSIENT_SYNC_REASON, withConflictContext, type SyncResult } from './publish.js';
+import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from './publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from './startup-cause.js';
 
@@ -142,9 +142,8 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
 }
 
 /**
- * A setup conclusion as the ending it decides: a fault or a conclusion lands its verdict, a requeue
- * hands the pre-run claim back, an interrupt hands the attempt back as an interruption, a leave
- * leaves it to the lease (issue #469).
+ * A setup conclusion as the ending it decides: a fault or a conclusion lands its verdict, an
+ * interrupt hands the attempt back as an interruption, a leave leaves it to the lease (issue #469).
  */
 export function setupDecision(halt: SetupHalt): EndDecision {
     switch (halt.halt) {
@@ -218,21 +217,18 @@ function leaveConclusion(
     );
 }
 
-/** The halt a failed checkout sync ends the attempt with: lock contention requeues, anything else is a fault. */
+/** The halt a failed checkout sync ends the attempt with: always a fault, config when the script named a kind. */
 export function syncFailureHalt(synced: SyncResult): SetupHalt {
-    if (synced.reason !== null && TRANSIENT_SYNC_REASON.test(synced.reason)) {
-        /*
-         * Lock contention on the shared checkout (issues #307, #559) is infrastructure, not a verdict: this
-         * driver's own syncs of the clone are queued above, so the lock the script waited out is another
-         * driver's (or, on docker, a stood-down sibling's sync container still finishing), or the fetch kept
-         * losing ref locks to a concurrent git. The claim goes straight back to the board, which refunds the
-         * attempt and defers the next claim. The kubernetes checkout claim was already released inside
-         * `syncCheckout` before it answered, the same discipline the sync-failure refusal below relies on.
-         */
-        return { halt: 'requeue', log: `checkout sync was lock-blocked, requeueing: ${synced.reason}` };
+    // A thread whose task volume is gone and whose checkpoint cannot rebuild it: its own kind, for a person.
+    if (synced.kind === 'checkpoint_unrestorable') {
+        return faultHalt(
+            `checkout restore failed: ${synced.reason}`,
+            `The task's checkout could not be restored before the run: ${synced.reason}`,
+            'checkpoint_unrestorable'
+        );
     }
     // A kind the script named is a refusal no retry fixes: a person acts on it, so it is config.
-    const deterministic = synced.kind !== undefined && SYNC_FAILURE_KINDS.includes(synced.kind);
+    const deterministic = synced.kind !== undefined && (SYNC_FAILURE_KINDS as readonly string[]).includes(synced.kind);
     return faultHalt(
         `checkout sync failed: ${synced.reason}`,
         `The checkout could not be synced with the remote before the run: ${synced.reason}`,

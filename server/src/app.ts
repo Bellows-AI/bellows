@@ -207,7 +207,7 @@ export async function buildApp({
     if (store) await app.register(ingestRoutes(store, orgs));
     // The board and the workflow definitions it resolves against: per-org runtimes, the routes
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
-    await app.register(jobRoutes({ orgs, workspaceRoot: config.workspaceRoot }));
+    await app.register(jobRoutes({ orgs }));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.

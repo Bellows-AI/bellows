@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { ArtifactStreamRef, BoardJob, ReviewClaim } from './board.js';
-import { ARTIFACT_STREAM, uploadRunArtifacts } from './artifact-upload.js';
+import { ARTIFACT_STREAM, NO_SESSION, uploadRunArtifacts } from './artifact-upload.js';
 import { mergeOpencodeOutcome, parseOpencodeRunOutcome } from './close-read.js';
 import { CLAUDE_CODE } from './executors.js';
-import type { ExportRelay } from './export-control.js';
+import type { CheckpointRelay, ExportRelay } from './export-control.js';
 import type { RunOutcome } from './runner.js';
 import { controlTokenOf, type ReviewExporter } from './supervised-steps.js';
 import { killAgent } from './loop-attempt.js';
@@ -45,6 +45,43 @@ const refOf = (job: BoardJob, session: string): ArtifactStreamRef => ({
     session,
     stream: ARTIFACT_STREAM.transcript,
 });
+
+/** What the supervisor names itself as in the checkpoint's manifest, and the shape of the stream it writes. */
+const CHECKPOINT_PRODUCER = 'supervisor';
+const CHECKPOINT_SCHEMA_VERSION = 1;
+
+const checkpointRef = (job: BoardJob): ArtifactStreamRef => ({
+    executor: job.executorType ?? '',
+    session: NO_SESSION,
+    stream: ARTIFACT_STREAM.checkpoint,
+});
+
+/**
+ * The relay behind the control token's checkpoint routes (issue #775): the supervisor's finalize
+ * stage puts the checkpoint's bytes and its closing record here and they go on to the board's
+ * `checkpoint` stream. The claim sequence that authorizes them is the job's own, read here — the
+ * supervisor names none — so a superseded attempt's checkpoint is the board's to refuse.
+ */
+export function createCheckpointRelay(rt: LoopRuntime, job: BoardJob): CheckpointRelay {
+    return {
+        putChunk: (offset, bytes) => rt.board.putArtifactChunk(job, checkpointRef(job), offset, bytes),
+        finalize: (manifest) =>
+            rt.board.finalizeArtifact(job, checkpointRef(job), {
+                producer: CHECKPOINT_PRODUCER,
+                schemaVersion: CHECKPOINT_SCHEMA_VERSION,
+                ...manifest,
+            }),
+        readChunk: (offset) => rt.board.checkpointChunk(job, offset),
+        listTranscripts: () => rt.board.transcripts(job),
+        readTranscript: (ref, offset) => rt.board.transcriptChunk(job, ref, offset),
+    };
+}
+
+/** Every attempt with a control endpoint checkpoints at finalize, whichever executor ran: no transcript stream is needed. */
+export function attachCheckpoint(ctx: Pick<AttemptCtx, 'rt' | 'job'>, token: string): void {
+    const { rt, job } = ctx;
+    rt.gates?.server.attachCheckpoint(token, createCheckpointRelay(rt, job));
+}
 
 /** The relay behind the control token's export routes: board calls plus the run's bookkeeping. */
 export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun, control: string | null): ExportRelay {

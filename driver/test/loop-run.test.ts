@@ -1,6 +1,6 @@
 /**
  * `runJob` driven directly, with no claim loop around it: the module's own contracts — the order in
- * which claim refusals are decided, how a checkout sync's answer becomes a verdict, a requeue or a
+ * which claim refusals are decided, how a checkout sync's answer becomes a verdict or a
  * fault, and what each way a run can end leaves on the board. The claim loop's behavior end to end
  * is `loop.test.ts`; the phase-boundary faults are `loop-phase-faults.test.ts`.
  */
@@ -125,15 +125,8 @@ describe('the claim refusals, decided before anything launches', () => {
 describe('the checkout sync answer', () => {
     const refused = (over: Partial<SyncResult>): SyncResult => ({ ok: false, reason: 'boom', ...over });
 
-    it('hands lock contention back as a requeue, with no verdict', async () => {
-        const r = await attempt(job(1), { sync: refused({ reason: 'transient worktree sync: lock busy' }) });
-
-        expect(r.board.requeued).toEqual([job(1).id]);
-        expect(r.board.completed).toEqual([]);
-    });
-
     it('fails a kind the script named as config', async () => {
-        const r = await attempt(job(1), { sync: refused({ kind: 'missing_clone' }) });
+        const r = await attempt(job(1), { sync: refused({ kind: 'missing_base_branch' }) });
 
         expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'config' });
         expect(r.board.completed[0]?.output).toContain('boom');
@@ -215,25 +208,5 @@ describe('how a run ends', () => {
         expect(r.board.interrupted).toHaveLength(1);
         expect(r.board.interrupted[0]?.reason).toContain('registry unreachable');
         expect(r.board.completed).toEqual([]);
-    });
-});
-
-describe('the sync turn, held across the token ask', () => {
-    it('releases the turn it was granted when the board cannot issue the checkout token', async () => {
-        const board = stubBoard([]).board;
-        board.githubCredential = async () => {
-            throw new Error('board unreachable');
-        };
-        let released = 0;
-        const syncs = { acquire: async () => ({ release: () => void released++ }) };
-        const rt = stubRuntime(
-            board,
-            stubRunner(async () => ok()),
-            { syncs }
-        );
-
-        await runJob(rt, { ...job(1), repo: 'Example-Org/example' }).catch(() => {});
-
-        expect(released).toBe(1);
     });
 });

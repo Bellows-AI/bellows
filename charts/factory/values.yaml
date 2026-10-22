@@ -137,6 +137,20 @@ workspaces:
     storageClass: ''
     existingClaim: ''
 
+# The volume each root thread gets for its checkout, transcripts and caches (issue #775): one
+# claim per thread, created by the driver and mounted at /task. Not ReadWriteMany: only that
+# thread's pods mount it. ReadWriteOncePod keeps a second pod off it; a provisioner without it
+# (kind's local-path) takes ReadWriteOnce. storageClass empty is the cluster default.
+taskVolume:
+    storageClass: ''
+    accessMode: ReadWriteOncePod
+    size: 20Gi
+    # The reaper deletes a thread's volumes (every generation) once its last attempt finalized and
+    # nothing is live: after ttlMs when its artifacts and checkpoint are whole, after boundMs (the
+    # longer) when a checkpoint is truncated or an artifact is still pending. Milliseconds, quoted.
+    ttlMs: '86400000'
+    boundMs: '604800000'
+
 # A namespace LimitRange (issue #454): a pod created WITHOUT limits — by anything, not only the
 # driver — inherits these instead of running unbounded. A container's own limits win. It applies
 # to every container in the namespace, the dashboard and driver included, so keep the defaults
@@ -231,6 +245,9 @@ driver:
     # the grace cannot be usefully zero below the default teardown span, but the knob exists.
     reapIntervalMs: '300000'
     reapGraceMs: '600000'
+    # Where a task's checkout is cloned from: `<base>/<owner>/<name>.git`. Empty is the driver's
+    # default, https://github.com; only a lane that serves its own origin sets it.
+    repoCloneBase: ''
     # What the runner-side exporters flush and cap (consumed by the exporters that follow the
     # artifact store; the board enforces the same caps).
     artifactFlush:

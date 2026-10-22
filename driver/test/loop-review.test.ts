@@ -40,6 +40,7 @@ function opened() {
                 grantExporter: (_token: string, exporterToken: string) => {
                     calls[0]?.push(exporterToken);
                 },
+                attachCheckpoint: () => {},
             },
             advertiseUrl: (port: number) => `http://driver:${port}`,
         },

@@ -2,11 +2,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID, workspacePath } from '../src/claim.js';
+import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { runnerJobSpec, secretName } from '../src/k8s-podspec.js';
-import { reclaimGroupSpec } from '../src/k8s-group.js';
-import { WORKSPACE_PATH } from '../src/publish.js';
+import { readerJobSpec, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
 import {
     AGENT_CONTAINER,
@@ -16,6 +14,7 @@ import {
     serviceContainerOf,
     SUPERVISOR_BINDING,
 } from '../src/supervisor-contract.js';
+import { TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
@@ -71,31 +70,35 @@ describe('the admission policy Secret pattern', () => {
 });
 
 /*
- * Every mount of the workspaces claim must carry a subPath of the WORKSPACE_PATH shape, so a pod
- * the driver's identity submits cannot mount the claim root. The template's pattern is a copy of
- * WORKSPACE_PATH (CEL has no case-insensitive flag), so the two are held to the same verdicts.
+ * Every task volume claim a pod mounts must carry the name taskVolumeName gives a thread's volume,
+ * and a mount of it only whole or at the reviewer home, so a pod the driver's identity submits
+ * cannot mount a subtree of another thread's work or a claim that is not a task volume. The
+ * template's claim pattern is held to the driver's own name.
  */
-const subPathPattern = new RegExp(/\$workspaceSubPath := "([^"]+)"/.exec(template)?.[1] ?? '(?!)');
+const claimPattern = new RegExp(/\$taskClaim := "([^"]+)"/.exec(template)?.[1] ?? '(?!)');
 
-describe('the admission policy workspace subPath pattern', () => {
-    it('admits the subPath every driver workspace mount uses', () => {
-        expect(workspacePath(job)).toMatch(subPathPattern);
+describe('the admission policy task volume claim pattern', () => {
+    it('admits the claim name every driver task volume uses', () => {
+        expect(taskVolumeName(job)).toMatch(claimPattern);
+        expect(taskVolumeName(job, 12)).toMatch(claimPattern);
     });
 
     it.each([
-        'bellows/44444444-4444-4444-8444-444444444444',
-        'Bellows_Org-1/ABCDEF01-2345-6789-ABCD-EF0123456789',
-        `a${'b'.repeat(38)}/44444444-4444-4444-8444-444444444444`,
-        `a${'b'.repeat(39)}/44444444-4444-4444-8444-444444444444`,
-        '',
-        'bellows',
-        '/',
-        '../bellows/44444444-4444-4444-8444-444444444444',
-        'bellows/44444444-4444-4444-8444-444444444444/.worktrees/x',
-        '-bellows/44444444-4444-4444-8444-444444444444',
-        'bellows/not-a-uuid',
-    ])('agrees with WORKSPACE_PATH on %j', (candidate) => {
-        expect(subPathPattern.test(candidate)).toBe(WORKSPACE_PATH.test(candidate));
+        'factory-dashboard',
+        'factory-workspaces',
+        'factory-task-',
+        'factory-task-not-a-uuid-1',
+        'factory-task-44444444-4444-4444-8444-444444444444',
+        'factory-task-44444444-4444-4444-8444-444444444444-x',
+        'x-factory-task-44444444-4444-4444-8444-444444444444-1',
+        'factory-task-44444444-4444-4444-8444-444444444444-1/extra',
+    ])('refuses %j', (candidate) => {
+        expect(candidate).not.toMatch(claimPattern);
+    });
+
+    it('mounts a task volume only whole or at the reviewer home', () => {
+        expect(policy('pods')).toContain("m.subPath in ['', '.factory/reviewer']");
+        expect(policy('pods')).toContain('!has(m.subPathExpr)');
     });
 });
 
@@ -161,9 +164,8 @@ describe('the admission policy requires the pod hardening (#382)', () => {
         const promptedJob: BoardJob = { ...job, masterPrompt: 'Factory execution contract' };
         const pods = [
             runnerJobSpec(config, promptedJob, { id: SESSION, resume: false }).spec.template.spec,
-            // The supervisor-only group of an agentless attempt and of a reclaim: no agent container.
+            // The supervisor-only group of an agentless attempt: no agent container.
             runnerJobSpec(config, { ...promptedJob, agent: false }, null).spec.template.spec,
-            reclaimGroupSpec(config, { ...job, repo: 'Bellows-AI/factory' }, job.leaseToken).spec.template.spec,
             // A run with a gate and a declared service: their sidecars are init containers (#773).
             runnerJobSpec(
                 config,
@@ -175,6 +177,9 @@ describe('the admission policy requires the pod hardening (#382)', () => {
                 },
                 { id: SESSION, resume: false }
             ).spec.template.spec,
+            // The reader Job of an adopted ended group's close-time readouts (#775).
+            readerJobSpec(config, promptedJob, 'factory-read-0', { argv: ['node'], env: {}, timeoutMs: 1_000 }).spec
+                .template.spec,
         ];
         for (const pod of pods) {
             expect(pod.securityContext?.seccompProfile?.type).toBe('RuntimeDefault');
@@ -236,6 +241,26 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(objects).toMatch(/operations: \['DELETE'\]\n\s+resources: \['pods'\]/);
     });
 
+    // Issue #775: the Role's `patch` on claims labels one unschedulable; admission lets that label change and
+    // nothing else, and the create-time shape check no longer reads a bound claim's volumeName.
+    it('lets a task volume claim change its unschedulable label alone', () => {
+        const objects = policy('objects');
+        expect(objects).toMatch(
+            /operations: \['CREATE', 'UPDATE', 'DELETE'\]\n\s+resources: \['persistentvolumeclaims'\]/
+        );
+        expect(objects).toContain(`k == '${TASK_UNSCHEDULABLE_LABEL}'`);
+        expect(objects).toContain('object.spec == oldObject.spec');
+        // An update carrying the label could still strip the pvc-protection finalizer, add an ownerReference the
+        // garbage collector then deletes the claim for, or rewrite the scheduler's selected-node annotation.
+        for (const field of ['annotations', 'finalizers', 'ownerReferences']) {
+            expect(objects).toContain(`has(object.metadata.${field}) == has(oldObject.metadata.${field})`);
+            expect(objects).toContain(
+                `(!has(object.metadata.${field}) || object.metadata.${field} == oldObject.metadata.${field})`
+            );
+        }
+        expect(objects).toContain("request.kind.kind != 'PersistentVolumeClaim' || request.operation != 'CREATE'");
+    });
+
     it(`maps hostAliases only to ${SERVICE_ADDRESS}, which is all the driver writes there`, () => {
         expect(policy('pods')).toContain(`variables.spec.hostAliases.all(h, h.ip == '${SERVICE_ADDRESS}')`);
         expect(pod.hostAliases?.length).toBeGreaterThan(0);
@@ -287,7 +312,7 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         expect(pods).toContain(`c.securityContext.runAsUser == ${REVIEWER_UID}`);
         expect(pods).toContain('a driver-specced reviewer runs as its own uid');
         expect(pods).toContain(
-            'a driver-specced reviewer mounts its workspace read-only but for its home, and its review mailbox'
+            'a driver-specced reviewer mounts the task volume read-only but for its home, and its review mailbox'
         );
         expect(pods).toContain(
             'a driver-specced reviewer references the credentials Secret alone: no envFrom, never the attempt Secret'
@@ -316,7 +341,7 @@ describe('the admission policy admits the holder binding (#829)', () => {
 
     it('matches Secret updates in the objects policy, beside the claim revoke', () => {
         expect(objects).toMatch(/operations: \['UPDATE'\]\n\s+resources: \['secrets'\]/);
-        expect(objects).toMatch(/operations: \['UPDATE'\]\n\s+resources: \['configmaps'\]/);
+        expect(objects).not.toMatch(/operations: \['UPDATE'\]\n\s+resources: \['configmaps'\]/);
     });
 
     it('lets a Secret update change only its binding key, keeping labels, type and owner', () => {
@@ -330,10 +355,5 @@ describe('the admission policy admits the holder binding (#829)', () => {
         expect(objects).toContain('(!has(object.immutable) || !object.immutable)');
         expect(objects).toContain('variables.newFinalizers == variables.oldFinalizers');
         expect(objects).toContain('variables.newAnnotations == variables.oldAnnotations');
-    });
-
-    it('guards the claim-update rules to ConfigMaps', () => {
-        expect(objects).toContain("request.kind.kind != 'ConfigMap' || request.operation != 'UPDATE'");
-        expect(objects).toContain('the driver updates only checkout claims and attempt Secret bindings');
     });
 });

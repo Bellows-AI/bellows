@@ -6,7 +6,6 @@ import type {
     ArtifactManifest,
     Board,
     BoardJob,
-    BoardLease,
     HeartbeatVerdict,
     Interruption,
     LeaseState,
@@ -18,7 +17,7 @@ import type {
 } from '../../src/board.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
-import type { ExportRelay } from '../../src/export-control.js';
+import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
@@ -42,7 +41,6 @@ import type {
     RuntimeSample,
 } from '../../src/runner.js';
 import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
-import { type SyncQueue, syncQueue } from '../../src/sync-queue.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -92,8 +90,6 @@ export interface BoardStub extends Board {
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
-    /** The pre-run claims the loop handed back for checkout contention (issue #559). */
-    requeued: string[];
     /** The interrupted attempts the loop reported (issue #792). */
     interrupted: ({ id: string } & Interruption)[];
     beats: number;
@@ -106,7 +102,6 @@ export interface BoardStub extends Board {
     reclaimAckTokens: string[];
     /** Every reclaim renew the loop sent, with the token it rode under (issue #821). */
     reclaimRenewals: { id: string; token: string }[];
-    leaseLookups: string[][];
     /** Every question report the loop sent (issue #226) — ids only, never text. */
     questionsReported: string[];
     /** Every artifact chunk and manifest the loop sent, with the claim sequence each rode under. */
@@ -143,8 +138,6 @@ export function stubBoard(
         /** The board's answer to a reclaim renew; held when absent (issue #821). */
         renewReclaim?: (id: string, token: string, signal?: AbortSignal) => Promise<ReclaimRenewal>;
         githubToken?: string | null;
-        /** The board's answer to `leases` — null models a refused lookup (issue #344). */
-        leaseRows?: BoardLease[] | null | undefined;
         /** The board's answer to a question report (issue #226); held when absent. */
         questionVerdict?: QuestionVerdict;
         /** Every artifact call throws, as a board that is down does. */
@@ -174,7 +167,6 @@ export function stubBoard(
         sessions: [],
         progressed: [],
         suspended: [],
-        requeued: [],
         interrupted: [],
         beats: 0,
         gatesReported: [],
@@ -183,10 +175,21 @@ export function stubBoard(
         reclaimAcks: [],
         reclaimAckTokens: [],
         reclaimRenewals: [],
-        leaseLookups: [],
         questionsReported: [],
         artifactChunks: [],
         artifactManifests: [],
+        async checkpoint() {
+            return { state: 'none' };
+        },
+        async checkpointChunk() {
+            return null;
+        },
+        async transcripts() {
+            return [];
+        },
+        async transcriptChunk() {
+            return null;
+        },
         async putArtifactChunk(claimed, ref, offset, bytes) {
             if (options.artifactsDown) throw new Error('board unreachable');
             const text = Buffer.from(bytes).toString('utf8');
@@ -207,20 +210,11 @@ export function stubBoard(
             board.questionsReported.push(questionId);
             return options.questionVerdict ?? 'held';
         },
-        async leases(ids) {
-            board.leaseLookups.push([...ids]);
-            if (options.leaseRows === undefined) return [];
-            return options.leaseRows;
-        },
-        async reclaimHolds() {
-            return new Set<string>();
+        async leases() {
+            return [];
         },
         async suspend(claimed) {
             board.suspended.push(claimed.id);
-            return 'held';
-        },
-        async requeue(claimed) {
-            board.requeued.push(claimed.id);
             return 'held';
         },
         async interrupt(claimed, interruption) {
@@ -327,8 +321,6 @@ export function stubRunner(
         reclaim?: { ok: boolean; removed: boolean; reason: string | null } | null | undefined;
         /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
         reclaimSequence?: ReclaimResult[];
-        /** The kubernetes orphan-claim reap; recorded in `reapAttempts` (issue #344). */
-        reapOrphanedClaim?: (job: BoardJob) => Promise<boolean>;
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
         probeTree?: string | null;
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
@@ -358,9 +350,6 @@ export function stubRunner(
     synced: BoardJob[];
     reclaimed: BoardJob[];
     servicesReleased: string[];
-    reapAttempts: BoardJob[];
-    /** The claim incarnation each reap was handed (issue #821). */
-    reapClaims: { uid: string; holder: string }[];
     probed: BoardJob[];
     deadServiceProbes: number;
     startedServices: string[];
@@ -381,8 +370,6 @@ export function stubRunner(
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
     const runner = {
         servicesReleased: [] as string[],
-        reapAttempts: [] as BoardJob[],
-        reapClaims: [] as { uid: string; holder: string }[],
         probed: [] as BoardJob[],
         deadServiceProbes: 0,
         async deadServices() {
@@ -510,15 +497,6 @@ export function stubRunner(
             if (!options.runReview) throw new Error('no review scripted');
             return options.runReview(caller, review, session, control);
         },
-        ...(options.reapOrphanedClaim
-            ? {
-                  reapOrphanedClaim: async (orphanJob: BoardJob, claim: { uid: string; holder: string }) => {
-                      runner.reapAttempts.push(orphanJob);
-                      runner.reapClaims.push(claim);
-                      return options.reapOrphanedClaim?.(orphanJob) ?? false;
-                  },
-              }
-            : {}),
     };
     return runner;
 }
@@ -533,7 +511,7 @@ export const ok = (over: Partial<RunOutcome> = {}): RunOutcome => ({
 
 /**
  * The runtime `runJob` and `adoptStep` take, without a claim loop around them: a verdict lands on
- * the board's `complete`, the sync queue is real, nothing reclaims.
+ * the board's `complete`, nothing reclaims.
  */
 export function stubRuntime(board: BoardStub, runner: Runner, extra: Partial<LoopRuntime> = {}): LoopRuntime {
     return {
@@ -543,7 +521,6 @@ export function stubRuntime(board: BoardStub, runner: Runner, extra: Partial<Loo
         log: () => {},
         sleep,
         reclaims: new Map(),
-        syncs: syncQueue(),
         report: async (reported, result) => (await board.complete(reported, result)).state,
         ...extra,
     };
@@ -566,8 +543,6 @@ export async function drive(
         runner: Runner;
         gates?: GateStack;
         log?: (message: string) => void;
-        syncs?: SyncQueue;
-        syncWaitMs?: number;
     },
     env = {}
 ) {
@@ -578,8 +553,6 @@ export async function drive(
         sleep,
         ...(deps.gates ? { gates: deps.gates } : {}),
         ...(deps.log ? { log: deps.log } : {}),
-        ...(deps.syncs ? { syncs: deps.syncs } : {}),
-        ...(deps.syncWaitMs === undefined ? {} : { syncWaitMs: deps.syncWaitMs }),
     });
     deps.attach(loop);
     await loop.start();
@@ -670,6 +643,10 @@ export function stubGateStack(
             attachExporter: (token: string, exporter: ExportRelay) => {
                 const control = stack.controls.get(token);
                 if (control) control.exporting.relay = exporter;
+            },
+            attachCheckpoint: (token: string, checkpoint: CheckpointRelay) => {
+                const control = stack.controls.get(token);
+                if (control) control.checkpointing.relay = checkpoint;
             },
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {

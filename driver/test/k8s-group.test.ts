@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import { holderGroupsOf, reclaimGroupName } from '../src/k8s-group.js';
+import { holderGroupsOf } from '../src/k8s-group.js';
 import { createKubernetesRunner } from '../src/k8s-runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { TASK_UNSCHEDULABLE_LABEL } from '../src/task-volume.js';
+import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
 import { createStepBroker, type StepBroker, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
 import {
     AGENT_CONTAINER,
@@ -87,7 +89,10 @@ function cluster(
     const gone = new Set<string>();
     const configmaps = `/api/v1/namespaces/${NAMESPACE}/configmaps`;
     const secrets = `/api/v1/namespaces/${NAMESPACE}/secrets`;
+    const serveVolumes = taskVolumeServer(NAMESPACE);
     const request: K8sRequest = async (method: K8sMethod, path: string, body?: unknown) => {
+        const volume = serveVolumes(method, path, body);
+        if (volume) return volume;
         if (path === configmaps && method === 'POST') {
             const claim = body as { metadata: { name: string }; data: { holder: string; claimSeq: string } };
             if (claims.has(claim.metadata.name)) return { status: 409, body: '{}' };
@@ -317,13 +322,13 @@ describe('the task group of one attempt', () => {
 
         const outcome = await running;
 
-        expect(kinds(s)).toEqual(['sync', 'go']);
+        // The close-time turn readout is a `probe` step of the task pod, not a Job of its own.
+        expect(kinds(s)).toEqual(['sync', 'go', 'probe']);
         // The supervisor reported and serves on: its channel stays open for the steps after it.
         expect(s.released).toEqual([]);
         expect(outcome).toMatchObject({ exitCode: 0, timedOut: false, started: true });
         // The Job is still the attempt's: nothing deleted it, and nothing else was created.
-        // (The close-time turn readout is a Job of its own until its own issue retires it.)
-        expect(api.created.deletedJobs.filter((name) => !name.startsWith('factory-cturns-'))).toEqual([]);
+        expect(api.created.deletedJobs).toEqual([]);
         expect(api.created.jobs.filter((created) => created.name === runnerJobName(job))).toHaveLength(1);
     });
 
@@ -371,6 +376,107 @@ describe('the task group of one attempt', () => {
         // No step was submitted to a supervisor that never came up, and the group is gone.
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+    });
+
+    describe('a task pod held Pending by its volume', () => {
+        const AFFINITY = '0/3 nodes are available: 3 node(s) had volume node affinity conflict.';
+        const pending = (message: string) => ({
+            phase: 'Pending',
+            conditions: [{ type: 'PodScheduled', status: 'False', reason: 'Unschedulable', message }],
+        });
+        /** The sync of an attempt whose supervisor never answers, with the volume patches the driver sent. */
+        async function stuckSync(podStatus: unknown, steal?: { holder: string; fromRead: number }) {
+            const api = cluster({ podStatus });
+            const patched: { path: string; body: unknown }[] = [];
+            let claimReads = 0;
+            let readsAtPatch = 0;
+            const request: K8sRequest = async (method, path, body) => {
+                if (method === 'PATCH' && path.includes('/persistentvolumeclaims/')) {
+                    patched.push({ path, body });
+                    readsAtPatch = claimReads;
+                }
+                const answer = await api.request(method, path, body);
+                // From the given claim read on, the checkout claim is held by another attempt.
+                if (method === 'GET' && path.includes('/configmaps/')) claimReads += 1;
+                if (
+                    steal &&
+                    claimReads >= steal.fromRead &&
+                    method === 'GET' &&
+                    path.includes('/configmaps/') &&
+                    answer.status === 200
+                ) {
+                    const claim = JSON.parse(answer.body) as { data: object };
+                    return {
+                        status: 200,
+                        body: JSON.stringify({ ...claim, data: { ...claim.data, holder: steal.holder } }),
+                    };
+                }
+                return answer;
+            };
+            const s = steps(() => ok(), false);
+            const thrown = await runner(request, s.sink)
+                .syncCheckout(job, undefined, SESSION)
+                .then(
+                    () => null,
+                    (e: unknown) => e
+                );
+            return { thrown, patched, api, readsAtPatch };
+        }
+
+        it('is an infrastructure loss, never a failure: refused as transient, its volume marked unschedulable', async () => {
+            const { thrown, patched, api } = await stuckSync(pending(AFFINITY));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({
+                startupCause: 'transient',
+                message: expect.stringContaining('volume node affinity'),
+            });
+            expect(patched).toEqual([
+                {
+                    path: expect.stringMatching(/\/persistentvolumeclaims\/.+/),
+                    body: { metadata: { labels: { [TASK_UNSCHEDULABLE_LABEL]: 'true' } } },
+                },
+            ]);
+            // The group is gone, as for any refused start; the volume is not deleted here.
+            expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+        });
+
+        it.each([
+            [
+                'a mix of reasons',
+                '0/5 nodes are available: 2 Insufficient cpu, 3 node(s) had volume node affinity conflict.',
+            ],
+            [
+                'a taint beside the conflict',
+                '0/3 nodes are available: 1 node(s) had untolerated taint, 2 node(s) had volume node affinity conflict.',
+            ],
+            ['words without a node count', 'pod has unbound volumes: volume node affinity conflict'],
+        ])('marks nothing for %s: the volume is not proven the fault', async (_name, message) => {
+            const { thrown, patched } = await stuckSync(pending(message));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({ startupCause: 'transient' });
+            expect(patched).toEqual([]);
+        });
+
+        it('marks nothing once the claim is no longer ours: a fenced attempt touches no volume', async () => {
+            // The claim reads of an undisturbed attempt end with the one before the mark: lose just that one.
+            const { readsAtPatch } = await stuckSync(pending(AFFINITY));
+            const { thrown, patched } = await stuckSync(pending(AFFINITY), {
+                holder: 'another-lease',
+                fromRead: readsAtPatch,
+            });
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(patched).toEqual([]);
+        });
+
+        it('marks nothing for a pod held Pending for another reason: not a volume fault', async () => {
+            const { thrown, patched } = await stuckSync(pending('0/3 nodes are available: 3 Insufficient cpu.'));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(patched).toEqual([]);
+        });
     });
 
     it('creates no group for a lease its driver killed, for the sync or any later step', async () => {
@@ -668,54 +774,21 @@ describe('the lists that decide a delete', () => {
     });
 });
 
-describe('the reclaim of a thread with no attempt', () => {
-    const endpoint: SupervisorEndpoint & { closed: string[] } = {
-        closed: [],
-        open: async () => ({ url: 'http://driver:8130', token: 'reclaim-token' }),
-        close(token) {
-            this.closed.push(token);
-        },
-    };
-
-    it('runs in a supervisor-only group under a lease of its own, then deletes the group and its Secret', async () => {
+describe('the terminal reclaim of a thread (issue #775)', () => {
+    // The thread's tree lives on its own task volume, which only the reaper deletes: the reclaim is an
+    // acknowledged no-op, so it creates no group, no Secret and opens no endpoint.
+    it('acknowledges without creating a group or a Secret, and without a supervisor endpoint', async () => {
         const api = cluster({ ended: true });
-        const s = steps(() => ok('{"ok":true,"removed":true,"reason":null}'));
-        const k8s = runner(api.request, s.sink, endpoint);
+        const s = steps(() => ok('{}'));
 
-        expect(await k8s.reclaimWorktree(job)).toMatchObject({ ok: true, removed: true });
-
-        const [group] = api.created.jobs;
-        expect(api.created.jobs).toHaveLength(1);
-        expect(group!.containers).toEqual(['supervisor']);
-        expect(group!.name).not.toBe(runnerJobName(job));
-        expect(group!.name).toMatch(/^factory-reclaim-/);
-        // Once, by its uid (issue #821): the derived name held nothing before the POST, so nothing
-        // was deleted then — the group itself goes after its step.
-        expect(api.created.deletedJobs).toEqual([group!.name]);
-        expect(kinds(s)).toEqual(['reclaim', 'finish']);
-        expect(s.tokens).toEqual(new Set(['reclaim-token']));
-        expect(endpoint.closed).toEqual(['reclaim-token']);
-        // Its Secret is not the attempt's, and it is deleted with the group.
-        expect(api.created.secrets).toHaveLength(1);
-        expect(api.created.secrets[0]).not.toBe(secretName(job));
-        // Its own Secret, by the uid its create answered, acknowledged before the Job (issue #821) —
-        // the only one: the gates hold none (issue #773); a lease of its own, random per invocation.
-        const [own] = api.created.secrets;
-        expect(api.created.deletedSecrets).toEqual([own]);
-    });
-
-    it('refuses without an endpoint to serve the group from, never by running the reclaim some other way', async () => {
-        const api = cluster();
-        const result = await runner(api.request, steps().sink).reclaimWorktree(job);
-        expect(result).toMatchObject({
-            ok: false,
+        expect(await runner(api.request, s.sink).reclaimWorktree(job)).toEqual({
+            ok: true,
             removed: false,
-            reason: expect.stringContaining('no supervisor endpoint'),
+            reason: null,
         });
-        expect(api.created.jobs).toEqual([]);
-    });
 
-    it('names its group apart from the attempt’s', () => {
-        expect(reclaimGroupName(job)).not.toBe(runnerJobName(job));
+        expect(api.created.jobs).toEqual([]);
+        expect(api.created.secrets).toEqual([]);
+        expect(kinds(s)).toEqual([]);
     });
 });

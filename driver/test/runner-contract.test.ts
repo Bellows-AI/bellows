@@ -42,7 +42,6 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     rebind: 'both',
     abandon: 'both',
     releaseFence: 'kubernetes',
-    reapOrphanedClaim: 'kubernetes',
 };
 
 const membersFor = (executor: 'docker' | 'kubernetes'): string[] =>
@@ -59,7 +58,7 @@ const kubernetes = createKubernetesRunner(
 
 describe('the Runner contract', () => {
     it('leaves optional only what one executor lacks', () => {
-        expectTypeOf<OptionalKeys<Runner>>().toEqualTypeOf<'releaseFence' | 'reapOrphanedClaim'>();
+        expectTypeOf<OptionalKeys<Runner>>().toEqualTypeOf<'releaseFence'>();
     });
 
     it.each([
@@ -90,7 +89,7 @@ describe('the Runner contract', () => {
             for (const name of Object.keys(wrapped)) await wrapped[name]?.(taken);
 
             // The runner-level members that name the claim (not a group) keep the job as the loop holds it.
-            const claimScoped = ['adopt', 'syncCheckout', 'reclaimWorktree', 'reapOrphanedClaim', 'rebind'];
+            const claimScoped = ['adopt', 'syncCheckout', 'reclaimWorktree', 'rebind'];
             for (const [name, job] of Object.entries(seen)) {
                 if (claimScoped.includes(name)) expect(job, name).toBe(taken);
                 else expect(job, name).toEqual(ownGroup(taken));

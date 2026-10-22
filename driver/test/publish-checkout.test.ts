@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
-import { loadDriverConfig } from '../src/config.js';
 import { PUBLISH_MOVED_REASON, type PublishOptions, type PublishStep, publishCheckout } from '../src/publish.js';
+import { TASK_MOUNT } from '../src/task-volume.js';
 
 /**
  * The publish workflow both executors run (`publishCheckout`), over a fake transport: every
@@ -26,7 +26,7 @@ const ISSUE_JOB = {
     repo: 'Bellows-AI/factory',
     env: { GITHUB_TOKEN: 't0k-3n' } as Record<string, string>,
 } as BoardJob;
-const WT = `/workspaces/bellows/${USER}/.worktrees/${ISSUE_JOB.id}`;
+const WT = `${TASK_MOUNT}/factory`;
 const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
 const PLAN_TITLE = '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)';
 const GATES_LINE = 'Published by the factory board after the declared gates passed.';
@@ -125,7 +125,7 @@ const transport = (
 };
 
 const publish = (t: ReturnType<typeof transport>, options?: PublishOptions, job: BoardJob = ISSUE_JOB) =>
-    publishCheckout(loadDriverConfig({}), job, options, t.run);
+    publishCheckout(job, options, t.run);
 
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
 

@@ -22,18 +22,10 @@ export const isSeq = (value: unknown): value is string =>
 export const isCommandMark = (value: unknown): value is string =>
     typeof value === 'string' && /^[0-9a-f]{16}$/.test(value);
 /**
- * The reclaim acquisition token a reclaim group serves (also the checkout claim's holder), on its
- * Job and pod template (kubernetes) or each container and volume (docker). The group's own lease
- * token is random per invocation, so its names are never reused; this label is how a retry, an
- * orphaned claim's reap and the reaper (which asks the board whether it is still held) find it.
+ * Kubernetes only: the checkout claim's holder a group serves, on its Job and its pod template.
+ * The reaper finds what a holder left by it.
  */
 export const HOLDER_LABEL = 'factory.holder';
-/**
- * Kubernetes only: the annotation an orphaned-claim reap puts on the checkout claim before it lists
- * the holder's groups (issue #821), its value the reaping acquisition's token. A reclaim refuses to
- * start a group under a revoked claim.
- */
-export const REVOKED_MARK = 'factory.revoked';
 /**
  * Why the driver ended a run itself (`termination.ts`), one mark per reason, its detail the value:
  * on a kubernetes runner Job's annotations, a docker kill marker volume's labels.
@@ -45,10 +37,3 @@ export const KILL_MARK_PREFIX = 'factory.kill.';
  * a kill of the agent from the teardown of the whole group.
  */
 export const ROLE_LABEL = 'factory.role';
-
-/**
- * Docker only: a terminal reclaim's supervisor-only group (`dockerReclaimWorktree`), on its
- * containers and mailboxes. Its lease is a token of its own the board never heard of, so the
- * orphan reaper — which would read it as a dead attempt's — leaves every object carrying this alone.
- */
-export const RECLAIM_LABEL = 'factory.reclaim';

@@ -1,7 +1,4 @@
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
-import { existsSync, mkdtempSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
@@ -112,7 +109,6 @@ interface StoreStub extends JobStore {
     sessions: { id: string; sessionId: string | null }[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
-    requeued: string[];
     interrupted: { id: string; interruption: { reason: string; release: boolean; claimSeq?: number | null } }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
@@ -130,9 +126,7 @@ interface StoreStub extends JobStore {
     reclaimAcks: { id: string; token: string }[];
     reclaimRenewals: { id: string; token: string; leaseSeconds: number }[];
     /** The lease lookups the orphan reaper's batched route made, with the ids it asked for. */
-    leased: { ids: string[] }[];
-    /** The reclaim-hold lookups the reaper's route made, with the tokens it asked for (issue #829). */
-    held: { tokens: string[] }[];
+    leased: { ids: string[]; threads?: true }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
     /** The question reports and answers the routes handed the store (050). */
@@ -214,8 +208,6 @@ function stubStore(
         reviewRead?: ReadReviewResult;
         /** The lease rows the store answers a batched lookup with; absent means none. */
         leaseRows?: { id: string; status: JobStatus; leaseToken: string | null }[];
-        /** The held reclaim acquisitions the store answers a holds lookup with; absent means none. */
-        holdRows?: string[];
         /**
          * What `waitForSettle` answers (issue #323); null → 404. A function may delay to model
          * the store's hold — the route must await it, never answer first.
@@ -239,7 +231,6 @@ function stubStore(
         sessions: [],
         progressed: [],
         suspended: [],
-        requeued: [],
         interrupted: [],
         followUps: [],
         retries: [],
@@ -256,7 +247,6 @@ function stubStore(
         reclaimAcks: [],
         reclaimRenewals: [],
         leased: [],
-        held: [],
         waits: [],
         asked: [],
         answered: [],
@@ -267,12 +257,6 @@ function stubStore(
             stub.suspended.push(id);
             const result = options.verdict ?? 'ok';
             return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'stopped' } : { result };
-        },
-        async requeue(id) {
-            boom();
-            stub.requeued.push(id);
-            const result = options.verdict ?? 'ok';
-            return result === 'ok' ? { result: 'ok', status: options.suspendStatus ?? 'queued' } : { result };
         },
         async interrupt(id, _leaseToken, interruption) {
             boom();
@@ -395,19 +379,18 @@ function stubStore(
             stub.reclaimRenewals.push({ id, token, leaseSeconds });
             return options.renewReclaim ?? { result: 'ok', leaseExpiresAt: '2026-08-21T12:10:00.000Z' };
         },
-        async leases(ids) {
+        async leases(ids, withThreads) {
             boom();
-            stub.leased.push({ ids: [...ids] });
+            stub.leased.push({ ids: [...ids], ...(withThreads ? { threads: true } : {}) });
             return options.leaseRows ?? [];
-        },
-        async reclaimHolds(tokens) {
-            boom();
-            stub.held.push({ tokens: [...tokens] });
-            return options.holdRows ?? [];
         },
         async artifactScope() {
             boom();
             return null;
+        },
+        async restoreScope() {
+            boom();
+            return { result: 'missing' };
         },
         async session(id, _token, sessionId) {
             boom();
@@ -1026,38 +1009,6 @@ describe('POST /api/jobs/claim', () => {
         expect(response2.json()).toEqual(withError);
     });
 
-    // Issue #774: the reviewer's home is a subPath mount of the member's tree. A tree that predates
-    // the reviewer, never opened in the dashboard, has none, and a missing subPath is refused by
-    // docker and made root-owned by the kubelet. The claim that declares reviewers makes it.
-    describe('the reviewer home', () => {
-        const homeOf = (root: string) => join(root, 'org-1', 'user-1', '.factory', 'reviewer');
-        const harnessAt = async (root: string, withClaim: Claim) => {
-            const config = testConfig({ workspaceRoot: root });
-            const instance = await buildApp({
-                config,
-                orgs: staticRegistry({ config, jobs: stubStore({ claim: withClaim }) }),
-            });
-            track(instance);
-            return instance;
-        };
-
-        it('exists, group-writable, once a claim declares reviewers', async () => {
-            const root = mkdtempSync(join(tmpdir(), 'factory-claim-home-'));
-            const withReviewer: Claim = { ...claim, workspacePath: 'org-1/user-1', reviewerProfiles: ['careful'] };
-            const instance = await harnessAt(root, withReviewer);
-            const response = await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
-            expect(response.statusCode).toBe(200);
-            expect(statSync(homeOf(root)).mode & 0o775).toBe(0o775);
-        });
-
-        it('is left alone for a claim without reviewers', async () => {
-            const root = mkdtempSync(join(tmpdir(), 'factory-claim-home-'));
-            const instance = await harnessAt(root, { ...claim, workspacePath: 'org-1/user-1' });
-            await post(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
-            expect(existsSync(homeOf(root))).toBe(false);
-        });
-    });
-
     // The idle poll is the common case: it must be recognisable without parsing a body.
     it('answers 204 when nothing is waiting', async () => {
         const instance = await harnessWith(stubStore({ claim: null }));
@@ -1170,89 +1121,6 @@ describe('POST /api/jobs/:id/heartbeat', () => {
     });
 });
 
-describe('POST /api/reclaims/holds — the reaper’s reclaim-ownership lookup (issue #829)', () => {
-    const OTHER_TOKEN = '55555555-5555-4555-8555-555555555555';
-
-    it('answers the held acquisition tokens and merges every org board', async () => {
-        const a = stubStore({ holdRows: [TOKEN] });
-        const b = stubStore({ holdRows: [OTHER_TOKEN] });
-        const instance = await harnessOfBoards([
-            ['org-a', a],
-            ['org-b', b],
-        ]);
-
-        const response = await postAsWorker(instance, '/api/reclaims/holds', { tokens: [TOKEN, OTHER_TOKEN] });
-
-        expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({ held: [TOKEN, OTHER_TOKEN] });
-        expect(a.held).toEqual([{ tokens: [TOKEN, OTHER_TOKEN] }]);
-    });
-
-    it.each([
-        ['a body without tokens', {}],
-        ['the retired ids key', { ids: [ID] }],
-        ['a non-uuid entry', { tokens: [TOKEN, 'nope'] }],
-        ['an empty list', { tokens: [] }],
-        ['more tokens than a batch', { tokens: Array.from({ length: 101 }, () => TOKEN) }],
-    ])('refuses %s with BAD_ID', async (_label, payload) => {
-        const instance = await harnessWith(stubStore());
-        const response = await postAsWorker(instance, '/api/reclaims/holds', payload);
-        expect(response.statusCode).toBe(400);
-        expect(response.json().code).toBe('BAD_ID');
-    });
-
-    it('answers 503 when any board throws', async () => {
-        const failing = stubStore();
-        failing.reclaimHolds = async () => {
-            throw new Error('database is down');
-        };
-        const instance = await harnessOfBoards([
-            ['org-a', failing],
-            ['org-b', stubStore({ holdRows: [TOKEN] })],
-        ]);
-        const response = await postAsWorker(instance, '/api/reclaims/holds', { tokens: [TOKEN] });
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-
-    // "Not held" is the board's positive answer, so a registry that dropped an org must not answer.
-    it('answers 503 when an organization has no runtime at all', async () => {
-        const config = testConfig({ auth: githubAuth() });
-        const repos = staticRepoSource([]);
-        const telemetry = stubTelemetryClient();
-        const jobs = stubStore();
-        const instance = await buildApp({
-            config,
-            auth: memoryAuthStore(),
-            orgs: {
-                for: async (orgId) =>
-                    orgId === 'org-alive'
-                        ? {
-                              orgId,
-                              repos,
-                              telemetry,
-                              service: createStatsService({ config, repos, telemetry }),
-                              jobs,
-                          }
-                        : null,
-                list: async () => [
-                    { id: 'org-alive', name: 'org-alive', installationId: null },
-                    { id: 'org-dead', name: 'org-dead', installationId: null },
-                ],
-                warmAll: async () => {},
-                reconcileBatches: async () => {},
-                observeBatchPrs: async () => {},
-            },
-        });
-        track(instance);
-
-        const response = await postAsWorker(instance, '/api/reclaims/holds', { tokens: [TOKEN] });
-
-        expect(response.statusCode).toBe(503);
-        expect(response.json().code).toBe('UNAVAILABLE');
-    });
-});
-
 describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue #301)', () => {
     const JOB_B = '44444444-4444-4444-8444-444444444444';
 
@@ -1277,6 +1145,16 @@ describe('POST /api/jobs/leases — the orphan reaper’s batched lookup (issue 
         });
         // The unknown id reached the store — its absence from the ANSWER is the board's verdict.
         expect(store.leased).toEqual([{ ids: [ID, JOB_B, UNKNOWN] }]);
+    });
+
+    it('asks the store for thread facts only when the body says threads: true', async () => {
+        const store = stubStore({ leaseRows: [] });
+        const instance = await harnessWith(store);
+
+        await postAsWorker(instance, '/api/jobs/leases', { ids: [ID], threads: true });
+        await postAsWorker(instance, '/api/jobs/leases', { ids: [ID], threads: 'yes' });
+
+        expect(store.leased).toEqual([{ ids: [ID], threads: true }, { ids: [ID] }]);
     });
 
     // The shared secret authenticates the driver, not an org, so this route — like the claim —
@@ -1809,23 +1687,6 @@ describe('POST /api/jobs/:id/suspend', () => {
         expect(response.json()).toEqual({ id: ID, status: 'stopped' });
         expect(store.suspended).toEqual([ID]);
     });
-});
-
-// Issue #559: a pre-run claim handed back after checkout contention, lease-guarded like suspend.
-describe('POST /api/jobs/:id/requeue', () => {
-    it.each(['queued', 'stopped'] as const)(
-        'hands the claim back, echoing that the board landed it %s',
-        async (status) => {
-            const store = stubStore({ verdict: 'ok', suspendStatus: status });
-            const instance = await harnessWith(store);
-
-            const response = await post(instance, `/api/jobs/${ID}/requeue`, { leaseToken: TOKEN });
-
-            expect(response.statusCode).toBe(200);
-            expect(response.json()).toEqual({ id: ID, status });
-            expect(store.requeued).toEqual([ID]);
-        }
-    );
 });
 
 // Issue #792: an attempt the infrastructure interrupted, handed back or adopted, lease-guarded.
@@ -3688,7 +3549,6 @@ describe('error-path mapping', () => {
             [404, null],
         ],
         ['a park on a lost lease', POST(`${JOB}/suspend`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
-        ['a requeue on a lost lease', POST(`${JOB}/requeue`, { leaseToken: TOKEN }), { verdict: 'lost' }, [409, null]],
         [
             'an interruption on a lost lease',
             POST(`${JOB}/interrupt`, { leaseToken: TOKEN, reason: 'evicted', release: true }),
@@ -3698,12 +3558,6 @@ describe('error-path mapping', () => {
         [
             'an interruption for a missing job',
             POST(`${JOB}/interrupt`, { leaseToken: TOKEN, reason: 'evicted', release: true }),
-            { verdict: 'missing' },
-            [404, null],
-        ],
-        [
-            'a requeue for a missing job',
-            POST(`${JOB}/requeue`, { leaseToken: TOKEN }),
             { verdict: 'missing' },
             [404, null],
         ],
@@ -3816,7 +3670,6 @@ describe('error-path mapping', () => {
         ['id on thread', GET('/api/jobs/nope/thread'), 'BAD_ID', null],
         ['id on activity', GET('/api/jobs/nope/activity'), 'BAD_ID', null],
         ['lease token on heartbeat', POST(`${JOB}/heartbeat`, { leaseToken: 'nope' }), 'BAD_TOKEN', null],
-        ['lease token on requeue', POST(`${JOB}/requeue`, { leaseToken: 'nope' }), null, 'requeued'],
         [
             'lease token on interrupt',
             POST(`${JOB}/interrupt`, { leaseToken: 'nope', reason: 'evicted', release: true }),

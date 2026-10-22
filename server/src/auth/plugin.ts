@@ -53,10 +53,13 @@ const WORKER_ROUTES: readonly RegExp[] = [
     // deleting the audit rows of jobs it never held would be the thread-read hole again.
     // to stop through the heartbeat it already holds, and the board secret moving or deleting
     // the audit rows of jobs it never held would be the thread-read hole again.
-    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|requeue|interrupt|complete|conclusion|phase-checkpoints?|output|gates|question|review|review-read)$/,
+    /^\/api\/jobs\/[^/]+\/(heartbeat|session|suspend|interrupt|complete|conclusion|phase-checkpoints?|output|gates|question|review|review-read)$/,
     // Artifact uploads: the shared secret authenticates the driver, the claim sequence in the
     // request authorizes the attempt (job-handlers-artifacts.ts), and no lease is consulted.
     /^\/api\/jobs\/[^/]+\/artifact\/(chunk|manifest)$/,
+    // The restore reads (issue #775): the thread's checkpoint and raw transcripts, authorized by the
+    // job's live lease in the body (job-handlers-restore.ts) — the lease is the credential.
+    /^\/api\/jobs\/[^/]+\/(checkpoint|transcripts)(\/chunk)?$/,
 ];
 
 /** Machine-to-machine telemetry, from the collector. The branch route is NOT here — see BRANCH. */

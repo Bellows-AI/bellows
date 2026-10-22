@@ -7,7 +7,9 @@
 
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
+import type { JobLeaseInfo } from './lease-types.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
+import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
 import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
@@ -55,6 +57,7 @@ export type FailureKind =
     | 'services'
     | 'config'
     | 'policy'
+    | 'checkpoint_unrestorable'
     | 'runner_error';
 
 /**
@@ -810,18 +813,6 @@ export interface ReclaimClaim {
 /** A reclaim renew's answer: extended, held by another acquisition, or gone (acked or never queued). */
 export type ReclaimRenewal = { result: 'ok'; leaseExpiresAt: string } | { result: 'lost' } | { result: 'missing' };
 
-/**
- * One row of the batched lease lookup the orphan reaper sweeps with (issue #301): the job's
- * status and its CURRENT lease token — null when the row holds none, which is what marks every
- * labelled object of the job as a dead attempt's. An id the board does not know is absent from
- * the answer, never a row with a made-up status: absence IS the verdict the reaper acts on.
- */
-export interface JobLeaseInfo {
-    id: string;
-    status: JobStatus;
-    leaseToken: string | null;
-}
-
 /** `JobStore.artifactScope`: where a job's artifacts are filed and how far its claim sequence has advanced. */
 export interface JobArtifactScope {
     /** The author, or null for an unattributed job. */
@@ -1075,18 +1066,10 @@ export interface JobStore extends PhaseCheckpointStore {
      * The batched lease lookup behind `POST /api/jobs/leases` (issue #301): every named id's
      * status and current lease, in no particular order. Ids this org's board does not know are
      * simply not answered — the driver reads an absent id as "no such job here". Read-only, and
-     * deliberately NOT lease-guarded: the reaper holding no lease is the whole point.
+     * deliberately NOT lease-guarded: the reaper holding no lease is the whole point. `withThreads`
+     * adds the thread facts (issue #775) to every ROOT's row; the task-volume sweep asks for them, the group sweep does not.
      */
-    leases(ids: readonly string[]): Promise<JobLeaseInfo[]>;
-    /**
-     * Which of these acquisition tokens the board still holds (issue #829), behind
-     * `POST /api/reclaims/holds`: a task_reclaim row carries its acquisition token from the claim
-     * until the ack deletes it or a re-acquisition replaces the token, expired or not. Asked by token
-     * because a follow-up member's reclaim is stored under its root. A token no row carries is simply
-     * not answered: that is the board's positive "nothing holds this group".
-     * Read-only and NOT lease-guarded, like `leases`.
-     */
-    reclaimHolds(tokens: readonly string[]): Promise<string[]>;
+    leases(ids: readonly string[], withThreads?: boolean): Promise<JobLeaseInfo[]>;
     /**
      * What an artifact upload for this job is authorized against (the artifact routes): the
      * member and root it is filed under and the newest claim sequence that exists. Deliberately
@@ -1094,6 +1077,12 @@ export interface JobStore extends PhaseCheckpointStore {
      * claim prefix, and that is all it may do. Null when the org has no such job.
      */
     artifactScope(id: string): Promise<JobArtifactScope | null>;
+    /**
+     * The thread facts the restore reads (issue #775), authorized by the LIVE lease of `id`: the
+     * root's checkpoint pointer and the thread's rows. `lost` is a known job whose lease is not
+     * `leaseToken` (or is not running); `missing` an unknown one. Writes nothing.
+     */
+    restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     heartbeat(
@@ -1168,13 +1157,6 @@ export interface JobStore extends PhaseCheckpointStore {
      * that continues the conversation).
      */
     suspend(id: string, leaseToken: string): Promise<SuspendResult>;
-    /**
-     * Hands a pre-run claim back after checkout contention (issue #559). Lease-guarded: the row
-     * goes back to `queued` with the claim's attempt refunded and its next claim deferred by
-     * `REQUEUE_DELAY_SECONDS`, so contention never exhausts `max_attempts` and never spins. A Stop
-     * already stamped on the row wins: it settles `stopped` instead. `lost` for a stale token.
-     */
-    requeue(id: string, leaseToken: string): Promise<SuspendResult>;
     /**
      * Records an attempt the infrastructure interrupted (issue #792), lease-guarded, refunding the
      * attempt and appending the reason. `release` hands the claim back claimable at once (a drained

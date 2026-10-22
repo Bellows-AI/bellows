@@ -56,7 +56,7 @@ export async function deleteSecretAcked(deps: K8sDeps, name: string, uid?: strin
 
 /**
  * The pods that can still write the attempt's tree: every pod of the (job, lease) pair — its runner
- * pod, whose gate and service sidecars go with it (issue #773), and its readout pods.
+ * pod, whose gate and service sidecars go with it (issue #773), and any aux pod of the pair.
  */
 export const writerPodsPath = (namespace: string, pair: BoardJob): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${pair.id},${LEASE_LABEL}=${pair.leaseToken}`)}`;
@@ -124,13 +124,13 @@ const anotherIncarnation = (read: Read<ReadJobObject>, uids: IncarnationUids | u
 };
 
 /**
- * The pods of every reclaim group serving checkout `holder` (`HOLDER_LABEL`, stamped on its pod
+ * The pods of every group serving checkout `holder` (`HOLDER_LABEL`, stamped on its pod
  * template): what a recovery that reaps that holder's claim must find none of live.
  */
 export const holderPodsPath = (namespace: string, job: BoardJob, holder: string): string =>
     `${podsPath(namespace)}?labelSelector=${encodeURIComponent(`${JOB_LABEL}=${job.id},${HOLDER_LABEL}=${holder}`)}`;
 
-/** Whether no live pod of a reclaim group serving `holder` is listed; an unreadable list proves nothing (false). */
+/** Whether no live pod of a group serving `holder` is listed; an unreadable list proves nothing (false). */
 export async function holderWritersGone(deps: K8sDeps, job: BoardJob, holder: string): Promise<boolean> {
     return (
         (await noLivePod(deps, holderPodsPath(deps.config.k8sNamespace, job, holder), 'listing the holder pods')) ===

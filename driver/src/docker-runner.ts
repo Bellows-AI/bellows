@@ -1,4 +1,6 @@
 import { JOB_LABEL } from './labels.js';
+import { assertTaskVolumeIsOurs, ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
+import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
 import {
     awaitSupervisor,
     closeEndOf,
@@ -18,12 +20,11 @@ import {
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
-import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
+import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_ENV, SUPERVISOR_EXIT } from './supervisor-contract.js';
 import { agentBackstopMs, spentMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { rm, writeFile } from 'node:fs/promises';
-import type { BoardJob } from './board.js';
+import type { Board, BoardJob } from './board.js';
 import type { DriverConfig } from './config.js';
 import { abortableSleep, anyOf, type Sleep } from './poll.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
@@ -35,21 +36,19 @@ import {
     orderFinish,
     orderGo,
     releaseSteps,
-    runReclaimStep,
     runSyncStep,
     type StepHost,
     stepHostOf,
     supervisedStepMembers,
 } from './supervised-steps.js';
 import { reviewRunOf } from './review-step.js';
-import { RELEASE_DEADLINE_MS, repoPath, worktreeDir, type ReclaimResult, type SyncResult } from './publish.js';
+import { checkoutDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
 import {
     containerName,
     parseDockerServiceExit,
     parseDockerServicePs,
     parseDockerStats,
-    toolTreeReleaseArgs,
 } from './docker.js';
 import {
     appendTailKept,
@@ -107,8 +106,12 @@ interface GroupState {
     resumed?: boolean;
 }
 
-/** How long `finish` waits for the group's supervisor to exit by itself before it kills the group. */
-const GROUP_END_WAIT_MS = 20_000;
+const GROUP_EXIT_WAIT_MS = 20_000;
+/**
+ * How long `finish` waits for the group's supervisor to exit by itself before it kills the group:
+ * its exit, and the checkpoint it takes at finalize (issue #775) under its own bound.
+ */
+const GROUP_END_WAIT_MS = GROUP_EXIT_WAIT_MS + SUPERVISOR_CHECKPOINT_MS;
 
 /** Everything a docker-runner method needs: the daemon transport, the config, and the per-attempt kill set. */
 interface RunnerDeps {
@@ -121,6 +124,8 @@ interface RunnerDeps {
     /** The supervised-step channel and the endpoint a supervisor-only group is served on (`step-control.ts`). */
     steps?: StepSink;
     endpoint?: SupervisorEndpoint;
+    /** The board's checkpoint read, for a continuing claim whose task volume is gone (`task-restore.ts`). */
+    checkpoints?: Pick<Board, 'checkpoint'>;
     /** The attempt groups this runner created, by lease token: one per attempt, never shared. */
     groups: Map<string, GroupState>;
     /**
@@ -231,7 +236,12 @@ async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
  * supervisor has pulled from the driver: a kill ends that wait at once, and a supervisor that
  * started and never answered is a plain error at the bound, left to the lease.
  */
-async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession | null): Promise<GroupState> {
+async function ensureGroup(
+    deps: RunnerDeps,
+    job: BoardJob,
+    session: RunSession | null,
+    signal?: AbortSignal
+): Promise<GroupState> {
     const known = deps.groups.get(job.leaseToken);
     if (known) {
         if (known.session?.id !== session?.id || known.session?.resume !== session?.resume) {
@@ -243,6 +253,7 @@ async function ensureGroup(deps: RunnerDeps, job: BoardJob, session: RunSession 
     // group's, and a step that awaited (a credential) must not revive the attempt it lost.
     assertJobNotKilled(deps.ledger, job);
     await dockerReclaimFence(deps, job, deps.ledger.signal(job));
+    await ensureTaskVolume(deps, job, signal);
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
@@ -297,68 +308,36 @@ async function dockerSyncCheckout(
     deps: RunnerDeps,
     job: BoardJob,
     session: RunSession | null = null,
-    githubToken?: string
+    { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
-    const { config } = deps;
-    if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, reason: null }; // nothing synced
+    if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced
     try {
-        await ensureGroup(deps, job, session);
-        return await runSyncStep(stepHostOf(deps), job, githubToken);
+        await ensureGroup(deps, job, session, signal);
+        const host = stepHostOf(deps);
+        // A volume made by a restore is filled before the sync looks at it; the generation it replaces goes after.
+        const restored = await restoreTaskTree(host, job, {
+            githubToken,
+            removeOlder: (generations) => removeTaskVolumes(deps.execDocker, job, generations, signal),
+        });
+        if (restored && !restored.ok) return restored;
+        return await runSyncStep(host, job, githubToken);
     } catch (e) {
         // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
         // and nothing to hand back: the loop leaves the job to its lease.
         await removeGroup(deps.execDocker, job);
         deps.groups.delete(job.leaseToken);
+        // A thread that cannot be rebuilt is a verdict, not a fault of the daemon: the loop fails the task with it.
+        if (e instanceof CheckpointUnrestorable) return unrestorableResult(e);
         throw e;
     }
 }
 
 /*
- * The terminal reclaim, in a supervisor-only group: the thread has no attempt, so there is no group
- * to ask. The group is a supervisor and nothing else under a lease of its own — it answers to
- * nothing of the thread's attempts. Removing the tree needs nothing the claim held, so no claim env
- * rides it. A job that names no repository never had a tree: "reclaimed, nothing was there".
+ * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
+ * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
-async function dockerReclaimWorktree(deps: RunnerDeps, job: BoardJob): Promise<ReclaimResult> {
-    const { config } = deps;
-    if (!repoPath(config, job) || !worktreeDir(config, job)) return { ok: true, removed: false, reason: null };
-    if (!deps.endpoint) {
-        return {
-            ok: false,
-            removed: false,
-            reason: 'this driver has no supervisor endpoint to run the reclaim through',
-        };
-    }
-    const opened = await deps.endpoint.open();
-    // A supervisor alone (#773 D11): no agent, and no gate or service its checkout would bring.
-    const group: BoardJob = {
-        ...job,
-        agent: false,
-        gates: null,
-        services: [],
-        leaseToken: randomUUID(),
-        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: opened.url, [SUPERVISOR_ENV.controlToken]: opened.token },
-    };
-    try {
-        // Issue #814: the tool uid first gives back what it closed; the reclaim's verdict decides.
-        const release = toolTreeReleaseArgs(config, job);
-        if (release) await deps.execDocker(release, { timeout: RELEASE_DEADLINE_MS }).catch(() => undefined);
-        await createGroup(deps, group, null, { startedAt: new Date().toISOString(), reclaim: job.leaseToken });
-        await startGroup(deps.execDocker, group, null);
-        await awaitGroupUp(deps, group);
-        return await runReclaimStep(stepHostOf(deps), group);
-    } catch (e) {
-        return {
-            ok: false,
-            removed: false,
-            reason: `the worktree reclaim group failed: ${dockerErrorDetail(e).slice(0, ERROR_DETAIL_MAX_CHARS)}`,
-        };
-    } finally {
-        await orderFinish(stepHostOf(deps), group).catch(() => undefined);
-        deps.endpoint.close(opened.token);
-        await dockerKill(deps, group);
-        await removeGroup(deps.execDocker, group);
-    }
+async function dockerReclaimWorktree(): Promise<ReclaimResult> {
+    return { ok: true, removed: false, reason: null };
 }
 
 /**
@@ -688,13 +667,19 @@ export function createDockerRunner(
         if (input) pending.child.stdin?.end(input);
         return pending;
     },
-    extras: { files?: RunnerFiles; steps?: StepSink; endpoint?: SupervisorEndpoint; sleep?: Sleep } = {}
+    extras: {
+        files?: RunnerFiles;
+        steps?: StepSink;
+        endpoint?: SupervisorEndpoint;
+        sleep?: Sleep;
+        checkpoints?: Pick<Board, 'checkpoint'>;
+    } = {}
 ): Runner {
     const deadlines = createDeadlineRegistry();
     const ledger = createKillLedger({
         write: (job, kill) => recordDockerKill(execDocker, job, kill),
     });
-    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep } = extras;
+    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep, checkpoints } = extras;
     const deps: RunnerDeps = {
         config,
         execDocker,
@@ -707,15 +692,16 @@ export function createDockerRunner(
         adopted: new Map(),
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
+        ...(checkpoints ? { checkpoints } : {}),
     };
     return onOwnGroup({
         kill: (job) => dockerKill(deps, job),
         pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
-        syncCheckout: (job, _signal, session, githubToken) =>
-            dockerSyncCheckout(deps, job, session ?? null, githubToken),
+        syncCheckout: (job, signal, session, githubToken) =>
+            dockerSyncCheckout(deps, job, session ?? null, { githubToken, signal }),
         finish: (job) => finishGroup(deps, job),
-        reclaimWorktree: (job) => dockerReclaimWorktree(deps, job),
+        reclaimWorktree: dockerReclaimWorktree,
         ...supervisedStepMembers({
             host: stepHostOf(deps),
             hasGroup: (job) => deps.groups.has(job.leaseToken),

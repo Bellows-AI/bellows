@@ -20,6 +20,8 @@ const LEASE2 = '33333333-3333-4333-8333-333333333333';
 const NEW_LEASE = '55555555-5555-4555-8555-555555555555';
 
 const job = { id: JOB, leaseToken: LEASE } as BoardJob;
+/** The board identity this driver stamps on its task volumes. */
+const BOARD = 'b0a4d00000000001';
 
 /** A container id as `docker ps` prints it: 12 lowercase hex characters. */
 const hexId = (seed: string): string => createHash('sha256').update(seed).digest('hex').slice(0, 12);
@@ -123,7 +125,7 @@ describe('the docker reaper arm: scan', () => {
                 }),
             ],
         ]);
-        const arm = createDockerReaper(execDocker);
+        const arm = createDockerReaper(execDocker, BOARD);
 
         const groups = await arm.scan();
 
@@ -163,7 +165,7 @@ describe('the docker reaper arm: scan', () => {
         const execDocker: ExecDocker = async () => {
             throw new Error('cannot connect to the Docker daemon');
         };
-        const arm = createDockerReaper(execDocker);
+        const arm = createDockerReaper(execDocker, BOARD);
 
         await expect(arm.scan()).resolves.toEqual([]);
     });
@@ -193,11 +195,8 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
             return { stdout: '' };
         };
         const reaper = createReaper({
-            board: {
-                leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })),
-                reclaimHolds: async () => new Set<string>(),
-            },
-            arm: createDockerReaper(execDocker),
+            board: { leases: async () => leases.map((lease) => ({ ...lease, status: 'running' as const })) },
+            arm: createDockerReaper(execDocker, BOARD),
             intervalMs: 0,
             graceMs: 0,
             log: () => undefined,
@@ -227,7 +226,7 @@ describe('the docker reaper arm: reap', () => {
     // Issue #773: a group shares its supervisor's network namespace, so no network is an attempt's.
     it('removes each container by id, and no network', async () => {
         const { execDocker, calls } = router([]);
-        const arm = createDockerReaper(execDocker);
+        const arm = createDockerReaper(execDocker, BOARD);
 
         const removed = await arm.reap(group(), 'gone');
 
@@ -242,7 +241,7 @@ describe('the docker reaper arm: reap', () => {
             }
             return { stdout: '' };
         };
-        const arm = createDockerReaper(failing);
+        const arm = createDockerReaper(failing, BOARD);
 
         // The vanished container is not this round's removal.
         expect(await arm.reap(group(), 'gone')).toEqual([]);
@@ -258,14 +257,11 @@ describe('the docker reaper arm: reap', () => {
  * Issue #821 D16: a task group whose attempt can never tear itself down — the supervisor, the
  * exporter, the agent and the four mailbox volumes a dead driver left — is the reaper's, found by
  * the role label and the job+lease volume labels. A scan that could not read every list is no
- * scan at all, a reclaim group is out of scope, and a finished runner nobody read is kept.
+ * scan at all, and a finished runner nobody read is kept.
  */
 describe('the docker reaper arm: task groups (#821 D16)', () => {
     const OLD = '2026-09-01 00:00:00 +0000 UTC';
     const OLD_VOLUME = '2026-09-01T00:00:00Z';
-    /** The reclaim mark, and — when given a string — the acquisition token the group serves (#829). */
-    const reclaimLabels = (reclaim: boolean | string | undefined): string =>
-        reclaim ? `,factory.reclaim=true${typeof reclaim === 'string' ? `,factory.holder=${reclaim}` : ''}` : '';
     const pair = (jobId: string, lease: string) => ({ id: jobId, leaseToken: lease }) as BoardJob;
     const roleLine = (fields: {
         id: string;
@@ -274,19 +270,18 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         lease: string;
         role: string;
         state: string;
-        reclaim?: boolean | string;
     }) =>
         JSON.stringify({
             ID: fields.id,
             Names: fields.name,
-            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}${reclaimLabels(fields.reclaim)}`,
+            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}`,
             CreatedAt: OLD,
             State: fields.state,
         });
-    const volumeLine = (name: string, jobId: string, lease: string, reclaim: boolean | string = false) =>
+    const volumeLine = (name: string, jobId: string, lease: string) =>
         JSON.stringify({
             Name: name,
-            Labels: `factory.job=${jobId},factory.lease=${lease}${reclaimLabels(reclaim)}`,
+            Labels: `factory.job=${jobId},factory.lease=${lease}`,
         });
 
     /** A daemon holding role-labelled containers and job+lease volumes; `refuse` names one verb to refuse. */
@@ -306,7 +301,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         };
         return { execDocker, calls };
     };
-    const group = (lease = LEASE, state = 'running', reclaim: boolean | string = false) => {
+    const group = (lease = LEASE, state = 'running') => {
         const named = pair(JOB, lease);
         return {
             containers: [
@@ -317,7 +312,6 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                     lease,
                     role: 'supervisor',
                     state: 'exited',
-                    reclaim,
                 }),
                 roleLine({
                     id: hexId(`agent-${lease}`),
@@ -326,12 +320,11 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
                     lease,
                     role: 'agent',
                     state,
-                    reclaim,
                 }),
             ],
             volumes: [
-                volumeLine(`factory-in-${JOB}-${lease}`, JOB, lease, reclaim),
-                volumeLine(`factory-kill-timeout-${JOB}-${lease}`, JOB, lease, reclaim),
+                volumeLine(`factory-in-${JOB}-${lease}`, JOB, lease),
+                volumeLine(`factory-kill-timeout-${JOB}-${lease}`, JOB, lease),
             ],
         };
     };
@@ -340,7 +333,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group(LEASE, 'exited');
         const { execDocker } = daemon(g.containers, g.volumes);
 
-        const groups = await createDockerReaper(execDocker).scan();
+        const groups = await createDockerReaper(execDocker, BOARD).scan();
 
         expect(groups).toEqual([
             {
@@ -361,7 +354,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group(LEASE, 'running');
         const { execDocker } = daemon(g.containers, g.volumes);
 
-        const [only] = await createDockerReaper(execDocker).scan();
+        const [only] = await createDockerReaper(execDocker, BOARD).scan();
 
         expect(only?.objects.some((object) => object.unread)).toBe(false);
     });
@@ -375,7 +368,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group();
         const { execDocker } = daemon(g.containers, g.volumes, refuse);
 
-        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toEqual([]);
     });
 
     it.each(['0', '2026-02-31T00:00:00Z', '2026-09-01', '2026-09-01 00:00:00 +0000 UTC', ''])(
@@ -386,7 +379,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             const execDocker: ExecDocker = async (args) =>
                 args[0] === 'volume' && args[1] === 'inspect' ? { stdout: createdAt } : base(args);
 
-            await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+            await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toEqual([]);
         }
     );
 
@@ -398,7 +391,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             const execDocker: ExecDocker = async (args) =>
                 args[0] === 'volume' && args[1] === 'inspect' ? { stdout: createdAt } : base(args);
 
-            expect(await createDockerReaper(execDocker).scan()).not.toEqual([]);
+            expect(await createDockerReaper(execDocker, BOARD).scan()).not.toEqual([]);
         }
     );
 
@@ -424,13 +417,10 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             return execDocker(args);
         };
 
-        await expect(createDockerReaper(recording).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(recording, BOARD).scan()).resolves.toEqual([]);
         await createReaper({
-            board: {
-                leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never,
-                reclaimHolds: async () => new Set<string>(),
-            },
-            arm: createDockerReaper(recording),
+            board: { leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never },
+            arm: createDockerReaper(recording, BOARD),
             intervalMs: 0,
             graceMs: 0,
             log: () => undefined,
@@ -467,7 +457,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const g = group();
         const { execDocker } = daemon([...g.containers, row], g.volumes);
 
-        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(execDocker, BOARD).scan()).resolves.toEqual([]);
     });
 
     it.each([
@@ -479,7 +469,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const garbled: ExecDocker = async (args) =>
             args[0] === 'volume' && args[1] === 'inspect' ? { stdout: answer } : execDocker(args);
 
-        await expect(createDockerReaper(garbled).scan()).resolves.toEqual([]);
+        await expect(createDockerReaper(garbled, BOARD).scan()).resolves.toEqual([]);
     });
 
     it('tolerates a volume removed between the list and its inspect, still reaping the rest', async () => {
@@ -493,7 +483,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             return execDocker(args);
         };
 
-        const [only] = await createDockerReaper(racing).scan();
+        const [only] = await createDockerReaper(racing, BOARD).scan();
 
         expect(only?.objects).toEqual([
             { kind: 'container', name: hexId(`sup-${LEASE}`), runner: true },
@@ -502,40 +492,10 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         ]);
     });
 
-    // Issue #829: a reclaim group labelled with the acquisition token it serves is in scope, so the
-    // board's holds decide its fate; the holder rides every object for the shared reaper to read.
-    const HOLDER = '77777777-7777-4777-8777-777777777777';
-
-    it('scans a reclaim group labelled with its holder, every object carrying it', async () => {
-        const g = group(LEASE, 'exited', HOLDER);
-        const { execDocker } = daemon(g.containers, g.volumes);
-
-        const groups = await createDockerReaper(execDocker).scan();
-
-        expect(groups).toHaveLength(1);
-        expect(groups[0]).toMatchObject({ jobId: JOB, leaseToken: LEASE });
-        expect(groups[0]!.objects).toHaveLength(4);
-        expect(groups[0]!.objects.every((object) => object.holder === HOLDER)).toBe(true);
-    });
-
-    it('answers nothing when a reclaim row carries a holder label that is no uuid — the listing is inconclusive', async () => {
-        const g = group(LEASE, 'exited', 'not-a-uuid');
-        const { execDocker } = daemon(g.containers, g.volumes);
-
-        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
-    });
-
-    it('leaves a reclaim group with no holder label out of scope, containers and volumes alike', async () => {
-        const g = group(LEASE, 'exited', true);
-        const { execDocker } = daemon(g.containers, g.volumes);
-
-        await expect(createDockerReaper(execDocker).scan()).resolves.toEqual([]);
-    });
-
     it('removes the containers before the volumes they mount', async () => {
         const { execDocker, calls } = daemon([], []);
 
-        await createDockerReaper(execDocker).reap(
+        await createDockerReaper(execDocker, BOARD).reap(
             {
                 jobId: JOB,
                 leaseToken: LEASE,
@@ -555,44 +515,6 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         ]);
     });
 
-    // Issue #829 (G7): the dead driver's reclaim group is reaped once the board no longer holds the
-    // acquisition it serves, and spared — whatever its root job says — while it does.
-    it('through the reaper: a reclaim group is spared while its acquisition is held, reaped once it is not', async () => {
-        const HELD = '77777777-7777-4777-8777-777777777777';
-        const g = group(LEASE, 'exited', HELD);
-        const { execDocker } = daemon(g.containers, g.volumes);
-        const removed: string[] = [];
-        const recording: ExecDocker = async (args) => {
-            if (args[0] === 'rm' || (args[0] === 'volume' && args[1] === 'rm')) removed.push(args[args.length - 1]!);
-            return execDocker(args);
-        };
-        const sweep = async (holds: string[] | null | 'throws') => {
-            removed.length = 0;
-            await createReaper({
-                board: {
-                    leases: async () => [{ id: JOB, leaseToken: null, status: 'succeeded' }] as never,
-                    reclaimHolds: async () => {
-                        if (holds === 'throws') throw new Error('board unreachable');
-                        return holds === null ? null : new Set(holds);
-                    },
-                },
-                arm: createDockerReaper(recording),
-                intervalMs: 0,
-                graceMs: 0,
-                log: () => undefined,
-            }).sweep();
-            return [...removed];
-        };
-
-        // The group's job label is a follow-up member's id; the board holds the token under the root's row.
-        expect(await sweep([HELD])).toEqual([]);
-        expect(await sweep(null)).toEqual([]);
-        expect(await sweep('throws')).toEqual([]);
-        expect(await sweep([])).toEqual(
-            expect.arrayContaining([hexId(`sup-${LEASE}`), `factory-kill-timeout-${JOB}-${LEASE}`])
-        );
-    });
-
     it('through the reaper: a gone job is reaped, a superseded unread runner kept with its kill marks, a live lease untouched', async () => {
         const gone = group(LEASE, 'running');
         const superseded = group(LEASE2, 'exited');
@@ -609,8 +531,8 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         const sweep = async (leases: { id: string; leaseToken: string | null; status: string }[]) => {
             removed.length = 0;
             await createReaper({
-                board: { leases: async () => leases as never, reclaimHolds: async () => new Set<string>() },
-                arm: createDockerReaper(recording),
+                board: { leases: async () => leases as never },
+                arm: createDockerReaper(recording, BOARD),
                 intervalMs: 0,
                 graceMs: 0,
                 log: () => undefined,
@@ -657,11 +579,8 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
             return { stdout: '' };
         };
         await createReaper({
-            board: {
-                leases: async () => [{ id: JOB, ...lease }] as never,
-                reclaimHolds: async () => new Set<string>(),
-            },
-            arm: createDockerReaper(execDocker),
+            board: { leases: async () => [{ id: JOB, ...lease }] as never },
+            arm: createDockerReaper(execDocker, BOARD),
             intervalMs: 0,
             graceMs: 0,
             log: () => undefined,
@@ -676,5 +595,186 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
 
     it('reaps it once the job is terminal', async () => {
         expect(await sweep({ leaseToken: null, status: 'succeeded' })).toEqual([hexId('agent-old')]);
+    });
+});
+
+describe('the docker reaper arm: task volumes (issue #775)', () => {
+    const ROOT = '11111111-1111-4111-8111-111111111111';
+    const OTHER = '44444444-4444-4444-8444-444444444444';
+    const LS = ['volume', 'ls', '--filter', 'label=factory.task-root', '--format', '{{json .}}'];
+    const row = (root: string, generation: number, over: Record<string, unknown> = {}) =>
+        JSON.stringify({
+            Name: `factory-task-${root}-${generation}`,
+            Labels: `factory.task-root=${root},factory.task-generation=${generation},factory.task-board=${BOARD}`,
+            ...over,
+        });
+
+    /** A daemon answering by argv: the listing from `listing`, every other call recorded and answered `rm`. */
+    const CREATED = '2026-01-01T00:00:00Z';
+    const daemon = (
+        listing: string | Error,
+        rm: (name: string) => Error | null = () => null,
+        created: (name: string) => string | Error = () => CREATED
+    ) => {
+        const calls: string[][] = [];
+        const execDocker: ExecDocker = async (args) => {
+            calls.push([...args]);
+            if (args[0] === 'volume' && args[1] === 'inspect') {
+                const at = created(args[4]!);
+                if (at instanceof Error) throw at;
+                return { stdout: at };
+            }
+            if (args.join(' ') === LS.join(' ')) {
+                if (listing instanceof Error) throw listing;
+                return { stdout: listing };
+            }
+            if (args[0] === 'volume' && args[1] === 'rm') {
+                const failure = rm(args[2]!);
+                if (failure) throw failure;
+            }
+            return { stdout: '' };
+        };
+        return { calls, arm: createDockerReaper(execDocker, BOARD) };
+    };
+    const removals = (calls: string[][]) => calls.filter((c) => c[1] === 'rm').map((c) => c[2]);
+
+    it('lists every generation by the root label and groups them by root', async () => {
+        const { arm } = daemon([row(ROOT, 1), row(ROOT, 2), row(OTHER, 1)].join('\n'));
+        const createdAtMs = Date.parse(CREATED);
+        expect(await arm.scanVolumes!()).toEqual({
+            threads: [
+                {
+                    root: ROOT,
+                    volumes: [
+                        { name: `factory-task-${ROOT}-1`, createdAtMs },
+                        { name: `factory-task-${ROOT}-2`, createdAtMs },
+                    ],
+                },
+                { root: OTHER, volumes: [{ name: `factory-task-${OTHER}-1`, createdAtMs }] },
+            ],
+            skipped: [],
+        });
+    });
+
+    it('reads a creation time the daemon would not give as null, keeping the listing', async () => {
+        const { arm } = daemon(row(ROOT, 1), undefined, () => 'not a date');
+        expect((await arm.scanVolumes!())!.threads[0]!.volumes).toEqual([
+            { name: `factory-task-${ROOT}-1`, createdAtMs: null },
+        ]);
+    });
+
+    it.each([
+        [
+            'a root label that is no uuid',
+            row('not-a-uuid', 1, { Labels: `factory.task-root=not-a-uuid,factory.task-board=${BOARD}` }),
+        ],
+        ['a name that is no generation of its root', row(ROOT, 1, { Name: 'factory-task-x' })],
+        [
+            'a volume without a root label value',
+            JSON.stringify({ Name: `factory-task-${ROOT}-1`, Labels: `factory.task-board=${BOARD}` }),
+        ],
+    ])('skips and names one junk volume (%s) without discarding the rest of the listing', async (_name, junk) => {
+        const { arm } = daemon([junk, row(OTHER, 1)].join('\n'));
+        const listing = (await arm.scanVolumes!())!;
+        expect(listing.threads.map((thread) => thread.root)).toEqual([OTHER]);
+        expect(listing.skipped).toHaveLength(1);
+    });
+
+    it.each([
+        ['another board', 'factory.task-board=ffffffffffffffff'],
+        ['no board at all', ''],
+    ])('never lists a volume made for %s: a shared daemon holds other boards', async (_name, board) => {
+        const foreign = row(OTHER, 1, {
+            Labels: `factory.task-root=${OTHER},factory.task-generation=1${board ? `,${board}` : ''}`,
+        });
+        const { arm } = daemon([row(ROOT, 1), foreign].join('\n'));
+        const listing = (await arm.scanVolumes!())!;
+        expect(listing.threads.map((thread) => thread.root)).toEqual([ROOT]);
+        expect(listing.skipped).toEqual([]);
+    });
+
+    it('answers an empty daemon as no threads', async () => {
+        expect(await daemon('').arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
+    });
+
+    it.each([
+        ['a refused list', new Error('daemon down')],
+        ['a line that is no record', 'garbage'],
+    ])('answers null — delete nothing — on %s', async (_name, listing) => {
+        expect(await daemon(listing).arm.scanVolumes!()).toBeNull();
+    });
+
+    it('removes every generation of a thread, without force', async () => {
+        const { arm, calls } = daemon('');
+        const removed = await arm.reapVolumes!({
+            root: ROOT,
+            volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }],
+        });
+        expect(removed).toEqual([`volume factory-task-${ROOT}-1`, `volume factory-task-${ROOT}-2`]);
+        expect(calls).toEqual([
+            ['volume', 'rm', `factory-task-${ROOT}-1`],
+            ['volume', 'rm', `factory-task-${ROOT}-2`],
+        ]);
+    });
+
+    it('does not report a volume the daemon refused to remove (in use), and goes on', async () => {
+        const { arm } = daemon('', (name) => (name.endsWith('-1') ? new Error('volume is in use') : null));
+        const removed = await arm.reapVolumes!({
+            root: ROOT,
+            volumes: [{ name: `factory-task-${ROOT}-1` }, { name: `factory-task-${ROOT}-2` }],
+        });
+        expect(removed).toEqual([`volume factory-task-${ROOT}-2`]);
+    });
+
+    describe('swept with the board', () => {
+        const FINAL = Date.parse('2026-10-01T00:00:00Z');
+        const HOUR = 3_600_000;
+        const factsOf = (over: Record<string, unknown> = {}) => ({
+            live: false,
+            lastFinalizedAt: new Date(FINAL).toISOString(),
+            artifactsComplete: true,
+            checkpoint: 'complete' as const,
+            checkpointFinalizedAt: new Date(FINAL).toISOString(),
+            ...over,
+        });
+        const sweep = async (
+            facts: ReturnType<typeof factsOf>,
+            ageH: number,
+            listing: string | Error = [row(ROOT, 1), row(ROOT, 2)].join('\n')
+        ) => {
+            const { arm, calls } = daemon(listing);
+            await createReaper({
+                board: { leases: async () => [{ id: ROOT, status: 'succeeded', leaseToken: null, thread: facts }] },
+                arm,
+                intervalMs: 0,
+                graceMs: 0,
+                volumePolicy: { ttlMs: 24 * HOUR, boundMs: 168 * HOUR },
+                now: () => FINAL + ageH * HOUR,
+                log: () => undefined,
+            }).sweep();
+            return removals(calls);
+        };
+
+        it('removes all generations after the ttl, together', async () => {
+            expect(await sweep(factsOf(), 25)).toEqual([`factory-task-${ROOT}-1`, `factory-task-${ROOT}-2`]);
+        });
+
+        it.each([
+            ['inside the ttl', factsOf(), 23],
+            ['while a job is live', factsOf({ live: true }), 500],
+            ['while artifacts are pending', factsOf({ artifactsComplete: false }), 100],
+            ['while the checkpoint is truncated', factsOf({ checkpoint: 'truncated' }), 100],
+            ['when the last attempt never finalized', factsOf({ lastFinalizedAt: null }), 500],
+        ])('keeps the volumes %s', async (_name, facts, ageH) => {
+            expect(await sweep(facts, ageH)).toEqual([]);
+        });
+
+        it('removes a truncated thread only at the bound', async () => {
+            expect(await sweep(factsOf({ checkpoint: 'truncated' }), 169)).toHaveLength(2);
+        });
+
+        it('removes nothing when the volume list is refused', async () => {
+            expect(await sweep(factsOf(), 500, new Error('daemon down'))).toEqual([]);
+        });
     });
 });

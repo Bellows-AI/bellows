@@ -10,12 +10,13 @@ import type {
     Job,
     JobStatus,
     JobStore,
-    JobLeaseInfo,
     JobArtifactScope,
     TaskListFilters,
     TaskSummary,
     SettleOutcome,
 } from './job-store-types.js';
+import type { RestoreScopeResult } from './restore-types.js';
+import type { JobLeaseInfo, JobThreadFacts } from './lease-types.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from './task-summary.js';
 
@@ -166,14 +167,101 @@ export async function waitForSettleOf(
  * the reaper needs three facts, and a worker credential must never pull more of a row than the
  * question asked for.
  */
-export async function leasesOf(ctx: JobStoreContext, ids: readonly string[]): Promise<JobLeaseInfo[]> {
+export async function leasesOf(
+    ctx: JobStoreContext,
+    ids: readonly string[],
+    withThreads = false
+): Promise<JobLeaseInfo[]> {
     const { sql, orgId } = ctx;
     const rows = await sql<{ id: string; status: JobStatus; lease_token: string | null }[]>`
         select id, status, lease_token from job
         where org_id = ${orgId} and id = any(${[...ids]}::uuid[])
     `;
-    return rows.map((row) => ({ id: row.id, status: row.status, leaseToken: row.lease_token }));
+    // Thread facts cost a subquery per root, so only the task-volume sweep (which names roots) asks for them.
+    const threads = withThreads ? await threadFactsOf(ctx, ids) : new Map<string, JobThreadFacts>();
+    return rows.map((row) => {
+        const thread = threads.get(row.id);
+        return { id: row.id, status: row.status, leaseToken: row.lease_token, ...(thread ? { thread } : {}) };
+    });
 }
+
+/**
+ * The thread facts of every ROOT id among `ids` (issue #775), in the one round trip the lease lookup
+ * already makes. The newest attempt is the thread's newest row at its current claim sequence; a stream
+ * of it with chunks and no manifest, or a `partial` manifest, is an artifact still pending.
+ */
+async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Promise<Map<string, JobThreadFacts>> {
+    const { sql, orgId } = ctx;
+    const rows = await sql<
+        {
+            id: string;
+            live: boolean;
+            last_status: JobStatus | null;
+            last_finished_at: Date | null;
+            pending: boolean | null;
+            on_last: boolean | null;
+            checkpoint_truncated: boolean | null;
+            checkpoint_finalized_at: Date | null;
+            last_manifest_at: Date | null;
+        }[]
+    >`
+        select r.id, r.checkpoint_truncated, r.checkpoint_finalized_at,
+               exists (select 1 from job t where t.org_id = r.org_id and t.root_job_id = r.id
+                       and t.status in ('queued', 'running')) as live,
+               last.status as last_status, last.finished_at as last_finished_at,
+               (select max(m.created_at) from artifact_manifest m
+                where m.org_id = r.org_id and m.job_id = last.id::text and m.claim_seq = last.claim_seq) as last_manifest_at,
+               (r.checkpoint_job_id = last.id::text and r.checkpoint_claim_seq = last.claim_seq) as on_last,
+               (exists (select 1 from artifact_chunk c
+                        where c.org_id = r.org_id and c.root_job_id = r.id::text
+                          and c.job_id = last.id::text and c.claim_seq = last.claim_seq
+                          and not exists (select 1 from artifact_manifest m
+                                          where m.org_id = c.org_id and m.member_id = c.member_id
+                                            and m.root_job_id = c.root_job_id and m.job_id = c.job_id
+                                            and m.claim_seq = c.claim_seq and m.executor = c.executor
+                                            and m.session_id = c.session_id and m.stream = c.stream))
+                or exists (select 1 from artifact_manifest m
+                           where m.org_id = r.org_id and m.root_job_id = r.id::text
+                             and m.job_id = last.id::text and m.claim_seq = last.claim_seq
+                             and m.state = 'partial')) as pending
+        from job r
+        left join lateral (
+            select t.id, t.status, t.finished_at, t.claim_seq from job t
+            where t.org_id = r.org_id and t.root_job_id = r.id
+            order by t.created_at desc, t.id desc limit 1
+        ) last on true
+        where r.org_id = ${orgId} and r.id = any(${[...ids]}::uuid[]) and r.root_job_id = r.id
+    `;
+    // The thread is idle from its newest finalize: the attempt, its checkpoint, or a manifest that landed late.
+    const latestOf = (row: (typeof rows)[number]): Date =>
+        new Date(
+            Math.max(
+                row.last_finished_at?.getTime() ?? 0,
+                row.checkpoint_finalized_at?.getTime() ?? 0,
+                row.last_manifest_at?.getTime() ?? 0
+            )
+        );
+    return new Map(
+        rows.map((row) => {
+            const finalized = row.last_status !== null && !LIVE_STATUSES.includes(row.last_status);
+            const pointed = row.checkpoint_finalized_at !== null;
+            let checkpoint: JobThreadFacts['checkpoint'] = 'none';
+            if (pointed && row.on_last === true) checkpoint = row.checkpoint_truncated ? 'truncated' : 'complete';
+            return [
+                row.id,
+                {
+                    live: row.live,
+                    lastFinalizedAt: finalized && row.last_finished_at ? latestOf(row).toISOString() : null,
+                    artifactsComplete: row.pending === false,
+                    checkpoint,
+                    checkpointFinalizedAt: row.checkpoint_finalized_at?.toISOString() ?? null,
+                },
+            ];
+        })
+    );
+}
+
+const LIVE_STATUSES: readonly JobStatus[] = ['queued', 'running'];
 
 /**
  * The coordinates an artifact upload is filed under and the newest claim that may be named: read
@@ -186,6 +274,65 @@ export async function artifactScopeOf(ctx: JobStoreContext, id: string): Promise
     `;
     const row = rows[0];
     return row ? { member: row.created_by, root: row.root_job_id, claimSeq: Number(row.claim_seq) } : null;
+}
+
+/**
+ * The root's checkpoint pointer and the thread's rows, for the live lease of `id` (issue #775). The
+ * lease check is the claim's own: running, and the token the row holds now.
+ */
+export async function restoreScopeOf(
+    ctx: JobStoreContext,
+    id: string,
+    leaseToken: string
+): Promise<RestoreScopeResult> {
+    const { sql, orgId } = ctx;
+    const [live] = await sql<{ root_job_id: string }[]>`
+        select root_job_id from job
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+    `;
+    if (!live) {
+        const known = await sql`select 1 from job where org_id = ${orgId} and id = ${id}`;
+        return { result: known.length > 0 ? 'lost' : 'missing' };
+    }
+    const [root] = await sql<
+        {
+            checkpoint_job_id: string | null;
+            checkpoint_claim_seq: string | null;
+            checkpoint_executor: string | null;
+            checkpoint_session: string | null;
+            checkpoint_truncated: boolean | null;
+            checkpoint_cause: string | null;
+            checkpoint_finalized_at: Date | null;
+        }[]
+    >`
+        select checkpoint_job_id, checkpoint_claim_seq, checkpoint_executor, checkpoint_session,
+               checkpoint_truncated, checkpoint_cause, checkpoint_finalized_at
+        from job where org_id = ${orgId} and id = ${live.root_job_id}
+    `;
+    const rows = await sql<{ id: string; created_by: string | null; claim_seq: string }[]>`
+        select id, created_by, claim_seq from job
+        where org_id = ${orgId} and root_job_id = ${live.root_job_id}
+        order by created_at, id
+    `;
+    const pointed = root?.checkpoint_job_id != null && root.checkpoint_finalized_at != null;
+    return {
+        result: 'ok',
+        scope: {
+            root: live.root_job_id,
+            checkpoint: pointed
+                ? {
+                      jobId: root.checkpoint_job_id!,
+                      claimSeq: Number(root.checkpoint_claim_seq),
+                      executor: root.checkpoint_executor ?? '',
+                      session: root.checkpoint_session ?? '',
+                      truncated: root.checkpoint_truncated === true,
+                      cause: root.checkpoint_cause,
+                      finalizedAt: root.checkpoint_finalized_at!,
+                  }
+                : null,
+            jobs: rows.map((row) => ({ id: row.id, member: row.created_by, claimSeq: Number(row.claim_seq) })),
+        },
+    };
 }
 
 export type ListFilter = Parameters<JobStore['list']>[0];

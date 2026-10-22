@@ -57,7 +57,7 @@ export function exportsTranscript(job: BoardJob, session: RunSession | null): bo
 export function exportEnv(config: DriverConfig, job: BoardJob, startedAt: string): [string, string][] {
     const giveUp = takeoverBoundMs(config);
     return [
-        ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(config, job)],
+        ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(job)],
         ['RUN_STARTED_AT', startedAt],
         ['EXPORT_FLUSH_BYTES', String(EXPORT_FLUSH_BYTES)],
         ['EXPORT_FLUSH_MS', String(EXPORT_FLUSH_MS)],

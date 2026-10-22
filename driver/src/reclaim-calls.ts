@@ -1,6 +1,4 @@
 import type { Board, Reclaim } from './board.js';
-// board.ts imports this file, so its UUID_SHAPE would make a cycle; publish.ts's is the same shape.
-import { UUID as UUID_SHAPE } from './publish.js';
 
 /** The board's POST as `createBoard` hands it out: a 409 is always an answer, a 404 when asked for. */
 type Post = (
@@ -27,7 +25,7 @@ function answerOf<T extends 'ok' | 'held'>(response: Response, ok: T): T | 'lost
 export function reclaimCalls(
     post: Post,
     leaseSeconds: number
-): Pick<Board, 'claimReclaim' | 'ackReclaim' | 'renewReclaim' | 'reclaimHolds'> {
+): Pick<Board, 'claimReclaim' | 'ackReclaim' | 'renewReclaim'> {
     return {
         async claimReclaim(worker) {
             const response = await post('/api/reclaims/claim', { worker, leaseSeconds });
@@ -42,20 +40,6 @@ export function reclaimCalls(
         async renewReclaim(id, token, signal) {
             const response = await post(`/api/reclaims/${id}/renew`, { token, leaseSeconds }, true, { signal });
             return answerOf(response, 'held');
-        },
-
-        // The reaper's read (issue #829), fail-closed like the lease lookup: a refused, failed or
-        // partly unreadable answer is null ("cannot answer"), never a list the reaper would act on.
-        async reclaimHolds(tokens) {
-            try {
-                const response = await post('/api/reclaims/holds', { tokens: [...tokens] });
-                if (!response.ok) return null;
-                const { held } = (await response.json()) as { held?: unknown };
-                const ok = Array.isArray(held) && held.every((t) => typeof t === 'string' && UUID_SHAPE.test(t));
-                return ok ? new Set(held as string[]) : null;
-            } catch {
-                return null;
-            }
         },
     };
 }

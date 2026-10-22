@@ -1,4 +1,4 @@
-import { LEASE_BATCH_MAX, type Board, type BoardLease, UUID_SHAPE } from './board.js';
+import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board.js';
 
 /**
  * The orphan reaper (issue #301): the periodic watcher that reaps service objects whose owning
@@ -29,10 +29,7 @@ export interface OrphanObject {
     runner?: true;
     /** The uid the scan listed it under: its delete names that incarnation only, never one created since. */
     uid?: string;
-    /**
-     * The reclaim acquisition token a listed reclaim group serves (`HOLDER_LABEL`; issue #829): the
-     * board's holds decide its fate. Kubernetes' Jobs and docker's containers and volumes carry it.
-     */
+    /** Kubernetes: the checkout holder a listed reclaim group serves (`HOLDER_LABEL`). */
     holder?: string;
 }
 
@@ -67,6 +64,33 @@ export type ReapVerdict = 'gone' | 'superseded';
 export interface ReaperArm {
     scan(): Promise<OrphanGroup[]>;
     reap(group: OrphanGroup, verdict: ReapVerdict): Promise<readonly string[]>;
+    /**
+     * Every task volume of the platform (issue #775), all generations, grouped by thread root; null when
+     * the listing proved nothing — a refused call or a row it could not read — and the round deletes none.
+     */
+    scanVolumes?(): Promise<VolumeListing | null>;
+    /** Deletes every generation of one thread, answering a line per volume actually removed. */
+    reapVolumes?(thread: VolumeThread): Promise<readonly string[]>;
+}
+
+/** One thread's task volumes, named the way their platform's delete call names them. */
+export interface VolumeThread {
+    /** The thread's root job id: what the board is asked about. */
+    root: string;
+    /** `createdAtMs`: the platform's creation time; null or absent when it could not be read, which keeps the volume. */
+    volumes: { name: string; uid?: string; createdAtMs?: number | null | undefined }[];
+}
+
+/** The task volume listing: the threads it proved, and a line per labelled object skipped as no thread's (logged by the sweep). */
+export interface VolumeListing {
+    threads: VolumeThread[];
+    skipped: readonly string[];
+}
+
+/** How long a task volume outlives its thread's last finalize: `ttlMs` when it is whole, `boundMs` when it is not. */
+export interface VolumePolicy {
+    ttlMs: number;
+    boundMs: number;
 }
 
 /**
@@ -107,19 +131,58 @@ export function reapDecision(
 }
 
 /**
+ * Whether a thread's task volumes may go (issue #775), pure. Deleted only when no job of the thread is
+ * live and its last attempt finalized, and then only once idle for the ttl when everything it left is
+ * whole — its artifacts all terminal and a complete checkpoint of that attempt — or for the (longer)
+ * bound when it is not: a truncated checkpoint or a pending artifact keeps the tree up to the bound,
+ * never forever. Anything unknown — no facts, no date, a date in the future — keeps it.
+ */
+export function volumeDecision(
+    facts: BoardThreadFacts | undefined,
+    nowMs: number,
+    policy: VolumePolicy
+): 'delete' | 'keep' {
+    if (facts === undefined || facts.live || facts.lastFinalizedAt === null) return 'keep';
+    const idleMs = nowMs - Date.parse(facts.lastFinalizedAt);
+    if (Number.isNaN(idleMs) || idleMs < 0) return 'keep';
+    const whole = facts.artifactsComplete && facts.checkpoint === 'complete';
+    return idleMs >= (whole ? policy.ttlMs : Math.max(policy.ttlMs, policy.boundMs)) ? 'delete' : 'keep';
+}
+
+/**
+ * Whether a thread's task volumes may go, given the board's lease row for its root (issue #775), pure.
+ * A row answers by its thread facts. NO row — the root absent from a fully confirmed answer, which is
+ * how `removeTask` leaves a thread — can never finalize again, so its volumes go once every one is at
+ * least the ttl old; a creation time that could not be read keeps them.
+ */
+export function volumeVerdict(
+    row: BoardLease | undefined,
+    volumes: VolumeThread['volumes'],
+    nowMs: number,
+    policy: VolumePolicy
+): 'delete' | 'keep' {
+    if (row !== undefined) return volumeDecision(row.thread, nowMs, policy);
+    const old = volumes.every(
+        (volume) => typeof volume.createdAtMs === 'number' && nowMs - volume.createdAtMs >= policy.ttlMs
+    );
+    return old ? 'delete' : 'keep';
+}
+
+/**
  * Asks the board about every id, in LEASE_BATCH_MAX-sized chunks. Null — ANY chunk refused —
  * aborts the whole round: absence must be proven for every id before anything is condemned.
  */
 const lookupAll = async (
     board: Pick<Board, 'leases'>,
     ids: readonly string[],
-    log: (message: string) => void
+    log: (message: string) => void,
+    { withThreads = false, consequence = 'reaping nothing this round' } = {}
 ): Promise<Map<string, BoardLease> | null> => {
     const leases = new Map<string, BoardLease>();
     for (let i = 0; i < ids.length; i += LEASE_BATCH_MAX) {
-        const answer = await board.leases(ids.slice(i, i + LEASE_BATCH_MAX));
+        const answer = await board.leases(ids.slice(i, i + LEASE_BATCH_MAX), withThreads);
         if (answer === null) {
-            log('reaper: the board could not answer a lease lookup — reaping nothing this round');
+            log(`reaper: the board could not answer a lease lookup — ${consequence}`);
             return null;
         }
         for (const row of answer) leases.set(row.id, row);
@@ -127,63 +190,13 @@ const lookupAll = async (
     return leases;
 };
 
-/**
- * The acquisition token a reclaim group serves: the one holder every object of the group carries.
- * Null when no object carries one (an attempt's group); undefined when the group is a reclaim group
- * whose objects disagree or lack it — unreadable, so spared.
- */
-const holderOf = (group: OrphanGroup): string | null | undefined => {
-    const [first] = group.objects;
-    if (!group.objects.every((object) => object.holder === first?.holder)) return undefined;
-    const holder = first?.holder ?? null;
-    // A holder the board could never have issued cannot be asked about: unreadable, so spared.
-    return holder === null || UUID_SHAPE.test(holder) ? holder : undefined;
-};
-
-/**
- * Asks the board which of these acquisition tokens it still holds, chunked like the lease lookup. Null
- * — ANY chunk refused — aborts the round: "not held" must be the board's positive answer. Asked by
- * token, never by the group's job label: a follow-up member's reclaim is stored under its root.
- */
-const holdsAll = async (
-    board: Pick<Board, 'reclaimHolds'>,
-    tokens: readonly string[],
-    log: (message: string) => void
-): Promise<Set<string> | null> => {
-    const held = new Set<string>();
-    for (let i = 0; i < tokens.length; i += LEASE_BATCH_MAX) {
-        const answer = await board.reclaimHolds(tokens.slice(i, i + LEASE_BATCH_MAX));
-        if (answer === null) {
-            log('reaper: the board could not answer a reclaim holds lookup — reaping nothing this round');
-            return null;
-        }
-        for (const token of answer) held.add(token);
-    }
-    return held;
-};
-
 /** Decides one group and reaps it, logging a line per object actually removed. */
 const reapOne = async (
     arm: ReaperArm,
     group: OrphanGroup,
-    ctx: {
-        lease: BoardLease | undefined;
-        held: ReadonlySet<string>;
-        graceMs: number;
-        nowMs: number;
-        log: (message: string) => void;
-    }
+    ctx: { lease: BoardLease | undefined; graceMs: number; nowMs: number; log: (message: string) => void }
 ): Promise<void> => {
-    const holder = holderOf(group);
-    // A reclaim group (issue #829) is decided by whether the board still holds the acquisition it
-    // serves, never by its root job's lease: the root is long terminal while a reclaim runs. Held, or
-    // not readable as one holder's, it is spared; not held it is a dead acquisition's, 'gone'.
-    if (holder === undefined) return;
-    if (holder !== null && ctx.held.has(holder)) return;
-    const verdict =
-        holder === null
-            ? reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs)
-            : reapDecision(undefined, group, ctx.nowMs, ctx.graceMs);
+    const verdict = reapDecision(ctx.lease, group, ctx.nowMs, ctx.graceMs);
     if (verdict === null) return;
     // A live job's next claim adopts it (issue #792), or its fence sweeps it: never deleted from a scan.
     if (verdict === 'superseded' && group.objects.some((object) => object.unread || object.runner)) return;
@@ -198,12 +211,14 @@ const reapOne = async (
  * problem.
  */
 export function createReaper(deps: {
-    board: Pick<Board, 'leases' | 'reclaimHolds'>;
+    board: Pick<Board, 'leases'>;
     arm: ReaperArm;
     intervalMs: number;
     graceMs: number;
     log?: (message: string) => void;
     now?: () => number;
+    /** Sweeps task volumes (issue #775) when set and the arm lists them. */
+    volumePolicy?: VolumePolicy;
 }): {
     sweep(): Promise<void>;
     start(): void;
@@ -214,37 +229,88 @@ export function createReaper(deps: {
     let sweeping = false;
     let timer: ReturnType<typeof setInterval> | null = null;
 
+    /** The orphan groups: scan → ask the board in batches → decide → reap. */
+    const sweepGroups = async (): Promise<void> => {
+        const groups = await deps.arm.scan();
+        // A labelled object whose factory.job is not a uuid can never be a board job — a
+        // foreign object, another tool's pod, a manual leftover. Asking the board about it
+        // would 400 the WHOLE batch and disable the reaper for as long as the object lives,
+        // so it is skipped at the source instead.
+        const reapable: OrphanGroup[] = [];
+        for (const group of groups) {
+            if (UUID_SHAPE.test(group.jobId)) reapable.push(group);
+            else log(`reaper: skipping a group whose factory.job label is not a uuid: ${group.jobId}`);
+        }
+        const ids = [...new Set(reapable.map((group) => group.jobId))];
+        const leases = await lookupAll(deps.board, ids, log);
+        if (leases === null) return;
+        for (const group of reapable) {
+            await reapOne(deps.arm, group, {
+                lease: leases.get(group.jobId),
+                graceMs: deps.graceMs,
+                nowMs: now(),
+                log,
+            });
+        }
+    };
+
+    /** The listed task volume threads that name a board job, the rest logged and skipped. */
+    const threadsOfVolumes = (listed: VolumeListing): VolumeThread[] => {
+        for (const line of listed.skipped) log(`reaper: skipping ${line}`);
+        const threads: VolumeThread[] = [];
+        for (const thread of listed.threads) {
+            if (UUID_SHAPE.test(thread.root)) threads.push(thread);
+            else log(`reaper: skipping task volumes whose root label is not a uuid: ${thread.root}`);
+        }
+        return threads;
+    };
+
+    /** The task volumes: list → ask the board about each root → decide → delete every generation of the deletable. */
+    const sweepVolumes = async (): Promise<void> => {
+        const { arm, volumePolicy } = deps;
+        if (volumePolicy === undefined || !arm.scanVolumes || !arm.reapVolumes) return;
+        const listed = await arm.scanVolumes();
+        if (listed === null) {
+            log('reaper: the task volumes could not be listed — deleting none this round');
+            return;
+        }
+        const threads = threadsOfVolumes(listed);
+        const leases = await lookupAll(deps.board, [...new Set(threads.map((thread) => thread.root))], log, {
+            withThreads: true,
+        });
+        if (leases === null) return;
+        for (const thread of threads) {
+            if (!(await deletable(thread, leases, volumePolicy))) continue;
+            for (const removed of await arm.reapVolumes(thread))
+                log(`reaper: thread ${thread.root} — removed ${removed}`);
+        }
+    };
+
+    /**
+     * The batch answer is minutes old by the time a thread's turn comes: a follow-up may have been queued
+     * and claimed since, and a volume deleted under it is recreated empty by its mount. So a thread the
+     * batch condemns is decided again on a read of its root alone, right before the delete; an
+     * unconfirmed read keeps it.
+     */
+    const deletable = async (
+        thread: VolumeThread,
+        leases: ReadonlyMap<string, BoardLease>,
+        policy: VolumePolicy
+    ): Promise<boolean> => {
+        if (volumeVerdict(leases.get(thread.root), thread.volumes, now(), policy) === 'keep') return false;
+        const fresh = await lookupAll(deps.board, [thread.root], log, {
+            withThreads: true,
+            consequence: `keeping thread ${thread.root} this round`,
+        });
+        return fresh !== null && volumeVerdict(fresh.get(thread.root), thread.volumes, now(), policy) === 'delete';
+    };
+
     const sweep = async (): Promise<void> => {
         if (sweeping) return;
         sweeping = true;
         try {
-            const groups = await deps.arm.scan();
-            // A labelled object whose factory.job is not a uuid can never be a board job — a
-            // foreign object, another tool's pod, a manual leftover. Asking the board about it
-            // would 400 the WHOLE batch and disable the reaper for as long as the object lives,
-            // so it is skipped at the source instead.
-            const reapable: OrphanGroup[] = [];
-            for (const group of groups) {
-                if (UUID_SHAPE.test(group.jobId)) reapable.push(group);
-                else log(`reaper: skipping a group whose factory.job label is not a uuid: ${group.jobId}`);
-            }
-            const ids = [...new Set(reapable.map((group) => group.jobId))];
-            const leases = await lookupAll(deps.board, ids, log);
-            if (leases === null) return;
-            const holders = [
-                ...new Set(reapable.map(holderOf).filter((holder): holder is string => typeof holder === 'string')),
-            ];
-            const held = holders.length === 0 ? new Set<string>() : await holdsAll(deps.board, holders, log);
-            if (held === null) return;
-            for (const group of reapable) {
-                await reapOne(deps.arm, group, {
-                    lease: leases.get(group.jobId),
-                    held,
-                    graceMs: deps.graceMs,
-                    nowMs: now(),
-                    log,
-                });
-            }
+            await sweepGroups();
+            await sweepVolumes();
         } catch (e) {
             log(`reaper: sweep failed, the next round retries: ${(e as Error).message}`);
         } finally {

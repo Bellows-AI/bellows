@@ -1,15 +1,8 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import {
-    CREDENTIAL_HELPER,
-    gitProbeScript,
-    gitWorktreeRemoveScript,
-    gitWorktreeScript,
-    prSummaryScript,
-    toolTreeReleaseBoundedScript,
-    toolTreeReleaseScript,
-} from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, prSummaryScript, taskCheckoutScript } from '../src/publish.js';
+import { taskInitScript } from '../src/task-volume.js';
 import {
     BODY_MAX,
     DIFF_HUNK_MAX,
@@ -28,6 +21,8 @@ import {
 } from '../src/review.js';
 import {
     bindingWriteScript,
+    checkpointRestoreScript,
+    checkpointScript,
     claudeTurnsScript,
     gateLoopScript,
     reviewLoopScript,
@@ -51,17 +46,15 @@ import { SCRIPTS_DIR, pathOf } from './fixtures/scripts-support.js';
  * constant is a pin on the artifact the container runs.
  *
  * The behavior of each script — the credential helper, the opencode/claude-turns readouts, the
- * worktree reclaim — is exercised in its own sibling file (`scripts-*.test.ts`, split out for the
+ * task checkout — is exercised in its own sibling file (`scripts-*.test.ts`, split out for the
  * line-count cap); this file keeps only the parity/parse checks that cover every script at once.
  */
 
 /** Every script file, with the checker that gates its syntax. */
 const FILES: [string, 'node' | 'sh'][] = [
     ['git-probe.cjs', 'node'],
-    ['git-worktree.cjs', 'node'],
-    ['git-worktree-remove.cjs', 'node'],
-    ['tool-tree-release.cjs', 'node'],
-    ['tool-tree-release-bounded.sh', 'sh'],
+    ['task-checkout.cjs', 'node'],
+    ['task-init.sh', 'sh'],
     ['git-review-snapshot.cjs', 'node'],
     ['operation-ledger.cjs', 'node'],
     ['pr-summary.cjs', 'node'],
@@ -69,6 +62,8 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['claude-turns.cjs', 'node'],
     ['claude-export.cjs', 'node'],
     ['supervisor.cjs', 'node'],
+    ['checkpoint.cjs', 'node'],
+    ['checkpoint-restore.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
@@ -127,13 +122,13 @@ describe('the container scripts', () => {
     // whitespace is code there, and the constant is the file TRIMMED (see publish.ts).
     it('loads every script from its file, byte for byte', () => {
         expect(gitProbeScript).toBe(readFileSync(pathOf('git-probe.cjs'), 'utf8'));
-        expect(gitWorktreeScript).toBe(readFileSync(pathOf('git-worktree.cjs'), 'utf8'));
-        expect(gitWorktreeRemoveScript).toBe(readFileSync(pathOf('git-worktree-remove.cjs'), 'utf8'));
-        expect(toolTreeReleaseScript).toBe(readFileSync(pathOf('tool-tree-release.cjs'), 'utf8'));
-        expect(toolTreeReleaseBoundedScript).toBe(readFileSync(pathOf('tool-tree-release-bounded.sh'), 'utf8'));
+        expect(taskCheckoutScript).toBe(readFileSync(pathOf('task-checkout.cjs'), 'utf8'));
+        expect(taskInitScript).toBe(readFileSync(pathOf('task-init.sh'), 'utf8'));
         expect(prSummaryScript).toBe(readFileSync(pathOf('pr-summary.cjs'), 'utf8'));
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
+        expect(checkpointScript).toBe(readFileSync(pathOf('checkpoint.cjs'), 'utf8'));
+        expect(checkpointRestoreScript).toBe(readFileSync(pathOf('checkpoint-restore.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(gateShellScript).toBe(readFileSync(pathOf('gate-shell.sh'), 'utf8'));

@@ -19,7 +19,7 @@ import {
     opencodeAgentArgs,
     opencodeTurnPrompt,
 } from './master-prompt.js';
-import { baseBranchOf, worktreeDir } from './publish.js';
+import { baseBranchOf, checkoutDir } from './publish.js';
 import { randomUUID } from 'node:crypto';
 import type { RunSession } from './runner.js';
 
@@ -49,8 +49,8 @@ export interface RunnerPlan {
  * always started. A repo label this driver cannot resolve a worktree for is refused before any
  * container or pod spec exists, on both platforms, from this one line.
  */
-export function assertWorktreeResolvable(config: DriverConfig, job: BoardJob): void {
-    if (job.repo && !worktreeDir(config, job)) {
+export function assertWorktreeResolvable(job: BoardJob): void {
+    if (job.repo && !checkoutDir(job)) {
         throw new Error(
             `refusing to run job ${job.id}: the board reported a repo label this driver cannot resolve a task worktree for (${job.repo})`
         );
@@ -94,18 +94,18 @@ const unwrittenResumeEnv = (job: BoardJob, session: RunSession): [string, string
  * refusal — the loop refuses the state first, and this is the runner asserting it too.
  *
  * The session database has to outlive the container or there is nothing to resume into: a fresh
- * one starts empty. XDG_DATA_HOME points at the task's own directory on the workspaces volume,
+ * one starts empty. XDG_DATA_HOME points at the task's own directory on the task volume,
  * persisting it per task (thread root) inside the member's tree — a dot-directory the workspace
  * reconcile never mistakes for a checkout.
  */
-function opencodePlan(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerPlan {
+function opencodePlan(job: BoardJob, session: RunSession | null): RunnerPlan {
     if (session && !session.resume) {
         throw new Error(`refusing to run job ${job.id}: the opencode runner cannot adopt a minted session`);
     }
     const envPairs: [string, string][] = [
-        ['XDG_DATA_HOME', opencodeDataDir(config, job)],
+        ['XDG_DATA_HOME', opencodeDataDir(job)],
         ...npmQuietEnv(job),
-        ...repoCacheEnv(config, job),
+        ...repoCacheEnv(job),
         ...baseBranchEnv(job),
     ];
     const cliArgs = ['run', ...opencodeAgentArgs()];
@@ -144,12 +144,12 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
     // minted by this driver as a uuid, or arriving on the claim only after the board's own token
     // check. The opencode path asserts because the id it carries was minted by the CLI itself.
     const envPairs: [string, string][] = [
-        ['FACTORY_TRANSCRIPT_DIR', transcriptDir(config, job)],
+        ['FACTORY_TRANSCRIPT_DIR', transcriptDir(job)],
         ['BELLOWS_SESSION_ID', session.id],
         ...unwrittenResumeEnv(job, session),
         ...claudeTurnContextEnv(job),
         ...npmQuietEnv(job),
-        ...repoCacheEnv(config, job),
+        ...repoCacheEnv(job),
         ...baseBranchEnv(job),
     ];
     const cliArgs = [session.resume ? '--resume' : '--session-id', session.id];
@@ -165,7 +165,7 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
 
 /** The plan for whichever executor the task's profile selected. */
 export function runnerPlan(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerPlan {
-    return job.executorType === OPENCODE ? opencodePlan(config, job, session) : claudePlan(config, job, session);
+    return job.executorType === OPENCODE ? opencodePlan(job, session) : claudePlan(config, job, session);
 }
 
 /** The executor image's ENTRYPOINT as argv, which a reviewer container runs as a command (issue #774). */

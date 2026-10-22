@@ -1,7 +1,6 @@
 {{/*
-The organization's checkouts. The dashboard writes them here and every runner mounts the same
-claim — the kubernetes form of the named docker volume the compose services share. Default
-ReadWriteMany because the dashboard and runners share it across nodes. Local clusters do not
+The organization's checkouts. The dashboard writes them here; runners mount their own task
+volume instead (issue #775). Default ReadWriteMany. Local clusters do not
 render this template at all: values-local.yaml sets existingClaim to the factory-local-state
 release's claim, which is the ReadWriteOnce one. What the class behind this claim must provide —
 RWX, and a root writable by uid 1000 — is docs/kubernetes.md, "The workspaces volume".

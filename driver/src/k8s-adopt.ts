@@ -103,7 +103,7 @@ function earlierRunnerOf(job: BoardJob, item: ListedRunner): EarlierRunner | nul
 }
 
 /** A runner pod that ran to its end — `Succeeded` or `Failed` — writes nothing any more. */
-const FINISHED_PHASES: readonly string[] = ['Succeeded', 'Failed'];
+export const FINISHED_PHASES: readonly string[] = ['Succeeded', 'Failed'];
 
 /**
  * Where a runner's group stands by its listed pods: `over` once every pod ran to its end or its

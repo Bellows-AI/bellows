@@ -37,6 +37,10 @@ database:
 workspaces:
     existingClaim: factory-state-workspaces
 
+# The local-path provisioner of a single-node cluster serves ReadWriteOnce, not ReadWriteOncePod.
+taskVolume:
+    accessMode: ReadWriteOnce
+
 # A single-node development stack keeps artifacts in the dashboard pod: no bucket to provision.
 artifacts:
     backend: filesystem

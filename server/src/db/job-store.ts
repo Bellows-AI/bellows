@@ -28,7 +28,6 @@ import {
     reopenJob,
     stopJob,
     suspendJob,
-    requeueJob,
     interruptJob,
     removeJobThread,
     cancelThreadWait,
@@ -38,7 +37,7 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob } from './job-store-claim.js';
-import { claimReclaimRow, ackReclaimRow, renewReclaimRow, reclaimHoldsOf } from './job-store-reclaims.js';
+import { claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-reclaims.js';
 import {
     threadOf,
     getJob,
@@ -47,6 +46,7 @@ import {
     listTasksOf,
     leasesOf,
     artifactScopeOf,
+    restoreScopeOf,
 } from './job-store-reads.js';
 import {
     wallTickFragment,
@@ -85,8 +85,8 @@ function workerMethods(
     | 'writePhaseCheckpoint'
     | 'readPhaseCheckpoints'
     | 'leases'
-    | 'reclaimHolds'
     | 'artifactScope'
+    | 'restoreScope'
 > {
     return {
         async claim(worker, leaseSeconds) {
@@ -149,19 +149,19 @@ function workerMethods(
             return readPhaseCheckpoints(ctx, { id, leaseToken }, runClaimSeq);
         },
 
-        async leases(ids) {
+        async leases(ids, withThreads) {
             await gate();
-            return leasesOf(ctx, ids);
-        },
-
-        async reclaimHolds(tokens) {
-            await gate();
-            return reclaimHoldsOf(ctx, tokens);
+            return leasesOf(ctx, ids, withThreads);
         },
 
         async artifactScope(id) {
             await gate();
             return artifactScopeOf(ctx, id);
+        },
+
+        async restoreScope(id, leaseToken) {
+            await gate();
+            return restoreScopeOf(ctx, id, leaseToken);
         },
     };
 }
@@ -267,10 +267,6 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return stopJob(ctx, id, stoppedBy);
         },
 
-        async requeue(id, leaseToken) {
-            await gate();
-            return requeueJob(ctx, id, leaseToken);
-        },
         async interrupt(id, leaseToken, interruption) {
             await gate();
             return interruptJob(ctx, id, leaseToken, interruption);

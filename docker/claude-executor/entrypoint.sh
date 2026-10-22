@@ -29,7 +29,7 @@ WORKDIR="${WORKDIR:-/workspace}"
 export WORKDIR
 
 # The transcript store (issue #55): when the driver hands us a transcript directory, the CLI's
-# config dir moves to it — on the workspaces volume, so transcripts survive this container and a
+# config dir moves to it — on the task volume, so transcripts survive this container and a
 # follow-up's --resume finds the thread's earlier sessions in the same directory. The seed below
 # and the patches read CLAUDE_CONFIG_DIR dynamically, so the baked guard and settings ride along
 # unchanged.

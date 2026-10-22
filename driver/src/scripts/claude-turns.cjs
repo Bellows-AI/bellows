@@ -1,6 +1,6 @@
 // The close-time claude-code read: how many assistant response cycles the run's ROOT
 // conversation took, and what the run's last words were — both read from the transcript the run
-// wrote onto the workspaces volume while it lived (FACTORY_TRANSCRIPT_DIR is the runner's
+// wrote onto the task volume while it lived (FACTORY_TRANSCRIPT_DIR is the runner's
 // CLAUDE_CONFIG_DIR, so the transcript is on disk the moment the CLI writes it — nothing dies
 // with the container). One JSON line on stdout; any failure prints `{ "turns": null }` with the
 // reason — unmeasured, never zero.

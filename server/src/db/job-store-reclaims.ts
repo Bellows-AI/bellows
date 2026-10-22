@@ -124,15 +124,3 @@ export async function renewReclaimRow(
     const present = await sql`select 1 from task_reclaim where org_id = ${orgId} and id = ${id}`;
     return present.length > 0 ? { result: 'lost' } : { result: 'missing' };
 }
-
-export async function reclaimHoldsOf(
-    ctx: JobStoreContext,
-    tokens: readonly string[]
-): ReturnType<JobStore['reclaimHolds']> {
-    const { sql, orgId } = ctx;
-    const rows = await sql<{ claim_token: string }[]>`
-        select claim_token from task_reclaim
-        where org_id = ${orgId} and claim_token = any(${[...tokens]}::uuid[])
-    `;
-    return rows.map((row) => row.claim_token);
-}

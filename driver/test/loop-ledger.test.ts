@@ -39,9 +39,10 @@ const parts = (over: Partial<LedgerParts> = {}): LedgerParts => ({
 
 /**
  * One fault each, by the kind it must name — the table the pairwise test crosses with itself.
- * `config` is a pre-run refusal (loop-run.ts), never a ledger fault, so it is not ranked.
+ * `config` is a pre-run refusal (loop-run.ts), and `checkpoint_unrestorable` a sync's (loop-fence.ts): neither
+ * is a ledger fault, so neither is ranked.
  */
-const SINGLE: Record<Exclude<FailureKind, 'config'>, LedgerParts> = {
+const SINGLE: Record<Exclude<FailureKind, 'config' | 'checkpoint_unrestorable'>, LedgerParts> = {
     timeout: parts({ outcome: outcome({ timedOut: true }) }),
     cache_lost: parts({ outcome: outcome({ cacheLost: 'c' }) }),
     blocked: parts({ outcome: outcome({ blockedLine: 'x' }) }),

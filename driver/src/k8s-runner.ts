@@ -15,37 +15,13 @@ import type { RunOutcome, RunSession, Runner } from './runner.js';
 import { adoptFinishedRunner } from './k8s-adopt.js';
 import type { OpencodeRunOutcome } from './close-read.js';
 import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished, vanishedOutcome } from './k8s-kill.js';
-import { claimName, deleteJob, jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import {
-    acquireClaim,
-    type ObservedClaim,
-    readClaim,
-    readClaimObject,
-    releaseClaimAfterGroupEnd,
-    revokeClaim,
-} from './k8s-fence.js';
-import {
-    ensureGroup,
-    finishGroup,
-    forgetGroup,
-    groupsOf,
-    holderGroupsOf,
-    reclaimInGroup,
-    runnerGroupOf,
-    takeGroupDown,
-} from './k8s-group.js';
-import { claudeTurnsJobSpec, jobsPath, opencodeReadoutJobSpec, runnerName } from './k8s-podspec.js';
-import {
-    auxVerdict,
-    pollJobToTerminal,
-    podsOf,
-    pollRunnerJobUntilTerminal,
-    readJobStatus,
-    readRunnerVerdict,
-    readTyped,
-    readLogVerdict,
-    readVerdict,
-} from './k8s-poll.js';
+import { jobPath, jobPodsPath } from './k8s-auxspec.js';
+import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
+import { removeTaskVolumes } from './k8s-task-volume.js';
+import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
+import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
+import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
+import { podsOf, pollRunnerJobUntilTerminal, readJobStatus, readRunnerVerdict, readTyped } from './k8s-poll.js';
 import {
     deadServices,
     forgetServices,
@@ -57,7 +33,6 @@ import { groupServices } from './services.js';
 import { rebindGroup } from './k8s-binding.js';
 import { resizeGateSidecar, resizeReviewerSidecar, runGateInGroup, runReviewInGroup } from './k8s-gate.js';
 import {
-    answerPreview,
     expectOk,
     HTTP_ERROR_STATUS,
     isRecord,
@@ -66,29 +41,31 @@ import {
     parsePodMetrics,
     boundedBy,
     POLL_MS,
-    refusal,
     waitOf,
     withSignal,
 } from './k8s-transport.js';
-import { abortableSleep, pollFor, type Sleep } from './poll.js';
+import { abortableSleep, pollFor, type Sleep, timeLeft } from './poll.js';
 import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import type { K8sDeps, K8sRequest, K8sResponse } from './k8s-transport.js';
 import { reviewRunOf } from './review-step.js';
-import { repoPath, worktreeDir } from './publish.js';
+import { checkoutDir } from './publish.js';
 import type { ReclaimResult, SyncResult } from './publish.js';
 import type { StepSink, SupervisorEndpoint } from './step-control.js';
 import { type KillRecord, settleEnd } from './termination.js';
 import {
     controlTokenOf,
+    detailOf,
     orderGo,
+    READOUT_STEP_TIMEOUT_MS,
     releaseSteps,
+    runReadoutStep,
     runSyncStep,
     stepHostOf,
     supervisedStepMembers,
 } from './supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { KILL_WINDDOWN_MS, type SupervisorReport } from './supervisor-contract.js';
-import { parseRfc3339 } from './timestamps.js';
+import { readViaReaderJob, type ReaderResult } from './k8s-reader.js';
 
 /**
  * The kubernetes `Runner`: assembles the fence (`k8s-fence.ts`), the pollers (`k8s-poll.ts`) and
@@ -100,111 +77,116 @@ import { parseRfc3339 } from './timestamps.js';
  */
 
 /**
- * The close-time opencode session scrape, as a Job: the same read the docker runner performs with
- * a throwaway container after the run's close, against the database the run persisted on the
- * PVC. NEVER throws — the scrape is the run's follow-up-ability, finish reason and context vitals,
- * and a failed read is not a failed run.
+ * Whether a step answer lost its head to the supervisor's output cap: every line the readout prints
+ * is a JSON object, so a first line that is not one was cut mid-line. A cut that fell on a line
+ * boundary is undetectable here.
  */
-async function scrapeOpencodeSession(
-    deps: K8sDeps,
-    job: BoardJob,
-    startedAt: string,
-    deadline: number
-): Promise<OpencodeRunOutcome> {
-    const bounded = boundedBy(deps, deadline);
-    const fail = opencodeReadFailed;
-    let spec: ReturnType<typeof opencodeReadoutJobSpec>;
+function headCut(stdout: string): boolean {
+    const first = stdout.split('\n', 1)[0]!.trim();
+    if (!first) return false;
     try {
-        spec = opencodeReadoutJobSpec(deps.config, job, startedAt);
-    } catch (e) {
-        return fail((e as Error).message);
-    }
-    const jobName = spec.metadata.name;
-    try {
-        const created = await bounded.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        const refused = refusal(created, 'creating the session readout');
-        if (refused) return fail(refused);
-        // pollJobToTerminal re-throws a read whose patience ran out (issue #308) — infrastructure,
-        // never the run's verdict. EVERY failure this block can raise — a transport rejection on
-        // the Job POST included — lands in the catch below: the scrape is the run's
-        // follow-up-ability, and a completed run's verdict must never burn over its close-time
-        // read.
-        const pollFailure = await pollJobToTerminal(bounded, jobName, {
-            what: 'the session readout',
-            notFound: (n) => `the session readout ${n} no longer exists`,
-            errorStatus: (s, b) => `reading the session readout ${answerPreview(s, b)}`,
-            failed: 'the session readout job failed — its own deadline is its bound',
-        });
-        if (pollFailure !== null) return fail(pollFailure);
-        const pods = await readVerdict(
-            bounded,
-            jobPodsPath(deps.config.k8sNamespace, jobName),
-            'listing the session readout pods'
-        );
-        if (pods.status >= HTTP_ERROR_STATUS)
-            return fail(`listing the session readout pods ${answerPreview(pods.status, pods.body)}`);
-        const read = podsOf(pods, 'listing the session readout pods');
-        const pod = read.kind === 'value' ? livePodOfItems(read.value) : undefined;
-        if (!pod?.metadata?.name) return fail('the session readout left no pod to read its output from');
-        const log = await readLogVerdict(
-            bounded,
-            podLogPath(deps.config.k8sNamespace, pod.metadata.name, null),
-            'reading the session readout log'
-        );
-        if (log.status >= HTTP_ERROR_STATUS)
-            return fail(`reading the session readout's log ${answerPreview(log.status, log.body)}`);
-        return parseOpencodeRunOutcome(log.body, log.truncated === true);
-    } catch (e) {
-        return fail((e as Error).message);
-    } finally {
-        void deleteJob(deps, jobName);
+        JSON.parse(first);
+        return false;
+    } catch {
+        return true;
     }
 }
 
 /**
- * The close-time claude-code read: one aux Job over the PVC, its one answer parsed to the turn
- * count and the run's last words, or nulls. Every failure on the way answers nulls: unmeasured,
- * never zero, exactly the contract the docker twin's failed exec keeps.
+ * How a close-time readout runs: a supervised step of the live group, or — for an adopted group that
+ * has ended and has no supervisor to answer — a reader Job over the task volume (`k8s-reader.ts`).
  */
-async function scrapeClaudeCloseRead(
+type Readout = (
     deps: K8sDeps,
     job: BoardJob,
-    sessionId: string,
-    startedAt: string
-): Promise<ClaudeCloseRead> {
-    let spec: ReturnType<typeof claudeTurnsJobSpec>;
-    try {
-        spec = claudeTurnsJobSpec(deps.config, job, sessionId, startedAt);
-    } catch {
-        return CLAUDE_READ_NONE;
+    readout: { name: string; argv: string[]; env: Record<string, string>; timeoutMs?: number }
+) => Promise<ReaderResult>;
+
+const supervisedReadout: Readout = (deps, job, readout) => runReadoutStep(stepHostOf(deps), job, readout);
+
+const readerJobReadout: Readout = (deps, job, readout) =>
+    readViaReaderJob(deps, job, { ...readout, timeoutMs: readout.timeoutMs ?? READOUT_STEP_TIMEOUT_MS });
+
+/**
+ * The close-time readouts of one run, over the way they execute (`Readout`): the live group's, or an
+ * adopted ended group's. NEVER throw — a failed read is "unmeasured", not a failed run.
+ */
+function closeReadsOver(readout: Readout) {
+    /**
+     * The close-time opencode session scrape, as a supervised step of the task group: the same read the
+     * docker runner performs with a throwaway container after the run's close, against the database
+     * the run persisted on the task volume. NEVER throws — the scrape is the run's follow-up-ability,
+     * finish reason and context vitals, and a failed read is not a failed run.
+     */
+    async function scrapeOpencodeSession(
+        deps: K8sDeps,
+        job: BoardJob,
+        startedAt: string,
+        deadline: number
+    ): Promise<OpencodeRunOutcome> {
+        try {
+            const answered = await readout(deps, job, {
+                name: 'opencode-readout',
+                ...opencodeReadoutStep(job, startedAt),
+                timeoutMs: Math.min(READOUT_STEP_TIMEOUT_MS, timeLeft(deadline)),
+            });
+            if (answered.timedOut) return opencodeReadFailed('the session readout exceeded its deadline');
+            if (answered.exitCode !== 0) {
+                return opencodeReadFailed(
+                    `the session readout step failed: ${detailOf(answered, READOUT_STEP_TIMEOUT_MS)}`
+                );
+            }
+            return parseOpencodeRunOutcome(answered.stdout, answered.truncated === true || headCut(answered.stdout));
+        } catch (e) {
+            return opencodeReadFailed((e as Error).message);
+        }
     }
-    const jobName = spec.metadata.name;
-    try {
-        const created = await deps.request('POST', jobsPath(deps.config.k8sNamespace), spec);
-        if (created.status >= HTTP_ERROR_STATUS) return CLAUDE_READ_NONE;
-        const verdict = await auxVerdict(deps, jobName);
-        return parseClaudeCloseRead(verdict.output);
-    } catch {
-        return CLAUDE_READ_NONE;
-    } finally {
-        void deleteJob(deps, jobName);
+
+    /**
+     * The close-time claude-code read: one supervised step, its one answer parsed to the turn count and
+     * the run's last words, or nulls. Every failure on the way answers nulls: unmeasured, never zero,
+     * exactly the contract the docker twin's failed exec keeps.
+     */
+    async function scrapeClaudeCloseRead(
+        deps: K8sDeps,
+        job: BoardJob,
+        sessionId: string,
+        startedAt: string
+    ): Promise<ClaudeCloseRead> {
+        try {
+            const answered = await readout(deps, job, {
+                name: 'claude-turns',
+                ...claudeTurnsStep(job, sessionId, startedAt),
+            });
+            return answered.exitCode === 0 && !answered.timedOut
+                ? parseClaudeCloseRead(answered.stdout)
+                : CLAUDE_READ_NONE;
+        } catch {
+            return CLAUDE_READ_NONE;
+        }
     }
+
+    async function attachOpencodeOutcome(
+        deps: K8sDeps,
+        job: BoardJob,
+        startedAt: string,
+        outcome: RunOutcome
+    ): Promise<void> {
+        const live = withSignal(deps, ledgerOf(deps).signal(job));
+        const { scraped, reason } = await readOpencodeWithRetries(
+            (deadline) => scrapeOpencodeSession(live, job, startedAt, deadline),
+            deps.sleep,
+            live.signal
+        );
+        mergeOpencodeOutcome(outcome, scraped, reason);
+    }
+    return { scrapeClaudeCloseRead, attachOpencodeOutcome };
 }
 
-async function attachOpencodeOutcome(
-    deps: K8sDeps,
-    job: BoardJob,
-    startedAt: string,
-    outcome: RunOutcome
-): Promise<void> {
-    const live = withSignal(deps, ledgerOf(deps).signal(job));
-    const { scraped, reason } = await readOpencodeWithRetries(
-        (deadline) => scrapeOpencodeSession(live, job, startedAt, deadline),
-        deps.sleep,
-        live.signal
-    );
-    mergeOpencodeOutcome(outcome, scraped, reason);
-}
+const { scrapeClaudeCloseRead, attachOpencodeOutcome } = closeReadsOver(supervisedReadout);
+
+/** An adoption's close-time readouts: its group has ended, so each runs as a reader Job, never a step. */
+const adoptionReads = closeReadsOver(readerJobReadout);
 
 // The docker runner samples `docker stats`; the twin here is the metrics API, read from the
 // runner's own pod. Every failure (no pod yet, no metrics-server, a blink) answers null for the
@@ -494,11 +476,9 @@ async function syncCheckout(
     deps: K8sDeps,
     job: BoardJob,
     session: RunSession | null = null,
-    githubToken?: string
+    { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
-    const clone = repoPath(deps.config, job);
-    const worktree = worktreeDir(deps.config, job);
-    if (!clone || !worktree) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+    if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced, nothing to fail either
 
     await acquireClaim(deps, job);
     // A group that could not come up is thrown, typed when the pod's words prove why (`StartupRefused`,
@@ -506,13 +486,21 @@ async function syncCheckout(
     // back only once nothing of this group can still write the worktree (`takeGroupDown`).
     const failed = (): Promise<void> => takeGroupDown(deps, job);
     try {
-        await ensureGroup(deps, job, session);
+        await ensureGroup(deps, job, session, signal);
     } catch (e) {
         await failed();
+        // A thread that cannot be rebuilt is a verdict, not a fault of the cluster: the loop fails the task with it.
+        if (e instanceof CheckpointUnrestorable) return unrestorableResult(e);
         throw e;
     }
     try {
-        const result = await runSyncStep(stepHostOf(deps), job, githubToken);
+        const host = stepHostOf(deps);
+        // A volume made by a restore is filled before the sync looks at it; the generation it replaces goes after.
+        const restored = await restoreTaskTree(host, job, {
+            githubToken,
+            removeOlder: (generations) => removeTaskVolumes(signal ? withSignal(deps, signal) : deps, job, generations),
+        });
+        const result = restored && !restored.ok ? restored : await runSyncStep(host, job, githubToken);
         // A failed sync means no runner follows — nobody else would give the checkout back.
         if (!result.ok) await failed();
         return result;
@@ -525,90 +513,11 @@ async function syncCheckout(
 }
 
 /**
- * The checkout claim that held an acquire off, read for the refusal's report (issue #344): its
- * name, the holder attempt the claim carries, and the apiserver's creation stamp. The loop logs
- * these and — once the board proves the holder job gone — decides the reap. Undefined when the
- * claim cannot be read (gone in between, refused, a transport blink): the refusal message the
- * acquire threw already names what it knows, and this read only adds to it.
+ * The terminal reclaim is an acknowledged no-op (issue #775): the thread's tree lives on its own task
+ * volume, which only the reaper may delete, so there is no linked worktree to remove.
  */
-async function heldClaim(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult['heldClaim']> {
-    const read = await readClaimObject(deps, job, true);
-    if (read.kind !== 'value') return undefined;
-    const claim = read.value;
-    const uid = claim.metadata?.uid;
-    const holder = claim.data?.holder;
-    // A claim that cannot name its incarnation and holder is nothing a recovery may act on.
-    if (!uid || !holder) return undefined;
-    const createdAt = claim.metadata?.creationTimestamp;
-    return {
-        name: claimName(job),
-        claimSeq: claim.data?.claimSeq ?? null,
-        createdMs: createdAt === undefined ? null : parseRfc3339(createdAt),
-        uid,
-        holder,
-    };
-}
-
-/**
- * Deletes an orphaned checkout claim (issue #344): a claim whose holder job the board no longer
- * knows as live, left behind by a driver that died holding it — the one leak the fence's
- * release-by-next-claimant cannot heal, because no later claimant of that job ever comes. The
- * claim is the incarnation the refused reclaim observed (issue #821): one replaced since — a
- * reopen's live claimant — is rejected before anything is ended. The claim is revoked first
- * (`revokeClaim`, under the reaping acquisition's token): a reclaim of the holder whose group was
- * not yet created when the groups are listed below then refuses to start it. Both groups its
- * holder can have left (its attempt's and its reclaim's, derived from the claim alone) are ended
- * the acknowledged way, and the uid-preconditioned delete runs only once both are confirmed ended.
- * Answers false otherwise — a refused revoke included: the caller retries on a later offer, and a
- * false negative costs one more throttled log.
- */
-async function reapOrphanedClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
-    if (!(await revokeClaim(deps, job, observed))) return false;
-    const groups = await holderGroupsOf(deps, job, observed.holder);
-    if (groups === null) return false;
-    return releaseClaimAfterGroupEnd(deps, job, { groups, observed });
-}
-
-/**
- * The terminal reclaim (issue #47), the kubernetes shape: the remove script as a supervised step
- * (in a supervisor-only group — the thread has no attempt to ask), UNDER the checkout claim — the
- * same `acquireClaim` protocol the sync and the runner use.
- * An acquire that answers 409 means a LIVE attempt holds the checkout, and the reclaim SKIPS:
- * costing the reclaim is fine by contract, costing a live run is not. The refusal carries the
- * claim's identity (`heldClaim`) so the loop can name it, and reap it when the board proves the
- * holder gone (issue #344).
- */
-async function reclaimWorktree(deps: K8sDeps, job: BoardJob): Promise<ReclaimResult> {
-    const clone = repoPath(deps.config, job);
-    const worktree = worktreeDir(deps.config, job);
-    if (!clone || !worktree) return { ok: true, removed: false, reason: null };
-    try {
-        await acquireClaim(deps, job);
-    } catch (e) {
-        // A 409 the acquire could not resolve by takeover is a live attempt on the checkout
-        // (acquireClaim says which and why in its message).
-        const refused: ReclaimResult = {
-            ok: false,
-            removed: false,
-            reason: `the checkout is held (${worktree}): ${(e as Error).message}`,
-        };
-        const claim = await heldClaim(deps, job);
-        if (claim) refused.heldClaim = claim;
-        return refused;
-    }
-    // The incarnation this reclaim took: its holder token is this acquisition's own (issue #821),
-    // and the uid tells it apart from one an earlier invocation under the same token took.
-    const acquired = await readClaim(deps, job);
-    if (acquired?.holder !== job.leaseToken) {
-        return { ok: false, removed: false, reason: 'the checkout claim this reclaim took could not be read back' };
-    }
-    try {
-        // The group is ended inside, acknowledged — THEN the claim goes, unless that end is
-        // unconfirmed, and only the incarnation this invocation took.
-        return await reclaimInGroup(deps, job, acquired);
-    } finally {
-        await releaseClaimAfterGroupEnd(deps, job, { observed: acquired, holderWriters: true });
-    }
+async function reclaimWorktree(): Promise<ReclaimResult> {
+    return { ok: true, removed: false, reason: null };
 }
 
 /**
@@ -620,14 +529,20 @@ export function createKubernetesRunner(
     config: DriverConfig,
     request: K8sRequest,
     sleep: Sleep = abortableSleep,
-    wiring: { leases?: Board['leases']; steps?: StepSink; endpoint?: SupervisorEndpoint } = {}
+    wiring: {
+        leases?: Board['leases'];
+        checkpoints?: Pick<Board, 'checkpoint'>;
+        steps?: StepSink;
+        endpoint?: SupervisorEndpoint;
+    } = {}
 ): Runner {
-    const { leases, steps, endpoint } = wiring;
+    const { leases, checkpoints, steps, endpoint } = wiring;
     const deps: K8sDeps = {
         config,
         request,
         sleep,
         ...(leases ? { leases } : {}),
+        ...(checkpoints ? { checkpoints } : {}),
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
     };
@@ -644,8 +559,7 @@ export function createKubernetesRunner(
         startServices: (job: BoardJob, signal?: AbortSignal) => startServiceFleet(deps, job, signal),
         run: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) =>
             run(deps, job, session, onOutput),
-        adopt: (job: BoardJob, signal?: AbortSignal) =>
-            adoptFinishedRunner(deps, job, { scrapeClaudeCloseRead, attachOpencodeOutcome }, signal),
+        adopt: (job: BoardJob, signal?: AbortSignal) => adoptFinishedRunner(deps, job, adoptionReads, signal),
         ...supervisedStepMembers({
             host: stepHostOf(deps),
             hasGroup: (job) => groupsOf(deps).has(job.leaseToken),
@@ -660,18 +574,15 @@ export function createKubernetesRunner(
             runReviewInGroup(deps, reviewRunOf(caller, review, session, control), control?.signal),
         rebind: (group, binding, signal) => rebindGroup(deps, group, binding, signal),
         abandon: (job) => ledgerOf(deps).abandon(job),
-        syncCheckout: (job: BoardJob, _signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
-            syncCheckout(deps, job, session ?? null, githubToken),
+        syncCheckout: (job: BoardJob, signal?: AbortSignal, session?: RunSession | null, githubToken?: string) =>
+            syncCheckout(deps, job, session ?? null, { githubToken, signal }),
         finish: (job: BoardJob) => finishGroup(deps, job),
-        reclaimWorktree: (job: BoardJob) => reclaimWorktree(deps, job),
+        reclaimWorktree,
         // The loop's hand-back of the checkout claim (`loop-fence.ts`) for an attempt that ends
         // without a group's end to give it back: a group still live keeps it for its `finish`
         // (issue #821), one whose end is unconfirmed keeps it for good.
         releaseFence: async (job: BoardJob) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
-        // The orphaned-claim reap (issue #344): uid-preconditioned, by the claim's derivable
-        // name — the fence's own GET/DELETE grants, nothing new.
-        reapOrphanedClaim: (job: BoardJob, observed: ObservedClaim) => reapOrphanedClaim(deps, job, observed),
     });
 }

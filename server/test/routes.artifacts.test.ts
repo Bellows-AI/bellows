@@ -144,6 +144,29 @@ describe('PUT /api/jobs/:id/artifact/chunk', () => {
         ]);
     });
 
+    it('files non-text bytes on the checkpoint stream and accepts its checkpoint_cap manifest', async () => {
+        const fake = memoryArtifacts();
+        const instance = await boot(SCOPE, fake.store);
+        const query = chunkQuery(CURRENT_CLAIM, 0, { stream: 'checkpoint', session: 'none' });
+
+        const chunk = await instance.inject({
+            method: 'PUT',
+            url: `/api/jobs/${JOB}/artifact/chunk?${query}`,
+            headers: { 'content-type': OCTET_STREAM_CONTENT_TYPE },
+            payload: Buffer.from([0x00, 0xff, 0xfe, 0x80]),
+        });
+        const manifest = await putManifest(instance, CURRENT_CLAIM, {
+            stream: 'checkpoint',
+            session: 'none',
+            state: 'truncated',
+            terminalCause: 'checkpoint_cap',
+        });
+
+        expect(chunk.statusCode).toBe(200);
+        expect(fake.puts[0]!.ref).toMatchObject({ stream: 'checkpoint', session: 'none' });
+        expect(manifest.statusCode).toBe(200);
+    });
+
     it('files an unattributed job under the placeholder member', async () => {
         const fake = memoryArtifacts();
         const instance = await boot({ ...SCOPE, member: null }, fake.store);

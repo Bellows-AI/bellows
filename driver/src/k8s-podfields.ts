@@ -1,7 +1,8 @@
 import { AGENT_LAUNCH_CAPS } from './claim.js';
 import { cpuQuantityToCores, type DriverConfig, memoryQuantityToBytes } from './config.js';
-import type { ExecutorType } from './executors.js';
+import type { BoardJob } from './board.js';
 import { type Mailbox, mailboxesOf, SUPERVISOR_BINDING } from './supervisor-contract.js';
+import { TASK_MOUNT, TASK_VOLUME, taskPodVolume } from './task-volume.js';
 import { telemetryConfig, telemetryConfigK8s, type TelemetryConfigVolume } from './telemetry-config.js';
 
 /**
@@ -166,6 +167,9 @@ export function doNotDisruptField(config: DriverConfig): { annotations?: Record<
 export interface PodSecurityContext {
     runAsUser?: number;
     runAsGroup?: number;
+    /** The group a fresh task volume's root is made writable for (issue #775). */
+    fsGroup?: number;
+    fsGroupChangePolicy?: 'OnRootMismatch';
     seccompProfile?: { type: 'RuntimeDefault' };
 }
 
@@ -281,21 +285,17 @@ export const mailboxMount = (box: Mailbox, access: 'ro' | 'rw'): RunnerMount => 
 });
 
 /**
- * The runner's volumes: the member's own subtree of the workspaces claim (`path`, asserted by the
- * caller), and its telemetry config read-only from the attempt Secret `secretName` (issue #452).
+ * The runner's volumes: the thread's task volume at its fixed mount (issue #775), and its telemetry
+ * config read-only from the attempt Secret `secretName` (issue #452).
  */
 export function runnerVolumesField(
     config: DriverConfig,
-    executorType: ExecutorType | null,
-    path: string,
+    job: BoardJob,
     secretName: string
 ): { mounts: RunnerMount[]; volumes: RunnerVolume[] } {
-    const telemetry = telemetryConfigK8s(telemetryConfig(executorType, config.otelEndpoint), secretName);
+    const telemetry = telemetryConfigK8s(telemetryConfig(job.executorType, config.otelEndpoint), secretName);
     return {
-        mounts: [{ name: 'workspaces', mountPath: `${config.workspaceMount}/${path}`, subPath: path }, telemetry.mount],
-        volumes: [
-            { name: 'workspaces', persistentVolumeClaim: { claimName: config.workspaceVolume } },
-            telemetry.volume,
-        ],
+        mounts: [{ name: TASK_VOLUME, mountPath: TASK_MOUNT }, telemetry.mount],
+        volumes: [taskPodVolume(job), telemetry.volume],
     };
 }

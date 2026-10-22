@@ -4,6 +4,7 @@ import type { ChildProcess, spawn } from 'node:child_process';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { createDockerRunner } from '../src/docker-runner.js';
+import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import { startDeadline } from '../src/run-deadline.js';
 import type { StepSink } from '../src/step-control.js';
 import { SUPERVISOR_ENV, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
@@ -120,7 +121,7 @@ describe('the docker runner kill timer', () => {
         const runner = createDockerRunner(
             loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: String(10 * SECOND) }),
             spawned as unknown as typeof spawn,
-            exec,
+            withTaskVolume(exec),
             // No real file I/O: fake timers cannot advance a write that is waiting on the disk.
             { files: { writeFile: async () => undefined, rm: async () => undefined }, steps: supervisorSteps }
         );
@@ -164,7 +165,7 @@ describe('the docker runner kill timer', () => {
         const runner = createDockerRunner(
             loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: String(10 * SECOND) }),
             spawned as unknown as typeof spawn,
-            exec,
+            withTaskVolume(exec),
             { files: { writeFile: async () => undefined, rm: async () => undefined }, steps: supervisorSteps }
         );
         const killed = () => calls.some((args) => args[0] === 'kill');
@@ -198,7 +199,7 @@ describe('the docker runner kill timer', () => {
             const runner = createDockerRunner(
                 loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: String(10 * SECOND), ...env }),
                 spawned as unknown as typeof spawn,
-                exec,
+                withTaskVolume(exec),
                 { files: { writeFile: async () => undefined, rm: async () => undefined }, steps: supervisorSteps }
             );
             const pending = runner.run(of, of.executorType === 'opencode' ? null : { id: SESSION, resume: false });

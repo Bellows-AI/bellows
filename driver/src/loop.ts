@@ -2,13 +2,12 @@ import type { Board, BoardJob, LeaseState, Reclaim } from './board.js';
 import type { DriverConfig } from './config.js';
 import { repoCacheProblem, workspacePathOf } from './claim.js';
 import type { Runner } from './runner.js';
-import { worktreeRelDir } from './publish.js';
+import { checkoutKey } from './publish.js';
 import type { GateStack, LiveAttempt, LoopRuntime } from './loop-types.js';
 import { runJob } from './loop-run.js';
 import { processReclaim, processVerdictReclaim } from './loop-reclaim.js';
 import { CLAUDE_CODE } from './executors.js';
 import { withBoardRetry } from './board-retry.js';
-import { type SyncQueue, syncQueue } from './sync-queue.js';
 import { down, type JobState } from './loop-attempt.js';
 import { recordEnding } from './loop-phase.js';
 
@@ -36,10 +35,6 @@ export interface LoopDeps {
     sleep?: (ms: number) => Promise<void>;
     /** Test seam for the draining grace (`STOP_GRACE_MS`); production never sets it. */
     stopGraceMs?: number;
-    /** Orders startup syncs of one clone; the in-process `syncQueue()` when absent (issue #559). */
-    syncs?: SyncQueue;
-    /** Test seam for the sync-queue wait (`SYNC_QUEUE_WAIT_MS`); production never sets it. */
-    syncWaitMs?: number;
 }
 
 /**
@@ -94,7 +89,7 @@ function claimRefusal(job: BoardJob): { log: string; output: string; config?: tr
      * in a fallback location. The board's own shape validation is not this
      * process's to trust.
      */
-    if (job.repo && !worktreeRelDir(job)) {
+    if (job.repo && !checkoutKey(job)) {
         return {
             log: 'no resolvable task worktree for its repo label, failing',
             output: `This job names repository ${job.repo}, but its workspace and thread do not resolve to a task worktree directory this driver can run it in.`,
@@ -198,15 +193,13 @@ export function createLoop({
     log = () => {},
     sleep = wait,
     stopGraceMs,
-    syncs = syncQueue(),
-    syncWaitMs,
 }: LoopDeps): Loop {
     let running = true;
     const active = new Set<Promise<void>>();
 
     /*
      * In-flight worktree reclaims, keyed by the thread's ROOT id (`rootJobId ?? id`, the same
-     * reading worktreeRelDir uses — the key the task worktree itself is filed under). report()
+     * reading checkoutKey uses — the key the task worktree itself is filed under). report()
      * registers the reclaim here before it starts and drops the entry when it settles; the
      * attempt waits on its root's entry before its startup sync (runJob, issue #126 moved the
      * wait in from the claim loop), so a follow-up claimed while the
@@ -245,11 +238,9 @@ export function createLoop({
         log,
         sleep,
         reclaims,
-        syncs,
         report,
         ...(gates ? { gates } : {}),
         ...(stopGraceMs === undefined ? {} : { stopGraceMs }),
-        ...(syncWaitMs === undefined ? {} : { syncWaitMs }),
     };
     const handoff = handoverOf(rt);
 
@@ -319,7 +310,6 @@ export function createLoop({
                 log,
                 sleep,
                 failureLog: reclaimFailureLog,
-                inFlightReclaim: (root) => reclaims.has(root),
             },
             reclaim
         );

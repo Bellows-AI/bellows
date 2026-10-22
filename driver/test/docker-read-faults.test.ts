@@ -22,6 +22,7 @@ import { createDockerRunner } from '../src/docker-runner.js';
 import { createReaper } from '../src/reaper.js';
 import { commandMark } from '../src/runner.js';
 import { forgetDeclaredServices, recordDeclaredServices } from '../src/services.js';
+import { TASK_ROOT_LABEL } from '../src/task-volume.js';
 import { type DockerSpecial, routedDocker } from './fixtures/docker-daemon.js';
 import {
     type Alias,
@@ -36,6 +37,8 @@ import {
     quietSteps,
     replayDocker,
 } from './fixtures/read-faults.js';
+
+const BOARD = 'b0a4d00000000001';
 
 /** Names `pair`'s job and lease by role; every docker name of an attempt spells the two out. */
 const aliasPair = (alias: Alias, pair: BoardJob, label: string): void => {
@@ -176,6 +179,10 @@ const adoptExited: Build<ExecDocker> = async (tap, alias) => {
                         : fencePs
                 );
             if (is(args, 'volume', 'ls')) return ok(fenceVolumes);
+            // The thread's task volume the close-time read mounts is there, labelled for its root.
+            if (is(args, 'volume', 'inspect') && args.at(-1)?.startsWith('factory-task-')) {
+                return ok(`${JSON.stringify({ [TASK_ROOT_LABEL]: prior.id })}\n`);
+            }
             // No kill marker recorded: the daemon's own refusal for a volume that does not exist.
             if (is(args, 'volume', 'inspect')) {
                 return Object.assign(new Error('docker volume inspect exited 1'), {
@@ -237,8 +244,8 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
 
 const reaperOver = (exec: ExecDocker, leases: Parameters<typeof createReaper>[0]['board']['leases'], graceMs: number) =>
     createReaper({
-        board: { leases, reclaimHolds: async () => new Set<string>() },
-        arm: createDockerReaper(exec),
+        board: { leases },
+        arm: createDockerReaper(exec, BOARD),
         intervalMs: 0,
         graceMs,
         log: () => undefined,

@@ -362,6 +362,15 @@ describe('asking the board for the orphan reaper lease lookups', () => {
         expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
     });
 
+    it('asks for thread facts with threads: true, and only when told to', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
+        const board = boardOn(fetch);
+
+        await board.leases([ID_A], true);
+
+        expect(calls[0]!.body).toEqual({ ids: [ID_A], threads: true });
+    });
+
     it('omits the bearer header against an open board, like every other call', async () => {
         const { calls, fetch } = recorder(() => Response.json({ jobs: [] }, { status: 200 }));
         const board = boardOn(fetch);
@@ -402,42 +411,44 @@ describe('asking the board for the orphan reaper lease lookups', () => {
         // and a malformed row must not be silently converted into it.
         expect(await board.leases([ID_A])).toBeNull();
     });
-});
 
-describe('asking the board which reclaim acquisitions it still holds', () => {
-    // Issue #829: the reaper spares a reclaim group whose acquisition token the board still holds.
-    // Null — refused, failed or malformed — is "cannot answer"; the reaper reaps nothing on it.
-    const TOKEN_A = '22222222-2222-4222-8222-222222222222';
-    const TOKEN_B = '33333333-3333-4333-8333-333333333333';
+    describe('the thread facts of a root row (issue #775)', () => {
+        const THREAD = {
+            live: false,
+            lastFinalizedAt: '2026-10-01T00:00:00.000Z',
+            artifactsComplete: true,
+            checkpoint: 'complete',
+            checkpointFinalizedAt: '2026-10-01T00:00:00.000Z',
+        };
+        const answerWith = (thread: unknown) =>
+            boardOn(
+                recorder(() => Response.json({ jobs: [{ id: ID_A, status: 'succeeded', leaseToken: null, thread }] }))
+                    .fetch
+            ).leases([ID_A]);
 
-    it('posts the tokens to the holds route and carries the held set', async () => {
-        const { calls, fetch } = recorder(() => Response.json({ held: [TOKEN_A] }, { status: 200 }));
-
-        expect(await boardOn(fetch, 'fwt_abc').reclaimHolds([TOKEN_A, TOKEN_B])).toEqual(new Set([TOKEN_A]));
-        expect(calls[0]!.url).toBe('http://board/api/reclaims/holds');
-        expect(calls[0]!.body).toEqual({ tokens: [TOKEN_A, TOKEN_B] });
-        expect(calls[0]!.headers.authorization).toBe('Bearer fwt_abc');
-    });
-
-    it('answers an empty set when the board positively holds nothing', async () => {
-        const { fetch } = recorder(() => Response.json({ held: [] }, { status: 200 }));
-        expect(await boardOn(fetch).reclaimHolds([TOKEN_A])).toEqual(new Set());
-    });
-
-    it('answers null when the board refuses, fails or answers a body without held', async () => {
-        const refused = recorder(() => Response.json({ error: 'boom' }, { status: 503 }));
-        expect(await boardOn(refused.fetch).reclaimHolds([TOKEN_A])).toBeNull();
-        const broken = recorder(() => {
-            throw new Error('board unreachable');
+        it('carries a well-formed thread beside the lease, and a null time as null', async () => {
+            expect(await answerWith(THREAD)).toEqual([
+                { id: ID_A, status: 'succeeded', leaseToken: null, thread: THREAD },
+            ]);
+            const open = { ...THREAD, lastFinalizedAt: null, checkpoint: 'none', checkpointFinalizedAt: null };
+            expect(await answerWith(open)).toEqual([{ id: ID_A, status: 'succeeded', leaseToken: null, thread: open }]);
         });
-        expect(await boardOn(broken.fetch).reclaimHolds([TOKEN_A])).toBeNull();
-        const bare = recorder(() => Response.json({}, { status: 200 }));
-        expect(await boardOn(bare.fetch).reclaimHolds([TOKEN_A])).toBeNull();
-    });
 
-    it('answers null when ANY entry is unreadable', async () => {
-        const { fetch } = recorder(() => Response.json({ held: [TOKEN_A, 'nope', 7] }, { status: 200 }));
-        expect(await boardOn(fetch).reclaimHolds([TOKEN_A])).toBeNull();
+        it.each([
+            ['a thread that is null', null],
+            ['a thread that is a string', 'complete'],
+            ['a missing live', { ...THREAD, live: undefined }],
+            ['a live that is no boolean', { ...THREAD, live: 'no' }],
+            ['a missing artifactsComplete', { ...THREAD, artifactsComplete: undefined }],
+            ['an unknown checkpoint', { ...THREAD, checkpoint: 'partial' }],
+            ['a missing checkpoint', { ...THREAD, checkpoint: undefined }],
+            ['a lastFinalizedAt that is no date', { ...THREAD, lastFinalizedAt: 'soon' }],
+            ['a missing lastFinalizedAt', { ...THREAD, lastFinalizedAt: undefined }],
+            ['a checkpointFinalizedAt that is a number', { ...THREAD, checkpointFinalizedAt: 5 }],
+            ['a missing checkpointFinalizedAt', { ...THREAD, checkpointFinalizedAt: undefined }],
+        ])('answers null — the whole round aborts — on %s', async (_name, thread) => {
+            expect(await answerWith(thread)).toBeNull();
+        });
     });
 });
 

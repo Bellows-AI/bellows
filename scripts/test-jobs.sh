@@ -67,7 +67,13 @@ IMAGE_RUN="factory-jobs-$RUN_ID-run"
 IMAGE_REVIEW="factory-jobs-$RUN_ID-review"
 IMAGE_GH="factory-jobs-$RUN_ID-github"
 IMAGE_KILL="factory-jobs-$RUN_ID-kill"
-VOLUME="factory-jobs-$RUN_ID-workspaces"
+# The smoke origin (issue #775): a bare repository on a named volume, served by a git daemon on a
+# network the runners join (RUNNER_NETWORK), because a runner clones its task's checkout onto its
+# own task volume and mounts nothing else. REPO_CLONE_BASE names the daemon.
+ORIGIN_VOLUME="factory-jobs-$RUN_ID-origins"
+ORIGIN_NAME="factory-jobs-$RUN_ID-origin"
+NETWORK="factory-jobs-$RUN_ID-net"
+CLONE_BASE="git://$ORIGIN_NAME:9418"
 COMPOSE_DRIVER="factory-jobs-$RUN_ID-compose-driver"
 # The compose phase pins its own project name, so the volumes and network its `run` creates can be
 # torn down by name without touching the stack services the script itself started (postgres).
@@ -208,12 +214,21 @@ cleanup() {
         docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
         # The compose phase's own project: its volumes and network, not the stack's postgres.
         compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
+        # The task volumes the driver created for this run's threads, by the roots in its database.
+        for root in $(compose exec -T postgres psql -U factory -d "$DB" -qtA \
+            -c 'select distinct coalesce(root_job_id, id) from job' 2>/dev/null); do
+            for volume in $(docker volume ls -q --filter "label=factory.task-root=$root" 2>/dev/null); do
+                docker volume rm "$volume" >/dev/null 2>&1
+            done
+        done
         # Only ever drops a database this run created, and only one named *_test.
         if [ -n "$db_created" ]; then
             compose exec -T postgres psql -U factory -d postgres \
                 -c "drop database if exists $DB" >/dev/null 2>&1
         fi
-        docker volume rm "$VOLUME" >/dev/null 2>&1
+        docker rm -f "$ORIGIN_NAME" >/dev/null 2>&1
+        docker network rm "$NETWORK" >/dev/null 2>&1
+        docker volume rm "$ORIGIN_VOLUME" >/dev/null 2>&1
         docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE" >/dev/null 2>&1
     fi
     # Which attempts held a slot past LANE_SLOW_S, and which never ended (issue #829); a report, never a verdict.
@@ -362,7 +377,7 @@ start_driver() { # start_driver <image> [RUNNER_SERVICES] [DRIVER_CONCURRENCY]
     # what each phase asserts stays independent of the default.
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$1" OPENCODE_EXECUTOR_IMAGE="$1" \
         RUNNER_SERVICES="${2:-0}" \
-        WORKSPACE_VOLUME="$VOLUME" \
+        REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY="${3:-2}" DRIVER_LEASE_SECONDS=60 \
         DRIVER_HANDOVER_MS="${LANE_HANDOVER_MS:-5000}" DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
@@ -375,18 +390,18 @@ stop_driver() {
     driver_pid=""
 }
 
-# The file has to be on the origin's default branch: every task's startup sync fetches it and
-# branches the task worktree from it, and the readout reads that worktree. There is no host path
+# The file has to be on the origin's default branch: every task clones it onto its task volume and
+# the readout reads that tree. There is no host path
 # into a named volume, so a container commits it. A failed write fails the run here, not later as a
 # misleading job verdict.
 write_bellows() { # write_bellows <contents>
-    docker run --rm -i -v "$VOLUME:/workspaces" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+    docker run --rm -i -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
         set -e
         git clone -q "$1" /tmp/tree
         cat >/tmp/tree/.bellows.yaml
         git -C /tmp/tree add .bellows.yaml
         git -C /tmp/tree -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m bellows
-        git -C /tmp/tree push -q origin HEAD:main' sh "/workspaces/$member_path/.smoke-origin.git" \
+        git -C /tmp/tree push -q origin HEAD:main' sh "/origins/$SMOKE_REPO.git" \
         <<<"$1" >/dev/null || {
         echo 'test-jobs: could not commit the .bellows.yaml fixture'
         exit 1
@@ -395,8 +410,8 @@ write_bellows() { # write_bellows <contents>
     # workspace root (server/src/github/local-origin-plan.ts), so the origin is copied out of the volume.
     local mirror="$work/workspaces/.origins/$SMOKE_REPO.git"
     rm -rf "$mirror" && mkdir -p "$mirror" &&
-        docker run --rm -v "$VOLUME:/workspaces" "$IMAGE_BASE" \
-            tar -C "/workspaces/$member_path/.smoke-origin.git" -cf - . | tar -C "$mirror" -xf - || {
+        docker run --rm -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
+            tar -C "/origins/$SMOKE_REPO.git" -cf - . | tar -C "$mirror" -xf - || {
         echo 'test-jobs: could not mirror the origin for the board'
         exit 1
     }
@@ -404,7 +419,7 @@ write_bellows() { # write_bellows <contents>
 # The recovery helpers the node-disruption and driver-kill phases share (issues #796, #829).
 disruption_driver() { # disruption_driver [VAR=value ...] — a services-off driver on the prompt-executing stub
     env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
-        RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" \
+        RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
         DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS="$LANE_LEASE_S" \
         DRIVER_REBIND_GRACE_MS="${LANE_REBIND_GRACE_MS:-20000}" "$@" \
         node driver/dist/index.js >>"$work/driver.log" 2>&1 &
@@ -808,10 +823,10 @@ compose exec -T postgres psql -U factory -d "$DB" -c 'truncate job, workflow cas
 
 # A task runs against a checkout (issue #263, 372f5630): POST /api/jobs refuses a create whose repo
 # is not the author's own ready selection. With no GitHub there is nothing to clone, so the fixture
-# is what a finished clone leaves — the ready user_repo row and, in the driver volume, the clone —
-# with its origin a bare repository beside it, so every startup sync fetches and branches its task
-# worktree with no network. The author is AUTH_MODE=none's stand-in, read from /api/auth/me; the
-# board names its tree `<org>/<user id>` on every claim (asserted below).
+# is the ready user_repo row plus an origin the runner clones from (issue #775): a bare repository
+# served by a git daemon on the runners' network, so every task clones onto its own task volume
+# with no GitHub. The author is AUTH_MODE=none's stand-in, read from /api/auth/me; the board names
+# its tree `<org>/<user id>` on every claim (asserted below).
 member="$(body "$(api GET /api/auth/me)")"
 member_org="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).organization.id); } catch {}' "$member")"
 member_user="$(node -e 'try { process.stdout.write(JSON.parse(process.argv[1]).user.id); } catch {}' "$member")"
@@ -831,22 +846,23 @@ compose exec -T postgres psql -U factory -d "$DB" -v ON_ERROR_STOP=1 -c \
     echo "test-jobs: could not select $SMOKE_REPO for the stand-in member"
     exit 1
 }
-# Production provisioning creates this subtree in the same volume the driver mounts. The harness's
-# board uses a host tempdir while the driver uses a named volume, so bridge that boundary explicitly;
-# volume-subpath refuses a missing target instead of silently mounting a broader parent. Owned by
-# uid 1000, the user every runner, sync and gate container writes the tree as.
-docker volume create "$VOLUME" >/dev/null &&
-    docker run --rm -v "$VOLUME:/workspaces" alpine:3 \
-        sh -c "mkdir -p '/workspaces/$member_path' && chown 1000:1000 '/workspaces/$member_path'" &&
-    docker run --rm -v "$VOLUME:/workspaces" -w "/workspaces/$member_path" -e HOME=/tmp "$IMAGE_BASE" sh -c '
+# The origin: the bare repository `<owner>/<name>.git` on the origin volume, one commit on main, and
+# a git daemon on the runners' network that serves it and takes pushes (a publish pushes back to it).
+# Uid 1000 owns the repository, as the user every runner and gate container writes as.
+docker volume create "$ORIGIN_VOLUME" >/dev/null &&
+    docker network create "$NETWORK" >/dev/null &&
+    docker run --rm -u 0 -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" sh -c \
+        "mkdir -p /origins/${SMOKE_REPO%%/*} && chown 1000:1000 /origins /origins/${SMOKE_REPO%%/*}" &&
+    docker run --rm -v "$ORIGIN_VOLUME:/origins" -e HOME=/tmp "$IMAGE_BASE" sh -c '
         set -e
-        rm -rf .smoke-origin.git "$1" .worktrees /tmp/seed
-        git init -q --bare -b main .smoke-origin.git
+        git init -q --bare -b main "/origins/$1.git"
         git init -q -b main /tmp/seed
         git -C /tmp/seed -c user.name=test-jobs -c user.email=test-jobs@localhost commit -q --allow-empty -m init
-        git -C /tmp/seed push -q "$PWD/.smoke-origin.git" main
-        git clone -q "$PWD/.smoke-origin.git" "$1"' sh "${SMOKE_REPO#*/}" || {
-    echo 'test-jobs: could not provision the member workspace in the driver volume'
+        git -C /tmp/seed push -q "/origins/$1.git" main' sh "$SMOKE_REPO" &&
+    docker run -d --name "$ORIGIN_NAME" --network "$NETWORK" -v "$ORIGIN_VOLUME:/origins" "$IMAGE_BASE" \
+        git daemon --reuseaddr --base-path=/origins --export-all --enable=receive-pack \
+        --listen=0.0.0.0 --port=9418 /origins >/dev/null || {
+    echo 'test-jobs: could not serve the smoke origin'
     exit 1
 }
 
@@ -1170,7 +1186,7 @@ docker build -q -t "$IMAGE_GH" "$work/github" >/dev/null || {
 
 env JOB_BOARD_URL="$BASE" RUNNER_STATS_URL="http://host.docker.internal:$MINT_PORT" \
     CLAUDE_EXECUTOR_IMAGE="$IMAGE_GH" OPENCODE_EXECUTOR_IMAGE="$IMAGE_GH" \
-    RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" \
+    RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
     DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
     node driver/dist/index.js >>"$work/driver.log" 2>&1 &
 driver_pid=$!
@@ -1346,7 +1362,7 @@ write_bellows "services:
 # A 10s lease keeps the expired-lease wait short; the reaper driver after the kill gets a fast
 # cadence and a grace the fleet has long outlived.
 env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
-    RUNNER_SERVICES=1 WORKSPACE_VOLUME="$VOLUME" \
+    RUNNER_SERVICES=1 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
     DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=10 \
     node driver/dist/index.js >>"$work/driver.log" 2>&1 &
 driver_pid=$!
@@ -1399,7 +1415,7 @@ fi
 # The reaper, at a fast cadence: first sweep fires at startup, the fleet is minutes old by now,
 # so one round is all it takes.
 env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_OK" OPENCODE_EXECUTOR_IMAGE="$IMAGE_OK" \
-    RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" \
+    RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" \
     DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
     DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000 \
     node driver/dist/index.js >>"$work/driver.log" 2>&1 &
@@ -1906,7 +1922,7 @@ echo '# run deadline'
 
 DEADLINE_MS=20000
 env JOB_BOARD_URL="$BASE" CLAUDE_EXECUTOR_IMAGE="$IMAGE_RUN" OPENCODE_EXECUTOR_IMAGE="$IMAGE_RUN" \
-    RUNNER_SERVICES=0 WORKSPACE_VOLUME="$VOLUME" DRIVER_JOB_TIMEOUT_MS="$DEADLINE_MS" \
+    RUNNER_SERVICES=0 REPO_CLONE_BASE="$CLONE_BASE" RUNNER_NETWORK="$NETWORK" DRIVER_JOB_TIMEOUT_MS="$DEADLINE_MS" \
     DRIVER_POLL_MS=500 DRIVER_CONCURRENCY=2 DRIVER_LEASE_SECONDS=60 \
     node driver/dist/index.js >>"$work/driver.log" 2>&1 &
 driver_pid=$!
@@ -2019,17 +2035,6 @@ write_bellows 'reviewers:
   - name: audit
     instructions: "Audit the tree. STUB-REVIEW-HOLD-20"
     timeout: 5'
-# The reviewer's home on the member's tree (REVIEWER_TREE_DIR). A deployment's dashboard makes it on
-# the shared volume (provision.ts, the claim handler); this lane's board keeps its workspaces on the
-# host, so the volume gets it here, group-writable for the reviewer's gid (GATE_GID, 1000) — the
-# parent too, as ensureReviewerHome makes both: a root-owned .factory left every later claude run
-# unable to make its .factory/transcripts directory, dying before it wrote agent.exit.
-docker run --rm -u 0 -v "$VOLUME:/workspaces" "$IMAGE_BASE" sh -c \
-    'd="/workspaces/$1/.factory" && mkdir -p "$d/reviewer" && chgrp 1000 "$d" "$d/reviewer" && chmod 2775 "$d" "$d/reviewer"' \
-    sh "$member_path" || {
-    echo 'test-jobs: could not make the reviewer home'
-    exit 1
-}
 start_driver "$IMAGE_REVIEW" 0 1
 
 jobs_seen() { docker ps -a --filter 'label=factory.job' --format '{{.ID}} {{.Label "factory.job"}} {{.Label "factory.role"}}'; }
@@ -2272,7 +2277,7 @@ compose -p "$COMPOSE_PROJECT" run --rm --use-aliases --name "$COMPOSE_DRIVER" --
     -e JOB_BOARD_URL="http://host.docker.internal:$PORT" \
     -e CLAUDE_EXECUTOR_IMAGE="$IMAGE_OK" \
     -e OPENCODE_EXECUTOR_IMAGE="$IMAGE_OK" \
-    -e WORKSPACE_VOLUME="$VOLUME" \
+    -e REPO_CLONE_BASE="$CLONE_BASE" \
     -e RUNNER_NETWORK="${COMPOSE_PROJECT}_default" \
     -e RUNNER_SERVICES=0 \
     -e JOB_BOARD_TOKEN= \
@@ -2302,12 +2307,19 @@ else
     bad 'the compose driver runs the checkout source' "$(tail -3 "$work/compose-driver.log")"
 fi
 
-compose_job="$(create_job '/fix 987 compose driver lifecycle check')"
-expect_contains 'the compose driver runs its job' "$(await_settled "$compose_job" 180)" succeeded
-ran="$(body "$(api GET "/api/jobs/$compose_job")")"
-expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
+# The runners of this phase join the project network, so the origin joins it too (its name resolves there).
+if docker network connect "${COMPOSE_PROJECT}_default" "$ORIGIN_NAME" >/dev/null 2>&1; then
+    compose_job="$(create_job '/fix 987 compose driver lifecycle check')"
+    expect_contains 'the compose driver runs its job' "$(await_settled "$compose_job" 180)" succeeded
+    ran="$(body "$(api GET "/api/jobs/$compose_job")")"
+    expect_contains 'the compose driver names itself' "$(field "$ran" claimedBy)" 'driver-'
+else
+    # Without the origin on the network the job could only wait out its whole settle deadline.
+    bad 'the smoke origin joins the compose network' "$(tail -3 "$work/compose-driver.log")"
+fi
 
 docker rm -f "$COMPOSE_DRIVER" >/dev/null 2>&1
+docker network disconnect "${COMPOSE_PROJECT}_default" "$ORIGIN_NAME" >/dev/null 2>&1
 compose -p "$COMPOSE_PROJECT" down --volumes --remove-orphans >/dev/null 2>&1
 wait "$compose_pid" 2>/dev/null
 compose_pid=""

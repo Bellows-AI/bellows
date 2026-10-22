@@ -191,16 +191,12 @@ services:
             # (AUTH_MODE=none) it stays empty and the header is omitted entirely rather than
             # sent blank.
             JOB_BOARD_TOKEN: ${JOB_BOARD_TOKEN:-}
-            # No ORG_ID. It only ever built the runner's WORKDIR as /workspaces/<org>, and the board
-            # sends `workspacePath` on the claim now: checkouts are per member, so only the board —
-            # which created the directory — knows where a given job's tree is.
+            # No ORG_ID and no workspace volume: each thread's checkout is cloned onto its own
+            # task volume (`factory-task-<root>-<n>`), which the driver creates through the daemon.
             # Image locations are deployment details; the task's executor selection chooses which
             # CLI/image pair runs. See docs/jobs.md.
             CLAUDE_EXECUTOR_IMAGE: ${CLAUDE_EXECUTOR_IMAGE:-claude-executor}
             OPENCODE_EXECUTOR_IMAGE: ${OPENCODE_EXECUTOR_IMAGE:-opencode-executor}
-            # A volume name as the daemon knows it, hence the compose project prefix. Override if
-            # the project directory is not `factory-ai`.
-            WORKSPACE_VOLUME: ${WORKSPACE_VOLUME:-factory-ai_workspaces}
             # Puts the runner on this compose network, which is the only place `collector` resolves.
             # Without it the agent still works and its telemetry silently goes nowhere.
             RUNNER_NETWORK: ${RUNNER_NETWORK:-factory-ai_default}
@@ -227,6 +223,10 @@ services:
             # raced by the attempt's own teardown.
             DRIVER_REAP_INTERVAL_MS: ${DRIVER_REAP_INTERVAL_MS:-300000}
             DRIVER_REAP_GRACE_MS: ${DRIVER_REAP_GRACE_MS:-600000}
+            # How long the reaper keeps a thread's task volume after its last attempt finalized
+            # (issue #775): the ttl when its checkpoint and artifacts are whole, the bound when not.
+            TASK_VOLUME_TTL_MS: ${TASK_VOLUME_TTL_MS:-86400000}
+            TASK_VOLUME_BOUND_MS: ${TASK_VOLUME_BOUND_MS:-604800000}
             # A stopping driver hands its runs over before docker's ten-second SIGKILL (issue
             # #792): the leases go back as interruptions, the runner containers keep running.
             DRIVER_HANDOVER_MS: ${DRIVER_HANDOVER_MS:-5000}

@@ -110,10 +110,6 @@ async function land(ctx: AttemptCtx, decision: EndDecision, after: Promise<void>
             return null;
         case 'interrupt':
             return interrupt(ctx, decision, after);
-        case 'requeue':
-            rt.log(`job ${job.id}: ${decision.log}`);
-            await requeue(ctx);
-            return null;
         case 'leave':
             rt.log(`job ${job.id}: ${decision.log}`);
             // Past its launch the runner is the next claim's to adopt, never to finish.
@@ -280,19 +276,4 @@ async function interrupt(
     if (answer === null) state.keepGroup = true;
     const why = answer === 'exhausted' ? `${reason}, and the interruption budget is spent` : reason;
     return land(ctx, leaveDecision(job, why, exitCode), after);
-}
-
-/**
- * Hands the pre-run claim back. A refused requeue (a lost lease, a stop that won the race) leaves the
- * board's answer standing; retried like a verdict, and one that still fails leaves the job to its
- * lease with its runner standing.
- */
-async function requeue(ctx: AttemptCtx): Promise<void> {
-    const { rt, job, state } = ctx;
-    await withBoardRetry(rt, `job ${job.id}: the requeue was not accepted`, () => rt.board.requeue(job)).catch(
-        (e: Error) => {
-            rt.log(`job ${job.id}: could not requeue: ${e.message}`);
-            state.keepGroup = true;
-        }
-    );
 }

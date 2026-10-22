@@ -34,13 +34,19 @@ export interface DriverConfig {
     /** Deployment image for each task-selected executor type. CLI choice comes from the claim. */
     executorImages: Readonly<Record<ExecutorType, string>>;
     /**
-     * The docker volume holding the checkouts — a NAME, not a host path. The dashboard writes them
-     * into a named volume precisely so no host directory is involved, and a runner spawned from
-     * inside a container could not resolve a host path anyway.
+     * The task volume a new thread gets (issue #775): kubernetes only, since docker volumes take
+     * no class, mode or size. `storageClass` null is the cluster default.
      */
-    workspaceVolume: string;
-    /** Where that volume is mounted inside the runner. */
-    workspaceMount: string;
+    taskVolume: { storageClass: string | null; accessMode: string; size: string };
+    /**
+     * How long a thread's task volume outlives its last finalize (issue #775): `taskVolumeTtlMs` when
+     * everything the thread left is whole, `taskVolumeBoundMs` (the longer) when a checkpoint is
+     * truncated or an artifact is still pending. The reaper alone deletes it.
+     */
+    taskVolumeTtlMs: number;
+    taskVolumeBoundMs: number;
+    /** Where a task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`. */
+    cloneBase: string;
     /**
      * Where a runner's telemetry is pointed, as `OTEL_EXPORTER_OTLP_ENDPOINT`. Defaults to
      * `http://collector:4318` when `RUNNER_OTEL_ENDPOINT` is not set, so the endpoint is always
@@ -162,7 +168,7 @@ export interface DriverConfig {
     gateTimeoutMs: number;
     /**
      * Honors `.bellows.yaml` in the author's checkouts: before a run, the driver reads the file
-     * (through a throwaway container over the workspaces volume — it has no host path), starts
+     * (through a throwaway container over the task volume — it has no host path), starts
      * each declared service as a sibling container on a per-job network, and joins the runner to
      * it, so `redis://cache:6379` resolves for the duration of one job. On by default;
      * `RUNNER_SERVICES=0` is the opt-out — see docs/jobs.md.
@@ -180,7 +186,7 @@ export interface DriverConfig {
     cacheWatch: boolean;
     /**
      * How often the cache watch polls the session database. Each poll is one throwaway container
-     * over the workspaces volume, so the period keeps the same order as the poll interval —
+     * over the task volume, so the period keeps the same order as the poll interval —
      * frequent enough to catch a collapse minutes into the turns that reveal it, rare enough
      * that the daemon never notices.
      */
@@ -237,7 +243,7 @@ export interface DriverConfig {
      * (RUNNER_NODE_SELECTOR, a JSON object). The chart's own pods get theirs from the top-level
      * `nodeSelector` value; these are the runner node group's — the tainted, IMDS-hardened nodes
      * agent-written code is meant to land on and nothing else (issue #361). Null (unset) places
-     * pods wherever the workspaces claim can attach, as before. Docker has no twin: the daemon
+     * pods wherever the task volume claim can attach, as before. Docker has no twin: the daemon
      * decides placement, there is nothing to forward.
      */
     runnerNodeSelector: Record<string, string> | null;
@@ -270,6 +276,9 @@ export function executorImage(config: DriverConfig, executorType: ExecutorType |
 
 /** One hour in milliseconds — the unit most of the bounds below are expressed in. */
 const MS_PER_HOUR = 3_600_000;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
+const DAYS_PER_WEEK = 7;
+const DAYS_PER_YEAR = 365;
 /** Names the runner never takes from the driver's env: its GitHub token is the board's to mint and renew. */
 const RUNNER_ENV_REFUSED = ['GITHUB_TOKEN', 'GH_TOKEN'];
 
@@ -305,6 +314,12 @@ const MAX_CACHE_WATCH_POLL_MS = 300_000;
 const DEFAULT_REAP_INTERVAL_MS = 300_000;
 /** The default DRIVER_REAP_GRACE_MS: ten minutes, comfortably longer than an attempt's own teardown. */
 const DEFAULT_REAP_GRACE_MS = 600_000;
+/** The default TASK_VOLUME_TTL_MS: a day of idleness after a whole thread's last finalize. */
+const DEFAULT_TASK_VOLUME_TTL_MS = MS_PER_DAY;
+/** The default TASK_VOLUME_BOUND_MS: a week, the bound on keeping a thread whose checkpoint is not whole. */
+const DEFAULT_TASK_VOLUME_BOUND_MS = DAYS_PER_WEEK * MS_PER_DAY;
+/** The longest TASK_VOLUME_TTL_MS / TASK_VOLUME_BOUND_MS the driver accepts: a year. */
+const MAX_TASK_VOLUME_MS = DAYS_PER_YEAR * MS_PER_DAY;
 /** The default DRIVER_HANDOVER_MS: nine minutes, a minute under the chart's drain grace. */
 const DEFAULT_HANDOVER_MS = 540_000;
 
@@ -321,8 +336,9 @@ const DEFAULTS = {
     boardUrl: 'http://127.0.0.1:8080',
     claudeExecutorImage: 'claude-executor',
     opencodeExecutorImage: 'opencode-executor',
-    workspaceVolume: 'factory-ai_workspaces',
-    workspaceMount: '/workspaces',
+    taskVolumeAccessMode: 'ReadWriteOncePod',
+    taskVolumeSize: '20Gi',
+    cloneBase: 'https://github.com',
     concurrency: 2,
     pollMs: 5_000,
     leaseSeconds: 300,
@@ -651,8 +667,12 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             [CLAUDE_CODE]: text(env.CLAUDE_EXECUTOR_IMAGE, 'CLAUDE_EXECUTOR_IMAGE', DEFAULTS.claudeExecutorImage),
             [OPENCODE]: text(env.OPENCODE_EXECUTOR_IMAGE, 'OPENCODE_EXECUTOR_IMAGE', DEFAULTS.opencodeExecutorImage),
         },
-        workspaceVolume: text(env.WORKSPACE_VOLUME, 'WORKSPACE_VOLUME', DEFAULTS.workspaceVolume),
-        workspaceMount: text(env.WORKSPACE_MOUNT, 'WORKSPACE_MOUNT', DEFAULTS.workspaceMount),
+        taskVolume: {
+            storageClass: (env.TASK_VOLUME_STORAGE_CLASS ?? '').trim() || null,
+            accessMode: text(env.TASK_VOLUME_ACCESS_MODE, 'TASK_VOLUME_ACCESS_MODE', DEFAULTS.taskVolumeAccessMode),
+            size: text(env.TASK_VOLUME_SIZE, 'TASK_VOLUME_SIZE', DEFAULTS.taskVolumeSize),
+        },
+        cloneBase: text(env.REPO_CLONE_BASE, 'REPO_CLONE_BASE', DEFAULTS.cloneBase).replace(/\/+$/, ''),
         // Empty is unset, like every other optional value here: default to the collector on the
         // compose network, so the endpoint is always provided to the runner.
         otelEndpoint: (env.RUNNER_OTEL_ENDPOINT ?? '').trim() || DEFAULTS.otelEndpoint,
@@ -693,6 +713,14 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             DEFAULT_CACHE_WATCH_POLL_MS,
             { min: MIN_CACHE_WATCH_POLL_MS, max: MAX_CACHE_WATCH_POLL_MS }
         ),
+        taskVolumeTtlMs: int(env.TASK_VOLUME_TTL_MS, 'TASK_VOLUME_TTL_MS', DEFAULT_TASK_VOLUME_TTL_MS, {
+            min: 0,
+            max: MAX_TASK_VOLUME_MS,
+        }),
+        taskVolumeBoundMs: int(env.TASK_VOLUME_BOUND_MS, 'TASK_VOLUME_BOUND_MS', DEFAULT_TASK_VOLUME_BOUND_MS, {
+            min: 0,
+            max: MAX_TASK_VOLUME_MS,
+        }),
         reapIntervalMs: int(env.DRIVER_REAP_INTERVAL_MS, 'DRIVER_REAP_INTERVAL_MS', DEFAULT_REAP_INTERVAL_MS, {
             min: 0,
             max: 24 * MS_PER_HOUR,

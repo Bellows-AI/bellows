@@ -20,6 +20,51 @@ export type Special = (
     body: unknown
 ) => K8sResponse | Promise<K8sResponse> | undefined;
 
+/**
+ * The thread's task volume claims (issue #775), emulated the way the apiserver arbitrates them: a GET
+ * lists none until a POST stores the claim (a list is by the root label), and a second POST of the same name answers 409. Answers
+ * `undefined` for any path that is not a claim's, so a suite's own routes stay in charge of the rest.
+ */
+export function taskVolumeServer(namespace: string) {
+    const volumes = new Map<string, string>();
+    const volumesPath = `/api/v1/namespaces/${namespace}/persistentvolumeclaims`;
+    return (method: K8sMethod, path: string, body?: unknown): K8sResponse | undefined => {
+        if (path === volumesPath && method === 'POST') {
+            const name = (body as { metadata: { name: string } }).metadata.name;
+            if (volumes.has(name)) return { status: 409, body: '{"kind":"Status","reason":"AlreadyExists"}' };
+            volumes.set(name, JSON.stringify(body));
+            return { status: 201, body: volumes.get(name)! };
+        }
+        if (path.startsWith(`${volumesPath}?`) && method === 'GET') {
+            const selector = decodeURIComponent(
+                new URLSearchParams(path.slice(volumesPath.length + 1)).get('labelSelector') ?? ''
+            );
+            const [label, root] = selector.split('=');
+            const items = [...volumes.values()]
+                .map((stored) => JSON.parse(stored) as { metadata: { labels?: Record<string, string> } })
+                .filter((claim) => claim.metadata.labels?.[label ?? ''] === root);
+            return { status: 200, body: JSON.stringify({ items }) };
+        }
+        if (path.startsWith(`${volumesPath}/`) && method === 'PATCH') {
+            const name = path.slice(volumesPath.length + 1);
+            const stored = volumes.get(name);
+            if (!stored) return { status: 404, body: '{"kind":"Status","reason":"NotFound"}' };
+            const claim = JSON.parse(stored) as { metadata: { labels?: Record<string, string> } };
+            const patch = body as { metadata?: { labels?: Record<string, string> } };
+            claim.metadata.labels = { ...claim.metadata.labels, ...patch.metadata?.labels };
+            volumes.set(name, JSON.stringify(claim));
+            return { status: 200, body: volumes.get(name)! };
+        }
+        if (path.startsWith(`${volumesPath}/`) && method === 'DELETE') {
+            const name = path.slice(volumesPath.length + 1);
+            return volumes.delete(name)
+                ? { status: 200, body: '{}' }
+                : { status: 404, body: '{"kind":"Status","reason":"NotFound"}' };
+        }
+        return undefined;
+    };
+}
+
 /** One fake API server for `namespace`, serving the runner pod log under `podName`. */
 export function k8sApiserver({ namespace, podName }: { namespace: string; podName: string }) {
     const configmapsPath = `/api/v1/namespaces/${namespace}/configmaps`;
@@ -73,10 +118,13 @@ export function k8sApiserver({ namespace, podName }: { namespace: string; podNam
         const deletedJobs = new Set<string>();
         // A Job never created reads 404 too — what a derived name's teardown reads before it ends anything.
         const postedJobs = new Set<string>();
+        const serveVolumes = taskVolumeServer(namespace);
         const request: K8sRequest = (method, path, body) => {
             calls.push({ method, path, body });
             const claimAnswer = serve(method, path, body);
             if (claimAnswer) return Promise.resolve(claimAnswer);
+            const volumeAnswer = serveVolumes(method, path, body);
+            if (volumeAnswer) return Promise.resolve(volumeAnswer);
             if (path === jobsPath(namespace) && method === 'POST') {
                 const posted = (body as { metadata?: { name?: string } } | undefined)?.metadata?.name;
                 const answer = answers.create as K8sResponse;

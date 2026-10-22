@@ -47,7 +47,7 @@ describe('the executor branch reporter', () => {
     });
 
     // claude-home/ cannot hold it: the transcript redirect moves CLAUDE_CONFIG_DIR onto the
-    // workspaces volume, so a script baked into a config home is not a stable path.
+    // task volume, so a script baked into a config home is not a stable path.
     it('is copied to /usr/local/bin by both Dockerfiles, never into a config home', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
@@ -230,7 +230,7 @@ describe('the executor branch reporter', () => {
 
 /*
  * The transcript store redirect (issue #55): when the driver hands the headless run a
- * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the workspaces volume
+ * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the task volume
  * BEFORE the seed block — the settings.json-keyed seed then runs against the thread dir, so the
  * baked git guard and every baked setting ride along (the spec's "baked runner configuration
  * survives the redirect"). Pinned against drift like every baked script: the block's exact shape,
@@ -1097,7 +1097,7 @@ describe('the claude-executor managed settings', () => {
     // Issue #505: a headless run's permission prompt ends in a deny (claude-bridge.cjs), so the
     // routine commands it kept prompting on are allowed here — managed settings, because the
     // entrypoint lets a member's `permissions` key replace the baked settings.json's outright.
-    // /workspaces is only ever the member's own mounted subtree (docker.ts, k8s-podspec.ts).
+    // /task is only ever the thread's own task volume (docker.ts, k8s-podspec.ts).
     // Interpreters and env dumps (`python3 *`, `env`, `printenv`) stay with the auto-mode
     // classifier. Limit: sed's own `e`/`w` commands can run and write, and the git guard reads no
     // sed script — like any interpreter, sed is outside what the guardrail sees. npm installs are
@@ -1106,7 +1106,7 @@ describe('the claude-executor managed settings', () => {
     it('allow the routine commands a headless run cannot be asked about', () => {
         const settings = JSON.parse(read('docker/claude-executor/managed-settings.json'));
         expect(settings.permissions).toEqual({
-            additionalDirectories: ['/workspaces', '/tmp'],
+            additionalDirectories: ['/task', '/tmp'],
             allow: [
                 'Bash(sed -i *)',
                 'Bash(grep *)',

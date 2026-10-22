@@ -14,7 +14,7 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
     const fx = setupWorktreeFixture();
     const probed = (): string | null => {
         const out = execFileSync('node', ['-e', gitProbeScript], {
-            env: { ...process.env, REPO: fx.worktree() },
+            env: { ...process.env, REPO: fx.checkout() },
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'ignore'],
         });
@@ -24,12 +24,12 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
 
     // ---- unknown forever: an untracked path `hash-object --stdin-paths` cannot read ----------------
     it.each([
-        ['a dangling symlink', () => symlinkSync('/nonexistent/target', join(fx.worktree(), 'link'))],
+        ['a dangling symlink', () => symlinkSync('/nonexistent/target', join(fx.checkout(), 'link'))],
         [
             'a nested repository',
             () => {
-                mkdirSync(join(fx.worktree(), 'vendored'));
-                git(join(fx.worktree(), 'vendored'), 'init');
+                mkdirSync(join(fx.checkout(), 'vendored'));
+                git(join(fx.checkout(), 'vendored'), 'init');
             },
         ],
     ])('stays measurable with an untracked %s', (_what, make) => {
@@ -53,30 +53,30 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
         execFileSync(
             'git',
             [...GIT_FIXTURE_CONFIG, '-c', 'protocol.file.allow=always', 'submodule', 'add', subSrc, 'sub'],
-            { cwd: fx.worktree(), stdio: 'ignore' }
+            { cwd: fx.checkout(), stdio: 'ignore' }
         );
-        git(fx.worktree(), 'commit', '-m', 'add sub');
-        writeFileSync(join(fx.worktree(), 'sub', 'lib.txt'), 'agent edit one\n');
+        git(fx.checkout(), 'commit', '-m', 'add sub');
+        writeFileSync(join(fx.checkout(), 'sub', 'lib.txt'), 'agent edit one\n');
         const before = probed();
-        writeFileSync(join(fx.worktree(), 'sub', 'lib.txt'), 'agent edit two — the real fix\n');
+        writeFileSync(join(fx.checkout(), 'sub', 'lib.txt'), 'agent edit two — the real fix\n');
         // " m sub" / "Subproject commit X-dirty" stay identical: only the submodule's content moves.
         expect(probed()).not.toBe(before);
     });
 
     it('untracked names git C-quotes (a double quote, a tab)', () => {
         fx.sync();
-        writeFileSync(join(fx.worktree(), 'say "hi".txt'), 'x');
-        writeFileSync(join(fx.worktree(), 'a\tb.txt'), 'x');
+        writeFileSync(join(fx.checkout(), 'say "hi".txt'), 'x');
+        writeFileSync(join(fx.checkout(), 'a\tb.txt'), 'x');
         expect(probed()).toMatch(/^[0-9a-f]{40}:[0-9a-f]{64}$/);
     });
 
     it('moves on a mode-only change, and survives a stale index.lock', () => {
         fx.sync();
         const before = probed();
-        chmodSync(join(fx.worktree(), 'README.md'), 0o755);
+        chmodSync(join(fx.checkout(), 'README.md'), 0o755);
         const moded = probed();
         expect(moded).not.toBe(before);
-        const gitDir = git(fx.worktree(), 'rev-parse', '--git-dir');
+        const gitDir = git(fx.checkout(), 'rev-parse', '--absolute-git-dir');
         writeFileSync(join(gitDir, 'index.lock'), '');
         expect(probed()).toBe(moded);
     });
@@ -84,20 +84,20 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
     // ---- the evidence binding (issue #825): what moves the fingerprint is what a publish would ship -
     it('stays put when a git-ignored artifact is written after it, and moves on publishable content', () => {
         fx.sync();
-        writeFileSync(join(fx.worktree(), '.gitignore'), 'dist/\n');
-        git(fx.worktree(), 'add', '.gitignore');
-        git(fx.worktree(), 'commit', '-m', 'ignore dist');
+        writeFileSync(join(fx.checkout(), '.gitignore'), 'dist/\n');
+        git(fx.checkout(), 'add', '.gitignore');
+        git(fx.checkout(), 'commit', '-m', 'ignore dist');
         const before = probed();
 
-        mkdirSync(join(fx.worktree(), 'dist'));
-        writeFileSync(join(fx.worktree(), 'dist', 'out.js'), 'generated\n');
+        mkdirSync(join(fx.checkout(), 'dist'));
+        writeFileSync(join(fx.checkout(), 'dist', 'out.js'), 'generated\n');
         expect(probed()).toBe(before);
 
-        writeFileSync(join(fx.worktree(), 'NEW.md'), 'untracked, not ignored\n');
+        writeFileSync(join(fx.checkout(), 'NEW.md'), 'untracked, not ignored\n');
         const untracked = probed();
         expect(untracked).not.toBe(before);
 
-        writeFileSync(join(fx.worktree(), 'README.md'), '# edited\n');
+        writeFileSync(join(fx.checkout(), 'README.md'), '# edited\n');
         expect(probed()).not.toBe(untracked);
     });
 });

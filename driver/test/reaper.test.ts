@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardLease } from '../src/board.js';
+import type { BoardLease, BoardThreadFacts } from '../src/board.js';
 import { LEASE_BATCH_MAX } from '../src/board.js';
-import { createReaper, reapDecision, type OrphanGroup, type ReaperArm, type ReapVerdict } from '../src/reaper.js';
+import {
+    createReaper,
+    reapDecision,
+    volumeDecision,
+    type OrphanGroup,
+    type ReaperArm,
+    type ReapVerdict,
+    type VolumeThread,
+} from '../src/reaper.js';
 
 /**
  * The reaper's decision core, offline: the board is a stub answering from a map, the arm records
@@ -100,18 +108,11 @@ const recordingArm = (removed: string[] = ['pod svc-postgres']): { arm: ReaperAr
     };
 };
 
-const noHolds = async (): Promise<Set<string> | null> => new Set();
-
-const boardOf = (
-    answer: BoardLease[] | null,
-    calls: string[][] = [],
-    reclaimHolds: (tokens: readonly string[]) => Promise<Set<string> | null> = noHolds
-) => ({
+const boardOf = (answer: BoardLease[] | null, calls: string[][] = []) => ({
     leases: async (ids: readonly string[]) => {
         calls.push([...ids]);
         return answer === null ? null : answer.filter((row) => ids.includes(row.id));
     },
-    reclaimHolds,
 });
 
 describe('the reaper sweep', () => {
@@ -192,7 +193,6 @@ describe('the reaper sweep', () => {
                 // REFUSED — the board cannot answer — which must abort the whole round.
                 return leaseCalls.length === 1 ? [] : null;
             },
-            reclaimHolds: noHolds,
         };
         const reaper = createReaper({
             board,
@@ -244,7 +244,6 @@ describe('the reaper sweep', () => {
                     leaseCalls += 1;
                     return [];
                 },
-                reclaimHolds: noHolds,
             },
             arm,
             intervalMs: 3_600_000,
@@ -258,147 +257,6 @@ describe('the reaper sweep', () => {
         await Promise.all([first, second]);
 
         expect(leaseCalls).toBe(1);
-    });
-});
-
-/**
- * Issue #829 (G7): a reclaim group is labelled with the acquisition token holding it. Its fate is the
- * board's answer to "is that acquisition still held", not its root job's lease: the root is terminal
- * or removed by the time a reclaim runs, so the lease lookup alone would reap a live reclaim.
- */
-describe('the reaper sweep — reclaim groups', () => {
-    const HOLDER = '55555555-5555-4555-8555-555555555555';
-    const OTHER_HOLDER = '66666666-6666-4666-8666-666666666666';
-    const reclaimGroup = (overrides: Partial<OrphanGroup> = {}): OrphanGroup =>
-        group({ objects: [{ kind: 'job', name: 'reclaim', holder: HOLDER }], ...overrides });
-
-    const sweepWith = async (opts: {
-        groups: OrphanGroup[];
-        holds: ((tokens: readonly string[]) => Promise<Set<string> | null>) | string[] | null;
-        leases?: BoardLease[] | null;
-        holdCalls?: string[][];
-    }) => {
-        const { arm, calls } = recordingArm();
-        arm.scan = async () => opts.groups;
-        const reclaimHolds = async (tokens: readonly string[]) => {
-            opts.holdCalls?.push([...tokens]);
-            if (typeof opts.holds === 'function') return opts.holds(tokens);
-            return opts.holds === null ? null : new Set(opts.holds);
-        };
-        const reaper = createReaper({
-            board: boardOf(opts.leases === undefined ? [lease()] : opts.leases, [], reclaimHolds),
-            arm,
-            intervalMs: 3_600_000,
-            graceMs: GRACE,
-            now: () => NOW,
-            log: () => {},
-        });
-        await reaper.sweep();
-        return calls;
-    };
-
-    it('spares a reclaim whose acquisition the board still holds, though its root job is terminal or absent', async () => {
-        const held = [HOLDER];
-        expect(await sweepWith({ groups: [reclaimGroup()], holds: held, leases: [lease()] })).toEqual([]);
-        expect(await sweepWith({ groups: [reclaimGroup()], holds: held, leases: [] })).toEqual([]);
-    });
-
-    // A follow-up member's verdict reclaim is stored under its ROOT, but its group is labelled with the
-    // member's own id: the board is asked by the token the group serves, never by that label.
-    it('spares a follow-up member’s reclaim group whose token the board holds', async () => {
-        const holdCalls: string[][] = [];
-        const member = reclaimGroup({ jobId: JOB_B });
-        const calls = await sweepWith({
-            groups: [member],
-            holds: (tokens) => Promise.resolve(new Set(tokens.filter((t) => t === HOLDER))),
-            leases: [lease({ id: JOB_B })],
-            holdCalls,
-        });
-        expect(holdCalls).toEqual([[HOLDER]]);
-        expect(calls).toEqual([]);
-    });
-
-    it('reaps a reclaim the board does not hold as gone, past the grace window', async () => {
-        const g = reclaimGroup();
-        expect(await sweepWith({ groups: [g], holds: [], leases: [lease({ status: 'running' })] })).toEqual([
-            { group: g, verdict: 'gone' },
-        ]);
-    });
-
-    it('reaps a reclaim held only under another token — the acquisition it served was replaced', async () => {
-        const g = reclaimGroup();
-        const calls = await sweepWith({ groups: [g], holds: [OTHER_HOLDER] });
-        expect(calls).toEqual([{ group: g, verdict: 'gone' }]);
-    });
-
-    it('defers an unheld reclaim inside the grace window', async () => {
-        const young = reclaimGroup({ createdAtMs: NOW - GRACE / 2 });
-        expect(await sweepWith({ groups: [young], holds: [] })).toEqual([]);
-    });
-
-    it('reaps nothing — not even an unrelated orphan — when the holds lookup is refused', async () => {
-        const holdCalls: string[][] = [];
-        const orphan = group({ jobId: JOB_B });
-        const calls = await sweepWith({
-            groups: [reclaimGroup(), orphan],
-            holds: null,
-            leases: [lease(), lease({ id: JOB_B })],
-            holdCalls,
-        });
-        expect(holdCalls).toEqual([[HOLDER]]);
-        expect(calls).toEqual([]);
-    });
-
-    it('reaps nothing when the holds lookup throws', async () => {
-        const calls = await sweepWith({
-            groups: [reclaimGroup()],
-            holds: async () => {
-                throw new Error('board unreachable');
-            },
-        });
-        expect(calls).toEqual([]);
-    });
-
-    it('spares a group whose objects carry mixed or missing holders', async () => {
-        const mixed = reclaimGroup({
-            objects: [
-                { kind: 'job', name: 'a', holder: HOLDER },
-                { kind: 'job', name: 'b', holder: OTHER_HOLDER },
-            ],
-        });
-        const partial = reclaimGroup({
-            jobId: JOB_B,
-            objects: [
-                { kind: 'job', name: 'a', holder: HOLDER },
-                { kind: 'job', name: 'b' },
-            ],
-        });
-        expect(
-            await sweepWith({ groups: [mixed, partial], holds: [], leases: [lease(), lease({ id: JOB_B })] })
-        ).toEqual([]);
-    });
-
-    it('does not ask the board about holds when no group is a reclaim group', async () => {
-        const holdCalls: string[][] = [];
-        await sweepWith({ groups: [group()], holds: [], holdCalls });
-        expect(holdCalls).toEqual([]);
-    });
-
-    it('chunks the holds lookup by the batch bound and aborts the round when any chunk is refused', async () => {
-        const groups: OrphanGroup[] = [];
-        for (let i = 0; i < LEASE_BATCH_MAX + 1; i += 1) {
-            const id = `${String(i).padStart(8, '0')}-1111-4111-8111-111111111111`;
-            groups.push(reclaimGroup({ jobId: id, objects: [{ kind: 'job', name: 'reclaim', holder: id }] }));
-        }
-        const holdCalls: string[][] = [];
-        const calls = await sweepWith({
-            groups,
-            leases: [],
-            holdCalls,
-            holds: async () => (holdCalls.length === 1 ? new Set() : null),
-        });
-        expect(holdCalls.map((ids) => ids.length)).toEqual([LEASE_BATCH_MAX, 1]);
-        expect(calls).toEqual([]);
     });
 });
 
@@ -416,7 +274,6 @@ describe('the reaper timer', () => {
                         leaseCalls += 1;
                         return [];
                     },
-                    reclaimHolds: noHolds,
                 },
                 arm,
                 intervalMs: 1_000,
@@ -446,7 +303,6 @@ describe('the reaper timer', () => {
                         leaseCalls += 1;
                         return [];
                     },
-                    reclaimHolds: noHolds,
                 },
                 arm,
                 intervalMs: 0,
@@ -459,5 +315,248 @@ describe('the reaper timer', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+const HOUR = 3_600_000;
+const POLICY = { ttlMs: 24 * HOUR, boundMs: 7 * 24 * HOUR };
+const FINALIZED = 1_000 * HOUR;
+
+const thread = (overrides: Partial<BoardThreadFacts> = {}): BoardThreadFacts => ({
+    live: false,
+    lastFinalizedAt: new Date(FINALIZED).toISOString(),
+    artifactsComplete: true,
+    checkpoint: 'complete',
+    checkpointFinalizedAt: new Date(FINALIZED).toISOString(),
+    ...overrides,
+});
+
+describe('volumeDecision: a task volume goes only on a whole, idle thread (issue #775)', () => {
+    it('keeps the volume while any job of the thread is live', () => {
+        expect(volumeDecision(thread({ live: true }), FINALIZED + 100 * 24 * HOUR, POLICY)).toBe('keep');
+    });
+
+    it('keeps it while the last attempt has artifacts pending, until the bound', () => {
+        const facts = thread({ artifactsComplete: false });
+        expect(volumeDecision(facts, FINALIZED + 48 * HOUR, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR - 1, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR, POLICY)).toBe('delete');
+    });
+
+    it.each(['truncated', 'none'] as const)('keeps a %s checkpoint until the bound, not the ttl', (checkpoint) => {
+        const facts = thread({ checkpoint });
+        expect(volumeDecision(facts, FINALIZED + 24 * HOUR, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR - 1, POLICY)).toBe('keep');
+        expect(volumeDecision(facts, FINALIZED + 7 * 24 * HOUR, POLICY)).toBe('delete');
+    });
+
+    it('keeps a whole thread inside the idle ttl and deletes it at the ttl', () => {
+        expect(volumeDecision(thread(), FINALIZED + 24 * HOUR - 1, POLICY)).toBe('keep');
+        expect(volumeDecision(thread(), FINALIZED + 24 * HOUR, POLICY)).toBe('delete');
+    });
+
+    it('never deletes sooner than the ttl when the bound is configured below it', () => {
+        const facts = thread({ checkpoint: 'truncated' });
+        expect(volumeDecision(facts, FINALIZED + 2 * HOUR, { ttlMs: 24 * HOUR, boundMs: HOUR })).toBe('keep');
+    });
+
+    it.each([
+        ['no thread facts', undefined],
+        ['an attempt that never finalized', thread({ lastFinalizedAt: null })],
+        ['a finalize time that is no date', thread({ lastFinalizedAt: 'soon' })],
+        [
+            'a finalize time in the future',
+            thread({ lastFinalizedAt: new Date(FINALIZED + 200 * 24 * HOUR).toISOString() }),
+        ],
+    ])('keeps the volume on %s', (_name, facts) => {
+        expect(volumeDecision(facts, FINALIZED + 100 * 24 * HOUR, POLICY)).toBe('keep');
+    });
+});
+
+const ROOT_A = '11111111-1111-4111-8111-111111111111';
+const ROOT_B = '44444444-4444-4444-8444-444444444444';
+
+describe('the volume sweep: the board decides each thread, the arm deletes every generation', () => {
+    const volumes = (root: string): VolumeThread => ({
+        root,
+        volumes: [{ name: `factory-task-${root}-1` }, { name: `factory-task-${root}-2`, uid: 'uid-2' }],
+    });
+
+    /** `answer` may be a function of the 0-based call, the batch lookup being call 0 and each pre-delete re-read after it. */
+    const run = async (opts: {
+        listed: VolumeThread[] | null;
+        skipped?: string[];
+        answer: BoardLease[] | null | ((call: number) => BoardLease[] | null);
+        now?: number;
+    }): Promise<{ reaped: VolumeThread[]; asked: string[][]; logs: string[] }> => {
+        const reaped: VolumeThread[] = [];
+        const asked: string[][] = [];
+        const logs: string[] = [];
+        const arm: ReaperArm = {
+            scan: async () => [],
+            reap: async () => [],
+            scanVolumes: async () =>
+                opts.listed === null ? null : { threads: opts.listed, skipped: opts.skipped ?? [] },
+            reapVolumes: async (t) => {
+                reaped.push(t);
+                return t.volumes.map((v) => v.name);
+            },
+        };
+        const reaper = createReaper({
+            board: {
+                leases: async (ids) => {
+                    asked.push([...ids]);
+                    return typeof opts.answer === 'function' ? opts.answer(asked.length - 1) : opts.answer;
+                },
+            },
+            arm,
+            intervalMs: 0,
+            graceMs: 0,
+            volumePolicy: POLICY,
+            now: () => opts.now ?? FINALIZED + 25 * HOUR,
+            log: (m) => logs.push(m),
+        });
+        await reaper.sweep();
+        return { reaped, asked, logs };
+    };
+    const root = (id: string, facts: BoardThreadFacts | undefined, status: BoardLease['status'] = 'succeeded') =>
+        ({ id, status, leaseToken: null, ...(facts ? { thread: facts } : {}) }) as BoardLease;
+
+    it('deletes every generation of a whole idle thread, once, asking the board by root id', async () => {
+        const out = await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, thread())] });
+        // The batch lookup, then a single-root re-read right before the delete.
+        expect(out.asked).toEqual([[ROOT_A], [ROOT_A]]);
+        expect(out.reaped).toEqual([volumes(ROOT_A)]);
+        expect(out.logs.join('\n')).toContain(`factory-task-${ROOT_A}-1`);
+    });
+
+    it('decides each thread on its own facts', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A), volumes(ROOT_B)],
+            answer: [root(ROOT_A, thread({ live: true })), root(ROOT_B, thread())],
+        });
+        expect(out.reaped.map((t) => t.root)).toEqual([ROOT_B]);
+    });
+
+    it('keeps a thread whose answer carries no thread facts', async () => {
+        const out = await run({ listed: [volumes(ROOT_B)], answer: [root(ROOT_B, undefined)] });
+        expect(out.reaped).toEqual([]);
+    });
+
+    describe('a root the board no longer holds (the thread was removed)', () => {
+        const dated = (root: string, createdAtMs: number | null | undefined): VolumeThread => ({
+            root,
+            volumes: [{ name: `factory-task-${root}-1`, createdAtMs }],
+        });
+        const NOW = FINALIZED + 25 * HOUR;
+
+        it('deletes the volumes once every one is at least the ttl old', async () => {
+            const old = dated(ROOT_A, NOW - 24 * HOUR);
+            const out = await run({ listed: [old], answer: [], now: NOW });
+            expect(out.reaped).toEqual([old]);
+        });
+
+        it('keeps them while one is younger than the ttl', async () => {
+            const out = await run({ listed: [dated(ROOT_A, NOW - 24 * HOUR + 1)], answer: [], now: NOW });
+            expect(out.reaped).toEqual([]);
+        });
+
+        it.each([
+            ['null', null],
+            ['missing', undefined],
+        ])('keeps them when the creation time is %s', async (_n, at) => {
+            const out = await run({ listed: [dated(ROOT_A, at)], answer: [], now: NOW });
+            expect(out.reaped).toEqual([]);
+        });
+
+        it('keeps them when the board could not answer: an unanswered lookup is not an absence', async () => {
+            const out = await run({ listed: [dated(ROOT_A, 0)], answer: null, now: NOW });
+            expect(out.reaped).toEqual([]);
+        });
+
+        it('keeps them when the re-read before the delete cannot be answered', async () => {
+            const out = await run({
+                listed: [dated(ROOT_A, 0)],
+                answer: (call) => (call === 0 ? [] : null),
+                now: NOW,
+            });
+            expect(out.reaped).toEqual([]);
+        });
+    });
+
+    it('keeps a board-condemned thread while its artifacts are pending, and follows the ttl once they complete', async () => {
+        const pending = thread({ artifactsComplete: false });
+        // Whole at the ttl, pending until the bound: the same thread, 25h idle.
+        expect((await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, pending)] })).reaped).toEqual([]);
+        const done = await run({ listed: [volumes(ROOT_A)], answer: [root(ROOT_A, thread())] });
+        expect(done.reaped).toEqual([volumes(ROOT_A)]);
+    });
+
+    it('deletes nothing when the thread went live between the batch lookup and the delete', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A)],
+            answer: (call) => [root(ROOT_A, call === 0 ? thread() : thread({ live: true }), 'running')],
+        });
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('deletes nothing when the re-read before the delete cannot be answered', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A)],
+            answer: (call) => (call === 0 ? [root(ROOT_A, thread())] : null),
+        });
+        expect(out.reaped).toEqual([]);
+        // The sweep goes on: the log says this thread is kept, not that the whole round reaps nothing.
+        expect(out.logs.join('\n')).toContain(`keeping thread ${ROOT_A} this round`);
+        expect(out.logs.join('\n')).not.toContain('reaping nothing');
+    });
+
+    it('logs the labelled volumes the arm skipped, and still sweeps the rest', async () => {
+        const out = await run({
+            listed: [volumes(ROOT_A)],
+            skipped: ['task volume junk: root label is not a uuid'],
+            answer: [root(ROOT_A, thread())],
+        });
+        expect(out.logs.join('\n')).toContain('task volume junk');
+        expect(out.reaped).toEqual([volumes(ROOT_A)]);
+    });
+
+    it('deletes nothing when the volume list is inconclusive, and never asks the board', async () => {
+        const out = await run({ listed: null, answer: [root(ROOT_A, thread())] });
+        expect(out.reaped).toEqual([]);
+        expect(out.asked).toEqual([]);
+    });
+
+    it('deletes nothing when the board cannot answer', async () => {
+        const out = await run({ listed: [volumes(ROOT_A)], answer: null });
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('skips a root that is no uuid, without asking the board about it', async () => {
+        const out = await run({ listed: [volumes('not-a-uuid')], answer: [] });
+        expect(out.asked).toEqual([]);
+        expect(out.reaped).toEqual([]);
+    });
+
+    it('does not sweep volumes without a policy', async () => {
+        const reaped: VolumeThread[] = [];
+        const reaper = createReaper({
+            board: { leases: async () => [root(ROOT_A, thread())] },
+            arm: {
+                scan: async () => [],
+                reap: async () => [],
+                scanVolumes: async () => ({ threads: [volumes(ROOT_A)], skipped: [] }),
+                reapVolumes: async (t) => {
+                    reaped.push(t);
+                    return [];
+                },
+            },
+            intervalMs: 0,
+            graceMs: 0,
+            now: () => FINALIZED + 100 * 24 * HOUR,
+            log: () => undefined,
+        });
+        await reaper.sweep();
+        expect(reaped).toEqual([]);
     });
 });

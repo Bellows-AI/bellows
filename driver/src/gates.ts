@@ -5,6 +5,7 @@ import { CONTAINER_GONE } from './exec-codes.js';
 import type { GateRunNote } from './timeout-note.js';
 import { createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish.js';
+import { TASK_MOUNT } from './task-volume.js';
 import { reportTail } from './runner.js';
 import { stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
@@ -12,7 +13,7 @@ import type { StepResult } from './supervisor-contract.js';
 import { readBody, respondJson } from './http.js';
 import type { PublishRelay } from './publish-control.js';
 import type { ReviewRelay } from './review-control.js';
-import type { ExportRelay } from './export-control.js';
+import type { CheckpointRelay, ExportRelay } from './export-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
 import { parseJsonObject } from './json-parse.js';
 
@@ -202,9 +203,7 @@ function assertAcquirable(key: string, image: string, attempt: GateAttempt | und
     if (!attempt?.job)
         throw gateHarness('the gate manager runs gates in their attempt’s task group, and no job was given');
     if (!GATE_KEY.test(key)) {
-        throw gateHarness(
-            `refusing to run a gate in a checkout key that is not <org>/<uuid>/.worktrees/<uuid>: ${key}`
-        );
+        throw gateHarness(`refusing to run a gate in a checkout key that is not <uuid>/<repo segment>: ${key}`);
     }
     if (!GATE_IMAGE.test(image)) {
         throw gateHarness(`refusing to run a gate in an image that is not a plain image reference: "${image}"`);
@@ -237,7 +236,7 @@ export function createSupervisedGateManager({
     ): Promise<GateRun> => {
         const gate = {
             command: run.command,
-            cwd: `${config.workspaceMount}/${entry.key}`,
+            cwd: `${TASK_MOUNT}/${entry.key.split('/')[1]}`,
             env: envBodyRecord(entry.envBody),
             timeoutMs: run.deadlineMs,
         };
@@ -380,6 +379,8 @@ export interface GateServer {
     revokeExporter(exporterToken: string): void;
     /** Gives an open control token its transcript exporter's relay (the `/export` routes). */
     attachExporter(token: string, exporter: ExportRelay): void;
+    /** Gives an open control token its supervisor's checkpoint relay (the `/checkpoint` routes). */
+    attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question
@@ -590,6 +591,7 @@ export function createGateServer({
         grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),
         revokeExporter: (exporterToken) => channel.revokeExporter(exporterToken),
         attachExporter: (token, exporter) => channel.attachExporter(token, exporter),
+        attachCheckpoint: (token, checkpoint) => channel.attachCheckpoint(token, checkpoint),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),

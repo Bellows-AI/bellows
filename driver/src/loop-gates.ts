@@ -12,9 +12,9 @@ import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
-import { attachTranscriptExport } from './loop-export.js';
+import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
 import type { LoopRuntime } from './loop-types.js';
-import { worktreeRelDir } from './publish.js';
+import { checkoutKey } from './publish.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
 const GATES_REPORT_BUDGET_BYTES = 16384;
@@ -80,10 +80,10 @@ export async function beginGates(
         rt.log(`job ${job.id}: environment.setup skipped — this driver has no gate environment configured`);
         return null;
     }
-    // The gates run in the task worktree (issue #35) — the tree the run edits — so the
-    // environment is keyed by the worktree path, `<org>/<uuid>/.worktrees/<root id>`. A job
-    // that names no repository has no worktree and no gates either.
-    const key = worktreeRelDir(job);
+    // The gates run in the task checkout (issue #35) — the tree the run edits — so the
+    // environment is keyed by `checkoutKey`, `<root id>/<repo segment>`. A job that names no
+    // repository has no checkout and no gates either.
+    const key = checkoutKey(job);
     if (!key) return null;
     // The environment starts with the claim's own env — resolved for THIS author and repo — and a
     // GitHub token fetched now, which is what a test suite needs to reach the forge.
@@ -226,6 +226,7 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         gates.server.grantAgent(token, agentToken);
         gates.server.grantExporter(token, exporterToken);
         attachTranscriptExport({ rt, job, state }, token);
+        attachCheckpoint({ rt, job }, token);
         const url = gates.advertiseUrl(port);
         job.supervisorEnv = {
             [SUPERVISOR_ENV.controlUrl]: url,

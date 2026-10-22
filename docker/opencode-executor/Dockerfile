@@ -120,10 +120,10 @@ COPY otel.json /etc/opencode-otel/otel.json
 # filename that happened to contain ".env.". The baked policy is permissionless inside the working
 # directory (`*: allow`, with read's allow-all stated explicitly over opencode's seeded `*.env.*`
 # deny) and hard-gated outside it: external_directory refuses every path beyond the checkout —
-# the rest of the shared workspaces volume and system folders included — except the runner's own
+# system folders included — except the runner's own
 # scratch, /tmp and $HOME, and webfetch is a flat deny. The entrypoint re-opens exactly one
-# subtree at run time: the member's own tree, derived from the driver's XDG_DATA_HOME, so a task
-# can always operate within its own workspace while other members' trees stay refused.
+# subtree at run time: the task volume, derived from the driver's XDG_DATA_HOME, so a task
+# can always operate within its own volume.
 #
 # Root-owned, the directory included (issue #452): this global copy is the FIRST config layer, so
 # its key order is the order every later layer merges into — writable, the agent could list the
@@ -147,7 +147,7 @@ COPY opencode-home/opencode.json /etc/opencode/opencode.json
 COPY --from=skills . /home/node/.config/opencode/skills/
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
-RUN mkdir -p /workspace && chown node:node /workspace
+RUN mkdir -p /workspace /task && chown node:node /workspace /task
 WORKDIR /workspace
 
 # The install above runs as root, and both opencode and node create scratch directories in /tmp

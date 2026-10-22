@@ -9,6 +9,7 @@ import {
 } from '../src/gates.js';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
+import { TASK_MOUNT } from '../src/task-volume.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import type { GateStepRequest } from '../src/supervised-steps.js';
 import type { StepResult } from '../src/supervisor-contract.js';
@@ -54,7 +55,7 @@ beforeAll(async () => {
     ({ StepChannelClosed: LostChannel } = await import('../src/step-control.js'));
 });
 
-const KEY = `bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555`;
+const KEY = `55555555-5555-4555-8555-555555555555/factory`;
 const config = loadDriverConfig({});
 
 /** The attempt a gate runs under: its supervisor runs the gate. */
@@ -131,7 +132,7 @@ function gateRunner(
     return { runner, calls };
 }
 
-const WORKTREE = `${config.workspaceMount}/${KEY}`;
+const WORKTREE = `${TASK_MOUNT}/factory`;
 
 describe('the supervised gate manager: one gate as a step', () => {
     it('runs a gate in the checkout’s worktree with the attempt’s env, and answers its exit and output', async () => {

@@ -3,6 +3,7 @@ import { envFileBody } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { containerName, envFilePath } from './docker.js';
 import { removeGroup } from './docker-group.js';
+import { assertTaskVolumeIsOurs } from './docker-task-volume.js';
 import {
     assertJobNotKilled,
     assertNotKilledAfterEnvWrite,
@@ -58,6 +59,16 @@ export async function createRunner(
     // The run's start instant (the group's, which the exporter and both close-time turn reads key
     // on): a follow-up resumes its session's conversation, so the delta each read reports is
     // bounded to what THIS run wrote.
+    // The reaper may have deleted the task volume since the group was made, and the mount would make an
+    // empty one (#775): a gone volume goes with the group and the env file, thrown as an interruption.
+    try {
+        await assertTaskVolumeIsOurs(execDocker, job);
+    } catch (e) {
+        if (file) await files.rm(file).catch(() => undefined);
+        await removeGroup(teardown, job);
+        deps.groups.delete(job.leaseToken);
+        throw e;
+    }
     const made = { config, execDocker, teardown };
     const refused = await createRunnerContainer(made, job, session, file ? { envFile: file } : {});
     if (refused && !ledger.was(job).stopped) {

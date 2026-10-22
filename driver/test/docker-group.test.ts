@@ -29,6 +29,7 @@ import {
 import { bindingVolumeName, ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
 import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
+import { TASK_MOUNT, TASK_ROOT_LABEL, taskRootOf, taskVolumeName } from '../src/task-volume.js';
 import { bindingWriteArgv, gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import {
     EXPORT_RELAY_SOCKET,
@@ -98,7 +99,7 @@ describe('the supervisor container', () => {
 
     // The supervisor runs the attempt's steps (sync, probe, publish, helpers, reclaim) as children
     // of its own container, so it mounts the member's workspace — only the member's own subtree.
-    it('mounts every mailbox and the member’s own workspace subtree, nothing broader', () => {
+    it('mounts every mailbox and the thread’s own task volume, nothing broader', () => {
         const mounted = mounts(argv);
         expect(mounted).toHaveLength(7);
         for (const box of ['in', 'out', 'export', 'supervisor', 'gate'] as const) {
@@ -106,9 +107,8 @@ describe('the supervisor container', () => {
         }
         // The review mailbox is the reviewer container's and the supervisor's alone (issue #774).
         expect(mounted.some((mount) => mount.includes(volumeOf('review')))).toBe(false);
-        const workspace = mounted.filter((mount) => mount.includes('workspaces'));
-        expect(workspace).toHaveLength(1);
-        expect(workspace[0]).toContain(`volume-subpath=bellows/${USER}`);
+        const task = mounted.filter((mount) => mount.includes(taskVolumeName(reviewing)));
+        expect(task).toEqual([`type=volume,src=${taskVolumeName(reviewing)},target=${TASK_MOUNT}`]);
     });
 
     it('mounts the review mailbox too, and is told of the reviewer, when the claim lists reviewer profiles', () => {
@@ -137,16 +137,6 @@ describe('the supervisor container', () => {
         expect(argv).toContain(`SUPERVISOR_CLAIM_SEQ=${job.claimSeq}`);
         expect(argv).toContain(`SUPERVISOR_BINDING_FILE=${SUPERVISOR_BINDING_PATH}`);
         expect(argv).toContain(`SUPERVISOR_TAKEOVER_MS=${takeoverBoundMs(config)}`);
-    });
-
-    it('does not tell a reclaim group its claim or the binding: it follows no newer holder', () => {
-        const reclaiming = supervisorCreateArgs(
-            config,
-            reviewing,
-            { exporting: false, agentless: true, reclaim: true },
-            '/tmp/supervisor.env'
-        );
-        expect(reclaiming.filter((arg) => /^SUPERVISOR_(CLAIM_SEQ|BINDING_FILE|TAKEOVER_MS)=/.test(arg))).toEqual([]);
     });
 
     it('takes its control pair by env file, never by argv', () => {
@@ -219,11 +209,11 @@ describe('the reviewer container', () => {
     it('mounts the member tree read-only, its home read-write and the review mailbox, no other mailbox', () => {
         const mounted = mounts(argv);
         expect(mounted).toHaveLength(3);
-        const tree = mounted.find((mount) => mount.includes(`target=${config.workspaceMount}/bellows/${USER}`));
-        expect(tree).toContain(`volume-subpath=bellows/${USER},`);
+        const tree = mounted.find((mount) => mount.includes(`target=${TASK_MOUNT},`));
+        expect(tree).toContain(`src=${taskVolumeName(reviewing)},`);
         expect(tree).toMatch(/,readonly$/);
         const home = mounted.find((mount) => mount.endsWith(`target=${REVIEWER_HOME}`));
-        expect(home).toContain(`volume-subpath=bellows/${USER}/${REVIEWER_TREE_DIR},`);
+        expect(home).toContain(`volume-subpath=${REVIEWER_TREE_DIR},`);
         expect(home).not.toMatch(/readonly/);
         const review = mounted.find((mount) => mount.includes(volumeOf('review')));
         expect(review).toBeDefined();
@@ -280,16 +270,17 @@ describe('the claim env and the supervisor’s credential names', () => {
 });
 
 describe('the exporter container', () => {
-    it('mounts the member’s subtree and only the mailbox it shares with the supervisor', () => {
+    it('mounts the thread’s task volume and only the mailbox it shares with the supervisor', () => {
         const mounted = mounts(exporterCreateArgs(config, job, START));
         expect(mounted).toHaveLength(2);
-        expect(mounted.some((mount) => mount.includes('volume-subpath=bellows/'))).toBe(true);
+        expect(mounted.some((mount) => mount.includes(`src=${taskVolumeName(job)},target=${TASK_MOUNT}`))).toBe(true);
         expect(mounted.some((mount) => mount.includes(volumeOf('export')))).toBe(true);
     });
 });
 
 describe('creating and starting the group', () => {
-    const recorder = (refuse: (argv: string[]) => boolean = () => false) => {
+    /** `volumeGone`: the daemon has no task volume (the reaper took it); otherwise it answers one carrying the root label. */
+    const recorder = (refuse: (argv: string[]) => boolean = () => false, volumeGone = false) => {
         const calls: string[][] = [];
         const written: { file: string; body: string; mode: number }[] = [];
         const removed: string[] = [];
@@ -302,6 +293,12 @@ describe('creating and starting the group', () => {
             }) as never,
         };
         const execDocker = async (argv: string[]) => {
+            // The guard's inspect is not a mutation: the calls list is what the group created.
+            if (argv[0] === 'volume' && argv[1] === 'inspect' && argv[2] === '--format') {
+                if (volumeGone)
+                    throw Object.assign(new Error('inspect failed'), { stderr: 'Error: No such volume: x' });
+                return { stdout: JSON.stringify({ [TASK_ROOT_LABEL]: taskRootOf(job) }) };
+            }
             calls.push(argv);
             if (refuse(argv)) throw new Error('daemon said no');
             return { stdout: '' };
@@ -318,6 +315,17 @@ describe('creating and starting the group', () => {
         expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
+    });
+
+    it('creates no container when the task volume is gone: a transient refusal, never an empty volume made by a mount', async () => {
+        const { calls, deps } = recorder(() => false, true);
+        const refused = await createGroup(deps, job, SESSION, { startedAt: START }).catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect((refused as StartupRefused).startupCause).toBe('transient');
+        expect(calls.some((argv) => argv[0] === 'create')).toBe(false);
+        expect(calls.some((argv) => argv.some((arg) => arg.includes('type=volume,src=' + taskVolumeName(job))))).toBe(
+            false
+        );
     });
 
     it('writes the supervisor the control pair and the two tokens it relays under to a 0600 env file removed after, the exporter no credential at all', async () => {
@@ -537,10 +545,10 @@ describe('the gate container (issue #773)', () => {
         expect(argv).not.toContain('-w');
     });
 
-    it('mounts the member’s own subtree and the gate mailbox, and no other mailbox', () => {
+    it('mounts the thread’s task volume and the gate mailbox, and no other mailbox', () => {
         const mounted = mounts(argv);
         expect(mounted).toHaveLength(2);
-        expect(mounted.some((mount) => mount.includes(`volume-subpath=bellows/${USER}`))).toBe(true);
+        expect(mounted.some((mount) => mount.includes(`src=${taskVolumeName(gated)},target=${TASK_MOUNT}`))).toBe(true);
         expect(mounted.some((mount) => mount.includes(volumeOf('gate')))).toBe(true);
     });
 
@@ -559,7 +567,7 @@ describe('the gate container (issue #773)', () => {
         expect(literals(named)).toEqual(['HOME=/tmp']);
         const cacheJob = { ...gated, repo: 'acme/widgets', gates: { ...gated.gates!, cache: ['NPM_CONFIG_CACHE'] } };
         expect(literals(gateCreateArgs(config, cacheJob, 'node:24'))).toContain(
-            `NPM_CONFIG_CACHE=/workspaces/bellows/${USER}/.cache/acme/widgets/NPM_CONFIG_CACHE`
+            `NPM_CONFIG_CACHE=${TASK_MOUNT}/.cache/acme/widgets/NPM_CONFIG_CACHE`
         );
     });
 
@@ -621,7 +629,6 @@ describe('the holder binding (#829)', () => {
         exportToken: 'tok-new-export',
     };
     const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'driver.example'];
-    const reclaimArgs = { exporting: false, agentless: true, reclaim: true };
     const supervisorArgs = supervisorCreateArgs(
         config,
         reviewing,
@@ -637,7 +644,7 @@ describe('the holder binding (#829)', () => {
         return { calls, execDocker: execDocker as never };
     };
 
-    it('creates one labelled binding volume for an attempt, none for a reclaim group', () => {
+    it('creates one labelled binding volume for an attempt', () => {
         const volumes = ctlVolumeArgs(job).filter((argv) => argv.includes(bindingVolumeName(job)));
         expect(volumes).toEqual([
             [
@@ -651,25 +658,9 @@ describe('the holder binding (#829)', () => {
             ],
         ]);
         expect(bindingVolumeName(job)).toBe(`factory-${SUPERVISOR_BINDING.volume}-${job.id}-${job.leaseToken}`);
-        expect(ctlVolumeArgs(job, { reclaim: true }).flat()).not.toContain(bindingVolumeName(job));
     });
 
-    it('labels a reclaim group’s volumes with the holder it serves, and an attempt’s with none (#829)', () => {
-        const HOLDER = '77777777-7777-4777-8777-777777777777';
-        for (const argv of ctlVolumeArgs(job, { reclaim: true, holder: HOLDER })) {
-            expect(argv).toEqual(expect.arrayContaining(['factory.reclaim=true', `factory.holder=${HOLDER}`]));
-        }
-        expect(ctlVolumeArgs(job).flat().join(' ')).not.toContain('factory.holder');
-        const supervisor = supervisorCreateArgs(
-            config,
-            job,
-            { exporting: false, agentless: true, reclaim: true, holder: HOLDER },
-            '/tmp/supervisor.env'
-        );
-        expect(supervisor).toEqual(expect.arrayContaining(['factory.reclaim=true', `factory.holder=${HOLDER}`]));
-    });
-
-    it('mounts the binding volume in the supervisor alone, and not in a reclaim supervisor', () => {
+    it('mounts the binding volume in the supervisor alone', () => {
         const mount = `type=volume,src=${bindingVolumeName(reviewing)},target=${SUPERVISOR_BINDING.dir}`;
         expect(mounts(supervisorArgs)).toContain(mount);
         const others = [
@@ -679,8 +670,6 @@ describe('the holder binding (#829)', () => {
             reviewerCreateArgs(config, reviewing),
         ];
         for (const argv of others) expect(argv.join(' ')).not.toContain(SUPERVISOR_BINDING.volume);
-        const reclaiming = supervisorCreateArgs(config, job, reclaimArgs, '/tmp/supervisor.env');
-        expect(reclaiming.join(' ')).not.toContain(SUPERVISOR_BINDING.volume);
     });
 
     it('removeGroup removes the binding volume with the rest', async () => {

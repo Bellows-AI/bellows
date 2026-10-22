@@ -19,7 +19,7 @@
 // leads with {stream,truncated:true,droppedLines}. The summary line stays the LAST line.
 //
 // Environment (set by the driver; paths, never credentials):
-//   OPENCODE_DB  — the session database: <workspaces>/<org>/<uuid>/.factory/opencode/<root>/opencode/opencode.db,
+//   OPENCODE_DB  — the session database: <task volume>/.factory/opencode/<root>/opencode/opencode.db,
 //                  one directory per task (thread root), so a follow-up's `--session` resumes in it.
 //   OPENCODE_DIR — the working directory the run had: the scope that keeps this readout answering
 //                  the root session that ran there.

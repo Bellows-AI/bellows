@@ -10,14 +10,12 @@ admission policy lets an update change only that key). No `get` on secrets is gr
 What this Role alone does NOT give, stated because it reads as if it did: RBAC cannot scope a verb
 to a name prefix, so `delete` reaches every Secret in the namespace, and `create` on Jobs
 is `read` on every Secret — a pod the driver specs may mount any Secret here, the dashboard's App
-key included. The runners (agent-written code) share this namespace because the workspaces claim
-they mount is namespaced and shared with the dashboard. The fence is driver-admission.yaml: an
+key included. The runners (agent-written code) share this namespace with the dashboard. The fence is driver-admission.yaml: an
 admission policy bound to this ServiceAccount that admits only pod specs referencing the driver's
 own per-attempt Secrets, and deletes only of objects it labelled `factory.job`.
 `configmaps` is the checkout claim that makes the re-claim fence atomic (issue #32): one ConfigMap
 per job id, POSTed to take the checkout (409 means another attempt holds it), read to order the
-contenders, patched to revoke an orphaned claim before its reap (issue #821), deleted to release or
-take over. `get` is safe HERE and only here — the claim carries
+contenders, deleted to release or take over. `get` is safe HERE and only here — the claim carries
 a holder token and a claim sequence, both already known to the driver, and never secret material,
 which is exactly why the claim is not a Secret. The grant is namespace-wide on ConfigMaps — RBAC
 cannot scope it to `factory-job-*-claim` names — so a compromised driver can read the namespace's
@@ -53,10 +51,16 @@ rules:
       verbs: ['create', 'delete', 'patch']
     - apiGroups: ['']
       resources: ['configmaps']
-      verbs: ['create', 'get', 'delete', 'patch']
+      verbs: ['create', 'get', 'delete']
     - apiGroups: ['']
       resources: ['pods']
       verbs: ['delete', 'list']
+    # The thread's task volume (issue #775): the driver creates one claim per root thread and reads
+    # it back on a later attempt, and `patch` labels one no pod can be scheduled onto. The admission
+    # policy admits only the claim's name, labels and shape, and that one label.
+    - apiGroups: ['']
+      resources: ['persistentvolumeclaims']
+      verbs: ['create', 'get', 'list', 'delete', 'patch']
     - apiGroups: ['']
       resources: ['pods/log']
       verbs: ['get']

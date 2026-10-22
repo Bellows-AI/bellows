@@ -67,9 +67,6 @@ const jobStub = (overrides: Partial<JobStore> = {}): JobStore =>
         async suspend() {
             return { result: 'ok', status: 'stopped' };
         },
-        async requeue() {
-            return { result: 'ok', status: 'queued' };
-        },
         async complete() {
             return 'ok';
         },
@@ -208,14 +205,11 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
     // reclaim, so both ends are as worker-only as claim and complete.
     ['/api/reclaims/claim', 'worker'],
-    // The reaper's read of which reclaim acquisitions are still held (issue #829): org-less, read-only.
-    ['/api/reclaims/holds', 'worker'],
     [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
     [`/api/reclaims/${JOB_ID}/renew`, 'worker'],
     [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
     [`/api/jobs/${JOB_ID}/session`, 'worker'],
     [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
-    [`/api/jobs/${JOB_ID}/requeue`, 'worker'],
     [`/api/jobs/${JOB_ID}/interrupt`, 'worker'],
     [`/api/jobs/${JOB_ID}/complete`, 'worker'],
     // The staged final envelope (issue #821): the same body as complete, under the same lease.
@@ -239,6 +233,11 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/review-read`, 'worker'],
     [`/api/jobs/${JOB_ID}/artifact/chunk`, 'worker'],
     [`/api/jobs/${JOB_ID}/artifact/manifest`, 'worker'],
+    // The restore reads (issue #775): the thread's checkpoint and raw transcripts, under the live lease.
+    [`/api/jobs/${JOB_ID}/checkpoint`, 'worker'],
+    [`/api/jobs/${JOB_ID}/checkpoint/chunk`, 'worker'],
+    [`/api/jobs/${JOB_ID}/transcripts`, 'worker'],
+    [`/api/jobs/${JOB_ID}/transcripts/chunk`, 'worker'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the

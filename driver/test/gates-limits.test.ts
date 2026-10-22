@@ -8,7 +8,7 @@ import { runDeclaredGates, type GateSession } from '../src/loop-gates.js';
 import type { LoopRuntime } from '../src/loop-types.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 
-const KEY = 'bellows/44444444-4444-4444-8444-444444444444/.worktrees/55555555-5555-4555-8555-555555555555';
+const KEY = '55555555-5555-4555-8555-555555555555/factory';
 const config = loadDriverConfig({});
 const JOB = {
     id: '55555555-5555-4555-8555-555555555555',

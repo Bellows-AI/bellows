@@ -13,11 +13,12 @@ codes, query parameters and error codes are read there, never restated here.
 | Skill discovery (`GET /api/skills`; never the instructions) | `server/src/routes/skills.ts`, `server/src/skills.ts` | `server/test/skills.test.ts` |
 | Dashboard payload (`/api/stats`) | `server/src/routes/stats.ts` | `server/test/routes.stats.get.test.ts` |
 | OTLP ingest, `/api/sessions/branch` | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
-| Jobs: create, claim, worker reports, `POST /:id/conclusion`, actions, reclaims and their holds (`POST /api/reclaims/holds`), `GET /:id?waitFor=terminal` ([batches.md](batches.md) for `done` with `force`) | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts`, `server/test/routes.job-conclusion.test.ts` |
+| Jobs: create, claim, worker reports, `POST /:id/conclusion`, actions, reclaims, `GET /:id?waitFor=terminal` ([batches.md](batches.md) for `done` with `force`) | `server/src/routes/jobs.ts` and `job-*.ts` | `server/test/routes.jobs.test.ts`, `server/test/routes.job-conclusion.test.ts` |
 | Phase checkpoints: `POST /api/jobs/:id/phase-checkpoint` (write), `/phase-checkpoints` (read), worker routes under the lease | `server/src/routes/job-handlers-phase-checkpoints.ts`, `server/src/routes/jobs.ts` | `server/test/routes.job-phase-checkpoints.test.ts`, `server/test/auth.enforcement.test.ts` |
 | `Idempotency-Key` header on `POST /api/jobs`, `/:id/follow-up`, `/:id/retry` | `server/src/routes/job-idempotency.ts` | `server/test/routes.jobs.test.ts`, `server/test-db/cli.scripting.test.ts` |
 | Run activity (`GET /api/jobs/:id/activity`) | `server/src/routes/job-handlers-actions.ts`, `server/src/telemetry/run-activity.ts` | `server/test/routes.jobs.test.ts`, `server/test/run-activity.test.ts` |
 | Artifact reads: `GET /api/jobs/:id/artifacts`, `/artifacts/read` | `server/src/routes/job-handlers-artifacts.ts`, `server/src/artifacts/artifact-read.ts` | `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts` |
+| Restore reads, worker + live lease in the body: `POST /api/jobs/:id/checkpoint` (`none`, `gone` or the pointer and its chunk list), `/checkpoint/chunk`, `/transcripts`, `/transcripts/chunk` (bytes, `x-chunk-sha256`; 422 `ARTIFACT_CORRUPT` when the stored bytes fail it) | `server/src/routes/job-handlers-restore.ts` | `server/test/routes.restore.test.ts`, `server/test-db/job-store.restore-scope.test.ts` |
 | Agent questions: `POST /api/jobs/:id/question` (worker), `questions/:questionId/answer` (member) | `server/src/routes/job-handlers-questions.ts`, `job-handlers-worker.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Named reviewers: `POST /api/jobs/:id/review`, `review-read` (worker, lease-fenced) | `server/src/routes/job-handlers-reviews.ts` | `server/test/routes.jobs.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Task read model (`/api/tasks`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
@@ -39,8 +40,9 @@ and by the `lint/no-shared-literals.grit` plugin.
 ## Invariants
 
 - Artifact upload (`PUT /api/jobs/:id/artifact/chunk`, `/manifest`) is authorized by the claim sequence the
-  request names, never by the lease, and writes nothing on `job`. `server/src/routes/job-handlers-artifacts.ts`,
-  `server/test/routes.artifacts.test.ts`.
+  request names, never by the lease, and writes nothing on `job` except a `checkpoint` manifest's pointer on the
+  root row ([persistence.md](persistence.md)); chunks are raw bytes. `server/src/routes/job-handlers-artifacts.ts`,
+  `server/test/routes.artifacts.test.ts`, `server/test-db/job-store.checkpoint-pointer.test.ts`.
 - Artifact reads resolve through the caller's org, so another org's job is `404`; a removed job answers its
   indexed streams as `deleted`. `server/test/routes.artifacts-read.test.ts`, `server/test-db/artifact-read.test.ts`.
 - Transcript exports never reach token metrics; where a session has both, the `session_source` view keeps OTEL.

@@ -5,7 +5,7 @@
  * checked against the attempt-level invariants:
  *
  * - I1, one logical conclusion: the accepted conclusions — a verdict (its stage or its complete), a
- *   suspend, a released interrupt, a requeue — number at most one, and it is the one expected.
+ *   suspend, a released interrupt — number at most one, and it is the one expected.
  * - I2, finalization: `runner.finish` runs as often as expected (0 after a handover, else 1), and
  *   each of finish, `releaseServices`, the gate release and the control close at most once.
  * - I3, contained: no unhandled rejection, and no attempt that threw out to `track` (`loop.ts`).
@@ -71,7 +71,7 @@ const BOUNDARIES = [
 ] as const;
 type Boundary = (typeof BOUNDARIES)[number];
 type Fault = 'stop' | 'lost' | 'removed' | 'handover' | 'exception';
-type Conclusion = 'verdict' | 'suspend' | 'interrupt:release' | 'requeue' | 'none';
+type Conclusion = 'verdict' | 'suspend' | 'interrupt:release' | 'none';
 
 /** The boundaries whose verdict is already decided: a later stop, loss or handover acts on nothing. */
 const CONCLUDING: readonly Boundary[] = ['conclusion', 'settle'];
@@ -99,15 +99,8 @@ interface Observed {
 const CONCLUSIONS: Record<string, Exclude<Conclusion, 'none'>> = {
     'board.suspend:ok': 'suspend',
     'board.interrupt(release):ok': 'interrupt:release',
-    'board.requeue:ok': 'requeue',
 };
-const DURABLE_ACKS = [
-    'board.stageConclusion',
-    'board.complete',
-    'board.suspend',
-    'board.interrupt(release)',
-    'board.requeue',
-] as const;
+const DURABLE_ACKS = ['board.stageConclusion', 'board.complete', 'board.suspend', 'board.interrupt(release)'] as const;
 const TEARDOWNS = ['runner.finish', 'runner.releaseServices', 'gate.release', 'control.close'] as const;
 
 /** The accepted conclusions in order; a verdict is one however many of its stage and complete landed. */
@@ -401,7 +394,6 @@ async function attempt(script: Script): Promise<Observed & { seams: Set<string> 
             }
         );
         b.suspend = recorded(timeline, 'board.suspend', b.suspend.bind(b));
-        b.requeue = recorded(timeline, 'board.requeue', b.requeue.bind(b));
         b.interrupt = recorded(
             timeline,
             (_j, interruption) => `board.interrupt(${interruption.release ? 'release' : 'record'})`,
@@ -614,11 +606,6 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
     });
 
     describe('scripted endings', () => {
-        cell(
-            'a lock-blocked sync requeues',
-            { at: null, sync: { ok: false, reason: 'transient worktree sync: the checkout lock is held' } },
-            { conclusion: 'requeue', finishes: 1 }
-        );
         cell(
             'a pre-helper whose supervisor was lost is interrupted',
             { at: null, helperLost: 'pre' },

@@ -5,8 +5,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { BoardJob, ReviewClaim } from '../src/board.js';
-import { executorImage, loadDriverConfig } from '../src/config.js';
+import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
+import { loadDriverConfig } from '../src/config.js';
 import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
 import {
     carriedPastLoss,
@@ -24,9 +24,11 @@ import {
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
-    toolTreeReleaseArgs,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
+import { TASK_MOUNT, TASK_ROOT_LABEL, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
+import { withTaskVolume } from './fixtures/task-volume-daemon.js';
+import { StartupRefused } from '../src/startup-cause.js';
 import {
     AdoptionBlocked,
     currentActivity,
@@ -101,19 +103,16 @@ import { telemetryConfig, telemetryConfigTar } from '../src/telemetry-config.js'
 import {
     CREDENTIAL_HELPER,
     gitProbeScript,
-    gitWorktreeRemoveScript,
-    gitWorktreeScript,
     isBranchName,
     parseGitState,
     parsePrSummary,
     publishPlan,
-    repoPath,
     SYNC_DEADLINE_MS,
-    toolTreeReleaseScript,
-    TRANSIENT_SYNC_REASON,
     worktreeBranch,
-    worktreeDir,
-    worktreeRelDir,
+    checkoutDir,
+    checkoutKey,
+    remoteUrl,
+    taskCheckoutScript,
 } from '../src/publish.js';
 
 const MISMATCH_ROW = 'a run specced for another session than its group' as const;
@@ -233,13 +232,6 @@ function reclaimEndpoint() {
     return { endpoint, closed };
 }
 
-/** A runner whose reclaim step prints `stdout`, over a group served by {@link reclaimEndpoint}. */
-function reclaimRunner(stdout: string) {
-    const supervised = fakeSteps((step) => ok(step.kind === 'reclaim' ? stdout : ''));
-    const { endpoint, closed } = reclaimEndpoint();
-    return { supervised, closed, runner: dockerRunner(emptyDaemon, { steps: supervised.sink, endpoint }) };
-}
-
 const SESSION = '33333333-3333-4333-8333-333333333333';
 const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
 const opencodeJob: BoardJob = { ...job, executorType: 'opencode' };
@@ -288,7 +280,7 @@ describe('the docker run arguments', () => {
             'fix the failing build',
         ]);
         envBeforeImage(claude, 'claude-executor', [
-            `FACTORY_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            `FACTORY_TRANSCRIPT_DIR=/task/.factory/transcripts/${job.id}`,
             `BELLOWS_SESSION_ID=${SESSION}`,
             'NPM_CONFIG_UPDATE_NOTIFIER=false',
         ]);
@@ -308,7 +300,7 @@ describe('the docker run arguments', () => {
             'fix the failing build',
         ]);
         envBeforeImage(opencode, 'opencode-executor', [
-            `XDG_DATA_HOME=/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}`,
+            `XDG_DATA_HOME=/task/.factory/opencode/${opencodeJob.id}`,
             'NPM_CONFIG_UPDATE_NOTIFIER=false',
             'BELLOWS_SESSION_ID=ses_f86188c3dffeZGYO4yZq4atba9',
         ]);
@@ -323,42 +315,20 @@ describe('the docker run arguments', () => {
         envBeforeImage(takeover, 'claude-executor', ['BELLOWS_RESUME_MAY_BE_UNWRITTEN=1']);
     });
 
-    it("mounts the checkouts volume and starts at the AUTHOR's workspace root", () => {
-        // Was `/workspaces/<orgId>`, built from the driver's own ORG_ID — one tree every member's
-        // agent shared. The board sends the path now, because it owns the layout; this process
-        // only knows where the volume is mounted.
-        //
-        // The mount is scoped with volume-subpath to the job's own `<orgId>/<userId>` subtree:
-        // the container's volume root is the member's tree, enforced by the mount itself, not by
-        // where the WORKDIR happens to point.
-        expect(args()).toEqual(
-            expect.arrayContaining([
-                '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-                `WORKDIR=/workspaces/bellows/${USER}`,
-            ])
-        );
+    it("mounts the thread's own task volume whole at /task and starts at its root", () => {
+        // The mount is the thread's volume by name, with no subPath: one task = one volume, so the
+        // container can reach nothing of any other task, whatever the WORKDIR points at.
+        expect(args()).toEqual(expect.arrayContaining([...taskMountArgs(job), `WORKDIR=${TASK_MOUNT}`]));
+        expect(args().join(' ')).toContain(`type=volume,src=${taskVolumeName(job)},target=/task`);
+        expect(args().join(' ')).not.toContain('volume-subpath');
     });
 
-    it('refuses a workspace path that is not <org>/<uuid>', () => {
-        /*
-         * The board is not something this process trusts with a fragment of a command line — the
-         * same rule every board-supplied id is held to, and the stakes are higher here:
-         * the value becomes the agent's working directory, and `..` in it points at the parent of
-         * every member's tree.
-         */
-        for (const path of [
-            '../../etc',
-            'bellows/../../etc',
-            'bellows/not-a-uuid',
-            `/absolute/${USER}`,
-            `bellows/${USER}/extra`,
-            null,
-        ]) {
+    it('refuses a thread root that is not a uuid before it becomes a volume name', () => {
+        for (const root of ['../../etc', 'bellows/../../etc', 'not-a-uuid', `/absolute/${USER}`]) {
             expect(
-                () => dockerArgs(loadDriverConfig({}), { ...job, workspacePath: path }, { id: SESSION, resume: false }),
-                String(path)
-            ).toThrow(/no usable workspace path/);
+                () => dockerArgs(loadDriverConfig({}), { ...job, rootJobId: root }, { id: SESSION, resume: false }),
+                root
+            ).toThrow(/not a uuid/);
         }
     });
 
@@ -462,21 +432,14 @@ describe('the docker run arguments', () => {
         const ROOT = '55555555-5555-4555-8555-555555555555';
 
         it('composes the per-thread-root store from the claim fields', () => {
-            expect(transcriptDir(loadDriverConfig({}), job)).toBe(
-                `/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`
-            );
+            expect(transcriptDir(job)).toBe(`/task/.factory/transcripts/${job.id}`);
             // A follow-up is a NEW job row resuming the parent conversation: its store is the
             // thread's, keyed by the same root the worktree is keyed by.
-            expect(transcriptDir(loadDriverConfig({}), { ...job, rootJobId: ROOT })).toBe(
-                `/workspaces/bellows/${USER}/.factory/transcripts/${ROOT}`
-            );
+            expect(transcriptDir({ ...job, rootJobId: ROOT })).toBe(`/task/.factory/transcripts/${ROOT}`);
         });
 
-        it('refuses a null workspace and a non-uuid thread root', () => {
-            expect(() => transcriptDir(loadDriverConfig({}), { ...job, workspacePath: null })).toThrow(
-                /no usable workspace path/
-            );
-            expect(() => transcriptDir(loadDriverConfig({}), { ...job, rootJobId: '../../etc' })).toThrow(/not a uuid/);
+        it('refuses a non-uuid thread root', () => {
+            expect(() => transcriptDir({ ...job, rootJobId: '../../etc' })).toThrow(/not a uuid/);
         });
     });
 });
@@ -658,7 +621,7 @@ describe("the board's environment", () => {
         );
         // The one WORKDIR on the line is the runner's own, with the mount in it.
         expect(line.filter((arg) => arg === 'WORKDIR')).toHaveLength(0);
-        expect(line).toEqual(expect.arrayContaining([`WORKDIR=/workspaces/bellows/${USER}`]));
+        expect(line).toEqual(expect.arrayContaining([`WORKDIR=${TASK_MOUNT}`]));
     });
 
     it.each<[string, Record<string, string>]>([
@@ -737,10 +700,9 @@ describe('the close-time claude-code turn count', () => {
             '--security-opt',
             'no-new-privileges',
             '--rm',
-            '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            ...taskMountArgs(job),
             '-e',
-            `CLAUDE_TRANSCRIPT_DIR=/workspaces/bellows/${USER}/.factory/transcripts/${job.id}`,
+            `CLAUDE_TRANSCRIPT_DIR=/task/.factory/transcripts/${job.id}`,
             '-e',
             `CLAUDE_SESSION_ID=${SESSION}`,
             // The per-run delta bound: a follow-up resumes this transcript, so only the
@@ -914,9 +876,8 @@ describe('an opencode runner', () => {
                 `factory.job=${job.id}`,
                 '--label',
                 `factory.lease=${job.leaseToken}`,
-                '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-                `WORKDIR=/workspaces/bellows/${USER}`,
+                ...taskMountArgs(job),
+                `WORKDIR=${TASK_MOUNT}`,
                 '-e',
                 'ANTHROPIC_API_KEY',
             ])
@@ -931,12 +892,12 @@ describe('scraping the session opencode used', () => {
      * node — the job container is already gone by the time it runs, and the driver has no host
      * path into a named volume. Pure and pinned for the same reason dockerArgs is.
      */
-    it('refuses to build a readout argv for a claim whose workspace path cannot be asserted', () => {
-        // The path lands in the mount's volume-subpath now, so it is asserted before any argv
-        // exists — a malformed claim produces no container, not one mounted somewhere unintended.
-        const broken = { ...opencodeJob, workspacePath: '../../etc' };
-        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({}), broken, START)).toThrow(/workspace path/);
-        expect(() => opencodeCacheProbeArgs(loadDriverConfig({}), broken)).toThrow(/workspace path/);
+    it('refuses to build a readout argv for a claim whose thread root cannot be asserted', () => {
+        // The root names the volume the readout mounts, so it is asserted before any argv exists —
+        // a malformed claim produces no container, not one mounted somewhere unintended.
+        const broken = { ...opencodeJob, rootJobId: '../../etc' };
+        expect(() => opencodeSessionReadoutArgs(loadDriverConfig({}), broken, START)).toThrow(/not a uuid/);
+        expect(() => opencodeCacheProbeArgs(loadDriverConfig({}), broken)).toThrow(/not a uuid/);
     });
 
     it('reads the session database out of the member’s data directory, root sessions only', () => {
@@ -948,18 +909,17 @@ describe('scraping the session opencode used', () => {
             '--security-opt',
             'no-new-privileges',
             '--rm',
-            '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            ...taskMountArgs(job),
             '-e',
-            `OPENCODE_DB=/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
+            `OPENCODE_DB=/task/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
             '-e',
             // The scope: the session database is per member, so the readout answers only the
             // session whose `directory` is the working directory the RUN container had — the
-            // member root here, since this job names no repo. Without it, two concurrent tasks
+            // task volume's root here, since this job names no repo. Without it, two concurrent tasks
             // of one member share the database and the newest-root-session scrape answers
             // whichever task closed last (observed 2026-09-11: two /fix tasks recorded one
             // session id, and both their follow-ups resumed the same conversation).
-            `OPENCODE_DIR=/workspaces/bellows/${USER}`,
+            `OPENCODE_DIR=${TASK_MOUNT}`,
             '-e',
             // The per-run delta bound: a follow-up resumes the same root conversation, so the
             // turn count is bounded to the messages written at or after this run began.
@@ -977,7 +937,7 @@ describe('scraping the session opencode used', () => {
             { ...opencodeJob, repo: 'Bellows-AI/factory' },
             START
         );
-        expect(line).toContain(`OPENCODE_DIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
+        expect(line).toContain(`OPENCODE_DIR=${TASK_MOUNT}/factory`);
     });
 
     it('pulls the session id, finish reason and context stats out of the readout’s answer', () => {
@@ -1116,10 +1076,9 @@ describe('the cache watch', () => {
             '--security-opt',
             'no-new-privileges',
             '--rm',
-            '--mount',
-            `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
+            ...taskMountArgs(job),
             '-e',
-            `OPENCODE_DB=/workspaces/bellows/${USER}/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
+            `OPENCODE_DB=/task/.factory/opencode/${opencodeJob.id}/opencode/opencode.db`,
             '-e',
             // The turn count rides from the driver's own constant, so the probe and the verdict
             // cannot drift apart.
@@ -1671,7 +1630,7 @@ function dockerRunner(
         sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
     } = {}
 ): ReturnType<typeof createDockerRunner> {
-    return createDockerRunner(loadDriverConfig(env), spawnFn, exec, {
+    return createDockerRunner(loadDriverConfig(env), spawnFn, exec ? withTaskVolume(exec) : exec, {
         ...(files ? { files } : {}),
         steps,
         ...(endpoint ? { endpoint } : {}),
@@ -1702,6 +1661,35 @@ describe('the docker runner', () => {
         });
         const outcome = await runner.run(job, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 125, started: false });
+    });
+
+    it('starts no runner on a task volume the reaper deleted since the group was made: a transient refusal, no empty volume (issue #775)', async () => {
+        let inspects = 0;
+        const calls: string[][] = [];
+        const exec = (args: string[]) => {
+            calls.push(args);
+            // The ensure and the group's guard find the volume; the runner's guard finds it gone.
+            if (args[0] === 'volume' && args[1] === 'inspect' && args[2] === '--format' && ++inspects > 2) {
+                throw Object.assign(new Error('inspect failed'), { stderr: 'Error: No such volume: x' });
+            }
+            return withTaskVolume(noContainer)(args);
+        };
+        const spawnFn = vitest.fn(() => fakeChild('', '', 0));
+        const runner = createDockerRunner(
+            loadDriverConfig({ RUNNER_SERVICES: '0' }),
+            spawnFn as unknown as typeof spawn,
+            exec,
+            {
+                steps: fakeSteps().sink,
+                sleep: async () => {},
+            }
+        );
+        const refused = await runner.run(job, { id: SESSION, resume: false }).catch((e: unknown) => e);
+
+        expect(refused).toBeInstanceOf(StartupRefused);
+        expect((refused as StartupRefused).startupCause).toBe('transient');
+        expect(calls.some((args) => args[0] === 'create' && args.includes(containerName(job)))).toBe(false);
+        expect(spawnFn).not.toHaveBeenCalled();
     });
 
     // Issue #452: the runner is created, handed its managed settings as a root-owned 0444
@@ -3699,7 +3687,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const outcome = await createDockerRunner(
             cfg,
             fn,
-            exec as unknown as (args: string[]) => Promise<{ stdout: string }>,
+            withTaskVolume(exec as unknown as (args: string[]) => Promise<{ stdout: string }>),
             { steps: fakeSteps().sink }
         ).run(job, { id: SESSION, resume: false });
 
@@ -4034,13 +4022,17 @@ describe('publishing the produced work', () => {
         expect(publishPlan({ ...job, command: 'fix #44.' }, NOW).issueNumber).toBe(44);
     });
 
-    it('builds the checkout path from the workspace and repo label, asserting both', () => {
-        expect(repoPath(loadDriverConfig({}), ISSUE_JOB)).toBe(`/workspaces/bellows/${USER}/factory`);
-        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, workspacePath: null })).toBeNull();
-        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, workspacePath: '../etc' })).toBeNull();
-        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'just-a-name' })).toBeNull();
-        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'o/..' })).toBeNull();
-        expect(repoPath(loadDriverConfig({}), { ...ISSUE_JOB, repo: 'o/.' })).toBeNull();
+    it('builds the checkout directory and clone URL from the repo label, asserting it', () => {
+        expect(checkoutDir(ISSUE_JOB)).toBe(`${TASK_MOUNT}/factory`);
+        expect(remoteUrl(loadDriverConfig({}), ISSUE_JOB)).toBe('https://github.com/Bellows-AI/factory.git');
+        expect(remoteUrl(loadDriverConfig({ REPO_CLONE_BASE: 'file:///origins' }), ISSUE_JOB)).toBe(
+            'file:///origins/Bellows-AI/factory.git'
+        );
+        // A dot-segment is the traversal; a dot-prefixed name is the task volume's own (`.factory`, `.<name>.sync`).
+        for (const repo of ['just-a-name', 'o/..', 'o/.', 'o/.factory', 'o/.hidden']) {
+            expect(checkoutDir({ ...ISSUE_JOB, repo }), repo).toBeNull();
+            expect(remoteUrl(loadDriverConfig({}), { ...ISSUE_JOB, repo }), repo).toBeNull();
+        }
     });
 
     /*
@@ -4052,70 +4044,75 @@ describe('publishing the produced work', () => {
     const ROOT = '55555555-5555-4555-8555-555555555555';
     const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
 
-    it('computes the worktree path and branch from the thread root', () => {
-        expect(worktreeRelDir(repoJob)).toBe(`bellows/${USER}/.worktrees/${job.id}`);
-        // A follow-up is a NEW job row resuming the parent conversation: its worktree is the
+    it('computes the checkout key and branch from the thread root', () => {
+        expect(checkoutKey(repoJob)).toBe(`${job.id}/factory`);
+        // A follow-up is a NEW job row resuming the parent conversation: its checkout is the
         // thread's, so it lands in the tree the session (and the parent's work) lives in.
-        expect(worktreeRelDir({ ...repoJob, rootJobId: ROOT })).toBe(`bellows/${USER}/.worktrees/${ROOT}`);
-        expect(worktreeDir(loadDriverConfig({}), { ...repoJob, rootJobId: ROOT })).toBe(
-            `/workspaces/bellows/${USER}/.worktrees/${ROOT}`
-        );
+        expect(checkoutKey({ ...repoJob, rootJobId: ROOT })).toBe(`${ROOT}/factory`);
+        expect(checkoutDir({ ...repoJob, rootJobId: ROOT })).toBe(`${TASK_MOUNT}/factory`);
         expect(worktreeBranch({ ...repoJob, rootJobId: ROOT })).toBe(`factory/${ROOT}`);
     });
 
-    it('refuses a worktree path it could not assert', () => {
-        // The same posture repoPath pins above: every board-supplied half is asserted before it
-        // joins a path, and here the value becomes the agent's working directory.
+    it('refuses a checkout key it could not assert', () => {
+        // The same posture the checkout directory pins above: every board-supplied half is asserted
+        // before it joins a path, and here the value becomes the agent's working directory.
         const broken: BoardJob[] = [
-            { ...repoJob, workspacePath: null },
-            { ...repoJob, workspacePath: '../etc' },
-            { ...repoJob, workspacePath: `bellows/not-a-uuid` },
             { ...repoJob, repo: 'just-a-name' },
             { ...repoJob, repo: 'o/..' },
             { ...repoJob, repo: 'o/.' },
             { ...repoJob, rootJobId: 'not-a-uuid' },
             { ...repoJob, rootJobId: '../../etc' },
         ];
-        for (const job of broken) expect(worktreeRelDir(job), job.repo ?? undefined).toBeNull();
+        for (const job of broken) expect(checkoutKey(job), job.repo ?? undefined).toBeNull();
     });
 
-    it('runs a repo job inside its worktree, and a repo-less job at the member root', () => {
+    it('runs a repo job inside its checkout, and a repo-less job at the task volume root', () => {
         const withRepo = dockerArgs(
             loadDriverConfig({}),
             repoJob,
             { id: SESSION, resume: false },
             { envFile: '/tmp/env-file' }
         );
-        expect(withRepo).toContain(`WORKDIR=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
-        // A command-only job names no repo: no worktree exists, and the member root is where it
-        // always started — the argv stays byte-identical to what it was.
+        expect(withRepo).toContain(`WORKDIR=${TASK_MOUNT}/factory`);
+        // A command-only job names no repo: no checkout exists, and the task volume's root is where
+        // it starts.
         expect(
             dockerArgs(loadDriverConfig({}), job, { id: SESSION, resume: false }, { envFile: '/tmp/env-file' })
-        ).toContain(`WORKDIR=/workspaces/bellows/${USER}`);
+        ).toContain(`WORKDIR=${TASK_MOUNT}`);
     });
 
-    it('refuses to run a repo job whose worktree path cannot be asserted', () => {
+    it('refuses to run a repo job whose thread root cannot be asserted', () => {
         expect(() =>
             dockerArgs(loadDriverConfig({}), { ...repoJob, rootJobId: 'not-a-uuid' }, { id: SESSION, resume: false })
-        ).toThrow(/worktree/);
+        ).toThrow(/task worktree/);
     });
 
-    // What the sync does is executed for real in worktree*.test.ts and scripts-worktree-lock.test.ts;
+    // What the sync does is executed for real in scripts-task-checkout*.test.ts;
     // these pins have no behavioural twin.
-    it('runs every git call of the sync without a shell, and anchors the transient marker', () => {
-        expect(gitWorktreeScript).toContain('execFileSync');
-        expect(gitWorktreeScript).not.toContain('execSync(');
-        // A rebase that fails without a conflict aborts itself — the worktree never sits
-        // mid-rebase — and the refusal names what happened.
-        expect(gitWorktreeScript).toContain("inw('rebase', '--abort')");
-        expect(gitWorktreeScript).toContain('rebased onto');
-        expect(TRANSIENT_SYNC_REASON.test('transient worktree sync: still held')).toBe(true);
-        // Anchored at the head: ordinary refusal reasons splice member-controlled git stderr,
-        // and a conflicted file named after the marker must never read as transient.
-        expect(TRANSIENT_SYNC_REASON.test('conflict in transient worktree sync.md')).toBe(false);
+    it('runs every git call of the sync without a shell', () => {
+        expect(taskCheckoutScript).toContain('execFileSync');
+        expect(taskCheckoutScript).not.toContain('execSync(');
+        // A rebase that fails without a conflict aborts itself: the checkout never sits mid-rebase.
+        expect(taskCheckoutScript).toContain("inw('rebase', '--abort')");
     });
 
-    it('hands the sync the clone, the worktree and the branch, by env', async () => {
+    it('creates no task volume for an attempt that was aborted before its group', async () => {
+        const calls: string[][] = [];
+        const exec = async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'volume' && args[1] === 'inspect') throw new Error('Error: No such volume: x');
+            return { stdout: '' };
+        };
+        const aborted = new AbortController();
+        aborted.abort();
+        const runner = createDockerRunner(loadDriverConfig({}), spawnChild('', '', 0), exec, {
+            steps: fakeSteps().sink,
+        });
+        await expect(runner.syncCheckout(repoJob, aborted.signal)).rejects.toThrow();
+        expect(calls.some((args) => args[0] === 'volume' && args[1] === 'create')).toBe(false);
+    });
+
+    it('hands the sync the checkout, the remote and the branch, by env', async () => {
         const supervised = syncSteps();
         const d = labelDaemon();
         const runner = dockerRunner(d.exec, { steps: supervised.sink });
@@ -4123,25 +4120,20 @@ describe('publishing the produced work', () => {
 
         expect(result).toEqual({ ok: true, reason: null });
         const [sync] = supervised.ofKind('sync');
-        expect(sync?.argv).toEqual(['node', '-e', gitWorktreeScript]);
-        // The clone — where origin lives and the worktree is created FROM. Paths, not credentials:
+        expect(sync?.argv).toEqual(['node', '-e', taskCheckoutScript]);
+        // The checkout in the task volume and the remote it is cloned from. Paths, not credentials:
         // the claim env rides the step's own env, exactly as it rode the env file.
         expect(sync?.env).toMatchObject({
-            REPO: `/workspaces/bellows/${USER}/factory`,
-            WORKTREE: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+            CHECKOUT: `${TASK_MOUNT}/factory`,
+            REMOTE: 'https://github.com/Bellows-AI/factory.git',
             BRANCH: `factory/${job.id}`,
         });
         // The step goes to the attempt's supervisor, under the control token only it holds.
         expect(supervised.submitted.map((entry) => entry.token)).toEqual([CONTROL_TOKEN]);
-        // The supervisor mounts the job's own subtree — the same scoping every other container
+        // The supervisor mounts the thread's own task volume — the same scoping every other container
         // this runner starts gets, nothing broader — and the sync starts no container of its own.
         const create = d.calls.find((a) => a[0] === 'create' && a.includes(supervisorName(repoJob)))!;
-        expect(create).toEqual(
-            expect.arrayContaining([
-                '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-            ])
-        );
+        expect(create).toEqual(expect.arrayContaining(taskMountArgs(job)));
         expect(d.calls.some((a) => a[0] === 'run')).toBe(false);
     });
 
@@ -4204,131 +4196,19 @@ describe('publishing the produced work', () => {
         expect(fresh?.env).toMatchObject({ GITHUB_TOKEN: 't0k-3n' });
     });
 
-    /* The terminal reclaim (issue #47): the one step that undoes the sync, naming only the clone
-     * and the tree — no BRANCH, no credential helper, no claim env. The thread has no attempt, so
-     * it runs in a supervisor-only group of its own, under a token of its own, and ends it. */
-    it('reclaims the worktree through a supervisor-only group of its own, naming only paths', async () => {
+    // The terminal reclaim (issue #775): the thread's tree lives on its own task volume, which only the
+    // reaper deletes, so the reclaim is an acknowledged no-op — no group, no step, no daemon call.
+    it.each([
+        ['a job with a repository', { ...repoJob, env: { GITHUB_TOKEN: 't0k-3n' } }],
+        ['a job that names none', job],
+        ['a thread root that is no uuid', { ...repoJob, rootJobId: 'not-a-uuid' }],
+    ])('acknowledges the reclaim of %s without asking the daemon anything', async (_what, of) => {
         const d = labelDaemon();
-        const { endpoint, closed } = reclaimEndpoint();
-        const supervised = fakeSteps((step) =>
-            ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
-        );
-        const runner = dockerRunner(d.exec, { steps: supervised.sink, endpoint });
-        // The checkout declares a service: a reclaim's group brings none of it (#773 D11).
-        const result = await runner.reclaimWorktree({
-            ...repoJob,
-            env: { GITHUB_TOKEN: 't0k-3n' },
-            services: [{ name: 'db', image: 'postgres:17', environment: [] }],
-        });
-
-        expect(result).toEqual({ ok: true, removed: true, reason: null });
-        const [reclaim] = supervised.ofKind('reclaim');
-        expect(reclaim?.argv).toEqual(['node', '-e', gitWorktreeRemoveScript]);
-        // Reclaim touches no credential and no branch: the thread is terminal, so there is no
-        // fetch to authenticate and no follow-up branch to preserve.
-        expect(reclaim?.env).toEqual({
-            REPO: `/workspaces/bellows/${USER}/factory`,
-            WORKTREE: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
-            // The thread's review roots go with it (issue #774).
-            REVIEW_ROOTS: `/workspaces/bellows/${USER}/.worktrees/${job.id}.reviews`,
-        });
-        // Under the token its own endpoint opened — not the attempt's — and ended with the group.
-        expect(supervised.submitted.every((entry) => entry.token === RECLAIM_TOKEN)).toBe(true);
-        expect(supervised.ofKind('finish')).toHaveLength(1);
-        expect(closed).toEqual([RECLAIM_TOKEN]);
-        // A supervisor and nothing else, under a lease of its own, with the control pair off argv;
-        // it mounts the job's own subtree like the sync it undoes, and it is gone afterwards.
-        const creates = d.calls.filter((a) => a[0] === 'create');
-        expect(creates).toHaveLength(1);
-        const create = creates[0]!;
-        expect(create).toContain('--entrypoint');
-        expect(create).not.toContain('db:127.0.0.1');
-        // The acquisition token rides only as the holder label the orphan reaper asks the board about (#829).
-        expect(create.filter((arg) => arg.includes(repoJob.leaseToken))).toEqual([
-            `factory.holder=${repoJob.leaseToken}`,
-        ]);
-        expect(create.join(' ')).not.toContain(RECLAIM_TOKEN);
-        expect(create).toEqual(
-            expect.arrayContaining([
-                '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-            ])
-        );
-        // Issue #814: the one throwaway container, before the group — the tool uid's release of
-        // what it closed, which the uid-1000 reclaim could not empty.
-        expect(d.calls.filter((a) => a[0] === 'run')).toEqual([toolTreeReleaseArgs(loadDriverConfig({}), repoJob)]);
-        expect(d.calls.findIndex((a) => a[0] === 'run')).toBeLessThan(d.calls.findIndex((a) => a[0] === 'create'));
-        expect(d.containers.size).toBe(0);
-        // Issue #821 D16: the group's supervisor and every mailbox carry the reclaim mark, so the
-        // orphan reaper never reads its lease of its own as a dead attempt's.
-        const volumes = d.calls.filter((a) => a[0] === 'volume' && a[1] === 'create');
-        expect(volumes).toHaveLength(Object.keys(MAILBOXES).length - 1); // no review mailbox without a reviewer
-        for (const made of [create, ...volumes]) {
-            expect(made).toEqual(
-                expect.arrayContaining(['factory.reclaim=true', `factory.holder=${repoJob.leaseToken}`])
-            );
-        }
-    });
-
-    it("marks no attempt's own group as a reclaim group (#821 D16)", async () => {
-        const d = labelDaemon();
-        await dockerRunner(d.exec, { steps: syncSteps().sink }).syncCheckout(repoJob);
-        const made = d.calls.filter((a) => a[0] === 'create' || (a[0] === 'volume' && a[1] === 'create'));
-        expect(made.length).toBeGreaterThan(0);
-        expect(made.some((args) => args.includes('factory.reclaim=true'))).toBe(false);
-        expect(made.some((args) => args.some((arg) => arg.startsWith('factory.holder=')))).toBe(false);
-    });
-
-    it('releases the tree as the tool uid, hardened, naming only the tree', () => {
-        const args = toolTreeReleaseArgs(loadDriverConfig({}), repoJob) ?? [];
-        expect(args.slice(0, 1)).toEqual(['run']);
-        expect(args).toEqual(expect.arrayContaining(['--cap-drop', 'ALL', '--rm']));
-        expect(args.join(' ')).toContain('--security-opt no-new-privileges');
-        expect(args.join(' ')).toContain('--user 1001:1000');
-        expect(args).toContain(`WORKTREE=/workspaces/bellows/${USER}/.worktrees/${job.id}`);
-        expect(args.slice(-4)).toEqual([
-            'node',
-            executorImage(loadDriverConfig({}), repoJob.executorType),
-            '-e',
-            toolTreeReleaseScript,
-        ]);
-        expect(args.some((arg) => arg.includes('--cap-add'))).toBe(false);
-    });
-
-    it('reclaims even when the release container fails: the reclaim’s own verdict decides', async () => {
-        const d = labelDaemon();
-        const failing = async (args: string[]) => {
-            if (args[0] === 'run') throw new Error('no such image');
-            return d.exec(args);
-        };
-        const { endpoint } = reclaimEndpoint();
-        const supervised = fakeSteps((step) =>
-            ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
-        );
-        const runner = dockerRunner(failing, { steps: supervised.sink, endpoint });
-        expect(await runner.reclaimWorktree(repoJob)).toEqual({ ok: true, removed: true, reason: null });
-    });
-
-    it('refuses a reclaim by saying this driver has no supervisor endpoint to run it through', async () => {
-        const supervised = fakeSteps();
-        const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
-
-        const result = await runner.reclaimWorktree(repoJob);
-
-        expect(result).toMatchObject({ ok: false, removed: false });
-        expect(result.reason).toContain('no supervisor endpoint');
-        expect(supervised.steps()).toEqual([]);
-    });
-
-    it('reclaims nothing, run untouched, for a job that never had a worktree', async () => {
-        const calls: string[][] = [];
-        const exec = vitest.fn(async (args: string[]) => {
-            calls.push(args);
-            return { stdout: '' };
-        }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
-        const runner = dockerRunner(exec);
-        expect(await runner.reclaimWorktree(job)).toEqual({ ok: true, removed: false, reason: null });
-        expect(calls).toHaveLength(0);
+        const supervised = syncSteps();
+        const runner = dockerRunner(d.exec, { steps: supervised.sink });
+        expect(await runner.reclaimWorktree(of)).toEqual({ ok: true, removed: false, reason: null });
+        expect(d.calls).toEqual([]);
+        expect(supervised.submitted).toEqual([]);
     });
 
     /*
@@ -4381,8 +4261,6 @@ describe('publishing the produced work', () => {
             ok: false,
             reason: `the worktree sync failed: the step exceeded its ${SYNC_DEADLINE_MS}ms deadline`,
         });
-        expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(false);
-        expect(result.settled).toBeUndefined();
     });
 
     // The sync is never abandoned mid-write: a stand-down — or an attempt whose channel closed —
@@ -4410,46 +4288,15 @@ describe('publishing the produced work', () => {
         expect(d.calls.filter((a) => a[0] === 'create').length).toBe(created * 2);
     });
 
-    // Issue #559: the contention verdict reaches the loop unchanged — the anchored marker is what
-    // hands the claim back to the board — and the sync never shortens the script's lock wait.
-    it('passes checkout contention through as the transient reason, with the shipped lock wait', async () => {
-        const reason =
-            'transient worktree sync: the checkout lock /w/.git/factory-sync.lock is still held after 20000ms';
-        const supervised = syncSteps(`${JSON.stringify({ ok: false, reason })}\n`);
-        const runner = dockerRunner(emptyDaemon, { steps: supervised.sink });
-
-        const result = await runner.syncCheckout(repoJob);
-
-        expect(result).toMatchObject({ ok: false, reason });
-        expect(TRANSIENT_SYNC_REASON.test(result.reason ?? '')).toBe(true);
-        expect(
-            Object.keys(supervised.ofKind('sync')[0]!.env).some((name) => name.startsWith('SYNC_LOCK_WAIT_MS'))
-        ).toBe(false);
-    });
-
     it('carries the script’s failure kind through the sync step’s stdout (issue #666)', async () => {
-        const verdict = { ok: false, reason: 'the repository clone /w/r does not exist', kind: 'missing_clone' };
+        const verdict = {
+            ok: false,
+            reason: 'the branch factory/x is gone from the remote',
+            kind: 'branch_unrestorable',
+        };
         const runner = dockerRunner(emptyDaemon, { steps: syncSteps(`${JSON.stringify(verdict)}\n`).sink });
 
         expect(await runner.syncCheckout(repoJob)).toMatchObject(verdict);
-    });
-
-    it('names why the reclaim verdict was unreadable', async () => {
-        const { runner } = reclaimRunner('rm: permission denied\n');
-        const result = await runner.reclaimWorktree(repoJob);
-        expect(result.ok).toBe(false);
-        expect(result.removed).toBe(false);
-        expect(result.reason).toContain('the worktree reclaim answered nothing readable');
-        expect(result.reason).toContain('rm: permission denied');
-    });
-
-    it('answers the refusal verbatim when the reclaim script refuses', async () => {
-        const { runner } = reclaimRunner(
-            '{"ok":false,"removed":false,"reason":"refusing to remove /x: a git tree that is not a registered worktree"}'
-        );
-        const result = await runner.reclaimWorktree(repoJob);
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('registered worktree');
     });
 
     // The fence before the sync (PR #46 review): the loop calls syncCheckout before the
@@ -4552,7 +4399,7 @@ describe('publishing the produced work', () => {
         });
         await runner.publishGit(ISSUE_JOB);
 
-        const wt = `/workspaces/bellows/${USER}/.worktrees/${job.id}`;
+        const wt = `/task/factory`;
         expect(steps.steps().length).toBeGreaterThan(0);
         for (const step of steps.steps()) {
             if (step.argv.some((x) => x.includes('shortstat'))) {
@@ -4574,12 +4421,7 @@ describe('publishing the produced work', () => {
         // The steps run in the supervisor, which mounts the job's own subtree — the publish never
         // sees another member's tree.
         const create = docker.find((a) => a[0] === 'create' && a.includes(supervisorName(ISSUE_JOB)))!;
-        expect(create).toEqual(
-            expect.arrayContaining([
-                '--mount',
-                `type=volume,src=factory-ai_workspaces,volume-subpath=bellows/${USER},target=/workspaces/bellows/${USER}`,
-            ])
-        );
+        expect(create).toEqual(expect.arrayContaining(taskMountArgs(job)));
     });
 
     // The loop asks the board for a token right before the push (docs/connections.md); the env the
@@ -4805,7 +4647,7 @@ describe('publishing the produced work', () => {
 
         expect(shapesOf(steps)).toEqual(['probe']);
         const [probe] = steps.ofKind('probe');
-        expect(probe?.env).toEqual({ REPO: worktreeDir(loadDriverConfig({}), ISSUE_JOB) });
+        expect(probe?.env).toEqual({ REPO: checkoutDir(ISSUE_JOB) });
         expect(JSON.stringify(steps.steps())).not.toContain('t0k-3n');
     });
 
@@ -5006,7 +4848,7 @@ describe('the block-helper transport (issue #207)', () => {
             effectId: 'effect-1',
         });
         expect(receiptOrder(supervised.steps())).toEqual(['read', 'started', 'helper', 'done']);
-        expect(supervised.steps()[0]!.env.LEDGER).toMatch(/\/\.worktrees\/[^/]+\/\.factory\/helpers\.json$/);
+        expect(supervised.steps()[0]!.env.LEDGER).toBe(`${TASK_MOUNT}/factory/.factory/helpers.json`);
 
         const lost = helperRunner(async () => {
             throw new StepChannelClosed('the helper');
@@ -5054,7 +4896,7 @@ describe('the block-helper transport (issue #207)', () => {
         // Each call is its own operation: a helper is never replayed from an earlier answer.
         expect(step?.id).toMatch(/^helper-[0-9a-f]{16}-/);
         // The task worktree, when the job names a repo — the same tree the agent run edits.
-        expect(step?.cwd).toBe(`/workspaces/bellows/${USER}/.worktrees/${job.id}`);
+        expect(step?.cwd).toBe(`/task/factory`);
         // A read-only helper (githubWriting: false) gets its bounded input and nothing of the claim env.
         expect(step?.env).toEqual({ HELPER_INPUT: JSON.stringify({ a: 1 }) });
         // No container of its own: the daemon never saw the helper.
@@ -5169,7 +5011,7 @@ describe('every container the driver runs is hardened (#382)', () => {
             () => supervisorCreateArgs(config(), job, { exporting: true, agentless: false }, '/tmp/supervisor.env'),
         ],
         [
-            'the task supervisor of an agentless or reclaim group',
+            'the task supervisor of an agentless group',
             () => supervisorCreateArgs(config(), repoJob, { exporting: false, agentless: true }, '/tmp/supervisor.env'),
         ],
         ['the claude transcript exporter', () => exporterCreateArgs(config(), job, START)],
@@ -5177,7 +5019,6 @@ describe('every container the driver runs is hardened (#382)', () => {
             'a declared service',
             () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] }, supervisorName(job)),
         ],
-        ['the tool tree release', () => toolTreeReleaseArgs(config(), repoJob) ?? []],
     ];
 
     it.each(builders)('drops every capability on %s', (_name, build) => {
@@ -5203,7 +5044,7 @@ describe('every container the driver runs is hardened (#382)', () => {
     });
 
     /*
-     * The paths that used to build a `docker run` argv INLINE — the worktree reclaim, the publish
+     * The paths that used to build a `docker run` argv INLINE — the publish
      * steps, the tree probe and the block helpers — now ask the task supervisor for a step instead
      * (#771). What they leave on the daemon is the group they ran in, so what is asserted is every
      * container THEY create (the supervisor of a group they open) and that none of them runs one
@@ -5236,10 +5077,6 @@ describe('every container the driver runs is hardened (#382)', () => {
 
     it.each([
         [
-            'the worktree reclaim',
-            (r: ReturnType<typeof createDockerRunner>) => r.reclaimWorktree({ ...job, repo: 'Bellows-AI/factory' }),
-        ],
-        [
             'a block helper',
             (r: ReturnType<typeof createDockerRunner>) =>
                 r.runHelper(job, { helperId: 'noop', phase: 'pre', input: { a: 1 }, githubWriting: false }),
@@ -5256,15 +5093,14 @@ describe('every container the driver runs is hardened (#382)', () => {
             'the startup sync',
             (r: ReturnType<typeof createDockerRunner>) => r.syncCheckout({ ...job, repo: 'Bellows-AI/factory' }),
         ],
-    ])('hardens every container %s creates or runs', async (name, drive) => {
+    ])('hardens every container %s creates or runs', async (_name, drive) => {
         const { created, runs } = await containersFrom(
             drive as (r: ReturnType<typeof createDockerRunner>) => Promise<unknown>
         );
         // The load-bearing guard: a path that created nothing would pass the loop below vacuously.
         expect(created.length).toBeGreaterThan(0);
-        // A step runs in the supervisor, never in a container of its own. The one throwaway is the
-        // tool uid's release of the tree before the reclaim (issue #814), hardened like the rest.
-        expect(runs).toHaveLength(name === 'the worktree reclaim' ? 1 : 0);
+        // A step runs in the supervisor, never in a container of its own.
+        expect(runs).toHaveLength(0);
         for (const argv of [...created, ...runs]) {
             expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
             expect(hasPair(argv, '--security-opt', 'no-new-privileges')).toBe(true);
@@ -6980,35 +6816,6 @@ describe('docker waits for the supervisor of a started group to make contact (#8
         expect(slept.length).toBeLessThanOrEqual(2);
         expect(d.calls.some((a) => a[0] === 'rm' && a.includes(supervisorName(repoJob)))).toBe(true);
     });
-
-    it('runs a reclaim only once its supervisor has pulled', async () => {
-        const supervised = fakeSteps((step) =>
-            ok(step.kind === 'reclaim' ? '{"ok":true,"removed":true,"reason":null}' : '')
-        );
-        const { endpoint } = reclaimEndpoint();
-        const submittedAtSleep: number[] = [];
-        const runner = dockerRunner(labelDaemon().exec, {
-            steps: contactAfter(supervised, [false, false, true]),
-            endpoint,
-            sleep: async () => void submittedAtSleep.push(supervised.submitted.length),
-        });
-        expect(await runner.reclaimWorktree(repoJob)).toEqual({ ok: true, removed: true, reason: null });
-        expect(submittedAtSleep).toEqual([0, 0]);
-    });
-
-    it('fails a reclaim whose supervisor never pulled, and removes its group', async () => {
-        const supervised = fakeSteps();
-        const { endpoint } = reclaimEndpoint();
-        const d = labelDaemon();
-        const result = await dockerRunner(d.exec, {
-            steps: contactAfter(supervised, [false]),
-            endpoint,
-        }).reclaimWorktree(repoJob);
-        expect(result.ok).toBe(false);
-        expect(result.reason).toContain('never came up');
-        expect(supervised.ofKind('reclaim')).toEqual([]);
-        expect(d.containers.size).toBe(0);
-    });
 });
 
 describe('readDocker and its listing parsers (#869)', () => {
@@ -7123,7 +6930,7 @@ describe('the docker runner and the gates', () => {
     };
     const gate = {
         command: 'npm test',
-        cwd: `/workspaces/bellows/${USER}/.worktrees/${job.id}`,
+        cwd: `/task/factory`,
         env: {},
         timeoutMs: 1000,
     };
@@ -7221,5 +7028,119 @@ describe('untilStandDown', () => {
         own.abort();
 
         expect(seen?.aborted).toBe(true);
+    });
+});
+
+/*
+ * Restoring a thread's task tree (issue #775): a continuing claim whose volume is gone is rebuilt from
+ * the board's checkpoint onto the next generation by a supervised `restore` step that runs before the
+ * sync step; the generation it replaces is removed only after that step reports ok.
+ */
+describe('the docker runner restoring a task volume', () => {
+    const ROOT_ID = '77777777-7777-4777-8777-777777777777';
+    const restoreJob = (over: Partial<BoardJob> = {}): BoardJob => ({
+        ...job,
+        repo: 'acme/widgets',
+        rootJobId: ROOT_ID,
+        followUp: true,
+        env: { GITHUB_TOKEN: 'claim-token' },
+        ...over,
+    });
+    const named = (generation: number) => `factory-task-${ROOT_ID}-${generation}`;
+    const POINTER = {
+        state: 'found' as const,
+        checkpoint: { bytes: 4, truncated: false, chunks: [{ offset: 0, length: 4, sha256: 'c'.repeat(64) }] },
+    };
+    /** A daemon listing `volumes` for the thread; every other verb answers nothing. */
+    const daemon = (volumes: number[]) => {
+        const calls: string[][] = [];
+        const exec = (async (args: string[]) => {
+            calls.push(args);
+            if (args[0] === 'volume' && args[1] === 'ls' && args[3]?.startsWith(`label=${TASK_ROOT_LABEL}=`)) {
+                return { stdout: volumes.map((g) => `${named(g)}\n`).join('') };
+            }
+            if (args[0] === 'volume' && args[1] === 'inspect') {
+                return { stdout: JSON.stringify({ [TASK_ROOT_LABEL]: ROOT_ID }) };
+            }
+            return { stdout: args[0] === 'wait' ? '0\n' : '' };
+        }) as unknown as Parameters<typeof createDockerRunner>[2];
+        return { calls, exec };
+    };
+    const runner = (volumes: number[], steps: ReturnType<typeof fakeSteps>, checkpoints: Pick<Board, 'checkpoint'>) => {
+        const d = daemon(volumes);
+        return {
+            d,
+            runner: createDockerRunner(loadDriverConfig({}), spawnChild('', '', 0), d.exec, {
+                steps: steps.sink,
+                sleep: async () => {},
+                checkpoints,
+            }),
+        };
+    };
+    const restoreStep = (steps: ReturnType<typeof fakeSteps>) =>
+        steps.submitted.find((s) => s.step.id.endsWith('-restore'));
+    const taskCreates = (calls: string[][]) =>
+        calls
+            .filter((a) => a[0] === 'volume' && a[1] === 'create')
+            .flatMap((a) => a.filter((x) => x.startsWith('factory-task-')));
+    const removes = (calls: string[][]) => calls.filter((a) => a[0] === 'volume' && a[1] === 'rm').map((a) => a[2]);
+
+    it('creates the next generation, restores onto it before the sync step, and removes the old one after ok', async () => {
+        const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+        const { d, runner: r } = runner([], steps, { checkpoint: async () => POINTER });
+        const j = restoreJob();
+        const result = await r.syncCheckout(j, undefined, null, 'ghs_x');
+        expect(result).toEqual({ ok: true, reason: null });
+        expect(j.taskGeneration).toBe(2);
+        expect(taskCreates(d.calls)).toEqual([named(2)]);
+        const ids = steps.submitted.map((s) => s.step.id);
+        expect(ids[0]).toMatch(/-restore$/);
+        expect(ids).toHaveLength(2);
+        expect(restoreStep(steps)?.step.env).toMatchObject({ RESTORE_FEED: '1' });
+        expect(steps.submitted[1]?.step.env).toMatchObject({ RESTORE: '1' });
+    });
+
+    it('keeps the older generation when the restore step fails, and fails the sync with its reason', async () => {
+        const steps = fakeSteps((step) =>
+            step.id.endsWith('-restore')
+                ? ok('{"ok":false,"reason":"bundle unreadable"}')
+                : ok('{"ok":true,"reason":null}')
+        );
+        const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
+        const result = await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        expect(result).toMatchObject({ ok: false });
+        expect(result.reason).toContain('bundle unreadable');
+        expect(removes(d.calls)).toEqual([]);
+        // The sync step never ran on the half-restored volume.
+        expect(steps.submitted).toHaveLength(1);
+    });
+
+    it('removes the older generation once the restore of an adopted restored volume reports ok', async () => {
+        const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+        const { d, runner: r } = runner([1, 2], steps, { checkpoint: async () => POINTER });
+        await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        expect(removes(d.calls)).toEqual([named(1)]);
+    });
+
+    it.each([
+        ['none', { state: 'none' as const }],
+        ['gone', { state: 'gone' as const }],
+        ['truncated', { state: 'found' as const, checkpoint: { bytes: 1, truncated: true, chunks: [] } }],
+    ])('ends a follow-up with checkpoint_unrestorable on a %s checkpoint and no volume', async (_n, read) => {
+        const steps = fakeSteps();
+        const { d, runner: r } = runner([], steps, { checkpoint: async () => read });
+        const result = await r.syncCheckout(restoreJob(), undefined, null, 'ghs_x');
+        expect(result).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
+        expect(steps.submitted).toEqual([]);
+        expect(taskCreates(d.calls)).toEqual([]);
+    });
+
+    it('starts a first claim on generation 1 with a fresh clone and no restore', async () => {
+        const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+        const { runner: r } = runner([], steps, { checkpoint: async () => ({ state: 'none' as const }) });
+        const j = restoreJob({ followUp: false });
+        await r.syncCheckout(j, undefined, null, 'ghs_x');
+        expect(j.taskGeneration).toBe(1);
+        expect(restoreStep(steps)).toBeUndefined();
     });
 });

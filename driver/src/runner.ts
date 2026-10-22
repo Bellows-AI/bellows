@@ -102,7 +102,7 @@ export interface RunOutcome {
     /**
      * The run's agent turns — one assistant response cycle in the run's ROOT conversation,
      * counted from the session's own records at close (opencode: the session database the
-     * readout walks; claude-code: the transcript on the workspaces volume). Null when the read
+     * readout walks; claude-code: the transcript on the task volume). Null when the read
      * ran and could not measure — the transcript was gone, or the container died first; absent
      * when no read was attempted. The board stores what arrives: absent
      * and null both land as null — unmeasured, never zero.
@@ -390,11 +390,8 @@ export interface Runner {
      * surviving thread branch (issue #58: git operations that touch the remote belong to the
      * task's beginning and end, never its middle). Called before the runner spawns, so a task
      * starts from the code it is meant to continue. Answers { ok: false, reason } rather than
-     * throwing; the loop turns that into the verdict — except a reason carrying the script's
-     * transient marker (TRANSIENT_SYNC_REASON, issue #307: lock contention on the shared
-     * checkout), which is infrastructure: the loop hands the claim back to the board (issue #559)
-     * and no verdict lands. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a sync
-     * writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
+     * throwing; the loop turns that into the verdict. An aborted `signal` (the attempt's stand-down) detaches the docker client only: a
+     * sync writes the worktree, so it is never killed mid-write, and kubernetes does not take the signal
      * at all — the abandoned sync finishes and `releaseAbandonedSync` hands its claim back.
      * `githubToken` is the board's token minted for the starting claim's fetch; absent, the fetch
      * runs unauthenticated.
@@ -435,18 +432,6 @@ export interface Runner {
      * behind to release, so its runner implements nothing and a loop facing it never calls.
      */
     releaseFence?(job: BoardJob): Promise<void>;
-    /**
-     * Deletes the checkout claim of a job the board no longer knows as live (issue #344): a
-     * driver that died holding the claim leaked it, and when the leaked holder's thread is later
-     * removed, its reclaim is refused by that claim forever — nothing else can see a bare
-     * ConfigMap, so the reclaim loop is the only cleaner. Ownership-safe by construction: `claim`
-     * is the incarnation the refused reclaim read, a claim replaced since is refused before
-     * anything is ended, the holder's groups are confirmed ended first, and the delete carries that
-     * uid, answering true only when that object is the one that went. Optional: kubernetes only —
-     * docker's fence leaves no claim object behind to reap, so its runner implements nothing and
-     * the loop never calls.
-     */
-    reapOrphanedClaim?(job: BoardJob, claim: { uid: string; holder: string }): Promise<boolean>;
     /**
      * Runs one declared block-helper step (issue #207): an allowlisted, board-owned script an
      * expanded workflow `block` node names to run before or after its agent turn. `call.token` is a
@@ -538,7 +523,6 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     finish: 'group',
     reclaimWorktree: 'attempt',
     releaseFence: 'group',
-    reapOrphanedClaim: 'attempt',
     runHelper: 'group',
     runGate: 'group',
     resizeGate: 'group',

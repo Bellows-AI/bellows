@@ -188,11 +188,17 @@ export const SUPERVISOR_DRAIN_MS = 300_000;
  */
 export const SUPERVISOR_REPORT_MS = 60_000;
 /**
- * What the kubelet's (or docker's) backstop deadline allows on top of the run budget: the drain and
- * a minute to report. The supervisor ends the agent at the budget itself; the backstop only ends a
- * supervisor that stopped doing so.
+ * How long the supervisor's finalize stage may take to run the checkpoint and upload it (issue #775),
+ * as one absolute wall-clock bound over the script, every chunk, every retry and the manifest;
+ * `DEFAULT_CHECKPOINT_MS` of supervisor.cjs.
  */
-export const SUPERVISOR_WINDDOWN_MS = SUPERVISOR_DRAIN_MS + SUPERVISOR_REPORT_MS;
+export const SUPERVISOR_CHECKPOINT_MS = 120_000;
+/**
+ * What the kubelet's (or docker's) backstop deadline allows on top of the run budget: the drain, a
+ * minute to report and the checkpoint. The supervisor ends the agent at the budget itself; the
+ * backstop only ends a supervisor that stopped doing so.
+ */
+export const SUPERVISOR_WINDDOWN_MS = SUPERVISOR_DRAIN_MS + SUPERVISOR_REPORT_MS + SUPERVISOR_CHECKPOINT_MS;
 /** How long a Stop's kill order may take to wind the group down before the driver deletes it outright. */
 export const KILL_WINDDOWN_MS = SUPERVISOR_WINDDOWN_MS;
 
@@ -370,6 +376,14 @@ export const SUPERVISOR_ENV = {
     // The claim this supervisor's binding belongs to, and the file a newer holder names itself in.
     claimSeq: 'SUPERVISOR_CLAIM_SEQ',
     bindingFile: 'SUPERVISOR_BINDING_FILE',
+    /** The attempt's checkpoint at finalize (issue #775): the script by content, and the tree it works on. */
+    checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
+    checkpointCheckout: 'SUPERVISOR_CHECKPOINT_CHECKOUT',
+    checkpointBranch: 'SUPERVISOR_CHECKPOINT_BRANCH',
+    checkpointBase: 'SUPERVISOR_CHECKPOINT_BASE',
+    checkpointDir: 'SUPERVISOR_CHECKPOINT_DIR',
+    checkpointOpencodeDb: 'SUPERVISOR_CHECKPOINT_OPENCODE_DB',
+    checkpointMs: 'SUPERVISOR_CHECKPOINT_MS',
 } as const;
 
 /** Where a newer holder names itself to a live supervisor: a file only the supervisor container mounts. */

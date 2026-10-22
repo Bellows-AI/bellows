@@ -60,6 +60,15 @@ every agent it spawns — copy them into each brief.
 - **Cap every agent at 250K tokens of context.** At the cap it stops and writes
   `<scratchpad>/handoff-<N>.md` — done, remaining, files touched, next command — and a fresh agent
   resumes from that note, never from the old context.
+- **Watch every background agent.** When the first one launches, arm a watchdog: a scheduled
+  message back into this conversation every 20 minutes (the host's wake tool — `send_later`,
+  `ScheduleWakeup` or a cron), re-armed on each tick until the run ends or blocks on the user. A
+  tick reads each agent's progress — `git log -1` in its tree, a hash of its tree's content
+  (`git diff HEAD` plus untracked files) compared with the last tick's, its transcript and log
+  mtimes, its live suite processes — and reports one line. No commit, content change, transcript
+  or log advance for 45
+  minutes, or 90 minutes on one task, is stuck: stop the agent, have it or you write
+  `<scratchpad>/handoff-<N>.md`, and resume with a fresh agent or in this conversation.
 
 ## Phase 0 — Fetch the issue
 
@@ -145,7 +154,11 @@ format drift) to settle what it flags.
 In order:
 
 1. RED: write a test that reproduces the issue. Run it (in WORKTREE) and confirm it FAILS for the
-   expected reason — a setup error is not a red.
+   expected reason — a setup error is not a red. Prefer an integration test — the real modules
+   together, only the outermost boundary faked, timers compressed — over a slow real lane: it
+   runs in seconds, so it is where the fix is prototyped and debugged. A failure a lane
+   (`test:jobs`, `test:k8s`) reports is reproduced this way before the lane runs again; the lane
+   only confirms the fix.
 2. GREEN: write the minimum implementation that makes it pass. No features beyond the issue, no
    speculative abstractions.
 3. Run the focused suite plus `npm run typecheck`. If existing tests break, fix them before

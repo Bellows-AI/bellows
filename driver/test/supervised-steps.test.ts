@@ -6,9 +6,9 @@ import { runTimeoutMs } from '../src/claim.js';
 import { dockerArgs } from '../src/docker.js';
 import { supervisorCreateArgs } from '../src/docker-group.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
-import { reclaimGroupSpec } from '../src/k8s-group.js';
 import { CREDENTIAL_HELPER, worktreeBranch, type PublishStep } from '../src/publish.js';
 import { pushWithLease } from '../src/publish-stale.js';
+import { TASK_MOUNT, TASK_VOLUME, taskVolumeName } from '../src/task-volume.js';
 import { createStepBroker, StepChannelClosed, StepTimedOut, type StepSink } from '../src/step-control.js';
 import {
     awaitFirstContact,
@@ -18,7 +18,6 @@ import {
     orderGo,
     runGateStep,
     runHelperStep,
-    runReclaimStep,
     runServiceGenerationStep,
     runSyncStep,
     type SupervisedGroups,
@@ -76,7 +75,7 @@ const job: BoardJob = {
     env: { GITHUB_TOKEN: CLAIM_TOKEN, MEMBER_VAR: 'member' },
     supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
 } as BoardJob;
-const WORKTREE = `${config.workspaceMount}/bellows/${USER}/.worktrees/${job.id}`;
+const WORKTREE = `${TASK_MOUNT}/factory`;
 
 const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
 
@@ -288,8 +287,8 @@ describe('the publish steps over the supervisor', () => {
     });
 });
 
-describe('the sync, the reclaim and the helpers over the supervisor', () => {
-    it('syncs a starting claim with fetch credentials, the credential helper code and the paths', async () => {
+describe('the sync and the helpers over the supervisor', () => {
+    it('syncs a starting claim with clone credentials, the credential helper code, the checkout and the remote', async () => {
         const s = sink(() => ok('{"ok":true,"reason":null,"fingerprint":"fp"}\n'));
         const result = await runSyncStep(s.host, job, MINTED_TOKEN);
 
@@ -298,15 +297,15 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
         expect(sync).toMatchObject({ kind: 'sync', timeoutMs: 600_000 });
         expect(sync!.env).toMatchObject({
             GITHUB_TOKEN: MINTED_TOKEN,
-            REPO: `${config.workspaceMount}/bellows/${USER}/factory`,
-            WORKTREE,
+            CHECKOUT: WORKTREE,
+            REMOTE: `${config.cloneBase}/Bellows-AI/factory.git`,
             BRANCH: worktreeBranch(job),
             CRED_HELPER: CREDENTIAL_HELPER,
         });
         expect(sync!.env.RESTORE).toBeUndefined();
     });
 
-    it('fetches plain, with neither token nor helper, when the board issued no token', async () => {
+    it('clones plain, with neither token nor helper, when the board issued no token', async () => {
         // A public repository's fetch must stay unauthenticated, which a helper answering an empty
         // password would break; the claim's own GitHub value is a reserved name and never forwarded.
         const s = sink(() => ok('{"ok":true,"reason":null}\n'));
@@ -346,21 +345,11 @@ describe('the sync, the reclaim and the helpers over the supervisor', () => {
         });
     });
 
-    it('has nothing to sync or reclaim for a job with no repository', async () => {
+    it('has nothing to sync for a job with no repository', async () => {
         const s = sink();
         const commandOnly = { ...job, repo: undefined } as unknown as BoardJob;
         expect(await runSyncStep(s.host, commandOnly)).toEqual({ ok: true, reason: null });
-        expect(await runReclaimStep(s.host, commandOnly)).toEqual({ ok: true, removed: false, reason: null });
         expect(s.submitted).toEqual([]);
-    });
-
-    it('reclaims with the clone and the worktree and no credential', async () => {
-        const s = sink(() => ok('{"ok":true,"removed":true,"reason":null}\n'));
-        expect(await runReclaimStep(s.host, job)).toEqual({ ok: true, removed: true, reason: null });
-        expect(s.submitted[0]).toMatchObject({ kind: 'reclaim', env: { WORKTREE } });
-        // The caller thread's reclaim also names its review roots: a review leaves its tree there.
-        expect(s.submitted[0]!.env.REVIEW_ROOTS).toBe(`${WORKTREE}.reviews`);
-        expect(Object.keys(s.submitted[0]!.env).sort()).toEqual(['REPO', 'REVIEW_ROOTS', 'WORKTREE']);
     });
 
     it("gives a helper the claim env and the board's minted token only when it writes to GitHub", async () => {
@@ -638,10 +627,8 @@ describe('the agent environment holds no publish token', () => {
         expect(names).not.toContain('GITHUB_TOKEN');
         expect(names).not.toContain('MEMBER_VAR');
         expect(holds(supervisor)).not.toContain(CLAIM_TOKEN);
-        // It mounts the member's workspace subtree — the steps work on the task worktree — and the mailboxes.
-        expect(supervisor.volumeMounts.some((m) => m.name === 'workspaces' && m.subPath === `bellows/${USER}`)).toBe(
-            true
-        );
+        // It mounts the thread's task volume — the steps work on the task checkout — and the mailboxes.
+        expect(supervisor.volumeMounts.some((m) => m.name === TASK_VOLUME && m.mountPath === TASK_MOUNT)).toBe(true);
     });
 
     it('holds the same line on docker: the agent container’s argv names no step credential', () => {
@@ -650,25 +637,21 @@ describe('the agent environment holds no publish token', () => {
         expect(args).not.toContain(CONTROL_TOKEN);
         for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(args).not.toContain(name);
         expect(args).toContain('FACTORY_CTL_GO=');
-        // The supervisor mounts the workspace there too, and carries the control pair by env file, never argv.
+        // The supervisor mounts the task volume there too, and carries the control pair by env file, never argv.
         const supervisorArgs = supervisorCreateArgs(
             config,
             job,
             { exporting: false, agentless: false },
             '/tmp/env'
         ).join(' ');
-        expect(supervisorArgs).toContain(`bellows/${USER}`);
+        expect(supervisorArgs).toContain(taskVolumeName(job));
         expect(supervisorArgs).not.toContain(CONTROL_TOKEN);
         expect(supervisorArgs).not.toContain(CLAIM_TOKEN);
     });
 
-    it('specs an agentless attempt’s group, and a reclaim’s, with no agent container at all', () => {
+    it('specs an agentless attempt’s group with no agent container at all', () => {
         const agentless = runnerJobSpec(config, { ...job, agent: false } as BoardJob, null);
         expect(agentless.spec.template.spec.containers.map((c) => c.name)).toEqual([SUPERVISOR_CONTAINER]);
-        const reclaim = reclaimGroupSpec(config, job, job.leaseToken);
-        expect(reclaim.spec.template.spec.containers.map((c) => c.name)).toEqual([SUPERVISOR_CONTAINER]);
-        expect(reclaim.metadata.name).not.toBe(group.metadata.name);
-        expect(holds(reclaim)).not.toContain(CLAIM_TOKEN);
     });
 });
 

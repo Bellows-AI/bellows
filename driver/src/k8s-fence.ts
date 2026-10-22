@@ -2,7 +2,8 @@ import type { BoardJob } from './board.js';
 import { runnerClaimEnv } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { telemetryConfig, type TelemetryConfig } from './telemetry-config.js';
-import { isSeq, LEASE_LABEL, REVOKED_MARK } from './labels.js';
+import { isSeq, LEASE_LABEL } from './labels.js';
+import { ensureTaskVolume } from './k8s-task-volume.js';
 import {
     claimBody,
     claimPath,
@@ -99,7 +100,7 @@ async function holdsLiveLease(deps: K8sDeps, job: BoardJob): Promise<boolean> {
 
 /**
  * The claim sequence a claim carries, NaN for a legacy claim that carries none. Ordered by the
- * claim sequence, never by `attempts`: a stop or a contention requeue refunds an attempt, and a
+ * claim sequence, never by `attempts`: a stop or an interruption refunds an attempt, and a
  * replacement must still read as newer than every claim before it. A field that is present is
  * digits within the safe integers (`asClaim`): `Number('')` is 0 and a long run of digits is
  * Infinity, and neither may read as an ordered claim (#869).
@@ -192,11 +193,6 @@ export interface ObservedClaim {
     holder: string;
 }
 
-/** A claim as read now: its incarnation, and whether an orphaned-claim reap revoked it. */
-export interface ReadClaim extends ObservedClaim {
-    revoked: boolean;
-}
-
 const CLAIM_READ = 'reading the checkout claim';
 
 /**
@@ -242,33 +238,12 @@ function claimVerdict(read: Read<K8sClaim>, job: BoardJob): ClaimVerdict {
 }
 
 /** One claim read, as the incarnation it names; null when gone, unreadable or unidentifiable. */
-export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ReadClaim | null> {
+export async function readClaim(deps: K8sDeps, job: BoardJob): Promise<ObservedClaim | null> {
     const read = await readClaimObject(deps, job, true);
     if (read.kind !== 'value') return null;
     const uid = read.value.metadata?.uid;
     const holder = read.value.data?.holder;
-    return uid && holder
-        ? { uid, holder, revoked: read.value.metadata?.annotations?.[REVOKED_MARK] !== undefined }
-        : null;
-}
-
-/**
- * Revokes the claim incarnation an orphaned-claim reap observed (issue #821): a merge patch adding
- * `REVOKED_MARK` under the reaping acquisition's token, preconditioned on the observed uid, so it
- * can only ever mark the incarnation read. A reclaim verifies its claim unrevoked before its group
- * starts (`reclaimInGroup`), so once this answers true no group of the holder created after the
- * reaper's list can run. True only on a 2xx; a refusal or a throw revokes nothing, and the reap
- * acts on nothing.
- */
-export async function revokeClaim(deps: K8sDeps, job: BoardJob, observed: ObservedClaim): Promise<boolean> {
-    try {
-        const patched = await deps.request('PATCH', claimPath(deps.config.k8sNamespace, job), {
-            metadata: { uid: observed.uid, annotations: { [REVOKED_MARK]: job.leaseToken } },
-        });
-        return is2xx(patched.status);
-    } catch {
-        return false;
-    }
+    return uid && holder ? { uid, holder } : null;
 }
 
 /**
@@ -624,6 +599,9 @@ export async function prepare(deps: K8sDeps, job: BoardJob, signal: AbortSignal)
                 `(${pre.unconfirmed})`
         );
     }
+
+    // The thread's task volume, adopted or created: the pod mounts it by name.
+    await ensureTaskVolume(deps, job, signal);
 }
 
 /** The `metadata.uid` a create answered, typed: no body, a non-JSON one or one with no uid throws. */

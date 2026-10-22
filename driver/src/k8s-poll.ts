@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import { executorImage } from './config.js';
-import { ARTIFACT_LIMIT, CLOSE_READ_DEADLINE_MS, Inconclusive, reportTail, tailKept } from './runner.js';
+import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
 import { anyOf, pollFor } from './poll.js';
@@ -32,7 +32,7 @@ import {
 } from './k8s-transport.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from './startup-cause.js';
-import { type HeldImage, heldOf, heldUnpullable, unpullableImage } from './k8s-held.js';
+import { type HeldImage, heldOf, heldUnpullable } from './k8s-held.js';
 import {
     AGENT_CONTAINER,
     SUPERVISOR_CONTAINER,
@@ -249,12 +249,28 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
     const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
     if (stuck && PULL_REASONS.has(stuck.reason)) {
-        return { blocked: pullDetail(stuck), containerSeen: true, waiting: stuck, held, podState, agentStarted };
+        return {
+            blocked: pullDetail(stuck),
+            containerSeen: true,
+            waiting: stuck,
+            held,
+            podState,
+            agentStarted,
+            volumeAffinity: null,
+        };
     }
     const containerSeen =
         containers.length > 0 &&
         containers.every((c) => c.state?.terminated !== undefined || c.state?.running !== undefined);
-    return { blocked: null, containerSeen, waiting: stuck, held, podState, agentStarted };
+    return {
+        blocked: null,
+        containerSeen,
+        waiting: stuck,
+        held,
+        podState,
+        agentStarted,
+        volumeAffinity: volumeAffinityOf(pod),
+    };
 }
 
 export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
@@ -268,7 +284,29 @@ export interface ImagePullStatus {
     podState: PodStartState;
     /** The agent container is running or ended: once released, the run has happened. */
     agentStarted: boolean;
+    /** The scheduler's words when the pod is held Pending by its volume's node affinity (#775); else null. */
+    volumeAffinity: string | null;
 }
+
+const NODES_AVAILABLE = /^0\/(\d+) nodes are available:([^.]*)/;
+const AFFINITY_COUNT = /(?:^|[\s,])(\d+) node\(s\) had volume node affinity conflict/;
+
+/**
+ * The scheduler's words for a pod EVERY node refused because of where its volume lives, else null: the
+ * volume is faulted only when the affinity count equals the node count. A mixed message ("2 Insufficient
+ * cpu, 3 node(s) had volume node affinity conflict") or one that does not parse proves a healthy volume
+ * and is an ordinary transient wait.
+ */
+const volumeAffinityOf = (
+    pod: { status?: { conditions?: { type?: string; status?: string; message?: string }[] } } | undefined
+) => {
+    const message = pod?.status?.conditions?.find((c) => c.type === 'PodScheduled' && c.status === 'False')?.message;
+    const available = message ? NODES_AVAILABLE.exec(message) : null;
+    const conflicts = available ? AFFINITY_COUNT.exec(available[2] ?? '') : null;
+    return available && conflicts && Number(available[1]) > 0 && conflicts[1] === available[1]
+        ? (message ?? null)
+        : null;
+};
 
 const PULL_REASONS: ReadonlySet<string> = new Set(['ImagePullBackOff', 'ErrImagePull']);
 const STUCK_REASONS: ReadonlySet<string> = new Set([...PULL_REASONS, 'InvalidImageName', 'CreateContainerConfigError']);
@@ -300,8 +338,7 @@ export function startRefusalOf(image: string, pull: ImagePullStatus, waitOutBack
  * One verdict-carrying read of a Job's status, translated to the four shapes every caller below
  * branches on: gone, an unexpected status, still running, or a terminal outcome. `readVerdict`
  * owns the transport/429/5xx/malformed-400 retry bound and THROWS once it is exhausted — every
- * caller propagates that (`pollJobToTerminal` re-throws it, `auxVerdict`,
- * `pollRunnerJobUntilTerminal`, the gate poll), wrapping it in its own shape when it needs to.
+ * caller propagates that (`pollRunnerJobUntilTerminal`, the gate poll), wrapping it in its own shape when it needs to.
  */
 export type JobStatusResult =
     | { kind: 'notFound' }
@@ -318,77 +355,6 @@ export async function readJobStatus(deps: K8sDeps, jobName: string, what: string
     const status = read.value;
     const outcome = jobOutcome(status);
     return outcome === 'pending' ? { kind: 'pending' } : { kind: 'terminal', outcome, status };
-}
-
-/**
- * The messages one `pollJobToTerminal` caller answers its own give-up shapes with. `failed` is
- * `null` for the sync/reclaim callers, whose script prints `{ok:false,reason}` on its OWN
- * failure — a failed Job is still a verdict to read there, never a give-up reason on its own.
- */
-export interface PollToTerminalMessages {
-    what: string;
-    notFound: (jobName: string) => string;
-    errorStatus: (status: number, body: string) => string;
-    failed: string | null;
-}
-
-/**
- * The pending arm's image watch for the polls whose Job runs the executor image (issue #302):
- * asks the pod whether the image is blocked — `readImagePullStatus` — and answers the failure
- * message when it is. Flips `seen.container` once any container status exists, so the pod list
- * is not re-read on later rounds after the image has pulled. Pulled out of the polls purely to
- * keep their complexity readable, the same move the gate poll makes.
- */
-async function executorImageWatch(
-    deps: K8sDeps,
-    jobName: string,
-    image: string,
-    seen: { container: boolean }
-): Promise<string | null> {
-    const pull = await readImagePullStatus(deps, jobName);
-    if (pull.blocked) return unpullableImage({ role: 'executor' }, image, pull.blocked);
-    seen.container = pull.containerSeen;
-    return null;
-}
-
-/**
- * Poll one Job to a terminal status, the shape every aux Job readout shares: `readVerdict` owns
- * the transport/429/5xx/malformed-400 retry bound, a 404 means the Job is gone, any other non-2xx
- * is unexpected, and a terminal status answers `failed` on the Job's own failure (when the caller
- * names one) or null once there is a verdict to read — a Job failure with no `failed` message is
- * itself such a verdict, exactly like success. A read whose patience ran out — transport failures,
- * 429s, 5xx or the malformed-request 400 (issue #308), all infrastructure — RE-THROWS: it is not
- * this Job's verdict, and a caller that must never see a throw wraps the poll itself (the
- * opencode scrape does; the sync and reclaim callers let it propagate so the loop leaves the job
- * to its lease). Callers whose Job runs the executor image pass its name as `image`:
- * while the pod is still pending, the poll then watches for an image the node cannot pull and
- * answers `unpullableImage` the moment the pod says so (issue #302), instead of letting the Job
- * sit in ImagePullBackOff until its deadline makes the verdict unreadable.
- */
-export async function pollJobToTerminal(
-    deps: K8sDeps,
-    jobName: string,
-    messages: PollToTerminalMessages,
-    image: string | null = null
-): Promise<string | null> {
-    const seen = { container: false };
-    const verdict = await pollFor<{ answer: string | null }>(
-        { ...waitOf(deps, CLOSE_READ_DEADLINE_MS), everyMs: POLL_MS },
-        async (deadline) => {
-            const bounded = boundedBy(deps, deadline);
-            const result = await readJobStatus(bounded, jobName, messages.what);
-            if (result.kind === 'notFound') return { answer: messages.notFound(jobName) };
-            if (result.kind === 'error') return { answer: messages.errorStatus(result.status, result.body) };
-            if (result.kind === 'pending') {
-                if (seen.container || image === null) return;
-                const failure = await executorImageWatch(bounded, jobName, image, seen);
-                return failure ? { answer: failure } : undefined;
-            }
-            return { answer: result.outcome === 'failed' ? messages.failed : null };
-        }
-    );
-    if (!verdict) throw new Inconclusive(`${messages.what} reached no verdict in ${CLOSE_READ_DEADLINE_MS}ms`);
-    return verdict.answer;
 }
 
 /**
@@ -510,43 +476,6 @@ export function runnerLossOf(pods: readonly K8sPod[]): string | null {
         ? 'the runner pod was taken away before it exited'
         : 'the runner pod was deleted before it exited';
     return `${what} (${detail || 'evicted, drained or its node removed'})`;
-}
-
-/**
- * Runs one aux Job to its verdict: poll the Job to a terminal status with the same bounded
- * patience every verdict-carrying read has, then read the exit code off its pod and the output
- * off the pod's log — the same discovery (job-name label, terminating pods skipped) and the same
- * succeeded-with-no-pod convention the runner's own verdict read applies. Used by the publish
- * steps and the claude-turns close read, whose every container is exactly this shape.
- */
-export async function auxVerdict(
-    deps: K8sDeps,
-    jobName: string,
-    signal?: AbortSignal
-): Promise<{ exitCode: number | null; output: string }> {
-    const live = withSignal(deps, signal);
-    const verdict = await pollFor<{ exitCode: number | null; output: string }>(
-        {
-            ...waitOf(live, CLOSE_READ_DEADLINE_MS),
-            everyMs: POLL_MS,
-            abandoned: () => new Error(`the job ${jobName} was cancelled`),
-        },
-        async (deadline) => {
-            const bounded = boundedBy(live, deadline);
-            const result = await readJobStatus(bounded, jobName, `reading the job ${jobName}`);
-            if (result.kind === 'notFound') throw new Error(`the job ${jobName} no longer exists`);
-            if (result.kind === 'error') throw new Error(refusal(result, `reading the job ${jobName}`)!);
-            if (result.kind === 'pending') return;
-            return readJobPodVerdict(
-                bounded,
-                jobName,
-                { succeeded: result.outcome === 'succeeded' },
-                `listing the pods of ${jobName}`
-            );
-        }
-    );
-    if (!verdict) throw new Inconclusive(`the job ${jobName} reached no verdict in ${CLOSE_READ_DEADLINE_MS}ms`);
-    return verdict;
 }
 
 /**

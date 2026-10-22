@@ -1,9 +1,10 @@
 import { type BoardJob, UUID_SHAPE } from './board.js';
 import { containerName } from './docker.js';
-import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL, RECLAIM_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
+import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { alreadyGone, CONTAINER_ID, DOCKER_NAME, type ExecDocker, readDocker } from './docker-runner-support.js';
 import { Inconclusive } from './runner.js';
-import type { OrphanGroup, OrphanObject, ReaperArm } from './reaper.js';
+import type { OrphanGroup, OrphanObject, ReaperArm, VolumeListing, VolumeThread } from './reaper.js';
+import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, generationOfName } from './task-volume.js';
 import { parseDockerTimestamp, parseRfc3339 } from './timestamps.js';
 
 /**
@@ -13,8 +14,8 @@ import { parseDockerTimestamp, parseRfc3339 } from './timestamps.js';
  * shares its supervisor's namespace (issue #773). Scope: the SERVICE and GATE labels (issue #667) and an attempt's task group (issue
  * #821) — every container carrying the ROLE label (agent, supervisor, exporter) and every volume
  * carrying the job and lease labels (its mailboxes and kill markers). An exited runner container
- * is unread: the next claim adopts it. A terminal reclaim's group (`RECLAIM_LABEL`) is in scope only
- * with the acquisition token it serves (`HOLDER_LABEL`, issue #829), and a scan any one list or inspect of which the daemon refused answers nothing.
+ * is unread: the next claim adopts it. A scan any one list or inspect of which the daemon refused
+ * answers nothing.
  */
 
 /**
@@ -32,13 +33,6 @@ interface PsRow {
     jobId: string;
     leaseToken: string;
     createdAtMs: number;
-}
-
-/** The identity a row's labels carry; `holder` is a reclaim group's acquisition token (issue #829). */
-interface RowPair {
-    jobId: string;
-    leaseToken: string;
-    holder?: string;
 }
 
 /** The value of one k=v label in docker's comma-spelled `Labels` field. */
@@ -64,22 +58,17 @@ const fieldsOf = (
 
 /**
  * The job and lease pair a row's labels carry; `'out-of-scope'` for a row the reaper leaves alone;
- * null for a row whose job, lease or holder label is present but no uuid (#869) — it would become the
- * attempt identity the grouping files the row under, so the whole listing is inconclusive. A reclaim
- * row (`RECLAIM_LABEL`) is in scope only with the holder it serves (issue #829): the board's holds
- * decide its fate, and one with no holder label has no owner the board could answer for.
+ * null for a row whose job or lease label is present but no uuid (#869) — it would become the attempt
+ * identity the grouping files the row under, so the whole listing is inconclusive.
  */
-const pairOf = (labels: string, scopeLabel: string): RowPair | 'out-of-scope' | null => {
+const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken: string } | 'out-of-scope' | null => {
     // The scope label is checked here as well as in the argv filter, because the argv is the
     // daemon's instruction and this is the row's proof.
     if (!labelOf(labels, scopeLabel)) return 'out-of-scope';
-    const holder = labelOf(labels, RECLAIM_LABEL) ? (labelOf(labels, HOLDER_LABEL) ?? 'none') : undefined;
-    if (holder === 'none') return 'out-of-scope';
     const jobId = labelOf(labels, JOB_LABEL);
     const leaseToken = labelOf(labels, LEASE_LABEL);
-    if ([jobId, leaseToken, holder].some((label) => label !== undefined && !UUID_SHAPE.test(label))) return null;
-    if (jobId === undefined || leaseToken === undefined) return 'out-of-scope';
-    return { jobId, leaseToken, ...(holder === undefined ? {} : { holder }) };
+    if ([jobId, leaseToken].some((label) => label !== undefined && !UUID_SHAPE.test(label))) return null;
+    return jobId === undefined || leaseToken === undefined ? 'out-of-scope' : { jobId, leaseToken };
 };
 
 /**
@@ -114,10 +103,8 @@ const parsePsRow = (line: string, scopeLabel: string): PsRow | 'out-of-scope' | 
         ...(exitedRunner ? { unread: true as const } : {}),
         // A task group's container: a live job's is its next claim's fence's, whatever the scan saw.
         ...(scopeLabel === ROLE_LABEL ? { runner: true as const } : {}),
-        // A reclaim group: the acquisition token the board's holds are asked about.
-        ...(pair.holder === undefined ? {} : { holder: pair.holder }),
     };
-    return { object, name, jobId: pair.jobId, leaseToken: pair.leaseToken, createdAtMs };
+    return { object, name, ...pair, createdAtMs };
 };
 
 /** A listing's in-scope rows, or null when any row is structurally invalid. */
@@ -168,8 +155,8 @@ const scanScope = async (execDocker: ExecDocker, scopeLabel: string, groups: Gro
 };
 
 /** A listing's in-scope volumes, or null when any row is structurally invalid. */
-const volumeRowsOf = (stdout: string): { name: string; pair: RowPair }[] | null => {
-    const found: { name: string; pair: RowPair }[] = [];
+const volumeRowsOf = (stdout: string): { name: string; pair: { jobId: string; leaseToken: string } }[] | null => {
+    const found: { name: string; pair: { jobId: string; leaseToken: string } }[] = [];
     for (const line of stdout.split('\n')) {
         if (!line.trim()) continue;
         const fields = fieldsOf(line.trim());
@@ -207,13 +194,7 @@ const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void
     if (listed.kind !== 'value') throw new Inconclusive(listed.kind === 'inconclusive' ? listed.reason : 'absent');
     for (const { name, pair } of listed.value) {
         const createdAtMs = await volumeCreatedAt(execDocker, name);
-        if (createdAtMs === null) continue;
-        const object: OrphanObject = {
-            kind: 'volume',
-            name,
-            ...(pair.holder === undefined ? {} : { holder: pair.holder }),
-        };
-        addRow(groups, { object, name, jobId: pair.jobId, leaseToken: pair.leaseToken, createdAtMs });
+        if (createdAtMs !== null) addRow(groups, { object: { kind: 'volume', name }, name, ...pair, createdAtMs });
     }
 };
 
@@ -272,10 +253,84 @@ const reap = async (execDocker: ExecDocker, group: OrphanGroup): Promise<readonl
     return removed;
 };
 
+/**
+ * One `volume ls` row of the task volume listing: the root its label names and the volume's name; null
+ * for a line that is not a volume record at all, a string for a labelled volume that is no thread's
+ * (skipped and logged, never a reason to delete nothing fleet-wide).
+ */
+const taskVolumeRow = (line: string, board: string): { root: string; name: string } | string | null | 'foreign' => {
+    const fields = fieldsOf(line);
+    if (!fields || typeof fields.Name !== 'string' || !DOCKER_NAME.test(fields.Name)) return null;
+    // Another board's volume (or none's) on a shared daemon: never ours to delete, however absent its root is here.
+    if (typeof fields.Labels !== 'string' || labelOf(fields.Labels, TASK_BOARD_LABEL) !== board) return 'foreign';
+    const root = typeof fields.Labels === 'string' ? labelOf(fields.Labels, TASK_ROOT_LABEL) : undefined;
+    if (root === undefined || !UUID_SHAPE.test(root) || generationOfName(root, fields.Name) === null) {
+        return `task volume ${fields.Name}: its root label (${root ?? 'none'}) names no thread it is a generation of`;
+    }
+    return { root: root.toLowerCase(), name: fields.Name };
+};
+
+/** The task volume listing, or null when any line of it is not a volume record. */
+const taskVolumeRows = (stdout: string, board: string): VolumeListing | null => {
+    const threads = new Map<string, VolumeThread>();
+    const skipped: string[] = [];
+    for (const line of stdout.split('\n')) {
+        if (!line.trim()) continue;
+        const row = taskVolumeRow(line.trim(), board);
+        if (row === null) return null;
+        if (row === 'foreign') continue;
+        if (typeof row === 'string') {
+            skipped.push(row);
+            continue;
+        }
+        const thread = threads.get(row.root) ?? { root: row.root, volumes: [] };
+        thread.volumes.push({ name: row.name });
+        threads.set(row.root, thread);
+    }
+    return { threads: [...threads.values()], skipped };
+};
+
+/**
+ * Every task volume (issue #775), all generations, by its root label, grouped by thread, each with its
+ * creation time (null when the daemon would not say). Null when the daemon refused the list or a line of
+ * it is not a volume record.
+ */
+const scanTaskVolumes = async (execDocker: ExecDocker, board: string): Promise<VolumeListing | null> => {
+    const read = await readDocker(
+        execDocker,
+        ['volume', 'ls', '--filter', `label=${TASK_ROOT_LABEL}`, '--format', '{{json .}}'],
+        'listing the task volumes',
+        { parse: (stdout) => taskVolumeRows(stdout, board) }
+    );
+    if (read.kind !== 'value') return null;
+    for (const thread of read.value.threads) {
+        for (const volume of thread.volumes) {
+            volume.createdAtMs = await volumeCreatedAt(execDocker, volume.name).catch(() => null);
+        }
+    }
+    return read.value;
+};
+
+/** Removes every generation, without force: a volume a container still mounts is refused, and the next round's. */
+const reapTaskVolumes = async (execDocker: ExecDocker, thread: VolumeThread): Promise<readonly string[]> => {
+    const removed: string[] = [];
+    for (const volume of thread.volumes) {
+        try {
+            await execDocker(['volume', 'rm', volume.name]);
+            removed.push(`volume ${volume.name}`);
+        } catch {
+            // In use, or already gone: either way the next round looks again.
+        }
+    }
+    return removed;
+};
+
 /** The docker arm of the orphan reaper: every group piece it finds by label, reaped on the lease lookup. */
-export function createDockerReaper(execDocker: ExecDocker): ReaperArm {
+export function createDockerReaper(execDocker: ExecDocker, board: string): ReaperArm {
     return {
         scan: () => scan(execDocker),
         reap: (group) => reap(execDocker, group),
+        scanVolumes: () => scanTaskVolumes(execDocker, board),
+        reapVolumes: (thread) => reapTaskVolumes(execDocker, thread),
     };
 }
