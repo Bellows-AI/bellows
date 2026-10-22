@@ -5,7 +5,8 @@
 
 import { evidenceDecision, gatesEvidenceOf } from './evidence-policy.js';
 import type { HelperFailureReport } from './helpers.js';
-import { setupDecision } from './loop-fence.js';
+import { interruptDecision, setupDecision } from './loop-fence.js';
+import { stepLost } from './step-control.js';
 import { runPostHelperPhase } from './loop-helpers.js';
 import { askGithubToken } from './loop-github.js';
 import { end, endIfDown } from './loop-conclusion.js';
@@ -61,7 +62,21 @@ async function publishPhase(
     // and pushing now would outlive it. The push itself is never fenced — it cannot be
     // recalled (issue #472).
     if (await endIfDown(ctx, 'its publish')) return STOOD_DOWN;
-    let published = await publishBranch(rt, job, githubToken, options);
+    let published: PublishResult;
+    try {
+        published = await publishBranch(rt, job, githubToken, options);
+    } catch (e) {
+        if (!stepLost(e)) throw e;
+        // The supervisor was lost under the push: no verdict on the publish, the next claim redoes it (#925).
+        await end(
+            ctx,
+            interruptDecision(
+                `infrastructure loss: the task supervisor running the publish was lost (${(e as Error).message})`,
+                null
+            )
+        );
+        return STOOD_DOWN;
+    }
     // A lease lost while the push ran stands down here WITHOUT reporting what it pushed: the
     // next holder re-runs the publish (`publishBranch` is the one call that is not abortable).
     if (await endIfDown(ctx, 'its publish')) return STOOD_DOWN;

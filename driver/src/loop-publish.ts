@@ -4,6 +4,7 @@ import { askGithubToken } from './loop-github.js';
 import { down, type JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { publishFailed } from './publish.js';
+import { stepLost } from './step-control.js';
 import type { PublishRelay, PublishVerdict } from './publish-control.js';
 
 /**
@@ -47,7 +48,9 @@ async function pushDraft(
     if (gone()) return 'gone';
     const result = await rt.runner
         .publishGit(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })
-        .catch((e: Error) => publishFailed(`the publish threw: ${e.message}`, 'unknown'));
+        .catch((e: Error) => (stepLost(e) ? 'gone' : publishFailed(`the publish threw: ${e.message}`, 'unknown')));
+    // A supervisor lost under the push is the attempt's end, not a verdict on the draft (#925).
+    if (result === 'gone') return 'gone';
     if (result.ok && result.published) state.draftPublication = result;
     return result;
 }

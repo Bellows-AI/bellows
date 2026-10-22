@@ -133,8 +133,9 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
  */
 async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): Promise<void> {
     const image = executorImage(deps.config, job.executorType);
-    const seen: { last: PodStartState; unproven: string | null; affinity: string | null } = {
+    const seen: { last: PodStartState; unproven: string | null; affinity: string | null; pod: boolean } = {
         last: 'unread',
+        pod: false,
         unproven: null,
         affinity: null,
     };
@@ -145,6 +146,15 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
             const pull = await readImagePullStatus(withSignal(boundedBy(deps, deadline), signal), jobName);
             const refused = startRefusalOf(image, pull, true);
             if (refused) throw refused;
+            // A pod seen and then gone, or marked for removal, is an infrastructure loss now: waiting on the
+            // bound would idle a replacement for GROUP_UP_WAIT_MS (#924). A `none` before any pod, and an
+            // unread list, prove nothing.
+            if (pull.disrupted || (seen.pod && pull.podState === 'none'))
+                throw new StartupRefused(
+                    `the task pod of ${jobName} was lost before its supervisor made contact`,
+                    'transient'
+                );
+            if (pull.podState === 'starting' || pull.podState === 'started') seen.pod = true;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
             if (pull.podState !== 'unread') seen.last = pull.podState;
             // The latest word only: a pod that got scheduled after all has nothing to say about its volume.

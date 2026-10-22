@@ -2083,17 +2083,16 @@ describe('publishing the produced work', () => {
         expect(argvs.some((a) => a.includes('push'))).toBe(published);
     });
 
-    // A step the supervisor never answers (the channel closed under it) is a transport failure
-    // the loop can retry, never a verdict on the work.
-    it('names a closed step channel a transport failure', async () => {
+    // A step the supervisor never answers (the channel closed under it) is no verdict on the work:
+    // it is thrown, and the loop hands the attempt back as an interruption (#925).
+    it('throws a closed step channel instead of answering a failed publish', async () => {
         const steps = scripted({
             step: (step) => {
                 if (!step.argv.includes('push')) return null;
                 throw new StepChannelClosed('the answer');
             },
         });
-        const result = await publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh');
-        expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
+        await expect(publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh')).rejects.toBeInstanceOf(StepChannelClosed);
     });
 });
 
