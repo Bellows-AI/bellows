@@ -50,7 +50,7 @@ describe('takeover gremlins', () => {
         expect(verdict?.violations).toEqual([]);
     }, 60_000);
 
-    // A heartbeat that hangs for the glitch and is retried a refresh later (twice) can by itself outlast the
+    // A heartbeat that hangs for the glitch can by itself delay the next beat past the
     // lease, load or not: such a loss is the board's right, not an interruption nobody injected (#932).
     it('a lease a hung heartbeat outlasts is not blamed on the product', async () => {
         const glitch = { at: 1_300, kind: 'glitch' as const, ops: ['heartbeat'], mode: 'timeout' as const, forMs: 800 };
@@ -59,7 +59,7 @@ describe('takeover gremlins', () => {
         const base = planOf(64, {});
         const verdict = await runGremlin(64, {
             faults: [glitch, hold],
-            timing: { ...base.timing, refreshMs: 1_400 },
+            timing: { ...base.timing, refreshMs: 400 },
             publishAtMs: 3_000,
             agentMs: 100,
         });

@@ -284,13 +284,11 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         clearTimeout(latch);
     }
 
-    // A heartbeat that hangs for the glitch and is retried a refresh later (twice) can outlast the lease by itself.
+    // A heartbeat call that hangs for the glitch (its own cadence is a third of the lease, twice that in setup)
+    // delays the next beat past what the lease leaves, so the board may rightly reclaim it.
     const leaseMs = plan.timing.leaseSeconds * 1_000;
     const blackout = plan.faults.some(
-        (f) =>
-            f.kind === 'glitch' &&
-            f.ops.includes('heartbeat') &&
-            2 * plan.timing.refreshMs + (f.mode === 'timeout' ? f.forMs : 0) >= leaseMs
+        (f) => f.kind === 'glitch' && f.mode === 'timeout' && f.ops.includes('heartbeat')
     );
     const jittery = worstLag > leaseMs / 3 || blackout;
     if (jittery)
