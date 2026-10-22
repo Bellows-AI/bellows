@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -195,13 +195,18 @@ describe('the origin plan reader', () => {
     it('kills the whole git process group at the deadline, so no transport child outlives the read', async () => {
         const { base } = mirror('acme/web', [SERVICE]);
         const pidFile = join(tempDir('pid-'), 'child');
-        const { reader } = readerOver(base, { timeoutMs: 700, gitBin: forkingGit('ls-remote', pidFile) });
+        // `init` is the read's first git call, so the child exists long before the deadline even on a loaded host.
+        const { reader } = readerOver(base, { timeoutMs: 5_000, gitBin: forkingGit('init', pidFile) });
 
-        await expect(reader.read('acme/web', 'main')).rejects.toMatchObject({ kind: READ_TRANSPORT });
+        const settled = reader.read('acme/web', 'main').catch((e: unknown) => e);
+        await expect
+            .poll(() => readFileSync(pidFile, { encoding: 'utf8', flag: 'a+' }).trim(), { timeout: 5_000 })
+            .not.toBe('');
+        expect(await settled).toMatchObject({ kind: READ_TRANSPORT });
 
-        const child = Number(execFileSync('cat', [pidFile], { encoding: 'utf8' }).trim());
+        const child = Number(readFileSync(pidFile, 'utf8').trim());
         await expect.poll(() => alive(child), { timeout: 2_000 }).toBe(false);
-    });
+    }, 15_000);
 
     it('leaves no scratch directory behind: success, missing branch, outage and timeout', async () => {
         const { base } = mirror('acme/web', [SERVICE]);
