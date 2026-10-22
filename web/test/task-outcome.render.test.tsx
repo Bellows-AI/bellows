@@ -155,7 +155,7 @@ describe('TaskOutcome', () => {
         expect(railOf(renderDetail({ jobs: [job()] }))).not.toContain('Interruptions');
     });
 
-    it('renders repository, worktree, executor — omitting the absent rows', () => {
+    it('renders repository, executor — omitting the absent rows, and never a Worktree row', () => {
         const html = renderDetail({
             jobs: [
                 job({
@@ -169,7 +169,9 @@ describe('TaskOutcome', () => {
         });
         expect(html).toContain('Repository');
         expect(html).toContain('acme/web');
-        expect(html).toContain('<dt>Worktree</dt><dd>repos/web</dd>');
+        // The payload still carries the path; the page no longer prints it (#777).
+        expect(html).not.toContain('Worktree');
+        expect(html).not.toContain('repos/web');
         expect(html).toContain('Executor');
         expect(html).toContain('main');
         expect(html).toContain('Workflow');

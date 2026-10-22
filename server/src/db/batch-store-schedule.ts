@@ -372,7 +372,7 @@ async function settle(at: Tx, decision: ScheduleDecision, completedAt: Date | nu
 /**
  * One launch: the decision, then the job, then the attempt and the task's binding — all inside the
  * caller's transaction. `launched` created a job, `changed` settled a task's outcome without one,
- * `skipped` wrote nothing (the decision was already made, or the checkout is being purged).
+ * `skipped` wrote nothing (the decision was already made).
  */
 async function launch(
     at: Tx,
@@ -399,11 +399,9 @@ async function launch(
                     target: rootTargetOf(task, target.repo),
                 });
     if (typeof created === 'string') {
-        // Nothing was created, so the decision must not stand. A checkout being purged is
-        // transient — the next pass tries again; a refused retry is the task's outcome, and one
-        // that needs a person.
+        // Nothing was created, so the decision must not stand. A refused retry is the task's
+        // outcome, and one that needs a person.
         await tx`delete from batch_decision where org_id = ${orgId} and batch_id = ${id} and key = ${decisionKey}`;
-        if (created === 'purging') return 'skipped';
         if (created === 'superseded') {
             await withdrawRepair(at, { key: task.key, attempt: attempt - 1 });
             return 'changed';

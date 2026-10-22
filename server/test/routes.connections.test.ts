@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView, NewConnection } from '../src/db/connection-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
+import { staticRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
     HTTP_BAD_GATEWAY,
@@ -83,7 +84,13 @@ async function boot() {
     const config = testConfig({ auth: githubAuth() });
     const app = await buildApp({
         config,
-        orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), connections, jobs }),
+        orgs: staticRegistry({
+            config,
+            repos: staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }]),
+            telemetry: stubTelemetryClient(),
+            connections,
+            jobs,
+        }),
         auth,
         cloudIdLookup: async (host) => (host === 'example.atlassian.net' ? CLOUD_ID : null),
     });
@@ -220,7 +227,11 @@ describe('selecting a connection for a task', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie },
-            payload: { command: 'look at ABC-1', ...(jiraConnection === undefined ? {} : { jiraConnection }) },
+            payload: {
+                repo: 'Bellows-AI/bellows.ai',
+                command: 'look at ABC-1',
+                ...(jiraConnection === undefined ? {} : { jiraConnection }),
+            },
         });
 
     it('stamps an authorized connection on the created task', async () => {

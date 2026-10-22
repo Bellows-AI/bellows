@@ -9,7 +9,7 @@ import { HTTP_CONFLICT, HTTP_FORBIDDEN, notFoundJob } from './job-limits.js';
  * for that file's line budget. They render; they validate nothing.
  */
 
-export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
     switch (reason) {
@@ -26,15 +26,10 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
                 'Only the account that queued the task can follow it up',
                 HTTP_FORBIDDEN
             );
-        case 'purging':
-            return reply.code(HTTP_CONFLICT).send({
-                error: "The task's checkout is being deleted from disk",
-                code: ERROR_CODES.PURGE_IN_PROGRESS,
-            });
     }
 }
 
-export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden' | 'purging';
+export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 export function retryRefusal(reply: FastifyReply, reason: RetryRefusal) {
     switch (reason) {
@@ -51,11 +46,6 @@ export function retryRefusal(reply: FastifyReply, reason: RetryRefusal) {
                 'Only the account that queued the task can retry it',
                 HTTP_FORBIDDEN
             );
-        case 'purging':
-            return reply.code(HTTP_CONFLICT).send({
-                error: "The task's checkout is being deleted from disk",
-                code: ERROR_CODES.PURGE_IN_PROGRESS,
-            });
     }
 }
 

@@ -52,15 +52,6 @@ services:
             GITHUB_APP_PRIVATE_KEY_FILE: ${GITHUB_APP_PRIVATE_KEY_FILE:-}
             # The organizations are the App's installations, materialized at sign-in (#99): no
             # org env exists. Install the App on every account this stack should serve.
-            # A literal default, and the volume below is mounted to
-            # match: this is a path INSIDE the container, so a host value from .env would be a path
-            # on the host that cannot exist here, and clobbering it is the correct outcome. Those
-            # two are host-independent identifiers; this one is not.
-            #
-            # `up` no longer clones anything on its own. Checkouts are per member now, at
-            # <root>/<orgId>/<userId>/<repo>, and they are created when somebody signs in and picks
-            # repositories from the dashboard. Set this empty to switch the feature off entirely.
-            ORG_WORKSPACE_ROOT: ${ORG_WORKSPACE_ROOT:-/workspaces}
             TELEMETRY_SOURCE: ${TELEMETRY_SOURCE:-postgres}
             TELEMETRY_TTL_SECONDS: ${TELEMETRY_TTL_SECONDS:-30}
             # Required, and pointed at the service this file provisions. Not overridable from the
@@ -130,11 +121,6 @@ services:
             - server-node-modules:/app/server/node_modules
             - web-node-modules:/app/web/node_modules
             - driver-node-modules:/app/driver/node_modules
-            # The checkouts ORG_WORKSPACE_ROOT points at. A named volume rather than part of the
-            # bind mount above: these are clones of other people's repositories, and they have no
-            # business landing in this working tree. Reach them with
-            # `docker compose exec dashboard sh` or `docker cp`.
-            - workspaces:/workspaces
         depends_on:
             postgres:
                 condition: service_healthy
@@ -334,9 +320,6 @@ services:
 volumes:
     postgres-data:
     s3-data:
-    # The organization's checkouts. Survives `docker compose down`; `down -v` discards them, and
-    # they are re-cloned on the next boot.
-    workspaces:
     # The container's linux-native dependency install, one per workspace. `down -v` discards these
     # too, which is the way to force a clean reinstall — and makes the next `up` slow, once.
     node-modules:

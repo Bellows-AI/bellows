@@ -24,18 +24,14 @@ FROM deps AS dev
 # Stages inherit the parent's USER, and deps now ends as node — apk needs root.
 USER root
 WORKDIR /app
-# Same reason as the runtime stage: the workspace reconcile shells out to git.
+# Same reason as the runtime stage: the offline plan read shells out to git.
 RUN apk add --no-cache git
-# Run as `node`, matching the runtime stage and the runner images (both uid 1000): this is the
-# process that clones the workspaces volume, and a root-owned clone is read-only for the runner
-# that mounts the same volume. The `USER` above is not enough on its own — every mount point the
-# compose file shadows with a named volume must already exist and be node-owned in the image, or
-# the daemon creates it root-owned and seeds the volume behind it. /workspaces is here for the
-# same reason the runtime stage creates it: a volume over a path the image does not have is
-# created root-owned, and the first clone then dies on EACCES.
-RUN mkdir -p core/node_modules server/node_modules web/node_modules driver/node_modules /workspaces \
+# Run as `node`, matching the runtime stage and the runner images (both uid 1000). Every mount point the
+# compose file shadows with a named volume must already exist and be node-owned in the image, or the
+# daemon creates it root-owned and seeds the volume behind it.
+RUN mkdir -p core/node_modules server/node_modules web/node_modules driver/node_modules \
     && chown node:node core server web driver \
-        core/node_modules server/node_modules web/node_modules driver/node_modules /workspaces
+        core/node_modules server/node_modules web/node_modules driver/node_modules
 # The runtime stage sets this too. Without it the dev server binds 127.0.0.1 *inside* the container,
 # where the published port cannot reach it and curl from the host just hangs.
 ENV HOST=0.0.0.0
@@ -79,10 +75,9 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
         /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
         /usr/local/bin/yarn /usr/local/bin/yarnpkg
-# node:24-alpine ships no git, and the workspace reconcile shells out to it. Absent, the failure is
-# an ENOENT per repo that only ever appears in the container, never in dev. tini is PID 1: the
-# facts read of a hostile checkout is killed by process group, and the git it orphans is reaped by
-# PID 1 — which node never does.
+# node:24-alpine ships no git, and the offline plan read shells out to it. Absent, the failure is
+# an ENOENT that only ever appears in the container, never in dev. tini is PID 1: a git killed by
+# process group leaves orphans, and PID 1 must reap them — which node never does.
 RUN apk add --no-cache git tini
 COPY --from=core-build /app/core/dist core/dist
 COPY --from=build /app/server/dist server/dist
@@ -102,12 +97,6 @@ COPY VERSION ./
 # have to arrive as a read-only mount or as environment, never baked into an image layer.
 ENV WEB_ROOT=/app/web/dist
 ENV HOST=0.0.0.0
-# The mount point for docker-compose's `workspaces` volume, which ORG_WORKSPACE_ROOT defaults to.
-# It has to exist in the image AND be owned by `node`: Docker seeds a fresh named volume from the
-# image directory it is mounted over, ownership included, and a volume over a path the image does
-# not have is created root-owned. The process runs as `node`, so the first clone then dies on
-# `EACCES: permission denied, mkdir '/workspaces/<org>'` — in the container only, never in dev.
-RUN mkdir -p /workspaces && chown node:node /workspaces
 USER node
 EXPOSE 8080
 ENTRYPOINT ["/sbin/tini", "--"]

@@ -6,6 +6,7 @@ import type { IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { useTasksPage } from './TasksLayout.js';
+import { trackedRepos } from '../api/useRepos.js';
 import { DEFAULT_FILTERS, inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
 import type { InboxFilters, TaskNavigation, TaskSummary, UseTasks } from '../api/useTasks.js';
 import { countLabel } from '../nav-model.js';
@@ -79,7 +80,7 @@ const filtersUrl = (filters: InboxFilters): string => {
     return query === '' ? '/tasks' : `/tasks?${query}`;
 };
 
-/** The workspace's selected repositories, plus the currently filtered one if it has since
+/** The tracked repositories, plus the currently filtered one if it has since
  * disappeared from the configuration — a linkable URL must keep rendering its own filter. */
 function repoOptionsFor(
     workspaceRepos: readonly { owner: string; name: string }[],
@@ -139,10 +140,12 @@ function InboxCountCards({ counts }: { counts: TaskNavigation['counts'] }) {
 function InboxFilterBar({
     filters,
     repoOptions,
+    repoRead,
     onSubmit,
 }: {
     filters: InboxFilters;
     repoOptions: readonly { owner: string; name: string }[];
+    repoRead: { loading: boolean; error: string | null; onRetry: () => void };
     onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 }) {
     // Minted, not literal: a component owns no id, and three hard-coded ones become three
@@ -192,6 +195,15 @@ function InboxFilterBar({
                         </option>
                     ))}
                 </select>
+                {repoRead.error !== null && (
+                    <span className="status error" role="alert">
+                        Repositories unavailable: {repoRead.error}{' '}
+                        <button type="button" onClick={repoRead.onRetry}>
+                            Retry
+                        </button>
+                    </span>
+                )}
+                {repoRead.error === null && repoRead.loading && <span className="muted">Loading repositories…</span>}
                 <label htmlFor={`${fieldId}-author`}>Author</label>
                 <input
                     className="field"
@@ -447,7 +459,7 @@ function InboxTaskList({
 }
 
 export function TaskInboxPage() {
-    const { tasks, workspace } = useTasksPage();
+    const { tasks, repos } = useTasksPage();
     const [, setSearchParams] = useSearchParams();
     const filters = tasks.filters;
 
@@ -500,7 +512,8 @@ export function TaskInboxPage() {
         });
     };
 
-    const repoOptions = repoOptionsFor(workspace.data?.repos ?? [], filters.repo);
+    const tracked = trackedRepos(repos);
+    const repoOptions = repoOptionsFor(tracked.repos ?? [], filters.repo);
     const counts = tasks.navigation?.counts ?? null;
     const noTasksAtAll =
         tasks.items !== null && counts !== null && counts.running === 0 && counts.review === 0 && counts.past === 0;
@@ -523,7 +536,12 @@ export function TaskInboxPage() {
 
             {counts !== null ? <InboxCountCards counts={counts} /> : null}
 
-            <InboxFilterBar filters={filters} repoOptions={repoOptions} onSubmit={submit} />
+            <InboxFilterBar
+                filters={filters}
+                repoOptions={repoOptions}
+                repoRead={{ loading: repos.loading, error: tracked.error, onRetry: repos.refresh }}
+                onSubmit={submit}
+            />
 
             <InboxChips filters={filters} />
 

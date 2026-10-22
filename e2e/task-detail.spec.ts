@@ -249,15 +249,15 @@ test.describe('the task detail actions', () => {
 const sql = postgres(E2E_DATABASE_URL, { max: 1 });
 
 test.beforeAll(async () => {
-    // A launch needs the author's repository selected and synced (issue 263). The open board's
-    // stand-in account has none, so the repository the mocked workspace offers is marked ready
-    // for it here — `queueTask` drives the real create route.
+    // A launch needs a tracked repository. The offline board lists the repositories its database
+    // already holds sessions for, so the repository the mocked composer offers is given one —
+    // `queueTask` drives the real create route, which validates against that list.
     await sql`
-        insert into user_repo (org_id, user_id, repo_owner, repo_name, status, ready_at)
-        select m.org_id, u.id, ${E2E_REPO.owner}, ${E2E_REPO.name}, 'ready', now()
+        insert into session_branch (agent, session_id, repo, branch, first_seen, last_seen, org_id)
+        select 'claude-code', 'e2e-task-detail-tracked', ${`${E2E_REPO.owner}/${E2E_REPO.name}`}, 'main', now(), now(), m.org_id
         from app_user u join org_membership m on m.user_id = u.id
         where u.github_login = '__local__'
-        on conflict (org_id, user_id, repo_owner, repo_name) do update set status = 'ready'
+        on conflict do nothing
     `;
 });
 
