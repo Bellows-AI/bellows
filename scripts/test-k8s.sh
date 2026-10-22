@@ -1560,13 +1560,27 @@ fetch(process.argv[2], { method: process.argv[1], headers, body: process.argv[3]
     .catch(() => process.stdout.write("000"));
 ' "$@"
 }
+bounded() { # bounded <seconds> <command...> -> the command's status; killed, status 143, past the deadline (kubectl exec's request timeout does not bound a running stream)
+    local secs="$1" pid watcher rc
+    shift
+    "$@" <&0 &
+    pid=$!
+    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
+    watcher=$!
+    wait "$pid"
+    rc=$?
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+    return "$rc"
+}
+
 give_up() {
     kill "$pf_pid" 2>/dev/null
     # What the lane was standing on when it stopped: the port-forward and this release's pods.
     echo '--- port-forward'
     tail -5 "$PF_LOG" 2>/dev/null
     echo '--- pods'
-    kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" 2>&1 | head -20
+    bounded 30 kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=20s 2>&1 | head -20
     printf '\n%d passed, %d failed\n' "$pass" "$fail"
     exit 1
 }
@@ -1595,7 +1609,7 @@ await_blocked() { # await_blocked <runner pod> <release file> -> the agent is ru
     while [ "$(date +%s)" -lt "$until" ]; do
         # From the supervisor, on the same task volume: the agent container runs as root without
         # DAC_OVERRIDE (issue #814).
-        kubectl exec "$1" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$2.ready-$1" \
+        bounded 20 kubectl exec "$1" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$2.ready-$1" \
             >/dev/null 2>&1 && return 0
         sleep 1
     done
@@ -1611,9 +1625,9 @@ release_stub() { # release_stub <release file> -> touched through a pod that has
     while [ "$(date +%s)" -lt "$until" ]; do
         for pod in $(kubectl get pods -n "$NAMESPACE" --request-timeout=10s \
             -o jsonpath='{range .items[?(@.status.phase=="Running")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
-            kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$1.ready-$pod" \
+            bounded 20 kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- test -f "$1.ready-$pod" \
                 >/dev/null 2>&1 || continue
-            kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- touch "$1" \
+            bounded 20 kubectl exec "$pod" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- touch "$1" \
                 >/dev/null 2>&1 && return 0
         done
         sleep 1
@@ -2082,25 +2096,32 @@ DRIVER_SEL="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=driv
 # expired lease. kill_driver_pods [pod/<name>] deletes the driver pods hard (all of them without an
 # argument) and returns once the node reports no container of theirs left running.
 kill_driver_pods() {
-    local rows pod node out
+    local rows pod node out deleted=0 confirmed=0
     if [ -n "${1:-}" ]; then
-        rows="$(kubectl get "$1" -n "$NAMESPACE" --request-timeout=10s \
+        rows="$(bounded 30 kubectl get "$1" -n "$NAMESPACE" --request-timeout=10s \
             -o jsonpath='{.metadata.name} {.spec.nodeName}{"\n"}' 2>/dev/null)" || rows=''
-        kubectl delete "$1" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+        bounded 60 kubectl delete "$1" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1 || deleted=1
     else
-        rows="$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s \
+        rows="$(bounded 30 kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s \
             -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}' 2>/dev/null)" || rows=''
-        kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force >/dev/null 2>&1
+        bounded 60 kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1 || deleted=1
     fi
-    [ -n "${kind_name:-}" ] || return 0
+    # Returns non-zero when the delete failed or the node never confirmed the containers stopped: the caller's crash check fails on that.
+    [ -n "${kind_name:-}" ] || return "$deleted"
     while read -r pod node; do
         [ -n "$pod" ] || continue
+        confirmed=0
         for _ in $(seq 1 60); do
-            out="$(docker exec "$node" crictl ps -q --state running --label "io.kubernetes.pod.name=$pod" 2>/dev/null)" &&
-                [ -z "$out" ] && break
+            out="$(bounded 20 docker exec "$node" crictl ps -q --state running --label "io.kubernetes.pod.name=$pod" 2>/dev/null)" &&
+                [ -z "$out" ] && {
+                confirmed=1
+                break
+            }
             sleep 1
         done
+        [ "$confirmed" = 1 ] || deleted=1
     done <<<"$rows"
+    return "$deleted"
 }
 driver_logs() { kubectl logs -l "$DRIVER_SEL" -n "$NAMESPACE" --tail=-1 --request-timeout=20s 2>/dev/null; }
 
@@ -2470,20 +2491,6 @@ POD_LOST='infrastructure loss: the runner pod was deleted'
 JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
-
-bounded() { # bounded <seconds> <command...> -> the command's status; killed, status 143, past the deadline (kubectl exec's request timeout does not bound a running stream)
-    local secs="$1" pid watcher rc
-    shift
-    "$@" <&0 &
-    pid=$!
-    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
-    watcher=$!
-    wait "$pid"
-    rc=$?
-    kill "$watcher" 2>/dev/null
-    wait "$watcher" 2>/dev/null
-    return "$rc"
-}
 
 expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
     bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
@@ -3953,6 +3960,10 @@ cap_executors() { # cap_executors <function wrapper> -> the member stores the ex
     return 1
 }
 
+cap_rows() { # cap_rows -> the four tasks' scheduling rows, for a check that failed (diagnostics only)
+    cap_psql "select id, status, claimed_by, claim_seq, lease_expires_at, org_id from job where id in ('$h1', '$h2', '$h3', '$l1') order by created_at" | tr '\n' ';'
+}
+
 cap_owner_of() { # cap_owner_of <job> -> the worker that held it when $owners was read; empty when it was not running
     printf '%s\n' "$owners" | sed -n "s/^$1|//p"
 }
@@ -4175,7 +4186,7 @@ cap_run() {
     if [ -n "$owners_known" ] && [ -n "$h1_owner" ] && kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s -o name 2>/dev/null |
         grep -qx "pod/$h1_owner"; then
         victim="$h1_owner"
-        kill_driver_pods "pod/$victim"
+        kill_driver_pods "pod/$victim" || bad 'capacity: the lost driver is confirmed stopped' "pod/$victim was not confirmed deleted and stopped"
         kill_at=$(date +%s)
         # Waiting the lease out would take the lane lease; its expiry is what a silent driver comes to. Done at once,
         # before the replacement rolls out; a lease that already ran out (or a claim already taken over) is read, not assumed.
@@ -4228,7 +4239,7 @@ cap_run() {
         [ -n "$l1_pod" ] && cap_queued cap_heavy "$h3" &&
             ok 'capacity: the light member gets the next freed slot when the first wave raced to the heavy member' ||
             bad 'capacity: the light member gets the next freed slot when the first wave raced to the heavy member' \
-                "light: $(cap_light job_brief "$l1"); last heavy: $(cap_heavy job_brief "$h3")"
+                "light: $(cap_light job_brief "$l1"); last heavy: $(cap_heavy job_brief "$h3"); rows: $(cap_rows)"
     fi
     pending="h2 h3 l1"
     until=$(($(date +%s) + 300))

@@ -1086,6 +1086,8 @@ export interface JobStore extends PhaseCheckpointStore {
     claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
     /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
     demand(): Promise<OrgDemand>;
+    /** Whether the global admission budget has room for another running row; true when it is unset (issue #831). */
+    globalRoom(): Promise<boolean>;
     heartbeat(
         id: string,
         leaseToken: string,

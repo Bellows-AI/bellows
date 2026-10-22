@@ -313,6 +313,9 @@ function stubStore(
         async demand() {
             return options.demand ?? { takeover: false, running: 0, oldestWaiting: null };
         },
+        async globalRoom() {
+            return true;
+        },
         async heartbeat() {
             boom();
             const result = options.verdict ?? 'ok';

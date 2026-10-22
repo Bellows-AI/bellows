@@ -25,8 +25,8 @@ const craft = (org: string, shape: CraftShape) => craftJob({ sql, org, author: '
 const queued = (org: string, repo: string, createdMinutesAgo: number) => craft(org, { repo, createdMinutesAgo });
 
 /** One board replica: its own scanner over the same two org boards, as each dashboard pod has. */
-function replica(admission: AdmissionBudgets) {
-    const boards = [ORG_A, ORG_B].map((orgId) => createJobStore({ sql, orgId, admission }));
+function replica(admission: AdmissionBudgets, wrap: (board: JobStore, orgId: string) => JobStore = (board) => board) {
+    const boards = [ORG_A, ORG_B].map((orgId) => wrap(createJobStore({ sql, orgId, admission }), orgId));
     const scan = fairBoardScan();
     return (worker: string) =>
         scan<Claim>(
@@ -102,6 +102,43 @@ describe.skipIf(!enabled)('cross-org fairness on every replica (issue #831)', ()
         await queued(ORG_A, 'acme/a-old', 300);
 
         expect((await replica({})('w1'))?.id).toBe(lost);
+    });
+
+    it('a poll that found the global budget full admits no new work from a later board when a slot frees mid-poll', async () => {
+        // Org A runs two rows and has one more queued; org B has one queued; the budget is two.
+        const budget = { global: 2 } as const;
+        const heavy = createJobStore({ sql, orgId: ORG_A, admission: budget });
+        const first = await queued(ORG_A, 'acme/a0', 60);
+        await queued(ORG_A, 'acme/a1', 59);
+        const claims = [await heavy.claim('w0', LEASE_SECONDS), await heavy.claim('w0', LEASE_SECONDS)];
+        expect(claims.map((claim) => claim?.id)).toContain(first);
+        const firstClaim = claims.find((claim) => claim?.id === first)!;
+        await queued(ORG_A, 'acme/a2', 58);
+        const light = await queued(ORG_B, 'acme/b0', 1);
+
+        // Org B ranks first (fewest running). Its claim is refused, the budget being full; then the first
+        // heavy row settles before the poll reaches org A, whose board would now admit its third row.
+        const poll = replica(budget, (board, orgId) =>
+            orgId === ORG_B
+                ? {
+                      ...board,
+                      claim: async (worker, leaseSeconds) => {
+                          const refused = await board.claim(worker, leaseSeconds);
+                          await heavy.complete(first, firstClaim.leaseToken, {
+                              status: 'succeeded',
+                              exitCode: 0,
+                              output: '',
+                          });
+                          return refused;
+                      },
+                  }
+                : board
+        );
+        expect(await poll('w1')).toBeNull();
+        expect(await runningOf(ORG_A)).toBe(1);
+
+        // The next poll hands the freed slot to the org that was waiting.
+        expect((await replica(budget)('w2'))?.id).toBe(light);
     });
 
     it('with equal running, the org whose oldest task has waited longest goes first', async () => {

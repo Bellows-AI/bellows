@@ -117,6 +117,37 @@ export function boardScan(): BoardScanner {
 }
 
 /**
+ * The fair scan's walk. A poll that finds the global budget full admits no new work from a later board:
+ * the order came from demand read at the start, and a slot freed meanwhile would go to whichever board
+ * the scan reaches next instead of the org the order put first. A board with a takeover waiting still
+ * needs no slot and is scanned.
+ */
+async function scanUnderBudget<T>(
+    boards: readonly JobStore[],
+    order: readonly number[],
+    demands: readonly (Awaited<ReturnType<JobStore['demand']>> | null)[],
+    log: (e: Error) => void,
+    claimOf: (board: JobStore) => Promise<T | null>
+): Promise<T | null> {
+    let failed: Error | null = null;
+    let full = false;
+    for (const index of order) {
+        if (full && !demands[index]?.takeover) continue;
+        const board = boards[index]!;
+        try {
+            if (!(await board.globalRoom())) full = true;
+            const claimed = await claimOf(board);
+            if (claimed !== null) return claimed;
+        } catch (e) {
+            failed = e as Error;
+            log(failed);
+        }
+    }
+    if (failed) throw failed;
+    return null;
+}
+
+/**
  * The job claim's scan (issue #831): the boards in the order their rows give, so every board
  * replica and every driver sees the same priority instead of each replica's own rotation. An org
  * whose lost attempt waits for its takeover comes first — recovery needs no budget slot, and a
@@ -157,6 +188,6 @@ export function fairBoardScan(): BoardScanner {
                 for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
                 return rotation(a) - rotation(b);
             });
-        return scanBoards(boards, order, log, claimOf);
+        return scanUnderBudget(boards, order, demands, log, claimOf);
     };
 }

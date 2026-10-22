@@ -2061,20 +2061,6 @@ cap_status() { # cap_status <job> -> its status once the board answered, retried
     return 1
 }
 
-cap_deadline() { # cap_deadline <seconds> <command...> -> the command's status; killed, status 143, past the deadline (for shell functions timeout cannot run)
-    local pid watcher rc secs="$1"
-    shift
-    "$@" &
-    pid=$!
-    { sleep "$secs"; kill "$pid" 2>/dev/null; } >/dev/null 2>&1 &
-    watcher=$!
-    wait "$pid"
-    rc=$?
-    kill "$watcher" 2>/dev/null
-    wait "$watcher" 2>/dev/null
-    return "$rc"
-}
-
 cap_owner_of() { # cap_owner_of <job> -> the worker that held it when $owners was read; empty when it was not running
     printf '%s\n' "$owners" | sed -n "s/^$1|//p"
 }
@@ -2221,9 +2207,11 @@ cap_run() {
     local samples="$work/capacity.samples.log" kill_at='' took_at='' verdict
 
     # The budget counts every running row on the database: a leftover one is not this phase's to count around.
-    cap_pg="$(cap_deadline 30 compose ps -q postgres | sed -n 1p)"
+    # The docker executable itself under timeout, so the deadline kills the process holding the pipe; the compose project is the one compose() uses.
+    cap_pg="$(timeout 30 docker ps -q --filter "label=com.docker.compose.project=${COMPOSE_PROJECT_NAME:-$(basename "$REPO" | tr '[:upper:]' '[:lower:]')}" \
+        --filter label=com.docker.compose.service=postgres | sed -n 1p)"
     [ -n "$cap_pg" ] || {
-        bad 'capacity: the postgres container is found' 'compose ps -q postgres answered nothing'
+        bad 'capacity: the postgres container is found' 'no running postgres container carries the compose project label'
         return 1
     }
     running="$(cap_psql "select count(*) from job where status in ('running', 'queued') and review_of is null")" && [ "$running" = 0 ] || {

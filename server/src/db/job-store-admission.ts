@@ -82,6 +82,13 @@ export async function roomForNew(sql: Sql, budgets: AdmissionBudgets, orgId: str
     return true;
 }
 
+/** Whether the global budget has room for one more running row (always, when it is unset), read without a lock. */
+export async function globalRoom(sql: Sql, budgets: AdmissionBudgets): Promise<boolean> {
+    if (budgets.global === undefined) return true;
+    const [row] = await sql<{ n: number }[]>`select count(*)::int as n from job where ${occupying(sql)}`;
+    return row!.n < budgets.global;
+}
+
 /** The reservation's repo filter for candidate alias `j`, advisory like `roomForNew`. */
 export function repoRoom(sql: Sql, budgets: AdmissionBudgets): Fragment {
     if (budgets.repo === undefined) return sql`true`;
