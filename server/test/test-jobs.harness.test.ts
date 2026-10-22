@@ -23,7 +23,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT.slice(origin, origin + 120)).toContain('-p 127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
-        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(3);
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(4);
         expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
         expect(SCRIPT).not.toContain('.origins');
     });

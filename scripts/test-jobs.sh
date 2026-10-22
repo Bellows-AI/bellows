@@ -2027,6 +2027,9 @@ cap_a_pid=''
 cap_b_pid=''
 cap_board_pid=''
 cap_sampler_pid=''
+cap_heavy_token=''
+cap_light_token=''
+cap_light_job=''
 
 cap_forget() { # cap_forget <pid> -> drops a stopped process from the list cleanup() kills
     local keep='' p
@@ -2118,16 +2121,28 @@ cap_release() { # cap_release <job> <name> -> the task's barrier opened
     lane_touch "$CAP_DIR/$2.go" || bad "capacity: $2's barrier is released" 'the touch failed'
 }
 
+cap_api_job() { # cap_api_job <job> -> the job's read, as the member who owns it: the github-mode boards refuse an anonymous one
+    local bearer="Bearer $cap_heavy_token"
+    [ "$1" = "$cap_light_job" ] && bearer="Bearer $cap_light_token"
+    AUTH_HEADER="$bearer" api GET "/api/jobs/$1"
+}
+
+cap_await_settled() { # cap_await_settled <job> <seconds> -> its final status, read as its member
+    local bearer="Bearer $cap_heavy_token"
+    [ "$1" = "$cap_light_job" ] && bearer="Bearer $cap_light_token"
+    AUTH_HEADER="$bearer" await_settled "$1" "$2"
+}
+
 cap_why() { # cap_why <job> -> what the board says about it, for a check that failed
     local job_json
-    job_json="$(body "$(api GET "/api/jobs/$1")")"
+    job_json="$(body "$(cap_api_job "$1")")"
     printf 'status %s, output: %s' "$(field "$job_json" status)" "$(field "$job_json" output)"
 }
 
 cap_settled() { # cap_settled <label> <job> <name> <owner> <lost owner> -> the checks every task shares once it ran to its end
     local job_json left
-    expect_contains "capacity $1: the task succeeds" "$(await_settled "$2" "$ADOPT_S")" succeeded
-    job_json="$(body "$(api GET "/api/jobs/$2")")"
+    expect_contains "capacity $1: the task succeeds" "$(cap_await_settled "$2" "$ADOPT_S")" succeeded
+    job_json="$(body "$(cap_api_job "$2")")"
     expect_field "capacity $1: no attempt is spent" "$job_json" attempts 1
     # Only a task the killed driver held records an interruption, and exactly one.
     if [ -n "$5" ] && [ "$4" = "$5" ]; then
@@ -2153,7 +2168,7 @@ cap_sample() { # cap_sample <file> -> one row a second, until killed: <epoch>|<r
 }
 
 cap_run() {
-    local running n tok h1 h2 h3 l1 heavy light heavy_token light_token h1_owner l1_owner victim='' victim_name=''
+    local running n tok until h1 h2 h3 l1 heavy light h1_owner l1_owner victim='' victim_name=''
     local h1_name="$RUN_ID-cap-h1" h2_name="$RUN_ID-cap-h2" h3_name="$RUN_ID-cap-h3" l1_name="$RUN_ID-cap-l1"
     local samples="$work/capacity.samples.log" kill_at='' took_at='' verdict
 
@@ -2193,23 +2208,24 @@ cap_run() {
         bad 'capacity: the heavy member is minted' "$(cat "$work/capacity-mint.log")"
         return 1
     }
-    heavy_token="$CAP_MEMBER_TOKEN"
+    cap_heavy_token="$CAP_MEMBER_TOKEN"
     cap_mint "$light" >"$work/capacity-mint.log" || {
         bad 'capacity: the light member is minted' "$(cat "$work/capacity-mint.log")"
         return 1
     }
-    light_token="$CAP_MEMBER_TOKEN"
+    cap_light_token="$CAP_MEMBER_TOKEN"
     ok 'capacity: two tenants are minted'
-    for tok in "$heavy_token" "$light_token"; do
+    for tok in "$cap_heavy_token" "$cap_light_token"; do
         AUTH_HEADER="Bearer $tok" expect_status 'capacity: the member stores the task executor' 200 PUT /api/workspace/executors \
             '{"executors":[{"name":"claude","type":"claude-code","config":{}},{"name":"opencode","type":"opencode","config":{}}]}'
     done
 
     # Queued before any driver exists, so the order the claim picks them in is the claim's own.
-    h1="$(AUTH_HEADER="Bearer $heavy_token" create_job "$(cap_command "$h1_name")")"
-    h2="$(AUTH_HEADER="Bearer $heavy_token" create_job "$(cap_command "$h2_name")")"
-    h3="$(AUTH_HEADER="Bearer $heavy_token" create_job "$(cap_command "$h3_name")")"
-    l1="$(AUTH_HEADER="Bearer $light_token" BASE="http://127.0.0.1:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
+    h1="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h1_name")")"
+    h2="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h2_name")")"
+    h3="$(AUTH_HEADER="Bearer $cap_heavy_token" create_job "$(cap_command "$h3_name")")"
+    l1="$(AUTH_HEADER="Bearer $cap_light_token" BASE="http://127.0.0.1:$CAP_LIGHT_PORT" create_job "$(cap_command "$l1_name")")"
+    cap_light_job="$l1"
     [ -n "$h1" ] && [ -n "$h2" ] && [ -n "$h3" ] && [ -n "$l1" ] || {
         bad 'capacity: the four tasks are queued' "h1 '$h1' h2 '$h2' h3 '$h3' l1 '$l1'"
         return 1
@@ -2224,15 +2240,13 @@ cap_run() {
     lane_extra_pids="$lane_extra_pids $cap_sampler_pid"
     lane_extra_pids="${lane_extra_pids# }"
 
-    # Each driver would run two tasks alone: four against a budget of two.
+    # The first driver alone takes the first wave: polls that read the same demand at once may both serve one
+    # org (docs/jobs.md), so the light org's turn is read from a single claimer, then the second driver joins.
     disruption_driver DRIVER_WORKER=cap-a JOB_BOARD_URL="http://127.0.0.1:$PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
         DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
     cap_a_pid=$driver_pid
-    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
-        DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
-    cap_b_pid=$driver_pid
     driver_pid=""
-    lane_extra_pids="$lane_extra_pids $cap_a_pid $cap_b_pid"
+    lane_extra_pids="$lane_extra_pids $cap_a_pid"
     lane_extra_pids="${lane_extra_pids# }"
 
     # Fairness: the light org's one task starts while the heavy org still has two queued.
@@ -2240,12 +2254,23 @@ cap_run() {
         bad 'capacity: the first heavy task runs' "$(cap_why "$h1")"
     cap_await_ready "$l1" "$l1_name" 90 && ok 'capacity: the light org runs while the heavy org still queues' ||
         bad 'capacity: the light org runs while the heavy org still queues' "$(cap_why "$l1")"
+
+    # Competing driver: it could run two tasks itself, and the budget is already full.
+    disruption_driver DRIVER_WORKER=cap-b JOB_BOARD_URL="http://127.0.0.1:$CAP_LIGHT_PORT" JOB_BOARD_TOKEN="$CAP_TOKEN" \
+        DRIVER_REAP_INTERVAL_MS=2000 DRIVER_REAP_GRACE_MS=1000
+    cap_b_pid=$driver_pid
+    driver_pid=""
+    lane_extra_pids="$lane_extra_pids $cap_b_pid"
+    lane_extra_pids="${lane_extra_pids# }"
+    until=$(($(date +%s) + 30))
+    while ! grep -qF 'as "cap-b"' "$work/driver.log" && [ "$(date +%s)" -lt "$until" ]; do sleep 1; done
+    sleep 10 # twenty polls of the second driver against a full budget
     running="$(cap_psql "select count(*) from job where status = 'running' and review_of is null")"
     [ "$running" = 2 ] && ok 'capacity: two run, the rest wait' ||
         bad 'capacity: two run, the rest wait' "running rows: $running"
     for n in "$h2" "$h3"; do
         lane_use "$n"
-        [ "$(field "$(body "$(api GET "/api/jobs/$n")")" status)" = queued ] && [ "$(lane_vol_state)" = absent ] &&
+        [ "$(field "$(body "$(cap_api_job "$n")")" status)" = queued ] && [ "$(lane_vol_state)" = absent ] &&
             ok 'capacity: a task over the budget waits queued, with no task volume' ||
             bad 'capacity: a task over the budget waits queued, with no task volume' "$(cap_why "$n"); volume $(lane_vol_state)"
     done
@@ -2271,7 +2296,7 @@ cap_run() {
         [ "$running" = 2 ] && ok 'capacity: a crashed owner leaves the budget full, not exceeded' ||
             bad 'capacity: a crashed owner leaves the budget full, not exceeded' "running rows: $running"
         for n in "$h2" "$h3"; do
-            [ "$(field "$(body "$(api GET "/api/jobs/$n")")" status)" = queued ] &&
+            [ "$(field "$(body "$(cap_api_job "$n")")" status)" = queued ] &&
                 ok 'capacity: no queued task was admitted while the owner was lost' ||
                 bad 'capacity: no queued task was admitted while the owner was lost' "$(cap_why "$n")"
         done
