@@ -42,6 +42,6 @@ reporting a number as measured, or "fixing" anything listed here.
   `date +%s` resolution, on one laptop's kind cluster. EKS, EFS, spot notices and Karpenter are not
   covered; three runs are a sample, not a bound. Measured 2026-10-22, macOS x86_64 laptop, kind with
   three workers (held/settled seconds): D1 (driver node drained) 24/33, 25/34, 24/30; D2 (runner node
-  drained) 12/21, 9/17, 37/46 (the drain itself took 31 s). A fourth run of D2 failed: the
+  drained) 12/21, 9/17, 37/46 (the drain itself took 31 s). One more run failed at D2: the
   replacement runner was lost a second time and two interruptions were recorded; the cause is
   not established.
