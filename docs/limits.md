@@ -28,11 +28,9 @@ reporting a number as measured, or "fixing" anything listed here.
 
 ## Measured versus assumed
 
-- The EFS storage contract in [kubernetes.md](kubernetes.md) was observed on a real EKS cluster
-  (eu-central-1, 2026-09-30), not quoted. What is still unobserved is the chart:
-  `scripts/test-k8s.sh` refuses every non-kind context, so no Factory release has been
-  installed there and a real sign-in and a real runner write on EFS remain unwatched. See
-  [eks-runbook.md](eks-runbook.md).
+- The EBS task volume class in [kubernetes.md](kubernetes.md) is unobserved: `scripts/test-k8s.sh` refuses every
+  non-kind context, so no Factory release has been installed on EKS, and `ReadWriteOncePod` on the EBS CSI
+  driver and a real runner write are unwatched. See [eks-runbook.md](eks-runbook.md).
 - Driver loss and node drain on both executors: `scripts/test-jobs.sh --phase driver-kill` and
   `scripts/test-k8s.sh --cluster --phase takeover` kill a driver at setup, agent, gates and publish;
   no block declares a post-phase helper, so neither has a post window

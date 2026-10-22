@@ -34,8 +34,6 @@ case "${LAYOUT:-}" in
     exit 2
     ;;
 esac
-# The drain layout's nodes bind-mount one host directory per cluster, not one fixed path two clusters share.
-shared="${FACTORY_KIND_SHARED:-$HOME/.cache/factory-kind/$name}"
 
 # Fails unless the listing succeeds with at least one node: a silent empty list would skip every check.
 nodes() {
@@ -72,18 +70,7 @@ misbound() {
 case "$verb" in
 create)
     if ! kind get clusters 2>/dev/null | grep -qx "$name"; then
-        if [ "${LAYOUT:-}" = drain ]; then
-            mkdir -p "$shared" || exit 1
-            rendered="$(mktemp)" || exit 1
-            sed "s|@SHARED@|$shared|" "$config" >"$rendered" || exit 1
-            kind create cluster --name "$name" --config "$rendered" || {
-                rm -f "$rendered"
-                exit 1
-            }
-            rm -f "$rendered"
-        else
-            kind create cluster --name "$name" --config "$config" || exit 1
-        fi
+        kind create cluster --name "$name" --config "$config" || exit 1
     fi
     node_list="$(nodes)" || rewire "no nodes found for the kind cluster $name"
     for node in $node_list; do
@@ -113,8 +100,6 @@ check)
     ;;
 delete)
     kind delete cluster --name "$name" || exit 1
-    # The per-cluster shared directory of the drain layout goes with it; a directory the caller chose stays.
-    [ -n "${FACTORY_KIND_SHARED:-}" ] || rm -rf "$HOME/.cache/factory-kind/$name"
     # Only a listing that succeeded and came back empty means no cluster still uses the registry.
     clusters="$(kind get clusters 2>/dev/null)" || exit 1
     if [ -z "$clusters" ]; then
