@@ -176,6 +176,39 @@ describe('readPullRequest', () => {
         expect(assessPullRequest(facts)).toMatchObject({ outcome: 'unknown', repairable: false });
     });
 
+    it('carries the PR activity stamp the pull payload already holds, null when GitHub sent none', async () => {
+        const routes = {
+            [`${base}/branches/main`]: { body: protectedMain },
+            [`${base}/rules/branches/main`]: { body: [] },
+            [`${base}/commits/head1/check-runs`]: { body: { check_runs: [] } },
+            [`${base}/commits/head1/status`]: { body: { statuses: [] } },
+        };
+        const stamped = await client({
+            ...routes,
+            [`${base}/pulls/7`]: { body: pull({ updated_at: '2026-10-22T08:00:00Z' }) },
+        }).readPullRequest('acme/web', 7);
+        const bare = await client({ ...routes, [`${base}/pulls/7`]: { body: pull() } }).readPullRequest('acme/web', 7);
+        expect(stamped.updatedAt).toBe('2026-10-22T08:00:00Z');
+        expect(bare.updatedAt).toBeNull();
+    });
+
+    it.each([
+        ['no state', { state: undefined }],
+        ['an unknown state', { state: 'draft' }],
+        ['no merged flag', { merged: undefined }],
+        ['a merged PR that is not closed', { state: 'open', merged: true }],
+    ])('refuses to guess from a payload with %s: a read failure, never a closed PR', async (_label, extra) => {
+        await expect(
+            client({
+                [`${base}/pulls/7`]: { body: pull(extra) },
+                [`${base}/branches/main`]: { body: protectedMain },
+                [`${base}/rules/branches/main`]: { body: [] },
+                [`${base}/commits/head1/check-runs`]: { body: { check_runs: [] } },
+                [`${base}/commits/head1/status`]: { body: { statuses: [] } },
+            }).readPullRequest('acme/web', 7)
+        ).rejects.toBeInstanceOf(GitHubReadError);
+    });
+
     it('reports a merged PR with its merge commit and time', async () => {
         const facts = await client({
             [`${base}/pulls/7`]: {

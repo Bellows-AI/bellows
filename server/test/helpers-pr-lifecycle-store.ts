@@ -107,6 +107,9 @@ export function memoryPrLifecycleStore(): MemoryPrLifecycleStore {
             deliveries.push({ ...delivery, outcome });
             return outcome;
         },
+        async foldObservedActivity() {
+            throw new Error('memory pr lifecycle: foldObservedActivity is not exercised by route tests');
+        },
         async claimReview() {
             throw new Error('memory pr lifecycle: claimReview is not exercised by route tests');
         },

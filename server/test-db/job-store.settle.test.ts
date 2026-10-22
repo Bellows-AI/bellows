@@ -158,6 +158,18 @@ describe.skipIf(!enabled)('waitForSettle — the long-poll settle read (issue #3
         expect(await pending).toMatchObject({ result: 'terminal' });
     });
 
+    it('a verdict another replica writes settles a wait held on this one', async () => {
+        // No notification crosses replicas: the held wait re-reads the row every poll.
+        const { id } = await queue('work');
+        const pending = store.waitForSettle(id, 10_000);
+        await sleep(150);
+        const other = createJobStore({ sql, orgId: ORG, prs: createPrLifecycleStore({ sql, orgId: ORG }) });
+        const claim = await other.claim('worker-2', LEASE_SECONDS);
+        await other.session(id, claim!.leaseToken, SESSION);
+        await other.complete(id, claim!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        expect(await pending).toMatchObject({ result: 'terminal' });
+    });
+
     it('never re-answers an id that vanishes mid-wait as settled', async () => {
         // Guarded by nothing in particular — the loop re-checks the org each round, so a row
         // deleted mid-hold (removeThread) answers null, never a stale settled.
