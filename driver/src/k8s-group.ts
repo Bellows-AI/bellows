@@ -60,6 +60,8 @@ export interface TaskGroup {
     agent: boolean;
     /** The incarnation this runner created: its teardown deletes that one only. */
     uids: IncarnationUids;
+    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    resumed?: boolean;
 }
 
 /** The attempt's own task group: its runner Job, named by its lease token. */
@@ -72,11 +74,12 @@ export const runnerGroupOf = (job: BoardJob, uids?: IncarnationUids): GroupRef =
 /**
  * Forgets the attempt's group, its end marked pending first — synchronously, before anything is
  * awaited — so no concurrent hand-back of the claim slips in while it is torn down. Answers what
- * the runner knew of it (its incarnation), or undefined for a group it never created.
+ * the runner knew of it (its incarnation), or undefined for a group it never created. The end is pending
+ * against the claim's holder, which a taken-over group's lease (`ownGroup`) is not (#829).
  */
 export function forgetGroup(deps: K8sDeps, job: BoardJob): TaskGroup | undefined {
     const known = groupsOf(deps).get(job.leaseToken);
-    markEnding(deps, runnerGroupOf(job, known?.uids));
+    markEnding(deps, runnerGroupOf(job, known?.uids), job.claimHolder ?? job.leaseToken);
     groupsOf(deps).delete(job.leaseToken);
     return known;
 }
@@ -93,7 +96,7 @@ const asHolderGroup = (value: unknown): ListedGroupJob | null => {
 };
 
 /**
- * Every group a checkout holder can have left: its attempt's runner group, and each reclaim group
+ * Every group a checkout holder can have left: its attempt's runner group, and each group
  * labelled as serving it (`HOLDER_LABEL`) — listed, each named by the uid it was listed under.
  * Null when the list proves nothing: the caller acts on none of them.
  */
@@ -130,8 +133,9 @@ export const groupsOf = (deps: K8sDeps): Map<string, TaskGroup> => {
  */
 async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): Promise<void> {
     const image = executorImage(deps.config, job.executorType);
-    const seen: { last: PodStartState; unproven: string | null; affinity: string | null } = {
+    const seen: { last: PodStartState; unproven: string | null; affinity: string | null; pod: boolean } = {
         last: 'unread',
+        pod: false,
         unproven: null,
         affinity: null,
     };
@@ -142,6 +146,15 @@ async function awaitSupervisor(deps: K8sDeps, job: BoardJob, jobName: string): P
             const pull = await readImagePullStatus(withSignal(boundedBy(deps, deadline), signal), jobName);
             const refused = startRefusalOf(image, pull, true);
             if (refused) throw refused;
+            // A pod seen and then gone, or marked for removal, is an infrastructure loss now: waiting on the
+            // bound would idle a replacement for GROUP_UP_WAIT_MS (#924). A `none` before any pod, and an
+            // unread list, prove nothing.
+            if (pull.disrupted || (seen.pod && pull.podState === 'none'))
+                throw new StartupRefused(
+                    `the task pod of ${jobName} was lost before its supervisor made contact`,
+                    'transient'
+                );
+            if (pull.podState === 'starting' || pull.podState === 'started') seen.pod = true;
             if (pull.blocked) seen.unproven = heldUnpullable(image, pull, pull.blocked);
             if (pull.podState !== 'unread') seen.last = pull.podState;
             // The latest word only: a pod that got scheduled after all has nothing to say about its volume.
@@ -257,8 +270,10 @@ export async function jobEndsWithin(deps: K8sDeps, name: string, ms: number): Pr
 export async function finishGroup(deps: K8sDeps, job: BoardJob): Promise<void> {
     if (!groupsOf(deps).has(job.leaseToken)) {
         // A group already taken away (a kill) whose end went unconfirmed is ended again here, and
-        // its claim given back once it is.
-        if (holderUnconfirmed(deps, job.leaseToken) && (await retryUnconfirmed(deps, job.leaseToken))) {
+        // its claim given back once it is. The end is recorded under the claim's holder, which a
+        // taken-over group's lease (`ownGroup`) is not (#829).
+        const holder = job.claimHolder ?? job.leaseToken;
+        if (holderUnconfirmed(deps, holder) && (await retryUnconfirmed(deps, holder))) {
             await releaseClaimAfterGroupEnd(deps, job);
         }
         return;

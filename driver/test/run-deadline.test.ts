@@ -181,6 +181,60 @@ describe('the docker runner kill timer', () => {
         await expect(pending).resolves.toMatchObject({ timedOut: true });
     });
 
+    // #829: a run abandoned to the next holder leaves its group alone; its timers must not act on it.
+    describe('once the run is abandoned to the next holder', () => {
+        const start = async (env: Record<string, string>, of: BoardJob) => {
+            const calls: string[][] = [];
+            const exec = vi.fn(async (args: string[]) => {
+                calls.push(args);
+                if (args[0] === 'ps' && args.some((a) => a.startsWith('label=factory.lease'))) {
+                    return { stdout: 'a0a0a0a0a001\n' };
+                }
+                return { stdout: '' };
+            }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+            const child = new EventEmitter() as ChildProcess;
+            child.stdout = new EventEmitter() as ChildProcess['stdout'];
+            child.stderr = new EventEmitter() as ChildProcess['stderr'];
+            const spawned = vi.fn(() => child);
+            const runner = createDockerRunner(
+                loadDriverConfig({ DRIVER_JOB_TIMEOUT_MS: String(10 * SECOND), ...env }),
+                spawned as unknown as typeof spawn,
+                withTaskVolume(exec),
+                { files: { writeFile: async () => undefined, rm: async () => undefined }, steps: supervisorSteps }
+            );
+            const pending = runner.run(of, of.executorType === 'opencode' ? null : { id: SESSION, resume: false });
+            pending.catch(() => undefined);
+            for (let i = 0; i < 200 && spawned.mock.calls.length === 0; i++) await vi.advanceTimersByTimeAsync(0);
+            return { runner, calls };
+        };
+
+        it('never fires the backstop kill', async () => {
+            const { runner, calls } = await start({}, job);
+
+            runner.abandon(job);
+            await vi.advanceTimersByTimeAsync(10 * SECOND + SUPERVISOR_WINDDOWN_MS + HOUR);
+
+            expect(calls.some((args) => args[0] === 'kill')).toBe(false);
+        });
+
+        it('stops the cache watch', async () => {
+            const opencode: BoardJob = { ...job, executorType: 'opencode' };
+            const { runner, calls } = await start(
+                { RUNNER_CACHE_WATCH: '1', RUNNER_CACHE_WATCH_POLL_MS: '5000' },
+                opencode
+            );
+            const before = calls.length;
+            await vi.advanceTimersByTimeAsync(5 * SECOND);
+            const probing = calls.length;
+            expect(probing).toBeGreaterThan(before);
+
+            runner.abandon(opencode);
+            await vi.advanceTimersByTimeAsync(HOUR);
+
+            expect(calls.length).toBe(probing);
+        });
+    });
+
     it('pausing a run that is not in flight does nothing', async () => {
         const runner = createDockerRunner(loadDriverConfig({}), vi.fn() as unknown as typeof spawn, vi.fn());
         await expect(runner.pauseDeadline(job, true)).resolves.toBeUndefined();

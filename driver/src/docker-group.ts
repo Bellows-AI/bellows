@@ -11,10 +11,23 @@ import {
     REVIEWER_UID,
     supervisorEnvFileBody,
 } from './claim.js';
-import { claudeExportScript, gateLoopArgv, reviewLoopArgv, supervisorScript } from './container-scripts.js';
+import {
+    bindingWriteArgv,
+    claudeExportScript,
+    gateLoopArgv,
+    reviewLoopArgv,
+    supervisorScript,
+} from './container-scripts.js';
 import { containerHardeningArgs, resourceArgs } from './docker.js';
 import { taskMountArgs } from './task-volume.js';
-import { ctlVolumeName, groupNetworkArgs, idsOf, mailboxMountArgs, supervisorName } from './docker-mailbox.js';
+import {
+    bindingVolumeName,
+    ctlVolumeName,
+    groupNetworkArgs,
+    idsOf,
+    mailboxMountArgs,
+    supervisorName,
+} from './docker-mailbox.js';
 import {
     type ClosedState,
     type ExecDocker,
@@ -25,21 +38,22 @@ import {
 } from './docker-runner-support.js';
 import { assertTaskVolumeIsOurs } from './docker-task-volume.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
-import { Inconclusive, type RunSession } from './runner.js';
+import { Inconclusive, REBIND_DEADLINE_MS, type RunSession } from './runner.js';
 import {
     EXPORTER_CONTAINER,
     GATE_CONTAINER,
     MAILBOXES,
     mailboxesOf,
     REVIEWER_CONTAINER,
+    SUPERVISOR_BINDING,
     SUPERVISOR_CONTAINER,
-    SUPERVISOR_ENV,
     DRIVER_LOST_LOSS,
     SUPERVISOR_EXIT,
     SUPERVISOR_WINDDOWN_MS,
+    type SupervisorBinding,
     type SupervisorReport,
 } from './supervisor-contract.js';
-import { gateImageOf, supervisorLiterals } from './supervisor-plan.js';
+import { bindingBody, gateImageOf, supervisorControlNames, supervisorLiterals } from './supervisor-plan.js';
 import { groupServices, SERVICE_ADDRESS } from './services.js';
 import { exportEnv, exportsTranscript } from './transcript-export.js';
 
@@ -68,16 +82,16 @@ const labelArgs = (job: BoardJob, role: string): string[] => [
     `${ROLE_LABEL}=${role}`,
 ];
 
-/** The `docker volume create` argv of each mailbox: labelled with the job and lease, so a fence can find them. */
+/** The `docker volume create` argv of each mailbox and the supervisor's binding volume: labelled with the job and lease, so a fence can find them. */
 export const ctlVolumeArgs = (job: BoardJob, { reviewing = false }: { reviewing?: boolean } = {}): string[][] =>
-    mailboxesOf(reviewing).map((box) => [
+    [...mailboxesOf(reviewing).map((box) => ctlVolumeName(job, box)), bindingVolumeName(job)].map((name) => [
         'volume',
         'create',
         '--label',
         `${JOB_LABEL}=${job.id}`,
         '--label',
         `${LEASE_LABEL}=${job.leaseToken}`,
-        ctlVolumeName(job, box),
+        name,
     ]);
 
 const reachDriverArgs = (config: DriverConfig): string[] => [
@@ -117,6 +131,9 @@ export function supervisorCreateArgs(
         // publish, the helpers) work on the task checkout.
         ...taskMountArgs(job),
         ...mailboxesOf(group.reviewing === true).flatMap((box) => mailboxMountArgs(job, box, 'rw')),
+        // The holder binding (#829): the supervisor's alone, written by the driver over `docker exec`.
+        '--mount',
+        `type=volume,src=${bindingVolumeName(job)},target=${SUPERVISOR_BINDING.dir}`,
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
@@ -126,8 +143,7 @@ export function supervisorCreateArgs(
 }
 
 /** The exporter's `docker create` argv: the member's workspace and the one mailbox it shares with the supervisor. */
-export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedAt: string, envFile: string): string[] {
-    const env = exportEnv(config, job, startedAt);
+export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
     return [
         'create',
         ...containerHardeningArgs(),
@@ -136,10 +152,7 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
         ...labelArgs(job, EXPORTER_CONTAINER),
         ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
-        ...reachDriverArgs(config),
-        '--env-file',
-        envFile,
-        ...env.literals.flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        ...exportEnv(config, job, startedAt).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
@@ -278,10 +291,7 @@ export async function createGroup(
         // The supervisor and exporter create mounts the task volume: a reaped one would be made empty by the mount.
         await assertTaskVolumeIsOurs(deps.execDocker, job);
         for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);
-        const supervisorPair = [SUPERVISOR_ENV.controlUrl, SUPERVISOR_ENV.controlToken].map((name) => ({
-            name,
-            source: name,
-        }));
+        const supervisorPair = supervisorControlNames(job).map((name) => ({ name, source: name }));
         await createWithEnvFile(
             deps,
             controlEnvFilePath(job, 'supervisor'),
@@ -289,12 +299,7 @@ export async function createGroup(
             (file) => supervisorCreateArgs(deps.config, job, shape, file)
         );
         if (exporting) {
-            await createWithEnvFile(
-                deps,
-                controlEnvFilePath(job, 'export'),
-                supervisorEnvFileBody(job, exportEnv(deps.config, job, startedAt).control),
-                (file) => exporterCreateArgs(deps.config, job, startedAt, file ?? '')
-            );
+            await deps.execDocker(exporterCreateArgs(deps.config, job, startedAt));
         }
     } catch (e) {
         await removeGroup(deps.teardown ?? deps.execDocker, job);
@@ -447,5 +452,30 @@ export async function removeGroup(execDocker: ExecDocker, job: BoardJob): Promis
     }
     for (const box of Object.values(MAILBOXES)) {
         await execDocker(['volume', 'rm', '-f', ctlVolumeName(job, box)]).catch(() => undefined);
+    }
+    await execDocker(['volume', 'rm', '-f', bindingVolumeName(job)]).catch(() => undefined);
+}
+
+/**
+ * Writes `binding` into the supervisor's binding volume (#829): the body rides stdin of one
+ * `docker exec`, never argv. Resolves only on a confirmed write; any rejection means "maybe
+ * written". The error is fixed text: the exec's own message quotes the argv and the stderr.
+ */
+export async function rebindGroup(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    binding: SupervisorBinding,
+    signal: AbortSignal
+): Promise<void> {
+    const body = Buffer.from(bindingBody(binding));
+    if (signal.aborted) throw new Error(`rebinding the task group of job ${job.id} was aborted`);
+    try {
+        await execDocker(['exec', '-i', supervisorName(job), ...bindingWriteArgv(body.length)], {
+            input: body,
+            timeout: REBIND_DEADLINE_MS,
+            signal,
+        });
+    } catch {
+        throw new Error(`rebinding the task group of job ${job.id} failed`);
     }
 }

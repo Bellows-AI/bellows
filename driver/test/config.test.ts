@@ -3,6 +3,8 @@ import type { BoardJob } from '../src/board.js';
 import { cpuQuantityToCores, gateAdvertiseUrlFor, loadDriverConfig, memoryQuantityToBytes } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
+import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
+import { takeoverBoundMs } from '../src/supervisor-plan.js';
 
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -467,6 +469,21 @@ describe('the driver config: the drain handover', () => {
     it('refuses a bad handover delay rather than falling back to the default', () => {
         expect(() => loadDriverConfig({ DRIVER_HANDOVER_MS: '-1' })).toThrow(/DRIVER_HANDOVER_MS/);
         expect(() => loadDriverConfig({ DRIVER_HANDOVER_MS: 'later' })).toThrow(/DRIVER_HANDOVER_MS/);
+    });
+});
+
+describe('the driver config: the rebind grace', () => {
+    // #829: what a released group waits past its lease for a newer holder; the lanes shorten it.
+    it('defaults to the supervisor contract, is overridable, and sets the takeover bound', () => {
+        expect(loadDriverConfig({}).rebindGraceMs).toBe(SUPERVISOR_REBIND_GRACE_MS);
+        const short = loadDriverConfig({ DRIVER_REBIND_GRACE_MS: '5000', DRIVER_LEASE_SECONDS: '10' });
+        expect(short.rebindGraceMs).toBe(5000);
+        expect(takeoverBoundMs(short)).toBe(15_000);
+    });
+
+    it('refuses a grace under a second or unreadable', () => {
+        expect(() => loadDriverConfig({ DRIVER_REBIND_GRACE_MS: '999' })).toThrow(/DRIVER_REBIND_GRACE_MS/);
+        expect(() => loadDriverConfig({ DRIVER_REBIND_GRACE_MS: 'soon' })).toThrow(/DRIVER_REBIND_GRACE_MS/);
     });
 });
 

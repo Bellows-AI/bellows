@@ -73,6 +73,7 @@ const securityDocs = readFileSync(join(ROOT, 'docs/security.md'), 'utf8');
 const workspaceDocs = readFileSync(join(ROOT, 'docs/workspace.md'), 'utf8');
 const testingDocs = readFileSync(join(ROOT, 'docs/executor-testing.md'), 'utf8');
 const jobsDocs = readFileSync(join(ROOT, 'docs/jobs.md'), 'utf8');
+const limitsDocs = readFileSync(join(ROOT, 'docs/limits.md'), 'utf8');
 
 /**
  * Prose wraps at 100 columns, so a sentence worth pinning is usually split across a line break and
@@ -185,14 +186,47 @@ describe('the executor isolation record (#382)', () => {
         expect(kubernetesDocs).toContain('`ttlSecondsAfterFinished`');
     });
 
-    // Issue #824 (D13): a runner whose agent exited is waited out and adopted, never swept; the claim
+    // Issue #829: a released, running agent is taken over, never swept; the endpoint it keeps is a limit.
+    it('states that a released running agent is taken over, and what a taken-over run reaches the new holder through', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            'is taken over: the next claim rebinds the supervisor (`rebind`), the supervisor must poll the new endpoint within `SUPERVISOR_REBIND_DELIVERY_MS`, and no sync, setup or `go` follows; one never released is swept'
+        );
+        expect(prose(kubernetesDocs)).toContain(
+            "A taken-over run's agent and exporter reach the new holder through the supervisor's relay (`serveRelay`); a request in flight across the rebind is hung up on (the exporter retries it; the agent's proxy answers 502), and the transcript continues under the new claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`, `driver/test/control-proxy.test.ts`."
+        );
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a taken-over run's agent gate requests (`BELLOWS_GATE_*`) keep the lost driver's endpoint; the end-of-run gates run on the new holder (follow-up #909). `driver/src/loop-gates.ts`."
+        );
+    });
+
+    // Issue #824 (D13): a runner whose agent exited and whose supervisor stopped serving is waited out and adopted, never swept; the claim
     // fences the checkout, not the steps a lost driver still alive sends, which the group's bound ends.
     it('states that a finalizing runner is waited out, and what the takeover does not fence', () => {
         expect(prose(kubernetesDocs)).toContain(
-            'one whose agent exited is waited out (`SUPERVISOR_WINDDOWN_MS`) and adopted with its logged report'
+            'one whose agent exited is taken over the same way while its supervisor still serves (no `supervisor: stopped serving the steps`), its report delivered to the new holder; one whose supervisor stopped serving is waited out (`finalizeWaitMs`, `driver/src/supervisor-plan.ts`) and adopted with its logged report'
         );
         expect(prose(kubernetesDocs)).toContain(
-            "a lost driver still alive steps into it until its lease or the group's orphan bound ends"
+            "a lost driver still alive steps into it until it learns its lease was lost, then hangs up on the group's tokens (`depart`), the wait outlasting that learning (one heartbeat) and the group's `takeoverBoundMs`."
+        );
+    });
+
+    // Issue #829: a driver the board cannot reach never learns its lease was lost.
+    it('states that a cut-off driver keeps contact past the adopter’s finalize wait', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker). `driver/src/loop-attempt.ts`."
+        );
+    });
+
+    // Issue #829: a rebind is a Secret patch the kubelet delivers on its own sync, not a push.
+    it('states how late a rebind reaches a live supervisor', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a rebind reaches a live supervisor only once the kubelet refreshes the attempt Secret's volume — up to its sync period (default one minute) plus its cache delay; docker's write is seen on the supervisor's next control poll."
+        );
+    });
+
+    it('states that a takeover needs the rebind grace to outlast the kubelet refresh', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a takeover needs `driver.rebindGraceMs` to outlast that refresh (~60 s measured); a shorter grace ends the group before the new holder's binding arrives."
         );
     });
 
@@ -201,7 +235,7 @@ describe('the executor isolation record (#382)', () => {
     it('states what an outage past the lease costs a finished attempt', () => {
         expect(kubernetesDocs).toContain('Stated limit: a verdict neither staged nor completed within one lease');
         expect(prose(kubernetesDocs)).toContain(
-            'its agent outcome is adopted, but the gates and the post-processing run again'
+            "its agent outcome is adopted and resumes after the last post-run phase checkpointed on the board (`gates` bound to the tree's fingerprint, then `post`, `publish`); a phase whose checkpoint is missing, unreadable or bound to another tree runs again, with every phase after it"
         );
         expect(prose(kubernetesDocs)).toContain('can retire `dead` before it is adopted');
     });
@@ -239,6 +273,16 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(testingDocs)).toContain(
             'a driver pod and its runner Job deleted together end succeeded in the lost session'
         );
+    });
+
+    // Issue #829: the takeover lanes and the drain measurement are stated, with where the numbers land.
+    it('names the takeover lanes, the explicit drain phase and where its timings are written', () => {
+        expect(prose(testingDocs)).toContain('Its driver-kill phase kills a real driver at setup');
+        expect(prose(testingDocs)).toContain(
+            "`--phase drain` (explicit, a `LAYOUT=drain` cluster) drains the driver's node and the runner's node and writes `.recovery.tsv`"
+        );
+        expect(prose(limitsDocs)).toContain('--phase drain');
+        expect(prose(limitsDocs)).toContain('.recovery.tsv');
     });
 
     // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the

@@ -3,10 +3,10 @@ import { executorImage } from './config.js';
 import { ARTIFACT_LIMIT, Inconclusive, reportTail, tailKept } from './runner.js';
 import type { Read } from './runner.js';
 import { jobPath, jobPodsPath, podLogPath } from './k8s-auxspec.js';
-import { pollFor } from './poll.js';
+import { anyOf, pollFor } from './poll.js';
 import { nonEmpty, stringsOnly } from './k8s-shapes.js';
 import { asPod, asStartupPod, validCounters } from './k8s-pod-shapes.js';
-import { ledgerOf, RunnerKilled, vanishedRunner } from './k8s-kill.js';
+import { ledgerOf, RunnerAbandoned, RunnerKilled, vanishedRunner } from './k8s-kill.js';
 import { runnerName } from './k8s-podspec.js';
 import {
     containerFailure,
@@ -247,6 +247,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     );
     const podState: PodStartState =
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
+    const disrupted = isDisrupted(pod);
     const stuck = waiting?.reason ? { reason: waiting.reason, message: waiting.message ?? '' } : null;
     if (stuck && PULL_REASONS.has(stuck.reason)) {
         return {
@@ -257,6 +258,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
             podState,
             agentStarted,
             volumeAffinity: null,
+            disrupted,
         };
     }
     const containerSeen =
@@ -270,8 +272,15 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         podState,
         agentStarted,
         volumeAffinity: volumeAffinityOf(pod),
+        disrupted,
     };
 }
+
+/** The control plane marked the pod a disruption target, or the kubelet evicted it: it is being taken away. */
+const isDisrupted = (pod: K8sPod | undefined): boolean =>
+    pod !== undefined &&
+    (pod.status?.reason === 'Evicted' ||
+        (pod.status?.conditions ?? []).some((c) => c.type === 'DisruptionTarget' && c.status === 'True'));
 
 export type PodStartState = 'unread' | 'none' | 'starting' | 'started';
 
@@ -286,6 +295,8 @@ export interface ImagePullStatus {
     agentStarted: boolean;
     /** The scheduler's words when the pod is held Pending by its volume's node affinity (#775); else null. */
     volumeAffinity: string | null;
+    /** The control plane marked the pod a disruption target, or the kubelet evicted it: it is being taken away. */
+    disrupted: boolean;
 }
 
 const NODES_AVAILABLE = /^0\/(\d+) nodes are available:([^.]*)/;
@@ -564,9 +575,17 @@ export async function pollRunnerJobUntilTerminal(
     // No bound of its own, on purpose: the kubelet's activeDeadlineSeconds and the run deadline
     // (run-deadline.ts, whose kill aborts the ledger signal) bound it.
     // Every request and pause of the poll ends on the kill, not at the next poll.
-    const live = withSignal(deps, ledgerOf(deps).signal(job));
+    // An abandoned attempt (#829) ends the poll too: the group is the next holder's, not this loop's to read.
+    const live = withSignal(deps, anyOf(ledgerOf(deps).signal(job), ledgerOf(deps).abandoned(job)));
     const polled = await pollFor<{ timedOut: boolean; jobSucceeded: boolean }>(
-        { ...waitOf(live, Infinity), everyMs: POLL_MS, abandoned: () => new RunnerKilled(runnerName(job)) },
+        {
+            ...waitOf(live, Infinity),
+            everyMs: POLL_MS,
+            abandoned: () =>
+                ledgerOf(deps).was(job).stopped
+                    ? new RunnerKilled(runnerName(job))
+                    : new RunnerAbandoned(runnerName(job)),
+        },
         async () => {
             const result = await readUnlessKilled(live, job);
             if (result.kind === 'notFound') {

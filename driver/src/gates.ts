@@ -403,6 +403,8 @@ export interface GateServer {
     raiseKill(token: string): void;
     /** Ends the control token: the supervisor and the agent both get 401 from here on. */
     closeControl(token: string): void;
+    /** Leaves the attempt to a newer holder (#829): every token of it is hung up on for `forMs`, never answered 401. */
+    departControl(token: string, forMs: number): void;
     /** Idempotent. Resolves with the bound port, which is what the advertised URL is built from. */
     listen(): Promise<number>;
     close(): Promise<void>;
@@ -597,6 +599,7 @@ export function createGateServer({
         raiseStop: (token) => channel.raiseStop(token),
         raiseKill: (token) => channel.raiseKill(token),
         closeControl: (token) => channel.close(token),
+        departControl: (token, forMs) => channel.depart(token, forMs),
         setDeadServices: (token, note) => setDeadNote(claims.get(token), note),
         lastRuns(token) {
             return [...(history.get(token)?.values() ?? [])];

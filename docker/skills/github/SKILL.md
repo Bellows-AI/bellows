@@ -40,7 +40,7 @@ the one the driver reuses: the same pull request is updated, never duplicated, a
 resumed task lands on it too. `published: false` means there was nothing new to push. `403` means
 this task's workflow publishes at its own step; `409` means a publish is already running, or the
 repository's explicit `policy:` refused it (the body says why); `502` carries the failure's
-reason. If `BELLOWS_CONTROL_URL` is unset this environment cannot publish for you.
+reason. If `/run/factory-control/control.sock` does not exist this environment cannot publish for you.
 
 A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request.
 Read a PR's diff with `gh pr diff`, never by checking the branch out:

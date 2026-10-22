@@ -35,6 +35,13 @@ interface Chunk {
     body: Buffer;
 }
 
+interface Relay {
+    /** The authorization header of every request that reached it, absent ones included. */
+    authorization: (string | undefined)[];
+    /** While set, every request is hung up on: a holder the supervisor cannot reach. */
+    hangUp: boolean;
+}
+
 interface Harness {
     dir: string;
     chunks: Chunk[];
@@ -49,16 +56,23 @@ interface Harness {
     /** The control endpoint goes away: the board, and the driver in front of it, are unreachable. */
     stopServer: () => void;
     start: (env?: Record<string, string>) => ChildProcess;
+    /** The supervisor's relay as the exporter sees it: a socket that adds the token itself, or hangs up. */
+    listenRelay: (socket: string) => Promise<Relay>;
     /** The bytes the board holds for one session, in offset order, with a check that offsets chain. */
     stored: (session: string) => Buffer;
     exited: () => Promise<number | null>;
 }
 
-const running: { server: Server | null; child: ChildProcess | null } = { server: null, child: null };
+const running: { server: Server | null; child: ChildProcess | null; relays: Server[] } = {
+    server: null,
+    child: null,
+    relays: [],
+};
 
 afterEach(() => {
     running.child?.kill('SIGKILL');
     running.server?.close();
+    for (const relay of running.relays.splice(0)) relay.close();
 });
 
 const until = async (what: string, ready: () => boolean): Promise<void> => {
@@ -124,6 +138,22 @@ async function harness(): Promise<Harness> {
             } catch {
                 return null;
             }
+        },
+        listenRelay: async (socket) => {
+            const relay: Relay = { authorization: [], hangUp: false };
+            const relayServer = createServer((request, reply) => {
+                relay.authorization.push(request.headers.authorization);
+                if (relay.hangUp) return request.socket.destroy();
+                void channel.serve(request, reply, TOKEN).then((handled) => {
+                    if (!handled) {
+                        reply.statusCode = 404;
+                        reply.end();
+                    }
+                });
+            });
+            await new Promise<void>((resolve) => relayServer.listen(socket, resolve));
+            running.relays.push(relayServer);
+            return relay;
         },
         close: () => channel.close(SUPERVISOR),
         stopServer: () => server.close(),
@@ -473,5 +503,62 @@ describe('the continuous claude-code exporter', () => {
         expect(await h.exited()).toBe(0);
         expect(h.stored(SESSION).toString()).toBe(records(2));
         expect(h.manifests[0]).toMatchObject({ state: 'complete', terminalCause: null });
+    });
+
+    // #829 S3c: the exporter holds no credential. It talks to the supervisor's relay socket, which
+    // attaches the token and follows whichever driver holds the run.
+    describe('over the supervisor’s relay socket', () => {
+        const NO_URL = { BELLOWS_CONTROL_URL: '', BELLOWS_CONTROL_TOKEN: '' };
+        const socketIn = (h: Harness) => join(h.exportDir, 'control.sock');
+
+        it('uploads, closes and exits through the socket with no authorization of its own', async () => {
+            const h = await harness();
+            const relay = await h.listenRelay(socketIn(h));
+            const all = records(30);
+            writeFileSync(fileOf(h), all);
+            h.start({ ...NO_URL, EXPORT_CONTROL_SOCKET: socketIn(h), EXPORT_FLUSH_BYTES: '1000' });
+            await until('the chunks', () => h.stored(SESSION).length === Buffer.byteLength(all));
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(all);
+            expect(h.manifests[0]).toMatchObject({ state: 'complete' });
+            expect(relay.authorization.length).toBeGreaterThan(0);
+            expect(relay.authorization.every((value) => value === undefined)).toBe(true);
+        });
+
+        it('reads a relay that hangs up as an unreachable driver: the drain ends at its bound, bytes left on the volume', async () => {
+            const h = await harness();
+            const relay = await h.listenRelay(socketIn(h));
+            relay.hangUp = true;
+            const all = records(4);
+            writeFileSync(fileOf(h), all);
+            h.start({ ...NO_URL, EXPORT_CONTROL_SOCKET: socketIn(h), EXPORT_DRAIN_GIVEUP_MS: '500' });
+            h.drain('complete', null);
+            const began = Date.now();
+            expect(await h.exited()).toBe(0);
+            expect(Date.now() - began).toBeLessThan(5_000);
+            expect(h.status()).toMatchObject({ done: true, gone: true });
+            expect(h.manifests).toEqual([]);
+            expect(readFileSync(fileOf(h), 'utf8')).toBe(all);
+        });
+
+        it('retries a socket that is not there yet instead of failing', async () => {
+            const h = await harness();
+            const all = records(3);
+            writeFileSync(fileOf(h), all);
+            h.start({ ...NO_URL, EXPORT_CONTROL_SOCKET: socketIn(h) });
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            expect(running.child?.exitCode).toBeNull();
+            await h.listenRelay(socketIn(h));
+            await until('the chunks', () => h.stored(SESSION).length === Buffer.byteLength(all));
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+        });
+
+        it('refuses to start with neither a socket nor an endpoint and token', async () => {
+            const h = await harness();
+            h.start({ ...NO_URL });
+            expect(await h.exited()).toBe(1);
+        });
     });
 });

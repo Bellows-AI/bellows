@@ -3,6 +3,7 @@ import type { DriverConfig } from './config.js';
 import { containerScript as script } from './container-scripts.js';
 import { TASK_MOUNT, UUID } from './task-volume.js';
 import { parseLastJsonLine } from './json-parse.js';
+import { stepLost } from './step-control.js';
 import { baseBranchOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
 import { publishedResult, pushRecorded, reconcileAgentPr, resolveOrCreatePr, resumePublication } from './publish-pr.js';
@@ -602,6 +603,8 @@ export async function publishCheckout(
         try {
             return await runStep(publish);
         } catch (e) {
+            // A lost supervisor keeps its class: it is the attempt's interruption, not a step's failure (#925).
+            if (stepLost(e)) throw e;
             throw new Error(`${publish.label}: ${(e as Error).message.slice(0, STEP_ERROR_MAX_CHARS)}`);
         }
     };
@@ -643,6 +646,7 @@ export async function publishCheckout(
 
         return publishedResult(job, branch, state.defaultBranch, prUrl);
     } catch (e) {
+        if (stepLost(e)) throw e;
         const message = `${(e as Error).message}`;
         return publishFailed(message.slice(0, PUBLISH_FAILURE_MAX_CHARS), publishCauseOf(message));
     }

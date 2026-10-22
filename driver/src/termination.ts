@@ -120,6 +120,24 @@ export interface SettledEnd {
 const LOST_AGENT = 'the supervisor lost the agent before it exited';
 
 /**
+ * A finalized SIGTERM kill (exit 143, cause `agent_killed`) that neither the driver nor the budget
+ * delivered, and no stop asked for, is the platform terminating the pod (eviction, drain): the
+ * supervisor reports it inside its grace. An OOM kill (137) stays a failure.
+ */
+const TERMINATED = 'the platform terminated the runner (the agent was killed by SIGTERM, exit 143)';
+
+/** The shell's code for a process ended by SIGTERM (128 + 15). */
+const EXIT_SIGTERM = 143;
+
+const platformTerminated = (e: EndEvidence, timedOut: boolean): boolean =>
+    !timedOut &&
+    !e.driverKilledHard &&
+    e.kills.length === 0 &&
+    e.report?.outcome === 'failed' &&
+    e.report.cause === 'agent_killed' &&
+    e.report.agentExit === EXIT_SIGTERM;
+
+/**
  * The one close-time classification, over all five ends of a started run (attached and adopted, on
  * both executors, and a vanished runner): a supervisor that finalized the run (`reportFinalized`)
  * counts as reported. A runner taken away under an attached run is a loss whatever its supervisor
@@ -128,15 +146,17 @@ const LOST_AGENT = 'the supervisor lost the agent before it exited';
 export function settleEnd(e: EndEvidence): SettledEnd {
     const timedOut = e.budgetEnded || e.report?.outcome === 'timed_out' || e.kills.some((k) => k.reason === 'timeout');
     const finalized = reportFinalized(e.report);
-    return {
-        timedOut,
-        infraLoss: infraLossOf({
+    const infraLoss =
+        infraLossOf({
             killedByDriver: e.driverKilledHard || e.kills.some((k) => killEndsGroup(k.reason)),
             timedOut,
             reported: finalized,
             vanished: e.vanished,
             unfinalized: e.unfinalized ?? (e.report?.agentEnd === 'lost' ? LOST_AGENT : null),
-        }),
+        }) ?? (platformTerminated(e, timedOut) ? TERMINATED : null);
+    return {
+        timedOut,
+        infraLoss,
         fields: { ...reportVerdictOf(e.report), ...adoptedVerdictOf(e.kills) },
     };
 }

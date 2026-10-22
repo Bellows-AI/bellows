@@ -12,7 +12,7 @@ import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from '.
 import type { SnapshotResult } from './review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
 import type { GateStepRequest, ReviewControl } from './supervised-steps.js';
-import type { StepResult } from './supervisor-contract.js';
+import type { StepResult, SupervisorBinding } from './supervisor-contract.js';
 import type { KillRecord } from './termination.js';
 
 /** What the board is told afterwards. `timedOut` is reported as a failure, with a reason. */
@@ -195,6 +195,9 @@ export const SERVICE_READY_POLL_MS = 2000;
  */
 export const CLOSE_READ_DEADLINE_MS = 120_000;
 
+/** The whole budget of writing a holder binding to a live supervisor: one request on kubernetes, one exec on docker, neither retried. */
+export const REBIND_DEADLINE_MS = 30_000;
+
 /** The states a platform reports for a declared service that is gone: docker's, then the pod phases. */
 export const DEAD_SERVICE_STATES: ReadonlySet<string> = new Set(['exited', 'dead', 'failed', 'succeeded']);
 
@@ -230,6 +233,28 @@ export interface AdoptedRun {
     outcome: RunOutcome;
     claimSeq: number;
 }
+
+/**
+ * A released group whose agent still runs, taken over by the claim that superseded its driver
+ * (#829): `prior` names the lease its objects carry, `session` the conversation it runs. Nothing of
+ * it was read as an end; the loop rebinds its supervisor to the new claim and the run continues.
+ */
+export interface LiveRun {
+    live: true;
+    prior: BoardJob;
+    claimSeq: number;
+    session: string | null;
+    startedAt: string;
+}
+
+/**
+ * The job as the group it runs in addresses it (#829): a taken-over attempt names the objects of the
+ * lease the group was created under (`groupLease`), and the claim holder — who the checkout claim is
+ * kept for — is carried apart. Every attempt-scoped runner method takes the job through it; an
+ * attempt that took nothing over is its own group.
+ */
+export const ownGroup = (job: BoardJob): BoardJob =>
+    job.groupLease ? { ...job, leaseToken: job.groupLease, claimHolder: job.leaseToken } : job;
 
 /**
  * Thrown by `Runner.adopt` once a finished run was read but something of an earlier attempt could
@@ -341,13 +366,14 @@ export interface Runner {
     /**
      * Reads and takes down a FINISHED runner an earlier claim of this job left behind (issue
      * #792), before this attempt's sync touches the tree that run left: its verdict, log and
-     * session are this attempt's outcome instead of a second run. Null when there is none — no
-     * earlier runner, one still running, or one the platform took away. The earlier attempt's
+     * session are this attempt's outcome instead of a second run. A RELEASED group whose agent still
+     * runs answers a `LiveRun` instead (#829), taken over rather than read. Null when there is none — no
+     * earlier runner, one not yet released, or one the platform took away. The earlier attempt's
      * objects are swept only once read. Under kubernetes it takes the checkout claim, which the
      * attempt holds from here as the sync would have taken it. `signal` is the attempt's stand-down:
      * an adoption still waiting on a finalizing supervisor (#824) is abandoned and deletes nothing.
      */
-    adopt(job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | null>;
+    adopt(job: BoardJob, signal?: AbortSignal): Promise<AdoptedRun | LiveRun | null>;
     /**
      * Freezes the task tree's current state under a snapshot ref of the shared clone, for a named
      * reviewer to start from (issue #549) — over the same transport `probeTree` uses, so both
@@ -453,6 +479,72 @@ export interface Runner {
         session: RunSession | null,
         control?: ReviewControl
     ): Promise<StepResult>;
+    /**
+     * Writes `binding` where the group's live supervisor follows a newer holder (#829): the attempt
+     * Secret's binding key on kubernetes, a supervisor-only volume on docker. Resolves only once the
+     * write is confirmed; any rejection means "maybe written", never "not written". It reads nothing,
+     * revokes nothing and never consults the driver's own groups (the group may be another driver's).
+     */
+    rebind(group: BoardJob, binding: SupervisorBinding, signal: AbortSignal): Promise<void>;
+    /**
+     * The attempt was abandoned — its lease lost past the launch, or a drain's handover — and its
+     * group is the next holder's (#829): ends every in-process timer, interval and poll this runner
+     * started for `job.leaseToken` (the run's backstop deadline, the cache watch, the verdict poll),
+     * so none kills, deletes or records a kill against a group this process no longer owns. It
+     * touches nothing of the group itself and is safe to call twice or for a run not in flight.
+     */
+    abandon(job: BoardJob): void;
+}
+
+/**
+ * How each Runner member addresses the group (#829): `group` members take the attempt's job through
+ * `ownGroup` (they act on the group's objects), `attempt` members act on the claim's own — the adoption
+ * that takes over, the checkout sync and reclaim, the binding write to a PRIOR group. A new member is
+ * classified here or it does not compile.
+ */
+const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
+    run: 'group',
+    sampleRuntime: 'group',
+    deadServices: 'group',
+    startServices: 'group',
+    restartServices: 'group',
+    kill: 'group',
+    stopAgent: 'group',
+    recordKill: 'group',
+    pauseDeadline: 'group',
+    releaseServices: 'group',
+    publishGit: 'group',
+    probeTree: 'group',
+    adopt: 'attempt',
+    snapshotTree: 'group',
+    syncCheckout: 'attempt',
+    finish: 'group',
+    reclaimWorktree: 'attempt',
+    releaseFence: 'group',
+    runHelper: 'group',
+    runGate: 'group',
+    resizeGate: 'group',
+    resizeReviewer: 'group',
+    runReview: 'group',
+    rebind: 'attempt',
+    abandon: 'group',
+};
+
+/**
+ * The runner whose attempt-scoped members address the group the attempt took over (#829): each
+ * `group` member is called with `ownGroup(job)`, its first argument, so a taken-over attempt reaches
+ * the prior lease's objects while the claim it holds is carried as `claimHolder`.
+ */
+export function onOwnGroup(runner: Runner): Runner {
+    const mapped: Record<string, unknown> = {};
+    for (const [name, member] of Object.entries(runner)) {
+        const call = member as (...args: unknown[]) => unknown;
+        mapped[name] =
+            ADDRESSING[name as keyof Runner] === 'attempt'
+                ? member
+                : (job: BoardJob, ...rest: unknown[]) => call(ownGroup(job), ...rest);
+    }
+    return mapped as unknown as Runner;
 }
 
 /** The two sizes a gate container is resized between: low while the agent runs, the gate requests for verify. */

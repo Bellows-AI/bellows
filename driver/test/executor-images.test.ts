@@ -138,16 +138,15 @@ describe('the executor branch reporter', () => {
         // instead of nothing at all.
         if (cli === 'opencode') {
             expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$WATCHER_PID \$CTL_PID/);
-            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" "\$WATCHER_PID" "\$CTL_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$REPORTER_PID" "\$WATCHER_PID" "\$CTL_PID" 2>\/dev\/null \|\| true/);
+            for (const pid of ['REPORTER_PID', 'WATCHER_PID', 'CTL_PID'])
+                expect(entry).toContain(`stop_helper "$${pid}"`);
         } else {
             expect(entry).toMatch(/kill -TERM \$CLI_PID \$REPORTER_PID \$PROGRESS_PID \$CTL_PID/);
-            expect(entry).toMatch(/kill -TERM "\$CTL_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$CTL_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/kill -TERM "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$REPORTER_PID" 2>\/dev\/null \|\| true/);
-            expect(entry).toMatch(/wait "\$PROGRESS_PID" 2>\/dev\/null \|\| true/);
+            for (const pid of ['REPORTER_PID', 'CTL_PID', 'PROGRESS_PID'])
+                expect(entry).toContain(`stop_helper "$${pid}"`);
         }
+        // Each helper is terminated and reaped by stop_helper before the close-time sample.
+        expect(entry.lastIndexOf('stop_helper "$CTL_PID"')).toBeLessThan(entry.indexOf('branch-reporter.cjs --once'));
         expect(entry).toMatch(/branch-reporter\.cjs --once/);
         expect(entry).toMatch(/exit "\$STATUS"/);
 
@@ -306,8 +305,6 @@ printf '%s' "\${OPENCODE_CONFIG_CONTENT-unset}" > "$STUB_DIR/opencode-config-con
 printf '%s\\n' "$@" > "$STUB_DIR/argv"
 printf '%s' "\${BELLOWS_SESSION_ID-unset}" > "$STUB_DIR/bellows-session-id"
 printf '%s' "\${BRANCH_REPORTER_PRIOR_UNKNOWN-unset}" > "$STUB_DIR/prior-unknown"
-printf '%s' "\${BELLOWS_CONTROL_TOKEN-unset}" > "$STUB_DIR/control-token"
-printf '%s' "\${BELLOWS_CONTROL_URL-unset}" > "$STUB_DIR/control-url"
 echo started > "$STUB_DIR/started"
 wait "$SLEEP_PID"
 exit "\${STUB_STATUS:-0}"
@@ -1763,22 +1760,16 @@ describe('the entrypoints under the tool uid (issue #814)', () => {
         });
 
     it.each(ENTRYPOINTS)(
-        '%s hands the CLI the control URL and never the token, which only its proxy holds',
-        async (entrypoint) => {
-            const sandbox = makeSandbox();
-            try {
-                const child = runShared(entrypoint, sandbox, {
-                    BELLOWS_CONTROL_URL: 'http://127.0.0.1:9',
-                    BELLOWS_CONTROL_TOKEN: 'agent-secret',
-                });
-                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-                expect(readFileSync(join(sandbox.bin, 'control-token'), 'utf8')).toBe('unset');
-                expect(readFileSync(join(sandbox.bin, 'control-url'), 'utf8')).toBe('http://127.0.0.1:9');
-            } finally {
-                sandbox.cleanup();
-            }
-        },
-        CASE_TIMEOUT_MS
+        '%s starts the control proxy only where the supervisor’s relay socket exists, and holds no token to hand the CLI',
+        (entrypoint) => {
+            const script = read(entrypoint);
+            expect(script).toContain(
+                'if [ -n "$' +
+                    '{FACTORY_CTL_OUT:-}" ] && [ -S "$FACTORY_CTL_OUT/control.sock" ]; then\n' +
+                    '    node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &'
+            );
+            expect(script).not.toContain('BELLOWS_CONTROL');
+        }
     );
 
     it.each(ENTRYPOINTS)(

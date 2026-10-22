@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from './board.js';
-import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV, gateEnvBody, setupTimeoutMs } from './claim.js';
+import { gateEnvBody, setupTimeoutMs } from './claim.js';
 import { tailBytes, type DeadService } from './runner.js';
 import { stepLost } from './step-control.js';
 import { declaredTimeoutMs, type GateRun } from './gates.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
+import { takeoverBoundMs } from './supervisor-plan.js';
 import type { JobState } from './loop-attempt.js';
 import { askGithubToken } from './loop-github.js';
 import { createPublishRelay } from './loop-publish.js';
@@ -39,6 +40,8 @@ export interface GateSession {
     declared: readonly DeclaredGate[];
     /** Whether the end-of-run pass runs: gates are declared, or setup failed and must be retried. */
     endPass: boolean;
+    /** The gates list the last declared pass left on the board; absent before one ran. */
+    lastReports?: GateReport[];
 }
 
 export interface GateFailure {
@@ -48,7 +51,7 @@ export interface GateFailure {
 }
 
 /** What one gate looks like on the board, at one moment. */
-type GateReport = {
+export type GateReport = {
     name: string;
     status: 'running' | 'passed' | 'failed';
     exitCode: number | null;
@@ -62,7 +65,12 @@ type GateReport = {
  * where docker's last-wins rule keeps a member-scoped `BELLOWS_GATE_TOKEN` from minting itself a
  * gate credential.
  */
-export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<GateSession | null> {
+export async function beginGates(
+    rt: LoopRuntime,
+    job: BoardJob,
+    state: JobState,
+    opts: { takeover?: boolean } = {}
+): Promise<GateSession | null> {
     const { gates } = rt;
     // A checkout that declares only `setup` still gets the environment: setup runs in it before
     // the agent starts (issue #733).
@@ -111,7 +119,8 @@ export async function beginGates(rt: LoopRuntime, job: BoardJob, state: JobState
             BELLOWS_GATE_URL: gates.advertiseUrl(port),
             BELLOWS_GATE_TOKEN: token,
         };
-        await runEnvironmentSetup(rt, job, key, state);
+        // A taken-over run's environment setup ran before the agent did (#829).
+        if (!opts.takeover) await runEnvironmentSetup(rt, job, key, state);
         // The same check at the far edge — listen can take its time, and nothing registered
         // or live may survive a stand-down detected inside this function.
         if (down(state)) {
@@ -192,9 +201,9 @@ async function runEnvironmentSetup(rt: LoopRuntime, job: BoardJob, key: string, 
  * Opens the run-control channel for one attempt about to launch, gated or not (issue #442): three
  * tokens scoped to this lease. The supervisor's goes to the task supervisor alone
  * (`job.supervisorEnv`) so it can read a Stop the board raised, relay the agent's questions and run
- * the supervised steps; the exporter's, beside it in `job.supervisorEnv`, opens only the transcript
- * export; the agent's, advertised beside the gate pair (`job.gateEnv`), opens only the publish and
- * review routes. Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
+ * the supervised steps; the exporter's and the agent's, beside it in `job.supervisorEnv`, open only
+ * the transcript export and only the publish and review routes. Neither leaves the supervisor: it
+ * relays the agent's and the exporter's requests, attaching the role's token (#829). Best-effort — a driver whose endpoint cannot bind keeps today's immediate-kill
  * Stop, said out loud, instead of refusing every job over a feature.
  */
 export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
@@ -219,10 +228,10 @@ export async function openRunControl(rt: LoopRuntime, job: BoardJob, state: JobS
         attachTranscriptExport({ rt, job, state }, token);
         attachCheckpoint({ rt, job }, token);
         const url = gates.advertiseUrl(port);
-        job.gateEnv = { ...job.gateEnv, [CONTROL_URL_ENV]: url, [CONTROL_TOKEN_ENV]: agentToken };
         job.supervisorEnv = {
             [SUPERVISOR_ENV.controlUrl]: url,
             [SUPERVISOR_ENV.controlToken]: token,
+            [SUPERVISOR_ENV.agentToken]: agentToken,
             [SUPERVISOR_ENV.exportToken]: exporterToken,
         };
         state.control = token;
@@ -242,6 +251,18 @@ export function closeRunControl(rt: LoopRuntime, state: JobState): void {
     if (state.control === null) return;
     rt.gates?.server.closeControl(state.control);
     // Closed once: `end` (`loop-conclusion.ts`) closes it after the group's `finish`.
+    state.control = null;
+}
+
+/**
+ * Leaves the attempt's control token to a newer holder (#829): its group is retained, so the token
+ * is hung up on — never answered 401, which the group's supervisor reads as the end of its attempt —
+ * until the group's takeover bound passes and the holder it waits for has named itself.
+ */
+export function departRunControl(rt: LoopRuntime, state: JobState): void {
+    clearPendingQuestions(state);
+    if (state.control === null) return;
+    rt.gates?.server.departControl(state.control, takeoverBoundMs(rt.config));
     state.control = null;
 }
 
@@ -329,6 +350,7 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
  * Runs every declared gate in order, reporting each state change to the board as it happens.
  * The report REPLACES the stored list — every report carries the whole list so the task view
  * always shows all gates at their current state, never a summary that arrived out of order.
+ * That list is left on `gateSession.lastReports`, so a checkpoint can keep what the board was last told.
  *
  * Both the reports and a gate whose exec itself throws are best-effort against the RUN, never
  * against the VERDICT: a board hiccup costs the live view, not the gating. A gate that cannot
@@ -353,6 +375,7 @@ export async function runDeclaredGates(
     // No declared gate to retry a failed setup before: the pass is that retry alone.
     if (gateSession.declared.length === 0) return retryFailedSetup(runCtx);
     const results: GateReport[] = [];
+    gateSession.lastReports = results;
     const report = async (): Promise<void> => {
         try {
             // A copy, not the live array: the report is a state-at-a-moment, and a reader

@@ -32,7 +32,10 @@ pod it labelled `factory.job` that changes no main container and no init contain
 label every runner-owned object carries), so the dashboard's Secret and ConfigMaps are out of
 reach, but for a task volume claim, whose name must repeat its labelled thread root and generation (issue #775), whose
 access mode is never ReadWriteMany and which never names a volume; Secrets only under the per-attempt names and only Opaque (a service-account-token Secret
-would mint credentials); pods only deleted (the re-claim fence's sweep). It admits no update of these objects.
+would mint credentials); pods only deleted (the re-claim fence's sweep). It admits two updates. A task volume claim's
+unschedulable label alone (issue #775). A holder binding (#829): the Role's `patch` on secrets is
+namespace-wide, so an update reaches only a per-attempt Secret, keeps its labels, type and
+owner, and changes no data key but `binding.json`.
 
 Limits, stated: the per-attempt Secret names do not carry the release, so in a namespace shared by
 two releases one driver can still reach the other's per-attempt objects — install one release per
@@ -299,6 +302,10 @@ spec:
               apiVersions: ['v1']
               operations: ['DELETE']
               resources: ['pods']
+            - apiGroups: ['']
+              apiVersions: ['v1']
+              operations: ['UPDATE']
+              resources: ['secrets']
             - apiGroups: ['batch']
               apiVersions: ['v1']
               operations: ['CREATE', 'DELETE']
@@ -310,6 +317,20 @@ spec:
         # A DELETE carries the stored object as oldObject and no object.
         - name: target
           expression: "request.operation == 'DELETE' ? oldObject : object"
+        # Read only under an UPDATE (variables are lazy): the object's annotations before and after.
+        - name: oldAnnotations
+          expression: "has(oldObject.metadata.annotations) ? oldObject.metadata.annotations : {}"
+        - name: newAnnotations
+          expression: "has(object.metadata.annotations) ? object.metadata.annotations : {}"
+        # Read only under a Secret UPDATE: the owner and the finalizers before and after.
+        - name: oldOwners
+          expression: "has(oldObject.metadata.ownerReferences) ? oldObject.metadata.ownerReferences : []"
+        - name: newOwners
+          expression: "has(object.metadata.ownerReferences) ? object.metadata.ownerReferences : []"
+        - name: oldFinalizers
+          expression: "has(oldObject.metadata.finalizers) ? oldObject.metadata.finalizers : []"
+        - name: newFinalizers
+          expression: "has(object.metadata.finalizers) ? object.metadata.finalizers : []"
     validations:
         - expression: >-
               request.kind.kind == 'PersistentVolumeClaim' ||
@@ -348,6 +369,18 @@ spec:
               (variables.target.metadata.name.matches({{ squote $secretName }}) &&
                 (request.operation == 'DELETE' || !has(object.type) || object.type == 'Opaque'))
           message: 'the driver manages only Opaque per-attempt Secrets'
+        - expression: >-
+              request.kind.kind != 'Secret' || request.operation != 'UPDATE' ||
+              (has(object.metadata.labels) && object.metadata.labels == oldObject.metadata.labels &&
+                variables.newOwners == variables.oldOwners &&
+                variables.newFinalizers == variables.oldFinalizers &&
+                variables.newAnnotations == variables.oldAnnotations &&
+                (!has(object.immutable) || !object.immutable) &&
+                has(object.data) &&
+                object.data.all(k, k == 'binding.json' ||
+                  (has(oldObject.data) && k in oldObject.data && oldObject.data[k] == object.data[k])) &&
+                (!has(oldObject.data) || oldObject.data.all(k, k in object.data)))
+          message: 'an attempt Secret update changes only its binding'
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

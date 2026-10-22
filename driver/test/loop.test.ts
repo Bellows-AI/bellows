@@ -56,7 +56,7 @@ describe('the agent’s draft publication (issue #547)', () => {
         const answers: number[] = [];
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
-                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 answers.push((await servePublish(control.publishing, control.publisher)).status);
                 return ok();
@@ -131,7 +131,7 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
                 const key = `${objectiveJob(1).id}/factory`;
-                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 const gate = async () => adHoc.push((await stack.manager.runGate(key, 'test', 'npm test')).exitCode);
                 // 1. implement, run the gate: red.
@@ -171,7 +171,7 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         const { stack, gates } = stubGateStack({ test: 1 }, { control: true });
         const runner: ReturnType<typeof stubRunner> = stubRunner(
             async (running) => {
-                const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
                 if (!control?.publisher) throw new Error('no publisher on the control entry');
                 await servePublish(control.publishing, control.publisher);
                 return ok();
@@ -1740,6 +1740,23 @@ describe('the poll loop', () => {
             }
         });
 
+        it("the loop's sleep takes an AbortSignal as the poll's Sleep does: it rejects on abort and clears its timer (#829 S3)", async () => {
+            vi.useFakeTimers();
+            try {
+                const controller = new AbortController();
+                const sleeping = wait(100_000, controller.signal);
+                const settled = expect(sleeping).rejects.toBeDefined();
+                expect(vi.getTimerCount()).toBe(1);
+                controller.abort();
+                await settled;
+                expect(vi.getTimerCount()).toBe(0);
+                await expect(wait(1, controller.signal)).rejects.toBeDefined();
+                expect(vi.getTimerCount()).toBe(0);
+            } finally {
+                vi.useRealTimers();
+            }
+        });
+
         it('returns and acks at once when the removal settles under a renew that never answers', async () => {
             const signals: (AbortSignal | undefined)[] = [];
             const { board } = stubBoard([], {
@@ -2246,6 +2263,7 @@ describe('the poll loop', () => {
         await started;
 
         expect(board.board.interrupted).toEqual([{ id: claimed.id, reason: 'the driver was drained', release: true }]);
+        expect(runner.abandoned).toHaveLength(1);
         expect(runner.killed).toEqual([]);
         expect(runner.finished).toEqual([]);
         expect(board.board.completed).toEqual([]);
@@ -2335,8 +2353,8 @@ describe('the poll loop', () => {
         expect(runner.killed).toEqual([]);
     });
 
-    // Issue #828: a lease lost while the agent runs kills it from the heartbeat; the board is told
-    // nothing, and the runner is retained for the new holder, never finished.
+    // Issues #828, #829: a lease lost while the agent runs leaves it running (no kill from the heartbeat); the
+    // board is told nothing, and the runner is retained for the new holder, never finished.
     it('tells the board nothing when the heartbeat reports the lease lost mid-run, and retains the runner', async () => {
         const board = stubBoard([job(1)]);
         let launched = false;
@@ -2353,7 +2371,8 @@ describe('the poll loop', () => {
         const started = drive({ ...board, runner });
         await new Promise((resolve) => setTimeout(resolve, 20));
         expect(launched).toBe(true);
-        expect(runner.killed).toEqual([job(1).id]);
+        expect(runner.abandoned).toHaveLength(1);
+        expect(runner.killed).toEqual([]);
         expect(board.board.interrupted).toEqual([]);
         expect(board.board.suspended).toEqual([]);
         expect(board.board.completed).toEqual([]);
@@ -3864,8 +3883,8 @@ describe('verification gates', () => {
 
         await drive({ ...board, runner, gates: stack.gates });
 
-        // The heartbeat did mark the lease lost while the re-acquire was pending…
-        expect(runner.killed).toEqual([gatedJob(1).id]);
+        // The heartbeat did mark the lease lost while the re-acquire was pending — past the launch it kills nothing…
+        expect(runner.killed).toEqual([]);
         // …and the gate never ran against the checkout the next attempt now owns — nor does a
         // verdict land: a lost lease settles the attempt the way a lost run does, unreported.
         expect(ran).toEqual([]);
@@ -5421,7 +5440,8 @@ describe('a stand-down after the gates (issue #427)', () => {
 
             await drive({ ...board, runner });
 
-            expect(runner.killed).toEqual([job(1).id]); // the heartbeat DID observe it
+            // The heartbeat DID observe it: a lost lease past the launch leaves the runner, a stop or a removal kills it.
+            expect(runner.killed).toEqual(kind === 'lost' ? [] : [job(1).id]);
             expect(runner.published).toEqual([]);
             expect(board.board.completed).toEqual([]);
             if (kind === 'stop') expect(board.board.suspended).toEqual([job(1).id]);
@@ -5591,16 +5611,17 @@ describe('a cooperative stop (issue #442)', () => {
         await driveControlled({ ...board, runner, gates });
 
         // Ungated job, yet the endpoint opened: the control channel is not a gate feature.
-        // The agent holds its own publish/review token; the supervisor's pair and the exporter's own
-        // token ride apart from it, three distinct tokens of one attempt.
-        expect(Object.keys(launchedEnv ?? {}).sort()).toEqual(['BELLOWS_CONTROL_TOKEN', 'BELLOWS_CONTROL_URL']);
+        // The agent's env holds no control pair (#829 S3c): its publish/review token rides with the
+        // supervisor's and the exporter's in the supervisor-side env, three distinct tokens of one attempt.
+        expect(Object.keys(launchedEnv ?? {})).toEqual([]);
         expect(Object.keys(supervisorEnv ?? {}).sort()).toEqual([
+            'SUPERVISOR_AGENT_TOKEN',
             'SUPERVISOR_CONTROL_TOKEN',
             'SUPERVISOR_CONTROL_URL',
             'SUPERVISOR_EXPORT_TOKEN',
         ]);
         const tokens = [
-            launchedEnv?.BELLOWS_CONTROL_TOKEN,
+            supervisorEnv?.SUPERVISOR_AGENT_TOKEN,
             supervisorEnv?.SUPERVISOR_CONTROL_TOKEN,
             supervisorEnv?.SUPERVISOR_EXPORT_TOKEN,
         ];
@@ -5701,7 +5722,7 @@ describe('a cooperative stop (issue #442)', () => {
         expect(runner.killed).toEqual([]);
     });
 
-    it('still kills at once on a lost lease while draining', async () => {
+    it('leaves the runner at once on a lost lease while draining, killing nothing', async () => {
         const board = stubBoard([job(1)]);
         let verdict: HeartbeatVerdict = { result: 'held', cancelRequested: false };
         board.board.heartbeat = async () => {
@@ -5714,13 +5735,14 @@ describe('a cooperative stop (issue #442)', () => {
             const target = board.board.beats + 2;
             await until(() => board.board.beats >= target);
             verdict = 'lost';
-            await until(() => runner.killed.length > 0);
+            const lostAt = board.board.beats + 2;
+            await until(() => board.board.beats >= lostAt);
             return ok();
         });
 
         await driveControlled({ ...board, runner, gates });
 
-        expect(runner.killed).toEqual([job(1).id]);
+        expect(runner.killed).toEqual([]);
         expect(board.board.suspended).toEqual([]);
     });
 
@@ -5842,7 +5864,7 @@ describe('questions (issue #226)', () => {
         };
         const { stack, gates } = stubGateStack({}, { control: true, polled: options.polled ?? true });
         const runner: ReturnType<typeof stubRunner> = stubRunner(async (running) => {
-            const control = stack.controls.get(running.gateEnv?.BELLOWS_CONTROL_TOKEN ?? '');
+            const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
             if (!control) throw new Error('no control entry');
             return body({ control, board: board.board, runner, stack, beat });
         });
@@ -5993,16 +6015,18 @@ describe('questions (issue #226)', () => {
     });
 
     it('drops the question entry when the lease is lost while pending', async () => {
-        const { stack } = await driveAsking(async ({ control, beat, runner }) => {
+        const { stack } = await driveAsking(async ({ control, beat, stack: running }) => {
             await recordQuestion(control, asked('toolu_1'));
             beat.verdict = 'lost';
-            await until(() => runner.killed.length > 0);
+            await until(() => running.controlDeparted.length > 0);
             return ok();
         });
         await new Promise((resolve) => setTimeout(resolve, 80));
 
         expect(stack.controls.size).toBe(0);
-        expect(stack.controlClosed).toEqual(stack.controlOpened);
+        // The runner is the new holder's: its token is departed, never closed on.
+        expect(stack.controlDeparted.map((departed) => departed.token)).toEqual(stack.controlOpened);
+        expect(stack.controlClosed).toEqual([]);
     });
 
     it('treats a lost lease on the question report as a lease loss', async () => {
@@ -6427,7 +6451,8 @@ describe('final envelope (issue #821 D1)', () => {
 
         expect(order).not.toContain('finish');
         expect(released).toEqual([]);
-        expect(stack.controlClosed).toHaveLength(1);
+        expect(stack.controlDeparted).toHaveLength(1);
+        expect(stack.controlClosed).toEqual([]);
         expect(
             logs.some((l) =>
                 l.includes(
@@ -6524,6 +6549,33 @@ describe('a lost supervisor under the gates and the setup', () => {
         await drive({ ...board, runner, gates });
         expect(stack.ran.names).toEqual([]);
         interruptedOnly(board);
+    });
+});
+
+// Issue #925: the supervisor lost while the end-of-run publish ran is the attempt's loss, never a failed publish.
+describe('a lost supervisor under the end-of-run publish', () => {
+    it('interrupts the attempt instead of failing it, and reports no verdict', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        runner.publishGit = async () => {
+            throw new StepChannelClosed('its step was answered: the task group ended or was taken away');
+        };
+        await drive({ ...board, runner });
+        expect(board.board.completed).toEqual([]);
+        expect(board.board.interrupted).toEqual([
+            { id: job(1).id, reason: expect.stringContaining('infrastructure loss'), release: true },
+        ]);
+    });
+
+    it('still fails an attempt whose publish threw for any other reason', async () => {
+        const board = stubBoard([job(1)]);
+        const runner = stubRunner(async () => ok());
+        runner.publishGit = async () => {
+            throw new Error('git exploded');
+        };
+        await drive({ ...board, runner });
+        expect(board.board.interrupted).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
     });
 });
 

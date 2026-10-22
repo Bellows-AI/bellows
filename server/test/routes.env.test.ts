@@ -218,6 +218,11 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
+            'the agent’s run-control token the supervisor relays under',
+            { vars: [{ name: 'SUPERVISOR_AGENT_TOKEN', value: 'spoof', isSecret: true }] },
+            'RESERVED_ENV_NAME',
+        ],
+        [
             'the transcript exporter’s token the driver mints per run',
             { vars: [{ name: 'SUPERVISOR_EXPORT_TOKEN', value: 'spoof', isSecret: true }] },
             'RESERVED_ENV_NAME',

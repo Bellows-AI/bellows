@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { runTimeoutMs, setupTimeoutMs } from '../src/claim.js';
 import { setupSpentNote } from '../src/loop-verdict.js';
+import { agentBackstopMs } from '../src/supervisor-plan.js';
+import { SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 /**
  * Issue #733: environment.setup runs before the agent, inside the run budget. Its own timeout keeps
@@ -30,6 +32,19 @@ describe('runTimeoutMs after setup', () => {
 
     it('takes the time setup spent off the run budget', () => {
         expect(runTimeoutMs(config(10 * MINUTE, MINUTE), { ...job, setupMs: 3 * MINUTE })).toBe(7 * MINUTE);
+    });
+});
+
+describe('agentBackstopMs of a taken-over run (#829)', () => {
+    const cfg = config(10 * MINUTE, MINUTE) as never;
+
+    it('takes the budget the run already spent off, keeping the wind-down', () => {
+        expect(agentBackstopMs(cfg, job)).toBe(10 * MINUTE + SUPERVISOR_WINDDOWN_MS);
+        expect(agentBackstopMs(cfg, job, 4 * MINUTE)).toBe(6 * MINUTE + SUPERVISOR_WINDDOWN_MS);
+    });
+
+    it('floors an overspent budget at the wind-down alone', () => {
+        expect(agentBackstopMs(cfg, job, 11 * MINUTE)).toBe(SUPERVISOR_WINDDOWN_MS);
     });
 });
 

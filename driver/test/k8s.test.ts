@@ -8,9 +8,14 @@ import {
     GO_MARKER,
     MAILBOXES,
     REVIEWER_CONTAINER,
+    EXPORT_RELAY_SOCKET,
     SUPERVISOR_CONTAINER,
     SUPERVISOR_CREDENTIAL_NAMES,
+    SUPERVISOR_BINDING,
+    SUPERVISOR_BINDING_PATH,
     SUPERVISOR_EXIT,
+    SUPERVISOR_REBIND_GRACE_MS,
+    SUPERVISOR_REPORT_MS,
     SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_STEPS_MS,
     SUPERVISOR_WINDDOWN_MS,
@@ -40,6 +45,7 @@ import {
     commandMark,
     OPENCODE_EXPORT_LIMIT,
     SERVICE_LOG_TAIL_LINES,
+    type AdoptedRun,
 } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
 import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
@@ -50,8 +56,15 @@ import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-tra
 import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
 import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
 import { ledgerOf, RunnerKilled } from '../src/k8s-kill.js';
+import { REBIND_DEADLINE_MS } from '../src/runner.js';
 import { pollRunnerJobUntilTerminal, readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s-poll.js';
-import { orphanBoundMs } from '../src/supervisor-plan.js';
+import {
+    bindingBody,
+    finalizeWaitMs,
+    heartbeatPeriodMs,
+    orphanBoundMs,
+    takeoverBoundMs,
+} from '../src/supervisor-plan.js';
 import {
     claudeTurnsStep,
     jobsPath,
@@ -110,7 +123,11 @@ const OTHER_SESSION = '44444444-4444-4444-8444-444444444444';
 
 const USER = '44444444-4444-4444-8444-444444444444';
 /** The Job's backstop beyond the agent's budget: the drain and the report, then the hours the group serves steps. */
-const WINDDOWN_S = (SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS) / 1000;
+const WINDDOWN_S =
+    (SUPERVISOR_WINDDOWN_MS +
+        SUPERVISOR_STEPS_MS +
+        takeoverBoundMs(loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: 'factory' }))) /
+    1000;
 
 /** A fixed, valid Factory execution context — the shape master-prompt.test.ts pins; only its
  *  presence matters to this file's own tests, none of which assert its exact text. */
@@ -122,6 +139,7 @@ const SUPERVISED: Pick<BoardJob, 'supervisorEnv'> = {
     supervisorEnv: {
         SUPERVISOR_CONTROL_URL: 'http://driver:7000',
         SUPERVISOR_CONTROL_TOKEN: 'tok-supervisor',
+        SUPERVISOR_AGENT_TOKEN: 'tok-agent',
         SUPERVISOR_EXPORT_TOKEN: 'tok-export',
     },
 };
@@ -423,21 +441,21 @@ describe('the runner job spec', () => {
         expect(JSON.stringify(container.env)).not.toContain('shh');
     });
 
-    // Issue #442: the run-control channel rides the same per-attempt Secret as the gate pair, so a
-    // kubernetes runner's stop poller reaches the driver pod's endpoint exactly as a docker one does.
-    it('names the run-control channel by secretKeyRef into the per-job Secret', () => {
+    // The gate pair rides the per-attempt Secret; run-control traffic goes through the supervisor's
+    // relays, so no BELLOWS_CONTROL_* name reaches the runner's env.
+    it('names the gate pair by secretKeyRef into the per-job Secret', () => {
         const controlled: BoardJob = {
             ...job,
             gateEnv: {
-                BELLOWS_CONTROL_URL: 'http://10.1.2.3:41000',
-                BELLOWS_CONTROL_TOKEN: 'ctl-secret',
+                BELLOWS_GATE_URL: 'http://10.1.2.3:41000',
+                BELLOWS_GATE_TOKEN: 'ctl-secret',
             },
         };
         const container = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), controlled, {
             id: SESSION,
             resume: false,
         }).spec.template.spec.containers[0]!;
-        for (const name of ['BELLOWS_CONTROL_URL', 'BELLOWS_CONTROL_TOKEN']) {
+        for (const name of ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN']) {
             expect(container.env).toContainEqual({
                 name,
                 valueFrom: { secretKeyRef: { name: secretName(controlled), key: name } },
@@ -520,6 +538,22 @@ describe('the runner job spec', () => {
         // budget itself; the kubelet's backstop adds the drain and the report on top.
         expect(spec({ DRIVER_JOB_TIMEOUT_MS: '45000' }).spec.activeDeadlineSeconds).toBe(45 + WINDDOWN_S);
     });
+
+    // #829: a released group waits the takeover bound after its agent went; the backstop must not end it first.
+    it.each(['60', '3600'])(
+        'leaves a released group its takeover bound under the deadline at a %s s lease',
+        (lease) => {
+            const config = loadDriverConfig({
+                EXECUTOR: 'kubernetes',
+                DRIVER_JOB_TIMEOUT_MS: '45000',
+                DRIVER_LEASE_SECONDS: lease,
+            });
+            const deadline = runnerJobSpec(config, job, { id: SESSION, resume: false }).spec.activeDeadlineSeconds ?? 0;
+            expect(deadline * 1000).toBeGreaterThanOrEqual(
+                45_000 + SUPERVISOR_WINDDOWN_MS + SUPERVISOR_STEPS_MS + takeoverBoundMs(config)
+            );
+        }
+    );
 
     // Issue #733: environment.setup ran before the agent, inside the same run budget.
     it('takes the time environment.setup spent off the active deadline', () => {
@@ -2049,17 +2083,16 @@ describe('publishing the produced work', () => {
         expect(argvs.some((a) => a.includes('push'))).toBe(published);
     });
 
-    // A step the supervisor never answers (the channel closed under it) is a transport failure
-    // the loop can retry, never a verdict on the work.
-    it('names a closed step channel a transport failure', async () => {
+    // A step the supervisor never answers (the channel closed under it) is no verdict on the work:
+    // it is thrown, and the loop hands the attempt back as an interruption (#925).
+    it('throws a closed step channel instead of answering a failed publish', async () => {
         const steps = scripted({
             step: (step) => {
                 if (!step.argv.includes('push')) return null;
                 throw new StepChannelClosed('the answer');
             },
         });
-        const result = await publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh');
-        expect(result).toMatchObject({ ok: false, published: false, cause: 'transport' });
+        await expect(publishing(steps).publishGit(ISSUE_JOB, 'ghs_fresh')).rejects.toBeInstanceOf(StepChannelClosed);
     });
 });
 
@@ -2313,7 +2346,6 @@ describe('the runner vitals', () => {
 describe('the kubernetes runner and the task supervisor', () => {
     const exporting: BoardJob = {
         ...job,
-        gateEnv: { BELLOWS_CONTROL_URL: 'http://driver:7000', BELLOWS_CONTROL_TOKEN: 'tok-agent' },
         ...SUPERVISED,
     };
     const containersOf = (body: unknown): string[] =>
@@ -5661,7 +5693,7 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
      */
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
 
-    it('claude: the exporter is a container of the run’s pod with its own token by Secret reference, never a value', () => {
+    it('claude: the exporter is a container of the run’s pod that holds no credential, only the supervisor’s relay socket', () => {
         const spec = runnerJobSpec(config, { ...job, ...SUPERVISED }, { id: SESSION, resume: false }, START);
         const container = spec.spec.template.spec.containers.find((c) => c.name === EXPORTER_CONTAINER)!;
         expect(container.command).toEqual(['node', '-e', claudeExportScript]);
@@ -5671,17 +5703,20 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
         });
         expect(container.env).toContainEqual({ name: 'RUN_STARTED_AT', value: START });
         expect(container.env).toContainEqual({ name: 'FACTORY_EXPORT_DIR', value: '/factory/export' });
-        expect(container.env).toContainEqual({
-            name: 'BELLOWS_CONTROL_TOKEN',
-            valueFrom: { secretKeyRef: { name: secretName(job), key: 'SUPERVISOR_EXPORT_TOKEN' } },
-        });
-        // Each credential reaches its own container only: the exporter never references the
-        // supervisor's token, the supervisor never the exporter's, the agent neither.
+        expect(container.env).toContainEqual({ name: 'EXPORT_CONTROL_SOCKET', value: EXPORT_RELAY_SOCKET });
+        expect(JSON.stringify(container.env)).not.toMatch(/secretKeyRef|BELLOWS_CONTROL/);
+        // The supervisor holds the control pair and the two tokens it relays under (#829 S3c); the
+        // exporter and the agent hold none of them.
         const keysOf = (name: string) =>
             JSON.stringify(spec.spec.template.spec.containers.find((c) => c.name === name)?.env ?? []);
         expect(keysOf(EXPORTER_CONTAINER)).not.toContain('SUPERVISOR_CONTROL_TOKEN');
         expect(keysOf(SUPERVISOR_CONTAINER)).toContain('SUPERVISOR_CONTROL_TOKEN');
-        expect(keysOf(SUPERVISOR_CONTAINER)).not.toContain('SUPERVISOR_EXPORT_TOKEN');
+        for (const name of ['SUPERVISOR_AGENT_TOKEN', 'SUPERVISOR_EXPORT_TOKEN']) {
+            expect(container.env).not.toContainEqual(expect.objectContaining({ name }));
+            expect(spec.spec.template.spec.containers.find((c) => c.name === SUPERVISOR_CONTAINER)?.env).toContainEqual(
+                { name, valueFrom: { secretKeyRef: { name: secretName(job), key: name } } }
+            );
+        }
         for (const name of SUPERVISOR_CREDENTIAL_NAMES) expect(keysOf(AGENT_CONTAINER)).not.toContain(name);
         expect(JSON.stringify(spec)).not.toMatch(/"value":"[^"]*tok-/);
         // The member's subtree and the one mailbox it shares with the supervisor — nothing else.
@@ -6276,6 +6311,34 @@ describe('a Stop on kubernetes (issue #427)', () => {
         await expect(r.run(job, { id: SESSION, resume: false })).resolves.toMatchObject({ started: true });
     });
 
+    // #829: an abandoned run's Job is the next holder's: the poll ends, deleting and recording nothing.
+    it('an abandoned run stops polling its Job and deletes nothing', async () => {
+        const base = fakeRequest({ job: { status: 200, body: JSON.stringify({ status: { active: 1 } }) } });
+        const methods: string[] = [];
+        let r: ReturnType<typeof runner> | null = null;
+        let abandoned = false;
+        let polls = 0;
+        const request: K8sRequest = (method, path, body) => {
+            if (path.startsWith(jobPath(namespace, runnerJobName(job)))) {
+                methods.push(method);
+                if (method === 'GET') {
+                    polls += 1;
+                    if (polls === 2) {
+                        abandoned = true;
+                        r?.abandon(job);
+                    }
+                    if (abandoned && polls > 4) throw new Error('still polling an abandoned run');
+                }
+            }
+            return base.request(method, path, body);
+        };
+        r = runner(request);
+
+        await expect(r.run(job, { id: SESSION, resume: false })).resolves.toMatchObject({ started: true });
+
+        expect(methods).not.toContain('DELETE');
+    });
+
     // U2: on Stop the loop's raceStep abandons a pre-helper and the heartbeat calls kill(job),
     // which deletes the runner Job and the services only. The helper's aux Job is deleted in
     // runHelper's finally, i.e. only once helperVerdict returns — the Job runs to completion.
@@ -6449,7 +6512,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             claimSeq: 1,
             outcome: { exitCode: 0, started: true, timedOut: false, sessionId: SESSION },
         });
-        expect(adopted!.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun).outcome.output).toContain('did the work');
         const logRead = calls.findIndex((call) =>
             call.path.startsWith(`/api/v1/namespaces/${namespace}/pods/${podName}/log`)
         );
@@ -6524,7 +6587,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
+        expect((adopted as AdoptedRun | null)?.outcome).toMatchObject({ fullLog: whole, logTruncated: false });
     });
 
     // Failure injection at the transport boundary: a runner-Job list too big for a log's stream
@@ -6634,8 +6697,8 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // A full spool rides a supervised stop: its record never explains a supervisor lost after it.
@@ -7029,8 +7092,10 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
     });
 
     // The report is the supervisor's finalization: a crash after it does not unsay it.
@@ -7099,8 +7164,25 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect(deletedPrior(calls)).toBe(false);
     });
 
-    // The bound is the wind-down in time: status reads that each take long end it sooner than polls would.
-    it('ends the wait at the wind-down deadline however slowly the status reads answer', async () => {
+    // #829 S3: a released group's supervisor may wait the takeover grace for a holder before it finalizes.
+    it('adopts a run whose supervisor ended past the wind-down, within the takeover grace', async () => {
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+            const { request } = earlier({
+                statuses: [STILL_FINALIZING, STILL_FINALIZING, jobAnswer({ succeeded: 1 })],
+                onPoll: (poll) => {
+                    if (poll === 2) vi.setSystemTime(Date.now() + SUPERVISOR_WINDDOWN_MS + 1_000);
+                },
+            });
+
+            expect(await runner(request).adopt(adopter)).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0 } });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    // The bound is the finalize wait in time: status reads that each take long end it sooner than polls would.
+    it('ends the wait at the finalize-wait deadline however slowly the status reads answer', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
             const { request, polled } = earlier({
@@ -7111,15 +7193,21 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
             expect(await runner(request).adopt(adopter)).toBeNull();
 
-            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / 60_000) + 1);
+            expect(polled().length).toBeLessThanOrEqual(
+                Math.ceil(
+                    finalizeWaitMs(
+                        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' })
+                    ) / 60_000
+                ) + 1
+            );
         } finally {
             vi.useRealTimers();
         }
     });
 
-    // The deadline bounds the reads too: an apiserver that never answers spends the wind-down, not
+    // The deadline bounds the reads too: an apiserver that never answers spends the finalize wait, not
     // the verdict reads' own retries on top of every poll.
-    it('stands down at the wind-down deadline when the status reads never answer', async () => {
+    it('stands down at the finalize-wait deadline when the status reads never answer', async () => {
         vi.useFakeTimers({ toFake: ['Date'] });
         try {
             const { request, calls, polled } = earlier({
@@ -7131,7 +7219,13 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
             await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
 
-            expect(polled().length).toBeLessThanOrEqual(Math.ceil(SUPERVISOR_WINDDOWN_MS / 30_000) + 1);
+            expect(polled().length).toBeLessThanOrEqual(
+                Math.ceil(
+                    finalizeWaitMs(
+                        loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace, RUNNER_SERVICES: '0' })
+                    ) / 30_000
+                ) + 1
+            );
             expect(deletedPrior(calls)).toBe(false);
         } finally {
             vi.useRealTimers();
@@ -7183,7 +7277,9 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
         expect(podReads).toBeGreaterThan(2);
         const secretGone = calls.findIndex(
             (call) => call.method === 'DELETE' && call.path.endsWith(`/secrets/${secretName(job)}`)
@@ -7264,7 +7360,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
 
         const adopted = await runner(request).adopt(adopter);
 
-        expect(adopted?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe('2000000000 bytes');
     });
 
     // Failure injection: a pod list that answers 200 with no list in it proves no pod over.
@@ -7437,7 +7533,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
                 ? Promise.resolve({ status: 503, body: 'unavailable' })
                 : base(method, path, body);
 
-        expect((await runner(request).adopt(adopter))?.outcome.output).toContain('did the work');
+        expect(((await runner(request).adopt(adopter)) as AdoptedRun | null)?.outcome.output).toContain('did the work');
     });
 
     // A Stop while the earlier runners are read: no claim is taken, so no stale claim is deleted.
@@ -7474,8 +7570,8 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         const adopted = await runner(request).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 0, started: true, sessionId: SESSION } });
-        expect(adopted?.outcome.output).toContain('did the work');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
         expect(calls.some((call) => isSupervisorLogRead(call.path))).toBe(true);
         expect(claimedAt(calls)).toBeGreaterThanOrEqual(0);
     });
@@ -7502,9 +7598,11 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         const adopted = await runner(request).adopt(adopter);
 
         expect(adopted).toMatchObject({ claimSeq: 1, outcome: { exitCode: 137, started: true, sessionId: SESSION } });
-        expect(adopted?.outcome.artifactSpoolFull).toBe('the supervisor reported the spool full');
-        expect(adopted?.outcome.output).toContain('did the work');
-        expect(adopted?.outcome).not.toHaveProperty('infraLoss');
+        expect((adopted as AdoptedRun | null)?.outcome.artifactSpoolFull).toBe(
+            'the supervisor reported the spool full'
+        );
+        expect((adopted as AdoptedRun | null)?.outcome.output).toContain('did the work');
+        expect((adopted as AdoptedRun | null)?.outcome).not.toHaveProperty('infraLoss');
         // The read run's Job is kept for a later claim (#821); only its Secrets go.
         expect(
             calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
@@ -7527,7 +7625,7 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
             await expect(adopting).rejects.toBeInstanceOf(AdoptionBlocked);
             expect(deletedPrior(calls)).toBe(false);
         } else {
-            expect((await adopting)?.outcome.output).toBe('');
+            expect(((await adopting) as AdoptedRun | null)?.outcome.output).toBe('');
         }
     });
 
@@ -7572,9 +7670,10 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '3600' }))).toBeLessThan(SUPERVISOR_WINDDOWN_MS);
     });
 
-    it('reaches the supervisor as its orphan bound and the exporter as its drain give-up', () => {
+    it('reaches the supervisor as its orphan bound and the exporter as a give-up that outlasts a takeover', () => {
         const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: '120' });
         const bound = String(orphanBoundMs(config));
+        const takeover = takeoverBoundMs(config);
         const pod = runnerJobSpec(
             config,
             { ...job, executorType: 'claude-code', ...SUPERVISED },
@@ -7582,8 +7681,63 @@ describe('the bound a runner pod outlives a lost driver by', () => {
         ).spec.template.spec;
         const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
         expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({ name: 'SUPERVISOR_ORPHAN_MS', value: bound });
-        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: bound });
+        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({ name: 'EXPORT_DRAIN_GIVEUP_MS', value: String(takeover) });
+        expect(envOf(EXPORTER_CONTAINER)).toContainEqual({
+            name: 'EXPORT_GIVEUP_MS',
+            value: String(Math.max(600_000, takeover)),
+        });
     });
+});
+
+describe('the holder a supervisor follows, on kubernetes', () => {
+    it('reaches the supervisor container alone: its claim and the file a newer holder names itself in', () => {
+        const pod = runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...job, executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        const envOf = (name: string) => pod.containers.find((container) => container.name === name)?.env;
+        expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({
+            name: 'SUPERVISOR_CLAIM_SEQ',
+            value: String(job.claimSeq),
+        });
+        expect(envOf(SUPERVISOR_CONTAINER)).toContainEqual({
+            name: 'SUPERVISOR_BINDING_FILE',
+            value: SUPERVISOR_BINDING_PATH,
+        });
+        const others = pod.containers.filter((container) => container.name !== SUPERVISOR_CONTAINER);
+        expect(JSON.stringify(others)).not.toMatch(/SUPERVISOR_(CLAIM_SEQ|BINDING_FILE|TAKEOVER_MS)/);
+    });
+
+    it('waits for a newer holder the lease plus the rebind grace, and the next claim waits a finalizing supervisor out for more than that', () => {
+        const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: '120' });
+        expect(takeoverBoundMs(config)).toBe(120_000 + SUPERVISOR_REBIND_GRACE_MS);
+        const pod = runnerJobSpec(
+            config,
+            { ...job, executorType: 'claude-code', ...SUPERVISED },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+        const supervisor = pod.containers.find((container) => container.name === SUPERVISOR_CONTAINER);
+        expect(supervisor?.env).toContainEqual({
+            name: 'SUPERVISOR_TAKEOVER_MS',
+            value: String(takeoverBoundMs(config)),
+        });
+    });
+
+    // The next claim's wait must outlast a lost-but-alive driver's last contact (its heartbeat learning
+    // the lease is gone), the takeover bound counted from it, and the report: at every lease, not one.
+    it.each(['60', '120', '3600'])(
+        'waits a finalizing supervisor out past the takeover bound at a %s s lease',
+        (lease) => {
+            const config = loadDriverConfig({ EXECUTOR: 'kubernetes', DRIVER_LEASE_SECONDS: lease });
+            expect(finalizeWaitMs(config)).toBeGreaterThanOrEqual(
+                heartbeatPeriodMs(config) + takeoverBoundMs(config) + SUPERVISOR_REPORT_MS
+            );
+            expect(finalizeWaitMs(config)).toBe(
+                SUPERVISOR_WINDDOWN_MS + heartbeatPeriodMs(config) + takeoverBoundMs(config)
+            );
+        }
+    );
 });
 
 describe('how a started run ends, on kubernetes (the conformance table)', () => {
@@ -9202,5 +9356,131 @@ describe('how a refused group start ends, on kubernetes (the startup conformance
             clock.mockRestore();
         }
         expect(pods.reads()).toBeLessThan(20);
+    });
+});
+
+describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
+    const BINDING = {
+        claimSeq: 4,
+        url: 'http://driver.example:8080',
+        token: 'tok-new-holder',
+        agentToken: 'tok-new-agent',
+        exportToken: 'tok-new-export',
+    };
+    const SENTINEL = 'sentinel-body-text';
+    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'driver.example', SENTINEL];
+    const podOf = (group: BoardJob) =>
+        runnerJobSpec(
+            loadDriverConfig({ EXECUTOR: 'kubernetes' }),
+            { ...group, executorType: 'claude-code' },
+            { id: SESSION, resume: false }
+        ).spec.template.spec;
+    const mountsOf = (pod: ReturnType<typeof podOf>, name: string) =>
+        pod.containers.find((container) => container.name === name)?.volumeMounts ?? [];
+    const patchPath = `/api/v1/namespaces/${namespace}/secrets/${secretName(job)}`;
+    const rebinder = (request: K8sRequest) =>
+        createKubernetesRunner(
+            loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+            request,
+            async () => {}
+        );
+    const ok = (body = ''): Promise<K8sResponse> => Promise.resolve({ status: 200, body });
+
+    it('mounts an optional read-only Secret item in the supervisor alone, without a subPath', () => {
+        const pod = podOf({ ...job, ...SUPERVISED });
+        expect(pod.volumes).toContainEqual({
+            name: SUPERVISOR_BINDING.volume,
+            secret: {
+                secretName: secretName(job),
+                items: [{ key: SUPERVISOR_BINDING.file, path: SUPERVISOR_BINDING.file }],
+                defaultMode: 0o444,
+                optional: true,
+            },
+        });
+        for (const container of pod.containers) {
+            const bound = mountsOf(pod, container.name).filter((mount) => mount.name === SUPERVISOR_BINDING.volume);
+            if (container.name === SUPERVISOR_CONTAINER) {
+                expect(bound).toEqual([
+                    { name: SUPERVISOR_BINDING.volume, mountPath: SUPERVISOR_BINDING.dir, readOnly: true },
+                ]);
+            } else {
+                expect(bound, container.name).toEqual([]);
+            }
+        }
+    });
+
+    it('merge-patches only the binding key with data, bounded and with the signal', async () => {
+        const seen: { method: string; path: string; body: unknown; options: unknown }[] = [];
+        const signal = new AbortController().signal;
+        await rebinder((method, path, body, options) => {
+            seen.push({ method, path, body, options });
+            return ok();
+        }).rebind(job, BINDING, signal);
+        expect(seen).toHaveLength(1);
+        expect(seen[0]).toMatchObject({ method: 'PATCH', path: patchPath });
+        expect(seen[0]!.body).toEqual({
+            data: { [SUPERVISOR_BINDING.file]: Buffer.from(bindingBody(BINDING)).toString('base64') },
+        });
+        expect(JSON.parse(bindingBody(BINDING))).toEqual(BINDING);
+        const options = seen[0]!.options as { timeoutMs: number; signal: AbortSignal; contentType?: string };
+        expect(options.timeoutMs).toBeLessThanOrEqual(REBIND_DEADLINE_MS);
+        expect(options.signal.aborted).toBe(false);
+        expect(options.contentType).toBeUndefined();
+    });
+
+    it('sends no request for an aborted signal', async () => {
+        const request = vi.fn(() => ok());
+        const controller = new AbortController();
+        controller.abort();
+        await expect(rebinder(request).rebind(job, BINDING, controller.signal)).rejects.toThrow();
+        expect(request).not.toHaveBeenCalled();
+    });
+
+    it('rejects on 403, 404, 409, 500, a throw and a timeout, never naming the token or the answer', async () => {
+        const answers: (() => Promise<K8sResponse>)[] = [
+            ...[403, 404, 409, 500].map(
+                (status) => () => Promise.resolve({ status, body: `${SENTINEL} tok-new-holder driver.example` })
+            ),
+            () => Promise.reject(new Error('connect ECONNREFUSED tok-new-holder driver.example')),
+            () => Promise.reject(new Error('the call timed out sentinel-body-text')),
+        ];
+        for (const answer of answers) {
+            const error = await rebinder(() => answer())
+                .rebind(job, BINDING, new AbortController().signal)
+                .catch((caught: Error) => caught);
+            expect(error).toBeInstanceOf(Error);
+            for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
+        }
+    });
+
+    it('discards a 2xx answer unread and resolves only after the patch answered', async () => {
+        let answer!: (res: K8sResponse) => void;
+        let done = false;
+        const pending = rebinder(() => new Promise<K8sResponse>((resolve) => (answer = resolve)))
+            .rebind(job, BINDING, new AbortController().signal)
+            .then((value) => {
+                done = true;
+                return value;
+            });
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(done).toBe(false);
+        answer({ status: 200, body: '{not json tok-new-holder' });
+        expect(await pending).toBeUndefined();
+    });
+
+    it.each([
+        ['a negative claim sequence', { ...BINDING, claimSeq: -1 }],
+        ['no agent token', { ...BINDING, agentToken: '' }],
+        ['an agent token with whitespace', { ...BINDING, agentToken: 'has space' }],
+        ['no export token', { ...BINDING, exportToken: '' }],
+        ['an export token with whitespace', { ...BINDING, exportToken: 'has space' }],
+    ])('refuses an invalid binding (%s) before any request, naming no token', async (_what, binding) => {
+        const request = vi.fn(() => ok());
+        const error = await rebinder(request)
+            .rebind(job, binding, new AbortController().signal)
+            .catch((caught: Error) => caught);
+        expect(error).toBeInstanceOf(Error);
+        for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
+        expect(request).not.toHaveBeenCalled();
     });
 });

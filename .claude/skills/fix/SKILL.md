@@ -57,9 +57,6 @@ every agent it spawns — copy them into each brief.
 - **Implementers are fresh agents, never forks.** A fork starts with this whole conversation.
   Each review round's fixes go to a new agent briefed with the round's findings file — never
   `SendMessage` into an agent that already ran a round.
-- **Cap every agent at 250K tokens of context.** At the cap it stops and writes
-  `<scratchpad>/handoff-<N>.md` — done, remaining, files touched, next command — and a fresh agent
-  resumes from that note, never from the old context.
 - **Watch every background agent.** When the first one launches, arm a watchdog: a scheduled
   message back into this conversation every 20 minutes (the host's wake tool — `send_later`,
   `ScheduleWakeup` or a cron), re-armed on each tick until the run ends or blocks on the user. A

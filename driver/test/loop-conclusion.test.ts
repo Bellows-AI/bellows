@@ -5,6 +5,7 @@ import { end } from '../src/loop-conclusion.js';
 import { newJobState } from '../src/loop-attempt.js';
 import { recordEnding } from '../src/loop-phase.js';
 import type { AttemptCtx, EndDecision } from '../src/loop-types.js';
+import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
 
 const JOB = { id: 'job-1', lastAttempt: false } as BoardJob;
 
@@ -32,6 +33,7 @@ const answer = <T>(given: T | (() => never) | undefined, fallback: T): T =>
 function attempt(answers: Answers = {}, { fenced = false, launched = false } = {}) {
     const calls: string[] = [];
     const lines: string[] = [];
+    const departedFor: number[] = [];
     const state = newJobState();
     state.launched = launched;
     state.control = 'control-token';
@@ -51,6 +53,10 @@ function attempt(answers: Answers = {}, { fenced = false, launched = false } = {
             gates: {
                 server: {
                     closeControl: () => calls.push('control.close'),
+                    departControl: (_token: string, forMs: number) => {
+                        calls.push('control.depart');
+                        departedFor.push(forMs);
+                    },
                     unregister: () => calls.push('gate.unregister'),
                 },
                 manager: { release: () => calls.push('gate.release') },
@@ -69,7 +75,7 @@ function attempt(answers: Answers = {}, { fenced = false, launched = false } = {
                     return answer(answers.stage, 'held');
                 },
             },
-            config: { leaseSeconds: 300 },
+            config: { leaseSeconds: 300, rebindGraceMs: SUPERVISOR_REBIND_GRACE_MS },
             report: async () => {
                 calls.push('complete');
                 return answer(answers.complete, 'ok');
@@ -90,7 +96,7 @@ function attempt(answers: Answers = {}, { fenced = false, launched = false } = {
         gateSession: { token: 'gate-token', key: 'gate-key' },
         setupDone: true,
     } as unknown as AttemptCtx;
-    return { ctx, calls, lines };
+    return { ctx, calls, lines, departedFor };
 }
 
 /** Every teardown step in its order: the group, then its control channel, then the rest. */
@@ -211,7 +217,7 @@ describe("end leaves a launched attempt's runner to the next claim (I6)", () => 
 
         expect(calls).not.toContain('finish');
         // The services belong to the runner it left: the next claim's fence reclaims them, not this teardown.
-        expect(down(calls)).toEqual(['quiesce', 'control.close', 'gate.unregister', 'gate.release']);
+        expect(down(calls)).toEqual(['quiesce', 'control.depart', 'gate.unregister', 'gate.release']);
     });
 
     it('finishes a leave before the launch: no agent ran, nothing to adopt', async () => {
@@ -230,7 +236,17 @@ describe("end leaves a launched attempt's runner to the next claim (I6)", () => 
 
         expect(calls).not.toContain('finish');
         expect(calls).not.toContain('services');
-        expect(calls).toContain('control.close');
+        expect(calls).toContain('control.depart');
+        expect(calls).not.toContain('control.close');
+    });
+
+    it('has the departed control hang up for the lease and the rebind grace, so a newer holder can bind the group', async () => {
+        const { ctx, departedFor } = attempt({}, { launched: true });
+        recordEnding(ctx.state, 'lost');
+
+        await end(ctx, { kind: 'none', log: 'the lease was lost' });
+
+        expect(departedFor).toEqual([300_000 + SUPERVISOR_REBIND_GRACE_MS]);
     });
 });
 
@@ -239,7 +255,8 @@ describe('end retains the runner of an attempt whose ownership was lost (issue #
         expect(calls).not.toContain('finish');
         expect(calls).not.toContain('services');
         expect(calls).not.toContain('fence');
-        expect(calls).toContain('control.close');
+        expect(calls).toContain('control.depart');
+        expect(calls).not.toContain('control.close');
     };
 
     it.each([
@@ -329,7 +346,7 @@ describe('end retains the runner a board call did not reach', () => {
         expect(lines.join('\n')).toContain('the board did not take the stop, left to the lease');
         expect(calls).not.toContain('finish');
         expect(calls).not.toContain('services');
-        expect(calls).toContain('control.close');
+        expect(calls).toContain('control.depart');
     });
 
     it('keeps it when the interruption never lands, and leaves the attempt to the lease', async () => {

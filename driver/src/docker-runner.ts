@@ -1,7 +1,15 @@
 import { JOB_LABEL } from './labels.js';
-import { assertTaskVolumeIsOurs, ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
+import { ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from './task-restore.js';
-import { awaitSupervisor, closeEndOf, createGroup, removeGroup, startGroup, supervisorLossOf } from './docker-group.js';
+import {
+    awaitSupervisor,
+    closeEndOf,
+    createGroup,
+    rebindGroup,
+    removeGroup,
+    startGroup,
+    supervisorLossOf,
+} from './docker-group.js';
 import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
     dockerKill,
@@ -11,9 +19,11 @@ import {
     recordDockerKill,
 } from './docker-teardown.js';
 import { supervisorName } from './docker-mailbox.js';
+import { readSupervisorState } from './docker-group-probe.js';
+import { StartupRefused } from './startup-cause.js';
 import { createKillLedger, type KillLedger } from './kill-ledger.js';
 import { SUPERVISOR_CHECKPOINT_MS, SUPERVISOR_EXIT } from './supervisor-contract.js';
-import { agentBackstopMs } from './supervisor-plan.js';
+import { agentBackstopMs, spentMs } from './supervisor-plan.js';
 import { spawn } from 'node:child_process';
 import { rm, writeFile } from 'node:fs/promises';
 import type { Board, BoardJob } from './board.js';
@@ -36,17 +46,11 @@ import {
 import { reviewRunOf } from './review-step.js';
 import { checkoutDir, type ReclaimResult, type SyncResult } from './publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from './services.js';
-import {
-    containerName,
-    envFilePath,
-    parseDockerServiceExit,
-    parseDockerServicePs,
-    parseDockerStats,
-} from './docker.js';
-import { envFileBody } from './claim.js';
+import { containerName, parseDockerServiceExit, parseDockerServicePs, parseDockerStats } from './docker.js';
 import {
     appendTailKept,
     composeRuntimeSample,
+    onOwnGroup,
     type KeptLog,
     reportTail,
     SERVICE_LOG_TAIL_LINES,
@@ -57,12 +61,12 @@ import {
     type RunSession,
     type RuntimeSample,
 } from './runner.js';
-import { applyCloseTimeReadout, dockerAdopt, tickCacheWatch } from './docker-close-read.js';
+import { applyCloseTimeReadout, dockerAdopt } from './docker-close-read.js';
+import { armRunTimers } from './docker-run-timers.js';
+import { createRunner } from './docker-create-runner.js';
 import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
-    assertNotKilledAfterEnvWrite,
-    createRunnerContainer,
     dockerErrorDetail,
     dockerRunVerdict,
     CONTAINER_ID,
@@ -78,11 +82,11 @@ import {
     startJobServices,
     type RunnerFiles,
     attemptExec,
+    boundedExec,
     type Spawn,
     type ExecDocker,
     readUtf8,
 } from './docker-runner-support.js';
-import { OPENCODE } from './executors.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
 import { settleEnd } from './termination.js';
 
@@ -96,6 +100,8 @@ import { settleEnd } from './termination.js';
 interface GroupState {
     startedAt: string;
     session: RunSession | null;
+    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    resumed?: boolean;
 }
 
 const GROUP_EXIT_WAIT_MS = 20_000;
@@ -210,9 +216,24 @@ const attemptExecOf = (deps: RunnerDeps, job: BoardJob): ExecDocker =>
 
 /** Waits for the supervisor of a started group to pull; a plain error at the bound, no proof of why. */
 async function awaitGroupUp(deps: RunnerDeps, job: BoardJob): Promise<void> {
+    const exec = attemptExecOf(deps, job);
+    let seenRunning = false;
     const up = await awaitFirstContact(stepHostOf(deps), job, {
         sleep: deps.sleep,
         signal: deps.ledger.signal(job),
+        // A supervisor seen running and then confirmed over or removed is an infrastructure loss now, not at
+        // the bound (#924, the kubernetes pod lost before first contact). A read that did not answer, and a
+        // container never seen running, prove nothing.
+        probe: async (bound) => {
+            const state = await readSupervisorState(boundedExec(exec, bound), job);
+            if (state === 'running') seenRunning = true;
+            else if (state === 'gone' && seenRunning) {
+                throw new StartupRefused(
+                    `the task supervisor ${supervisorName(job)} was lost before it made contact`,
+                    'transient'
+                );
+            }
+        },
     });
     if (!up) {
         throw new Error(`the task supervisor ${supervisorName(job)} never came up within ${GROUP_UP_WAIT_MS}ms`);
@@ -268,30 +289,6 @@ async function ensureGroup(
     const group: GroupState = { startedAt, session };
     deps.groups.set(job.leaseToken, group);
     return group;
-}
-
-/**
- * Creates the runner container once its mount is sure to find the task volume (issue #775): the reaper may
- * have deleted it since the group was made, and the mount would make an empty one. A gone volume goes
- * with the group and the env file, and is thrown as a transient startup refusal — an interruption.
- */
-async function createRunnerOnVolume(
-    deps: RunnerDeps,
-    job: BoardJob,
-    session: RunSession | null,
-    envFile: string | null
-): Promise<RunOutcome | null> {
-    const execDocker = attemptExecOf(deps, job);
-    try {
-        await assertTaskVolumeIsOurs(execDocker, job);
-    } catch (e) {
-        if (envFile) await deps.files.rm(envFile).catch(() => undefined);
-        await removeGroup(deps.execDocker, job);
-        deps.groups.delete(job.leaseToken);
-        throw e;
-    }
-    const created = { config: deps.config, execDocker, teardown: deps.execDocker };
-    return createRunnerContainer(created, job, session, envFile ? { envFile } : {});
 }
 
 /**
@@ -445,6 +442,23 @@ async function dockerDeadServices(deps: RunnerDeps, job: BoardJob): Promise<Dead
     return out;
 }
 
+/** How long a taken-over run's exit is waited for once its log stream has closed. */
+const RESUMED_EXIT_WAIT_MS = 30_000;
+
+/**
+ * The exit code of a taken-over runner container (#829), read with a bounded `docker wait` once its
+ * followed log has closed — `docker logs -f` exits 0 whatever the container did. A stream that closed
+ * with an error is no end of the run (the container may still run); a wait that cannot say rejects,
+ * which the loop leaves to its lease. `wait` is the uncancelled daemon seam: a killed run's exit is still read.
+ */
+async function resumedExit(wait: ExecDocker, job: BoardJob, streamExit: number | null): Promise<number> {
+    if (streamExit !== 0)
+        throw new Error(`following the log of ${containerName(job)} ended with ${streamExit ?? 'a signal'}`);
+    const waited = (await wait(['wait', containerName(job)], { timeout: RESUMED_EXIT_WAIT_MS })).stdout.trim();
+    if (!/^-?\d+$/.test(waited)) throw new Inconclusive(`docker wait answered '${waited}'`);
+    return Number(waited);
+}
+
 async function dockerRun(
     deps: RunnerDeps,
     job: BoardJob,
@@ -468,7 +482,7 @@ async function dockerRun(
      */
     // A group made fresh forgets the kill an earlier group of this attempt recorded, so a killed job is refused first.
     assertJobNotKilled(ledger, job);
-    const { startedAt } = await ensureGroup(deps, job, session);
+    const { startedAt, resumed } = await ensureGroup(deps, job, session);
 
     /*
      * Auxiliary services (issue #6) were started by the loop (`startServices`) before the gate
@@ -479,55 +493,25 @@ async function dockerRun(
      * check and spawnFn is synchronous.
      */
 
-    // The runner container is the last resource this attempt creates, and the spawn is
-    // what a killed setup must never reach — see assertJobNotKilled for why a throw is
-    // the right verdict here.
-    assertJobNotKilled(ledger, job);
-
-    /*
-     * The env file's ride: a 0600 file in the OS temp directory, written just before the spawn
-     * and removed as soon as the run is over — a crash leaves it in tmpdir at worst, never
-     * in argv and never in this process's environment. The body is the claim env PLUS the
-     * loop's minted gate credentials PLUS the runner's own attempt pair, so a gated job whose
-     * claim resolves to nothing still carries its BELLOWS_GATE_URL/TOKEN and the credential
-     * its attribution reports authenticate with.
-     */
-    const body = envFileBody(job, config);
-    const file = body ? envFilePath(job) : null;
-    if (file) await files.writeFile(file, body, { mode: 0o600 });
-    // The write above is an await, so the kill-check must run once more: see
-    // assertNotKilledAfterEnvWrite for why a lease lost while it was pending must not
-    // reach spawnFn.
-    await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
-
-    // The run's start instant (the group's, which the exporter and both close-time turn reads key
-    // on): a follow-up resumes its session's conversation, so the delta each read reports is
-    // bounded to what THIS run wrote.
-    const refused = await createRunnerOnVolume(deps, job, session, file);
-    if (refused && !ledger.was(job).stopped) {
-        if (file) await files.rm(file).catch(() => undefined);
-        return refused;
-    }
-    // The create and the copy are awaits too: a lease lost behind them must not reach the start.
-    // The created container is this attempt's leftover to remove, the group and the env file with it.
-    if (ledger.was(job).stopped) {
-        await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
-        await removeGroup(teardown, job);
-        deps.groups.delete(job.leaseToken);
-        await assertNotKilledAfterEnvWrite({ ledger, job, files }, file);
-    }
+    // A group taken over from a lost driver (#829) has its runner container up and released: nothing
+    // is created, no env file written and no `go` ordered; the run attaches to the container's log.
+    const created = resumed ? null : await createRunner(deps, attemptExecOf(deps, job), job, session);
+    if (created?.refused) return created.refused;
+    const file = created?.file ?? null;
 
     // The supervisor and the exporter were started with the group and outlive the agent: the agent
     // is released by the supervisor's `go` order, which also hands it what is left of the run
     // budget, and the supervisor reports once the agent is gone and its exporter drained.
     const host = stepHostOf(deps);
     const reported = host.sink.awaitReport(controlTokenOf(job)).catch(() => null);
-    try {
-        await orderGo(host, job);
-    } catch (e) {
-        await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
-        if (file) await files.rm(file).catch(() => undefined);
-        throw e;
+    if (!resumed) {
+        try {
+            await orderGo(host, job);
+        } catch (e) {
+            await teardown(['rm', '-f', containerName(job)]).catch(() => undefined);
+            if (file) await files.rm(file).catch(() => undefined);
+            throw e;
+        }
     }
 
     const outcome = new Promise<RunOutcome>((resolve, reject) => {
@@ -547,9 +531,18 @@ async function dockerRun(
                 closed: proven,
             });
 
-        const child = spawnFn('docker', ['start', '-a', containerName(job)], {
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        // A taken-over run is already up: its log is followed from the start, and its exit read after.
+        // The followed log ends with the container, as `start -a` does: a Stop, a kill or the backstop end
+        // the container, never the stream, so the verdict they decide is read as a started run's. Only an
+        // abandonment hangs up on it (spawn terminates the child on abort).
+        const child = spawnFn(
+            'docker',
+            resumed ? ['logs', '-f', containerName(job)] : ['start', '-a', containerName(job)],
+            {
+                stdio: ['ignore', 'pipe', 'pipe'],
+                ...(resumed ? { signal: ledger.abandoned(job) } : {}),
+            }
+        );
         let timedOut = false;
         let proven: ClosedState | null = null;
         const cacheState: { cacheLost: string | null } = { cacheLost: null };
@@ -574,35 +567,18 @@ async function dockerRun(
         readUtf8(child.stdout, collect);
         readUtf8(child.stderr, collect);
 
-        // The BACKSTOP: the supervisor ends the agent at the run budget itself (its exit 124), so
-        // this only fires for a group whose supervisor stopped doing that — the budget plus the
-        // wind-down — and then kills all of it.
-        const deadline = deps.deadlines.start(job.leaseToken, agentBackstopMs(config, job), () => {
-            timedOut = true;
-            void dockerKillFor(deps, job, { reason: 'timeout', detail: '' });
-        });
-
-        /*
-         * The cache watch polls on a period while the run is live. Each tick is one
-         * throwaway probe container; a probe that fails once (the daemon is busy, the
-         * session is not there yet) just waits for the next tick, and the trigger itself
-         * needs three consecutive damning turns, so no single answer — or no single fluke —
-         * kills anything. The kill is this attempt's own, label-scoped like every other;
-         * the task-type check below keeps it on opencode, and config keeps it docker-only.
-         */
-        let cacheTimer: NodeJS.Timeout | null = null;
-        if (config.cacheWatch && job.executorType === OPENCODE) {
-            cacheTimer = setInterval(() => {
-                const kill = (j: BoardJob) =>
-                    dockerKillFor(deps, j, { reason: 'cache_lost', detail: cacheState.cacheLost ?? '' });
-                void tickCacheWatch({ execDocker, config, job, kill }, cacheState);
-            }, config.cacheWatchPollMs);
-        }
-
-        const done = () => {
-            deadline.clear();
-            if (cacheTimer) clearInterval(cacheTimer);
-        };
+        const done = armRunTimers(
+            deps,
+            { execDocker, config, job, backstopMs: agentBackstopMs(config, job, resumed ? spentMs(startedAt) : 0) },
+            cacheState,
+            {
+                backstop: () => {
+                    timedOut = true;
+                    void dockerKillFor(deps, job, { reason: 'timeout', detail: '' });
+                },
+                cacheLost: (j) => dockerKillFor(deps, j, { reason: 'cache_lost', detail: cacheState.cacheLost ?? '' }),
+            }
+        );
 
         /*
          * A spawn failure makes Node deliver 'error' and then 'close' with a null code.
@@ -635,14 +611,17 @@ async function dockerRun(
             // steps. A supervisor that exited instead of reporting says how: 124 is the budget it
             // enforced, the driver's own hard kill explains its exit, and anything else is a
             // supervisor lost, an infrastructure loss (`settleEnd`).
-            void closeEndOf(execDocker, job, { code, output, reported })
-                .then((ended) => {
+            void (resumed ? resumedExit(teardown, job, code) : Promise.resolve(code))
+                .then((exit) =>
+                    closeEndOf(execDocker, job, { code: exit, output, reported }).then((ended) => ({ ended, exit }))
+                )
+                .then(({ ended, exit }) => {
                     proven = ended.proven;
                     // An exit with no report taken leaves nobody to answer the steps the loop still sends.
                     if (!ended.report) releaseSteps(host, job);
-                    return ended;
+                    return { ...ended, exit };
                 })
-                .then(async ({ report, supervisorExit }) => {
+                .then(async ({ report, supervisorExit, exit: code }) => {
                     // The verdict read below reports the budget, so it is settled first.
                     if (report?.outcome === 'timed_out' || supervisorExit === SUPERVISOR_EXIT.deadline) {
                         timedOut = true;
@@ -728,7 +707,7 @@ export function createDockerRunner(
         ...(endpoint ? { endpoint } : {}),
         ...(checkpoints ? { checkpoints } : {}),
     };
-    return {
+    return onOwnGroup({
         kill: (job) => dockerKill(deps, job),
         pauseDeadline: async (job, paused) => deadlines.pause(job.leaseToken, paused),
         releaseServices: (job) => dockerServiceTeardown(deps, job),
@@ -748,6 +727,8 @@ export function createDockerRunner(
         resizeReviewer: async () => false, // likewise the reviewer container: it keeps its RUNNER_* sizing
         runReview: (caller, review, session, control) =>
             runDockerReview(gateDeps(deps, caller), reviewRunOf(caller, review, session, control), control?.signal),
+        rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
+        abandon: (job) => ledger.abandon(job),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, execDocker, anyOf(signal, ledger.signal(job))),
@@ -757,5 +738,5 @@ export function createDockerRunner(
             dockerAdopt({ ...deps, fence: (fenced, stand) => dockerReclaimFence(deps, fenced, stand) }, job, signal),
         stopAgent: (job) => dockerStopAgent(deps, job),
         recordKill: (job, kill) => ledger.record(job, kill),
-    };
+    });
 }

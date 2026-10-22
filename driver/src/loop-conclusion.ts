@@ -10,7 +10,7 @@
 import { withBoardRetry } from './board-retry.js';
 import type { BoardJob, LeaseState } from './board.js';
 import type { JobState } from './loop-attempt.js';
-import { closeRunControl, releaseGateSession } from './loop-gates.js';
+import { closeRunControl, departRunControl, releaseGateSession } from './loop-gates.js';
 import { handBackFence, leaveDecision, standDown } from './loop-fence.js';
 import { transition } from './loop-phase.js';
 import { cancelReviews } from './loop-review.js';
@@ -68,9 +68,15 @@ export async function endIfDown(ctx: AttemptCtx, phase: string, beforePark?: () 
  * The run's outcome, or null once a drain's handover abandoned it: the run is contained and its
  * outcome ignored, its runner being the next claim's.
  */
-export function abandonOnHandover<T>(state: JobState, run: Promise<T>): Promise<T | null> {
+export function abandonOnHandover<T>(state: JobState, run: Promise<T>, abandon: () => void): Promise<T | null> {
     run.catch(() => undefined);
-    return Promise.race([run, state.handedOver.then(() => null)]);
+    return Promise.race([
+        run,
+        state.handedOver.then(() => {
+            abandon();
+            return null;
+        }),
+    ]);
 }
 
 async function conclude(ctx: AttemptCtx, decision: EndDecision): Promise<LeaseState | null> {
@@ -136,7 +142,9 @@ async function teardown(ctx: AttemptCtx): Promise<void> {
     // The same retention governs the services it uses: they are reclaimed by that claim's fence.
     const retained = state.ending?.kind === 'handover' || state.keepGroup;
     if (!retained) await rt.runner.finish(job).catch(() => undefined);
-    closeRunControl(rt, state);
+    // A retained group is left to a newer holder: hung up on, not closed on.
+    if (retained) departRunControl(rt, state);
+    else closeRunControl(rt, state);
     if (ctx.gateSession) releaseGateSession(rt, ctx.gateSession, job);
     // The services outlived run() for the declared gates' sake; they go now, unless the runner is retained.
     if (!retained && (ctx.servicesStarted || ctx.setupDone)) await releaseServices(ctx);

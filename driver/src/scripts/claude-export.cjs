@@ -5,9 +5,13 @@
 // The raw files on the volume are the spool: nothing is ever dropped, an unacknowledged byte just
 // stays on disk and is retried.
 //
-// Environment (set by the driver; paths and the per-attempt control pair, nothing else):
+// Environment (set by the driver; paths and literals, no credential):
 //   CLAUDE_TRANSCRIPT_DIR  — the thread's transcript directory (the runner's CLAUDE_CONFIG_DIR).
-//   BELLOWS_CONTROL_URL / BELLOWS_CONTROL_TOKEN — the attempt's control endpoint and token.
+//   EXPORT_CONTROL_SOCKET  — the task supervisor's relay socket in FACTORY_EXPORT_DIR: it adds this
+//                            exporter's token and follows whichever driver holds the run (issue #829),
+//                            so this process holds no credential. A socket not there yet is retried.
+//   BELLOWS_CONTROL_URL / BELLOWS_CONTROL_TOKEN — one-shot mode only (a review's close-time export,
+//                            run by the holder itself): the endpoint and the token it issued.
 //   RUN_STARTED_AT         — ISO instant the attempt began. A file that existed before it is a
 //                            resumed session: only what is appended past its size at first sight
 //                            belongs to this attempt (offsets stay the file's own byte offsets).
@@ -27,7 +31,7 @@
 //   EXPORT_DRAIN_GIVEUP_MS — once drained, how long an unreachable driver is tolerated before the
 //                            exporter ends with its bytes left on the volume for the next claim.
 //
-// Protocol (all keyed by the token): PUT /export/chunk?session&offset (raw bytes) -> 200 stored, 413
+// Protocol (all keyed by the token the relay, or the one-shot's env, supplies): PUT /export/chunk?session&offset (raw bytes) -> 200 stored, 413
 // refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a session; POST
 // /export/state reports the vitals. `drain.json` ({state, cause}, written by the supervisor) says the
 // agent is gone: flush everything, close every session's manifest, report `done`, exit 0. A token the
@@ -76,6 +80,7 @@ const EXPORT_DIR = process.env.FACTORY_EXPORT_DIR;
 // One-shot mode (a review's close-time export, issue #774): no mailbox and no drain order. The
 // closing state and cause come from the env, and the exporter drains what is there, closes and exits.
 const ONCE = process.env.EXPORT_ONCE;
+const CONTROL_SOCKET = process.env.EXPORT_CONTROL_SOCKET;
 const CONTROL_URL = process.env.BELLOWS_CONTROL_URL;
 const TOKEN = process.env.BELLOWS_CONTROL_TOKEN;
 const STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
@@ -126,9 +131,10 @@ const send = (method, target, body) =>
             },
             REQUEST_TIMEOUT_MS + Math.ceil(bytes / MIB) * MS_PER_MIB
         );
-        const headers = { authorization: `Bearer ${TOKEN}` };
+        // Over the relay socket the exporter sends no credential: the supervisor attaches the token.
+        const headers = CONTROL_SOCKET ? {} : { authorization: `Bearer ${TOKEN}` };
         if (body) headers['content-length'] = bytes;
-        req = http.request(new URL(target, CONTROL_URL), { method, headers }, (res) => {
+        const onResponse = (res) => {
             // A response cut by the timer's destroy errors here, not on the request.
             res.on('error', () => settle(UNREACHABLE));
             const parts = [];
@@ -142,7 +148,10 @@ const send = (method, target, body) =>
                 }
                 settle({ status: res.statusCode ?? 0, json });
             });
-        });
+        };
+        req = CONTROL_SOCKET
+            ? http.request({ socketPath: CONTROL_SOCKET, path: target, method, headers }, onResponse)
+            : http.request(new URL(target, CONTROL_URL), { method, headers }, onResponse);
         req.on('error', () => settle(UNREACHABLE));
         if (body) req.write(body);
         req.end();
@@ -549,9 +558,9 @@ const orderOnce = () => {
 };
 
 const main = async () => {
-    if (!DIR || !CONTROL_URL || !TOKEN || (!EXPORT_DIR && !ONCE)) {
+    if (!DIR || !(CONTROL_SOCKET || (CONTROL_URL && TOKEN)) || (!EXPORT_DIR && !ONCE)) {
         throw new Error(
-            'CLAUDE_TRANSCRIPT_DIR, FACTORY_EXPORT_DIR, BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN are required'
+            'CLAUDE_TRANSCRIPT_DIR, FACTORY_EXPORT_DIR and EXPORT_CONTROL_SOCKET (or BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN) are required'
         );
     }
     orderOnce();

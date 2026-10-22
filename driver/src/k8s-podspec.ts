@@ -56,6 +56,8 @@ import {
     containerHardeningField,
     doNotDisruptField,
     gateResourcesField,
+    bindingMount,
+    bindingVolume,
     mailboxMount,
     reviewerResourcesField,
     mailboxVolumes,
@@ -144,7 +146,7 @@ export interface RunnerJobSpec {
                 nodeSelector?: Record<string, string>;
                 tolerations?: Record<string, unknown>[];
                 affinity?: Record<string, unknown>;
-                /** The gate and service sidecars (issue #773), or the reclaim group's release pass (issue #814). */
+                /** The gate and service sidecars (issue #773). */
                 initContainers?: RunnerPodContainer[];
                 /** The agent, the supervisor beside it and, for a run that exports its transcript, the exporter. */
                 containers: RunnerPodContainer[];
@@ -266,6 +268,7 @@ function supervisorContainer(
         volumeMounts: [
             taskMount(),
             ...mailboxesOf(group.reviewing).map((box) => mailboxMount(box, 'rw')),
+            bindingMount,
             ...serviceRestartMounts(group.services),
         ],
     };
@@ -416,27 +419,19 @@ function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
 /**
  * The continuous claude-code transcript exporter (`claude-export.cjs`), the third container of the
  * pod: beside the agent and under the supervisor, so a kill of the agent leaves it running to drain
- * what the agent wrote — the pod only ends once the supervisor has had it close its manifests. The
- * control URL and its own export-only token come from the attempt's Secret BY REFERENCE, under the
- * names the script reads; it
+ * what the agent wrote — the pod only ends once the supervisor has had it close its manifests. It
+ * holds no credential: it sends through the supervisor's relay socket in their shared mailbox. It
  * mounts the member's workspace (the transcripts, its own cursor files) and the one mailbox it
  * shares with the supervisor.
  */
 function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string): RunnerPodContainer {
-    const { literals, control } = exportEnv(config, job, startedAt);
     return {
         name: EXPORTER_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
         ...containerHardeningField(),
         command: ['node', '-e', claudeExportScript],
-        env: [
-            ...literals.map(([name, value]) => ({ name, value })),
-            ...control.map(({ name, source }) => ({
-                name,
-                valueFrom: { secretKeyRef: { name: secretName(job), key: source } },
-            })),
-        ],
+        env: exportEnv(config, job, startedAt).map(([name, value]) => ({ name, value })),
         volumeMounts: [taskMount(), mailboxMount(MAILBOXES.export, 'rw')],
     };
 }
@@ -634,7 +629,12 @@ export function runnerJobSpec(
                         }),
                         ...(exporting ? [exporterContainer(config, job, startedAt)] : []),
                     ],
-                    volumes: [...volumes, ...mailboxVolumes(reviewing), ...servicesFields.volumes],
+                    volumes: [
+                        ...volumes,
+                        ...mailboxVolumes(reviewing),
+                        bindingVolume(secretName(job)),
+                        ...servicesFields.volumes,
+                    ],
                 },
             },
         },

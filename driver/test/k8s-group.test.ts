@@ -56,6 +56,7 @@ const job = {
     supervisorEnv: {
         [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130',
         [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN,
+        [SUPERVISOR_ENV.agentToken]: 'tok-agent',
         [SUPERVISOR_ENV.exportToken]: 'tok-export',
     },
 } as BoardJob;
@@ -81,6 +82,8 @@ function cluster(
         groupJob?: () => K8sResponse | undefined;
         podStatus?: unknown;
         podSpec?: unknown;
+        /** The pod list a read answers, read by read; a status code is a list that did not answer. */
+        podItems?: (read: number) => unknown[] | number;
     } = {}
 ) {
     const created: Created = { jobs: [], secrets: [], deletedJobs: [], deletedSecrets: [] };
@@ -89,6 +92,7 @@ function cluster(
     const configmaps = `/api/v1/namespaces/${NAMESPACE}/configmaps`;
     const secrets = `/api/v1/namespaces/${NAMESPACE}/secrets`;
     const serveVolumes = taskVolumeServer(NAMESPACE);
+    let podReads = 0;
     const request: K8sRequest = async (method: K8sMethod, path: string, body?: unknown) => {
         const volume = serveVolumes(method, path, body);
         if (volume) return volume;
@@ -153,6 +157,11 @@ function cluster(
         // The sweep's selector lists, and the pod discovery by `job-name`.
         if (path.includes('labelSelector')) {
             if (!decodeURIComponent(path).includes('job-name=')) return json({ items: [] });
+            if (options.podItems) {
+                podReads += 1;
+                const items = options.podItems(podReads);
+                return typeof items === 'number' ? { status: items, body: '' } : json({ items });
+            }
             if (options.podStatus) {
                 const spec = options.podSpec ? { spec: options.podSpec } : {};
                 return json({ items: [{ metadata: { name: 'pod-1' }, ...spec, status: options.podStatus }] });
@@ -192,7 +201,7 @@ function cluster(
         }
         return { status: 404, body: '{}' };
     };
-    return { request, created, claims };
+    return { request, created, claims, podReads: () => podReads };
 }
 
 /** The supervised-step channel: records every step, answers each by kind, and reports on demand. */
@@ -375,6 +384,66 @@ describe('the task group of one attempt', () => {
         // No step was submitted to a supervisor that never came up, and the group is gone.
         expect(s.submitted).toEqual([]);
         expect(api.created.deletedJobs).toEqual([runnerJobName(job)]);
+    });
+
+    // #924: a pod lost before the supervisor's first contact ends the attempt at once, not at the bound.
+    describe('a task pod lost before its supervisor made contact', () => {
+        const starting = { metadata: { name: 'pod-1' }, status: { phase: 'Pending' } };
+        const disrupted = {
+            metadata: { name: 'pod-1' },
+            status: {
+                phase: 'Failed',
+                conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'EvictionByEvictionAPI' }],
+            },
+        };
+        async function lostSync(podItems: (read: number) => unknown[] | number) {
+            const api = cluster({ podItems });
+            const patched: string[] = [];
+            const request: K8sRequest = async (method, path, body) => {
+                if (method === 'PATCH' && path.includes('/persistentvolumeclaims/')) patched.push(path);
+                return api.request(method, path, body);
+            };
+            const thrown = await runner(request, steps(() => ok(), false).sink)
+                .syncCheckout(job, undefined, SESSION)
+                .then(
+                    () => null,
+                    (e: unknown) => e
+                );
+            return { thrown, patched, reads: api.podReads() };
+        }
+
+        it('is a transient refusal as soon as a pod seen starting is gone, with no volume marked', async () => {
+            const { thrown, patched, reads } = await lostSync((read) => (read < 3 ? [starting] : []));
+
+            expect(thrown).toBeInstanceOf(StartupRefused);
+            expect(thrown).toMatchObject({ startupCause: 'transient', message: expect.stringContaining('was lost') });
+            expect(reads).toBeLessThanOrEqual(4);
+            expect(patched).toEqual([]);
+        });
+
+        it('is a transient refusal as soon as the pod carries a disruption mark', async () => {
+            const { thrown, reads } = await lostSync(() => [disrupted]);
+
+            expect(thrown).toMatchObject({ startupCause: 'transient', message: expect.stringContaining('was lost') });
+            expect(reads).toBeLessThanOrEqual(2);
+        });
+
+        it('counts no pod that was never seen: an empty list before the first pod waits on', async () => {
+            const { thrown, reads } = await lostSync(() => []);
+
+            expect(thrown).toMatchObject({
+                startupCause: 'transient',
+                message: expect.stringContaining('never came up'),
+            });
+            expect(reads).toBeGreaterThan(100);
+        });
+
+        it('counts no unconfirmed read: a list that did not answer is not a pod gone', async () => {
+            const { thrown, reads } = await lostSync((read) => (read < 3 ? [starting] : 500));
+
+            expect(thrown).toBeInstanceOf(Error);
+            expect(reads).toBeGreaterThan(100);
+        });
     });
 
     describe('a task pod held Pending by its volume', () => {

@@ -14,6 +14,13 @@ case "$*" in
     mkdir -p "$WORKDIR/.factory" && echo "${HOSTNAME:-stub}" >"$WORKDIR/.factory/stub-mark"
     ;;
 esac
+# `factory-stub-commit` (issue #829): one empty commit on the task branch, so the publish after the run
+# has something to push; made before any wait, so a driver killed at the wait finds it already there.
+case "$*" in
+*factory-stub-commit*)
+    git -C "$WORKDIR" -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit
+    ;;
+esac
 # `factory-stub-services` (issue #773): the names a task pod's hosts file puts on its loopback, then
 # a TCP connect to each declared service of the services lane, retried while one still boots.
 reach() { # reach <host> <port>
@@ -86,12 +93,17 @@ for arg in "$@"; do
         # `factory-stub-review` (issue #774): ask the declared `audit` reviewer for key `rv-k` on the
         # control endpoint and wait for its verdict. A re-claimed run asks the same key again.
         node -e '
-const base = process.env.BELLOWS_CONTROL_URL.replace(/\/$/, "");
-const headers = { authorization: "Bearer " + process.env.BELLOWS_CONTROL_TOKEN, "content-type": "application/json" };
-const call = async (method, path, body) => {
-    const r = await fetch(base + path, { method, headers, body });
-    return { status: r.status, text: await r.text() };
-};
+const http = require("node:http");
+const socketPath = process.env.FACTORY_CTL_OUT + "/control.sock";
+const call = (method, path, body) => new Promise((resolve, reject) => {
+    const req = http.request({ socketPath, method, path, headers: { "content-type": "application/json" } }, (res) => {
+        let text = "";
+        res.on("data", (c) => { text += c; });
+        res.on("end", () => resolve({ status: res.statusCode, text }));
+    });
+    req.on("error", reject);
+    req.end(body);
+});
 (async () => {
     let last = await call("POST", "/review", JSON.stringify({ key: "rv-k", profile: "audit" }));
     console.log("review-request=" + last.status);
@@ -108,13 +120,25 @@ const call = async (method, path, body) => {
         echo 'agent survived'
         break
         ;;
+    *factory-stub-pass-*)
+        # The pass of an agent that must not wait (issue #829): its ready file, so a lane counts the runs.
+        release="${arg##*factory-stub-pass-}"
+        release="${release%%[!a-zA-Z0-9_./-]*}"
+        [ -n "$release" ] || exit 1
+        : > "$release.ready-${HOSTNAME:-stub}"
+        echo "passed in ${HOSTNAME:-stub}"
+        break
+        ;;
     *factory-stub-wait-*)
         release="${arg##*factory-stub-wait-}"
         release="${release%%[!a-zA-Z0-9_./-]*}"
         [ -n "$release" ] || exit 1
         : > "$release.ready-${HOSTNAME:-stub}"
         echo "waiting in ${HOSTNAME:-stub}"
-        deadline=$(($(date +%s) + ${FACTORY_STUB_TIMEOUT_SECONDS:-120}))
+        wait_seconds="${FACTORY_STUB_TIMEOUT_SECONDS:-120}"
+        # `factory-stub-patient` (issue #829): a takeover case holds the agent past a kubelet Secret refresh.
+        case "$*" in *factory-stub-patient*) wait_seconds=900 ;; esac
+        deadline=$(($(date +%s) + wait_seconds))
         while [ ! -f "$release" ]; do
             if [ -n "$stoppable" ] && [ -f "${FACTORY_CTL_IN:-/nonexistent}/stop" ]; then
                 echo "stopped in ${HOSTNAME:-stub}"

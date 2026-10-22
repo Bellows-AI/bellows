@@ -15,6 +15,7 @@ import type {
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board.js';
+import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
@@ -30,6 +31,7 @@ import type { ReviewRelay } from '../../src/review-control.js';
 import type { SnapshotResult } from '../../src/review-snapshot.js';
 import type {
     AdoptedRun,
+    LiveRun,
     DeadService,
     GateSizing,
     ReviewerSizing,
@@ -38,7 +40,7 @@ import type {
     Runner,
     RuntimeSample,
 } from '../../src/runner.js';
-import type { StepResult } from '../../src/supervisor-contract.js';
+import type { StepResult, SupervisorBinding } from '../../src/supervisor-contract.js';
 
 export const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -72,6 +74,17 @@ export const job = (n: number, resumeSessionId: string | null = null): BoardJob 
 
 export interface BoardStub extends Board {
     completed: ({ id: string } & Parameters<Board['complete']>[1])[];
+    /** Every phase checkpoint the loop wrote (issue #829), in write order. */
+    phaseCheckpointsWritten: {
+        id: string;
+        leaseToken: string;
+        runClaimSeq: number;
+        phase: CheckpointPhase;
+        tree: string | null;
+        result: unknown;
+    }[];
+    /** The run claim sequence of every phase checkpoint read the loop made, with the job's lease token. */
+    phaseCheckpointReads: { id: string; leaseToken: string; runClaimSeq: number }[];
     /** The final envelopes the loop staged before each verdict (issue #821). */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
@@ -105,6 +118,8 @@ export function stubBoard(
     jobs: BoardJob[],
     options: {
         lease?: LeaseState;
+        /** A lease that goes while the attempt runs: the first heartbeat after this answers true loses it. */
+        leaseGone?: () => boolean;
         progressLease?: LeaseState;
         failProgress?: boolean;
         idleBeforeStop?: number;
@@ -129,6 +144,10 @@ export function stubBoard(
         artifactsDown?: boolean;
         /** The board's answer to an interruption report (issue #792); held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
+        /** The board's answer to a phase checkpoint read (issue #829); null (unreadable) when absent. */
+        phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
+        /** The board's answer to a phase checkpoint write (issue #829); `throw` models a board that throws. */
+        phaseCheckpointWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
         /** The board's answer to a staged conclusion (issue #821); held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
@@ -143,6 +162,8 @@ export function stubBoard(
     const board: BoardStub = {
         completed: [],
         staged: [],
+        phaseCheckpointsWritten: [],
+        phaseCheckpointReads: [],
         sessions: [],
         progressed: [],
         suspended: [],
@@ -223,7 +244,7 @@ export function stubBoard(
         },
         async heartbeat() {
             board.beats += 1;
-            if (options.lease === 'lost') return 'lost';
+            if (options.lease === 'lost' || options.leaseGone?.()) return 'lost';
             if (options.removedOnBeat) return 'removed';
             const verdict: HeartbeatVerdict = { result: 'held', cancelRequested: options.cancelRequested ?? false };
             return verdict;
@@ -250,6 +271,21 @@ export function stubBoard(
         async githubCredential(claimed) {
             board.githubAsks.push(claimed.id);
             return options.githubToken ?? null;
+        },
+        async phaseCheckpoint(claimed, checkpoint) {
+            board.phaseCheckpointsWritten.push({
+                id: claimed.id,
+                leaseToken: claimed.leaseToken,
+                ...checkpoint,
+                result: structuredClone(checkpoint.result),
+            });
+            if (options.phaseCheckpointWrite === 'throw') throw new Error('the board is down');
+            return options.phaseCheckpointWrite ?? 'ok';
+        },
+        async phaseCheckpoints(claimed, runClaimSeq, signal) {
+            board.phaseCheckpointReads.push({ id: claimed.id, leaseToken: claimed.leaseToken, runClaimSeq });
+            const answer = options.phaseCheckpoints ?? null;
+            return typeof answer === 'function' ? answer(signal) : answer;
         },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });
@@ -299,7 +335,7 @@ export function stubRunner(
             control: ReviewControl
         ) => Promise<StepResult>;
         /** A finished runner of an earlier claim to adopt (issue #792); absent finds none. */
-        adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | null>;
+        adopt?: (job: BoardJob, signal?: AbortSignal) => Promise<AdoptedRun | LiveRun | null>;
     } = {}
 ): Runner & {
     killed: string[];
@@ -325,6 +361,10 @@ export function stubRunner(
     reviewerResized: ReviewerSizing[];
     /** Every review the loop ran in a caller's group (issue #774). */
     reviewed: { caller: BoardJob; review: BoardJob; session: RunSession | null }[];
+    /** Every holder binding the loop wrote to a group's supervisor (#829), in order. */
+    rebound: { group: BoardJob; binding: SupervisorBinding }[];
+    /** Every attempt the loop abandoned to the next holder. */
+    abandoned: BoardJob[];
 } {
     const { sample = null, publish = null, sync = null, syncError = null, reclaim = null } = options;
     const reclaimQueue = options.reclaimSequence ? [...options.reclaimSequence] : [];
@@ -439,6 +479,14 @@ export function stubRunner(
         },
         /** Every review the loop ran in a caller's group (issue #774), replaced by a test that scripts one. */
         reviewed: [] as { caller: BoardJob; review: BoardJob; session: RunSession | null }[],
+        rebound: [] as { group: BoardJob; binding: SupervisorBinding }[],
+        abandoned: [] as BoardJob[],
+        abandon(abandonedJob: BoardJob): void {
+            runner.abandoned.push(abandonedJob);
+        },
+        async rebind(group: BoardJob, binding: SupervisorBinding): Promise<void> {
+            runner.rebound.push({ group, binding });
+        },
         async runReview(
             caller: BoardJob,
             review: ReviewClaim,
@@ -530,6 +578,7 @@ export function stubGateStack(
         killsRaised: [] as string[],
         deadNotes: [] as [string, string | null][],
         controlClosed: [] as string[],
+        controlDeparted: [] as { token: string; forMs: number }[],
         /** The real control state per open token (issue #226): questions run through the real code. */
         controls: new Map<string, ControlEntry>(),
         acquired: [] as string[],
@@ -612,6 +661,11 @@ export function stubGateStack(
             },
             closeControl: (token: string) => {
                 stack.controlClosed.push(token);
+                const control = stack.controls.get(token);
+                for (const [key, entry] of stack.controls) if (entry === control) stack.controls.delete(key);
+            },
+            departControl: (token: string, forMs: number) => {
+                stack.controlDeparted.push({ token, forMs });
                 const control = stack.controls.get(token);
                 for (const [key, entry] of stack.controls) if (entry === control) stack.controls.delete(key);
             },

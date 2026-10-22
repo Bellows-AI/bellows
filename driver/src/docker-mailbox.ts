@@ -1,7 +1,7 @@
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
 import { ROLE_LABEL } from './labels.js';
-import { AGENT_CONTAINER, type Mailbox, MAILBOXES } from './supervisor-contract.js';
+import { AGENT_CONTAINER, type Mailbox, MAILBOXES, SUPERVISOR_BINDING } from './supervisor-contract.js';
 import { agentMailboxEnv } from './supervisor-plan.js';
 
 /**
@@ -30,6 +30,9 @@ export const groupNetworkArgs = (job: BoardJob): string[] => ['--network', `cont
 
 /** The marker volume one reason the driver ended the attempt for is recorded on (`termination.ts`), attempt-scoped by name. */
 export const killMarkName = (job: BoardJob, reason: string): string => `factory-kill-${reason}-${idsOf(job)}`;
+
+/** The supervisor-only binding volume (#829), attempt-scoped by name like the mailboxes. */
+export const bindingVolumeName = (job: BoardJob): string => `factory-${SUPERVISOR_BINDING.volume}-${idsOf(job)}`;
 
 /** One mailbox's volume, attempt-scoped by name like every container: a sibling attempt's can never be this one's. */
 export const ctlVolumeName = (job: BoardJob, box: Mailbox): string => `factory-${box.name}-${idsOf(job)}`;

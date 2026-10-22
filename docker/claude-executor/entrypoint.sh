@@ -216,15 +216,33 @@ on_term() {
 }
 trap on_term TERM INT
 
-# The run-control proxy (issue #814): the agent's tools run as their own uid and never hold the
-# run-control token. The proxy keeps it and serves the two routes the baked skills call on a socket
-# a tool can reach; the token leaves this shell's environment before the CLI starts. A sibling like
-# the reporter, stdio discarded.
-if [ -n "${BELLOWS_CONTROL_URL:-}" ] && [ -n "${BELLOWS_CONTROL_TOKEN:-}" ]; then
+# Stops one helper and reaps it. A helper TERMed while still between its fork and exec runs this
+# shell's handler and swallows the signal, so a guard sends TERM again and then KILL; a bare `wait`
+# held PID 1, and the run, forever.
+stop_helper() {
+    [ -n "$1" ] || return 0
+    kill -TERM "$1" 2>/dev/null || true
+    (
+        sleep 1
+        kill -TERM "$1" 2>/dev/null
+        sleep 2
+        kill -KILL "$1" 2>/dev/null
+    ) &
+    _guard=$!
+    wait "$1" 2>/dev/null || true
+    kill -KILL "$_guard" 2>/dev/null || true
+    wait "$_guard" 2>/dev/null || true
+}
+
+# The run-control proxy (issue #814): the agent's tools run as their own uid and hold no run-control
+# token. The proxy serves the two routes the baked skills call on a socket a tool can reach and
+# forwards them to the supervisor's relay socket in FACTORY_CTL_OUT, where the supervisor attaches
+# the agent's token (#829); no token is ever in this shell's environment. A sibling like the
+# reporter, stdio discarded.
+if [ -n "${FACTORY_CTL_OUT:-}" ] && [ -S "$FACTORY_CTL_OUT/control.sock" ]; then
     node /usr/local/bin/control-proxy.cjs >/dev/null 2>&1 &
     PROXY_PID=$!
 fi
-unset BELLOWS_CONTROL_TOKEN
 
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs >/dev/null 2>&1 &
 REPORTER_PID=$!
@@ -285,16 +303,10 @@ set -e
 
 # The run is over: stop the sampler and reap it before the close-time sample, which is the
 # last thing that runs.
-kill -TERM "$REPORTER_PID" 2>/dev/null || true
-wait "$REPORTER_PID" 2>/dev/null || true
-kill -TERM "$CTL_PID" 2>/dev/null || true
-wait "$CTL_PID" 2>/dev/null || true
-if [ -n "$PROXY_PID" ]; then
-    kill -TERM "$PROXY_PID" 2>/dev/null || true
-    wait "$PROXY_PID" 2>/dev/null || true
-fi
-kill -TERM "$PROGRESS_PID" 2>/dev/null || true
-wait "$PROGRESS_PID" 2>/dev/null || true
+stop_helper "$REPORTER_PID"
+stop_helper "$CTL_PID"
+stop_helper "$PROXY_PID"
+stop_helper "$PROGRESS_PID"
 rm -rf "$PROGRESS_DIR"
 node --disable-warning=ExperimentalWarning /usr/local/bin/branch-reporter.cjs --once >/dev/null 2>&1 || true
 # The supervisor's word that the agent is over, written last and atomically: the exit status the

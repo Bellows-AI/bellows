@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { boardScan } from './job-context.js';
 import {
     handleClaimJob,
@@ -41,6 +41,7 @@ import {
 } from './job-handlers-artifacts.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
+import { phaseCheckpointRoutes } from './job-handlers-phase-checkpoints.js';
 import { registerRestoreRoutes } from './job-handlers-restore.js';
 import { BODY_LIMIT, CONCLUSION_BODY_LIMIT, CONTROL_BODY_LIMIT, QUESTION_BODY_LIMIT } from './job-limits.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -48,6 +49,20 @@ import type { OrgRegistry } from '../orgs.js';
 export interface JobRouteDeps {
     /** The per-org runtimes; the store a request touches is the CALLER's org's. */
     orgs: OrgRegistry;
+}
+
+/** The worktree-reclaim queue's routes: the driver's claim, ack and renew, and the reaper's holds lookup (issue #829). */
+function reclaimRoutes(app: FastifyInstance, orgs: OrgRegistry): void {
+    const firstReclaimClaim = boardScan();
+    app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)
+    );
+    app.post('/api/reclaims/:id/ack', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimsAck(orgs, request, reply)
+    );
+    app.post('/api/reclaims/:id/renew', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+        handleReclaimsRenew(orgs, request, reply)
+    );
 }
 
 /**
@@ -61,7 +76,6 @@ export const jobRoutes =
     ({ orgs }: JobRouteDeps): FastifyPluginAsync =>
     async (app) => {
         const firstJobClaim = boardScan();
-        const firstReclaimClaim = boardScan();
 
         app.post('/api/jobs', { bodyLimit: BODY_LIMIT }, (request, reply) => handleCreateJob(orgs, request, reply));
 
@@ -127,21 +141,14 @@ export const jobRoutes =
         app.post('/api/jobs/:id/wait/poke', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleWaitPoke(orgs, request, reply)
         );
-        app.post('/api/reclaims/claim', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimsClaim(orgs, firstReclaimClaim, request, reply)
-        );
-        app.post('/api/reclaims/:id/ack', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimsAck(orgs, request, reply)
-        );
-        app.post('/api/reclaims/:id/renew', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
-            handleReclaimsRenew(orgs, request, reply)
-        );
+        reclaimRoutes(app, orgs);
         app.post('/api/jobs/:id/complete', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleCompleteJob(orgs, request, reply)
         );
         app.post('/api/jobs/:id/conclusion', { bodyLimit: CONCLUSION_BODY_LIMIT }, (request, reply) =>
             handleConclusion(orgs, request, reply)
         );
+        phaseCheckpointRoutes(app, orgs);
         // The agent's questions (050, issue #531): the driver's reports are worker
         // routes; the answer is a person's, and no organization token reaches it.
         app.post('/api/jobs/:id/question', { bodyLimit: QUESTION_BODY_LIMIT }, (request, reply) =>
