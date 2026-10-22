@@ -40,6 +40,7 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     resizeReviewer: 'both',
     runReview: 'both',
     rebind: 'both',
+    supervisorServing: 'both',
     abandon: 'both',
     releaseFence: 'kubernetes',
 };
@@ -89,7 +90,7 @@ describe('the Runner contract', () => {
             for (const name of Object.keys(wrapped)) await wrapped[name]?.(taken);
 
             // The runner-level members that name the claim (not a group) keep the job as the loop holds it.
-            const claimScoped = ['adopt', 'syncCheckout', 'reclaimWorktree', 'rebind'];
+            const claimScoped = ['adopt', 'syncCheckout', 'reclaimWorktree', 'rebind', 'supervisorServing'];
             for (const [name, job] of Object.entries(seen)) {
                 if (claimScoped.includes(name)) expect(job, name).toBe(taken);
                 else expect(job, name).toEqual(ownGroup(taken));
