@@ -36,4 +36,17 @@ describe('takeover gremlins', () => {
         },
         Math.max(120_000, RUNS * 1_000)
     );
+
+    // A host too loaded to play the faults on time runs a drain's handover and a kill of the same driver
+    // together (#932): the kill leaves the handover nothing to settle on, and the run must still end.
+    it('a driver killed while it hands over does not hold the run', async () => {
+        const overlap = [
+            { at: 50, kind: 'handover' as const, restartMs: 186 },
+            { at: 50, kind: 'killDriver' as const, restartMs: 403 },
+        ];
+        const timeBox = new Promise<null>((resolve) => setTimeout(() => resolve(null), 40_000));
+        const verdict = await Promise.race([runGremlin(118, { faults: overlap }), timeBox]);
+        expect(verdict, 'the run did not end within its bound').not.toBeNull();
+        expect(verdict?.violations).toEqual([]);
+    }, 60_000);
 });

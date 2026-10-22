@@ -216,7 +216,9 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
             if (f.kind === 'handover') {
                 say(`driver ${d.name} drains (handover) at row claim ${sim.row.claimSeq} ${sim.row.status}`);
                 if (sim.row.status === 'running') allowed.add(sim.row.claimSeq);
-                await d.loop.handover('the driver is draining');
+                // A kill of this driver meanwhile (a host too loaded to space the faults) ends the wait: its calls never return.
+                await Promise.race([d.loop.handover('the driver is draining'), d.killed]);
+                if (d.dead) return;
             } else if (sim.row.status === 'running') {
                 required.add(sim.row.claimSeq);
             }
