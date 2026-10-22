@@ -8,7 +8,7 @@
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { JobLeaseInfo } from './lease-types.js';
-import type { AdmissionBudgets, ClaimObserver, OrgDemand } from './job-store-admission.js';
+import type { AdmissionBudgets, ClaimObserver, ClaimOptions, OrgDemand } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -820,23 +820,6 @@ export interface JobArtifactScope {
     root: string;
     /** The row's newest claim sequence; a claim above it has not happened. */
     claimSeq: number;
-}
-
-/**
- * What a claim that returned null reports, for the cross-org scan (issue #831): `global` is set when the global
- * admission budget refused it new work, so no later board of the same poll may admit any either.
- */
-export interface ClaimRefusal {
-    global: boolean;
-}
-
-/**
- * How a claim is made (issue #831). `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
- * already, and never admits a queued row; `refusal` is where the claim reports a global budget refusal.
- */
-export interface ClaimOptions {
-    takeoverOnly?: boolean;
-    refusal?: ClaimRefusal;
 }
 
 export interface JobStore extends PhaseCheckpointStore {

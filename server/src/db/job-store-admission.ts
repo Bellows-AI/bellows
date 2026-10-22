@@ -246,3 +246,20 @@ export interface ClaimObserver {
     /** The settle passes a claim runs before it looks for a candidate. */
     sweep(seconds: number): void;
 }
+
+/**
+ * What a claim that returned null reports, for the cross-org scan (issue #831): `global` is set when the global
+ * admission budget refused it new work, so no later board of the same poll may admit any either.
+ */
+export interface ClaimRefusal {
+    global: boolean;
+}
+
+/**
+ * How a claim is made (issue #831). `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
+ * already, and never admits a queued row; `refusal` is where the claim reports a global budget refusal.
+ */
+export interface ClaimOptions {
+    takeoverOnly?: boolean;
+    refusal?: ClaimRefusal;
+}
