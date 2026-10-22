@@ -2933,6 +2933,17 @@ if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
 else
     ok 'the restart runner is running'
     await_blocked "$restart_pod" "$svc_release" && ok 'the restart agent is blocked at its barrier' || give_up
+    # pid 1 is the image's entrypoint until postgres is up, and it drops a SIGTERM it has no handler for.
+    # TCP, not the socket: the init-time server listens on the socket alone.
+    pg_ready=""
+    for _ in $(seq 1 120); do
+        kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" --request-timeout=10s -- pg_isready -q -h 127.0.0.1 >/dev/null 2>&1 && {
+            pg_ready=1
+            break
+        }
+        sleep 1
+    done
+    [ -n "$pg_ready" ] || bad 'the postgres sidecar accepts connections before it is ended' 'not ready within 120s'
     kubectl exec "$restart_pod" -c svc-postgres -n "$NAMESPACE" -- sh -c 'kill 1' >/dev/null 2>&1
     died=""
     for _ in $(seq 1 60); do
