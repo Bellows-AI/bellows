@@ -2159,6 +2159,9 @@ const viaSocket = (
             }
         );
         request.on('error', reject);
+        // A refused oversize body (413) closes the socket while the body is still being written: the
+        // late EPIPE lands on the socket after the answer settled this promise.
+        request.on('socket', (socket) => socket.on('error', () => {}));
         onRequest?.(request);
         request.end(body);
     });
