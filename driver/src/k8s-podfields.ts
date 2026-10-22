@@ -184,7 +184,7 @@ export function podHardeningField(): { seccompProfile: { type: 'RuntimeDefault' 
  *     without asking anyone, and an agent run needs none of them: it reads, writes and compiles
  *     inside its own worktree. Dropping them all is what makes `CAP_NET_RAW` (ARP-spoofing a
  *     neighbour pod, which no NetworkPolicy sees) and `CAP_DAC_OVERRIDE` (reading past the file
- *     modes on the shared workspaces claim) unavailable rather than merely unused.
+ *     modes on the task volume) unavailable rather than merely unused.
  *   - `allowPrivilegeEscalation: false` — without it a setuid binary inside the image re-acquires
  *     what the drop removed, and the drop is decoration. The two are one control.
  *
@@ -234,7 +234,7 @@ export interface RunnerMount {
 }
 
 /**
- * A runner pod's volume: the workspaces claim, the attempt Secret its telemetry config rides, or
+ * A runner pod's volume: the task volume claim, the attempt Secret its telemetry config rides, or
  * one of the supervisor's mailboxes (an emptyDir — transient control, never finished work).
  */
 export type RunnerVolume =

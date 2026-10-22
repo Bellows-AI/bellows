@@ -1,7 +1,6 @@
 # The state a local `factory` release runs against, in its own release so the app release can be
-# uninstalled and reinstalled without taking the database or the checkouts with it. Local only:
-# a real deployment points the factory chart's `database.url` at a managed database and lets the
-# factory chart create its own ReadWriteMany workspaces claim. Nothing here is a production shape.
+# uninstalled and reinstalled without taking the database with it. Local only: a real deployment
+# points the factory chart's `database.url` at a managed database. Nothing here is a production shape.
 
 postgres:
     # The same plain Postgres container compose runs. The key keeps the name `postgres`
@@ -13,10 +12,3 @@ postgres:
     database: factory_dev
     storageSize: 10Gi
     resources: {}
-
-# One node, so ReadWriteOnce: the local provisioner cannot serve ReadWriteMany.
-workspaces:
-    storageSize: 20Gi
-    accessModes:
-        - ReadWriteOnce
-    storageClass: ''

@@ -22,7 +22,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 | Checkout-claim ownership: each acquisition holds the claim under its own token, and a claim is deleted only once every group of its holder is confirmed ended | `driver/src/k8s-fence.ts` (`releaseClaimAfterGroupEnd`), `loop-reclaim.ts` | `driver/test/k8s.test.ts`, `k8s-fence.test.ts`, `scripts/test-k8s.sh` |
 | Every `EXECUTOR`, `K8S_*`, `RUNNER_*` and `GATE_*` variable with its boot validation; the app chart (dashboard, driver, collector, RBAC, PDBs, Ingress, `LimitRange`) | `driver/src/config.ts`, `charts/factory/` ([README](../charts/factory/README.md)) | `driver/test/config.test.ts`, `scripts/test-k8s.sh` |
 | Admission policies fencing the driver (one capability add: `SETUID`/`SETGID` on a runner Job's `agent`; two updates: a task volume claim's unschedulable label, an attempt Secret's holder binding); runner network confinement | `charts/factory/templates/driver-admission.yaml`, `runner-networkpolicy.yaml`, `driver/src/k8s-podfields.ts` | `driver/test/k8s-admission.test.ts`, `scripts/test-k8s.sh` (`--cluster`, `--netpol`) |
-| Local Postgres, the workspaces claim, `.env`-fed local values, `make start`/`reset`; the kind cluster and registry, `make cluster`/`cleanup` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `scripts/kind-cluster.sh`, `Makefile` | `scripts/test-k8s.sh`, `driver/test/k8s-lane.test.ts`, `core/test/makefile.kind-cluster.test.ts` |
+| Local Postgres, `.env`-fed local values, `make start`/`reset`; the kind cluster and registry, `make cluster`/`cleanup` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `scripts/kind-cluster.sh`, `Makefile` | `scripts/test-k8s.sh`, `driver/test/k8s-lane.test.ts`, `core/test/makefile.kind-cluster.test.ts` |
 
 ## Invariants
 
@@ -32,7 +32,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - **Credentials go by reference, never by value**, and **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`). Both pinned in `driver/test/k8s.test.ts`.
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every
-  workspaces mount uses `workspaceMount()`'s `<org>/<user id>` subPath (the reviewer's home: its `REVIEWER_TREE_DIR`), `hostAliases` map only to
+  task volume mount is whole or at the reviewer's home (`REVIEWER_TREE_DIR`), `hostAliases` map only to
   `127.0.0.1` and only the `gate`, `reviewer` and `svc-` sidecars restart — or admission refuses it. `driver/test/k8s-admission.test.ts`.
 - **The agent container's env holds no GitHub token and no route to the step channel**; the claim env and the
   board's GitHub token are a step's own `env`, and the agent's helper caches its own in a Memory `emptyDir`.
@@ -104,26 +104,19 @@ Each is silent when wrong. Walk: [eks-runbook.md](eks-runbook.md); measured clai
 - **metrics-server is not installed by default** (vitals read null), and **`blockedCidrs` blocks the VPC too** — a
   runner that must reach a VPC endpoint needs that host in `isolation.allowedCidrs` as a /32.
 
-### The workspaces volume
+### The task volume
 
-The chart defaults (`ReadWriteMany`, `storageClass: ''`) fit kind and nothing on EKS. It needs:
+The driver mints one claim per root thread. The chart's default (`taskVolume.storageClass: ''`) fits kind and
+nothing on EKS, whose default class is not an EBS class the CSI add-on serves. It needs:
 
-1. **The EFS CSI driver, running** — controller bound to an IAM role by IRSA or EKS Pod Identity. Check the
-   controller pods, **never for the `CSIDriver` object**.
-2. **A mount target in every availability zone the nodes run in.**
-3. **A StorageClass owned by uid 1000** — `provisioningMode: efs-ap`, `directoryPerms: "0775"`, `uid: "1000"`,
-   `gid: "1000"`; then `workspaces.storageClass`.
+1. **The EBS CSI driver add-on, running** — its controller bound to an IAM role by IRSA or EKS Pod Identity.
+2. **A StorageClass with `provisioner: ebs.csi.aws.com`**, `volumeBindingMode: WaitForFirstConsumer`, `type: gp3`
+   and `reclaimPolicy: Delete`; then `taskVolume.storageClass`. The operator creates it ([eks-runbook.md](eks-runbook.md)).
 
-**Only the driver's task pods set `fsGroup`** (`core/test/docs.eks-storage.test.ts`), for the block-backed task
-volume; the workspaces claim is mounted by the dashboard alone, and on an RWX NFS mount
-the access point's POSIX user is what makes the tree writable. Dynamic provisioning always applies
-identity enforcement, and a class omitting `uid`/`gid` draws from the driver's allocation range.
-
-That contract was **observed on a real EKS cluster** — eu-central-1, v1.34, **2026-09-30**:
-`Uid 1000` / `Permissions 0775`, a cross-zone `subPath` mount over `nfs4`. The chart itself
-has **never been installed on EKS**. The single-AZ `ReadWriteOnce` fallback needs
-`runner.nodeSelector`/`tolerations`/`affinity`; without them a driver-specced pod has no scheduling knob
-(admission refuses `nodeName`).
+The volume is zonal: its pods run in the zone it was created in, and a zone with no capacity ends the task as
+`factory.task-unschedulable`. **Only the driver's task pods set `fsGroup`** (`core/test/docs.eks-storage.test.ts`),
+which is what makes the block volume writable by uid 1000. Whether `ReadWriteOncePod` binds on the EBS CSI driver
+has **never been observed**, nor has the chart **been installed on EKS**.
 
 ## Isolation: assumptions and residuals
 

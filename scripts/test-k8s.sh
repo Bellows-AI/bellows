@@ -19,7 +19,7 @@
 # generated per run; it never reads the repo's .env.
 #
 # Everything it creates it removes: two helm releases — the app and the local state it runs against
-# (charts/factory-local-state: the database and the workspaces claim) — and the state's claims. The
+# (charts/factory-local-state: the database) — and the state's claim. The
 # images it pushes stay in the cluster's local registry under a per-run tag, as the layer cache the
 # next run's push skips; `make cleanup` removes the registry with the last cluster.
 set -uo pipefail
@@ -62,7 +62,6 @@ RELEASE="factory-k8s-test-$(date +%s)"
 STATE_RELEASE="$RELEASE-state"
 STATE_SETS=(
     --set "database.url=postgres://factory:factory@$STATE_RELEASE-postgres:5432/factory_dev"
-    --set "workspaces.existingClaim=$STATE_RELEASE-workspaces"
 )
 # The chart refuses to render without its auth values, and values-local.yaml carries none (they come
 # from .env through scripts/k8s-local-values.mjs, which this script deliberately never runs). These
@@ -229,16 +228,10 @@ cleanup() {
         kill "$drain_pid" >/dev/null 2>&1
         wait "$drain_pid" >/dev/null 2>&1
     fi
-    # Nodes this run cordoned or drained go back to scheduling, then the shared volume and its directory go.
+    # Nodes this run cordoned or drained go back to scheduling.
     for node in $(cat "${cordoned_file:-/dev/null}" 2>/dev/null); do
         kubectl uncordon "$node" --request-timeout=20s >/dev/null 2>&1
     done
-    if [ -n "${shared_pv:-}" ]; then
-        kubectl delete pv "$shared_pv" --ignore-not-found --wait=false >/dev/null 2>&1
-        for node in ${shared_names:-}; do
-            docker exec "$node" rm -rf "/factory-shared/$RELEASE" >/dev/null 2>&1
-        done
-    fi
     rm -rf "$work"
     end_phase
     printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
@@ -537,7 +530,6 @@ fi
 # the pod identity and no update can put a second writer on it.
 state="$(helm template "$STATE_RELEASE" charts/factory-local-state --namespace "$NAMESPACE")"
 expect_contains 'the state chart names the database service'  "$state" "name: $STATE_RELEASE-postgres"
-expect_contains 'the state chart names the workspaces claim'  "$state" "name: $STATE_RELEASE-workspaces"
 expect_contains 'the state database is a StatefulSet'         "$state" 'kind: StatefulSet'
 expect_contains 'the database claim is the set’s own'         "$state" 'volumeClaimTemplates:'
 expect_contains 'the set is addressed by the database service' "$state" "serviceName: $STATE_RELEASE-postgres"
@@ -553,14 +545,13 @@ vct="$(printf '%s\n' "$state" | sed -n '/^    volumeClaimTemplates:/,$p')"
 expect_contains 'the database claim is the template’s own'      "$vct" 'name: data'
 expect_contains 'the database claim carries the instance label' "$vct" \
     "app.kubernetes.io/instance: $STATE_RELEASE"
-# Exactly one standalone claim — the workspaces one. The database's is the set's, so a second
-# `kind: PersistentVolumeClaim` would mean the old Deployment-era claim came back beside it and
-# helm would delete the data on uninstall again.
+# No standalone claim at all. The database's is the set's, so a `kind: PersistentVolumeClaim` would
+# mean the old Deployment-era claim came back beside it and helm would delete the data on uninstall again.
 claims="$(printf '%s\n' "$state" | grep -c '^kind: PersistentVolumeClaim' || true)"
-if [ "$claims" = 1 ]; then
-    ok 'the workspaces claim is the only standalone claim'
+if [ "$claims" = 0 ]; then
+    ok 'the state chart renders no standalone claim'
 else
-    bad 'the workspaces claim is the only standalone claim' "found $claims"
+    bad 'the state chart renders no standalone claim' "found $claims"
 fi
 
 # --- The review hardening: every item pinned so a revert fails here, not in production ---------
@@ -625,9 +616,6 @@ expect_contains 'the driver gives a released group the default rebind grace' "$(
 selectors="$(grep -A4 'matchLabels:' <<<"$gh_dashboard$gh_driver")"
 expect_not_contains 'selectors carry no version label'  "$selectors" 'app.kubernetes.io/version'
 expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by'
-
-# The checkouts survive `helm uninstall` when the chart created their claim.
-expect_contains 'the chart-created claim is kept on uninstall' "$gh" 'helm.sh/resource-policy: keep'
 
 # The collector always sends the ingest header by reference: with secret.existingSecret the token
 # is in the Secret while telemetry.ingestToken is empty, and a header gated on the value would
@@ -990,7 +978,7 @@ helm lint charts/factory "${GH_SETS[@]}" --set driver.replicas=2 >/dev/null 2>&1
 EKS_SETS=(
     "${GH_SETS[@]}"
     --set global.imageRegistry=ghcr.io/example
-    --set workspaces.storageClass=efs-ap
+    --set taskVolume.storageClass=ebs-gp3
     --set ingress.enabled=true --set ingress.className=alb
     --set 'ingress.hosts={factory.example}'
     --set-string 'ingress.annotations.alb\.ingress\.kubernetes\.io/scheme=internet-facing'
@@ -1012,10 +1000,9 @@ if ! eks="$(eks_render)"; then
 else
     ok 'the EKS-shaped values render as one shape'
 fi
-# The claim and its class: the EFS decision, pinned so a values regression cannot silently drop
-# the cloud install back onto a default class that cannot serve ReadWriteMany.
-expect_contains 'the EKS shape names the EFS storage class on the claim' "$eks" 'storageClassName: "efs-ap"'
-expect_contains 'the EFS claim stays ReadWriteMany' "$eks" '- ReadWriteMany'
+# The chart renders no claim of its own; the class reaches the driver, which mints each task volume.
+expect_not_contains 'the EKS shape renders no claim' "$eks" 'kind: PersistentVolumeClaim'
+expect_contains 'the EKS shape names the EBS task volume class' "$(grep -A1 'name: TASK_VOLUME_STORAGE_CLASS' <<<"$eks")" 'value: "ebs-gp3"'
 # The chart's gate request (issue #507): a gate runs the whole suite, so it requests more than a runner.
 expect_contains 'the gate cpu request renders from the chart value' "$(grep -A1 'name: GATE_CPU_REQUEST' <<<"$eks")" 'value: "2"'
 expect_contains 'the gate memory request renders from the chart value' "$(grep -A1 'name: GATE_MEMORY_REQUEST' <<<"$eks")" 'value: "2Gi"'
@@ -1455,10 +1442,8 @@ echo "installing the releases $STATE_RELEASE and $RELEASE"
 begin_phase deploy
 deploy_started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # A cluster made with LAYOUT=drain (scripts/kind-cluster-drain.yaml) carries nodes, the control plane too,
-# that share one host directory, labelled factory.lane/shared: the workspaces then live on a static ReadWriteMany volume over
-# it, so a task pod can move between those nodes (issue #829). Any other cluster keeps the claim the
-# state chart makes. An unreadable node list refuses the run: it is never "no such nodes".
-SHARED_SETS=()
+# labelled factory.lane/shared, which the drain phase and the board placement below key on. An unreadable
+# node list refuses the run: it is never "no such nodes".
 shared_nodes="$(kubectl get nodes -l factory.lane/shared=true -o name --request-timeout=10s)" || {
     echo 'test-k8s: could not list the cluster nodes'
     exit 1
@@ -1475,32 +1460,6 @@ lane_uncordon() { # lane_uncordon <node> -> schedulable again and dropped from t
     }
 }
 if [ -n "$shared_nodes" ]; then
-    shared_names="${shared_nodes//node\//}"
-    for node in $shared_names; do
-        docker exec "$node" sh -c 'mkdir -p "$1" && chown 1000:1000 "$1"' sh "/factory-shared/$RELEASE" || {
-            echo "test-k8s: could not prepare /factory-shared/$RELEASE on $node"
-            exit 1
-        }
-    done
-    kubectl apply -f - >/dev/null <<EOF || {
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-    name: $RELEASE-shared
-spec:
-    capacity:
-        storage: 20Gi
-    accessModes: [ReadWriteMany]
-    persistentVolumeReclaimPolicy: Retain
-    storageClassName: factory-lane-shared
-    hostPath:
-        path: /factory-shared/$RELEASE
-        type: DirectoryOrCreate
-EOF
-        echo 'test-k8s: could not create the shared workspaces volume'
-        exit 1
-    }
-    shared_pv="$RELEASE-shared"
     # State and app land on the control plane: a drain case moves the driver and the runner, never the board.
     workers="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name --request-timeout=10s)" || {
         echo 'test-k8s: could not list the worker nodes'
@@ -1512,9 +1471,8 @@ EOF
             exit 1
         }
     done
-    SHARED_SETS=(--set workspaces.storageClass=factory-lane-shared --set 'workspaces.accessModes[0]=ReadWriteMany')
 fi
-helm install "$STATE_RELEASE" charts/factory-local-state ${SHARED_SETS[@]+"${SHARED_SETS[@]}"} \
+helm install "$STATE_RELEASE" charts/factory-local-state \
     --set "postgres.image=$POSTGRES_REF" -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install of the state chart failed'
     exit 1
@@ -1765,7 +1723,7 @@ origin_script="$(printf '%s' "$origin_script" | tr '\n' ' ')"
 # On the multi-node layout the origin sits with the board on the control plane: a drain case moves the
 # driver and the runner, and a bare pod on a drained node is neither evicted nor kept (emptyDir).
 origin_place=''
-[ "${#SHARED_SETS[@]}" -eq 0 ] || origin_place='"nodeSelector":{"node-role.kubernetes.io/control-plane":""},
+[ -z "$shared_nodes" ] || origin_place='"nodeSelector":{"node-role.kubernetes.io/control-plane":""},
 "tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}],'
 kubectl run "$RELEASE-origin" -n "$NAMESPACE" --image="$STUB_REF" --restart=Never --command \
     --overrides="$(
@@ -2197,9 +2155,9 @@ expect_contains 'the policy admits a pod mounting a task volume whole' "$task" '
 reviewer_home="$(probe_pod reviewerhome "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /h, subPath: .factory/reviewer}]}]
     volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
 expect_contains 'the policy admits a pod mounting the reviewer home of a task volume' "$reviewer_home" 'created (server dry run)'
-workspaces="$(probe_pod workspaces "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w}]}]
-    volumes: [{name: w, persistentVolumeClaim: {claimName: $STATE_RELEASE-workspaces}}]" | as_driver)"
-expect_contains 'the policy refuses a pod mounting the workspaces claim' "$workspaces" 'may mount only a task volume claim'
+foreign="$(probe_pod foreign "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: w, mountPath: /w}]}]
+    volumes: [{name: w, persistentVolumeClaim: {claimName: $RELEASE-not-a-task}}]" | as_driver)"
+expect_contains 'the policy refuses a pod mounting a claim that is no task volume' "$foreign" 'may mount only a task volume claim'
 other="$(probe_pod othersub "    containers: [{name: c, image: alpine, $HARD_C, volumeMounts: [{name: task, mountPath: /w, subPath: other}]}]
     volumes: [{name: task, persistentVolumeClaim: {claimName: $TASK_CLAIM}}]" | as_driver)"
 expect_contains 'the policy refuses a task volume mounted at any other subPath' "$other" 'only whole or at the reviewer home'
@@ -3518,7 +3476,7 @@ begin_phase drain
 # --- Node drain on a multi-node cluster (issue #829) --------------------------------------------
 #
 # Explicit only: it needs a cluster made with `make cluster LAYOUT=drain` (a control plane and three
-# workers that share the workspaces volume), so no other phase includes it. D1 drains the node the
+# workers labelled factory.lane/shared), so no other phase includes it. D1 drains the node the
 # driver runs on while a runner holds a barrier elsewhere: the replacement driver takes the running
 # agent over. D2 drains the node the runner runs on while the driver survives: the replacement
 # runner resumes the attempt. Each case times, from the start of `kubectl drain`, how long until the

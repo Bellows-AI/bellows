@@ -56,6 +56,5 @@ There is **no opt-out for a declared service or a GATE image**: one needing root
   run as the CLI's uid; context-mode cannot run as the tool uid and is not baked.
 - **Pod Security `restricted` cannot admit the agent container** (the broker holds `CAP_SETUID`/`CAP_SETGID`);
   `baseline` can. There is no `readOnlyRootFilesystem`.
-- **The EFS access point maps both uids to 1000** ([eks-runbook.md](eks-runbook.md)); **the mount is a member
-  boundary, never a task boundary** ([workspace.md](workspace.md));
+- **A task volume is a thread boundary** ([workspace.md](workspace.md));
   **membership is not a sandbox** ([auth.md](auth.md)).
