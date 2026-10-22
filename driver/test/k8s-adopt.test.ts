@@ -385,6 +385,15 @@ describe('a live run (#829)', () => {
         expect(calls.slice(before).filter((call) => call.method === 'POST')).toEqual([]);
     });
 
+    it('forgets the group it recorded exactly when the takeover finds it finished and hands the run back (#928)', async () => {
+        const { deps } = liveWorld();
+        const adopted = await adoptFinishedRunner(deps, adopter, reads());
+        expect(deps.groups?.get(job.leaseToken)).toBeDefined();
+
+        (adopted as { forget(): void }).forget();
+        expect(deps.groups?.get(job.leaseToken)).toBeUndefined();
+    });
+
     describe("the claim of a taken-over group is its holder's, the group the prior lease's", () => {
         const claimDeletes = (calls: { method: string; path: string }[]) =>
             deletes(calls).filter((call) => call.path.includes('/configmaps/'));
