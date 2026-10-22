@@ -2,7 +2,7 @@ import { ERROR_CODES, executorSuspendedMessage, type ExecutorScope } from '@fact
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import { type BoardScanner, boardsFor, executorsFor, storeFor, userReposFor, workflowsFor } from './job-context.js';
+import { type BoardScanner, boardsFor, executorsFor, reposFor, storeFor, workflowsFor } from './job-context.js';
 import { resolveJiraConnection } from './connections.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
@@ -17,9 +17,9 @@ import {
     validateVerdictBody,
 } from './job-field-validation.js';
 import { skillCatalog } from '../skills.js';
-import { bad, body, guard } from './helpers.js';
+import { bad, body, checkReposVisible, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
-import { fullName, UUID } from '../config.js';
+import { UUID } from '../config.js';
 import {
     HTTP_CONFLICT,
     HTTP_NO_CONTENT,
@@ -67,41 +67,41 @@ async function refusedAsSuspended(
 }
 
 /**
- * A task runs against a checkout (issue 263): the repository must be in the caller's own selection
- * AND `ready`. Revalidated here, whatever the browser believed — a deselection or a failed clone
- * between page load and submit is refused, never queued. True when a refusal (or a failed read) has
- * already landed on `reply`. Skipped where no member or repo store exists: the route tests'
- * configuration, as for the suspension check above.
+ * A task runs against a repository: it must be one this board tracks (the org's repo list).
+ * Revalidated here, whatever the browser believed. A miss invalidates the cached list and asks once
+ * more before refusing, so a repo that became visible after the last read is not refused for the
+ * cache's age; a miss while the list read has an error is a 503, never `UNKNOWN_REPO`
+ * (`checkReposVisible`). Follow-up and retry are not re-checked: they inherit the root's repo.
+ * True when a refusal (or a failed read) has already landed on `reply`.
  */
-async function refusedAsNotSynced(
+async function refusedAsUntracked(
     request: FastifyRequest,
     reply: FastifyReply,
-    opts: { userRepos: Awaited<ReturnType<typeof userReposFor>>; repo: string | null; createdBy: string | null }
+    opts: { repos: Awaited<ReturnType<typeof reposFor>>; repo: string | null }
 ): Promise<boolean> {
-    const { userRepos, repo, createdBy } = opts;
-    if (!userRepos || !createdBy) return false;
+    const { repos, repo } = opts;
     if (repo === null) {
-        bad(reply, ERROR_CODES.REPO_REQUIRED, 'Select a synced repository to run this task against.');
+        bad(reply, ERROR_CODES.BAD_REPO, 'repo is required: name the repository the task runs against (owner/name)');
         return true;
     }
-    const selected = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'repo selection read failed'),
-        () => userRepos.list(createdBy)
-    );
-    if (!selected.ok) return true;
-    const row = selected.value.find((candidate) => fullName(candidate) === repo);
-    if (row?.status === 'ready') return false;
-    if (!row) {
-        bad(reply, ERROR_CODES.REPO_REQUIRED, `${repo} is not in your selected repositories.`);
-    } else {
-        bad(
+    if (!repos) return false;
+    const [owner, name] = repo.split('/') as [string, string];
+    const check = async () =>
+        guard(
             reply,
-            ERROR_CODES.REPO_NOT_READY,
-            `${repo} is ${row.status}, not synced yet. Wait for it to finish syncing, then start the task.`,
-            HTTP_CONFLICT
+            (e) => request.log.error({ err: e }, 'repo list read failed'),
+            () => checkReposVisible(repos, [{ owner, name }], { subject: 'the repository' })
         );
+    let checked = await check();
+    if (!checked.ok) return true;
+    if (!checked.value.ok) {
+        repos.invalidate();
+        checked = await check();
+        if (!checked.ok) return true;
     }
+    const verdict = checked.value;
+    if (verdict.ok) return false;
+    bad(reply, verdict.code, verdict.message, verdict.status);
     return true;
 }
 
@@ -173,8 +173,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
     if (await refusedAsSuspended(request, reply, { executorsStore, executor, executorScope, createdBy })) {
         return reply;
     }
-    const userRepos = await userReposFor(orgs, request);
-    if (await refusedAsNotSynced(request, reply, { userRepos, repo, createdBy })) return reply;
+    if (await refusedAsUntracked(request, reply, { repos: await reposFor(orgs, request), repo })) return reply;
     const resolved = await resolveLaunchWorkflow(request, reply, {
         workflowsStore,
         fields,
@@ -210,21 +209,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
             })
     );
     if (!created.ok) return reply;
-    return sendCreated(reply, created.value);
-}
-
-/**
- * The answer to a create. The author's checkout row was `purging` when the insert transaction took
- * its lock (issue #92): a task cannot be queued into a checkout that is being deleted.
- */
-function sendCreated(reply: FastifyReply, created: { id: string; replayed?: boolean } | 'purging') {
-    if (created === 'purging') {
-        return reply.code(HTTP_CONFLICT).send({
-            error: 'The checkout for this task is being deleted from disk',
-            code: ERROR_CODES.PURGE_IN_PROGRESS,
-        });
-    }
-    return sendQueued(reply, created);
+    return sendQueued(reply, created.value);
 }
 
 export async function handleClaimJob(

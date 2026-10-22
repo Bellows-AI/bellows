@@ -66,10 +66,16 @@ export interface ComposerDraft {
 function useListClamps(
     state: ComposerDraftInput,
     update: Update,
-    lists: { repos: Repos; executors: Executors; defaultExecutor: ExecutorChoice | null; workflows: Workflows },
+    lists: {
+        repos: Repos;
+        executors: Executors;
+        executorsLoaded: boolean;
+        defaultExecutor: ExecutorChoice | null;
+        workflows: Workflows;
+    },
     onExecutorClamped: (notice: string) => void
 ) {
-    const { repos, executors, defaultExecutor, workflows } = lists;
+    const { repos, executors, executorsLoaded, defaultExecutor, workflows } = lists;
     const { repo, repoTouched, executor, executorScope, workflow, workflowRepo } = state;
 
     // The FIRST selected repository is the default — the executor precedent: a member who picked
@@ -95,13 +101,12 @@ function useListClamps(
     // A configured executor can be deleted — or demoted, or scope-changed — in Settings while a
     // draft sits here; the select would go blank while `send` still submitted the stale name.
     // Clamp to what exists — back to the resolved default, or an explicit blocked state when
-    // nothing is selectable. Only against an ANSWERED list: the executors ride the same workspace
-    // poll as the repositories, and the empty list the page hands in while that poll is pending
-    // would clamp a restored executor away before its list could name it. The clamp tests the
+    // nothing is selectable. Only against an ANSWERED list: the empty list the page hands in while
+    // the workspace read is pending would clamp a restored executor away before its list could name it. The clamp tests the
     // PAIR — a personal and an org profile may share a name (issue 391).
     useEffect(() => {
         if (
-            repos !== null &&
+            executorsLoaded &&
             executor !== '' &&
             !selectionExists(executors, { name: executor, scope: executorScope })
         ) {
@@ -114,7 +119,7 @@ function useListClamps(
                     : { executor: defaultExecutor.name, executorScope: defaultExecutor.scope }
             );
         }
-    }, [repos, executors, defaultExecutor, executor, executorScope, update, onExecutorClamped]);
+    }, [executorsLoaded, executors, defaultExecutor, executor, executorScope, update, onExecutorClamped]);
 
     // Same for the repository: a deselection must not survive invisibly in the draft and stamp a
     // task with a repository the member no longer works in. Clamp to what exists — the first
@@ -174,16 +179,22 @@ function useRepoReport(repo: string, onRepoChange: ((repo: string | null) => voi
  */
 function useRestoredNotices(
     restored: ComposerDraftInput | null,
-    lists: { repos: Repos; executors: Executors; workflows: Workflows; defaultExecutor: ExecutorChoice | null }
+    lists: {
+        repos: Repos;
+        executors: Executors;
+        executorsLoaded: boolean;
+        workflows: Workflows;
+        defaultExecutor: ExecutorChoice | null;
+    }
 ): { notices: string[]; dismiss: () => void } {
-    const { repos, executors, workflows, defaultExecutor } = lists;
+    const { repos, executors, executorsLoaded, workflows, defaultExecutor } = lists;
     // Null until the lists it is judged against have answered, then said once.
     const [notices, setNotices] = useState<string[] | null>(restored === null ? [] : null);
     useEffect(() => {
-        if (restored === null || notices !== null || repos === null) return;
+        if (restored === null || notices !== null || repos === null || !executorsLoaded) return;
         const said = restoredDraftNotices(restored, { repos, executors, workflows, defaultExecutor });
         if (said !== null) setNotices(said);
-    }, [restored, notices, repos, executors, workflows, defaultExecutor]);
+    }, [restored, notices, repos, executors, executorsLoaded, workflows, defaultExecutor]);
     return { notices: notices ?? [], dismiss: () => setNotices([]) };
 }
 
@@ -212,6 +223,8 @@ export function queuedTask(
 export function useComposerDraft(input: {
     repos: Repos;
     executors: Executors;
+    /** The workspace read has answered: only then is an absent executor a fact, not a pending list. */
+    executorsLoaded: boolean;
     /**
      * The poll's resolved default executor (issue 391), from the same poll the option lists rode
      * in on — null when nothing is selectable.
@@ -224,7 +237,8 @@ export function useComposerDraft(input: {
     /** The shell's held draft (F1): read once at mount, then kept in step with the state. */
     draftStore: ComposerDraftStore;
 }): ComposerDraft {
-    const { repos, executors, defaultExecutor, workflows, onRepoChange, sending, onSend, draftStore } = input;
+    const { repos, executors, executorsLoaded, defaultExecutor, workflows, onRepoChange, sending, onSend, draftStore } =
+        input;
     const { save, clear } = draftStore;
     // The draft held for this member when the composer mounted — a return from Settings — read
     // exactly once: the state starts from it, and the store follows the state after that.
@@ -256,9 +270,15 @@ export function useComposerDraft(input: {
         (notice: string) => setClampNotices((held) => (held.includes(notice) ? held : [...held, notice])),
         []
     );
-    useListClamps(state, update, { repos, executors, defaultExecutor, workflows }, announceClamp);
+    useListClamps(state, update, { repos, executors, executorsLoaded, defaultExecutor, workflows }, announceClamp);
     useRepoReport(state.repo, onRepoChange);
-    const restoredNotices = useRestoredNotices(restored, { repos, executors, workflows, defaultExecutor });
+    const restoredNotices = useRestoredNotices(restored, {
+        repos,
+        executors,
+        executorsLoaded,
+        workflows,
+        defaultExecutor,
+    });
     // A restored draft's clamp is said twice by construction (the same sentence); the set keeps one.
     const notices = [...new Set([...restoredNotices.notices, ...clampNotices])];
     const dismiss = () => {

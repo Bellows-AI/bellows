@@ -308,12 +308,7 @@ function check(sim: Sim, required: Set<number>, allowed: Set<number>, jittery: b
     const bad: string[] = [];
     const row = sim.row;
     const recorded = row.interruptions.map((i) => i.claimSeq);
-    // #928: a takeover rebound to a supervisor that had already stopped serving waits out the rebind bound
-    // (150 s), longer than a run is given here. Stalled that way, the task is slow, not lost.
-    const stalledOnRebind =
-        row.status === 'running' &&
-        [...sim.groups.values(), ...sim.deleted].some((g) => g.secretWrites > 0 && sim.served(g));
-    if (row.status !== 'succeeded' && !stalledOnRebind) bad.push(`the task ended ${row.status}, not succeeded`);
+    if (row.status !== 'succeeded') bad.push(`the task ended ${row.status}, not succeeded`);
     for (const c of required)
         if (!recorded.includes(c)) bad.push(`claim ${c} was hit by a fault but no interruption was recorded for it`);
     for (const c of recorded)

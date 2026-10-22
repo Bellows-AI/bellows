@@ -55,11 +55,9 @@ describe('/api/auth/me', () => {
                 { id: ORG, name: 'acme' },
                 { id: '888888', name: 'other-org' },
             ],
-            // The harness configures no workspace root, and "off" is a supported state the SPA
-            // renders as an absence rather than an error — the same posture as /api/workspace.
-            workspacePath: null,
             mode: 'github',
         });
+        expect(body).not.toHaveProperty('workspacePath');
     });
 
     it('answers 503, not "not signed in", when the session store cannot be reached', async () => {

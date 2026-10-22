@@ -25,12 +25,14 @@ import {
     readList,
     readObject,
     readRunnerVerdict,
+    readTyped,
+    readTypedList,
     readLogVerdict,
     runnerPodOf,
     timedOutOf,
 } from './k8s-poll.js';
 import { boundedBy, containerStatusOf, HTTP_ERROR_STATUS, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
-import { anyOf } from './poll.js';
+import { anyOf, type Bound } from './poll.js';
 import { pollFor } from './poll.js';
 import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
 import { CLAIM_SEQ_MARK, COMMAND_MARK, isCommandMark, isSeq, LEASE_LABEL, SESSION_MARK } from './labels.js';
@@ -40,6 +42,7 @@ import {
     adoptionAbandoned,
     Inconclusive,
     type LiveRun,
+    type Read,
     type RunOutcome,
 } from './runner.js';
 import {
@@ -236,6 +239,43 @@ async function releasedRunning(deps: K8sDeps, pod: K8sPod | undefined): Promise<
         throw new AdoptionBlocked(`the earlier supervisor's release could not be read: HTTP ${log.status}`);
     }
     return log.body.split('\n').some((line) => line.trim() === SUPERVISOR_RELEASED_LINE);
+}
+
+/**
+ * Whether an earlier group's supervisor can still pick up a rebind (#928), as `Runner.supervisorServing`
+ * reads it: one request each for the Job, its pods and the supervisor log, none retried, all ended by
+ * `bound`. Only a Job confirmed gone, a pod over, a terminated supervisor or `SUPERVISOR_SERVED_LINE` in
+ * its log says it stopped; every other read that does not answer is inconclusive, never an end.
+ */
+export async function supervisorServing(deps: K8sDeps, group: BoardJob, bound: Bound): Promise<Read<boolean>> {
+    const live = withSignal(boundedBy(deps, bound.deadline), bound.signal);
+    const ns = deps.config.k8sNamespace;
+    const job = await readTyped(live, jobPath(ns, runnerName(group)), 'reading the earlier runner Job', {
+        shape: asJob,
+        once: true,
+    });
+    if (job.kind !== 'value') return job;
+    const listed = await readTypedList(live, jobPodsPath(ns, runnerName(group)), 'listing the earlier runner pods', {
+        entry: asPod,
+        once: true,
+    });
+    if (listed.kind !== 'value') return listed;
+    const pod = runnerPodOf(listed.value);
+    if (!pod?.metadata?.name) return { kind: 'inconclusive', reason: 'the earlier runner pod is not listed' };
+    if (FINISHED_PHASES.includes(pod.status?.phase ?? '')) return { kind: 'value', value: false };
+    const supervisor = containerStatusOf(pod, SUPERVISOR_CONTAINER)?.state;
+    if (supervisor?.terminated) return { kind: 'value', value: false };
+    if (!supervisor?.running) return { kind: 'inconclusive', reason: 'the earlier supervisor is not shown running' };
+    let log: K8sResponse;
+    try {
+        log = await live.request('GET', podLogPath(ns, pod.metadata.name, null, SUPERVISOR_CONTAINER));
+    } catch (e) {
+        return { kind: 'inconclusive', reason: `reading the earlier supervisor log: ${(e as Error).message}` };
+    }
+    if (log.status >= HTTP_ERROR_STATUS || logIsNone(log))
+        return { kind: 'inconclusive', reason: `the earlier supervisor log answered ${log.status}` };
+    const served = log.body.split('\n').some((line) => line.trim() === SUPERVISOR_SERVED_LINE);
+    return { kind: 'value', value: !served };
 }
 
 /** Whether the runner pods read now show the group over; null when the list proves nothing. */

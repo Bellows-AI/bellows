@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
 import { loadArtifactsConfig, type ArtifactsConfig } from './artifacts/config.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
@@ -42,6 +41,12 @@ export type GitHubConfig =
            * `npm run test:jobs`) run the compiled offline entry, `server/dist/offline.js`.
            */
           readonly mode: 'none';
+          /**
+           * The git origin the offline board reads a repo's `.bellows.yaml` plan from, as
+           * `<originBase>/<owner>/<name>.git` (REPO_CLONE_BASE, the base the driver clones from).
+           * Absent, the board reads no plan. Ignored under the App, which reads through the API.
+           */
+          readonly originBase?: string;
       }
     | {
           readonly mode: 'app';
@@ -146,19 +151,6 @@ export interface AppConfig {
     readonly databaseUrl: string;
     readonly dbPoolMax: number;
     readonly telemetryTtlMs: number;
-    /**
-     * Where a member's checkouts live: one clone per repo they selected, at
-     * `<workspaceRoot>/<orgId>/<userId>/<name>`.
-     *
-     * `null` — the feature off — is the default, not a path under `$HOME`. A default would make an
-     * upgrade start cloning gigabytes for an operator who changed nothing, and would turn a
-     * no-network boot into a network boot; nothing on the read path needs a checkout, so there is
-     * no case where having one silently is better than not having one.
-     *
-     * Absolute, with `~` already expanded. See `workspaceRootOf` for why it is rejected rather than
-     * resolved.
-     */
-    readonly workspaceRoot: string | null;
     readonly auth: AuthConfig;
     /**
      * The GitHub App webhook's HMAC secret (GITHUB_WEBHOOK_SECRET), or null — and with it the
@@ -239,36 +231,6 @@ function loadAdmission(env: NodeJS.ProcessEnv): AppConfig['admission'] {
 
 const DEFAULT_PORT = 8080;
 const DEFAULT_DB_POOL_MAX = 50;
-
-/**
- * `~` expands against `env.HOME` rather than `os.homedir()`, and a relative path is rejected rather
- * than resolved. Both keep `loadConfig` a pure function of its argument: `homedir()` reads the
- * environment behind the validator's back, and a relative root means two different trees on one
- * machine — `npm run dev -w server` has cwd `server/` while the container has `/app`. Resolving
- * against the config file's directory instead would give one key two meanings depending on whether
- * it arrived from the file or the environment, and `loadConfig` is not allowed to know a file
- * exists at all.
- */
-function workspaceRootOf(env: NodeJS.ProcessEnv): string | null {
-    const raw = env.ORG_WORKSPACE_ROOT?.trim();
-    if (!raw) return null;
-
-    let path = raw;
-    if (raw === '~' || raw.startsWith('~/')) {
-        const home = env.HOME?.trim();
-        if (!home) {
-            throw new Error(`ORG_WORKSPACE_ROOT is "${raw}" but HOME is not set, so "~" cannot be expanded`);
-        }
-        path = raw === '~' ? home : join(home, raw.slice(2));
-    }
-
-    if (!isAbsolute(path)) {
-        throw new Error(
-            `ORG_WORKSPACE_ROOT must be an absolute path (or start with "~/"), got "${raw}" — a relative one would mean a different directory when run from the repo root, from server/, and in the container`
-        );
-    }
-    return path;
-}
 
 /**
  * The one GitHub configuration there is: the App, which is what every process reaching the
@@ -578,10 +540,15 @@ function assertNoRetiredEnvVars(env: NodeJS.ProcessEnv): void {
     }
 }
 
+/** REPO_CLONE_BASE, trailing slashes stripped, read only under the code-only `none` arm. */
+function withOriginBase(github: GitHubConfig, env: NodeJS.ProcessEnv): GitHubConfig {
+    if (github.mode !== 'none') return github;
+    const base = env.REPO_CLONE_BASE?.trim().replace(/\/+$/, '');
+    return base ? { ...github, originBase: base } : github;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?: GitHubConfig): AppConfig {
     assertNoRetiredEnvVars(env);
-
-    const workspaceRoot = workspaceRootOf(env);
 
     // CACHE_TTL_SECONDS used to floor the PR slot at 300s per repo, then SYNC_TTL_SECONDS at
     // 60s; both slots are gone with the pipeline they throttled. Fatal rather than ignored: a
@@ -623,7 +590,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
     }
 
     // The App, unless the caller injected the code-only none arm — the offline tooling's seam.
-    const github = injectedGitHub ?? loadGitHub(env);
+    const github = withOriginBase(injectedGitHub ?? loadGitHub(env), env);
 
     /*
      * The disposable-database guard.
@@ -658,7 +625,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         databaseUrl,
         dbPoolMax,
         telemetryTtlMs: telemetryTtlSeconds * MS_PER_SECOND,
-        workspaceRoot,
         auth: loadAuth(env, host, port),
         webhookSecret,
         artifacts: loadArtifactsConfig(env),

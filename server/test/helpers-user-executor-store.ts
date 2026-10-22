@@ -27,7 +27,7 @@ export interface MemoryUserExecutorStore extends UserExecutorStore {
 }
 
 /**
- * An in-memory UserExecutorStore, for the same reason memoryUserRepoStore exists. The SQL behind it
+ * An in-memory UserExecutorStore, for route tests that need no database. The SQL behind it
  * is covered by server/test-db, which needs a container. The scope semantics mirror the SQL: a
  * NULL owner is the org scope, personal rows key on their owner, and a name may exist once per
  * ownership — the coalesce index's shape, simulated with a keyed lookup.

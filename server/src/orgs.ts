@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
 import type { ArtifactBackend } from './artifacts/backend.js';
@@ -13,7 +12,6 @@ import { createJobStore } from './db/job-store.js';
 import type { JobStore } from './db/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
-import { createUserRepoStore, type UserRepoStore } from './db/user-repo-store.js';
 import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
@@ -24,11 +22,8 @@ import { createStatsService, type StatsService } from './stats-service.js';
 import { createPostgresTelemetryClient } from './telemetry/postgres-client.js';
 import { createFixtureTelemetryClient, createNullTelemetryClient } from './telemetry/fixture-client.js';
 import type { TelemetryClient } from './telemetry/client.js';
-import { createCloneQueue, type CloneQueue } from './workspace/queue.js';
-import { createPurger, PURGE_RECOVERY_INTERVAL_MS, type Purger } from './workspace/purge.js';
-import { createFactsCache, type FactsCache } from './workspace/facts.js';
 import { createPlanReader } from './workspace/bellows-plan.js';
-import { createLocalPlanReader, LOCAL_ORIGINS_DIR } from './github/local-origin-plan.js';
+import { createOriginPlanReader } from './github/local-origin-plan.js';
 
 /**
  * Everything one organization needs at runtime, built lazily and cached.
@@ -71,16 +66,7 @@ export interface OrgRuntime {
     connections?: ConnectionStore | undefined;
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
-    userRepos?: UserRepoStore | undefined;
     userExecutors?: UserExecutorStore | undefined;
-    cloneQueue?: CloneQueue | undefined;
-    /** The manual purge (issue #92): one member's orphaned checkout, deleted deliberately. */
-    purger?: Purger | undefined;
-    /**
-     * The checkout facts cache, per org so the purger and the workspace routes share one instance:
-     * a deleted tree's cached size must not answer for whatever is re-cloned into its path.
-     */
-    facts?: FactsCache | undefined;
 }
 
 export interface OrgRegistry {
@@ -102,14 +88,20 @@ export interface OrgRegistryDeps {
     config: AppConfig;
     /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
     withStores: boolean;
-    /**
-     * The checkout facts cache. One per process in the live server — main.ts builds it and hands
-     * the same instance to the registry and the app, because a purge must invalidate exactly the
-     * cache the routes read. Absent (route tests) each org builds its own.
-     */
-    facts?: FactsCache;
     /** The object store behind each org's artifact index; absent (route tests), no org has one. */
     artifacts?: ArtifactBackend;
+}
+
+/**
+ * The execution-plan source: the App installation's API read, else (code-only `none` arm) a git
+ * read from the origin named by `REPO_CLONE_BASE`, else none.
+ */
+export function planReaderOf(config: AppConfig, client: Parameters<typeof createPlanReader>[0] | undefined) {
+    if (client) return createPlanReader(client);
+    if (config.github.mode === 'none' && config.github.originBase) {
+        return createOriginPlanReader(config.github.originBase);
+    }
+    return null;
 }
 
 /** The per-org write-side stores, built only under `withStores` (#99's route-test bypass). */
@@ -120,7 +112,6 @@ function buildOrgStores({
     config,
     tokens,
     client,
-    facts,
 }: {
     sql: Sql;
     orgId: string;
@@ -128,7 +119,6 @@ function buildOrgStores({
     config: AppConfig;
     tokens: ReturnType<typeof installationTokenProvider> | undefined;
     client: ReturnType<typeof createGitHubAppClient> | undefined;
-    facts: FactsCache;
 }): {
     envVars: EnvVarStore;
     batches: BatchStore;
@@ -137,54 +127,26 @@ function buildOrgStores({
     batchMerger: BatchMerger | undefined;
     connections: ConnectionStore;
     userExecutors: UserExecutorStore;
-    userRepos: UserRepoStore;
     prs: PrLifecycleStore;
-    cloneQueue: CloneQueue | undefined;
-    purger: Purger | undefined;
     jobs: JobStore;
     workflows: WorkflowStore;
-    facts: FactsCache;
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready });
     const connections = createConnectionStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
-    const userRepos = createUserRepoStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
     const prs = createPrLifecycleStore({ sql, orgId, ready });
-    const cloneQueue = config.workspaceRoot
-        ? createCloneQueue({
-              store: userRepos,
-              root: config.workspaceRoot,
-              orgId,
-              tokens,
-              log: (m) => console.log(`[workspace] ${m}`),
-          })
-        : undefined;
-    const purger = config.workspaceRoot
-        ? createPurger({
-              store: userRepos,
-              root: config.workspaceRoot,
-              orgId,
-              facts,
-              log: (m) => console.log(`[workspace] ${m}`),
-          })
-        : undefined;
-    const planReader = client
-        ? createPlanReader(client)
-        : config.github.mode === 'none' && config.workspaceRoot
-          ? createLocalPlanReader(join(config.workspaceRoot, LOCAL_ORIGINS_DIR))
-          : null;
+    const planReader = planReaderOf(config, client);
     const jobs = createJobStore({
         sql,
         orgId,
-        hasWorkspaces: config.workspaceRoot !== null,
         ready,
         env: envVars,
         executorConfig: userExecutors,
         // The execution plan is read per claim through the org's installation, at the tip of the
         // thread's base branch — never from a checkout on disk. The code-only `none` arm has no
-        // client: it reads the bare mirrors under the workspace root instead (test:jobs keeps them).
+        // client: with `REPO_CLONE_BASE` it reads the plan from the origin by git instead.
         ...(planReader ? { plan: { readFor: planReader.read } } : {}),
         // The github skill connection: the runner obtains the org's installation token from the
         // board's credential endpoint, so a claim only needs to know the installation exists.
@@ -245,7 +207,6 @@ function buildOrgStores({
     // Workflow definitions (027): the process a task walks, stored per scope inside this org.
     const workflows = createWorkflowStore({ sql, orgId, ready });
     return {
-        facts,
         envVars,
         batches,
         batchObserver,
@@ -253,26 +214,14 @@ function buildOrgStores({
         batchMerger,
         connections,
         userExecutors,
-        userRepos,
         prs,
-        cloneQueue,
-        purger,
         jobs,
         workflows,
     };
 }
 
-/**
- * Attaches the write-side stores to a runtime and starts its background work, in the one order
- * that matters: purge recovery is awaited (a row left `purging` by a holder that vanished is
- * finished once its stamp is stale, and every workspace mutation and task insert refuses or
- * serializes behind a purging stamp — finishing each one here is what makes "boot recovery
- * before accepting mutations" true rather than aspirational), the recovery interval keeps
- * running after boot, THEN the clone queue starts (fired — its first pass recovers expired
- * clone leases, and a clone is minutes of network).
- */
+/** Attaches the write-side stores to a runtime. */
 async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<typeof buildOrgStores>>): Promise<void> {
-    runtime.facts = stores.facts;
     runtime.envVars = stores.envVars;
     runtime.batches = stores.batches;
     runtime.batchObserver = stores.batchObserver;
@@ -280,19 +229,9 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.batchMerger = stores.batchMerger;
     runtime.connections = stores.connections;
     runtime.userExecutors = stores.userExecutors;
-    runtime.userRepos = stores.userRepos;
-    runtime.cloneQueue = stores.cloneQueue;
-    runtime.purger = stores.purger;
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;
     runtime.workflows = stores.workflows;
-    try {
-        await stores.purger?.recoverInterrupted();
-    } catch (e) {
-        console.error(`[workspace] purge recovery failed: ${(e as Error).message}`);
-    }
-    stores.purger?.start(PURGE_RECOVERY_INTERVAL_MS);
-    void stores.cloneQueue?.start().catch((e: Error) => console.error(`[workspace] ${e.message}`));
 }
 
 /** The org's artifact index over the process's object store, or undefined when none was configured. */
@@ -320,14 +259,7 @@ function artifactStoreOf({
     });
 }
 
-export function createOrgRegistry({
-    sql,
-    ready,
-    config,
-    withStores,
-    facts: sharedFacts,
-    artifacts,
-}: OrgRegistryDeps): OrgRegistry {
+export function createOrgRegistry({ sql, ready, config, withStores, artifacts }: OrgRegistryDeps): OrgRegistry {
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
@@ -374,11 +306,7 @@ export function createOrgRegistry({
         };
 
         if (withStores) {
-            // Per org unless the process shares one (main.ts passes it): the cache is keyed by
-            // full path, so sharing is safe, and sharing is what lets a purge invalidate the
-            // instance the routes read.
-            const facts = sharedFacts ?? createFactsCache();
-            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client, facts });
+            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
         }

@@ -57,9 +57,8 @@ export interface UserExecutorStore {
      * Replaces a member's whole PERSONAL executor list.
      *
      * The body of `PUT /api/workspace/executors` is the entire list, so this is delete-then-insert:
-     * replaying the same body changes nothing, which is what makes the route a PUT. Unlike
-     * user_repo there is nothing to preserve — a row tracks no disk state, so "keeping" an omitted
-     * executor would only contradict the body the member just sent. Org-scope rows are never
+     * replaying the same body changes nothing, which is what makes the route a PUT. Nothing is
+     * preserved — a row tracks no disk state, so "keeping" an omitted executor would only contradict the body the member just sent. Org-scope rows are never
      * touched: they belong to the organization, and the admin CRUD routes are their only writers.
      */
     replace(
@@ -256,7 +255,7 @@ async function setSuspendedRow(
     return rows[0] ? toExecutorProfile(rows[0]) : null;
 }
 
-/** The organization is bound at construction, for the reason createUserRepoStore's header gives. */
+/** The organization is bound at construction: one store serves one organization. */
 export function createUserExecutorStore({
     sql,
     orgId,

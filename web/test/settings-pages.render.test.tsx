@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { UseEnv } from '../src/api/useEnv.js';
+import type { UseRepos } from '../src/api/useRepos.js';
 import type { UseWorkspace } from '../src/api/useWorkspace.js';
 import type { Session } from '../src/api/useSession.js';
 import { SettingsExecutorsPage } from '../src/pages/SettingsExecutorsPage.js';
@@ -11,10 +12,8 @@ import { SettingsOrganizationPage } from '../src/pages/SettingsOrganizationPage.
 import { SettingsRepositoriesPage } from '../src/pages/SettingsRepositoriesPage.js';
 import { SettingsWorkflowsPage } from '../src/pages/SettingsWorkflowsPage.js';
 import { SettingsWorkspacePage } from '../src/pages/SettingsWorkspacePage.js';
-import { orphanDeleteDialogBody, orphanDeleteDialogTitle } from '../src/components/OrphanDeleteDialog.js';
 import { EXECUTOR_SCOPE } from '../src/workspace/executors.js';
 import { expectNoPlaceholder, memberSession } from './fixtures.js';
-import { rootlessWorkspace } from './settings-board.js';
 
 /**
  * The pages of the settings tree, rendered through a real route tree so the layout's outlet
@@ -42,6 +41,13 @@ const idleWorkspace = {
     listExecutorConfigs: async () => null,
 } as unknown as UseWorkspace;
 
+const idleRepos = {
+    data: null,
+    loading: true,
+    error: null,
+    refresh: () => {},
+} as unknown as UseRepos;
+
 const idleEnv = {
     data: null,
     loading: true,
@@ -58,7 +64,12 @@ const idleUnsaved = { guards: new Map(), setGuard: () => {} };
 
 const render = (
     path: string,
-    overrides: { session?: Session; workspace?: Partial<UseWorkspace>; env?: Partial<UseEnv> } = {}
+    overrides: {
+        session?: Session;
+        workspace?: Partial<UseWorkspace>;
+        repos?: Partial<UseRepos>;
+        env?: Partial<UseEnv>;
+    } = {}
 ) => {
     /**
      * Publishes what SettingsLayout promises — the shell context, both polls and the unsaved
@@ -73,6 +84,7 @@ const render = (
                     session: overrides.session ?? session,
                     sessionLoading: false,
                     workspace: { ...idleWorkspace, ...overrides.workspace },
+                    repos: { ...idleRepos, ...overrides.repos },
                     env: { ...idleEnv, ...overrides.env },
                     unsaved: idleUnsaved,
                 }}
@@ -177,153 +189,34 @@ describe('Settings organization page', () => {
 });
 
 describe('Settings workspace page', () => {
-    it('says it is loading until the workspace poll answers', () => {
+    it('owns the member\u2019s own scopes only: no checkout root, orphan list or checkout management', () => {
+        // The page reads no workspace data: nothing is checked out on the board, so a cold render
+        // is the whole page and it never waits on the workspace poll.
         const html = render('/settings/workspace');
-        expect(html).toContain('Loading your workspace…');
-        expectNoPlaceholder(html);
-    });
-
-    it('states the workspace scope before its editor', () => {
-        // The workspace poll must have settled for the page to reach its env section at all —
-        // the loading posture early-returns with the header and the status line only.
-        const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
-        });
+        expect(html).not.toContain('Loading your workspace');
         expect(html).toContain('My workspace');
         expect(html).toContain('Applies only to tasks the current member starts.');
         expect(html).toContain('Edited only by that member.');
-    });
-
-    it('offers no checkout management after a failed workspace read — unavailable data is not an empty workspace', () => {
-        const html = render('/settings/workspace', {
-            workspace: { loading: false, error: 'The workspace request failed' },
-        });
-        expect(html).toContain('The workspace request failed');
-        expect(html).not.toContain('Manage repository checkouts');
-        expect(html).not.toContain('Select repositories');
-    });
-
-    it('links to the repositories page for checkout management, and nowhere offers a picker', () => {
-        const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
-        });
-        expect(html).toContain('Your checkouts live at');
-        expect(html).toContain('Manage repository checkouts');
-        expect(html).toContain('/settings/repos');
-        expect(html).not.toContain('Select repositories');
-        expect(html).not.toContain('No variables configured.');
-    });
-
-    it('states the mandated root-null copy — an operator, not the member, fixes it', () => {
-        const html = render('/settings/workspace', {
-            workspace: rootlessWorkspace(),
-        });
-        expect(html).toContain('This deployment has no workspace root. Tasks cannot run until an operator sets');
-        expect(html).toContain('ORG_WORKSPACE_ROOT');
-        expect(html).not.toContain('Manage repository checkouts');
-        // A deliberate configuration, stated as the shared warn banner (issue 282) — never a
-        // button, because no member can set the root from here.
-        expect(html).toContain('class="banner-warn"');
-        expect(html).toContain('Workspace root not configured');
-        expect(html).not.toMatch(/banner-warn[\s\S]*<button/);
-    });
-
-    it('shows orphan sizes, the checkout total, and the Delete from disk action (issue 92)', () => {
-        const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: '/workspaces',
-                    repos: [],
-                    checkoutTotalBytes: 4096,
-                    orphaned: [
-                        { owner: 'acme', name: 'gone', status: 'queued', error: null, sizeBytes: 4096 },
-                        {
-                            owner: 'acme',
-                            name: 'broken',
-                            status: 'failed',
-                            error: 'fatal: repository not found',
-                            sizeBytes: null,
-                        },
-                        {
-                            owner: 'acme',
-                            name: 'deleting',
-                            status: 'purging',
-                            error: null,
-                            sizeBytes: null,
-                        },
-                    ],
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
-        });
-        expect(html).toContain('Still on disk');
-        // The measured size, and the em dash for the unmeasured — never 0 B for nothing.
-        expect(html).toContain('4 KB');
-        expect(html).toContain('·');
-        expect(html).not.toContain('0 B');
-        // A deletion in flight is named, and a failed clone's error is its row's explanation.
-        expect(html).toContain('Deleting');
-        expect(html).toContain('fatal: repository not found');
-        // The explicit member action the issue asks for, per row — a purging row offers none.
-        expect((html.match(/Delete from disk/g) ?? []).length).toBe(2);
-        // The checkout total is labelled as checkout usage.
-        expect(html).toContain('Checkout usage');
-        expect(html).toContain('4 KB');
+        for (const gone of [
+            'ORG_WORKSPACE_ROOT',
+            'Your checkouts live at',
+            'Manage repository checkouts',
+            'Nothing checked out',
+            'Still on disk',
+            'Delete from disk',
+            'Workspace root not configured',
+        ]) {
+            expect(html, gone).not.toContain(gone);
+        }
         expectNoPlaceholder(html);
     });
 
-    it('renders the checkout total as an em dash while it is unmeasured', () => {
+    it('is unaffected by a failed workspace read: that error belongs to the executors', () => {
         const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: '/workspaces',
-                    repos: [],
-                    checkoutTotalBytes: null,
-                    orphaned: [{ owner: 'acme', name: 'gone', status: 'queued', error: null, sizeBytes: null }],
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
+            workspace: { loading: false, error: 'The workspace request failed' },
         });
-        expect(html).toContain('Checkout usage');
-        expect(html).not.toContain('0 B');
-    });
-
-    it('names the purge\u2019s consequences in its confirmation copy', () => {
-        // The issue's mandatory warning: uncommitted work AND the local factory/<root> branches
-        // are lost. Exported pure, held here like TaskRemoveDialog's copy is.
-        expect(orphanDeleteDialogTitle('acme', 'gone')).toBe('Delete acme/gone from disk?');
-        const body = orphanDeleteDialogBody();
-        expect(body).toContain('uncommitted');
-        expect(body).toContain('factory/');
-        expect(body).toContain('cannot be undone');
+        expect(html).not.toContain('The workspace request failed');
+        expect(html).toContain('My workspace');
     });
 
     it('renders the personal environment editor when its store answers', () => {
@@ -331,10 +224,6 @@ describe('Settings workspace page', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [],
                     orgExecutors: [],
                     defaultExecutor: null,
@@ -351,10 +240,6 @@ describe('Settings workspace page', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [],
                     orgExecutors: [],
                     defaultExecutor: null,
@@ -370,10 +255,6 @@ describe('Settings workspace page', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [],
                     orgExecutors: [],
                     defaultExecutor: null,
@@ -400,10 +281,6 @@ describe('Settings executors page', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [
                         {
                             id: 'e-main',
@@ -447,23 +324,6 @@ describe('Settings executors page', () => {
         // The save announcement's region is mounted before any save, so the sentence is heard
         // when it arrives (issue 261).
         expect(html).toMatch(/<p class="muted" role="status"><\/p>/);
-    });
-
-    it('refuses before any dialog when the deployment has no workspace root', () => {
-        // The executor routes answer 409 WORKSPACE_DISABLED without a root; the page refuses
-        // first — the action never renders, and the sentence points at workspace setup.
-        const html = render('/settings/executors', {
-            workspace: rootlessWorkspace(),
-        });
-        expect(html).toContain('Personal executors are unavailable because this deployment has no workspace root.');
-        // The link is woven into the sentence — "…until <a>workspace setup</a> is complete." — so
-        // the two halves are asserted around it.
-        expect(html).toContain('Tasks cannot run until <a');
-        expect(html).toContain('workspace setup</a> is complete.');
-        expect(html).toContain('href="/settings/workspace"');
-        expect(html).not.toContain('Add executor');
-        expect(html).toContain('class="banner-warn"');
-        expect(html).toContain('Workspace root not configured');
     });
 
     it('renders no list after a failed workspace read — the error is the whole story', () => {
@@ -515,41 +375,64 @@ describe('Settings workflows page', () => {
 });
 
 describe('Settings repositories page', () => {
-    it('states nothing about counts while either answer is unresolved — never 0 of 0', () => {
-        // Cold render: the installation list has not been fetched and the workspace poll has not
-        // answered. "0 of 0 repositories enabled" would be two claims about two absent answers.
+    const tracked = (name: string, over: object = {}) => ({
+        owner: 'acme',
+        name,
+        private: false,
+        defaultBranch: 'main',
+        pushedAt: '2026-09-01T00:00:00.000Z',
+        ...over,
+    });
+    const answered = (names: string[], error: string | null = null): Partial<UseRepos> => ({
+        loading: false,
+        data: {
+            repos: names.map((name) => tracked(name)),
+            installation: { id: '1', account: 'acme', repositorySelection: 'all' },
+            meta: { fetchedAt: '2026-09-01T00:00:00.000Z', error },
+        },
+    });
+
+    it('states nothing about the list while the read is unresolved', () => {
         const html = render('/settings/repos');
-        expect(html).toContain('Choose which repositories are checked out for your workspace');
-        // Every card is an unmeasured dash named Loading, never a zero (plan §2.6).
-        expect(html.match(/aria-label="Loading"/g)?.length).toBeGreaterThanOrEqual(4);
-        expect(html).not.toMatch(/repo-card-value">0</);
-        expect(html).not.toContain('0 of 0');
+        expect(html).toContain('Loading repositories');
+        expect(html).not.toContain('No repositories');
         expect(html).not.toContain('No variables configured.');
         expectNoPlaceholder(html);
     });
 
-    it('warns that the workspace root is missing, links to Workspace, and holds the save', () => {
-        // `root: null` is a deliberate configuration: availability and configuration stay
-        // readable, but nothing may claim checkouts or save a selection into nothing.
-        const html = render('/settings/repos', {
-            workspace: rootlessWorkspace(),
-        });
-        expect(html).toContain('class="banner-warn"');
-        expect(html).toContain('Workspace root not configured');
-        expect(html).toContain('An operator must set <code>ORG_WORKSPACE_ROOT</code> on the deployment');
-        expect(html).toContain('/settings/workspace');
-        expect(html).not.toContain('Configure workspace root');
-        expect(html).toContain('disabled');
-        expect(html).not.toContain('No variables configured.');
+    it('lists the tracked repositories with their branch and a Configure action, and nothing to select', () => {
+        const html = render('/settings/repos', { repos: answered(['web', 'api']) });
+        expect(html).toContain('acme/web');
+        expect(html).toContain('acme/api');
+        expect(html).toContain('>main<');
+        expect(html.match(/<button[^>]*>Configure<\/button>/g)?.length).toBe(2);
+        for (const gone of [
+            'type="checkbox"',
+            'Save selection',
+            'Selection limited to',
+            'Checkout status',
+            'Selection summary',
+            'ORG_WORKSPACE_ROOT',
+            'Not checked out',
+            'Enable ',
+        ]) {
+            expect(html, gone).not.toContain(gone);
+        }
     });
 
-    it('names a failed workspace read rather than stating checkout facts over it', () => {
+    it('names a failed read, rather than stating the list is empty', () => {
+        const html = render('/settings/repos', { repos: { loading: false, error: 'Request failed (503)' } });
+        expect(html).toContain('Request failed (503)');
+        expect(html).not.toContain('not installed on any repositories');
+    });
+
+    it('does not depend on the workspace poll: a failed one is not the repositories page\u2019s error', () => {
         const html = render('/settings/repos', {
             workspace: { loading: false, error: 'The workspace request failed' },
+            repos: answered(['web']),
         });
-        expect(html).toContain('The workspace request failed');
-        expect(html).not.toContain('Not checked out');
-        expect(html).not.toMatch(/repo-card-value">0</);
+        expect(html).not.toContain('The workspace request failed');
+        expect(html).toContain('acme/web');
     });
 
     it('keeps no role-conditional sentence — the editor is every member\u2019s to edit (issue 180)', () => {
@@ -559,6 +442,18 @@ describe('Settings repositories page', () => {
         const html = render('/settings/repos', { session: { ...session, role: 'member' } });
         expect(html).not.toContain('shown here read-only');
         expect(html).not.toContain('An admin configures repository environment');
+    });
+
+    it('does not claim the App is installed nowhere when the first repository read failed', () => {
+        // The server answers 200 with `repos: []` and `meta.error` when it could not read the list:
+        // an unconfirmed read, never the verdict "no repositories".
+        const html = render('/settings/repos', {
+            repos: {
+                loading: false,
+                data: { repos: [], installation: null, meta: { fetchedAt: null, error: 'GitHub is unreachable' } },
+            },
+        });
+        expect(html).not.toContain('not installed on any repositories');
     });
 
     it('renders no repository editor after a failed environment read', () => {
@@ -576,13 +471,12 @@ describe('Settings repositories page', () => {
         expect(html).not.toContain('Choose a repository…');
     });
 
-    it('states the scope context in the header: this member\u2019s workspace, in this organization', () => {
+    it('states the scope context in the header: the organization the repositories belong to', () => {
         const html = render('/settings/repos');
-        expect(html).toMatch(/class="page-header-meta"[\s\S]*<dt>Workspace<\/dt><dd>My workspace<\/dd>/);
         expect(html).toMatch(/class="page-header-meta"[\s\S]*<dt>Organization<\/dt><dd>Bellows AI<\/dd>/);
     });
 
-    it('keeps the selection table full width — no master/detail split', () => {
+    it('keeps the repositories table full width — no master/detail split', () => {
         const html = render('/settings/repos');
         expect(html).not.toContain('repo-columns');
     });
@@ -611,10 +505,6 @@ describe('settings scope context (issue 182 invariants)', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [],
                     orgExecutors: [],
                     defaultExecutor: null,
@@ -660,41 +550,8 @@ describe('settings page headers', () => {
         expect(render('/settings/workspace')).not.toContain('<h2>Workspace</h2>');
         expect(render('/settings/executors')).not.toContain('<h2>Executors</h2>');
         expect(render('/settings/repos')).not.toContain('<h2>Repositories</h2>');
-        // The repositories page names its summary and its selection by label, not by a heading
-        // that would restate the title.
-        expect(render('/settings/repos')).toContain('aria-label="Selection summary"');
-        expect(render('/settings/repos')).toContain('aria-label="Repository selection"');
-    });
-
-    it('carries the workspace sentence in the header, and the checkout-management link in its actions', () => {
-        const html = render('/settings/workspace', {
-            workspace: {
-                loading: false,
-                data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
-                    executors: [],
-                    orgExecutors: [],
-                    defaultExecutor: null,
-                },
-            },
-        });
-        expect(html).toContain('page-header-description');
-        expect(html).toContain('Your checkouts live at');
-        expect(html).toContain('page-header-actions');
-        expect(html).toContain('Manage repository checkouts');
-    });
-
-    it('offers no checkout-management action on a deployment with no workspace root', () => {
-        // `root: null` is a deliberate configuration: there is nothing to check out into, so
-        // the header keeps its sentence and drops its action.
-        const html = render('/settings/workspace', {
-            workspace: rootlessWorkspace(),
-        });
-        expect(html).toContain('no workspace root');
-        expect(html).not.toContain('Manage repository checkouts');
+        // The repositories page names its list by label, not by a heading that would restate the title.
+        expect(render('/settings/repos')).toContain('aria-label="Tracked repositories"');
     });
 
     it('puts Add executor in the executors page header', () => {
@@ -702,10 +559,6 @@ describe('settings page headers', () => {
             workspace: {
                 loading: false,
                 data: {
-                    root: '/workspaces',
-                    repos: [],
-                    orphaned: [],
-                    checkoutTotalBytes: 0,
                     executors: [],
                     orgExecutors: [],
                     defaultExecutor: null,

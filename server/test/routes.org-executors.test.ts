@@ -1,7 +1,4 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { AppConfig } from '../src/config.js';
 import type { AuthStore } from '../src/auth/store.js';
@@ -10,7 +7,6 @@ import {
     githubAuth,
     memoryAuthStore,
     memoryUserExecutorStore,
-    memoryUserRepoStore,
     signedIn,
     staticRegistry,
     stubTelemetryClient,
@@ -39,18 +35,11 @@ const track = trackApps();
 
 const CLAUDE_CODE = { name: 'team-runner', type: 'claude-code', config: { model: 'sonnet' } };
 
-let root: string;
-beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), 'factory-org-exec-'));
-});
-
 async function boot(executors: MemoryUserExecutorStore = memoryUserExecutorStore()) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
-    // A workspace root: the tests that seed personal rows do it through the personal PUT, which
-    // refuses 409 without one — the org routes themselves touch no checkout.
-    const config = testConfig({ auth: githubAuth(), workspaceRoot: root });
+    const config = testConfig({ auth: githubAuth() });
     const instance = await build(executors, auth, config);
     track(instance);
     return {
@@ -63,13 +52,12 @@ async function boot(executors: MemoryUserExecutorStore = memoryUserExecutorStore
     };
 }
 
-/** Boots the app with the given executor store and NO workspace root — these routes need none. */
+/** Boots the app with the given executor store. */
 function build(executors: MemoryUserExecutorStore, auth: AuthStore, config: AppConfig) {
     return buildApp({
         config,
         orgs: staticRegistry({
             config,
-            userRepos: memoryUserRepoStore(),
             userExecutors: executors,
             telemetry: stubTelemetryClient(),
         }),
@@ -594,7 +582,6 @@ describe('the workspace poll and the personal routes after 391', () => {
             config,
             orgs: staticRegistry({
                 config,
-                userRepos: memoryUserRepoStore(),
                 telemetry: stubTelemetryClient(),
             }),
             auth,

@@ -16,10 +16,9 @@ const READINESS_PILL: Record<ReadinessTone, string> = {
 
 /**
  * The settings tree's index (issue 180): what is configured for this organization and this
- * member's workspace, read from the two polls `SettingsLayout` already owns — the page itself
- * starts no request of any kind. Notably absent: an `/api/repos` fetch (repository facts derive
- * from the workspace poll's payload) and an executor-config read (those carry credentials and are
- * fetched only when the dialog opens).
+ * member's workspace, read from the reads `SettingsLayout` already owns — the page itself
+ * starts no request of any kind. Notably absent: an executor-config read (those carry credentials
+ * and are fetched only when the dialog opens).
  *
  * Every readiness item's action names its destination — there is no generic top-level Fix button.
  * Status is text, the tone class is decoration; and nothing here is a live region, because the
@@ -31,8 +30,8 @@ const READINESS_PILL: Record<ReadinessTone, string> = {
  * does not repeat it.
  */
 export function SettingsOverviewPage() {
-    const { session, workspace, env } = useSettingsPage();
-    const items = deriveReadiness({ session, workspace, environment: env });
+    const { session, workspace, repos, env } = useSettingsPage();
+    const items = deriveReadiness({ session, workspace, repos, environment: env });
     return (
         <>
             <PageHeader

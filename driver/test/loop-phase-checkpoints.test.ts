@@ -210,7 +210,14 @@ describe('resuming an adopted run from its phase checkpoints', () => {
 
     it('g: a taken-over run reads with the claim sequence of the run it took over', async () => {
         const prior = { ...gatedJob(1), claimSeq: 4 } as BoardJob;
-        const live: LiveRun = { live: true, prior, claimSeq: 4, session: 'sess', startedAt: 'then' };
+        const live: LiveRun = {
+            live: true,
+            prior,
+            claimSeq: 4,
+            session: 'sess',
+            startedAt: 'then',
+            forget: () => undefined,
+        };
         const r = await run({ adopted: live, checkpoints: [gatesCp({ claimSeq: 4 })] });
 
         expect(r.board.phaseCheckpointReads.map((x) => x.runClaimSeq)).toEqual([4]);

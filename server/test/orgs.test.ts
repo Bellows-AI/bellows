@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { LOCAL_ORG_ID, type AppConfig } from '../src/config.js';
-import { createOrgRegistry, type OrgRegistry } from '../src/orgs.js';
+import { createOrgRegistry, planReaderOf, type OrgRegistry } from '../src/orgs.js';
 import { testConfig } from './helpers.js';
 
 /**
@@ -87,25 +87,28 @@ describe('createOrgRegistry', () => {
         expect(fullRuntime?.prFollower).toBeDefined();
     });
 
-    it('wires the purge service and facts cache only under a workspace root, and shares the cache', async () => {
-        // The manual purge (issue #92) exists exactly when checkouts do, and its facts
-        // invalidation is only honest if the routes' cache and the purger's are the same instance.
-        const { sql } = fakeSql([
-            orgRows([{ id: LOCAL_ORG_ID, installation_id: null }]),
-            orgRows([{ id: LOCAL_ORG_ID, installation_id: null }]),
-        ]);
-        const withRoot: AppConfig = { ...config, workspaceRoot: '/tmp/factory-orgs-purge-test' };
-        const bare = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: false });
-        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config: withRoot, withStores: true });
+    it('builds no checkout machinery: the runtime has no userRepos, cloneQueue, purger or facts', async () => {
+        const { sql } = fakeSql([orgRows([{ id: LOCAL_ORG_ID, installation_id: null }])]);
+        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true });
 
-        const bareRuntime = await bare.for(LOCAL_ORG_ID);
-        expect(bareRuntime?.purger).toBeUndefined();
-        const fullRuntime = await full.for(LOCAL_ORG_ID);
-        expect(fullRuntime?.purger).toBeDefined();
-        expect(fullRuntime?.facts).toBeDefined();
-        // The fired queue start must not spin against the scripted sql — its claims would answer
-        // the org rows forever. Stopped before its first pass claims anything.
-        fullRuntime?.cloneQueue?.stop();
+        const runtime = await full.for(LOCAL_ORG_ID);
+
+        expect(runtime).toBeDefined();
+        for (const gone of ['userRepos', 'cloneQueue', 'purger', 'facts']) expect(runtime).not.toHaveProperty(gone);
+        expect(runtime?.userExecutors).toBeDefined();
+    });
+
+    it('reads plans from the origin only in the none arm with an origin base', () => {
+        const none = (originBase?: string) => ({
+            ...config,
+            github: originBase ? { mode: 'none' as const, originBase } : { mode: 'none' as const },
+        });
+
+        expect(planReaderOf(none('file:///srv/git'), undefined)).not.toBeNull();
+        expect(planReaderOf(none(), undefined)).toBeNull();
+        const client = { readFileAtBranchTip: async () => null };
+        expect(planReaderOf(none(), client)).not.toBeNull();
+        expect(planReaderOf(none('file:///srv/git'), client)).not.toBeNull();
     });
 
     it('lists the organizations and warms each runtime', async () => {

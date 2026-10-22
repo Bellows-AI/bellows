@@ -84,6 +84,8 @@ async function setup(
         canMerge?: boolean;
         /** The branches the installation can read, on every repository; absent offline. */
         branches?: readonly string[];
+        /** The repo list read is failing: the cached list is served with this reason attached. */
+        listError?: string;
     } = {}
 ) {
     const auth = memoryAuthStore();
@@ -99,12 +101,15 @@ async function setup(
         },
     } as unknown as JobStore;
     const config = testConfig({ auth: githubAuth() });
-    const repos = reposWithDefaults(
-        options.repos ?? [
-            { ...WEB, defaultBranch: 'main' },
-            { ...API, defaultBranch: 'main' },
-        ]
-    );
+    const repos = {
+        ...reposWithDefaults(
+            options.repos ?? [
+                { ...WEB, defaultBranch: 'main' },
+                { ...API, defaultBranch: 'main' },
+            ]
+        ),
+        ...(options.listError !== undefined ? { lastError: () => options.listError as string } : {}),
+    };
     const app = await buildApp({
         config,
         orgs: staticRegistry({
@@ -319,6 +324,23 @@ describe('launch checks: validate and start', () => {
             const response = await call('POST', `/api/batches/${id}/${path}`, payload);
             expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
             expect(response.json().code).toBe('UNKNOWN_REPO');
+        }
+        expect(batches.writes).toEqual(['create']);
+    });
+
+    it('answers 503, not UNKNOWN_REPO, when a target is missing from a stale list with lastError set', async () => {
+        const { call, create, batches } = await setup({
+            repos: [{ ...API, defaultBranch: 'main' }],
+            listError: 'github unreachable',
+        });
+        const { id } = await create();
+        for (const [path, payload] of [
+            ['validate', {}],
+            ['start', { version: 1 }],
+        ] as const) {
+            const response = await call('POST', `/api/batches/${id}/${path}`, payload);
+            expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+            expect(response.json().code).toBe('UNAVAILABLE');
         }
         expect(batches.writes).toEqual(['create']);
     });

@@ -7,7 +7,6 @@
  */
 import { COMMAND_LIMIT, USER_SCOPE } from '@factory-ai/core';
 import type { ComposerDraftInput } from './composer-draft.js';
-import type { CloneStatus } from './api/useWorkspace.js';
 import { selectionExists, type ExecutorChoice } from './workspace/executors.js';
 
 /**
@@ -173,25 +172,21 @@ export function paramFieldVerdict(
     return { kind: 'ok', message: null };
 }
 
-/** A repository option as the composer judges it: its name and its clone status (issue 263). */
+/** A tracked repository as the composer lists it. */
 export interface RepoOption {
     owner: string;
     name: string;
-    status: CloneStatus;
 }
 
 /**
- * Whether the draft's repository can run a task: only a selected repository whose checkout is
- * `ready` qualifies. `none-synced` is checked first — no ready repository at all is the modal's
- * case, whatever is chosen — and another ready repository never satisfies the chosen one.
+ * Whether the draft's repository can run a task: `none` is a confirmed empty tracked list,
+ * `unselected` a choice that is empty or no longer tracked.
  */
-export type RepoReadiness = 'ready' | 'none-synced' | 'unselected' | 'not-ready';
+export type RepoReadiness = 'ready' | 'none' | 'unselected';
 
 export function repoReadiness(repo: string, repos: readonly RepoOption[]): RepoReadiness {
-    if (!repos.some(({ status }) => status === 'ready')) return 'none-synced';
-    const chosen = repos.find(({ owner, name }) => `${owner}/${name}` === repo);
-    if (!chosen) return 'unselected';
-    return chosen.status === 'ready' ? 'ready' : 'not-ready';
+    if (repos.length === 0) return 'none';
+    return repos.some(({ owner, name }) => `${owner}/${name}` === repo) ? 'ready' : 'unselected';
 }
 
 /** The one reason Start is dark, in precedence order: in flight, executor, prompt, length, repository, workflow list, workflow params. */
@@ -200,9 +195,8 @@ export type StartBlocker =
     | 'missing-executor'
     | 'empty-prompt'
     | 'too-long'
-    | 'no-synced-repos'
+    | 'no-repos'
     | 'repo-required'
-    | 'repo-not-ready'
     | 'workflow-loading'
     | 'invalid-params';
 
@@ -229,9 +223,8 @@ export function startBlocker(input: {
     if (input.executorMissing) return 'missing-executor';
     if (input.promptEmpty) return 'empty-prompt';
     if (input.promptTooLong) return 'too-long';
-    if (input.repoReadiness === 'none-synced') return 'no-synced-repos';
+    if (input.repoReadiness === 'none') return 'no-repos';
     if (input.repoReadiness === 'unselected') return 'repo-required';
-    if (input.repoReadiness === 'not-ready') return 'repo-not-ready';
     if (input.workflowUnresolved) return 'workflow-loading';
     if (input.paramsInvalid) return 'invalid-params';
     return null;
@@ -247,9 +240,8 @@ export function blockerTone(blocker: StartBlocker | null): 'bad' | 'info' | 'qui
         case 'missing-executor':
         case 'invalid-params':
         case 'too-long':
-        case 'no-synced-repos':
+        case 'no-repos':
         case 'repo-required':
-        case 'repo-not-ready':
             return 'bad';
         case 'workflow-loading':
             return 'info';
