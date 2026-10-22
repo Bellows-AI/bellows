@@ -247,6 +247,16 @@ describe('the docker reaper arm: reap', () => {
         expect(await arm.reap(group(), 'gone')).toEqual([]);
     });
 
+    it('does not read a daemon that answers "not found" for something else as the container gone', async () => {
+        const failing: ExecDocker = async (args) => {
+            if (args[0] === 'rm') throw new Error('Error response from daemon: page not found');
+            return { stdout: '' };
+        };
+        const arm = createDockerReaper(failing, BOARD);
+
+        await expect(arm.reap(group(), 'gone')).rejects.toThrow('page not found');
+    });
+
     it('names the service container the way the fleet builder does', () => {
         // The pin that keeps the reaper's idea of a name from drifting from the spawner's.
         expect(serviceContainerName(job, 'postgres')).toBe(`factory-job-${JOB}-${LEASE}-svc-postgres`);
@@ -853,6 +863,10 @@ describe('a sweep over the real docker arm (issue #831)', () => {
         it.each([
             ['the daemon fails', new Error('Cannot connect to the Docker daemon')],
             ['the volume is in use', new Error('Error response from daemon: remove x: volume is in use')],
+            [
+                'the daemon answers "not found" for something else',
+                new Error('Error response from daemon: page not found'),
+            ],
         ])('reports aborted when removing a task volume fails because %s', async (_name, rm) => {
             expect(await volumeSweep({ rm })).toEqual(['aborted']);
         });
