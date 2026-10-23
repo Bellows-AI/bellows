@@ -314,4 +314,16 @@ describe('the executor isolation record (#382)', () => {
         expect(kubernetesDocs).toContain('`driver.metricsPort` (`DRIVER_METRICS_PORT`, default `9464`)');
         expect(kubernetesDocs).toContain('Authorization: Bearer $JOB_BOARD_TOKEN');
     });
+
+    // Issue #831: the benchmark phase's numbers are a laptop sample on kind, and what it cannot measure is stated.
+    it('records the bench phase as a kind sample and names what stays unmeasured', () => {
+        expect(prose(limitsDocs)).toContain('--phase bench');
+        expect(prose(limitsDocs)).toContain('<release>.bench.tsv');
+        expect(prose(limitsDocs)).toContain(
+            'A laptop sample, not a bound: EKS, EFS, Karpenter and the docker executor are unmeasured'
+        );
+        expect(prose(limitsDocs)).toContain('the shared-worktree alternative is unmeasured and its code is gone');
+        expect(prose(testingDocs)).toContain('--phase bench');
+        expect(prose(testingDocs)).toContain('.bench.tsv');
+    });
 });
