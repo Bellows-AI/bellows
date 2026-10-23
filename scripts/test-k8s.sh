@@ -3956,12 +3956,13 @@ release_stub "$ACC_REL-a"
 acc_a_end="$(await_brief "$acc_a" 'succeeded*' 120)"
 tk_check 'acceptance: a. the task succeeds in one attempt' "$acc_a_end" 'succeeded|1|0||'
 tk_left_out=''
+acc_reaped=''
 acc_until=$(($(date +%s) + 120))
-until tk_left_out="$(tk_left "$acc_a")"; do
+until tk_left_out="$(tk_left "$acc_a")" && acc_reaped=1; do
     [ "$(date +%s)" -lt "$acc_until" ] || break
     sleep 2
 done
-[ -z "$tk_left_out" ] && ok 'acceptance: a. the runner Job and pod are reaped' ||
+[ -n "$acc_reaped" ] && ok 'acceptance: a. the runner Job and pod are reaped' ||
     bad 'acceptance: a. the runner Job and pod are reaped' "${tk_left_out:-unconfirmed}"
 tk_check "acceptance: a. the artifact read holds the $ACC_N records, whole" "$(acc_poll exact 90 acc_transcript "$BASE" "$acc_a" "$acc_a_session" 1 "$ACC_N")" exact
 

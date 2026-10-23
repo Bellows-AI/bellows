@@ -2438,12 +2438,14 @@ acc_release "$acc_a" "$ACC_REL-a" || bad 'acceptance: a. the barrier is released
 acc_a_end="$(acc_await "$acc_a" 'succeeded*' 120)"
 acc_check 'acceptance: a. the task succeeds in one attempt' "$acc_a_end" 'succeeded|1|0||'
 acc_left=""
+acc_reaped=""
 acc_until=$(($(date +%s) + 120))
-until acc_left="$(lane_left "$acc_a")"; do
+until acc_left="$(lane_left "$acc_a")" && acc_reaped=1; do
     [ "$(date +%s)" -lt "$acc_until" ] || break
     sleep 2
 done
-[ -z "$acc_left" ] && ok 'acceptance: a. the runner group is reaped' || bad 'acceptance: a. the runner group is reaped' "$acc_left"
+[ -n "$acc_reaped" ] && ok 'acceptance: a. the runner group is reaped' ||
+    bad 'acceptance: a. the runner group is reaped' "${acc_left:-unconfirmed}"
 acc_check "acceptance: a. the artifact read holds the $ACC_N records, whole" \
     "$(acc_poll exact 90 acc_transcript "$BASE" "$acc_a" "$acc_a_session" 1 "$ACC_N")" exact
 
