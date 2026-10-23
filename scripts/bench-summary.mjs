@@ -107,7 +107,7 @@ function loadSet(cell, comp, expected) {
  * when a counter went down, a series vanished, or a pod lacks a required family at the end (or at both ends
  * when `both` is set).
  */
-function delta(set, from, to, required, both = false) {
+function delta(set, from, to, required, both = false, check = () => true) {
     if (set === null) return null;
     const total = new Map();
     const pods = [];
@@ -118,6 +118,7 @@ function delta(set, from, to, required, both = false) {
             if (!end.samples.some((x) => x.name === name)) return null;
             if (both && !start.samples.some((x) => x.name === name)) return null;
         }
+        if (!check(end.samples)) return null;
         const before = new Map(start.samples.map((x) => [seriesKey(x), x]));
         const own = [];
         for (const x of end.samples) {
@@ -159,6 +160,23 @@ function histogram(samples, base, where = () => true) {
         if (hit && Number.isFinite(hit[0])) p95Le = String(hit[0]);
     }
     return { count, sum: total, p95Le };
+}
+
+/** True when every series of histogram `base` matching `where` has its count, sum and +Inf bucket, and nothing is left over. */
+function histogramWhole(samples, base, where = () => true) {
+    const key = (x) => JSON.stringify(Object.entries(x.labels).filter(([k]) => k !== 'le').sort());
+    const parts = { count: new Set(), sum: new Set(), inf: new Set(), bucket: new Set() };
+    for (const x of samples) {
+        if (!where(x.labels)) continue;
+        if (x.name === `${base}_count`) parts.count.add(key(x));
+        else if (x.name === `${base}_sum`) parts.sum.add(key(x));
+        else if (x.name === `${base}_bucket`) {
+            parts.bucket.add(key(x));
+            if (x.labels.le === '+Inf') parts.inf.add(key(x));
+        }
+    }
+    const same = (a, b) => a.size === b.size && [...a].every((k) => b.has(k));
+    return same(parts.count, parts.sum) && same(parts.count, parts.inf) && same(parts.count, parts.bucket);
 }
 
 const quantile = (sorted, q) => sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)];
@@ -289,11 +307,20 @@ function row(cell) {
         const board = loadSet(cell, 'board', 1);
         const driver = Number.isInteger(replicas) ? loadSet(cell, 'driver', replicas) : null;
 
-        const wait = delta(board, 's', 'c', ['factory_claim_wait_seconds_count', 'factory_claim_wait_seconds_bucket']);
+        const whole = (base, where) => (samples) => histogramWhole(samples, base, where);
+        const fams = (base) => [`${base}_count`, `${base}_sum`, `${base}_bucket`];
+        const wait = delta(board, 's', 'c', fams('factory_claim_wait_seconds'), false, whole('factory_claim_wait_seconds'));
         if (wait) r.claim_wait_p95_le_s = histogram(wait.samples, 'factory_claim_wait_seconds').p95Le;
-        const lock = delta(board, 's', 'c', ['factory_claim_lock_wait_seconds_count', 'factory_claim_lock_wait_seconds_bucket']);
+        const lock = delta(board, 's', 'c', fams('factory_claim_lock_wait_seconds'), false, whole('factory_claim_lock_wait_seconds'));
         if (lock) r.claim_lock_wait_p95_le_s = histogram(lock.samples, 'factory_claim_lock_wait_seconds').p95Le;
-        const sweepD = delta(driver, 's', 'c', ['factory_driver_reaper_sweep_seconds_count', 'factory_driver_reaper_scanned_total']);
+        const sweepD = delta(
+            driver,
+            's',
+            'c',
+            [...fams('factory_driver_reaper_sweep_seconds'), 'factory_driver_reaper_scanned_total'],
+            false,
+            whole('factory_driver_reaper_sweep_seconds')
+        );
         if (sweepD) {
             const sweep = histogram(sweepD.samples, 'factory_driver_reaper_sweep_seconds');
             if (sweep.count > 0) {
@@ -301,37 +328,39 @@ function row(cell) {
                 r.reaper_objects_per_sweep = fixed(sum(sweepD.samples, 'factory_driver_reaper_scanned_total') / sweep.count);
             }
         }
-        const stepD = delta(driver, 's', 'c', ['factory_driver_step_seconds_count', 'factory_driver_step_seconds_sum']);
-        const syncs = stepD ? stepD.samples.filter((x) => x.labels.kind === 'sync') : [];
-        const same = (x, y) => JSON.stringify(Object.entries(x.labels).sort()) === JSON.stringify(Object.entries(y.labels).sort());
-        // The mean needs the sum and the count of the same series: a count beside another series' sum is not a mean.
-        const counts = syncs.filter((x) => x.name === 'factory_driver_step_seconds_count');
-        const paired = counts.length > 0 && counts.every((c) => syncs.some((x) => x.name === 'factory_driver_step_seconds_sum' && same(x, c)));
-        if (stepD && paired) {
-            const sync = histogram(stepD.samples, 'factory_driver_step_seconds', (l) => l.kind === 'sync');
+        // Each pod's sync series are whole on their own (count, sum, +Inf bucket, none left over) before any pod is added up.
+        const isSync = (l) => l.kind === 'sync';
+        const stepD = delta(driver, 's', 'c', fams('factory_driver_step_seconds'), false, whole('factory_driver_step_seconds', isSync));
+        if (stepD) {
+            const sync = histogram(stepD.samples, 'factory_driver_step_seconds', isSync);
             if (sync.count > 0) {
                 r.sync_mean_s = fixed(sync.sum / sync.count, 3);
                 r.sync_p95_le_s = sync.p95Le;
             }
         }
 
-        // Per-task rates: requests over the interval each pod was observed for, per task-second that ran in it.
-        const perTask = (d, value) => {
-            if (!rows || !d) return UNKNOWN;
-            const avg = d.pods.reduce((x, p) => x + activeSeconds(rows, p.from, p.to) / p.seconds, 0) / d.pods.length;
-            return avg > 0 ? fixed(value / avg, 3) : UNKNOWN;
+        // Per-task rates: each pod's requests over its own interval, per task-second that ran in that interval,
+        // and only then added up. Every task needs its claim and its end, or no per-task figure exists.
+        const timed = rows !== null && rows.every((x) => Number.isFinite(x.started) && Number.isFinite(x.finished));
+        const perTask = (d, valueOf) => {
+            if (!timed || !d) return UNKNOWN;
+            let total = 0;
+            for (const p of d.pods) {
+                const avg = activeSeconds(rows, p.from, p.to) / p.seconds;
+                if (!(avg > 0)) return UNKNOWN;
+                total += valueOf(p) / avg;
+            }
+            return fixed(total, 3);
         };
+        const podRate = (p, name, where = () => true) => sum(p.samples, name, where) / p.seconds;
+        const beat = (l) => (l.route ?? '').includes('heartbeat');
         const steadyBoard = delta(board, 'a', 'b', [HTTP, POLLS], true);
         if (steadyBoard) {
-            const rps = rate(steadyBoard, HTTP);
-            r.board_rps = fixed(rps, 3);
-            r.board_rps_per_task = perTask(steadyBoard, rps);
+            r.board_rps = fixed(rate(steadyBoard, HTTP), 3);
+            r.board_rps_per_task = perTask(steadyBoard, (p) => podRate(p, HTTP));
             r.claim_polls_per_min = fixed(rate(steadyBoard, POLLS) * 60, 1);
-            if (steadyBoard.samples.some((x) => x.name === HTTP && (x.labels.route ?? '').includes('heartbeat'))) {
-                r.heartbeats_per_task_min = perTask(
-                    steadyBoard,
-                    rate(steadyBoard, HTTP, (l) => (l.route ?? '').includes('heartbeat')) * 60
-                );
+            if (steadyBoard.pods.every((p) => p.samples.some((x) => x.name === HTTP && beat(x.labels)))) {
+                r.heartbeats_per_task_min = perTask(steadyBoard, (p) => podRate(p, HTTP, beat) * 60);
             }
         }
         const steadyDriver = delta(driver, 'a', 'b', [K8S], true);
@@ -346,7 +375,7 @@ function row(cell) {
             }
             const total = [...by.values()].reduce((a, b) => a + b, 0);
             r.k8s_rps = fixed(total, 3);
-            r.k8s_rps_per_task = perTask(steadyDriver, total);
+            r.k8s_rps_per_task = perTask(steadyDriver, (p) => podRate(p, K8S));
             r.k8s_by_client_verb_resource = [...by]
                 .sort((x, y) => y[1] - x[1])
                 .map(([k, v]) => `${k}=${fixed(v, 3)}`)

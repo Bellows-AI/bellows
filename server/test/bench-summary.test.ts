@@ -437,19 +437,80 @@ describe('bench-summary', () => {
         expect(header).toContain('saturated');
     });
 
+    const syncSeries = (outcome: string, count: number, sum: number) =>
+        histogram(
+            'factory_driver_step_seconds',
+            { '1': count, '5': count, '+Inf': count },
+            sum,
+            `kind="sync",outcome="${outcome}"`
+        );
+    const REAP = [
+        histogram('factory_driver_reaper_sweep_seconds', { '1': 0, '+Inf': 0 }, 0, 'outcome="ok"'),
+        'factory_driver_reaper_scanned_total{what="jobs"} 0',
+    ].join('\n');
+    const driverCell = (name: string, r: number, ends: string[]): Files =>
+        cell(
+            name,
+            4,
+            r,
+            scrapes(
+                name,
+                'driver',
+                Object.fromEntries(ends.map((end, i) => [`d${i}`, { s: `${REAP}\n`, c: `${REAP}\n${end}\n` }]))
+            )
+        );
+
     it('reports the sync mean only from a sum and a count of the same series', () => {
-        const count = 'factory_driver_step_seconds_count{kind="sync",outcome="ok"} 4\n';
-        const sumOk = 'factory_driver_step_seconds_sum{kind="sync",outcome="ok"} 2\n';
-        const agentSum = 'factory_driver_step_seconds_sum{kind="agent",outcome="ok"} 9\n';
-        const reap =
-            'factory_driver_reaper_sweep_seconds_count{outcome="ok"} 0\nfactory_driver_reaper_scanned_total{what="jobs"} 0\n';
-        const run = (end: string) =>
-            summarize(cell('t-n4-r1', 4, 1, scrapes('t-n4-r1', 'driver', { d0: { s: reap, c: reap + end } }))).rows[0];
-        expect(run(count + sumOk)?.sync_mean_s).toBe('0.5');
-        expect(run(count + agentSum)?.sync_mean_s).toBe('?');
-        expect(
-            run(`factory_driver_step_seconds_count{kind="sync",outcome="error"} 1\n${count}${sumOk}`)?.sync_mean_s
-        ).toBe('?');
+        const agentSum = 'factory_driver_step_seconds_sum{kind="agent",outcome="ok"} 9';
+        const count = 'factory_driver_step_seconds_count{kind="sync",outcome="ok"} 4';
+        expect(summarize(driverCell('t-n4-r1', 1, [syncSeries('ok', 4, 2)])).rows[0]?.sync_mean_s).toBe('0.5');
+        expect(summarize(driverCell('t-n4-r1', 1, [`${count}\n${agentSum}`])).rows[0]?.sync_mean_s).toBe('?');
+        const twoOutcomes = `${syncSeries('ok', 4, 2)}\nfactory_driver_step_seconds_count{kind="sync",outcome="error"} 1`;
+        expect(summarize(driverCell('t-n4-r1', 1, [twoOutcomes])).rows[0]?.sync_mean_s).toBe('?');
+    });
+
+    it('validates the sync series of each driver before adding the drivers up', () => {
+        const whole = syncSeries('ok', 2, 1);
+        const countOnly = 'factory_driver_step_seconds_count{kind="sync",outcome="ok"} 2';
+        // Driver 0 is whole; driver 1 has a count and no sum, so its pair must not borrow driver 0's.
+        expect(summarize(driverCell('t-n4-r2', 2, [whole, countOnly])).rows[0]?.sync_mean_s).toBe('?');
+        // An extra sum with no count on a second series would enter the numerator.
+        const extraSum = `${whole}\nfactory_driver_step_seconds_sum{kind="sync",outcome="error"} 7`;
+        expect(summarize(driverCell('t-n4-r2', 2, [whole, extraSum])).rows[0]?.sync_mean_s).toBe('?');
+        expect(summarize(driverCell('t-n4-r2', 2, [whole, whole])).rows[0]?.sync_mean_s).toBe('0.5');
+    });
+
+    it('gives no per-task rate unless every task has its claim and its end', () => {
+        const http = (n: number) =>
+            `factory_http_request_duration_seconds_count{route="/api/jobs/:id/heartbeat"} ${n}\nfactory_claim_polls_total{outcome="x"} 0\n`;
+        const withRows = (rows: string): Files =>
+            cell('t-n2-r1', 2, 1, {
+                ...board('t-n2-r1', { a: [http(0), 1000], b: [http(30), 1030] }),
+                't-n2-r1.db.tsv': `id\tcreated\tstarted\tfinished\tstatus\tattempts\tclaim_seq\n${rows}`,
+            });
+        const whole = 'j0\t900\t901\t1100\tsucceeded\t1\t1\nj1\t900\t901\t1100\tsucceeded\t1\t1\n';
+        expect(summarize(withRows(whole)).rows[0]).toMatchObject({ board_rps: '1', board_rps_per_task: '0.5' });
+        const noStart = 'j0\t900\t901\t1100\tsucceeded\t1\t1\nj1\t900\t\t1100\tsucceeded\t1\t1\n';
+        expect(summarize(withRows(noStart)).rows[0]).toMatchObject({
+            board_rps: '1',
+            board_rps_per_task: '?',
+            heartbeats_per_task_min: '?',
+        });
+    });
+
+    it('normalizes each driver by its own task-seconds before adding the drivers up', () => {
+        const k8s = (n: number) =>
+            `factory_driver_k8s_request_duration_seconds_count{client="runner",verb="get",resource="pods"} ${n}\n`;
+        const files = cell('t-n1-r2', 1, 2, {
+            ...scrapes('t-n1-r2', 'driver', {
+                d0: { a: [k8s(0), 1000], b: [k8s(30), 1030] },
+                d1: { a: [k8s(0), 1000], b: [k8s(15), 1060] },
+            }),
+            // one task, active until 1030: all of d0's window, half of d1's
+            't-n1-r2.db.tsv': db([[900, 901, 1030, 'succeeded']]),
+        });
+        // d0: 1 req/s over 1 task = 1; d1: 0.25 req/s over 0.5 task = 0.5.
+        expect(summarize(files).rows[0]).toMatchObject({ k8s_rps: '1.25', k8s_rps_per_task: '1.5' });
     });
 
     it('reports ? for the runner start unless every expected runner has both times', () => {
