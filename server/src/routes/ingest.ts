@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { JOB_ID_HEADER, LEASE_TOKEN_HEADER, orgOf } from '../auth/plugin.js';
-import { UUID } from '../config.js';
+import { UUID } from '../identifiers.js';
 import type { OrgRegistry } from '../orgs.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';

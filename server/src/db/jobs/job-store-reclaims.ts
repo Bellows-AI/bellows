@@ -1,6 +1,27 @@
 // The worktree-reclaim queue's worker half (issue #41): claim, ack and renew, each under the
 // acquisition's own token (issue #821).
-import type { JobStore, JobStoreContext } from './job-store-types.js';
+import type { JobStore, JobStoreContext, ReclaimClaim, ReclaimRenewal } from './job-store-types.js';
+
+/** The worktree-reclaim queue. */
+export interface JobReclaimStore {
+    /** The driver's poll of the worktree-reclaim queue. The oldest claimable row, or null —
+     * claimable by the expiry a previous claim GRANTED it, never by the polling worker's own
+     * leaseSeconds. */
+    claimReclaim(worker: string, leaseSeconds: number): Promise<ReclaimClaim | null>;
+
+    /**
+     * Removes the reclaim row once the driver has actually taken the tree, under the acquisition's
+     * own token only, and records the ack's receipt: the identical ack replayed answers `ok`, any
+     * other token `lost`, a row never queued `missing`.
+     */
+    ackReclaim(id: string, token: string): Promise<'ok' | 'lost' | 'missing'>;
+
+    /**
+     * Extends the row's lease to `leaseSeconds` from now while `token` still owns it — even past
+     * its expiry, since a row still carrying the token was never re-acquired.
+     */
+    renewReclaim(id: string, token: string, leaseSeconds: number): Promise<ReclaimRenewal>;
+}
 
 export async function claimReclaimRow(
     ctx: JobStoreContext,

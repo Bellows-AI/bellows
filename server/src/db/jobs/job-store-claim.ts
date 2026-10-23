@@ -27,11 +27,11 @@ import { secondsSince } from '../../prometheus.js';
 import { startAcquire } from './job-store-claim-probe.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
 import type {
-    JobStoreContext,
-    JobStore,
-    CreateJobStoreDeps,
     Claim,
     ClaimHelperPlan,
+    CreateJobStoreDeps,
+    JobStore,
+    JobStoreContext,
     JobStorePrs,
     ReviewerSpec,
 } from './job-store-types.js';
@@ -47,6 +47,12 @@ import {
     nodeOf,
     nodeSkipsGates,
 } from '../workflows/workflow-schema.js';
+
+/** The worker claim of the next queued job. */
+export interface JobClaimStore {
+    /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
+    claim(worker: string, leaseSeconds: number, options?: ClaimOptions): Promise<Claim | null>;
+}
 
 /** An expired running row of the org that `rule` selects: what a claim sweep settles. */
 const dueRows = (ctx: JobStoreContext, tx: TransactionSql, rule: Fragment): Fragment =>

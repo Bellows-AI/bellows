@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { loadArtifactsConfig } from '../src/artifacts/config.js';
-import { chunkKey, InvalidKeyError, normalizePrefix, parseChunkKey, type StreamRef } from '../src/artifacts/keys.js';
+import { loadArtifactsConfig, normalizePrefix } from '../src/config-artifacts.js';
+import { chunkKey, InvalidKeyError, parseChunkKey, type StreamRef } from '../src/artifacts/keys.js';
 import { createCredentialProvider } from '../src/artifacts/s3-credentials.js';
 import { createS3Store } from '../src/artifacts/s3-store.js';
 import { sha256Hex, signRequest } from '../src/artifacts/sigv4.js';

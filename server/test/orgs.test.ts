@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { LOCAL_ORG_ID, type AppConfig } from '../src/config.js';
+import type { AppConfig } from '../src/config.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { createOrgRegistry, planReaderOf, type OrgRegistry } from '../src/orgs.js';
 import { testConfig } from './helpers.js';
 

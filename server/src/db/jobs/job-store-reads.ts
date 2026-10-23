@@ -6,19 +6,104 @@
 import type { Sql, Fragment } from 'postgres';
 import { type JobRow, toJobRow, type TaskRow, toTask } from './job-store-rows.js';
 import type {
-    JobStoreContext,
     Job,
+    JobArtifactScope,
     JobStatus,
     JobStore,
-    JobArtifactScope,
-    TaskListFilters,
-    TaskSummary,
+    JobStoreContext,
     SettleOutcome,
+    TaskListFilters,
+    TaskListResponse,
+    TaskSummary,
 } from './job-store-types.js';
 import type { RestoreScopeResult } from '../restore-types.js';
 import type { JobLeaseInfo, JobThreadFacts } from '../lease-types.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from '../task-summary.js';
+
+/** The reads: a job, a thread, the task list, the settle wait, and the scopes artifacts and restore resolve against. */
+export interface JobReadStore {
+    /**
+     * The batched lease lookup behind `POST /api/jobs/leases` (issue #301): every named id's
+     * status and current lease, in no particular order. Ids this org's board does not know are
+     * simply not answered — the driver reads an absent id as "no such job here". Read-only, and
+     * deliberately NOT lease-guarded: the reaper holding no lease is the whole point. `withThreads`
+     * adds the thread facts (issue #775) to every ROOT's row; the task-volume sweep asks for them, the group sweep does not.
+     */
+    leases(ids: readonly string[], withThreads?: boolean): Promise<JobLeaseInfo[]>;
+
+    /**
+     * What an artifact upload for this job is authorized against (the artifact routes): the
+     * member and root it is filed under and the newest claim sequence that exists. Deliberately
+     * NOT lease-guarded, and it writes nothing: a stale attempt may finish uploads to its own
+     * claim prefix, and that is all it may do. Null when the org has no such job.
+     */
+    artifactScope(id: string): Promise<JobArtifactScope | null>;
+
+    /**
+     * The thread facts the restore reads (issue #775), authorized by the LIVE lease of `id`: the
+     * root's checkpoint pointer and the thread's rows. `lost` is a known job whose lease is not
+     * `leaseToken` (or is not running); `missing` an unknown one. Writes nothing.
+     */
+    restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
+
+    /**
+     * The whole follow-up chain containing `id` — the root task and every adjustment after it,
+     * oldest first. Accepts ANY member of the chain (the UI keeps one URL per conversation, so a
+     * member deep in the thread must resolve to the same view): every member carries the same
+     * `root_job_id` (022), which is what the read keys on. Null when `id` is not a job here.
+     */
+    thread(id: string): Promise<Job[] | null>;
+
+    get(id: string): Promise<Job | null>;
+
+    /**
+     * The settle long-poll (issue #323): holds until the named job's THREAD settles — the chain
+     * head (the newest member, created then id, the sidenav's rule) reaches a terminal status, or
+     * an open PR wait (036) stands on the thread — the same predicate `listTasksOf` buckets by,
+     * so a waiting client and the sidenav can never disagree about "still moving". Answers
+     * `terminal` or `parked` the moment a read says so, `timeout` once `timeoutMs` has elapsed,
+     * each with the thread's root and head identity, and null — without holding — when the org
+     * holds no such job.
+     */
+    waitForSettle(id: string, timeoutMs: number): Promise<SettleOutcome | null>;
+
+    /**
+     * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
+     * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
+     * `activity` line is the live summary the nav and task view render (issue #61).
+     *
+     * `status: 'terminal'` is the one pseudo-value, and its answer is grouped as one row per
+     * TASK, not per run (#124): the settled verdicts (`succeeded`/`failed`/`dead`/`stopped` —
+     * the same set the thread-done computation uses) are folded by `root_job_id`, so a finished
+     * conversation with follow-ups is one row. Identity fields are the ROOT's (id, command,
+     * author, created), present-tense fields the chain HEAD's (status, summary, runtime,
+     * session, started) — the rule the sidenav's `chainHead` already applies — and the wall
+     * clock and completion stamp are the thread's (sum and max over the members); `doneAt`
+     * comes from whichever member carries the thread's done. A thread with a member still
+     * queued or running is not completed and is excluded whole. Ordering is by the
+     * thread's newest completion, and the limit bounds tasks. The per-run lists (no status,
+     * one named status) keep their row-per-run contract — the tasks pages and sidenav group on
+     * the client.
+     */
+    list(filter: {
+        status?: JobStatus | 'terminal' | undefined;
+        repo?: string | undefined;
+        limit: number;
+    }): Promise<Job[]>;
+
+    /**
+     * The task read model (#157): one summary per thread root — identity and authorship from the
+     * ROOT row, present tense from the chain HEAD (the newest member, created then id — the
+     * sidenav's chainHead rule), bucketed running/review/past exactly as `taskSections()` does in
+     * the web layer, including a done task resurrected by a queued follow-up. The response
+     * carries the org's whole navigation (counts and previews, immune to the page's filters) and
+     * one keyset-paginated page on (activity_at, root_id) — never OFFSET. Cursor validation is
+     * the caller's first line of defence and repeated here: a cursor that does not decode under
+     * the handed filters throws rather than answering a page of a different question.
+     */
+    listTasks(filters: TaskListFilters): Promise<TaskListResponse>;
+}
 
 export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] | null> {
     const { sql, orgId, authorJoin, authorColumns, waitLateral, publicationJoin, publicationColumns } = ctx;

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { LOCAL_ORG_ID, loadConfig } from '../src/config.js';
+import { loadConfig } from '../src/config.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 
 /** All required now, and none of these cases is about any of them. */
 const DB = 'postgres://factory:factory@127.0.0.1:5432/factory_dev';

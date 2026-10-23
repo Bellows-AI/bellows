@@ -113,7 +113,7 @@ export interface ArtifactStoreOptions {
     orgId: string;
     ready: Promise<unknown>;
     objects: ObjectStore;
-    /** Normalized: empty or one trailing slash (`normalizePrefix`). */
+    /** Normalized: empty or one trailing slash (`normalizePrefix` in `config-artifacts.ts`). */
     prefix: string;
     streamMaxBytes?: number;
     /** 0 or absent: no per-org quota. */

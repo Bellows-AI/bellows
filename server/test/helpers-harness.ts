@@ -1,10 +1,12 @@
 import { type AppDeps, buildApp } from '../src/app.js';
 import type { GitHubIdentityClient } from '../src/auth/github.js';
 import type { AuthStore } from '../src/auth/store.js';
-import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js';
+import type { AppConfig, AuthConfig } from '../src/config.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import type { WorkflowStore } from '../src/db/workflows/workflow-store.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { type RepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
@@ -12,6 +14,15 @@ import type { InstallationRepo } from '../src/github/app-client.js';
 import type { TelemetryStore } from '../src/telemetry/store.js';
 import { testConfig } from './helpers-config.js';
 import { stubTelemetryClient, type TelemetryStub } from './helpers-telemetry.js';
+
+/**
+ * A sparse stand-in for the one concern of the job store a route under test calls, handed to a
+ * registry that holds the whole store. Only that concern's methods can be named (`Slice` is its
+ * interface, e.g. `JobQuestionStore`); a method the route should not reach is simply absent.
+ */
+export function jobStoreSlice<Slice extends Partial<JobStore>>(stub: { [K in keyof Slice]?: unknown }): JobStore {
+    return stub as unknown as JobStore;
+}
 
 /**
  * A registry that answers for EVERY org id with one runtime — the single-org shape most route

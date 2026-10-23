@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { PhaseCheckpointStore } from '../src/db/jobs/job-store-phase-checkpoints.js';
 import { trackApps } from './helpers-http.js';
-import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { staticRegistry, stubTelemetryClient, testConfig, jobStoreSlice } from './helpers.js';
 
 /**
  * Issue #829 (G6): `POST /api/jobs/:id/phase-checkpoint` records a post-run phase's outcome under
@@ -14,13 +15,13 @@ const track = trackApps();
 const ID = '11111111-1111-4111-8111-111111111111';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 
-type Written = Parameters<JobStore['writePhaseCheckpoint']>;
+type Written = Parameters<PhaseCheckpointStore['writePhaseCheckpoint']>;
 type Answer = 'ok' | 'lost' | 'missing' | 'conflict';
 
 function stubStore(answer: Answer = 'ok') {
     const written: Written[] = [];
     const read: [string, string, number][] = [];
-    const store = {
+    const store = jobStoreSlice<PhaseCheckpointStore>({
         async writePhaseCheckpoint(...args: Written) {
             written.push(args);
             return { result: answer };
@@ -34,7 +35,7 @@ function stubStore(answer: Answer = 'ok') {
                   }
                 : { result: answer === 'conflict' ? ('lost' as const) : answer };
         },
-    } as unknown as JobStore;
+    });
     return { store, written, read };
 }
 

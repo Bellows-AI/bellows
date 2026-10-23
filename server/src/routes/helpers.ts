@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
-import { fullName, type Repo } from '../config.js';
+import type { Repo } from '../config.js';
+import { fullName } from '../identifiers.js';
 import type { OrgRuntime } from '../orgs.js';
 
 const HTTP_UNAVAILABLE = 503;

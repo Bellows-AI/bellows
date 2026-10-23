@@ -9,12 +9,12 @@ import {
 } from '../src/artifacts/artifact-store.js';
 import { STREAM_STATE } from '../src/artifacts/artifact-read.js';
 import type { StreamRef } from '../src/artifacts/keys.js';
-import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
 import { trackApps } from './helpers-http.js';
-import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, signedIn, stubTelemetryClient, testConfig, jobStoreSlice } from './helpers.js';
 
 /**
  * The analysis reads over the artifact index (#768): pagination across chunks, attempts and
@@ -118,7 +118,8 @@ function fakeArtifacts(streams: FakeStream[]) {
     return { store, reads };
 }
 
-const jobStoreOf = (present: boolean) => ({ get: async () => (present ? { id: JOB } : null) }) as unknown as JobStore;
+const jobStoreOf = (present: boolean) =>
+    jobStoreSlice<JobReadStore>({ get: async () => (present ? { id: JOB } : null) });
 
 async function harness(boards: Record<string, { artifacts: ArtifactStore; jobPresent?: boolean }>) {
     const config = testConfig({ auth: githubAuth() });

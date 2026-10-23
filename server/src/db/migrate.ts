@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import type { Sql, TransactionSql } from 'postgres';
-import { LOCAL_ORG_ID } from '../config.js';
+import { LOCAL_ORG_ID } from '../identifiers.js';
 import { TelemetryError } from '../telemetry/errors.js';
 import { ADMIN_ROLE } from '@factory-ai/core';
 

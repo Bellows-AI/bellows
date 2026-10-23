@@ -13,6 +13,20 @@ import { stagedUnderLease } from './job-store-staged.js';
 import type { JobStore, JobStoreContext } from './job-store-types.js';
 import { type CompleteOutcome, type CompleteResult, completeInTx } from './job-store-worker.js';
 
+/** The staged conclusion an agent leaves under its lease. */
+export interface JobConclusionStore {
+    /**
+     * Stages the attempt's final envelope, the input `complete` takes, under its lease (issue #821),
+     * renewing it by `leaseSeconds`: immutable, and binding — see `job-store-conclusions.ts`.
+     */
+    stageConclusion(
+        id: string,
+        leaseToken: string,
+        result: Parameters<JobStore['complete']>[2],
+        leaseSeconds: number
+    ): Promise<{ result: 'ok' | 'lost' | 'missing' | 'conflict' }>;
+}
+
 /** The interruption a board commit records: the lease ran out between the stage and the verdict. */
 export const STAGED_COMMIT_REASON = 'the lease expired after its verdict was staged: the board committed it';
 

@@ -1,5 +1,6 @@
 import { createCache } from '../cache.js';
-import { fullName, type Repo } from '../config.js';
+import type { Repo } from '../config.js';
+import { fullName } from '../identifiers.js';
 import type { GitHubAppClient, Installation, InstallationRepo } from './app-client.js';
 
 /**

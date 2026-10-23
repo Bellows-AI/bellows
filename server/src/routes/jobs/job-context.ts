@@ -1,6 +1,6 @@
 import type { FastifyRequest } from 'fastify';
 import { orgOf } from '../../auth/plugin.js';
-import type { ClaimOptions } from '../../db/jobs/job-store-admission.js';
+import type { ClaimOptions, JobAdmissionStore } from '../../db/jobs/job-store-admission.js';
 import type { JobStore } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 
@@ -10,7 +10,10 @@ import type { OrgRegistry } from '../../orgs.js';
  * it carries that org's store. Absent in the route-test mode with no stores behind the
  * registry.
  */
-export async function storeFor(orgs: OrgRegistry, request: FastifyRequest): Promise<JobStore | null> {
+export async function storeFor<K extends keyof JobStore = keyof JobStore>(
+    orgs: OrgRegistry,
+    request: FastifyRequest
+): Promise<Pick<JobStore, K> | null> {
     const rt = await orgs.for(orgOf(request));
     return rt?.jobs ?? null;
 }
@@ -39,7 +42,10 @@ export async function telemetryFor(orgs: OrgRegistry, request: FastifyRequest) {
  * wins and the empty orgs cost one idle poll each. Every other worker route arrives with
  * the org the auth hook read from the row its URL names, and is a one-element list.
  */
-export async function boardsFor(orgs: OrgRegistry, request: FastifyRequest): Promise<JobStore[]> {
+export async function boardsFor<K extends keyof JobStore = keyof JobStore>(
+    orgs: OrgRegistry,
+    request: FastifyRequest
+): Promise<Pick<JobStore, K>[]> {
     if (request.auth?.kind === 'worker' && request.auth.orgId === null) {
         // Resolved in parallel — the lookups are independent, and this runs on every driver poll.
         // Warm runtimes are cached promises and cost nothing; a cold start would otherwise
@@ -64,17 +70,24 @@ export async function executorsFor(orgs: OrgRegistry, request: FastifyRequest) {
     return rt?.userExecutors ?? null;
 }
 
-export type BoardScanner = <T>(
-    boards: readonly JobStore[],
+export type BoardScanner = <Board, T>(
+    boards: readonly Board[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
+    claimOf: (board: Board, options: ClaimOptions) => Promise<T | null>
 ) => Promise<T | null>;
 
-async function scanBoards<T>(
-    boards: readonly JobStore[],
+/** The fair scan orders boards by their `demand()`, so its boards must carry it. */
+export type FairBoardScanner = <Board extends JobAdmissionStore, T>(
+    boards: readonly Board[],
+    log: (e: Error) => void,
+    claimOf: (board: Board, options: ClaimOptions) => Promise<T | null>
+) => Promise<T | null>;
+
+async function scanBoards<Board, T>(
+    boards: readonly Board[],
     order: readonly number[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
+    claimOf: (board: Board, options: ClaimOptions) => Promise<T | null>
 ): Promise<T | null> {
     let failed: Error | null = null;
     for (const index of order) {
@@ -106,10 +119,10 @@ async function scanBoards<T>(
  */
 export function boardScan(): BoardScanner {
     let turn = 0;
-    return async <T>(
-        boards: readonly JobStore[],
+    return async <Board, T>(
+        boards: readonly Board[],
         log: (e: Error) => void,
-        claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
+        claimOf: (board: Board, options: ClaimOptions) => Promise<T | null>
     ): Promise<T | null> => {
         const start = turn++ % boards.length;
         const order = Array.from({ length: boards.length }, (_, i) => (start + i) % boards.length);
@@ -124,11 +137,11 @@ export function boardScan(): BoardScanner {
  * reaches next instead of the org the order put first. A takeover keeps the slot its row holds, so recovery is
  * still offered everywhere.
  */
-async function scanUnderBudget<T>(
-    boards: readonly JobStore[],
+async function scanUnderBudget<Board, T>(
+    boards: readonly Board[],
     order: readonly number[],
     log: (e: Error) => void,
-    claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
+    claimOf: (board: Board, options: ClaimOptions) => Promise<T | null>
 ): Promise<T | null> {
     let failed: Error | null = null;
     let full = false;
@@ -156,12 +169,12 @@ async function scanUnderBudget<T>(
  * oldest waiting row queued first. Only an exact tie falls back to the rotation. A board whose
  * demand read fails goes last, still scanned, so one unhealthy org never blocks the others.
  */
-export function fairBoardScan(): BoardScanner {
+export function fairBoardScan(): FairBoardScanner {
     let turn = 0;
-    return async <T>(
-        boards: readonly JobStore[],
+    return async <Board extends JobAdmissionStore, T>(
+        boards: readonly Board[],
         log: (e: Error) => void,
-        claimOf: (board: JobStore, options: ClaimOptions) => Promise<T | null>
+        claimOf: (board: Board, options: ClaimOptions) => Promise<T | null>
     ): Promise<T | null> => {
         const start = turn++ % boards.length;
         const demands = await Promise.all(

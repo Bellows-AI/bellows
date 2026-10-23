@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import type { PhaseCheckpointPhase } from '../../db/jobs/job-store-phase-checkpoints.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, body, guard } from '../helpers.js';
@@ -13,6 +13,7 @@ import {
     notFoundJob,
 } from './job-limits.js';
 import { resolveJobRoute } from '../route-guards.js';
+import type { PhaseCheckpointStore } from '../../db/jobs/job-store-phase-checkpoints.js';
 
 const PHASES: readonly string[] = ['setup', 'gates', 'post', 'publish'] satisfies PhaseCheckpointPhase[];
 
@@ -25,7 +26,7 @@ const runClaimSeqOf = (value: unknown): number | null =>
  * both a 409 the writer treats as "not recorded".
  */
 export async function handlePhaseCheckpoint(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof PhaseCheckpointStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -72,7 +73,7 @@ export async function handlePhaseCheckpoint(orgs: OrgRegistry, request: FastifyR
 
 /** The checkpoints of the run claim `runClaimSeq` started, under the caller's lease. */
 export async function handlePhaseCheckpoints(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof PhaseCheckpointStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 

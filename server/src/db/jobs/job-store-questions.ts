@@ -15,6 +15,33 @@ import type {
     JobStoreContext,
 } from './job-store-types.js';
 
+/** An agent's questions and the member's answers. */
+export interface JobQuestionStore {
+    /**
+     * Stores one question the agent asked (050, issue #531), pending, for the attempt holding the
+     * lease. Idempotent on `(job, questionId)` (`existing`, nothing changed); an attempt holds at
+     * most `QUESTIONS_PER_ATTEMPT` rows (`limit`). The lease guard and the cap count serialize on
+     * the job row, so concurrent asks cannot overshoot.
+     */
+    askQuestion(
+        id: string,
+        leaseToken: string,
+        ask: { questionId: string; questions: AskedQuestion[] }
+    ): Promise<AskQuestionResult>;
+
+    /**
+     * A member's answer: ONE conditional update (pending, job running under the asking attempt's
+     * lease, no stop requested), so a retried or concurrent answer lands once. `answers` maps each
+     * stored question text to a trimmed, non-empty answer; any other key set is `invalid`.
+     */
+    answerQuestion(
+        id: string,
+        questionId: string,
+        answers: Record<string, string>,
+        answeredBy: string | null
+    ): Promise<AnswerQuestionResult>;
+}
+
 /** How many question rows one claim may hold (074, keyed by `claim_seq`); the next ask is refused. */
 export const QUESTIONS_PER_ATTEMPT = 5;
 

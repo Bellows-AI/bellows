@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
+import { canonical } from './job-store-idempotency.js';
 import { exists } from './job-store-rows.js';
 
 /**
@@ -10,18 +11,6 @@ import { exists } from './job-store-rows.js';
  */
 
 export type SettleOperation = 'complete' | 'suspend' | 'interrupt';
-
-/** Stable JSON: object keys sorted at every depth, so key order never changes a fingerprint. */
-export function canonical(value: unknown): string {
-    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
-    if (typeof value === 'object' && value !== null) {
-        const entries = Object.entries(value as Record<string, unknown>)
-            .filter(([, v]) => v !== undefined)
-            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-        return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
-    }
-    return JSON.stringify(value) ?? 'null';
-}
 
 export function fingerprintOf(input: unknown): string {
     return createHash('sha256').update(canonical(input)).digest('hex');

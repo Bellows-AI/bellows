@@ -20,7 +20,7 @@ import {
 import { validateDefinition } from '../workflow-schema-validate.js';
 import { GITHUB_REVIEW_RECONCILE } from './github-review-reconcile.js';
 import { MERGE_CONFLICT_AUTOFIX } from './merge-conflict-autofix.js';
-import { parseRuntimeParams } from './runtime.js';
+import { parseRuntimeParams } from './runtime-params.js';
 import { BLOCK_NAMESPACE_SEPARATOR } from './types.js';
 import type { BlockConfigField, BlockDescriptor, BlockRegistry, CompileCheck, CompileRefusal } from './types.js';
 

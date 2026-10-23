@@ -22,8 +22,6 @@ import {
 } from './batch-store-schedule.js';
 import { BATCH_DRAFT, BATCH_ROW_STARTED, type BatchStore } from './batch-store-types.js';
 
-export * from './batch-store-types.js';
-
 /**
  * Batches (059; docs/batches.md): a draft plan, edited whole, then frozen by `start`. The org is
  * bound at construction like every store here. The plan lives in `batch_target`, `batch_stage` and

@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { JobMergeStore } from '../src/db/jobs/job-store-merge.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -11,6 +11,7 @@ import {
     stubTelemetryClient,
     testConfig,
     type MemoryPrLifecycleStore,
+    jobStoreSlice,
 } from './helpers.js';
 
 import type { OrgRuntime } from '../src/orgs.js';
@@ -396,7 +397,7 @@ function mergeCloseStub() {
             return { outcome: 'applied' as const, closedRoots: 0 };
         },
     };
-    return { store: store as unknown as JobStore, closed };
+    return { store: jobStoreSlice<JobMergeStore>(store), closed };
 }
 
 describe('POST /api/github/webhook: a merged PR closes its tasks (390)', () => {

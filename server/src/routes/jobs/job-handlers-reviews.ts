@@ -1,6 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import type { ReviewRequest } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { REVIEWER_NAME } from '../../workspace/bellows-reviewers.js';
@@ -16,6 +16,7 @@ import {
     notFoundJob,
 } from './job-limits.js';
 import { resolveJobRoute } from '../route-guards.js';
+import type { JobReviewStore } from '../../db/jobs/job-store-reviews.js';
 
 /**
  * Independent reviewer invocation (issue #549): the driver's request for a named reviewer's
@@ -47,7 +48,7 @@ function validateReviewBody(fields: Record<string, unknown>): Checked {
 }
 
 export async function handleReviewRequest(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReviewStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -105,7 +106,7 @@ function refusedReview(
 }
 
 export async function handleReviewRead(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReviewStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
