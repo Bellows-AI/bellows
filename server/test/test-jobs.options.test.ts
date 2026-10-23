@@ -48,7 +48,15 @@ case "$1 $2" in
     'logs '*) echo 'supervisor diagnostics' ;;
 esac
 exit 0`,
+    // --changed maps real git output through the real map; git answers with $CHANGED_FILES.
+    git: `case "$1" in
+    merge-base) echo deadbeef ;;
+    diff) printf '%s' "$CHANGED_FILES" ;;
+    ls-files) ;;
+    *) exit 99 ;;
+esac`,
     node: `case "$1" in
+    */scripts/test-jobs-changed.mjs) exec "$REAL_NODE" "$@" ;;
     scripts/fake-model-endpoint.mjs) printf '1234\n' ;;
     -e) printf '1\n' ;;
     *) exit 99 ;;
@@ -86,6 +94,8 @@ function fixture() {
                         PATH: `${dir}:${process.env.PATH}`,
                         HARNESS_TRACE: trace,
                         HARNESS_GATE: dir,
+                        REAL_NODE: process.execPath,
+                        CHANGED_FILES: '',
                         TIMINGS_FILE: timings,
                         AGENT_TIMEOUT: '',
                         POSTGRES_START_FAIL: '',
@@ -144,6 +154,17 @@ describe('test-jobs phase options', () => {
         expect(help.stdout).toContain('driver-kill');
         const lane = fixture();
         const result = await lane.run(['--phase', 'driver-kill'], { JOBS_TEST_DB: 'factory_dev' });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('ending _test');
+        expect(result.stdout).not.toContain('invalid --phase');
+    });
+
+    // Issue #831: competing drivers under one shared admission budget.
+    it('lists the capacity phase and accepts it as a phase', async () => {
+        const help = await fixture().run(['--help']);
+        expect(help.stdout).toContain('capacity');
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'capacity'], { JOBS_TEST_DB: 'factory_dev' });
         expect(result.status).toBe(2);
         expect(result.stdout).toContain('ending _test');
         expect(result.stdout).not.toContain('invalid --phase');
@@ -287,5 +308,107 @@ describe('test-jobs phase options', () => {
         expect(result.stdout).toContain("supervisor exit '70'");
         expect(lane.log('stop-opencode.supervisor-wait')).toBe('70\n');
         expect(lane.trace()).toMatch(/rm -f lane-agent-.* lane-sup-/);
+    });
+    // Issue #950: phases that share one board fixture are named as a comma list.
+    it('accepts a comma list of phases and rejects an unknown, empty or mixed-in one', async () => {
+        for (const list of [
+            'board,driver',
+            'driver-kill,capacity,services',
+            'services,node-disruption',
+            'board,board',
+        ]) {
+            const result = await fixture().run(['--phase', list], { JOBS_TEST_DB: 'factory_dev' });
+            expect(result.status, list).toBe(2);
+            expect(result.stdout, list).toContain('ending _test');
+        }
+        for (const list of ['board,bogus', 'board,,driver', 'board,', ',board', 'all,board']) {
+            const result = await fixture().run(['--phase', list]);
+            expect(result.status, list).toBe(2);
+            expect(result.stdout, list).toContain('invalid --phase');
+        }
+    });
+
+    it('requires the real executor images a listed standalone phase needs, before any board setup', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'ask-user-question,cooperative-stop'], {
+            MISSING_IMAGE: 'opencode-executor',
+        });
+        expect(result.status).toBe(1);
+        expect(lane.trace().trim().split('\n')).toEqual([
+            'info',
+            'image inspect claude-executor',
+            'image inspect opencode-executor',
+        ]);
+    });
+
+    it('boots no board for a list of standalone phases and one for a list that mixes in a board phase', async () => {
+        const alone = await fixture().run(['--phase', 'tool-isolation,cooperative-stop'], {
+            JOBS_TEST_DB: 'factory_dev',
+        });
+        expect(alone.stdout).not.toContain('ending _test');
+        const mixed = await fixture().run(['--phase', 'tool-isolation,auth'], { JOBS_TEST_DB: 'factory_dev' });
+        expect(mixed.status).toBe(2);
+        expect(mixed.stdout).toContain('ending _test');
+    });
+
+    // Issue #950: --changed runs the phases mapped from the diff, says why, and runs nothing for none.
+    it('runs nothing, and says so, when no file changed', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--changed', 'origin/main']);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('no phase; nothing to run');
+        expect(result.stderr).toContain('no changed files');
+        expect(lane.trace()).toBe('');
+    });
+
+    it('runs nothing when only files no lane executes changed', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--changed', 'origin/main'], {
+            CHANGED_FILES: 'docs/jobs.md\ndriver/src/k8s-gate.ts\n',
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('nothing to run');
+        expect(lane.trace()).toBe('');
+    });
+
+    it('selects the mapped phases and prints the reason for each file', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--changed', 'origin/main'], {
+            CHANGED_FILES: 'driver/src/loop-adopt.ts\n',
+            JOBS_TEST_DB: 'factory_dev',
+        });
+        expect(result.stdout).toContain('--changed origin/main runs: node-disruption,driver-kill');
+        expect(result.stderr).toContain(
+            '[changed] driver/src/loop-adopt.ts -> node-disruption,driver-kill (adoption and takeover)'
+        );
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('ending _test');
+    });
+
+    it('falls back to the whole lane for a shared file', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--changed', 'origin/main'], {
+            CHANGED_FILES: 'scripts/stub-agent.sh\n',
+            MISSING_IMAGE: 'claude-executor',
+        });
+        expect(result.stdout).toContain('runs: all');
+        expect(result.stderr).toContain('full lane');
+        expect(lane.trace().trim().split('\n')).toEqual(['info', 'image inspect claude-executor']);
+    });
+
+    it('refuses --changed together with --phase, and --changed without a base', async () => {
+        const both = await fixture().run(['--changed', 'origin/main', '--phase', 'board']);
+        expect(both.status).toBe(2);
+        expect(both.stdout).toContain('exclusive');
+        const bare = await fixture().run(['--changed']);
+        expect(bare.status).toBe(2);
+        expect(bare.stdout).toContain('needs a base ref');
+    });
+
+    it('documents both flags and the policy in --help', async () => {
+        const help = await fixture().run(['--help']);
+        expect(help.stdout).toContain('--phase driver,services');
+        expect(help.stdout).toContain('--changed BASE');
+        expect(help.stdout).toContain('the full lane');
     });
 });

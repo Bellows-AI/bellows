@@ -91,9 +91,9 @@ function workerMethods(
     | 'restoreScope'
 > {
     return {
-        async claim(worker, leaseSeconds) {
+        async claim(worker, leaseSeconds, options) {
             await gate();
-            return claimJob(ctx, worker, leaseSeconds);
+            return claimJob(ctx, worker, leaseSeconds, options);
         },
 
         async demand() {
@@ -181,7 +181,18 @@ export { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.j
 export { CLAIM_PREPARE_SECONDS } from './job-store-claim.js';
 
 export function createJobStore(deps: CreateJobStoreDeps): JobStore {
-    const { sql, orgId, ready, env, githubApp = false, plan: planReader, executorConfig, prs, admission = {} } = deps;
+    const {
+        sql,
+        orgId,
+        ready,
+        env,
+        githubApp = false,
+        plan: planReader,
+        executorConfig,
+        prs,
+        admission = {},
+        metrics,
+    } = deps;
     const gate = async () => {
         if (ready) await ready;
     };
@@ -194,6 +205,7 @@ export function createJobStore(deps: CreateJobStoreDeps): JobStore {
         planReader,
         executorConfig,
         prs,
+        metrics,
         wallTick: wallTickFragment(sql),
         authorJoin: authorJoinFragment(sql),
         authorColumns: authorColumnsFragment(sql),

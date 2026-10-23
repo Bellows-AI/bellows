@@ -165,6 +165,13 @@ spec:
                       # What a released run's group waits for a newer holder on top of the lease (#829).
                       - name: DRIVER_REBIND_GRACE_MS
                         value: {{ $.Values.driver.rebindGraceMs | quote }}
+                      # The orphan floor of a lost driver's group and the GET /step long poll it outlasts (#950).
+                      # Production keeps both defaults; the kind lane lowers them with its lease, and the driver
+                      # refuses a pair the lease cannot hold.
+                      - name: DRIVER_ORPHAN_MIN_MS
+                        value: {{ $.Values.driver.orphanMinMs | quote }}
+                      - name: DRIVER_STEP_WAIT_MS
+                        value: {{ $.Values.driver.stepWaitMs | quote }}
                       # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port; the
                       # runner reaches it at THIS pod's IP, the driver appending the bound port. A
                       # Service name would resolve to every driver replica — and, during a rollout,
@@ -179,6 +186,12 @@ spec:
                         value: http://$(POD_IP)
                       - name: GATE_LISTEN_HOST
                         value: 0.0.0.0
+                      {{- with $.Values.driver.metricsPort }}
+                      # The scrape listener (GET /metrics), behind the board token above; the driver
+                      # refuses to boot with a port, no token and this bind (issue #831).
+                      - name: DRIVER_METRICS_PORT
+                        value: {{ . | quote }}
+                      {{- end }}
                       # Touched every 10s by a timer; the liveness probe below reads its age.
                       - name: DRIVER_HEARTBEAT_FILE
                         value: /tmp/heartbeat
@@ -258,8 +271,14 @@ spec:
                       {{- toYaml . | nindent 22 }}
                   {{- end }}
                   {{- include "factory.containerSecurityContext" $ | nindent 18 }}
-                  # The driver serves no HTTP of its own, so liveness is the heartbeat file's age:
-                  # a wedged event loop stops the timer, a long drain does not.
+                  {{- with $.Values.driver.metricsPort }}
+                  ports:
+                      - name: metrics
+                        containerPort: {{ . }}
+                  {{- end }}
+                  # Liveness is the heartbeat file's age, not an HTTP probe (the scrape listener above
+                  # is optional and answers only the board token): a wedged event loop stops the
+                  # timer, a long drain does not.
                   livenessProbe:
                       exec:
                           command:

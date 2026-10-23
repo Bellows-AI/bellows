@@ -149,6 +149,7 @@ const sink = (answer: (step: StepRequest) => { stdout?: string; timedOut?: boole
             };
         },
         awaitReport: () => new Promise(() => undefined),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,

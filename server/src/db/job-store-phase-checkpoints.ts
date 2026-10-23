@@ -7,8 +7,8 @@
 import { exists } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
-/** The post-run phases that leave a checkpoint, in the order they run (issue #829). */
-export type PhaseCheckpointPhase = 'gates' | 'post' | 'publish';
+/** The phases that leave a checkpoint, in the order they run: the pre-agent setup, then the post-run phases (#829, #917). */
+export type PhaseCheckpointPhase = 'setup' | 'gates' | 'post' | 'publish';
 
 /** One stored phase checkpoint: the claim that wrote it, the tree its phase ran against, its outcome. */
 export interface PhaseCheckpointRow {
@@ -38,7 +38,7 @@ export interface PhaseCheckpointStore {
     ): Promise<{ result: 'lost' | 'missing' } | { result: 'ok'; checkpoints: PhaseCheckpointRow[] }>;
 }
 
-const ORDER = ['gates', 'post', 'publish'] as const;
+const ORDER = ['setup', 'gates', 'post', 'publish'] as const;
 
 export async function writePhaseCheckpoint(
     ctx: JobStoreContext,
@@ -87,9 +87,7 @@ export async function readPhaseCheckpoints(
     `;
     if (!row) return { result: 'missing' };
     if (row.status !== 'running' || row.lease_token !== leaseToken) return { result: 'lost' };
-    const rows = await sql<
-        { phase: 'gates' | 'post' | 'publish'; claim_seq: string; tree: string | null; result: unknown }[]
-    >`
+    const rows = await sql<{ phase: PhaseCheckpointPhase; claim_seq: string; tree: string | null; result: unknown }[]>`
         select phase, claim_seq, tree, result from job_phase_checkpoint
         where org_id = ${orgId} and job_id = ${id} and run_claim_seq = ${runClaimSeq}
     `;

@@ -201,6 +201,7 @@ function fakeSteps(
             return answer(step);
         },
         awaitReport: () => Promise.resolve(reported),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: (token) => {
             released.push(token);
@@ -1961,6 +1962,62 @@ describe('the docker runner', () => {
             started: true,
             infraLoss: 'the runner container was removed before it exited (exit 137)',
         });
+    });
+
+    // An agent that died before it wrote agent.exit (#920) leaves its supervisor waiting out the start or heartbeat
+    // window: the supervisor cannot see the container, so the driver names it once the daemon confirms it over.
+    describe.each([
+        ['exited', '{"Status":"exited","Running":false,"StartedAt":"2026-01-01T00:00:00Z","ExitCode":1}', true],
+        ['dead', '{"Status":"dead","Running":false,"StartedAt":"2026-01-01T00:00:00Z","ExitCode":1}', true],
+        ['still running', '{"Status":"running","Running":true,"StartedAt":"2026-01-01T00:00:00Z"}', false],
+        ['unparsable', 'not json', false],
+    ])('a runner container the daemon reports %s', (_state, inspected, told) => {
+        it(`${told ? 'tells' : 'never tells'} the supervisor the agent ended`, async () => {
+            const exec = (args: string[]) =>
+                args[0] === 'inspect' && args.at(-1) === containerName(job)
+                    ? Promise.resolve({ stdout: inspected })
+                    : Promise.resolve({ stdout: '' });
+            const steps = fakeSteps(undefined, new Promise<never>(() => undefined));
+            const ended: string[] = [];
+            steps.sink.agentEnded = (token) => void ended.push(token);
+            const runner = dockerRunner(exec, {
+                env: { RUNNER_SERVICES: '0' },
+                spawn: spawnChild('', '', 1),
+                steps: steps.sink,
+            });
+            await runner.run(job, { id: SESSION, resume: false });
+            expect(ended).toEqual(told ? ['supervisor-control-token'] : []);
+        });
+    });
+
+    it('tells the supervisor at once about an attached start that exited 0, without asking the daemon', async () => {
+        const inspects: string[][] = [];
+        const exec = (args: string[]) => {
+            if (args[0] === 'inspect') inspects.push(args);
+            return Promise.resolve({ stdout: '' });
+        };
+        const steps = fakeSteps(undefined, new Promise<never>(() => undefined));
+        const ended: string[] = [];
+        steps.sink.agentEnded = (token) => void ended.push(token);
+        const runner = dockerRunner(exec, { env: { RUNNER_SERVICES: '0' }, steps: steps.sink });
+        await runner.run(job, { id: SESSION, resume: false });
+        expect(ended).toEqual(['supervisor-control-token']);
+        expect(inspects.filter((args) => args.at(-1) === containerName(job))).toEqual([]);
+    });
+
+    it('never tells the supervisor the agent ended when the daemon cannot answer', async () => {
+        const exec = (args: string[]) =>
+            args[0] === 'inspect' ? Promise.reject(new Error('daemon timed out')) : Promise.resolve({ stdout: '' });
+        const steps = fakeSteps(undefined, new Promise<never>(() => undefined));
+        const ended: string[] = [];
+        steps.sink.agentEnded = (token) => void ended.push(token);
+        const runner = dockerRunner(exec, {
+            env: { RUNNER_SERVICES: '0' },
+            spawn: spawnChild('', '', 1),
+            steps: steps.sink,
+        });
+        await runner.run(job, { id: SESSION, resume: false });
+        expect(ended).toEqual([]);
     });
 
     // A run the platform took away has no container left to read: no throwaway `docker run` runs.
@@ -4271,6 +4328,7 @@ describe('publishing the produced work', () => {
         const sink: StepSink = {
             submit: () => Promise.reject(new Error('the task supervisor channel closed before its step was answered')),
             awaitReport: () => Promise.resolve(FINALIZED),
+            agentEnded: () => undefined,
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
@@ -4662,6 +4720,7 @@ describe('publishing the produced work', () => {
                 throw new Error('step was cancelled');
             },
             awaitReport: () => Promise.resolve(FINALIZED),
+            agentEnded: () => undefined,
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
@@ -4694,6 +4753,7 @@ describe('publishing the produced work', () => {
                 return ok('{"ok":true}');
             },
             awaitReport: () => Promise.resolve(FINALIZED),
+            agentEnded: () => undefined,
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
@@ -4919,6 +4979,7 @@ describe('the block-helper transport (issue #207)', () => {
                 throw new Error('step was cancelled');
             },
             awaitReport: () => Promise.resolve(FINALIZED),
+            agentEnded: () => undefined,
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,

@@ -285,6 +285,18 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(limitsDocs)).toContain('.recovery.tsv');
     });
 
+    // Issue #831: competing drivers under one shared budget are proven in both executors' lanes, and the one
+    // thing they cannot run (two dashboard replicas on a cluster) is a stated limit.
+    it('records the capacity phases and the two-dashboard-replica limit', () => {
+        expect(prose(testingDocs)).toContain(
+            'Its capacity phase runs two `AUTH_MODE=github` boards and two drivers under `ADMISSION_MAX_RUNNING=2`, kills the driver holding the first heavy task and samples the running rows every second'
+        );
+        expect(prose(testingDocs)).toContain(
+            'Its capacity phase runs two driver replicas under `ADMISSION_MAX_RUNNING=2`, deletes the pod holding the first heavy task and samples the running rows every two seconds into `.capacity.tsv`'
+        );
+        expect(prose(testingDocs)).toContain('**Two dashboard replicas on a cluster.** The chart pins one');
+    });
+
     // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the
     // read-fault suites are the enforcement, so the sentences naming them are pinned.
     it('states that an unconfirmed read is inconclusive and names its enforcement', () => {
@@ -295,5 +307,23 @@ describe('the executor isolation record (#382)', () => {
             '`lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`'
         );
         expect(prose(kubernetesDocs)).toContain('a `k8s-*.ts` importing from `docker*.ts` belongs in a neutral file');
+    });
+
+    it('documents the driver scrape port the chart ships, behind the board token', () => {
+        expect(chartValues).toMatch(/metricsPort: '9464'/);
+        expect(kubernetesDocs).toContain('`driver.metricsPort` (`DRIVER_METRICS_PORT`, default `9464`)');
+        expect(kubernetesDocs).toContain('Authorization: Bearer $JOB_BOARD_TOKEN');
+    });
+
+    // Issue #831: the benchmark phase's numbers are a laptop sample on kind, and what it cannot measure is stated.
+    it('records the bench phase as a kind sample and names what stays unmeasured', () => {
+        expect(prose(limitsDocs)).toContain('--phase bench');
+        expect(prose(limitsDocs)).toContain('<release>.bench.tsv');
+        expect(prose(limitsDocs)).toContain(
+            'A laptop sample, not a bound: EKS, EFS, Karpenter and the docker executor are unmeasured'
+        );
+        expect(prose(limitsDocs)).toContain('the shared-worktree alternative is unmeasured and its code is gone');
+        expect(prose(testingDocs)).toContain('--phase bench');
+        expect(prose(testingDocs)).toContain('.bench.tsv');
     });
 });

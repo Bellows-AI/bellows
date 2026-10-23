@@ -69,17 +69,17 @@ function budgetsFor(
 }
 
 /**
- * Whether new work of `orgId` has room in the global and org budgets, read without a lock. Advisory:
- * it only spares the claim a reservation it would refuse; `admitInTx` decides.
+ * The first budget (global, then org) with no room for new work of `orgId`, or null when there is room, read
+ * without a lock. Advisory: it only spares the claim a reservation it would refuse; `admitInTx` decides.
  */
-export async function roomForNew(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<boolean> {
+export async function fullScope(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<AdmissionScope | null> {
     for (const budget of budgetsFor(sql, budgets, orgId, null)) {
         const [row] = await sql<{ n: number }[]>`
             select count(*)::int as n from job where ${occupying(sql)} and ${budget.where}
         `;
-        if (row!.n >= budget.limit) return false;
+        if (row!.n >= budget.limit) return budget.scope;
     }
-    return true;
+    return null;
 }
 
 /** The reservation's repo filter for candidate alias `j`, advisory like `roomForNew`. */
@@ -194,4 +194,72 @@ export async function orgDemand(sql: Sql, orgId: string): Promise<OrgDemand> {
         where org_id = ${orgId} and status in ('queued', 'running')
     `;
     return { takeover: row?.takeover ?? false, running: row?.running ?? 0, oldestWaiting: row?.oldest_waiting ?? null };
+}
+
+/** How much runs now, cluster-wide: the global count and the busiest org and repo (never which). */
+export interface AdmissionOccupancy {
+    readonly global: number;
+    readonly orgMax: number;
+    readonly repoMax: number;
+}
+
+/** A scrape never waits on a lock for longer than this; the read then fails and its samples are omitted. */
+export const OCCUPANCY_TIMEOUT_MS = 2000;
+
+/**
+ * `signal` is the caller's deadline over the WHOLE read: `sql.begin` waits for a pool connection
+ * without limit, so a read that was let go while it waited does nothing when its turn comes.
+ */
+export async function admissionOccupancy(
+    sql: Sql,
+    { signal, timeoutMs = OCCUPANCY_TIMEOUT_MS }: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<AdmissionOccupancy> {
+    return sql.begin(async (tx) => {
+        signal?.throwIfAborted();
+        await tx`select set_config('statement_timeout', ${String(timeoutMs)}, true)`;
+        const [row] = await tx<{ global: number; org_max: number; repo_max: number }[]>`
+            with running as (
+                select org_id, repo from job where ${occupying(tx)}
+            )
+            select (select count(*) from running)::int as global,
+                   coalesce((select max(n) from (select count(*) n from running group by org_id) o), 0)::int as org_max,
+                   coalesce((select max(n) from (select count(*) n from running where repo is not null
+                                                 group by org_id, repo) r), 0)::int as repo_max
+        `;
+        return { global: row!.global, orgMax: row!.org_max, repoMax: row!.repo_max };
+    });
+}
+
+/** What the claim reports about itself (issue #831): `metrics.ts` turns these into series. No method takes an id. */
+/** A row waiting for its first claim (`new`) or for the takeover of an attempt that was lost (`takeover`). */
+export type ClaimWaitKind = 'new' | 'takeover';
+
+export interface ClaimObserver {
+    /** A candidate a full budget refused, by the scope that was full. */
+    refusal(scope: AdmissionScope): void;
+    /** Queued to claimed, in seconds. */
+    wait(kind: ClaimWaitKind, seconds: number): void;
+    /** The acquisition's row lock and root advisory lock, round trips included. */
+    lockWait(seconds: number): void;
+    /** The whole acquisition transaction. */
+    acquire(seconds: number): void;
+    /** The settle passes a claim runs before it looks for a candidate. */
+    sweep(seconds: number): void;
+}
+
+/**
+ * What a claim that returned null reports, for the cross-org scan (issue #831): `global` is set when the global
+ * admission budget refused it new work, so no later board of the same poll may admit any either.
+ */
+export interface ClaimRefusal {
+    global: boolean;
+}
+
+/**
+ * How a claim is made (issue #831). `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
+ * already, and never admits a queued row; `refusal` is where the claim reports a global budget refusal.
+ */
+export interface ClaimOptions {
+    takeoverOnly?: boolean;
+    refusal?: ClaimRefusal;
 }

@@ -68,6 +68,7 @@ import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
     dockerErrorDetail,
+    tellAgentOver,
     dockerRunVerdict,
     CONTAINER_ID,
     DOCKER_NAME,
@@ -89,6 +90,15 @@ import {
 } from './docker-runner-support.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from './run-deadline.js';
 import { settleEnd } from './termination.js';
+
+/** The docker CLI, exported so the driver can wrap it with its metrics (issue #831). */
+export const defaultExecDocker: ExecDocker = (args, { input, ...options } = {}) => {
+    const pending = run('docker', args, { ...options, encoding: 'utf8' });
+    // A CLI that exits before reading its stdin must not crash the driver with an EPIPE.
+    pending.child.stdin?.on('error', () => undefined);
+    if (input) pending.child.stdin?.end(input);
+    return pending;
+};
 
 /**
  * The docker executor's stateful `RunnerDeps` methods and `createDockerRunner` itself — the
@@ -613,7 +623,13 @@ async function dockerRun(
             // supervisor lost, an infrastructure loss (`settleEnd`).
             void (resumed ? resumedExit(teardown, job, code) : Promise.resolve(code))
                 .then((exit) =>
-                    closeEndOf(execDocker, job, { code: exit, output, reported }).then((ended) => ({ ended, exit }))
+                    closeEndOf(execDocker, job, {
+                        code: exit,
+                        output,
+                        reported,
+                        // A followed log's exit came from `docker wait` and an attached start's 0 from the container.
+                        onAgentOver: () => tellAgentOver(execDocker, job, host.sink, resumed || exit === 0),
+                    }).then((ended) => ({ ended, exit }))
                 )
                 .then(({ ended, exit }) => {
                     proven = ended.proven;
@@ -673,13 +689,7 @@ async function dockerRun(
 export function createDockerRunner(
     config: DriverConfig,
     spawnFn: Spawn = spawn,
-    execDocker: ExecDocker = (args, { input, ...options } = {}) => {
-        const pending = run('docker', args, { ...options, encoding: 'utf8' });
-        // A CLI that exits before reading its stdin must not crash the driver with an EPIPE.
-        pending.child.stdin?.on('error', () => undefined);
-        if (input) pending.child.stdin?.end(input);
-        return pending;
-    },
+    execDocker: ExecDocker = defaultExecDocker,
     extras: {
         files?: RunnerFiles;
         steps?: StepSink;

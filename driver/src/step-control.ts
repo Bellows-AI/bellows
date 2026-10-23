@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import { readBody } from './http.js';
 import { parseJsonObject } from './json-parse.js';
+import { secondsSince } from './prometheus.js';
 import {
     STEP_ANSWER_GRACE_MS,
     STEP_OUTPUT_LIMIT_BYTES,
@@ -74,6 +75,12 @@ export interface StepSink {
      * step of its own, so a cancel never queues behind the step it cancels.
      */
     cancel(token: string, id: string): void;
+    /**
+     * The runner read the agent container over — docker's exited state, the pod's terminated one — before the
+     * supervisor reported (#920): the supervisor's control poll says so, and an agent that left no exit marker is
+     * read as lost at once instead of at its start or heartbeat window. Only a confirmed state is ever named here.
+     */
+    agentEnded(token: string): void;
 }
 
 /**
@@ -98,6 +105,8 @@ export interface StepBroker extends StepSink {
     settle(token: string, id: string, invocation: string, result: StepResult): boolean;
     /** The pulled steps the driver cancelled, which the supervisor's control poll reads. */
     cancels(token: string): string[];
+    /** Whether the runner read the agent container over on this token, which the supervisor's control poll reads. */
+    agentWasEnded(token: string): boolean;
     /**
      * Takes the supervisor's report: `accepted` the first time, or a serving report's departure under
      * the same id; `duplicate` for a redelivery; `conflict` for another report than the one taken.
@@ -129,6 +138,8 @@ interface Slot {
     retired: Set<string>;
     /** The pulled steps the driver cancelled, until their answers settle them. */
     cancelled: Set<string>;
+    /** The runner read the agent container over (`StepSink.agentEnded`); a fresh group clears it. */
+    agentEnded: boolean;
 }
 
 const newSlot = (): Slot => ({
@@ -141,6 +152,7 @@ const newSlot = (): Slot => ({
     gone: null,
     retired: new Set(),
     cancelled: new Set(),
+    agentEnded: false,
 });
 
 const callKey = (id: string, invocation: string): string => `${id}\n${invocation}`;
@@ -153,6 +165,11 @@ function abandon(slot: Slot, why: string): void {
     slot.waiters.clear();
     for (const waiter of waiters) waiter.reject(new StepChannelClosed(`its step was answered: ${why}`));
     for (const poller of [...slot.pollers]) poller.resolve(null);
+}
+
+/** Records the runner's reading of the agent container over (`StepSink.agentEnded`); an unknown token has no slot. */
+function markAgentEnded(slot: Slot | undefined): void {
+    if (slot) slot.agentEnded = true;
 }
 
 /** Cancels one step on its slot (`StepSink.cancel`). */
@@ -210,7 +227,27 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal | undefined, what
     });
 }
 
-export function createStepBroker(): StepBroker {
+/** Reports one step's end: its kind, how it ended and how long it took from submission. */
+export type StepObserver = (kind: StepRequest['kind'], outcome: StepOutcome, seconds: number) => void;
+
+export type StepOutcome = 'ok' | 'failed' | 'timed_out' | 'undelivered' | 'closed';
+
+const outcomeOf = (result: StepResult): StepOutcome => {
+    if (result.timedOut) return 'timed_out';
+    return result.exitCode === 0 ? 'ok' : 'failed';
+};
+
+/** Observes a NEW waiter's end once; a duplicate that joins it is never observed again. */
+function observeWaiter(promise: Promise<StepResult>, kind: StepRequest['kind'], observe: StepObserver): void {
+    const start = performance.now();
+    const seconds = () => secondsSince(start);
+    promise.then(
+        (result) => observe(kind, outcomeOf(result), seconds()),
+        (error: Error) => observe(kind, error instanceof StepTimedOut ? 'undelivered' : 'closed', seconds())
+    );
+}
+
+export function createStepBroker(observe?: StepObserver): StepBroker {
     const slots = new Map<string, Slot>();
 
     const submit = (token: string, step: StepRequest, signal?: AbortSignal): Promise<StepResult> => {
@@ -228,6 +265,7 @@ export function createStepBroker(): StepBroker {
         });
         // A waiter nobody joins after its caller gave up must not become an unhandled rejection.
         promise.catch(() => undefined);
+        if (observe) observeWaiter(promise, step.kind, observe);
         const lost = setTimeout(() => {
             // The step leaves the queue too: a redelivery of the same call is queued afresh.
             slot.waiters.delete(key);
@@ -271,7 +309,7 @@ export function createStepBroker(): StepBroker {
             if (!slot) return;
             dropReportWaiters(slot);
             if (slot.reported) slot.retired.add(slot.reported.id);
-            Object.assign(slot, { contacted: false, reported: null, gone: null });
+            Object.assign(slot, { contacted: false, reported: null, gone: null, agentEnded: false });
         },
         awaitReport(token, signal) {
             const slot = slots.get(token);
@@ -323,6 +361,8 @@ export function createStepBroker(): StepBroker {
             if (slot) cancelStep(slot, id);
         },
         cancels: (token) => [...(slots.get(token)?.cancelled ?? [])],
+        agentEnded: (token) => markAgentEnded(slots.get(token)),
+        agentWasEnded: (token) => slots.get(token)?.agentEnded ?? false,
         report(token, report) {
             const slot = slots.get(token);
             return slot ? takeReport(slot, report) : 'conflict';
@@ -341,6 +381,7 @@ export const noStepChannel: StepSink = {
     release: () => undefined,
     attach: () => undefined,
     cancel: () => undefined,
+    agentEnded: () => undefined,
 };
 
 const HTTP_OK = 200;

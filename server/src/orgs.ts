@@ -3,11 +3,13 @@ import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-st
 import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
 import { createBatchMerger, type BatchMerger } from './batch-merger.js';
-import { createBatchPrObserver, type BatchPrObserver } from './batch-pr-observer.js';
+import { createBatchPrObserver, createReadPause, type BatchPrObserver } from './batch-pr-observer.js';
+import { createPrFollower, type PrFollower } from './pr-follower.js';
 import { createBatchStore, type BatchStore } from './db/batch-store.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
 import { createJobStore } from './db/job-store.js';
+import type { ClaimObserver } from './db/job-store-admission.js';
 import type { JobStore } from './db/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
@@ -53,6 +55,8 @@ export interface OrgRuntime {
     batches?: BatchStore | undefined;
     /** Reads each batch task's PR from GitHub and records the observations (063); present with the batch store. */
     batchObserver?: BatchPrObserver | undefined;
+    /** Reads the PRs the webhook alone used to move (waits, merged non-batch threads); absent with no PR store. */
+    prFollower?: PrFollower | undefined;
     /** Merges the PRs of automerge stages and verifies each merged stage (064); absent offline, where the board cannot merge. */
     batchMerger?: BatchMerger | undefined;
     /** A branch's tip through the org's installation, null when it cannot be read; absent offline. */
@@ -75,7 +79,7 @@ export interface OrgRegistry {
     warmAll(): Promise<void>;
     /** One scheduling pass over every org's open batches (docs/batches.md); one org's failure is logged, not thrown. */
     reconcileBatches(): Promise<void>;
-    /** One observation pass, then one merge pass, over every org's batch PRs (docs/batches.md); one org's failure is logged, not thrown. */
+    /** One observation pass, then one merge pass, over every org's batch PRs (docs/batches.md), then the PR follower's pass (docs/workflows.md); one org's failure is logged, not thrown. */
     observeBatchPrs(): Promise<void>;
 }
 
@@ -87,6 +91,8 @@ export interface OrgRegistryDeps {
     withStores: boolean;
     /** The object store behind each org's artifact index; absent (route tests), no org has one. */
     artifacts?: ArtifactBackend;
+    /** What each org's job store reports about its claims (issue #831). */
+    claimMetrics?: ClaimObserver;
 }
 
 /**
@@ -109,7 +115,9 @@ function buildOrgStores({
     config,
     tokens,
     client,
+    claimMetrics,
 }: {
+    claimMetrics: ClaimObserver | undefined;
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
@@ -120,6 +128,7 @@ function buildOrgStores({
     envVars: EnvVarStore;
     batches: BatchStore;
     batchObserver: BatchPrObserver;
+    prFollower: PrFollower;
     batchMerger: BatchMerger | undefined;
     connections: ConnectionStore;
     userExecutors: UserExecutorStore;
@@ -151,6 +160,7 @@ function buildOrgStores({
         // transaction as the verdict (and cancel/remove sweep the thread's waits).
         prs,
         admission: config.admission,
+        ...(claimMetrics ? { metrics: claimMetrics } : {}),
     });
     // Batches (059, 060): dispatch creates task roots in the job table, settles a cancelled
     // batch through the job store's own stop and closes an ended batch's threads through its Done.
@@ -165,13 +175,27 @@ function buildOrgStores({
     });
     // The PR observer (063): reads the org's installation, records merges through the job store and
     // lets the gate judge them. Offline there is no client, so it only keeps rows and hints.
+    // One rate-limit pause for both readers of this installation.
+    const pause = createReadPause();
     const batchObserver = createBatchPrObserver({
         sql,
         orgId,
         ready,
         reader: client,
+        pause,
         recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
         reconcile: (batchId) => batches.reconcile(batchId),
+    });
+    // The PR follower (docs/workflows.md): the periodic read behind the webhook-only paths, so a lost
+    // delivery never strands a wait or a merged thread. Same reader, same pause as the observer.
+    const prFollower = createPrFollower({
+        sql,
+        orgId,
+        ready,
+        reader: client,
+        prs,
+        pause,
+        recordMerge: (repo, prNumber, deliveryId, mergedAt) => jobs.closeMergedPr(repo, prNumber, deliveryId, mergedAt),
     });
     // The merger (064): needs the installation to merge through; offline the board cannot merge and
     // refuses an automerge plan at start.
@@ -192,6 +216,7 @@ function buildOrgStores({
         envVars,
         batches,
         batchObserver,
+        prFollower,
         batchMerger,
         connections,
         userExecutors,
@@ -206,6 +231,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.envVars = stores.envVars;
     runtime.batches = stores.batches;
     runtime.batchObserver = stores.batchObserver;
+    runtime.prFollower = stores.prFollower;
     runtime.batchMerger = stores.batchMerger;
     runtime.connections = stores.connections;
     runtime.userExecutors = stores.userExecutors;
@@ -239,7 +265,14 @@ function artifactStoreOf({
     });
 }
 
-export function createOrgRegistry({ sql, ready, config, withStores, artifacts }: OrgRegistryDeps): OrgRegistry {
+export function createOrgRegistry({
+    sql,
+    ready,
+    config,
+    withStores,
+    artifacts,
+    claimMetrics,
+}: OrgRegistryDeps): OrgRegistry {
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
@@ -286,7 +319,7 @@ export function createOrgRegistry({ sql, ready, config, withStores, artifacts }:
         };
 
         if (withStores) {
-            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client });
+            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client, claimMetrics });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
         }
@@ -363,6 +396,11 @@ export function createOrgRegistry({ sql, ready, config, withStores, artifacts }:
                         await runtime?.batchObserver?.observeDue().finally(() => runtime?.batchMerger?.mergeDue());
                     } catch (e) {
                         console.error(`[batches] observe for "${org.id}" failed: ${(e as Error).message}`);
+                    }
+                    try {
+                        await (await this.for(org.id))?.prFollower?.observeDue();
+                    } catch (e) {
+                        console.error(`[pr-follow] pass for "${org.id}" failed: ${(e as Error).message}`);
                     }
                 })
             );

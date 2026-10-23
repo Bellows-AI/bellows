@@ -9,6 +9,7 @@
  * and a task volume pinned to one node, a hard driver kill, a driver drain's handover, and board
  * glitches (a call that throws or answers nothing, shorter than the lease: an inconclusive read).
  */
+import { takeoverBoundMs } from '../../src/supervisor-plan.js';
 import { type Group, nap, Sim, type Timing, until } from './takeover-sim.js';
 
 /** mulberry32: small, seedable, the same stream on every platform. */
@@ -184,8 +185,14 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
 
     const evict = (g: Group, why: string) => {
         const running = sim.row.status === 'running' && !sim.row.staged;
-        // A pod over (its supervisor ended) loses nothing; a Pending one never ran an attempt but still a claim's.
-        if (running && g.exit === null) required.add(sim.row.claimSeq);
+        // A pod over (its supervisor ended) loses nothing; a Pending one never ran an attempt but still a claim's. The
+        // pod of an earlier claim is the row's claim's loss only once that claim holds it (a holder's token the driver
+        // answered to): lost before that contact, the claim finds it over and redoes the group, which hit no attempt of it (#943).
+        // `tokens` is insertion-ordered: index 0 is the owner's own token, the rest are holders' after a rebind.
+        const holds =
+            g.claimSeq === sim.row.claimSeq ||
+            [...g.tokens].slice(1).some((t) => drivers.some((d) => d.steps.contacted(t)));
+        if (running && g.exit === null) (holds ? required : allowed).add(sim.row.claimSeq);
         say(
             `${why}: pod of claim ${g.claimSeq} (node ${g.node ?? 'none'}) gone, row claim ${sim.row.claimSeq} ${sim.row.status}`
         );
@@ -216,7 +223,9 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
             if (f.kind === 'handover') {
                 say(`driver ${d.name} drains (handover) at row claim ${sim.row.claimSeq} ${sim.row.status}`);
                 if (sim.row.status === 'running') allowed.add(sim.row.claimSeq);
-                await d.loop.handover('the driver is draining');
+                // A kill of this driver meanwhile (a host too loaded to space the faults) ends the wait: its calls never return.
+                await Promise.race([d.loop.handover('the driver is draining'), d.killed]);
+                if (d.dead) return;
             } else if (sim.row.status === 'running') {
                 required.add(sim.row.claimSeq);
             }
@@ -271,9 +280,19 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         sim.release();
         await until('a driver', sim, () => restarting === 0, 8_000);
         if (!drivers.some((d) => !d.dead)) await startDriver();
-        await until('the task to settle', sim, () => sim.row.status === 'succeeded', 25_000);
+        await until(
+            'the task to settle',
+            sim,
+            () => sim.row.status === 'succeeded',
+            25_000 + takeoverBoundMs(sim.config)
+        );
         // Pods over, after the verdict: every supervisor ends or is a pod already gone.
-        await until('no group left running', sim, () => [...sim.groups.values()].every((g) => g.exit !== null), 8_000);
+        await until(
+            'no group left running',
+            sim,
+            () => [...sim.groups.values()].every((g) => g.exit !== null),
+            8_000 + plan.timing.orphanMs
+        );
     } catch (e) {
         trace.push(`run ended early: ${(e as Error).message.split('\n')[0]}`);
     } finally {
@@ -282,8 +301,17 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         clearTimeout(latch);
     }
 
-    const jittery = worstLag > (plan.timing.leaseSeconds * 1_000) / 3;
-    if (jittery) trace.push(`host lag ${worstLag}ms: unexplained lease losses are not blamed on the product`);
+    // A heartbeat call that hangs for the glitch (its own cadence is a third of the lease, twice that in setup)
+    // delays the next beat past what the lease leaves, so the board may rightly reclaim it.
+    const leaseMs = plan.timing.leaseSeconds * 1_000;
+    const blackout = plan.faults.some(
+        (f) => f.kind === 'glitch' && f.mode === 'timeout' && f.ops.includes('heartbeat')
+    );
+    const jittery = worstLag > leaseMs / 3 || blackout;
+    if (jittery)
+        trace.push(
+            `host lag ${worstLag}ms, heartbeat blackout ${blackout}: unexplained lease losses are not blamed on the product`
+        );
     const violations = check(sim, required, allowed, jittery);
     const verdict = {
         seed,

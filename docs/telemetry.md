@@ -14,6 +14,7 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Executor emission, collector config, branch reporter | `docker/{claude,opencode}-executor/`, `docker/otel-collector.yaml`, `charts/factory/files/collector.yaml` | `docker/claude-executor/test.sh`, `driver/test/branch-reporter.test.ts` |
 
 Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.md](persistence.md).
+| Prometheus series, board and driver (`GET /api/metrics`, driver `GET /metrics`); hand-rolled exposition, copied to the driver | `server/src/metrics.ts`, `server/src/prometheus.ts`, `driver/src/driver-metrics.ts`, `driver/src/prometheus.ts` | `server/test/routes.prometheus.test.ts`, `server/test/prometheus.test.ts`, `server/test-db/job-store.claim-metrics.test.ts`, `driver/test/driver-metrics.test.ts` |
 
 ## Invariants
 
@@ -43,3 +44,6 @@ Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.
   so gzip means a 400 on every export.
 - **Transcripts carry only token usage** — no edit decisions, no active time, and `input_tokens`
   excludes cache reads (`server/src/backfill/transcripts.ts`).
+- **No org, repo, job, lease, pod or user id in any metric label value**: labels come from closed vocabularies
+  (route pattern, status class, verb, resource kind, docker command, outcome). A failed scrape-time read omits
+  its samples, never reports zero (`server/test/routes.prometheus.test.ts`).

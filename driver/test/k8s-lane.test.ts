@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
+import {
+    SUPERVISOR_ORPHAN_MIN_MS,
+    SUPERVISOR_REBIND_GRACE_MS,
+    SUPERVISOR_STEP_WAIT_MS,
+} from '../src/supervisor-contract.js';
 import { REPO_ROOT, readRepoFile } from './fixtures/repo-files.js';
 
 describe('kind lane argument validation', () => {
@@ -34,7 +38,7 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|drain]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|drain|bench]');
     });
 
     it('runs the failure-matrix acceptance phase in the full cluster run, one named check per case (issue #779)', () => {
@@ -432,7 +436,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|drain\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|drain\|bench\)/
         );
     });
 
@@ -491,7 +495,7 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
     const installCall = install.slice(0, install.indexOf('>/dev/null'));
 
     it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
-        expect(script).toContain('LANE_LEASE_S=45');
+        expect(script).toContain('LANE_LEASE_S=15');
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
         // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
@@ -499,6 +503,29 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.
         expect(script).toContain(`LANE_REBIND_GRACE_S=$((2 * $\{KUBELET_SYNC_S:-60} + 10))`);
         expect(installCall).toContain('--set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))"');
+    });
+
+    // #950: the 15 s lease needs an orphan bound of 10 s (L >= orphan + L/3), under the 30 s production floor
+    // and over a long poll the floor outlasts by 5 s. All three derive from the lease, and the driver refuses a mismatch.
+    it('derives the orphan floor and the step long poll from the lease, and installs both', () => {
+        expect(script).toContain('LANE_ORPHAN_S=$((LANE_LEASE_S - LANE_LEASE_S / 3))');
+        expect(script).toContain('LANE_STEP_WAIT_MS=$((LANE_ORPHAN_S * 200))');
+        expect(installCall).toContain('--set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))"');
+        expect(installCall).toContain('--set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS"');
+        expect(script).not.toContain('LANE_ORPHAN_S=30');
+    });
+
+    it('renders DRIVER_ORPHAN_MIN_MS and DRIVER_STEP_WAIT_MS from chart values whose defaults are the production ones', () => {
+        const values = readRepoFile('charts/factory/values.yaml');
+        const template = readRepoFile('charts/factory/templates/driver-deployment.yaml');
+        expect(template).toContain('- name: DRIVER_ORPHAN_MIN_MS');
+        expect(template).toContain('value: {{ $.Values.driver.orphanMinMs | quote }}');
+        expect(template).toContain('- name: DRIVER_STEP_WAIT_MS');
+        expect(template).toContain('value: {{ $.Values.driver.stepWaitMs | quote }}');
+        expect(values).toContain(`    orphanMinMs: '${SUPERVISOR_ORPHAN_MIN_MS}'`);
+        expect(values).toContain(`    stepWaitMs: '${SUPERVISOR_STEP_WAIT_MS}'`);
+        expect(script).toContain(`'value: "${SUPERVISOR_ORPHAN_MIN_MS}"'`);
+        expect(script).toContain(`'value: "${SUPERVISOR_STEP_WAIT_MS}"'`);
     });
 
     it('waits out a handed-over runner for the takeover bound (lease plus rebind grace), and expects the takeover', () => {
@@ -534,5 +561,220 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         expect(dump).toContain(`$\{TIMINGS_FILE%.tsv}.stall-$1.log`);
         const brief = script.slice(script.indexOf('\nawait_brief() {'), script.indexOf('\nDRIVER_DEPLOY='));
         expect(brief).toMatch(/done\n {4}kind_dump_stall "\$1"\n/);
+    });
+});
+
+describe('kind lane capacity phase (issue #831)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    const capacity = script.slice(
+        script.indexOf('if selected_phase capacity; then'),
+        script.indexOf('if [ "$PHASE" = bench ]; then')
+    );
+
+    it('runs in all, after control, and is not the drain phase', () => {
+        expect(script.indexOf('if selected_phase capacity; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase control; then')
+        );
+        expect(script).not.toMatch(/selected_phase drain/);
+    });
+
+    it('runs two driver replicas under one shared budget, kills one and samples the rows', () => {
+        expect(capacity).toContain('ADMISSION_MAX_RUNNING=2');
+        expect(capacity).toContain('--replicas=2');
+        expect(capacity).toContain('kill_driver_pods');
+        expect(capacity).toContain('expire_claim_one');
+        expect(capacity).toContain('claimed_by');
+        expect(capacity).toContain('admission_slot_global');
+        expect(capacity).toContain('.capacity.tsv');
+        expect(capacity).toContain('--request-timeout');
+        expect(capacity).toContain('job $h1: $TOOK_OVER');
+    });
+
+    it('restores the budget, the board connection and the driver replica count on every path', () => {
+        expect(capacity).toContain('ADMISSION_MAX_RUNNING=');
+        expect(capacity).toMatch(/ADMISSION_MAX_RUNNING= /);
+        expect(capacity).toContain('--replicas=1');
+        expect(capacity).toContain('start_port_forward');
+        expect(cleanup).toMatch(/kill "\$capacity_sampler_pid"/);
+    });
+});
+
+describe('kind lane services restart case (issue #926)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const fnStart = script.indexOf('\nend_postgres_sidecar() {');
+    const fn = script.slice(fnStart, script.indexOf('\n}\n', fnStart) + 3);
+
+    // A faked `kubectl` on PATH: pg_isready fails STUB_NOT_READY times, then succeeds; every call is logged.
+    const KUBECTL_STUB = `#!/bin/sh
+echo "$*" >>"$STUB_LOG"
+case "$*" in
+*pg_isready*)
+    n=$(cat "$STUB_COUNT" 2>/dev/null || echo 0)
+    echo $((n + 1)) >"$STUB_COUNT"
+    [ "$n" -ge "$STUB_NOT_READY" ] || exit 1
+    ;;
+esac
+`;
+    const dirs: string[] = [];
+    afterEach(() => {
+        for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    });
+
+    const endSidecar = (notReady: number, env: Record<string, string> = {}) => {
+        const dir = mkdtempSync(join(tmpdir(), 'k8s-lane-pg-'));
+        dirs.push(dir);
+        writeFileSync(join(dir, 'kubectl'), KUBECTL_STUB);
+        chmodSync(join(dir, 'kubectl'), 0o755);
+        const harness = `NAMESPACE=ns\nbad() { echo "BAD $1"; }\n${fn}\nend_postgres_sidecar pod-x; echo "rc=$?"\n`;
+        const result = spawnSync('bash', ['-c', harness], {
+            encoding: 'utf8',
+            timeout: 30000,
+            env: {
+                ...process.env,
+                PATH: `${dir}:${process.env.PATH ?? ''}`,
+                STUB_LOG: join(dir, 'log'),
+                STUB_COUNT: join(dir, 'count'),
+                STUB_NOT_READY: String(notReady),
+                ...env,
+            },
+        });
+        const calls = readFileSync(join(dir, 'log'), 'utf8').trim().split('\n');
+        return { out: result.stdout, calls };
+    };
+
+    it('extracts the wait from the lane script', () => {
+        expect(fnStart).toBeGreaterThan(-1);
+        expect(fn).toContain('pg_isready -q -h 127.0.0.1');
+    });
+
+    // `kill 1` is dropped by the postgres image while its entrypoint (pid 1, no SIGTERM handler) still
+    // initialises the data directory, so a kill sent before the server is ready restarts nothing.
+    it('ends the postgres sidecar only after pg_isready has succeeded', () => {
+        const { out, calls } = endSidecar(2);
+        expect(out).toContain('rc=0');
+        const kills = calls.flatMap((c, i) => (c.includes('kill 1') ? [i] : []));
+        expect(kills).toEqual([3]);
+        expect(calls.slice(0, 3).every((c) => c.includes('pg_isready'))).toBe(true);
+    });
+
+    it('fails the case and never ends the sidecar when postgres is not ready by the deadline', () => {
+        const { out, calls } = endSidecar(1000, { PG_READY_SECONDS: '2' });
+        expect(out).toContain('BAD the postgres sidecar accepts connections before it is ended');
+        expect(out).toContain('rc=1');
+        expect(calls.some((c) => c.includes('kill 1'))).toBe(false);
+    });
+
+    it('bounds the wait well inside the stub agent lifetime and the request timeout', () => {
+        const stub = readRepoFile('scripts/k8s-stub.sh');
+        const lifetime = Number(/FACTORY_STUB_TIMEOUT_SECONDS:-(\d+)/.exec(stub)?.[1]);
+        const deadline = Number(/PG_READY_SECONDS:-(\d+)/.exec(fn)?.[1]);
+        const request = Number(/--request-timeout=(\d+)s/.exec(fn)?.[1]);
+        expect(deadline + request + 1).toBeLessThanOrEqual(lifetime / 2);
+    });
+});
+
+describe('kind lane bench phase (issue #831)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    const bench = script.slice(
+        script.indexOf('if [ "$PHASE" = bench ]; then'),
+        script.lastIndexOf("printf '\\n%d passed")
+    );
+
+    it('runs only when asked for, after capacity, and never through selected_phase', () => {
+        expect(bench.length).toBeGreaterThan(0);
+        expect(script.indexOf('if [ "$PHASE" = bench ]; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase capacity; then')
+        );
+        expect(script).not.toMatch(/selected_phase bench/);
+    });
+
+    it('offers the phase in --help and says it is left out of all', () => {
+        const result = spawnSync('bash', ['scripts/test-k8s.sh', '--help'], {
+            cwd: REPO_ROOT,
+            encoding: 'utf8',
+            timeout: 5000,
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('|drain|bench]');
+        expect(result.stdout).toMatch(/leaves out drain .* and bench/);
+    });
+
+    it('measures the cells the issue asks for at the chart production pace', () => {
+        expect(bench).toContain('for bench_n in 1 4 8 16');
+        expect(bench).toContain('for bench_r in 1 2');
+        expect(bench).toContain('for bench_n in 1 8; do bench_cell recovery');
+        expect(bench).toContain('helm upgrade "$RELEASE" charts/factory --reuse-values');
+        expect(bench).toContain('driver.replicas=$1');
+        for (const key of ['pollMs', 'leaseSeconds', 'reapIntervalMs', 'reapGraceMs']) {
+            expect(bench).toContain(`bench_default ${key}`);
+        }
+        expect(bench).toContain('factory-stub-sleep-$task_s');
+        expect(bench).toContain('.bench.tsv');
+        expect(bench).toContain('scripts/bench-summary.mjs');
+    });
+
+    it('keeps the board token out of every argv and reads it inside the pod', () => {
+        expect(bench).toContain('process.env.JOB_BOARD_TOKEN');
+        expect(bench).not.toMatch(/JOB_BOARD_TOKEN=|\$JOB_BOARD_TOKEN|\$\{JOB_BOARD_TOKEN/);
+    });
+
+    it('bounds every cluster call and every wait, and reads a failed read as another poll', () => {
+        const calls = bench
+            .split('\n')
+            .filter((l) => /\bkubectl (exec|get|rollout)\b/.test(l) && !l.trim().startsWith('#'));
+        expect(calls.length).toBeGreaterThan(0);
+        for (const call of calls) expect(call, call).toMatch(/bounded |\| node|--request-timeout/);
+        expect(bench).toContain('--request-timeout');
+        for (const wait of bench.split('\n').filter((l) => /^\s*while \[/.test(l))) {
+            expect(wait, wait).toMatch(/date \+%s/);
+        }
+    });
+
+    it('stops the sampler at the cell and in cleanup, and never reads a failed sample as a count', () => {
+        expect(cleanup).toMatch(/kill "\$bench_sampler_pid"/);
+        expect(bench).toContain('bench_stop_sampler');
+        expect(bench).toContain("row='?'");
+        expect(bench).toContain('bench_sample "$BENCH_DIR/$cell.sampler.tsv" "$deadline"');
+    });
+
+    it('fails a recovery cell on a task that does not succeed, and reads the kill from the claim rows', () => {
+        expect(bench).toContain("status = 'succeeded'");
+        expect(bench).toContain('kill_driver_pods');
+        expect(bench).toContain('j.claim_seq > v.seq');
+        expect(bench).toContain('held_s');
+        expect(bench).toContain('settled_s');
+    });
+
+    // Codex round 1 on S6: evidence from an earlier run or an unconfirmed kill is never evidence.
+    it('starts from a fresh directory and drops every destination file before a scrape', () => {
+        expect(bench).toContain('rm -rf -- "${BENCH_DIR:?}" "${BENCH_TSV:?}"');
+        expect(bench.indexOf('rm -rf -- "${BENCH_DIR:?}"')).toBeLessThan(bench.indexOf('mkdir -p "$BENCH_DIR"'));
+        const scrape = bench.slice(bench.indexOf('bench_scrape() {'), bench.indexOf('bench_count() {'));
+        expect(scrape.indexOf('rm -f -- "${list:?}"')).toBeLessThan(scrape.indexOf('bench_pods "$comp"'));
+        expect(scrape.indexOf('rm -f -- "${file:?}.prom" "${file:?}.at"')).toBeLessThan(scrape.indexOf('kubectl exec'));
+        expect(scrape).toContain('date +%s >"$file.at"');
+    });
+
+    it('records each pod answer time and no shared window', () => {
+        expect(bench).not.toMatch(/bench_meta "\$cell" [ab]_at/);
+    });
+
+    it('ends a recovery cell whose driver kill is not confirmed', () => {
+        expect(bench).toContain('bench_meta "$cell" kill_confirmed yes');
+        const refused = bench.slice(bench.indexOf('bench_meta "$cell" kill_confirmed no'));
+        expect(refused.slice(0, 600)).toContain('return 1');
+        expect(bench).toMatch(/kill_driver_pods; \}/);
+    });
+
+    it('moves the pod timeline into place only when it was read', () => {
+        expect(bench).toContain('mv "$BENCH_DIR/$cell.pods.tsv.tmp" "$BENCH_DIR/$cell.pods.tsv"');
+    });
+
+    it('times a recovery cell from the last finish in the database, not from the end of a wait', () => {
+        expect(bench).toContain('select floor(extract(epoch from max(finished_at))) from job');
+        expect(bench).not.toContain('settled_s "$(($(date +%s) - a_at))"');
+        expect(bench).toContain('settled_s "$((last - a_at))"');
     });
 });

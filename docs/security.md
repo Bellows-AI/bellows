@@ -17,6 +17,7 @@ What each credential grants, what each boundary actually holds, and where the co
 | A tool reaches `POST /publish` and `/review` through the CLI uid's proxy; the proxy forwards to the supervisor's relay and no tool's env holds a run-control token | `docker/claude-executor/control-proxy.cjs`, `entrypoint.sh` | `driver/test/control-proxy.test.ts`, `driver/test/executor-images.test.ts` |
 | Runner telemetry config, claude's managed settings and opencode's policy: root-owned, never written by the uid-1000 entrypoints | `driver/src/telemetry-config.ts`, `docker/claude-executor/managed-settings.json`, `docker/opencode-executor/Dockerfile` | `driver/test/telemetry-shipping.test.ts`, `docker/claude-executor/test.sh`, `docker/opencode-executor/test.sh` |
 | Artifact store credentials live in the dashboard only; reads are scoped to the caller's org | `server/src/artifacts/artifact-store.ts`, `server/src/artifacts/s3-credentials.ts` | `server/test-db/artifact-store.test.ts`, `server/test/artifacts.unit.test.ts` |
+| Metrics scrapes: board `GET /api/metrics` takes the worker credential (a session is 401); driver `GET /metrics` takes `Bearer $JOB_BOARD_TOKEN`, and the driver refuses a port with no token off loopback | `server/src/auth/plugin.ts`, `driver/src/metrics-server.ts`, `driver/src/config.ts` | `server/test/routes.prometheus.test.ts`, `driver/test/metrics-server.test.ts`, `driver/test/config.test.ts` |
 
 ## Operational facts
 

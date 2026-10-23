@@ -204,6 +204,10 @@ driver:
     # pod IP as the gate endpoint, and the re-claim fence's checkout claim keeps two drivers off
     # one checkout (docs/kubernetes.md).
     replicas: 1
+    # The port of the driver's Prometheus scrape (GET /metrics, Authorization: Bearer <board token>),
+    # on the pod IP. '' serves none. No Service and no scrape annotations: point a PodMonitor or a
+    # scrape config at the `metrics` container port (docs/telemetry.md).
+    metricsPort: '9464'
     # One driver serves both task-selected executor types. These values choose image locations —
     # bare repository paths the global.imageRegistry prefix composes with (a tag may be included:
     # `claude-executor:v1.2.3`; tagless reads :latest); the task's executor profile chooses which
@@ -220,6 +224,11 @@ driver:
     # (DRIVER_REBIND_GRACE_MS, issue #829): the next claim must find the group and bind it. A lane
     # that compresses time shortens it; production keeps the default.
     rebindGraceMs: '240000'
+    # The floor of a lost driver's group's orphan bound, and the GET /step long poll it must outlast by
+    # 5 s (DRIVER_ORPHAN_MIN_MS / DRIVER_STEP_WAIT_MS, issue #950). A lane that compresses the lease lowers
+    # both; the driver refuses a lowered floor the lease cannot hold (lease >= orphan + lease / 3).
+    orphanMinMs: '30000'
+    stepWaitMs: '15000'
     jobTimeoutMs: '7200000'
     # The wall-clock cap on ONE gate run — the gate Job's activeDeadlineSeconds. A gate that
     # outlives it fails with exit 124. A declared gate that installs dependencies into a fresh

@@ -544,7 +544,8 @@ export interface Board extends PhaseCheckpointBoard {
     ): Promise<{ bytes: Uint8Array; sha256: string } | null>;
     /** Null means the queue is empty, which is the ordinary case, not an error. */
     claim(worker: string): Promise<BoardJob | null>;
-    heartbeat(job: BoardJob): Promise<HeartbeatVerdict>;
+    /** Renews the lease. `signal` bounds the request: an aborted beat rejects, which the caller reads as inconclusive. */
+    heartbeat(job: BoardJob, signal?: AbortSignal): Promise<HeartbeatVerdict>;
     /** Reports one question the agent asked (`POST /api/jobs/:id/question`); a repeat of a stored id is `held`. */
     question(job: BoardJob, questionId: string, questions: AskedQuestion[]): Promise<QuestionVerdict>;
     /** Starts a named reviewer's separate run (`POST /api/jobs/:id/review`); a repeated key answers the stored review. */
@@ -932,14 +933,15 @@ export function createBoard({
             return claimOf((await response.json()) as Partial<BoardJob>);
         },
 
-        async heartbeat(job) {
+        async heartbeat(job, signal) {
             const response = await post(
                 `/api/jobs/${job.id}/heartbeat`,
                 {
                     leaseToken: job.leaseToken,
                     leaseSeconds,
                 },
-                true
+                true,
+                { signal }
             );
             // The 404 only a Remove can have produced: the thread's rows are gone, so the answer
             // is "die and report nothing" — there is nothing left to park against or hand a

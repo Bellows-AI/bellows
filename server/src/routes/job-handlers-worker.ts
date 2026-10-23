@@ -20,6 +20,7 @@ import { skillCatalog } from '../skills.js';
 import { bad, body, checkReposVisible, guard } from './helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from './route-guards.js';
 import { UUID } from '../config.js';
+import type { ClaimPollOutcome } from '../metrics.js';
 import {
     HTTP_CONFLICT,
     HTTP_NO_CONTENT,
@@ -213,23 +214,30 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
 }
 
 export async function handleClaimJob(
-    claiming: { orgs: OrgRegistry; firstJobClaim: BoardScanner },
+    claiming: { orgs: OrgRegistry; firstJobClaim: BoardScanner; claimPoll?: (outcome: ClaimPollOutcome) => void },
     request: FastifyRequest,
     reply: FastifyReply
 ) {
-    const { orgs, firstJobClaim } = claiming;
+    const { orgs, firstJobClaim, claimPoll } = claiming;
     const claimRoute = await resolveClaimRoute(orgs, request, reply);
     if (!claimRoute) return reply;
     const { boards, worker, lease } = claimRoute;
 
     const claimFailed = (e: Error) => request.log.error({ err: e }, 'job claim failed');
     const claim = await guard(reply, claimFailed, () =>
-        firstJobClaim(boards, claimFailed, (board) => board.claim(worker, lease))
+        firstJobClaim(boards, claimFailed, (board, options) => board.claim(worker, lease, options))
     );
-    if (!claim.ok) return reply;
+    if (!claim.ok) {
+        claimPoll?.('error');
+        return reply;
+    }
     // 204, not 200 with a null: an idle poll is the common case and it should not have to be
     // parsed to be recognised.
-    if (claim.value === null) return reply.code(HTTP_NO_CONTENT).send();
+    if (claim.value === null) {
+        claimPoll?.('idle');
+        return reply.code(HTTP_NO_CONTENT).send();
+    }
+    claimPoll?.('claimed');
     return reply.code(HTTP_OK).send(claim.value);
 }
 

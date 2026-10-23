@@ -8,7 +8,7 @@
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { JobLeaseInfo } from './lease-types.js';
-import type { AdmissionBudgets, OrgDemand } from './job-store-admission.js';
+import type { AdmissionBudgets, ClaimObserver, ClaimOptions, OrgDemand } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -1083,7 +1083,7 @@ export interface JobStore extends PhaseCheckpointStore {
      */
     restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
-    claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
+    claim(worker: string, leaseSeconds: number, options?: ClaimOptions): Promise<Claim | null>;
     /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
     demand(): Promise<OrgDemand>;
     heartbeat(
@@ -1471,6 +1471,8 @@ export interface CreateJobStoreDeps {
     prs?: JobStorePrs;
     /** The shared admission budgets every claim enforces (issue #831); absent is unlimited. */
     admission?: AdmissionBudgets;
+    /** What the claim reports about itself (issue #831); absent in the tests that predate it. */
+    metrics?: ClaimObserver;
 }
 
 /** The PR lifecycle store's claim-time surface — named once so a helper can take it explicitly. */
@@ -1550,6 +1552,7 @@ export interface JobStoreContext extends Required<Pick<CreateJobStoreDeps, 'admi
     planReader: CreateJobStoreDeps['plan'];
     executorConfig: CreateJobStoreDeps['executorConfig'];
     prs: JobStorePrs | undefined;
+    metrics: ClaimObserver | undefined;
     wallTick: Fragment;
     authorJoin: Fragment;
     authorColumns: Fragment;

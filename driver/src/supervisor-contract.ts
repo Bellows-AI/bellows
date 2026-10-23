@@ -330,6 +330,45 @@ export const SUPERVISOR_ORPHAN_LEASE_SHARE = 4;
 export const SUPERVISOR_ORPHAN_MIN_MS = 30_000;
 export const SUPERVISOR_ORPHAN_MAX_MS = 90_000;
 /**
+ * One `GET /step` long poll (DRIVER_STEP_WAIT_MS, `supervisor.cjs` SUPERVISOR_STEP_WAIT_MS). A live driver answers it
+ * inside this hold, and the answer is the supervisor's contact, so the orphan floor must outlast it by
+ * `SUPERVISOR_ORPHAN_SLACK_MS`: the answer's own latency on a loaded host. The production values (15 s, 30 s) keep
+ * a 15 s slack; a lane that lowers the floor (DRIVER_ORPHAN_MIN_MS, #950) lowers the long poll with it.
+ */
+export const SUPERVISOR_STEP_WAIT_MS = 15_000;
+export const SUPERVISOR_ORPHAN_SLACK_MS = 5_000;
+/** The pace a lease is renewed at while the driver holds it, as a share of the lease (`heartbeatPeriodMs`). */
+export const SUPERVISOR_HEARTBEAT_DIVISOR = 3;
+
+const MS_PER_SECOND = 1000;
+
+/** The orphan bound at a lease: a share of it, clamped to [`floorMs`, `SUPERVISOR_ORPHAN_MAX_MS`] (`orphanBoundMs`). */
+export const orphanBoundOf = (leaseSeconds: number, floorMs: number): number =>
+    Math.min(
+        SUPERVISOR_ORPHAN_MAX_MS,
+        Math.max(floorMs, (leaseSeconds * MS_PER_SECOND) / SUPERVISOR_ORPHAN_LEASE_SHARE)
+    );
+
+/**
+ * Why the orphan floor, the step long poll and the lease cannot all hold, or null. The floor outlasts the long poll
+ * by `SUPERVISOR_ORPHAN_SLACK_MS` (else a live driver reads as lost between two answers); and, where a lane lowered
+ * the floor (`lowered`), the lease outlasts the orphan bound plus one heartbeat (else a lost driver's group can end
+ * after its lease did, #950). The production floor is the contract the default leases were sized for, not rechecked.
+ */
+export function orphanConfigFault(
+    config: { leaseSeconds: number; orphanMinMs: number; stepWaitMs: number },
+    lowered: boolean
+): string | null {
+    if (config.orphanMinMs < config.stepWaitMs + SUPERVISOR_ORPHAN_SLACK_MS)
+        return `DRIVER_ORPHAN_MIN_MS=${config.orphanMinMs} must outlast DRIVER_STEP_WAIT_MS=${config.stepWaitMs} by ${SUPERVISOR_ORPHAN_SLACK_MS} ms, or a live driver reads as lost between two answers`;
+    const leaseMs = config.leaseSeconds * MS_PER_SECOND;
+    const bound = orphanBoundOf(config.leaseSeconds, config.orphanMinMs);
+    const beat = Math.floor(leaseMs / SUPERVISOR_HEARTBEAT_DIVISOR);
+    if (lowered && bound + beat > leaseMs)
+        return `DRIVER_LEASE_SECONDS=${config.leaseSeconds} must outlast the orphan bound (${bound} ms, floor DRIVER_ORPHAN_MIN_MS) plus one heartbeat (${beat} ms), or a lost driver's group can end after its lease`;
+    return null;
+}
+/**
  * What a released group (its agent went) waits for a newer holder on top of the lease (#829): the
  * next claim must find the group, learn it is released and write its binding, which a driver that
  * lost its lease only then stops hanging up on. `takeoverBoundMs` is the lease plus this. The
@@ -368,6 +407,7 @@ export const SUPERVISOR_ENV = {
     deadlineMs: 'SUPERVISOR_DEADLINE_MS',
     drainMs: 'SUPERVISOR_DRAIN_MS',
     orphanMs: 'SUPERVISOR_ORPHAN_MS',
+    stepWaitMs: 'SUPERVISOR_STEP_WAIT_MS',
     takeoverMs: 'SUPERVISOR_TAKEOVER_MS',
     exports: 'SUPERVISOR_EXPORTS',
     agentless: 'SUPERVISOR_AGENTLESS',

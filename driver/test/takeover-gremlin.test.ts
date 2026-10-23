@@ -4,11 +4,13 @@
  * `GREMLIN_SEED=<n>` replays that one run, `GREMLIN_RUNS=<n>` raises the count for a local soak.
  */
 import { describe, expect, it } from 'vitest';
-import { runGremlin, type Verdict } from './fixtures/gremlin.js';
+import { planOf, runGremlin, type Verdict } from './fixtures/gremlin.js';
+import { lane15 } from './fixtures/takeover-sim.js';
 
 const RUNS = Number(process.env.GREMLIN_RUNS ?? 200);
 const ONE = process.env.GREMLIN_SEED === undefined ? null : Number(process.env.GREMLIN_SEED);
 const WIDTH = 40;
+const LANE_RUNS = Number(process.env.GREMLIN_LANE_RUNS ?? 12);
 
 const report = (v: Verdict) =>
     `seed ${v.seed} (replay: GREMLIN_SEED=${v.seed})\n${v.violations.join('\n')}\n--- plan\n${JSON.stringify(v.plan)}\n--- trace\n${v.trace.join('\n')}`;
@@ -36,4 +38,43 @@ describe('takeover gremlins', () => {
         },
         Math.max(120_000, RUNS * 1_000)
     );
+
+    // A host too loaded to play the faults on time runs a drain's handover and a kill of the same driver
+    // together (#932): the kill leaves the handover nothing to settle on, and the run must still end.
+    it('a driver killed while it hands over does not hold the run', async () => {
+        const overlap = [
+            { at: 50, kind: 'handover' as const, restartMs: 186 },
+            { at: 50, kind: 'killDriver' as const, restartMs: 403 },
+        ];
+        const timeBox = new Promise<null>((resolve) => setTimeout(() => resolve(null), 40_000));
+        const verdict = await Promise.race([runGremlin(118, { faults: overlap }), timeBox]);
+        expect(verdict, 'the run did not end within its bound').not.toBeNull();
+        expect(verdict?.violations).toEqual([]);
+    }, 60_000);
+
+    // A heartbeat that hangs for the glitch can by itself delay the next beat past the
+    // lease, load or not: such a loss is the board's right, not an interruption nobody injected (#932).
+    it('a lease a hung heartbeat outlasts is not blamed on the product', async () => {
+        const glitch = { at: 1_300, kind: 'glitch' as const, ops: ['heartbeat'], mode: 'timeout' as const, forMs: 800 };
+        // Nothing else happens: this one only keeps the run going past the glitch.
+        const hold = { at: 6_000, kind: 'glitch' as const, ops: ['none'], mode: 'throw' as const, forMs: 10 };
+        const base = planOf(64, {});
+        const verdict = await runGremlin(64, {
+            faults: [glitch, hold],
+            timing: { ...base.timing, refreshMs: 400 },
+            publishAtMs: 3_000,
+            agentMs: 100,
+        });
+        expect(verdict.violations).toEqual([]);
+    }, 60_000);
+
+    // #950: the kind lane's 15 s lease in real time. The faults still land in the first seconds of a run and the
+    // takeover waits out the lease, so a seed plays for a minute; a few seeds at the lane's timing, not the soak.
+    it("seeded runs at the lane's 15 s lease hold every invariant", async () => {
+        const seeds = ONE === null ? Array.from({ length: LANE_RUNS }, (_, i) => i + 1) : [ONE];
+        const failed = (await Promise.all(seeds.map((seed) => runGremlin(seed, { timing: lane15() }))))
+            .filter((v) => v.violations.length > 0)
+            .sort((a, b) => a.seed - b.seed);
+        expect(failed.map(report).slice(0, 3).join('\n\n=====\n\n')).toBe('');
+    }, 240_000);
 });

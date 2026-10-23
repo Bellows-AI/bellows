@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -716,5 +716,30 @@ describe('scripts/acceptance-job.mjs', () => {
         expect(await read(201, { id: {} }, 'POST', 'id')).toMatch(/^unread:/);
         expect(await read(201, {}, 'POST', 'id')).toMatch(/^unread:/);
         expect(await read(409, { error: 'no' }, 'POST', 'id')).toMatch(/^refused: 409/);
+    });
+});
+
+describe('scripts/k8s-stub.sh factory-stub-sleep (issue #831)', () => {
+    const stub = join(ROOT, 'scripts/k8s-stub.sh');
+    const sleepRun = (command: string) => {
+        const started = Date.now();
+        const run = spawnSync('sh', [stub, command], {
+            encoding: 'utf8',
+            env: { ...process.env, HOSTNAME: 'bench-pod' },
+        });
+        return { run, seconds: (Date.now() - started) / 1000 };
+    };
+
+    it('holds for the named seconds, says where it slept and exits 0', () => {
+        const { run, seconds } = sleepRun('factory-stub-sleep-1');
+        expect(run.status).toBe(0);
+        expect(run.stdout).toContain('slept in bench-pod');
+        expect(seconds).toBeGreaterThanOrEqual(1);
+    });
+
+    it('refuses a marker with no number', () => {
+        const { run } = sleepRun('factory-stub-sleep-');
+        expect(run.status).toBe(1);
+        expect(run.stdout).not.toContain('slept in');
     });
 });

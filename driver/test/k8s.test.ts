@@ -1033,6 +1033,7 @@ function fakeSteps(answer: (step: StepRequest) => StepResult | Promise<StepResul
             return answer(step);
         },
         awaitReport: () => reported,
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
@@ -1970,6 +1971,7 @@ describe('publishing the produced work', () => {
                       })
                     : Promise.resolve(stepOk()),
             awaitReport: () => new Promise(() => undefined),
+            agentEnded: () => undefined,
             contacted: () => true,
             release: () => undefined,
             attach: () => undefined,
@@ -6410,6 +6412,56 @@ describe('the run wait ends on the clock (#869)', () => {
         const polling = pollRunnerJobUntilTerminal(deps, job);
         setTimeout(() => ledgerOf(deps).note(job, 'hard'), 10);
         await expect(polling).rejects.toBeInstanceOf(RunnerKilled);
+    });
+});
+
+describe('the agent container read over before the supervisor reports (#920)', () => {
+    const pendingBody = JSON.stringify({ status: { active: 1 } });
+    const agent = (state: unknown) => ({ name: 'agent', image: 'runner:1', state });
+    const podListing = (containers: unknown[]): string =>
+        JSON.stringify({
+            items: [{ metadata: { name: podName }, status: { phase: 'Running', containerStatuses: containers } }],
+        });
+    const poll = async (answer: (path: string) => { status: number; body: string }) => {
+        let polls = 0;
+        const told: number[] = [];
+        const deps: K8sDeps = {
+            request: async (_method, path) => {
+                polls += 1;
+                return answer(path);
+            },
+            sleep: async () => {},
+            config: loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace }),
+        };
+        await pollRunnerJobUntilTerminal(deps, job, {
+            // The supervisor's report ends the poll; here a bounded number of reads stands in for it.
+            over: () => polls > 12,
+            agentEnded: () => void told.push(polls),
+        });
+        return told;
+    };
+    const answering = (pods: { status: number; body: string }) => (path: string) =>
+        path.includes('/pods') ? pods : { status: 200, body: pendingBody };
+
+    it('tells the supervisor, once, when the pod list shows the agent container terminated', async () => {
+        const ended = answering({
+            status: 200,
+            body: podListing([agent({ terminated: { exitCode: 1, reason: 'Error' } })]),
+        });
+        expect(await poll(ended)).toHaveLength(1);
+    });
+
+    it.each([
+        ['running', podListing([agent({ running: {} })])],
+        ['another container terminated', podListing([{ name: 'exporter', state: { terminated: { exitCode: 1 } } }])],
+        ['a pod list that is null', 'null'],
+        ['a pod list that cannot be read', 'not json'],
+    ])('says nothing while the agent container reads %s', async (_name, body) => {
+        expect(await poll(answering({ status: 200, body }))).toEqual([]);
+    });
+
+    it('says nothing when the pod list request fails', async () => {
+        expect(await poll(answering({ status: 500, body: 'boom' }))).toEqual([]);
     });
 });
 

@@ -82,6 +82,9 @@ describe('createOrgRegistry', () => {
         expect(bareRuntime?.jobs).toBeUndefined();
         const fullRuntime = await full.for(LOCAL_ORG_ID);
         expect(fullRuntime?.jobs).toBeDefined();
+        // The periodic PR read behind the webhook-only paths rides the same stores (docs/workflows.md).
+        expect(bareRuntime?.prFollower).toBeUndefined();
+        expect(fullRuntime?.prFollower).toBeDefined();
     });
 
     it('builds no checkout machinery: the runtime has no userRepos, cloneQueue, purger or facts', async () => {

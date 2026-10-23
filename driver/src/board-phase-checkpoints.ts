@@ -10,8 +10,11 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
 const CONFLICT_CODE = 'PHASE_CHECKPOINT_CONFLICT';
 
-/** The post-run phases that leave a checkpoint, in the order they run (copied from the board's). */
-export const CHECKPOINT_PHASES = ['gates', 'post', 'publish'] as const;
+/**
+ * The phases that leave a checkpoint, in the order they run (copied from the board's): the pre-agent
+ * setup outcome, then the post-run phases.
+ */
+export const CHECKPOINT_PHASES = ['setup', 'gates', 'post', 'publish'] as const;
 export type CheckpointPhase = (typeof CHECKPOINT_PHASES)[number];
 
 /** One checkpoint the board stored: the claim that wrote it, the tree its phase ran against, its outcome. */

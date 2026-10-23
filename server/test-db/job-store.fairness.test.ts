@@ -25,17 +25,17 @@ const craft = (org: string, shape: CraftShape) => craftJob({ sql, org, author: '
 const queued = (org: string, repo: string, createdMinutesAgo: number) => craft(org, { repo, createdMinutesAgo });
 
 /** One board replica: its own scanner over the same two org boards, as each dashboard pod has. */
-function replica(admission: AdmissionBudgets) {
-    const boards = [ORG_A, ORG_B].map((orgId) => createJobStore({ sql, orgId, admission }));
+function replica(
+    admission: AdmissionBudgets,
+    wrap: (board: JobStore, orgId: string) => JobStore = (board) => board,
+    log: (e: Error) => void = (e) => {
+        throw e;
+    }
+) {
+    const boards = [ORG_A, ORG_B].map((orgId) => wrap(createJobStore({ sql, orgId, admission }), orgId));
     const scan = fairBoardScan();
     return (worker: string) =>
-        scan<Claim>(
-            boards,
-            (e) => {
-                throw e;
-            },
-            (board: JobStore) => board.claim(worker, LEASE_SECONDS)
-        );
+        scan<Claim>(boards, log, (board: JobStore, options) => board.claim(worker, LEASE_SECONDS, options));
 }
 
 const runningOf = async (org: string): Promise<number> => {
@@ -102,6 +102,149 @@ describe.skipIf(!enabled)('cross-org fairness on every replica (issue #831)', ()
         await queued(ORG_A, 'acme/a-old', 300);
 
         expect((await replica({})('w1'))?.id).toBe(lost);
+    });
+
+    it('a poll whose claim was refused by the global budget admits no new work from a later board', async () => {
+        // Org A runs one row and has two more queued; org B has one queued; the budget is two, so the poll starts with room.
+        const budget = { global: 2 } as const;
+        const heavy = createJobStore({ sql, orgId: ORG_A, admission: budget });
+        const first = await queued(ORG_A, 'acme/a0', 60);
+        await queued(ORG_A, 'acme/a1', 59);
+        const firstClaim = await heavy.claim('w0', LEASE_SECONDS);
+        expect(firstClaim?.id).toBe(first);
+        await queued(ORG_A, 'acme/a2', 58);
+        const light = await queued(ORG_B, 'acme/b0', 1);
+
+        // Org B ranks first (fewest running). Before its claim another driver fills the budget, so the claim is
+        // refused; then the first heavy row settles before the poll reaches org A, whose board would now admit a row.
+        const poll = replica(budget, (board, orgId) =>
+            orgId === ORG_B
+                ? {
+                      ...board,
+                      claim: async (worker, leaseSeconds, options) => {
+                          await heavy.claim('w-other', LEASE_SECONDS);
+                          const refused = await board.claim(worker, leaseSeconds, options);
+                          await heavy.complete(first, firstClaim!.leaseToken, {
+                              status: 'succeeded',
+                              exitCode: 0,
+                              output: '',
+                          });
+                          return refused;
+                      },
+                  }
+                : board
+        );
+        expect(await poll('w1')).toBeNull();
+        expect(await runningOf(ORG_A)).toBe(1);
+        expect(await runningOf(ORG_B)).toBe(0);
+
+        // The next poll hands the freed slot to the org that was waiting.
+        expect((await replica(budget)('w2'))?.id).toBe(light);
+    });
+
+    // The refusal interleaving of the test above, with the poll's later board varied (issue #831).
+    const refusedPoll = async (
+        mutate: (board: JobStore, orgId: string, settle: () => Promise<void>) => JobStore,
+        log?: (e: Error) => void
+    ) => {
+        const budget = { global: 2 } as const;
+        const heavy = createJobStore({ sql, orgId: ORG_A, admission: budget });
+        const first = await queued(ORG_A, 'acme/a0', 60);
+        await queued(ORG_A, 'acme/a1', 59);
+        const firstClaim = await heavy.claim('w0', LEASE_SECONDS);
+        await queued(ORG_A, 'acme/a2', 58);
+        await queued(ORG_B, 'acme/b0', 1);
+        const settle = async () => {
+            await heavy.complete(first, firstClaim!.leaseToken, { status: 'succeeded', exitCode: 0, output: '' });
+        };
+        const fill = () => heavy.claim('w-other', LEASE_SECONDS);
+        const poll = replica(budget, (board, orgId) => mutate({ ...board, fill } as JobStore, orgId, settle), log);
+        return { poll, runningA: () => runningOf(ORG_A) };
+    };
+
+    it('claims a later board takeover-only after a global refusal, whatever its demand read said', async () => {
+        const { poll, runningA } = await refusedPoll(
+            (board, orgId, settle) => {
+                if (orgId === ORG_A)
+                    return { ...board, demand: async () => Promise.reject(new Error('demand read failed')) };
+                return {
+                    ...board,
+                    claim: async (worker, leaseSeconds, options) => {
+                        await (board as unknown as { fill: () => Promise<unknown> }).fill();
+                        const refused = await board.claim(worker, leaseSeconds, options);
+                        await settle();
+                        return refused;
+                    },
+                };
+            },
+            () => {}
+        );
+        expect(await poll('w1')).toBeNull();
+        expect(await runningA()).toBe(1);
+    });
+
+    it('keeps a global refusal when the claim throws after reporting it', async () => {
+        const failures: Error[] = [];
+        const { poll, runningA } = await refusedPoll(
+            (board, orgId, settle) =>
+                orgId === ORG_B
+                    ? {
+                          ...board,
+                          claim: async (worker, leaseSeconds, options) => {
+                              await (board as unknown as { fill: () => Promise<unknown> }).fill();
+                              await board.claim(worker, leaseSeconds, options);
+                              await settle();
+                              throw new Error('claim failed after the refusal');
+                          },
+                      }
+                    : board,
+            (e) => failures.push(e)
+        );
+        await expect(poll('w1')).rejects.toThrow('claim failed after the refusal');
+        expect(await runningA()).toBe(1);
+        expect(failures).toHaveLength(1);
+    });
+
+    it('a takeover-only claim never admits a queued row, and still takes over an expired one', async () => {
+        const budget = { global: 5 } as const;
+        const board = createJobStore({ sql, orgId: ORG_A, admission: budget });
+        const lost = await queued(ORG_A, 'acme/lost', 120);
+        expect((await board.claim('w0', LEASE_SECONDS))?.id).toBe(lost);
+        await queued(ORG_A, 'acme/new', 1);
+        expect(await board.claim('w1', LEASE_SECONDS, { takeoverOnly: true })).toBeNull();
+        await expireLease(sql, lost);
+        expect((await board.claim('w2', LEASE_SECONDS, { takeoverOnly: true }))?.id).toBe(lost);
+    });
+
+    it('a takeover-only claim whose row was released while it prepared gives the deferral back', async () => {
+        const budget = { global: 5 } as const;
+        const lost = await queued(ORG_A, 'acme/lost', 120);
+        expect((await createJobStore({ sql, orgId: ORG_A, admission: budget }).claim('w0', LEASE_SECONDS))?.id).toBe(
+            lost
+        );
+        await expireLease(sql, lost);
+        // The plan read is the claim's preparation: the old owner releases the row while it runs.
+        const preparing = createJobStore({
+            sql,
+            orgId: ORG_A,
+            admission: budget,
+            plan: {
+                readFor: async () => {
+                    await sql`update job set status = 'queued' where id = ${lost}`;
+                    return { config: null, services: [], revision: null, error: null };
+                },
+            },
+        });
+        expect(await preparing.claim('w1', LEASE_SECONDS, { takeoverOnly: true })).toBeNull();
+
+        // Nothing is left of the reservation: the next poll, with room, claims the row at once.
+        const [row] = await sql<
+            { deferred: Date | null }[]
+        >`select claim_deferred_until as deferred from job where id = ${lost}`;
+        expect(row!.deferred).toBeNull();
+        expect((await createJobStore({ sql, orgId: ORG_A, admission: budget }).claim('w2', LEASE_SECONDS))?.id).toBe(
+            lost
+        );
     });
 
     it('with equal running, the org whose oldest task has waited longest goes first', async () => {

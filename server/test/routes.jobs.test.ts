@@ -1223,6 +1223,40 @@ describe('POST /api/jobs/claim', () => {
         expect(scanned).toEqual(['org-b', 'org-a']);
     });
 
+    // A poll whose claim the global budget refused admits nothing from later boards (issue #831): every later
+    // board is claimed takeover-only, which needs no slot, whatever its demand read said.
+    it('claims the later boards takeover-only after a claim was refused by the global budget', async () => {
+        const modes: Record<string, boolean | undefined> = {};
+        const unknown = stubStore();
+        unknown.demand = async () => {
+            throw new Error('demand read failed');
+        };
+        unknown.claim = async (_worker, _lease, options) => {
+            modes['org-a'] = options?.takeoverOnly;
+            return claim;
+        };
+        const full = stubStore();
+        full.claim = async (_worker, _lease, options) => {
+            modes['org-b'] = options?.takeoverOnly;
+            if (options?.refusal) options.refusal.global = true;
+            return null;
+        };
+        const known = stubStore();
+        known.claim = async (_worker, _lease, options) => {
+            modes['org-c'] = options?.takeoverOnly;
+            return null;
+        };
+        const instance = await harnessOfBoards([
+            ['org-a', unknown],
+            ['org-b', full],
+            ['org-c', known],
+        ]);
+        const response = await postAsWorker(instance, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
+        expect(response.json()).toEqual(claim);
+        // org-b is scanned first and refused; org-c and the unknown-demand org-a follow takeover-only.
+        expect(modes).toEqual({ 'org-b': false, 'org-c': true, 'org-a': true });
+    });
+
     // The driver polls the reclaim queue between job polls, so the two scans must not share one
     // rotation counter: each interleaved reclaim poll would advance the job scan's phase, and
     // with two orgs every job claim would start at the same org and starve the other.

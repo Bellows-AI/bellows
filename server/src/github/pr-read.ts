@@ -77,10 +77,11 @@ function retryAfterMs(headers: Headers, nowMs: number): number | null {
 interface PullPayload {
     number?: number;
     html_url?: string;
-    state?: string;
-    merged?: boolean;
+    state?: unknown;
+    merged?: unknown;
     merged_at?: string | null;
     merge_commit_sha?: string | null;
+    updated_at?: string | null;
     mergeable?: boolean | null;
     head?: { sha?: string };
     base?: { ref?: string; repo?: { full_name?: string } };
@@ -252,6 +253,19 @@ async function readApprovals(call: ApiCall, base: string, number: number): Promi
 }
 
 /**
+ * What the board acts on — a close, a merge — is never inferred from a missing or odd field:
+ * anything but an explicit state and merged flag (a merge being closed) is a failed read, retried
+ * and changing nothing.
+ */
+function confirmedState(pull: PullPayload, path: string): { state: 'open' | 'closed'; merged: boolean } {
+    const { state, merged } = pull;
+    if ((state !== 'open' && state !== 'closed') || typeof merged !== 'boolean' || (merged && state !== 'closed')) {
+        throw new GitHubReadError(`GET ${path} returned no usable state`, READ_TRANSPORT);
+    }
+    return { state, merged };
+}
+
+/**
  * Reads one PR. The recorded `repo` is checked against the repository the PR actually belongs to
  * — a number alone identifies nothing — and the installation token's own reach decides access: a
  * repository it cannot see answers 404/403 and surfaces as `not_found`/`forbidden`.
@@ -268,7 +282,7 @@ export async function readPullRequest(call: ApiCall, repo: string, number: numbe
     if (!sameRepo(baseRepo, repo) || pull.number !== number) {
         throw new GitHubReadError(`pull request ${repo}#${number} belongs to ${baseRepo}`, READ_NOT_FOUND);
     }
-    const merged = pull.merged === true;
+    const { state, merged } = confirmedState(pull, `${base}/pulls/${number}`);
     const requirements = await readRequirements(call, base, baseBranch);
     const [runs, statuses, approvals] = await Promise.all([
         readCheckRuns(call, base, headSha),
@@ -279,10 +293,11 @@ export async function readPullRequest(call: ApiCall, repo: string, number: numbe
         repo: baseRepo,
         number,
         url: pull.html_url ?? `https://github.com/${repo}/pull/${number}`,
-        state: pull.state === 'open' ? 'open' : 'closed',
+        state,
         merged,
         mergedAt: pull.merged_at ?? null,
         mergeCommitSha: pull.merge_commit_sha ?? null,
+        updatedAt: pull.updated_at ?? null,
         baseBranch,
         headSha,
         targetSha: requirements.targetSha,

@@ -423,10 +423,17 @@ export async function awaitReportOrExit(
 export async function closeEndOf(
     execDocker: ExecDocker,
     job: BoardJob,
-    close: { code: number | null; output: string; reported: Promise<SupervisorReport | null> }
+    close: {
+        code: number | null;
+        output: string;
+        reported: Promise<SupervisorReport | null>;
+        /** Called once the close is no refused start and before the wait: the agent container is over (#920). */
+        onAgentOver?: () => Promise<void>;
+    }
 ): Promise<{ proven: ClosedState | null; report: SupervisorReport | null; supervisorExit: number | null }> {
     const proven = await provenStartRefusal(execDocker, job, close.code, close.output);
     if (proven) return { proven, report: null, supervisorExit: SUPERVISOR_EXIT.finalized };
+    await close.onAgentOver?.().catch(() => undefined);
     return { proven, ...(await awaitReportOrExit(execDocker, job, close.reported)) };
 }
 
