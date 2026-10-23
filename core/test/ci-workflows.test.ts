@@ -456,6 +456,9 @@ describe('ci workflows', () => {
     it('publishes the CLI to npmjs after validation, at the version release.sh bumped', () => {
         const npm = workflow(RELEASE).jobs.npm!;
         expect(needs(npm)).toEqual(['validate']);
+        // A release candidate (`npm run release -- --rc`) leaves VERSION behind its tag, so it
+        // publishes images and the chart but never the CLI.
+        expect(npm.if).toMatch(/^\$\{\{ !contains\(github\.ref_name, '-rc'\) \}\}$/);
         const setup = (npm.steps ?? []).find((step) => step.uses?.startsWith('actions/setup-node@'));
         expect(setup?.with?.['registry-url']).toBe('https://registry.npmjs.org');
         const commands = runs(npm);

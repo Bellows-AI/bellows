@@ -4,16 +4,30 @@
 # publishes; ci.yml's push filter skips the VERSION-only commit on main.
 #
 #   npm run release
+#   npm run release -- --rc
+#
+# --rc cuts a release candidate of that next version instead: HEAD itself is tagged vX.Y.Z-rc, then
+# -rc-2, -rc-3, ... (one past the highest candidate locally or on origin), and only the tag is
+# pushed. VERSION and main do not move, so the final release still cuts vX.Y.Z.
 #
 # Refuses a branch other than main, a dirty tree, a HEAD not level with origin/main, a HEAD that
-# already carries a v* tag, a malformed VERSION, and a next tag that exists locally or on origin.
-# On failure it undoes only what it created locally; the atomic push lands both refs or neither.
+# already carries a final v* tag (with --rc: any v* tag), a malformed VERSION, and a next tag that
+# exists locally or on origin. On failure it undoes only what it created locally; the atomic push
+# lands both refs or neither.
 set -eu
 
 fail() {
     echo "release: $*" >&2
     exit 1
 }
+
+rc=
+case "${1-}" in
+'') ;;
+--rc) rc=1 ;;
+*) fail "usage: npm run release [-- --rc]" ;;
+esac
+[ "$#" -le 1 ] || fail "usage: npm run release [-- --rc]"
 
 cd "$(git rev-parse --show-toplevel)"
 
@@ -28,7 +42,12 @@ current=$(cat VERSION)
     && printf '%s\n' "$current" | grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' \
     || fail "VERSION holds '$current', not X.Y.Z"
 
-[ -z "$(git tag --points-at HEAD --list 'v*')" ] || fail 'HEAD is already released'
+# A candidate on HEAD does not block the final release, which commits on top of it.
+if [ -n "$rc" ]; then
+    [ -z "$(git tag --points-at HEAD --list 'v*')" ] || fail 'HEAD is already released'
+else
+    git tag --points-at HEAD --list 'v*' | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' && fail 'HEAD is already released'
+fi
 
 major=${current%%.*}
 rest=${current#*.}
@@ -36,6 +55,23 @@ minor=${rest%%.*}
 patch=${rest#*.}
 next="$major.$minor.$((patch + 1))"
 tag="v$next"
+
+if [ -n "$rc" ]; then
+    remote_tags=$(git ls-remote --tags --refs origin "refs/tags/$tag-rc*") || fail "cannot list origin's tags"
+    # -rc is candidate 1; -rc-N is candidate N. Anything else under the prefix is not a candidate.
+    highest=$(
+        {
+            git tag --list "$tag-rc*"
+            printf '%s\n' "$remote_tags" | sed 's|.*refs/tags/||'
+        } | sed -n "s/^v$major\.$minor\.$((patch + 1))-rc\(-\([1-9][0-9]*\)\)\{0,1\}\$/\2/p" \
+            | sed 's/^$/1/' | sort -n | tail -n 1
+    )
+    if [ -z "$highest" ]; then
+        tag="$tag-rc"
+    else
+        tag="$tag-rc-$((highest + 1))"
+    fi
+fi
 
 git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null && fail "$tag already exists locally"
 if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
@@ -60,13 +96,19 @@ undo() {
 trap undo EXIT
 trap 'exit 1' INT TERM
 
-wrote=1
-printf '%s\n' "$next" >VERSION
-git add VERSION
-git commit --quiet -m "Release $tag"
-committed=1
-git tag -a "$tag" -m "$tag"
-tagged=1
-git push --quiet --atomic origin HEAD:refs/heads/main "refs/tags/$tag" || fail "push of $tag failed; check origin before retrying"
+if [ -n "$rc" ]; then
+    git tag -a "$tag" -m "$tag"
+    tagged=1
+    git push --quiet origin "refs/tags/$tag" || fail "push of $tag failed; check origin before retrying"
+else
+    wrote=1
+    printf '%s\n' "$next" >VERSION
+    git add VERSION
+    git commit --quiet -m "Release $tag"
+    committed=1
+    git tag -a "$tag" -m "$tag"
+    tagged=1
+    git push --quiet --atomic origin HEAD:refs/heads/main "refs/tags/$tag" || fail "push of $tag failed; check origin before retrying"
+fi
 released=1
 echo "released $tag"

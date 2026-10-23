@@ -338,6 +338,8 @@ jobs:
     # workflow file, or the publish is refused.
     npm:
         needs: [validate]
+        # A release candidate's tag runs ahead of VERSION (release.sh --rc); it ships no CLI.
+        if: ${{ !contains(github.ref_name, '-rc') }}
         runs-on: ubuntu-latest
         timeout-minutes: 10
         # Job-level permissions replace the workflow's: no packages or security-events here, and
