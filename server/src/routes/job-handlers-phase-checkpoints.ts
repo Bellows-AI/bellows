@@ -14,7 +14,7 @@ import {
 } from './job-limits.js';
 import { resolveJobRoute } from './route-guards.js';
 
-const PHASES: readonly string[] = ['gates', 'post', 'publish'] satisfies PhaseCheckpointPhase[];
+const PHASES: readonly string[] = ['setup', 'gates', 'post', 'publish'] satisfies PhaseCheckpointPhase[];
 
 const runClaimSeqOf = (value: unknown): number | null =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : null;

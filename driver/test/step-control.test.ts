@@ -376,6 +376,20 @@ describe('the control routes of a step channel', () => {
         steps.close('reclaim-token');
     });
 
+    it('names an agent container the runner read over on the control poll until a fresh group is attached (#920)', async () => {
+        steps.agentEnded('nobody');
+        expect(steps.agentWasEnded('nobody')).toBe(false);
+        expect(await (await call(SUPERVISOR, 'GET', '/control')).json()).toEqual({ stop: false, kill: false });
+        steps.agentEnded(SUPERVISOR);
+        expect(await (await call(SUPERVISOR, 'GET', '/control')).json()).toEqual({
+            stop: false,
+            kill: false,
+            agentEnded: true,
+        });
+        steps.attach(SUPERVISOR);
+        expect(await (await call(SUPERVISOR, 'GET', '/control')).json()).toEqual({ stop: false, kill: false });
+    });
+
     it('serves a supervisor-only token — a group with no attempt — its steps and a control that never stops', async () => {
         steps.open('reclaim-token');
         const answered = steps.submit('reclaim-token', step('r1', { kind: 'reclaim' }));

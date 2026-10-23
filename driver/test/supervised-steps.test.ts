@@ -92,6 +92,7 @@ function sink(answer: (step: StepRequest, call: number) => StepResult | Error = 
             return given;
         },
         awaitReport: () => Promise.reject(new Error('not used')),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,

@@ -74,6 +74,7 @@ export async function k8sSyncRun(
             return { exitCode: 0, stdout: answer(step), stderr: '', timedOut: false };
         },
         awaitReport: () => new Promise(() => undefined),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,

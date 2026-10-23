@@ -54,6 +54,8 @@
 //   SUPERVISOR_DRAIN_MS       — how long the exporter may take to drain (default 300000).
 //   SUPERVISOR_AGENT_LOST_MS  — a seen agent heartbeat older than this is a lost agent (default 30000).
 //   SUPERVISOR_AGENT_START_MS — how long the agent may take to show a first heartbeat (default 600000).
+//                               The driver's reading of the agent container ended (`GET /control` answers `agentEnded`)
+//                               with no exit marker is a lost agent at once, inside both windows (#920).
 //   SUPERVISOR_EXPORTS        — `1` when an exporter container waits for the drain order.
 //   SUPERVISOR_AGENTLESS      — `1` for an attempt with no agent container: no `go` is awaited.
 //   SUPERVISOR_ORPHAN_MS      — how long an unanswering driver is served before finalizing (default 90000).
@@ -420,6 +422,7 @@ function newRun(settings, now, log) {
         stopRaised: false,
         killRaised: null,
         agentSeenAt: null,
+        agentEnded: false, // the driver read the agent container over (#920); true is sticky, never a verdict on its own
         agentEnd: null, // { exitCode: number | null, how: 'exit' | 'lost' }
         closed: false,
         intent: null,
@@ -1197,6 +1200,13 @@ async function serveQuestions(run) {
     }
 }
 
+/** The gate steps the driver cancelled, named on the control poll until their answers settle them. */
+function takeCancels(run, cancel) {
+    for (const id of Array.isArray(cancel) ? cancel : []) {
+        if (typeof id === 'string') for (const lane of LANES) run.lanes[lane].cancels.add(id);
+    }
+}
+
 async function pollControl(run) {
     followBinding(run);
     const { settings } = run;
@@ -1211,9 +1221,8 @@ async function pollControl(run) {
         return;
     }
     if (answer.json?.stop === true) raiseStop(run);
-    for (const id of Array.isArray(answer.json?.cancel) ? answer.json.cancel : []) {
-        if (typeof id === 'string') for (const lane of LANES) run.lanes[lane].cancels.add(id);
-    }
+    if (answer.json?.agentEnded === true) run.agentEnded = true;
+    takeCancels(run, answer.json?.cancel);
     if (answer.json?.kill === true) {
         intend(run, 'cancelled', CAUSE.killed);
         raiseKill(run, CAUSE.killed);
@@ -1230,12 +1239,28 @@ function agentBeatMs(run) {
     }
 }
 
+/** Whether the file is confirmed missing: any other failure to read it is inconclusive, never a no. */
+function markerAbsent(file) {
+    try {
+        fs.accessSync(file);
+        return false;
+    } catch (e) {
+        return e?.code === 'ENOENT';
+    }
+}
+
 /** The agent ended on its own (an exit marker) or was lost (its heartbeat stopped, or never started). */
 function watchAgent(run) {
     if (run.agentEnd) return;
     if (fs.existsSync(run.file.agentExit)) {
         const code = Number.parseInt(fs.readFileSync(run.file.agentExit, 'utf8').trim(), 10);
         run.agentEnd = { exitCode: Number.isFinite(code) ? code : null, how: 'exit' };
+        return;
+    }
+    // The driver read the agent container over (#920) and the marker, written before the container ends, is
+    // confirmed absent: the agent died before it could write one. A marker that cannot be read says nothing.
+    if (run.agentEnded && markerAbsent(run.file.agentExit)) {
+        run.agentEnd = { exitCode: null, how: 'lost' };
         return;
     }
     const beatMs = agentBeatMs(run);

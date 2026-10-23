@@ -169,7 +169,9 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
     const { rt, job, state } = ctx;
     try {
         const gateOut = await raceStep(state.signal, beginGates(rt, job, state, { takeover: Boolean(ctx.takeover) }));
-        return gateOut === null ? STOOD_DOWN : gateOut.value;
+        if (gateOut === null) return STOOD_DOWN;
+        await recordSetup(ctx);
+        return gateOut.value;
     } catch (e) {
         // The setup's supervisor was lost (issue #773): the attempt's loss, never a config verdict.
         if (stepLost(e)) return { halt: 'interrupt', reason: gateLossReason(e) };
@@ -179,6 +181,20 @@ async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null |
             'runner_error'
         );
     }
+}
+
+/**
+ * Leaves the pre-agent `environment.setup` outcome on the board, passed or failed, before the agent
+ * starts (issue #917): the failure lives in this driver's memory otherwise, and a holder that adopts
+ * or takes the run over would decide its end-of-run pass without it. Only the attempt that ran the
+ * setup records it; a missing row reads as unknown, so a write the board did not take only costs the
+ * adopter a retried setup.
+ */
+async function recordSetup(ctx: AttemptCtx): Promise<void> {
+    const { job } = ctx;
+    if (ctx.adopted || ctx.takeover || job.setupMs === undefined) return;
+    // A chain of its own: a setup write the board refused must not silence the later phases' records.
+    await (await openChain(ctx)).record('setup', null, { failure: job.setupFailure ?? null });
 }
 
 /** Why a gate or setup whose supervisor was lost interrupts its attempt (issue #773). */
@@ -415,12 +431,18 @@ async function verifyRun(
      * finish cleanly skips them: a gate over work that never happened fires gate-fix for nothing.
      * A session whose gates are all on demand has no pass: its evidence reads `none`, never `passed`.
      */
-    const gating = gateSession?.endPass && !outcome.refused && !lostOf(state) ? gateSession : null;
+    const phases = await openChain(ctx);
+    ctx.phases = phases;
+    // An adopted or taken-over run carries the setup outcome of the attempt it resumes (issue #917):
+    // a failure the first driver held in memory is back on this job, and one the board cannot
+    // confirm is retried, never taken as a pass.
+    const carried = phases.carriedSetup();
+    if (carried && carried !== 'unknown') job.setupFailure ??= carried;
+    const endPass = gateSession?.endPass || carried !== null;
+    const gating = gateSession && endPass && !outcome.refused && !lostOf(state) ? gateSession : null;
     // The tree is read BEFORE the gates: a gate that writes a non-ignored artifact (a timestamped
     // report) must not read as the agent's progress. Under an evidence policy it is read gated or
     // not: it is the revision the evidence is bound to.
-    const phases = await openChain(ctx);
-    ctx.phases = phases;
     // A stand-down that cut the read short settles here, before any probe or phase.
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;

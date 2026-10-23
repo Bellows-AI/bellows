@@ -63,6 +63,19 @@ describe('POST /api/jobs/:id/phase-checkpoint', () => {
         ]);
     });
 
+    it('takes the pre-agent setup phase (issue #917)', async () => {
+        const { store, written } = stubStore();
+        const result = { failure: { exitCode: 7, output: 'npm ERR!' } };
+        const res = await post(await harnessWith(store), `/api/jobs/${ID}/phase-checkpoint`, {
+            ...good,
+            phase: 'setup',
+            tree: null,
+            result,
+        });
+        expect(res.statusCode).toBe(200);
+        expect(written[0]![2]).toMatchObject({ phase: 'setup', result });
+    });
+
     it('takes a null tree and a null result', async () => {
         const { store, written } = stubStore();
         const res = await post(await harnessWith(store), `/api/jobs/${ID}/phase-checkpoint`, {

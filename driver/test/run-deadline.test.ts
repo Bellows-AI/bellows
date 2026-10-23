@@ -98,6 +98,7 @@ describe('the docker runner kill timer', () => {
     const supervisorSteps: StepSink = {
         submit: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
         awaitReport: () => new Promise(() => undefined),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
