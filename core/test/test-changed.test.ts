@@ -16,7 +16,7 @@ interface PlanInput {
 const SCRIPT = new URL('../../scripts/test-changed.mjs', import.meta.url).href;
 const { plan, DIRECTORY_READERS } = (await import(/* @vite-ignore */ SCRIPT)) as {
     plan: (input: PlanInput) => Step[];
-    DIRECTORY_READERS: [RegExp, string[], string][];
+    DIRECTORY_READERS: [RegExp, string[]][];
 };
 
 const SPAWN = ['driver/test/scripts-gate-shell.test.ts', 'core/test/biome.test.ts'];
@@ -35,15 +35,21 @@ describe('test:changed plan', () => {
     it('follows the import graph across every project and nothing else for a driver module', () => {
         const steps = run(['driver/src/loop.ts']);
         expect(steps.some((step) => step.run)).toBe(false);
-        expect(vitestArgs(steps)).toEqual([
-            [
-                'run',
-                '--changed',
-                'abc123',
-                '--passWithNoTests',
-                ...['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'].flatMap((name) => ['--project', name]),
-            ],
+        expect(vitestArgs(steps)[0]).toEqual([
+            'run',
+            '--changed',
+            'abc123',
+            '--passWithNoTests',
+            ...['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'].flatMap((name) => ['--project', name]),
         ]);
+        // Beside the graph, only the suites that scan driver/src without importing from it.
+        expect(vitestArgs(steps)[1]).toEqual([
+            'run',
+            'core/test/polling-authority.test.ts',
+            'driver/test/k8s.test.ts',
+            'driver/test/loop-fence.test.ts',
+        ]);
+        expect(steps).toHaveLength(2);
     });
 
     it('runs only the suites that name a changed doc, for a docs-only branch', () => {
@@ -74,6 +80,7 @@ describe('test:changed plan', () => {
         expect(vitestArgs(steps).at(-1)).toEqual([
             'run',
             'core/test/core-index.test.ts',
+            'core/test/polling-authority.test.ts',
             'driver/test/scripts-gate-shell.test.ts',
         ]);
     });
@@ -91,12 +98,18 @@ describe('test:changed plan', () => {
 
     it('maps a changed script to the spawn suite that names it', () => {
         const steps = run(['driver/src/scripts/gate-loop.sh']);
-        expect(vitestArgs(steps).at(-1)).toEqual(['run', 'driver/test/scripts-gate-shell.test.ts']);
+        expect(vitestArgs(steps).at(-1)).toContain('driver/test/scripts-gate-shell.test.ts');
+        expect(vitestArgs(steps).at(-1)).toContain('driver/test/scripts.test.ts');
     });
 
     it('finds a suite that reads a changed TypeScript source or a test fixture by path', () => {
         const steps = run(['server/src/routes/jobs/job-limits.ts', 'core/test/fixtures/sessions.json']);
-        expect(vitestArgs(steps).at(-1)).toEqual(['run', 'core/test/task-usage.test.ts', 'driver/test/board.test.ts']);
+        expect(vitestArgs(steps).at(-1)).toEqual([
+            'run',
+            'core/test/polling-authority.test.ts',
+            'core/test/task-usage.test.ts',
+            'driver/test/board.test.ts',
+        ]);
     });
 
     it('does not look up a changed test file, which the graph follows', () => {
@@ -123,13 +136,28 @@ describe('test:changed plan', () => {
         expect(vitestArgs(steps)).toContainEqual(['run', 'server/test/local-origin-plan.test.ts']);
     });
 
-    it('keeps every directory reader on disk and naming its directory', () => {
-        for (const [, tests, token] of DIRECTORY_READERS) {
+    it('keeps every directory reader on disk and still scanning a directory', () => {
+        for (const [, tests] of DIRECTORY_READERS) {
             for (const test of tests) {
                 const source = readFileSync(new URL(`../../${test}`, import.meta.url), 'utf8');
-                expect(source, test).toContain(token);
+                expect(source, test).toMatch(/readdirSync/);
             }
         }
+    });
+
+    it('routes the paths whose scanners import nothing from them', () => {
+        const scanners = (path: string) => {
+            const steps = plan({ base: 'abc123', changed: [path], spawn: SPAWN, namedBy: () => [] });
+            return vitestArgs(steps).at(-1)?.slice(1) ?? [];
+        };
+        expect(scanners('docs/design-system/composer.md')).toContain('web/test/styles.test.ts');
+        expect(scanners('charts/factory-local-state/templates/postgres.yaml')).toContain(
+            'core/test/docs.eks-storage.test.ts'
+        );
+        expect(scanners('server/src/routes/jobs/job-limits.ts')).toContain('core/test/polling-authority.test.ts');
+        expect(scanners('server/test-db/job-store.fairness.test.ts')).toContain('server/test/test-db.harness.test.ts');
+        expect(scanners('web/test/panels.render.test.tsx')).toContain('web/test/no-shared-module-spies.test.ts');
+        expect(scanners('driver/test/brand-new.test.ts')).toContain('core/test/vitest-projects.test.ts');
     });
 
     it('plans only the graph step for an empty change', () => {

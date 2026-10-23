@@ -15,13 +15,25 @@ const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
 const GRAPH_FILE = /\.(ts|tsx|mts|cts)$/;
-// Suites that enumerate a directory (`readdirSync`) and never name its files, so no grep finds them.
-// `core/test/test-changed.test.ts` pins that each one exists and still names its directory.
+// Suites that scan a directory with `readdirSync` and never name its files, so no grep finds them.
+// `core/test/test-changed.test.ts` pins that each one exists and still reads a directory. A
+// suite missing here is the gap `npm test`, the gate, still closes.
+const SOURCE_SCANNERS = ['core/test/polling-authority.test.ts'];
 export const DIRECTORY_READERS = [
-    [/^server\/migrations\//, ['core/test/migrations.sql.test.ts'], 'migrations'],
-    [/^lint\//, ['core/test/biome.test.ts'], 'lint'],
-    [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts'], 'skills'],
-    [/^core\/src\//, ['core/test/core-index.test.ts'], 'src'],
+    [/^server\/migrations\//, ['core/test/migrations.sql.test.ts']],
+    [/^lint\//, ['core/test/biome.test.ts']],
+    [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts']],
+    [/^\.claude\/skills\//, ['driver/test/executor-images.test.ts']],
+    [/^core\/src\//, ['core/test/core-index.test.ts', ...SOURCE_SCANNERS]],
+    [/^server\/src\//, SOURCE_SCANNERS],
+    [/^driver\/src\//, [...SOURCE_SCANNERS, 'driver/test/loop-fence.test.ts', 'driver/test/k8s.test.ts']],
+    [/^driver\/src\/scripts\//, ['driver/test/scripts.test.ts']],
+    [/^(web\/src|docs\/design-system)\//, ['web/test/styles.test.ts']],
+    [/^web\/test\//, ['web/test/no-shared-module-spies.test.ts']],
+    [/^server\/test-db\//, ['server/test/test-db.harness.test.ts']],
+    [/^charts\//, ['core/test/docs.eks-storage.test.ts']],
+    // A test file added, moved or removed moves the project lists.
+    [/^((core|server|web|driver|cli)\/test\/.*\.test\.tsx?|vitest\.spawn-tests\.json)$/, ['core/test/vitest-projects.test.ts']],
 ];
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
