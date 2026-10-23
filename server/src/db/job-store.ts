@@ -91,9 +91,9 @@ function workerMethods(
     | 'restoreScope'
 > {
     return {
-        async claim(worker, leaseSeconds) {
+        async claim(worker, leaseSeconds, options) {
             await gate();
-            return claimJob(ctx, worker, leaseSeconds);
+            return claimJob(ctx, worker, leaseSeconds, options);
         },
 
         async demand() {

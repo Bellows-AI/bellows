@@ -148,6 +148,17 @@ describe('test-jobs phase options', () => {
         expect(result.stdout).not.toContain('invalid --phase');
     });
 
+    // Issue #831: competing drivers under one shared admission budget.
+    it('lists the capacity phase and accepts it as a phase', async () => {
+        const help = await fixture().run(['--help']);
+        expect(help.stdout).toContain('capacity');
+        const lane = fixture();
+        const result = await lane.run(['--phase', 'capacity'], { JOBS_TEST_DB: 'factory_dev' });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('ending _test');
+        expect(result.stdout).not.toContain('invalid --phase');
+    });
+
     it.each([
         ['--phase'],
         ['--phase', 'unknown'],

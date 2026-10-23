@@ -10,7 +10,14 @@ import type { BellowsConfig } from '../workspace/bellows.js';
 import type { ServiceSpec } from '../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from './evidence-policy.js';
 import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
-import { admitInTx, awaitingTakeover, repoRoom, roomForNew } from './job-store-admission.js';
+import {
+    admitInTx,
+    awaitingTakeover,
+    type ClaimOptions,
+    type ClaimRefusal,
+    fullScope,
+    repoRoom,
+} from './job-store-admission.js';
 import { type ResolvedClaimExecutor, resolveClaimExecutor } from './job-store-claim-executor.js';
 import { readReviewEvidence } from './job-store-evidence.js';
 import { stopReviewsOf, workspacePathFor } from './job-store-rows.js';
@@ -214,10 +221,18 @@ function claimRules({ sql, orgId }: JobStoreContext) {
  * and only from a repo with room; a takeover of a running row needs no slot and is always offered.
  * `refused` are this poll's candidates a budget already refused.
  */
-async function reserveCandidate(ctx: JobStoreContext, refused: readonly string[]): Promise<ReservedCandidate | null> {
+async function reserveCandidate(
+    ctx: JobStoreContext,
+    refused: readonly string[],
+    refusal: ClaimRefusal,
+    takeoverOnly: boolean
+): Promise<ReservedCandidate | null> {
     const { sql, orgId, admission } = ctx;
     const { sameThreadRunning, recovering, baseBranch } = claimRules(ctx);
-    const room = await roomForNew(sql, admission, orgId);
+    const full = await fullScope(sql, admission, orgId);
+    if (full === 'global') refusal.global = true;
+    // A takeover-only claim has no room for new work whatever the budgets say: only rows already holding a slot.
+    const room = full === null && !takeoverOnly;
     const [reserved] = await sql<ReservedCandidate[]>`
         with picked as (
             select j.id, j.claim_deferred_until as prior_deferral from job j
@@ -260,6 +275,41 @@ async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidat
     return resolveClaimGates(skip ? undefined : planReader, { orgId, rootJobId: reserved.root_job_id }, reserved);
 }
 
+/** What a poll's earlier boards told this claim: where to report a global refusal, and whether it may admit new work. */
+type ClaimGate = { refusal: ClaimRefusal; takeoverOnly: boolean };
+
+/**
+ * New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds. A queued row is
+ * REFUSED when the claim is takeover-only (the row changed under its reservation) or a budget is full.
+ */
+async function slotsFor(
+    tx: TransactionSql,
+    ctx: JobStoreContext,
+    reserved: ReservedCandidate,
+    step: { status: string; gate: ClaimGate; probe: ReturnType<typeof startAcquire> }
+): Promise<{ slots: Fragment } | typeof REFUSED> {
+    // Wrapped: a bare fragment is a thenable, and returning it from an async function would run it as a query.
+    const { sql, orgId, admission } = ctx;
+    const { status, gate, probe } = step;
+    if (status !== 'queued') return { slots: sql`admission_slot_global, admission_slot_org, admission_slot_repo` };
+    // A refusal gives the reservation's deferral back under this row lock, so the next poll can claim the row at once.
+    const restoreDeferral = () =>
+        tx`update job set claim_deferred_until = ${reserved.prior_deferral}
+           where org_id = ${orgId} and id = ${reserved.id}`;
+    if (gate.takeoverOnly) {
+        await restoreDeferral();
+        return REFUSED;
+    }
+    const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
+    if (!('full' in admitted)) {
+        return { slots: sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int` };
+    }
+    if (admitted.full === 'global') gate.refusal.global = true;
+    await restoreDeferral();
+    probe.refused(admitted.full);
+    return REFUSED;
+}
+
 /**
  * The claim's short half: one transaction that takes the candidate's row lock, then its thread
  * root's advisory lock — the order a verdict takes them, so the two never deadlock — and claims it
@@ -280,11 +330,11 @@ async function prepareCandidate(ctx: JobStoreContext, reserved: ReservedCandidat
  */
 async function acquireCandidate(
     ctx: JobStoreContext,
-    lease: { worker: string; leaseSeconds: number },
+    lease: { worker: string; leaseSeconds: number } & ClaimGate,
     reserved: ReservedCandidate,
     gates: ResolvedClaimGates
 ): Promise<Claim | typeof NEXT_CANDIDATE | typeof REFUSED> {
-    const { sql, orgId, admission } = ctx;
+    const { sql, orgId } = ctx;
     const { sameThreadRunning, recovering, exhausted, baseBranch, ownSession } = claimRules(ctx);
     const expiry = sql.json({ reason: LEASE_EXPIRED_REASON, at: new Date().toISOString() });
     const rootJobId = reserved.root_job_id;
@@ -300,21 +350,13 @@ async function acquireCandidate(
                        as queued_since
             from job where org_id = ${orgId} and id = ${reserved.id} for update
         `;
+        // Gone: no row is left to carry a deferral.
         if (!locked) return NEXT_CANDIDATE;
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
         probe.locked();
-        // New work takes a slot in every budget (issue #831); a takeover keeps the slots its row holds.
-        let slots = sql`admission_slot_global, admission_slot_org, admission_slot_repo`;
-        if (locked.status === 'queued') {
-            const admitted = await admitInTx(tx, admission, orgId, reserved.repo);
-            if ('full' in admitted) {
-                await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
-                         where org_id = ${orgId} and id = ${reserved.id}`;
-                probe.refused(admitted.full);
-                return REFUSED;
-            }
-            slots = sql`${admitted.global}::int, ${admitted.org}::int, ${admitted.repo}::int`;
-        }
+        const admission = await slotsFor(tx, ctx, reserved, { status: locked.status, gate: lease, probe });
+        if (admission === REFUSED) return REFUSED;
+        const { slots } = admission;
 
         const rows = await tx<
             (ClaimCandidateRow & {
@@ -394,9 +436,14 @@ async function acquireCandidate(
                       ${baseBranch} as base_branch
         `;
         const row = rows[0];
-        // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy:
-        // the next candidate, with nothing written here.
-        if (!row) return NEXT_CANDIDATE;
+        // Moved while this claim prepared — claimed, stopped, its lease renewed, its thread busy: the
+        // next candidate, and the reservation's deferral goes back, so a holder that renewed and then
+        // crashes is recoverable at once.
+        if (!row) {
+            await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
+                     where org_id = ${orgId} and id = ${reserved.id}`;
+            return NEXT_CANDIDATE;
+        }
         probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         return assembleClaim(ctx, tx, row, { rootJobId, gates });
@@ -416,14 +463,15 @@ async function acquireCandidate(
 async function claimNextCandidate(
     ctx: JobStoreContext,
     worker: string,
-    leaseSeconds: number
+    leaseSeconds: number,
+    options: ClaimGate
 ): ReturnType<JobStore['claim']> {
     const refused: string[] = [];
     for (;;) {
-        const reserved = await reserveCandidate(ctx, refused);
+        const reserved = await reserveCandidate(ctx, refused, options.refusal, options.takeoverOnly);
         if (!reserved) return null;
         const gates = await prepareCandidate(ctx, reserved);
-        const claim = await acquireCandidate(ctx, { worker, leaseSeconds }, reserved, gates);
+        const claim = await acquireCandidate(ctx, { worker, leaseSeconds, ...options }, reserved, gates);
         if (claim === REFUSED) refused.push(reserved.id);
         else if (claim !== NEXT_CANDIDATE) return claim;
     }
@@ -477,7 +525,8 @@ async function assembleClaim(
 export async function claimJob(
     ctx: JobStoreContext,
     worker: string,
-    leaseSeconds: number
+    leaseSeconds: number,
+    options: ClaimOptions = {}
 ): ReturnType<JobStore['claim']> {
     const { sql, orgId, wallTick, prs } = ctx;
     const sweepStart = performance.now();
@@ -552,7 +601,10 @@ export async function claimJob(
      * the exclusion reads OTHER rows without locking them, and only the root lock makes it see a
      * same-thread claim that committed while this one waited.
      */
-    return claimNextCandidate(ctx, worker, leaseSeconds);
+    return claimNextCandidate(ctx, worker, leaseSeconds, {
+        refusal: options.refusal ?? { global: false },
+        takeoverOnly: options.takeoverOnly ?? false,
+    });
 }
 
 /**

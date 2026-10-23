@@ -23,7 +23,7 @@ describe('the test-jobs harness', () => {
         expect(SCRIPT.slice(origin, origin + 120)).toContain('-p 127.0.0.1::9418');
         expect(SCRIPT).toContain('docker port "$ORIGIN_NAME" 9418/tcp');
         expect(origin).toBeLessThan(SCRIPT.indexOf('\nstart_open_board\n'));
-        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(3);
+        expect(SCRIPT.match(/REPO_CLONE_BASE="\$PLAN_BASE"/g)).toHaveLength(4);
         expect(SCRIPT).not.toContain('ORG_WORKSPACE_ROOT');
         expect(SCRIPT).not.toContain('.origins');
     });
@@ -295,6 +295,30 @@ describe('the test-jobs harness', () => {
         expect(phase).toContain('docker ps -aq --filter "label=factory.job=$lost" |');
         expect(phase).toContain('"job $lost: attempt 1 resuming session $lost_session"');
         expect(phase).toContain('upstream:0');
+    });
+
+    // Issue #831: two drivers on two boards under one shared admission budget, one of them killed.
+    it('the capacity phase runs two boards and two drivers under one shared budget, kills one, and samples the rows', () => {
+        const start = SCRIPT.indexOf("echo '# capacity'");
+        expect(start).toBeGreaterThan(SCRIPT.indexOf("echo '# run deadline'"));
+        expect(start).toBeLessThan(SCRIPT.indexOf("echo '# review'"));
+        const phase = SCRIPT.slice(start, SCRIPT.indexOf("echo '# review'"));
+        expect(phase).toContain('ADMISSION_MAX_RUNNING=2');
+        expect(phase).toContain('AUTH_MODE=github');
+        expect(phase).toContain('DRIVER_WORKER=cap-a');
+        expect(phase).toContain('DRIVER_WORKER=cap-b');
+        expect(phase).toContain('kill -9');
+        expect(phase).toContain('claimed_by');
+        expect(phase).toContain('admission_slot_global');
+        expect(phase).toContain('"$TOOK_OVER"');
+        // The sampler reads under a timeout; an unreadable sample is counted apart, never zero.
+        expect(phase).toContain('timeout 10');
+        expect(phase).toContain('lane_extra_pids');
+        // driver_kill() stays inside the driver-kill phase (its pin above); the dk_ helpers sit at file scope.
+        expect(SCRIPT.indexOf('\ndk_log() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\ndk_clean() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\ndk_count() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
+        expect(SCRIPT.indexOf('\ndk_await_log() {')).toBeLessThan(SCRIPT.indexOf("echo '# node disruption'"));
     });
 
     // Issue #829: a driver killed at each step of a run, on real containers, finishes the task once.

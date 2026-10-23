@@ -225,7 +225,7 @@ export async function handleClaimJob(
 
     const claimFailed = (e: Error) => request.log.error({ err: e }, 'job claim failed');
     const claim = await guard(reply, claimFailed, () =>
-        firstJobClaim(boards, claimFailed, (board) => board.claim(worker, lease))
+        firstJobClaim(boards, claimFailed, (board, options) => board.claim(worker, lease, options))
     );
     if (!claim.ok) {
         claimPoll?.('error');

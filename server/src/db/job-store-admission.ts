@@ -69,17 +69,17 @@ function budgetsFor(
 }
 
 /**
- * Whether new work of `orgId` has room in the global and org budgets, read without a lock. Advisory:
- * it only spares the claim a reservation it would refuse; `admitInTx` decides.
+ * The first budget (global, then org) with no room for new work of `orgId`, or null when there is room, read
+ * without a lock. Advisory: it only spares the claim a reservation it would refuse; `admitInTx` decides.
  */
-export async function roomForNew(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<boolean> {
+export async function fullScope(sql: Sql, budgets: AdmissionBudgets, orgId: string): Promise<AdmissionScope | null> {
     for (const budget of budgetsFor(sql, budgets, orgId, null)) {
         const [row] = await sql<{ n: number }[]>`
             select count(*)::int as n from job where ${occupying(sql)} and ${budget.where}
         `;
-        if (row!.n >= budget.limit) return false;
+        if (row!.n >= budget.limit) return budget.scope;
     }
-    return true;
+    return null;
 }
 
 /** The reservation's repo filter for candidate alias `j`, advisory like `roomForNew`. */
@@ -245,4 +245,21 @@ export interface ClaimObserver {
     acquire(seconds: number): void;
     /** The settle passes a claim runs before it looks for a candidate. */
     sweep(seconds: number): void;
+}
+
+/**
+ * What a claim that returned null reports, for the cross-org scan (issue #831): `global` is set when the global
+ * admission budget refused it new work, so no later board of the same poll may admit any either.
+ */
+export interface ClaimRefusal {
+    global: boolean;
+}
+
+/**
+ * How a claim is made (issue #831). `takeoverOnly` offers only rows awaiting a takeover, which hold their slot
+ * already, and never admits a queued row; `refusal` is where the claim reports a global budget refusal.
+ */
+export interface ClaimOptions {
+    takeoverOnly?: boolean;
+    refusal?: ClaimRefusal;
 }

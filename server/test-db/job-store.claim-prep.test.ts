@@ -174,6 +174,10 @@ describe.skipIf(!enabled)('claim preparation outside the locks — database', ()
             interruptions: [],
             lease_live: true,
         });
+
+        // The holder then crashes: its row is recoverable at once, not after this claim's preparation deferral.
+        await expireLease(sql, id);
+        expect((await plain.claim(WORKER, LEASE_SECONDS))?.id).toBe(id);
     });
 
     it('returns a lease measured from acquisition, not from before a delayed plan read', async () => {

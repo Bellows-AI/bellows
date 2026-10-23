@@ -8,7 +8,7 @@
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { UserRef, ExecutorScope, ExecutorType, JobMode } from '@factory-ai/core';
 import type { JobLeaseInfo } from './lease-types.js';
-import type { AdmissionBudgets, ClaimObserver, OrgDemand } from './job-store-admission.js';
+import type { AdmissionBudgets, ClaimObserver, ClaimOptions, OrgDemand } from './job-store-admission.js';
 import type { Sql, TransactionSql, Fragment } from 'postgres';
 import type { RestoreScopeResult } from './restore-types.js';
 import type { PublicationState, WaitState } from './pr-lifecycle-store.js';
@@ -1083,7 +1083,7 @@ export interface JobStore extends PhaseCheckpointStore {
      */
     restoreScope(id: string, leaseToken: string): Promise<RestoreScopeResult>;
     /** The oldest claimable job, or null when there is none. Never blocks on a live lease. */
-    claim(worker: string, leaseSeconds: number): Promise<Claim | null>;
+    claim(worker: string, leaseSeconds: number, options?: ClaimOptions): Promise<Claim | null>;
     /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
     demand(): Promise<OrgDemand>;
     heartbeat(
