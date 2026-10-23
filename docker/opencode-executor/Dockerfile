@@ -60,7 +60,7 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 -o /usr/local/bin/acli \
 # GitHub CLI. The agent instructions point GitHub work at `gh`, and without it every one of those
 # instructions ends in "command not found". Static release tarball rather than apt, for the same
 # proxy reason as the base image choice.
-ARG GH_VERSION=2.102.0
+ARG GH_VERSION=2.103.0
 RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
         | tar -xz -C /tmp \
     && mkdir -p /usr/local/libexec \
