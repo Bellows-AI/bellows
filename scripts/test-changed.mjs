@@ -15,17 +15,19 @@ const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
 const GRAPH_FILE = /\.(ts|tsx|mts|cts)$/;
-// Suites that scan a directory with `readdirSync` and never name its files, so no grep finds them.
-// `core/test/test-changed.test.ts` pins that each one exists and still reads a directory. A
+// Suites that scan a directory (`readdirSync`, a recursive read) and never name its files, so no grep
+// finds them. `core/test/test-changed.test.ts` pins that each one exists. A
 // suite missing here is the gap `npm test`, the gate, still closes.
 const SOURCE_SCANNERS = ['core/test/polling-authority.test.ts'];
+const SERVER_SCANNERS = [...SOURCE_SCANNERS, 'server/test/import-boundaries.test.ts'];
 export const DIRECTORY_READERS = [
     [/^server\/migrations\//, ['core/test/migrations.sql.test.ts']],
     [/^lint\//, ['core/test/biome.test.ts']],
     [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts']],
     [/^\.claude\/skills\//, ['driver/test/executor-images.test.ts']],
     [/^core\/src\//, ['core/test/core-index.test.ts', ...SOURCE_SCANNERS]],
-    [/^server\/src\//, SOURCE_SCANNERS],
+    [/^server\/src\//, SERVER_SCANNERS],
+    [/^scripts\//, ['server/test/test-jobs.harness.test.ts']],
     [/^driver\/src\//, [...SOURCE_SCANNERS, 'driver/test/loop-fence.test.ts', 'driver/test/k8s.test.ts']],
     [/^driver\/src\/scripts\//, ['driver/test/scripts.test.ts']],
     [/^(web\/src|docs\/design-system)\//, ['web/test/styles.test.ts']],

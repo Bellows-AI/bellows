@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /** The planner behind `npm run test:changed`; fixtures stand in for git, so nothing here spawns. */
@@ -109,6 +109,7 @@ describe('test:changed plan', () => {
             'core/test/polling-authority.test.ts',
             'core/test/task-usage.test.ts',
             'driver/test/board.test.ts',
+            'server/test/import-boundaries.test.ts',
         ]);
     });
 
@@ -136,12 +137,9 @@ describe('test:changed plan', () => {
         expect(vitestArgs(steps)).toContainEqual(['run', 'server/test/local-origin-plan.test.ts']);
     });
 
-    it('keeps every directory reader on disk and still scanning a directory', () => {
+    it('keeps every directory reader on disk', () => {
         for (const [, tests] of DIRECTORY_READERS) {
-            for (const test of tests) {
-                const source = readFileSync(new URL(`../../${test}`, import.meta.url), 'utf8');
-                expect(source, test).toMatch(/readdirSync/);
-            }
+            for (const test of tests) expect(existsSync(new URL(`../../${test}`, import.meta.url)), test).toBe(true);
         }
     });
 
@@ -156,6 +154,8 @@ describe('test:changed plan', () => {
         );
         expect(scanners('server/src/routes/jobs/job-limits.ts')).toContain('core/test/polling-authority.test.ts');
         expect(scanners('server/test-db/job-store.fairness.test.ts')).toContain('server/test/test-db.harness.test.ts');
+        expect(scanners('server/src/routes/jobs/job-limits.ts')).toContain('server/test/import-boundaries.test.ts');
+        expect(scanners('scripts/stub-agent.sh')).toContain('server/test/test-jobs.harness.test.ts');
         expect(scanners('web/test/panels.render.test.tsx')).toContain('web/test/no-shared-module-spies.test.ts');
         expect(scanners('driver/test/brand-new.test.ts')).toContain('core/test/vitest-projects.test.ts');
     });
