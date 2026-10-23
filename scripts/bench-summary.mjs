@@ -104,8 +104,8 @@ function loadSet(cell, comp, expected) {
 
 /**
  * The per-series delta from one stage to another, summed over pods, and each pod's own interval. Null (`?`)
- * when a counter went down, a series vanished, or a pod lacks a required family at the end (or at both ends
- * when `both` is set).
+ * when a counter went down, a series vanished, a histogram is partial at either end, or a pod lacks a
+ * required family at the end (or at both ends when `both` is set).
  */
 function delta(set, from, to, required, both = false, check = () => true) {
     if (set === null) return null;
@@ -118,7 +118,8 @@ function delta(set, from, to, required, both = false, check = () => true) {
             if (!end.samples.some((x) => x.name === name)) return null;
             if (both && !start.samples.some((x) => x.name === name)) return null;
         }
-        if (!check(end.samples)) return null;
+        // Both ends: a partial baseline subtracts the wrong amount; a series wholly absent at the start is whole.
+        if (!check(start.samples) || !check(end.samples)) return null;
         const before = new Map(start.samples.map((x) => [seriesKey(x), x]));
         const own = [];
         for (const x of end.samples) {

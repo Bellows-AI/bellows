@@ -480,6 +480,27 @@ describe('bench-summary', () => {
         expect(summarize(driverCell('t-n4-r2', 2, [whole, whole])).rows[0]?.sync_mean_s).toBe('0.5');
     });
 
+    it('validates the sync series at the start of the window as well as at its end', () => {
+        const withStart = (start: string) =>
+            cell(
+                't-n4-r1',
+                4,
+                1,
+                scrapes('t-n4-r1', 'driver', {
+                    d0: { s: `${REAP}\n${start}\n`, c: `${REAP}\n${syncSeries('ok', 8, 4)}\n` },
+                })
+            );
+        // A baseline with its count and buckets but no sum would subtract nothing from the end's sum.
+        const noSum = syncSeries('ok', 4, 2)
+            .split('\n')
+            .filter((l) => !l.includes('_sum'))
+            .join('\n');
+        expect(summarize(withStart(noSum)).rows[0]?.sync_mean_s).toBe('?');
+        expect(summarize(withStart(syncSeries('ok', 4, 2))).rows[0]?.sync_mean_s).toBe('0.5');
+        // A series that first appears inside the window is whole at the start: absent, not partial.
+        expect(summarize(withStart('')).rows[0]?.sync_mean_s).toBe('0.5');
+    });
+
     it('gives no per-task rate unless every task has its claim and its end', () => {
         const http = (n: number) =>
             `factory_http_request_duration_seconds_count{route="/api/jobs/:id/heartbeat"} ${n}\nfactory_claim_polls_total{outcome="x"} 0\n`;
