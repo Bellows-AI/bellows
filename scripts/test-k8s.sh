@@ -4083,6 +4083,10 @@ else
     acc_e_session="$(acc_session "$acc_e")"
     tk_check "acceptance: e. the volume holds $ACC_N records before the pod is deleted" \
         "$(acc_poll "$ACC_N" 60 acc_volume_records "$acc_e_pod" "$acc_e" "$acc_e_session")" "$ACC_N"
+    # The loss must have something to lose: the exporter flushes at 15 s / 256 KiB, so the store is read
+    # now and must NOT yet hold all $ACC_N records; a read that fails or finds them all is not a pass.
+    tk_check "acceptance: e. the store does not yet hold all $ACC_N records when the pod is deleted" \
+        "$(acc_stored_short "$BASE" "$acc_e" "$acc_e_session" 1 "$ACC_N")" short
     kubectl delete pod "$acc_e_pod" -n "$NAMESPACE" --grace-period=0 --force --wait=false --request-timeout=10s >/dev/null 2>&1
     acc_e_mid="$(await_brief "$acc_e" "*|1|1|$POD_LOST*" 60)"
     case "$acc_e_mid" in

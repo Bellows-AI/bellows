@@ -628,6 +628,26 @@ describe('scripts/acceptance-transcript.mjs', () => {
         expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3'])).toBe('unread: malformed body');
     });
 
+    it('before-loss says short only for a confirmed partial store; all records, or a failed read, never proceed', async () => {
+        const open = (a: number, b: number) => {
+            const text = records(a, b);
+            return {
+                status: 200,
+                body: {
+                    streams: [{ attempt: 1, state: 'open' }],
+                    segments: a > b ? [] : [{ state: 'ok', offset: 0, length: Buffer.byteLength(text), text }],
+                },
+            };
+        };
+        expect(await judge(() => open(1, 2), ['1', '3', 'before-loss'])).toBe('short');
+        expect(await judge(() => open(1, 0), ['1', '3', 'before-loss'])).toBe('short');
+        expect(await judge(() => open(1, 3), ['1', '3', 'before-loss'])).toMatch(/^bad: inconclusive:/);
+        expect(await judge(() => ({ status: 503, body: {} }), ['1', '3', 'before-loss'])).toBe('unread: status 503');
+        expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3', 'before-loss'])).toBe(
+            'unread: malformed body'
+        );
+    });
+
     it('says unread, never exact, for a body whose streams, segments or cursor are misshapen', async () => {
         const good = page(1, 3).body;
         const text = records(1, 3);

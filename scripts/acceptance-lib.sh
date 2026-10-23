@@ -21,6 +21,10 @@ acc_transcript() { # acc_transcript <board base> <id> <session> <first> <last> [
     node "$(dirname "${BASH_SOURCE[0]}")/acceptance-transcript.mjs" "$1/api/jobs/$2/artifacts" "$3" "$4" "$5" "${6-}"
 }
 
+acc_stored_short() { # acc_stored_short <board base> <id> <session> <first> <last> -> "short" only when the store is confirmed to hold fewer than records first..last
+    node "$(dirname "${BASH_SOURCE[0]}")/acceptance-transcript.mjs" "$1/api/jobs/$2/artifacts" "$3" "$4" "$5" before-loss
+}
+
 acc_job_read() { # acc_job_read <board base> <id> <brief|session|cause> -> the validated value, or "unread: <why>"
     # "brief" is "status|attempts|interruptions|first claimSeq|first reason". A non-200, a body that is not a
     # job object or a field of the wrong shape says "unread"; it is never a value a check can pass on.

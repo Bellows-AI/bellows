@@ -2985,6 +2985,10 @@ else
     acc_e_session="$(acc_session "$acc_e")"
     acc_check "acceptance: e. the volume holds $ACC_N records before the group is removed" \
         "$(acc_poll "$ACC_N" 60 acc_volume_records "$acc_e" "$acc_e_session")" "$ACC_N"
+    # The loss must have something to lose: the exporter flushes at 15 s / 256 KiB, so the store is read
+    # now and must NOT yet hold all $ACC_N records; a read that fails or finds them all is not a pass.
+    acc_check "acceptance: e. the store does not yet hold all $ACC_N records when the group is removed" \
+        "$(acc_stored_short "$BASE" "$acc_e" "$acc_e_session" 1 "$ACC_N")" short
     docker ps -aq --filter "label=factory.job=$acc_e" |
         while IFS= read -r container_id; do
             [ -n "$container_id" ] && docker rm -f "$container_id" >/dev/null 2>&1
