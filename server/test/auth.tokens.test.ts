@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { InjectOptions } from 'fastify';
 import type { AuthConfig } from '../src/config.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { MemoryAuthStore } from './helpers.js';
 import { buildWithAuth, githubAuth, memoryAuthStore, signedIn } from './helpers.js';

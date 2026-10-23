@@ -32,7 +32,7 @@ export default defineConfig({
             reporter: ['text', 'lcov'],
             include: [
                 'driver/src/**',
-                'server/src/routes/jobs.ts',
+                'server/src/routes/jobs/jobs.ts',
                 'server/src/routes/ingest.ts',
                 'server/src/telemetry/**',
                 'core/src/telemetry.ts',

@@ -1,7 +1,7 @@
 import { expect } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type PrFacts } from '@factory-ai/core';
-import type { BatchStore } from '../src/db/batch-store.js';
+import type { BatchStore } from '../src/db/batches/batch-store.js';
 import type { PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { startRow } from './fixtures.js';
 

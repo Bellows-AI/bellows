@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reviewerPrompts, TASK_COMMAND_LIMIT } from '../src/db/review-prompt.js';
-import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflow-templates.js';
+import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflows/workflow-templates.js';
 
 const SPEC = {
     name: 'security',

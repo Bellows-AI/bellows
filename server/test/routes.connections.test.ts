@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView, NewConnection } from '../src/db/connection-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {

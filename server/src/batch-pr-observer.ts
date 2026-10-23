@@ -10,7 +10,7 @@ import {
     type ObservationClaim,
     type ObservationResult,
     type RefreshHint,
-} from './db/batch-store-observation.js';
+} from './db/batches/batch-store-observation.js';
 import { GitHubReadError } from './github/pr-read.js';
 
 /**

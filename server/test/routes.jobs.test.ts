@@ -6,8 +6,8 @@ import { LOCAL_ORG_ID } from '../src/config.js';
 import { type RepoSource, type StaticRepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
-import { validateWaitQuery } from '../src/routes/job-field-validation.js';
-import { IdempotencyKeyReusedError, type IdempotencyInput } from '../src/db/job-store-idempotency.js';
+import { validateWaitQuery } from '../src/routes/jobs/job-field-validation.js';
+import { IdempotencyKeyReusedError, type IdempotencyInput } from '../src/db/jobs/job-store-idempotency.js';
 import type {
     Claim,
     GateReport,
@@ -16,7 +16,7 @@ import type {
     RuntimeVitals,
     SettleOutcome,
     SettleResult,
-} from '../src/db/job-store-types.js';
+} from '../src/db/jobs/job-store-types.js';
 import { trackApps } from './helpers-http.js';
 import type {
     AnswerQuestionResult,
@@ -39,11 +39,11 @@ import type {
     ReviewRequest,
     ReviewView,
     StopResult,
-} from '../src/db/job-store-types.js';
-import type { OrgDemand } from '../src/db/job-store-admission.js';
-import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
-import type { BatchStore } from '../src/db/batch-store.js';
+} from '../src/db/jobs/job-store-types.js';
+import type { OrgDemand } from '../src/db/jobs/job-store-admission.js';
+import type { WorkflowRecord, WorkflowStore } from '../src/db/workflows/workflow-store.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
+import type { BatchStore } from '../src/db/batches/batch-store.js';
 import { memoryBatchStore } from './helpers-batch-store.js';
 import {
     githubAuth,

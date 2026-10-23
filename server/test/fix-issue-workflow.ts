@@ -2,8 +2,8 @@
  * A fetch-issue → implement → review (x3) → gate-fix (x3) → publish graph, the fixture the engine
  * walkthrough walks. Authored here, in the test tree — the board ships no seeded workflow.
  */
-import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflow-templates.js';
-import type { WorkflowDefinition, WorkflowParam } from '../src/db/workflow-schema.js';
+import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflows/workflow-templates.js';
+import type { WorkflowDefinition, WorkflowParam } from '../src/db/workflows/workflow-schema.js';
 
 /**
  * The issue reference `fix-issue` is launched with — a bare `#123` or a full GitHub issues URL.

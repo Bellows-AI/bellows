@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createServerMetrics, type AdmissionOccupancy } from '../src/metrics.js';
 import { CONTENT_TYPE } from '../src/prometheus.js';
 import {

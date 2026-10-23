@@ -10,7 +10,7 @@ import { run } from '../../cli/src/run.js';
 import { buildApp } from '../src/app.js';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore } from '../src/auth/store.js';
-import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/job-store-org-resolvers.js';
+import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';

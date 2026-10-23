@@ -9,7 +9,7 @@ import {
 } from '../src/artifacts/artifact-store.js';
 import { STREAM_STATE } from '../src/artifacts/artifact-read.js';
 import type { StreamRef } from '../src/artifacts/keys.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { failedAttentionReason } from '../src/db/batch-store-repair.js';
+import { failedAttentionReason } from '../src/db/batches/batch-store-repair.js';
 
 const head = (failure_cause: string | null) => ({ head_id: 'job-1', failure_kind: 'publish', failure_cause });
 

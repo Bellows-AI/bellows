@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { FIX_ISSUE_WORKFLOW } from './fix-issue-workflow.js';
-import { validateDefinition } from '../src/db/workflow-schema-validate.js';
+import { validateDefinition } from '../src/db/workflows/workflow-schema-validate.js';
 
 describe('validateDefinition', () => {
     it('accepts a minimal well-formed definition', () => {

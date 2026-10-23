@@ -164,7 +164,7 @@ export interface AppConfig {
     /**
      * The shared admission budgets every claim enforces (issue #831): the most rows running at once
      * across every org (ADMISSION_MAX_RUNNING), per org (ADMISSION_MAX_RUNNING_PER_ORG) and per repo
-     * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/job-store-admission.ts`.
+     * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/jobs/job-store-admission.ts`.
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
 }

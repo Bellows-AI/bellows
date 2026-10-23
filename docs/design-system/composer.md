@@ -17,7 +17,7 @@ primitives and the system contracts: [../design-system.md](../design-system.md).
 - Start's `aria-describedby` names whichever banner or status text is blocking it, so the reason is
   announced rather than inferred from a disabled button.
 - A task launches only against a tracked repository; the same rule is refused at `POST /api/jobs`
-  (`400 UNKNOWN_REPO`) in `server/src/routes/job-handlers-worker.ts`,
+  (`400 UNKNOWN_REPO`) in `server/src/routes/jobs/job-handlers-worker.ts`,
   `server/test/routes.executor-lifecycle.test.ts`.
 
 Classes defined here: `composer-row`, `composer-input`, `composer-label`, `composer-fields`,

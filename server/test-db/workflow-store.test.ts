@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createWorkflowStore } from '../src/db/workflow-store.js';
-import { checkWorkflowParams } from '../src/db/workflow-schema.js';
+import { createWorkflowStore } from '../src/db/workflows/workflow-store.js';
+import { checkWorkflowParams } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 

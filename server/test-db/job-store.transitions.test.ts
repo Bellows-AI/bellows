@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore } from '../src/db/job-store.js';
-import type { Claim, JobStatus, JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { Claim, JobStatus, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { craftJob, testOrg } from './fixtures.js';
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach } from 'vitest';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
+import { assertTestDatabase } from './database-guard.js';
 
 /**
  * The shared harness for the suites in this directory (`npm run test:db`).
@@ -16,28 +17,12 @@ import { migrate } from '../src/db/migrate.js';
  *   test starts from the same known state regardless of what the database has been through;
  * - afterAll: truncate again, so the run leaves the database schema-only.
  *
- * This is only safe because the db suites share one database and run with
- * `fileParallelism: false` (vitest.db.config.ts) — a second concurrent file would see its rows
- * vanish mid-test.
+ * This is only safe because each vitest worker owns its database: `global-setup.ts` clones one per
+ * worker from a once-migrated template and `setup-worker.ts` points `DATABASE_URL` at it, so a
+ * truncate never reaches a file running on another worker.
  */
 
-/**
- * These suites truncate their tables, so pointing them at the database the dashboard actually
- * uses destroys real history — including anything imported by `npm run backfill`. Requiring a
- * `_test` database name is the guard, because the failure is silent: the tests pass and the
- * data is simply gone.
- */
-export function assertTestDatabase(raw: string): void {
-    const name = new URL(raw).pathname.replace(/^\//, '');
-    if (!/_test$/.test(name)) {
-        throw new Error(
-            `Refusing to run: this suite truncates its tables, and "${name}" is not a test database.\n` +
-                `Create one and point DATABASE_URL at it:\n` +
-                `  docker compose exec postgres psql -U factory -d postgres -c 'create database factory_test'\n` +
-                `  DATABASE_URL=postgres://factory:factory@127.0.0.1:5432/factory_test npm run test:db`
-        );
-    }
-}
+export { assertTestDatabase } from './database-guard.js';
 
 /** An account a suite plants for its foreign keys to reference. */
 export interface TestUser {

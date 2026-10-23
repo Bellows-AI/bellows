@@ -1,9 +1,9 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { OrgRegistry } from '../orgs.js';
-import type { WorkflowStore, WorkflowSummary } from '../db/workflow-store.js';
+import type { WorkflowStore, WorkflowSummary } from '../db/workflows/workflow-store.js';
 import type { Caller } from '../auth/store.js';
-import { blockCatalog } from '../db/workflow-blocks/index.js';
+import { blockCatalog } from '../db/workflows/workflow-blocks/index.js';
 import { bad, body, repoReason } from './helpers.js';
 import { resolveCallerRoute } from './route-guards.js';
 import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';

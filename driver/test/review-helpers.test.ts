@@ -511,7 +511,7 @@ describe('the review-reply-probe helper', () => {
     it('fails the helper (never concludes) when the underlying collect fetch fails', async () => {
         // GH_HTTP_STATUS fails every gh call, including the fresh re-fetch this node always runs
         // first — proving a reply-step failure propagates as ok:false, never a marker, so the
-        // block's own reply->reply retry edge (server/src/db/workflow-blocks/
+        // block's own reply->reply retry edge (server/src/db/workflows/workflow-blocks/
         // github-review-reconcile.ts) is what re-attempts it.
         const { verdict } = await probe(REVIEW_REPLY_PROBE_ID, { GH_HTTP_STATUS: '403' });
         expect(verdict.ok).toBe(false);

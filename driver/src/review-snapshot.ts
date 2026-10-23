@@ -16,7 +16,7 @@ export const gitReviewSnapshotScript = containerScript('git-review-snapshot.cjs'
 
 /**
  * The ref one review's snapshot lives under in the shared clone. A copy of the board's
- * `reviewRefOf` (server/src/db/job-store-reviews.ts), which refuses any other ref on a request —
+ * `reviewRefOf` (server/src/db/jobs/job-store-reviews.ts), which refuses any other ref on a request —
  * this package depends on nothing, so the spelling is kept in step by `review-snapshot.test.ts`.
  */
 export const reviewRefOf = (job: BoardJob, key: string): string => `refs/factory/review/${job.id}/${key}`;

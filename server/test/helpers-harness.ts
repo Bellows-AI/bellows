@@ -4,7 +4,7 @@ import type { AuthStore } from '../src/auth/store.js';
 import { LOCAL_ORG_ID, type AppConfig, type AuthConfig } from '../src/config.js';
 import type { EnvVarStore } from '../src/db/env-var-store.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
-import type { WorkflowStore } from '../src/db/workflow-store.js';
+import type { WorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { type RepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import { createStatsService } from '../src/stats-service.js';
