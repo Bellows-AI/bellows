@@ -12,9 +12,10 @@
 //                            so this process holds no credential. A socket not there yet is retried.
 //   BELLOWS_CONTROL_URL / BELLOWS_CONTROL_TOKEN — one-shot mode only (a review's close-time export,
 //                            run by the holder itself): the endpoint and the token it issued.
-//   RUN_STARTED_AT         — ISO instant the attempt began. A file that existed before it is a
-//                            resumed session: only what is appended past its size at first sight
-//                            belongs to this attempt (offsets stay the file's own byte offsets).
+//   RUN_STARTED_AT         — ISO instant the attempt began; the earliest one on the volume is kept in
+//                            <CLAUDE_TRANSCRIPT_DIR>/export-floor.json. An unseen file that existed
+//                            before that floor is a resumed session: only what is appended past its
+//                            size at first sight is exported (offsets stay the file's own byte offsets).
 //   EXPORT_FLUSH_BYTES / EXPORT_FLUSH_MS — flush at this much pending, or this long after the
 //                            oldest unflushed byte.
 //   EXPORT_SPOOL_MAX_BYTES — unacknowledged bytes allowed before `spoolFull` is reported.
@@ -84,6 +85,7 @@ const CONTROL_SOCKET = process.env.EXPORT_CONTROL_SOCKET;
 const CONTROL_URL = process.env.BELLOWS_CONTROL_URL;
 const TOKEN = process.env.BELLOWS_CONTROL_TOKEN;
 const STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
+let FLOOR_MS = STARTED_MS;
 const FLUSH_BYTES = positive('EXPORT_FLUSH_BYTES', DEFAULT_FLUSH_KIB * KIB);
 const FLUSH_MS = positive('EXPORT_FLUSH_MS', DEFAULT_FLUSH_MS);
 const SPOOL_MAX = positive('EXPORT_SPOOL_MAX_BYTES', DEFAULT_SPOOL_BYTES);
@@ -260,11 +262,31 @@ const blankTrack = (file, fd, stat) => ({
     failures: 0,
 });
 
-// Where an unseen file starts. A file born during this attempt is exported whole; one that predates
-// it is a resumed session whose existing bytes belong to earlier attempts.
+// The start of the first attempt any exporter served on this volume, kept on the volume itself. Every
+// file an exporter sees gets a saved state at once, so an unseen file born after this was never seen:
+// its attempt's pod was lost before a scan reached it, and none of its bytes were exported.
+const floorPath = () => path.join(DIR, 'export-floor.json');
+
+// A floor that is there but unreadable is left alone: this attempt falls back to its own start.
+const volumeFloor = () => {
+    if (Number.isNaN(STARTED_MS)) return STARTED_MS;
+    try {
+        const saved = JSON.parse(fs.readFileSync(floorPath(), 'utf8')).startedMs;
+        return Number.isFinite(saved) ? Math.min(saved, STARTED_MS) : STARTED_MS;
+    } catch (e) {
+        if (e?.code !== 'ENOENT') return STARTED_MS;
+    }
+    fs.mkdirSync(DIR, { recursive: true });
+    fs.writeFileSync(`${floorPath()}.tmp`, JSON.stringify({ startedMs: STARTED_MS }));
+    fs.renameSync(`${floorPath()}.tmp`, floorPath());
+    return STARTED_MS;
+};
+
+// Where an unseen file starts. A file born since the volume's first exported attempt is exported
+// whole; one that predates it is a resumed session whose existing bytes belong to earlier attempts.
 const firstSight = (track, stat) => {
     const born = stat.birthtimeMs > 0 ? stat.birthtimeMs : Number.POSITIVE_INFINITY;
-    const fresh = Number.isNaN(STARTED_MS) || born >= STARTED_MS;
+    const fresh = Number.isNaN(FLOOR_MS) || born >= FLOOR_MS;
     track.pos = fresh ? 0 : stat.size;
     track.acked = track.pos;
     saveState(track);
@@ -563,6 +585,7 @@ const main = async () => {
             'CLAUDE_TRANSCRIPT_DIR, FACTORY_EXPORT_DIR and EXPORT_CONTROL_SOCKET (or BELLOWS_CONTROL_URL and BELLOWS_CONTROL_TOKEN) are required'
         );
     }
+    FLOOR_MS = volumeFloor();
     orderOnce();
     for (;;) {
         await tick();

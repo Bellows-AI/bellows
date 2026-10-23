@@ -337,6 +337,51 @@ describe('the continuous claude-code exporter', () => {
         expect(h.stored('brand-new').toString()).toBe(fresh);
     });
 
+    describe('a pod lost with its volume kept: the next claim’s exporter over the same volume', () => {
+        const kill = async (child: ChildProcess): Promise<void> => {
+            const gone = new Promise((resolve) => child.on('close', resolve));
+            child.kill('SIGKILL');
+            await gone;
+        };
+
+        it('uploads every record the lost one never had acknowledged, from the offset it reached', async () => {
+            const h = await harness();
+            const file = fileOf(h);
+            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const acked = records(5);
+            writeFileSync(file, acked);
+            await until('the first records', () => h.stored(SESSION).length === Buffer.byteLength(acked));
+            h.board.down = true;
+            const unacked = `${records(7, 5)}{"n":12,"cut mid-wri`;
+            appendFileSync(file, unacked);
+            await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
+            await kill(lost);
+            h.board.down = false;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(acked + records(7, 5));
+            expect(h.chunks.filter((c) => c.session === SESSION)[0]?.offset).toBe(0);
+        });
+
+        it('exports a session born under the lost attempt whole, though that exporter never saw it', async () => {
+            const h = await harness();
+            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            await until('the lost exporter running', () => h.status() !== null);
+            await kill(lost);
+            // The agent wrote its session after the exporter's last scan; then the pod was lost.
+            const all = records(9);
+            writeFileSync(fileOf(h), all);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(all);
+        });
+    });
+
     it('gives a subagent its own session', async () => {
         const h = await harness();
         const sub = join(h.dir, 'projects', '-work-tree', SESSION, 'subagents');
