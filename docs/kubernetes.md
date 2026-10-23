@@ -23,6 +23,7 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
 | Every `EXECUTOR`, `K8S_*`, `RUNNER_*` and `GATE_*` variable with its boot validation; the app chart (dashboard, driver, collector, RBAC, PDBs, Ingress, `LimitRange`) | `driver/src/config.ts`, `charts/factory/` ([README](../charts/factory/README.md)) | `driver/test/config.test.ts`, `scripts/test-k8s.sh` |
 | Admission policies fencing the driver (one capability add: `SETUID`/`SETGID` on a runner Job's `agent`; two updates: a task volume claim's unschedulable label, an attempt Secret's holder binding); runner network confinement | `charts/factory/templates/driver-admission.yaml`, `runner-networkpolicy.yaml`, `driver/src/k8s-podfields.ts` | `driver/test/k8s-admission.test.ts`, `scripts/test-k8s.sh` (`--cluster`, `--netpol`) |
 | Local Postgres, `.env`-fed local values, `make start`/`reset`; the kind cluster and registry, `make cluster`/`cleanup` | `charts/factory-local-state/`, `scripts/k8s-local-values.mjs`, `scripts/kind-cluster.sh`, `Makefile` | `scripts/test-k8s.sh`, `driver/test/k8s-lane.test.ts`, `core/test/makefile.kind-cluster.test.ts` |
+| The orphan floor and `GET /step` long poll a lane lowers with its lease (`driver.orphanMinMs`/`driver.stepWaitMs`, `DRIVER_ORPHAN_MIN_MS`/`DRIVER_STEP_WAIT_MS`; defaults 30 s/15 s); `loadDriverConfig` refuses a floor under the long poll + 5 s or a lowered floor the lease cannot hold (lease >= orphan + lease / 3); the docker lane keeps the 30 s floor | `driver/src/supervisor-contract.ts` (`orphanConfigFault`), `driver/src/config.ts`, `charts/factory/values.yaml`, `scripts/test-k8s.sh` | `driver/test/config.test.ts`, `driver/test/k8s-lane.test.ts`, `driver/test/takeover-sim.test.ts` (15 s lease in real time), `driver/test/takeover-gremlin.test.ts` |
 | `driver.metricsPort` (`DRIVER_METRICS_PORT`, default `9464`): the driver's scrape listener on the pod IP, reachable from runner pods like any driver port, so it answers only `Authorization: Bearer $JOB_BOARD_TOKEN`; no Service, no scrape annotations | `charts/factory/templates/driver-deployment.yaml`, `driver/src/metrics-server.ts`, `driver/src/config.ts` | `driver/test/metrics-server.test.ts`, `driver/test/k8s-docs.test.ts`, `scripts/test-k8s.sh` |
 
 ## Invariants
@@ -41,13 +42,10 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**
   `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
 - **A runner group whose driver is lost ends inside its lease** (`orphanBoundMs`, `driver/src/supervisor-plan.ts`;
-  30 s floor under a 120 s lease; a lane lowers the floor and the `GET /step` long poll with `driver.orphanMinMs` and
-  `driver.stepWaitMs`, and `loadDriverConfig` refuses a pair the lease cannot hold: lease >= orphan + lease / 3, floor
-  >= long poll + 5 s, `orphanConfigFault`; the docker lane keeps the 30 s floor at its 10 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
+  30 s floor under a 120 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
   the run is redone, never adopted; a released group (its agent went, `supervisor: released the agent`) waits
   `takeoverBoundMs` (the lease plus `SUPERVISOR_REBIND_GRACE_MS`) for a newer holder instead.
-  `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`, `driver/test/k8s.test.ts`,
-  `driver/test/config.test.ts`, `driver/test/takeover-sim.test.ts` (the lane's 15 s lease in real time).
+  `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`, `driver/test/k8s.test.ts`.
 - **The driver never reads a Secret back** â€” the Role grants no `get`/`list`; attempt Secrets are reaped by
   derived name; the binding patch's answer is discarded unread.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
