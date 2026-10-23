@@ -22,6 +22,7 @@
         "pretest": "npm run build -w core",
         "test": "vitest run",
         "pretest:executors": "npm run build -w core",
+        "test:changed": "node scripts/test-changed.mjs",
         "test:executors": "vitest run --config vitest.executors.config.ts",
         "pretest:coverage:executors": "npm run build -w core",
         "test:coverage:executors": "vitest run --config vitest.executors.config.ts --coverage",
