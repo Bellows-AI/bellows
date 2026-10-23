@@ -3908,7 +3908,7 @@ const shared = (v) => v.spec?.nfs || /nfs|efs/i.test((v.metadata?.annotations?.[
 for (const c of claims.items) {
     const name = c?.metadata?.name, modes = c?.spec?.accessModes;
     // A claim is judged only once its access modes and the volume behind it were both read.
-    if (typeof name !== "string" || !Array.isArray(modes) || modes.length === 0 || !modes.every((m) => typeof m === "string")) { process.stdout.write("unread: malformed claim " + name); process.exit(0); }
+    if (typeof name !== "string" || !Array.isArray(modes) || modes.length === 0 || !modes.every((m) => ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"].includes(m))) { process.stdout.write("unread: malformed claim " + name); process.exit(0); }
     const volume = pvs.get(c.spec.volumeName);
     if (typeof c.spec.volumeName !== "string" || !volume) { process.stdout.write("unread: claim " + name + " has no readable volume (" + c.spec.volumeName + ")"); process.exit(0); }
     if (/^factory-task-/.test(name)) tasks++;
