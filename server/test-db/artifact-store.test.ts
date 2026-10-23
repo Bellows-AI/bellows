@@ -10,7 +10,7 @@ import {
 } from '../src/artifacts/artifact-store.js';
 import { chunkKey, type StreamRef } from '../src/artifacts/keys.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
-import { createJobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
 import { BACKENDS } from '../test/artifacts-backends.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';

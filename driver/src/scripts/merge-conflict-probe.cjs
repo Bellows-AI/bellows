@@ -42,7 +42,7 @@ const VERSION = 1;
 const CONFLICTING_PATHS_MAX = 50;
 const STATE_PATH = '.factory/merge-conflict-probe.json';
 const ERROR_MAX_LENGTH = 200;
-// Literal copies of the block's markers (server/src/db/workflow-blocks/merge-conflict-autofix.ts):
+// Literal copies of the block's markers (server/src/db/workflows/workflow-blocks/merge-conflict-autofix.ts):
 // a script content-passed into a container cannot import them.
 const UP_TO_DATE_MARKER = 'MERGE-UP-TO-DATE';
 const REBASED_MARKER = 'MERGE-REBASED';

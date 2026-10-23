@@ -8,7 +8,7 @@ const HTTP_UNAVAILABLE = 503;
 /**
  * The shapes every route here repeats.
  *
- * Extracted when `routes/workspace.ts` arrived and copied them out of `routes/jobs.ts` — at which
+ * Extracted when `routes/workspace.ts` arrived and copied them out of `routes/jobs/jobs.ts` — at which
  * point the 503 body existed in four places and would have drifted in one of them.
  */
 

@@ -9,19 +9,19 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Migration runner (advisory-locked, one transaction), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
-| Job and thread reads and writes | `server/src/db/job-store*.ts` | `server/test-db/job-store.*.test.ts` |
-| Agent questions, stamped with the asking claim's `claim_seq` (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
-| Named-profile reviews (056) | `server/migrations/056_job_review.sql`, `server/src/db/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
-| Claim sequence, never refunded (057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/job-store-claim.ts` | `server/test-db/job-store.interrupt.test.ts` |
-| Idempotency keys on the `job` row (058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
+| Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
+| Agent questions, stamped with the asking claim's `claim_seq` (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/jobs/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
+| Named-profile reviews (056) | `server/migrations/056_job_review.sql`, `server/src/db/jobs/job-store-reviews.ts` | `server/test-db/job-store.reviews.test.ts` |
+| Claim sequence, never refunded (057) | `server/migrations/057_job_claim_seq.sql`, `server/src/db/jobs/job-store-claim.ts` | `server/test-db/job-store.interrupt.test.ts` |
+| Idempotency keys on the `job` row (058) | `server/migrations/058_job_idempotency.sql`, `server/src/db/jobs/job-store-idempotency.ts` | `server/test-db/job-store.idempotency.test.ts` |
 | Batch plans and runtime (059, 060, 062–065; [batches.md](batches.md)) | `server/migrations/059_batches.sql`, `server/migrations/06[0-5]_*.sql`, `server/src/db/batch-store*.ts` | `server/test-db/batch-store.test.ts`, `server/test-db/batch-dispatch.test.ts`, `server/test-db/batch-pr-observation.test.ts`, `server/test-db/batch-merge.test.ts` |
 | Checkpoint pointer on the root `job` row, advanced in the `checkpoint` manifest's finalize transaction only under the uploading row's current `claim_seq` (079) | `server/migrations/079_checkpoint_pointer.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/job-store.checkpoint-pointer.test.ts` |
 | Artifact index and manifests (070; [configuration.md](configuration.md)) | `server/migrations/070_artifact_index.sql`, `server/src/artifacts/artifact-store.ts` | `server/test-db/artifact-store.test.ts` |
-| Settle receipts per attempt (072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
-| Reclaim ownership and ack receipts (075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |
-| Staged conclusions, immutable per attempt (076) | `server/migrations/076_job_conclusions.sql`, `server/src/db/job-store-conclusions.ts` | `server/test-db/job-store.conclusions.test.ts` |
-| Phase checkpoints, one row per run and phase (080, 083) | `server/migrations/080_job_phase_checkpoints.sql`, `server/migrations/083_phase_checkpoint_setup.sql`, `server/src/db/job-store-phase-checkpoints.ts` | `server/test-db/job-store.phase-checkpoints.test.ts` |
-| Admission slots on running `job` rows, unique per budget among running non-review rows (081) | `server/migrations/081_job_admission.sql`, `server/src/db/job-store-admission.ts` | `server/test-db/job-store.admission.test.ts` |
+| Settle receipts per attempt (072) | `server/migrations/072_job_settle_receipts.sql`, `server/src/db/jobs/job-store-receipts.ts` | `server/test-db/job-store.receipts.test.ts` |
+| Reclaim ownership and ack receipts (075) | `server/migrations/075_task_reclaim_ownership.sql`, `server/src/db/jobs/job-store-reclaims.ts` | `server/test-db/job-store.stop-remove.test.ts`, `server/test-db/job-store.receipts.test.ts` |
+| Staged conclusions, immutable per attempt (076) | `server/migrations/076_job_conclusions.sql`, `server/src/db/jobs/job-store-conclusions.ts` | `server/test-db/job-store.conclusions.test.ts` |
+| Phase checkpoints, one row per run and phase (080, 083) | `server/migrations/080_job_phase_checkpoints.sql`, `server/migrations/083_phase_checkpoint_setup.sql`, `server/src/db/jobs/job-store-phase-checkpoints.ts` | `server/test-db/job-store.phase-checkpoints.test.ts` |
+| Admission slots on running `job` rows, unique per budget among running non-review rows (081) | `server/migrations/081_job_admission.sql`, `server/src/db/jobs/job-store-admission.ts` | `server/test-db/job-store.admission.test.ts` |
 | PR follower cadence, one row per followed PR (082; [workflows.md](workflows.md)) | `server/migrations/082_pr_follow.sql`, `server/src/db/pr-follow-store.ts` | `server/test-db/pr-follow.test.ts` |
 | `job.status` transition graph, refused in storage with 23514 `job_status_transition` (084) | `server/migrations/084_job_status_transitions.sql` | `server/test-db/job-store.transitions.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |

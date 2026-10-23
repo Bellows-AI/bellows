@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withoutGithubToken } from '../src/db/job-store-claim-executor.js';
+import { withoutGithubToken } from '../src/db/jobs/job-store-claim-executor.js';
 
 /**
  * The claim env's GitHub rule, pinned offline for the same reason `stackEnv` is: a rule this

@@ -106,7 +106,7 @@ spec:
                       # The organizations are the App's installations, materialized at sign-in
                       # (#99) — there is no org env to set. Install the App on every account this
                       # deployment should serve.
-                      # Shared admission budgets (server/src/db/job-store-admission.ts); empty is unlimited.
+                      # Shared admission budgets (server/src/db/jobs/job-store-admission.ts); empty is unlimited.
                       - name: ADMISSION_MAX_RUNNING
                         value: {{ .Values.dashboard.admission.maxRunning | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_ORG

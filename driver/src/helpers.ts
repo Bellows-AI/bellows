@@ -144,7 +144,7 @@ const MERGE_CONFLICT_PROBE_SCRIPT = script('merge-conflict-probe.cjs');
  * The shipped descriptors: `noop` is a fixture that echoes its bounded input back as its output,
  * proving the transport (argv/env secrecy, output parsing, cleanup, failure semantics) without any
  * real board-owned side effect. `merge-conflict-probe` is the first real one (issue #122's
- * merge-conflict-autofix block, `server/src/db/workflow-blocks/merge-conflict-autofix.ts`) —
+ * merge-conflict-autofix block, `server/src/db/workflows/workflow-blocks/merge-conflict-autofix.ts`) —
  * registered here exactly the same way, additive to the transport #207 shipped.
  */
 const DESCRIPTORS: readonly HelperDescriptor[] = [

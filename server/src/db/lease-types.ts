@@ -1,4 +1,4 @@
-import type { JobStatus } from './job-store-types.js';
+import type { JobStatus } from './jobs/job-store-types.js';
 
 /**
  * The facts the reaper decides a task volume on (issue #775), read with the lease lookup rather than

@@ -1,4 +1,4 @@
-import type { Claim } from '../src/db/job-store-types.js';
+import type { Claim } from '../src/db/jobs/job-store-types.js';
 
 /** A complete root-job claim with nothing optional set; `overrides` adds or replaces fields. */
 export const makeClaim = (overrides: Partial<Claim> & Pick<Claim, 'id' | 'command' | 'leaseToken'>): Claim => ({

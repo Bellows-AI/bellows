@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { ArtifactIntegrityError, type ArtifactStore, type StreamSummary } from '../src/artifacts/artifact-store.js';
 import type { StreamRef } from '../src/artifacts/keys.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { CheckpointPointer, RestoreScope, RestoreScopeResult } from '../src/db/restore-types.js';
 import { trackApps } from './helpers-http.js';
 import { staticRegistry, testConfig } from './helpers.js';

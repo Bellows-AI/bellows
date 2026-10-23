@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
-import type { WorkflowRecord, WorkflowStore } from '../src/db/workflow-store.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
+import type { WorkflowRecord, WorkflowStore } from '../src/db/workflows/workflow-store.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,

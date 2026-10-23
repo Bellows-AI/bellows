@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { nextTransition, type EngineRow } from '../src/db/workflow-engine.js';
+import { nextTransition, type EngineRow } from '../src/db/workflows/workflow-engine.js';
 import {
     BOTH_BLOCKS as BOTH,
     compileGateFixWorkflow as compileDefaultWorkflow,

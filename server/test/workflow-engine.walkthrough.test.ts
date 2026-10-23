@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { EngineRow } from '../src/db/workflow-engine.js';
-import { nextTransition } from '../src/db/workflow-engine.js';
+import type { EngineRow } from '../src/db/workflows/workflow-engine.js';
+import { nextTransition } from '../src/db/workflows/workflow-engine.js';
 import { FIX_ISSUE_WORKFLOW } from './fix-issue-workflow.js';
-import { checkWorkflowParams } from '../src/db/workflow-schema.js';
-import { validateDefinition } from '../src/db/workflow-schema-validate.js';
+import { checkWorkflowParams } from '../src/db/workflows/workflow-schema.js';
+import { validateDefinition } from '../src/db/workflows/workflow-schema-validate.js';
 import { done, gate, row } from './workflow-engine-fixtures.js';
 
 describe('the fix-issue fixture walkthrough', () => {

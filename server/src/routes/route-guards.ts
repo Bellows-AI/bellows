@@ -3,12 +3,12 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
 import { UUID } from '../config.js';
-import type { JobStore } from '../db/job-store-types.js';
+import type { JobStore } from '../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, body } from './helpers.js';
-import { boardsFor, storeFor } from './job-context.js';
-import { validateClaimBody } from './job-field-validation.js';
-import { noBoard } from './job-limits.js';
+import { boardsFor, storeFor } from './jobs/job-context.js';
+import { validateClaimBody } from './jobs/job-field-validation.js';
+import { noBoard } from './jobs/job-limits.js';
 
 /**
  * The preambles the `:id` and CLAIM routes open with.

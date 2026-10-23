@@ -7,9 +7,9 @@ import {
     resolveMasterPrompt,
     resolveTurnContext,
 } from '../src/db/master-prompt.js';
-import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflow-blocks/github-review-reconcile.js';
-import { PROBE_HELPER_ID } from '../src/db/workflow-blocks/merge-conflict-autofix.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from '../src/db/workflows/workflow-blocks/github-review-reconcile.js';
+import { PROBE_HELPER_ID } from '../src/db/workflows/workflow-blocks/merge-conflict-autofix.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { readSkillCatalog } from '../src/skills.js';
 
 const OBJECTIVE: MasterPromptClaimInput = {

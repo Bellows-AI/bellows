@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { authoredBy, interruptedThread, nullAuthorThread, type ThreadJob } from '../../e2e/fixtures/threads.js';
-import { createJobStore } from '../src/db/job-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 

@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore } from '../src/db/job-store.js';
-import { CLAIM_PREPARE_SECONDS } from '../src/db/job-store-claim.js';
-import type { Claim, CreateJobStoreDeps, JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import { CLAIM_PREPARE_SECONDS } from '../src/db/jobs/job-store-claim.js';
+import type { Claim, CreateJobStoreDeps, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import {
     account,

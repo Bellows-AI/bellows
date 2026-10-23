@@ -1,6 +1,6 @@
-import type { GateReport } from '../src/db/job-store-types.js';
-import type { CompletedRun, EngineRow } from '../src/db/workflow-engine.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import type { GateReport } from '../src/db/jobs/job-store-types.js';
+import type { CompletedRun, EngineRow } from '../src/db/workflows/workflow-engine.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 
 /**
  * Shared fixtures for the workflow-engine test suite, split across

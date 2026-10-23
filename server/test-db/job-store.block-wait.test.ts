@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { USER_SCOPE } from '@factory-ai/core';
-import { createJobStore } from '../src/db/job-store.js';
-import type { Claim, JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
 import { expireLease, mustCreate, testOrg, testUser } from './fixtures.js';
 
@@ -399,7 +399,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
 
         // Re-enter the boundary directly: a second completed row transitioning into "review" again
         // before any wake, exactly as a graph edge back into it would.
-        const { enterRuntimeBoundary } = await import('../src/db/workflow-blocks/runtime.js');
+        const { enterRuntimeBoundary } = await import('../src/db/workflows/workflow-blocks/runtime.js');
         await sql.begin(async (tx) => {
             await enterRuntimeBoundary(tx, prs, waitingWorkflow.nodes[1]!, {
                 orgId: ORG,
@@ -444,7 +444,7 @@ describe.skipIf(!enabled)('durable block waits — concurrency and cancellation'
         // rests the thread, clearing the active-member predicate the next park/wake shares.
         await store.complete(claim1.id, claim1.leaseToken, { status: 'succeeded', exitCode: 0, output: 'handled' });
 
-        const { enterRuntimeBoundary } = await import('../src/db/workflow-blocks/runtime.js');
+        const { enterRuntimeBoundary } = await import('../src/db/workflows/workflow-blocks/runtime.js');
         await sql.begin(async (tx) => {
             await enterRuntimeBoundary(tx, prs, waitingWorkflow.nodes[1]!, {
                 orgId: ORG,

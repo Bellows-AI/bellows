@@ -128,7 +128,7 @@ if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUN
 fi
 
 # The member's own executor config — model, env vars, permission allowlist — synthesized by the
-# board from their `claude-code` executor row (server/src/db/job-store.ts) and delivered as
+# board from their `claude-code` executor row (server/src/db/jobs/job-store.ts) and delivered as
 # CLAUDE_CODE_CONFIG_CONTENT, the same shape opencode's OPENCODE_CONFIG_CONTENT takes. Top-level
 # keys overwrite the baked settings.json; `env` merges INTO the baked env block instead of
 # replacing it outright. Telemetry is not in this file at all: it lives in managed settings, which
