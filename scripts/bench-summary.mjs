@@ -119,7 +119,7 @@ function delta(set, from, to, required, both = false, check = () => true) {
             if (both && !start.samples.some((x) => x.name === name)) return null;
         }
         // Both ends: a partial baseline subtracts the wrong amount; a series wholly absent at the start is whole.
-        if (!check(start.samples) || !check(end.samples)) return null;
+        if (!check(end.samples, start.samples)) return null;
         const before = new Map(start.samples.map((x) => [seriesKey(x), x]));
         const own = [];
         for (const x of end.samples) {
@@ -178,6 +178,28 @@ function histogramWhole(samples, base, where = () => true) {
     }
     const same = (a, b) => a.size === b.size && [...a].every((k) => b.has(k));
     return same(parts.count, parts.sum) && same(parts.count, parts.inf) && same(parts.count, parts.bucket);
+}
+
+/**
+ * True when every series of histogram `base` present at the start has the same buckets at the end: a bucket
+ * missing from the baseline would be subtracted from nothing. A series first seen at the end is not compared.
+ */
+function sameBuckets(start, end, base, where = () => true) {
+    const buckets = (samples) => {
+        const out = new Map();
+        for (const x of samples) {
+            if (x.name !== `${base}_bucket` || !where(x.labels)) continue;
+            const key = JSON.stringify(Object.entries(x.labels).filter(([k]) => k !== 'le').sort());
+            out.set(key, (out.get(key) ?? new Set()).add(x.labels.le));
+        }
+        return out;
+    };
+    const ended = buckets(end);
+    for (const [key, les] of buckets(start)) {
+        const after = ended.get(key);
+        if (!after || after.size !== les.size || [...les].some((le) => !after.has(le))) return false;
+    }
+    return true;
 }
 
 const quantile = (sorted, q) => sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)];
@@ -308,7 +330,10 @@ function row(cell) {
         const board = loadSet(cell, 'board', 1);
         const driver = Number.isInteger(replicas) ? loadSet(cell, 'driver', replicas) : null;
 
-        const whole = (base, where) => (samples) => histogramWhole(samples, base, where);
+        const whole = (base, where) => (end, start) =>
+            histogramWhole(end, base, where) &&
+            histogramWhole(start, base, where) &&
+            sameBuckets(start, end, base, where);
         const fams = (base) => [`${base}_count`, `${base}_sum`, `${base}_bucket`];
         const wait = delta(board, 's', 'c', fams('factory_claim_wait_seconds'), false, whole('factory_claim_wait_seconds'));
         if (wait) r.claim_wait_p95_le_s = histogram(wait.samples, 'factory_claim_wait_seconds').p95Le;

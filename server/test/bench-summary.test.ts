@@ -499,6 +499,13 @@ describe('bench-summary', () => {
         expect(summarize(withStart(syncSeries('ok', 4, 2))).rows[0]?.sync_mean_s).toBe('0.5');
         // A series that first appears inside the window is whole at the start: absent, not partial.
         expect(summarize(withStart('')).rows[0]?.sync_mean_s).toBe('0.5');
+        // A baseline missing one finite bucket would subtract nothing from that bucket at the end.
+        const noFirstBucket = syncSeries('ok', 4, 2)
+            .split('\n')
+            .filter((l) => !l.includes('le="1"'))
+            .join('\n');
+        expect(summarize(withStart(noFirstBucket)).rows[0]?.sync_p95_le_s).toBe('?');
+        expect(summarize(withStart(syncSeries('ok', 4, 2))).rows[0]?.sync_p95_le_s).toBe('1');
     });
 
     it('gives no per-task rate unless every task has its claim and its end', () => {
