@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end for the job board and its driver.
 #
-#   scripts/test-jobs.sh [--phase workflows]
+#   scripts/test-jobs.sh [--phase workflows | --phase driver,services | --changed origin/main]
 #
 # Real HTTP, a real database, stub runners and real agent CLIs against a scripted model endpoint.
 # No model credential or quota. Selected phases provision fixtures without running other phases.
@@ -14,17 +14,35 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO" || exit 1
 
 PHASE=all
+PHASE_GIVEN=''
+CHANGED_BASE=''
 CLI_WORKERS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
+valid_phase() {
+    case "$1" in
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) return 0 ;;
+    esac
+    return 1
+}
 while [ "$#" -gt 0 ]; do
     case "$1" in
     --phase)
         shift
         PHASE="${1:-}"
-        case "$PHASE" in
-        all|board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) ;;
-        *) echo 'test-jobs: invalid --phase (see --help)'; exit 2 ;;
-        esac
+        PHASE_GIVEN=1
+        # `all`, one phase, or a comma list of phases that share one board fixture.
+        if [ "$PHASE" != all ]; then
+            case ",$PHASE," in *,,*) PHASE='' ;; esac
+            [ -n "$PHASE" ] || { echo 'test-jobs: invalid --phase (see --help)'; exit 2; }
+            for phase in ${PHASE//,/ }; do
+                valid_phase "$phase" || { echo 'test-jobs: invalid --phase (see --help)'; exit 2; }
+            done
+        fi
+        ;;
+    --changed)
+        shift
+        CHANGED_BASE="${1:-}"
+        [ -n "$CHANGED_BASE" ] || { echo 'test-jobs: --changed needs a base ref (see --help)'; exit 2; }
         ;;
     --cli-workers)
         shift
@@ -33,10 +51,15 @@ while [ "$#" -gt 0 ]; do
         ;;
     --watch-stalls) WATCH_STALLS=1 ;;
     --help)
-        echo 'Usage: scripts/test-jobs.sh [--phase PHASE] [--cli-workers 1|2] [--watch-stalls]'
+        echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, compose-driver, auth, cooperative-stop,'
         echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill, capacity'
+        echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
+        echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
+        echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
+        echo '        shared files; an empty set runs nothing. For iteration and per-PR checks; the full lane'
+        echo '        (no flag) runs at the end of a PR series and on main.'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
@@ -48,10 +71,30 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-selected_phase() { [ "$PHASE" = all ] || [ "$PHASE" = "$1" ]; }
+if [ -n "$CHANGED_BASE" ]; then
+    [ -z "$PHASE_GIVEN" ] || { echo 'test-jobs: --changed and --phase are exclusive'; exit 2; }
+    command -v node >/dev/null || { echo 'test-jobs: node is required'; exit 1; }
+    chosen="$(node "$REPO/scripts/test-jobs-changed.mjs" "$CHANGED_BASE")" ||
+        { echo "test-jobs: could not map the changes since $CHANGED_BASE"; exit 2; }
+    case "$chosen" in
+    '') echo "test-jobs: --changed $CHANGED_BASE selected no phase; nothing to run"; exit 0 ;;
+    full) PHASE=all ;;
+    *) PHASE="$chosen" ;;
+    esac
+    echo "test-jobs: --changed $CHANGED_BASE runs: $PHASE"
+fi
+selected_phase() {
+    [ "$PHASE" = all ] && return 0
+    case ",$PHASE," in *",$1,"*) return 0 ;; esac
+    return 1
+}
+# The standalone CLI phases boot no board; any other selected phase does.
 needs_board() {
-    case "$PHASE" in cooperative-stop|tool-isolation|ask-user-question) return 1 ;; esac
-    return 0
+    [ "$PHASE" = all ] && return 0
+    for phase in ${PHASE//,/ }; do
+        case "$phase" in cooperative-stop|tool-isolation|ask-user-question) ;; *) return 0 ;; esac
+    done
+    return 1
 }
 
 RUN_ID="$(date +%s)-$$"
@@ -106,10 +149,11 @@ for tool in docker node timeout; do
 done
 docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable'; exit 1; }
 images=''
-case "$PHASE" in
-all|cooperative-stop|tool-isolation) images='claude-executor opencode-executor' ;;
-ask-user-question|question-round-trip) images='claude-executor' ;;
-esac
+if selected_phase cooperative-stop || selected_phase tool-isolation; then
+    images='claude-executor opencode-executor'
+elif selected_phase ask-user-question || selected_phase question-round-trip; then
+    images='claude-executor'
+fi
 for image in $images; do
     docker image inspect "$image" >/dev/null 2>&1 || {
         echo "test-jobs: $image is missing — run make runners"
@@ -1306,11 +1350,6 @@ docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
     exit 1
 }
 
-if [ "$PHASE" = node-disruption ]; then
-write_bellows "services:
-  - name: stub-svc
-    image: $IMAGE_SVC"
-fi
 fi
 
 if selected_phase services; then
@@ -1528,6 +1567,10 @@ echo '# node disruption'
 # a. The hard kill: no drain, no handover, the lease left to expire. The runner runs to its end
 #    while no driver watches it; the next driver's claim (2) records the expiry as claim 1's
 #    interruption and adopts it — at max_attempts 1, where an expiry used to retire the job dead.
+# The plan is this phase's own, whatever phase ran before it (services leaves a malformed one).
+write_bellows "services:
+  - name: stub-svc
+    image: $IMAGE_SVC"
 disruption_driver
 killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
 capped="$(last_attempt "$killed")" && ok 'the hard-kill job runs at max_attempts 1' ||

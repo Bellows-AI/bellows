@@ -25,6 +25,10 @@ cover every command this skill names below.
   single-file `npx vitest run <path>` and `npm run lint:changed` run bare.
 - Lanes with fixed ports or project names run as `sh HEAVY --exclusive <command>`:
   `npm run test:jobs`, `npm run test:k8s`, `npm run verify:ui`.
+- `test:jobs` lanes: iterate and check a PR with `npm run test:jobs -- --changed origin/main` (or
+  `--phase a,b` for a hand-picked pair); it prints the phases it chose and why, and runs the full lane
+  itself when a shared file changed. The full default `npm run test:jobs` runs once at the end of a PR
+  series and on `main`, not per PR.
 - HEAVY waits for a free slot (2 per host, `FACTORY_HEAVY_SLOTS`) and prints who holds them. The wait
   is the point: never bypass it, never kill a holder. Launch long ones with `run_in_background`.
 - Name everything the run creates outside the worktree `fix<N>` or `fix<N>-<what>` — kind clusters
