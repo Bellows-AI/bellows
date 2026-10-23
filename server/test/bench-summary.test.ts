@@ -436,4 +436,28 @@ describe('bench-summary', () => {
         expect(header).not.toContain('cause');
         expect(header).toContain('saturated');
     });
+
+    it('reports the sync mean only from a sum and a count of the same series', () => {
+        const count = 'factory_driver_step_seconds_count{kind="sync",outcome="ok"} 4\n';
+        const sumOk = 'factory_driver_step_seconds_sum{kind="sync",outcome="ok"} 2\n';
+        const agentSum = 'factory_driver_step_seconds_sum{kind="agent",outcome="ok"} 9\n';
+        const reap =
+            'factory_driver_reaper_sweep_seconds_count{outcome="ok"} 0\nfactory_driver_reaper_scanned_total{what="jobs"} 0\n';
+        const run = (end: string) =>
+            summarize(cell('t-n4-r1', 4, 1, scrapes('t-n4-r1', 'driver', { d0: { s: reap, c: reap + end } }))).rows[0];
+        expect(run(count + sumOk)?.sync_mean_s).toBe('0.5');
+        expect(run(count + agentSum)?.sync_mean_s).toBe('?');
+        expect(
+            run(`factory_driver_step_seconds_count{kind="sync",outcome="error"} 1\n${count}${sumOk}`)?.sync_mean_s
+        ).toBe('?');
+    });
+
+    it('reports ? for the runner start unless every expected runner has both times', () => {
+        const head = 'pod\timage\tscheduled\tpulled_at\tpull_seconds\tstarted\n';
+        const pods = (rows: string[]) => cell('t-n2-r1', 2, 1, { 't-n2-r1.pods.tsv': head + rows.join('\n') + '\n' });
+        const whole = ['factory-runner-a\ti\t1\t2\tpresent\t3', 'factory-runner-b\ti\t1\t2\tpresent\t5'];
+        expect(summarize(pods(whole)).rows[0]?.runner_start_mean_s).toBe('3');
+        expect(summarize(pods([whole[0] ?? '', 'factory-runner-b\ti\t\t\t\t'])).rows[0]?.runner_start_mean_s).toBe('?');
+        expect(summarize(pods([whole[0] ?? ''])).rows[0]?.runner_start_mean_s).toBe('?');
+    });
 });

@@ -736,4 +736,10 @@ describe('kind lane bench phase (issue #831)', () => {
     it('moves the pod timeline into place only when it was read', () => {
         expect(bench).toContain('mv "$BENCH_DIR/$cell.pods.tsv.tmp" "$BENCH_DIR/$cell.pods.tsv"');
     });
+
+    it('times a recovery cell from the last finish in the database, not from the end of a wait', () => {
+        expect(bench).toContain('select floor(extract(epoch from max(finished_at))) from job');
+        expect(bench).not.toContain('settled_s "$(($(date +%s) - a_at))"');
+        expect(bench).toContain('settled_s "$((last - a_at))"');
+    });
 });

@@ -218,16 +218,19 @@ function sampler(cell) {
     return { ok, unread };
 }
 
-function runnerStart(cell) {
+/** Mean scheduled-to-started seconds over the runner pods; `?` unless at least `expected` runners all have both times. */
+function runnerStart(cell, expected) {
     const text = read(`${cell}.pods.tsv`);
-    if (text === null) return UNKNOWN;
+    if (text === null || !Number.isInteger(expected)) return UNKNOWN;
     const pods = new Map();
     for (const line of text.split('\n').slice(1)) {
         const [pod, , scheduled, , , started] = line.split('\t');
-        if (pod?.startsWith('factory-runner-') && scheduled !== '' && started !== '') pods.set(pod, Number(started) - Number(scheduled));
+        if (!pod?.startsWith('factory-runner-')) continue;
+        const span = scheduled === '' || started === '' ? Number.NaN : Number(started) - Number(scheduled);
+        pods.set(pod, Math.min(pods.get(pod) ?? Number.POSITIVE_INFINITY, span));
     }
-    if (pods.size === 0) return UNKNOWN;
-    return fixed([...pods.values()].reduce((a, b) => a + b, 0) / pods.size, 1);
+    if (pods.size < expected || [...pods.values()].some((x) => !Number.isFinite(x))) return UNKNOWN;
+    return fixed([...pods.values()].reduce((x, y) => x + y, 0) / pods.size, 1);
 }
 
 const COLUMNS = [
@@ -299,7 +302,12 @@ function row(cell) {
             }
         }
         const stepD = delta(driver, 's', 'c', ['factory_driver_step_seconds_count', 'factory_driver_step_seconds_sum']);
-        if (stepD && stepD.samples.some((x) => x.name === 'factory_driver_step_seconds_count' && x.labels.kind === 'sync')) {
+        const syncs = stepD ? stepD.samples.filter((x) => x.labels.kind === 'sync') : [];
+        const same = (x, y) => JSON.stringify(Object.entries(x.labels).sort()) === JSON.stringify(Object.entries(y.labels).sort());
+        // The mean needs the sum and the count of the same series: a count beside another series' sum is not a mean.
+        const counts = syncs.filter((x) => x.name === 'factory_driver_step_seconds_count');
+        const paired = counts.length > 0 && counts.every((c) => syncs.some((x) => x.name === 'factory_driver_step_seconds_sum' && same(x, c)));
+        if (stepD && paired) {
             const sync = histogram(stepD.samples, 'factory_driver_step_seconds', (l) => l.kind === 'sync');
             if (sync.count > 0) {
                 r.sync_mean_s = fixed(sync.sum / sync.count, 3);
@@ -356,11 +364,11 @@ function row(cell) {
                 r.db_ungranted_mean = fixed(mean(col(1)));
             }
         }
-        r.runner_start_mean_s = runnerStart(cell);
+        r.runner_start_mean_s = runnerStart(cell, n);
     } else if (m.kind === 'recovery') {
         for (const c of COLUMNS.slice(10, 34)) r[c] = NONE;
         r.running_at_b = NONE;
-        r.runner_start_mean_s = runnerStart(cell);
+        r.runner_start_mean_s = runnerStart(cell, n);
         // Only a confirmed kill makes the seconds after it recovery evidence.
         const confirmed = m.kill_confirmed === 'yes';
         r.held_s = confirmed && m.held_s !== undefined ? m.held_s : UNKNOWN;

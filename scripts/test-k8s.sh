@@ -4489,8 +4489,8 @@ bench_meta() { # bench_meta <cell> <key> <value> -> one line of <cell>.meta.tsv
 }
 
 bench_cell() { # bench_cell <throughput|recovery> <n> <r>
-    local kind="$1" n="$2" r="$3" cell prefix ids ids_sql id i since task_s deadline running a_at b_at running_at_b settle_deadline until
-    local victim_pod victims victim_count moved t_kill held_deadline held='' got
+    local kind="$1" n="$2" r="$3" cell prefix ids ids_sql id i since task_s deadline running a_at b_at running_at_b settle_deadline until last
+    local victim_pod victims victim_count moved t_kill held_deadline held='' got last
     prefix=t
     task_s=$BENCH_TASK_S
     if [ "$kind" = recovery ]; then
@@ -4602,7 +4602,11 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
     fi
 
     if bench_wait "$settle_deadline" "$ids_sql" 'finished_at is not null' "$n"; then
-        [ "$kind" = recovery ] && bench_meta "$cell" settled_s "$(($(date +%s) - a_at))"
+        if [ "$kind" = recovery ]; then
+            # The last confirmed finish in the database, not the moment this loop noticed it.
+            last="$(bench_psql "select floor(extract(epoch from max(finished_at))) from job where id in ($ids_sql)")" || last=''
+            case "$last" in '' | *[!0-9]*) ;; *) [ "$last" -ge "$a_at" ] && bench_meta "$cell" settled_s "$((last - a_at))" ;; esac
+        fi
         bench_wait 20 "$ids_sql" "status = 'succeeded'" "$n" && ok "bench $cell: every task succeeded" ||
             bad "bench $cell: every task succeeded" "$(bench_psql "select status, count(*) from job where id in ($ids_sql) group by status" | tr '\n' ';')"
     else
