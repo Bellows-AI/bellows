@@ -439,6 +439,68 @@ describe('scripts/k8s-stub.sh factory-stub-commit', () => {
     });
 });
 
+// #779: the acceptance lanes need a runner that leaves a transcript on the volume, as the real CLI does.
+describe('scripts/k8s-stub.sh factory-stub-transcript', () => {
+    const stub = join(ROOT, 'scripts/k8s-stub.sh');
+    const fixture = () => {
+        const root = mkdtempSync(join(tmpdir(), 'lane-transcript-'));
+        dirs.push(root);
+        const store = join(root, 'store');
+        const env = {
+            PATH: process.env.PATH ?? '',
+            WORKDIR: '/task/work.tree/repo',
+            FACTORY_TRANSCRIPT_DIR: store,
+            BELLOWS_SESSION_ID: 'sess-1',
+        };
+        const file = join(store, 'projects', '-task-work-tree-repo', 'sess-1.jsonl');
+        return { store, env, file };
+    };
+
+    it('tops the session file up to n records under the working directory\u2019s project segment, then marks ready', () => {
+        const { store, env, file } = fixture();
+        execFileSync('sh', [stub, 'factory-stub-transcript-3'], { env });
+        const lines = readFileSync(file, 'utf8').trimEnd().split('\n');
+        expect(lines.map((l) => JSON.parse(l).uuid)).toEqual(['stub-record-1', 'stub-record-2', 'stub-record-3']);
+        expect(existsSync(join(store, 'stub-transcript-ready'))).toBe(true);
+        execFileSync('sh', [stub, 'factory-stub-transcript-3'], { env });
+        expect(readFileSync(file, 'utf8').trimEnd().split('\n')).toHaveLength(3);
+        execFileSync('sh', [stub, 'factory-stub-transcript-5'], { env });
+        expect(readFileSync(file, 'utf8').trimEnd().split('\n')).toHaveLength(5);
+    });
+
+    it('fails instead of reporting success when the records cannot be written', () => {
+        const { store, env } = fixture();
+        writeFileSync(store, 'a file where the store directory should be');
+        expect(() => execFileSync('sh', [stub, 'factory-stub-transcript-1'], { env, stdio: 'pipe' })).toThrow();
+    });
+
+    it('ends non-zero on factory-stub-fail, after its records', () => {
+        const { env, file } = fixture();
+        let code: number | null = 0;
+        try {
+            execFileSync('sh', [stub, 'factory-stub-transcript-1 factory-stub-fail'], { env, stdio: 'pipe' });
+        } catch (e) {
+            code = (e as { status: number }).status;
+        }
+        expect(code).toBe(1);
+        expect(readFileSync(file, 'utf8').trimEnd().split('\n')).toHaveLength(1);
+    });
+
+    it('fails only the first run on a volume under factory-stub-fail-once', () => {
+        const { store, env } = fixture();
+        mkdirSync(store, { recursive: true });
+        const attempt = () => {
+            try {
+                execFileSync('sh', [stub, 'factory-stub-fail-once'], { env, stdio: 'pipe' });
+                return 0;
+            } catch (e) {
+                return (e as { status: number }).status;
+            }
+        };
+        expect([attempt(), attempt()]).toEqual([1, 0]);
+    });
+});
+
 describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
     const gh = join(ROOT, 'scripts/lane-gh.sh');
     /** A state directory standing for /task/.lane-gh, and a working directory: where the stub keeps its state. */
