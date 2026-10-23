@@ -162,6 +162,8 @@ export class Sim {
     readonly row: Row;
     readonly config;
     readonly drivers: Driver[] = [];
+    /** Binding refreshes not yet delivered; the teardown cancels them before it removes the mounts. */
+    private readonly refreshes = new Set<NodeJS.Timeout>();
     /** What the publish step of a group waits on: a file the test touches. */
     readonly latch: string;
     /** Held until the test opens it: the attempt has a group but no `go` yet (the setup is running). */
@@ -397,9 +399,11 @@ export class Sim {
         group.secretWrites += 1;
         group.tokens.add((JSON.parse(body) as { token: string }).token);
         // A pod deleted meanwhile has no mount for the refresh to reach.
-        setTimeout(() => {
+        const refresh = setTimeout(() => {
+            this.refreshes.delete(refresh);
             if (this.groups.get(lease) === group) writeFileSync(group.file, body);
         }, this.t.refreshMs);
+        this.refreshes.add(refresh);
     }
 
     /** The agent container ends on its own. */
@@ -604,6 +608,8 @@ export class Sim {
     }
 
     async teardown() {
+        for (const refresh of this.refreshes) clearTimeout(refresh);
+        this.refreshes.clear();
         for (const d of this.drivers) {
             d.dead = true;
             d.loop.stop();
