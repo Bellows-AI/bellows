@@ -14,8 +14,15 @@ const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
-// Files vitest's import graph already follows; everything else is read by path.
 const GRAPH_FILE = /\.(ts|tsx|mts|cts)$/;
+// Suites that enumerate a directory (`readdirSync`) and never name its files, so no grep finds them.
+// `core/test/test-changed.test.ts` pins that each one exists and still names its directory.
+export const DIRECTORY_READERS = [
+    [/^server\/migrations\//, ['core/test/migrations.sql.test.ts'], 'migrations'],
+    [/^lint\//, ['core/test/biome.test.ts'], 'lint'],
+    [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts'], 'skills'],
+    [/^core\/src\//, ['core/test/core-index.test.ts'], 'src'],
+];
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
 
@@ -24,7 +31,7 @@ const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]
  *
  * - `changed`: repo-relative paths changed since the base.
  * - `spawn`: the spawn-tier test files (`vitest.spawn-tests.json`).
- * - `namedBy(name)`: files under a `test/` directory that mention `name`.
+ * - `namedBy(names)`: files under a `test/` directory that mention any of `names`.
  */
 export function plan({ base, changed, spawn, namedBy }) {
     const spawning = new Set(spawn);
@@ -38,6 +45,11 @@ export function plan({ base, changed, spawn, namedBy }) {
             label: 'core changed: every server and web suite',
             vitest: ['run', ...projectArgs(covered)],
         });
+        // The spawn tier is in no package project, and its server and web suites import core/dist too.
+        const spawnConsumers = spawn.filter((file) => /^(server|web)\//.test(file)).sort();
+        if (spawnConsumers.length > 0) {
+            steps.push({ label: 'core changed: the server and web spawn suites', vitest: ['run', ...spawnConsumers] });
+        }
     }
 
     // Spawn-tier suites join the import-graph step: they run when a file they import changed, or
@@ -53,15 +65,22 @@ export function plan({ base, changed, spawn, namedBy }) {
         ],
     });
 
-    const named = new Set();
+    // Everything vitest's graph cannot see: a file a test reads by path, whatever its language, a
+    // fixture under test/, and a directory a test enumerates.
+    const named = new Set(
+        changed.flatMap((file) => DIRECTORY_READERS.filter(([pattern]) => pattern.test(file)).flatMap(([, tests]) => tests))
+    );
     const helpers = new Set();
-    for (const file of changed) {
-        if (GRAPH_FILE.test(file) || TEST_TREE.test(file)) continue;
-        const name = file.slice(file.lastIndexOf('/') + 1);
-        for (const hit of namedBy(name)) {
-            if (UNIT_TEST.test(hit)) named.add(hit);
-            else if (TEST_TREE.test(hit)) helpers.add(hit);
-        }
+    const names = [
+        ...new Set(
+            changed
+                .filter((file) => !(TEST_TREE.test(file) && GRAPH_FILE.test(file)))
+                .map((file) => file.slice(file.lastIndexOf('/') + 1))
+        ),
+    ];
+    for (const hit of names.length > 0 ? namedBy(names) : []) {
+        if (UNIT_TEST.test(hit)) named.add(hit);
+        else if (TEST_TREE.test(hit)) helpers.add(hit);
     }
     const inCovered = (file) => {
         const pkg = file.split('/')[0];
@@ -89,9 +108,9 @@ function changedFiles(mergeBase) {
     ];
 }
 
-function namedBy(name) {
+function namedBy(names) {
     try {
-        return git('grep', '-l', '-F', '-e', name, '--', '*/test/*');
+        return git('grep', '-l', '-F', ...names.flatMap((name) => ['-e', name]), '--', '*/test/*');
     } catch {
         return []; // git grep exits 1 on no match
     }
