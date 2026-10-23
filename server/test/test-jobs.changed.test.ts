@@ -39,6 +39,16 @@ function scriptPhases(): string[] {
     return (body ?? '').split('|');
 }
 
+describe('test-jobs phase lists', () => {
+    // The services phase leaves a malformed plan behind, so node-disruption must write its own
+    // before its first driver starts rather than rely on whatever ran earlier in a list.
+    it('has node-disruption write its stub-svc plan before its first driver', () => {
+        const phase = SCRIPT.slice(SCRIPT.indexOf('begin_phase node-disruption\n'));
+        expect(phase.indexOf('write_bellows "services:\n  - name: stub-svc')).toBeGreaterThan(0);
+        expect(phase.indexOf('write_bellows "services:')).toBeLessThan(phase.indexOf('\ndisruption_driver\n'));
+    });
+});
+
 describe('test-jobs --changed path-to-phase map', () => {
     const ranges = tracked('driver/src', 'docker', 'scripts');
 
@@ -81,6 +91,9 @@ describe('test-jobs --changed path-to-phase map', () => {
             'driver/src/scripts/supervisor.cjs',
             'driver/src/runner.ts',
             'server/src/main.ts',
+            'docker-compose.yml',
+            'package-lock.json',
+            'Makefile',
         ]) {
             expect(classify([file]).selected, file).toBe('full');
         }

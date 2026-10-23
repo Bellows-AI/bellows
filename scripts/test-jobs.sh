@@ -56,7 +56,7 @@ while [ "$#" -gt 0 ]; do
         echo '        node-disruption, run-deadline, review, workflows, compose-driver, auth, cooperative-stop,'
         echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill, capacity'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
-        echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only BASE`'
+        echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
         echo '        shared files; an empty set runs nothing. For iteration and per-PR checks; the full lane'
         echo '        (no flag) runs at the end of a PR series and on main.'
@@ -1350,12 +1350,6 @@ docker build -q -t "$IMAGE_RUN" "$work/run" >/dev/null || {
     exit 1
 }
 
-# The services phases before it leave this plan behind; alone, node-disruption writes it itself.
-if selected_phase node-disruption && ! selected_phase services && ! selected_phase orphan-reaper; then
-write_bellows "services:
-  - name: stub-svc
-    image: $IMAGE_SVC"
-fi
 fi
 
 if selected_phase services; then
@@ -1573,6 +1567,10 @@ echo '# node disruption'
 # a. The hard kill: no drain, no handover, the lease left to expire. The runner runs to its end
 #    while no driver watches it; the next driver's claim (2) records the expiry as claim 1's
 #    interruption and adopts it — at max_attempts 1, where an expiry used to retire the job dead.
+# The plan is this phase's own, whatever phase ran before it (services leaves a malformed one).
+write_bellows "services:
+  - name: stub-svc
+    image: $IMAGE_SVC"
 disruption_driver
 killed="$(create_job 'sleep 8; echo "ran in $HOSTNAME"')"
 capped="$(last_attempt "$killed")" && ok 'the hard-kill job runs at max_attempts 1' ||

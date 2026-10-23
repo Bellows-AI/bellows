@@ -4,7 +4,7 @@
 // phase is reachable, and every tracked file under driver/src, docker/ and scripts/ matches a rule
 // here (an unmatched path is a test failure, not a silent full lane).
 //
-//   node scripts/test-jobs-changed.mjs <base>         paths from `git diff --name-only <base>`
+//   node scripts/test-jobs-changed.mjs <base>         paths from `git diff --name-only $(git merge-base <base> HEAD)`
 //                                                     plus untracked files
 //   node scripts/test-jobs-changed.mjs --files        paths on stdin, one per line
 //   add --json for the whole verdict on stdout
@@ -70,7 +70,7 @@ export const RULES = [
     [/^driver\/src\/(publish|publish-[a-z]+|loop-publish)\.ts$/, ['driver', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop-gates|gates|gate-cause|docker-gate|loop-agentless|loop-phase|loop-phase-checkpoints|board-phase-checkpoints)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
-    [/^driver\/src\/scripts\/gate-(loop|shell)\.(sh)$/, ['driver', 'workflows'], 'gates'],
+    [/^driver\/src\/scripts\/gate-(loop|shell)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker-close-read|close-read|docker-teardown|loop-conclusion|loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],
     [/^driver\/src\/(master-prompt|continuation|transcript-export|loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop-verdict|loop-attempt|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
@@ -82,10 +82,9 @@ export const RULES = [
 
     // --- runner images ------------------------------------------------------------------------------
     [/^docker\/claude-executor\/github-credential\.cjs$/, ['github-credential'], 'GitHub credential'],
-    [/^docker\/opencode-executor\/github-credential\.cjs$/, ['github-credential'], 'GitHub credential'],
     [/^docker\/(claude-executor|opencode-executor)\/(stop-hook\.cjs|stop-plugin\/.*)$/, ['cooperative-stop'], 'cooperative stop'],
     [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|branch-reporter\.cjs|git-guard\.cjs|control-proxy\.cjs|gh-wrapper\.sh|managed-settings\.json|claude-home\/.*)$/, REAL, 'claude-executor image'],
-    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|branch-reporter\.cjs|control-proxy\.cjs|ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|gh-wrapper\.sh|rate-limit-watch\.cjs|tool-bash\.sh|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation'], 'opencode-executor image'],
+    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|branch-reporter\.cjs|control-proxy\.cjs|ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|gh-wrapper\.sh|github-credential\.cjs|rate-limit-watch\.cjs|tool-bash\.sh|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation'], 'opencode-executor image'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
     [/^docker\/(Dockerfile|driver\.Dockerfile)$/, ['compose-driver'], 'the deployed and compose images'],
     [/^docker\/skills\/review\//, ['review'], 'reviewer prompt'],
@@ -97,6 +96,8 @@ export const RULES = [
     [/^scripts\/fake-model-endpoint\.mjs$/, REAL, 'scripted model endpoint'],
     [/^scripts\/lane-capacity-samples\.mjs$/, ['capacity'], 'capacity verdict'],
     [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|release\.sh|lint-changed\.sh|gate-jq\.sh)$/, NONE, 'not part of the docker lane'],
+
+    [/^(docker-compose\.yml|package\.json|package-lock\.json|tsconfig(\.base)?\.json|VERSION|Makefile|\.dockerignore)$/, FULL, 'what the lane builds and boots'],
 
     // --- outside the lane's inputs ----------------------------------------------------------------
     [/^(web|e2e|docs|openspec|charts|lint|cli|plugins|\.github|\.claude|\.claude-plugin|\.opencode|\.factory)\//, NONE, 'not executed by the docker lane'],
@@ -126,7 +127,9 @@ export function classify(files) {
 
 function changedFiles(base) {
     const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).split('\n').filter(Boolean);
-    return [...new Set([...git('diff', '--name-only', base), ...git('ls-files', '--others', '--exclude-standard')])];
+    // From the merge base, so a branch behind <base> is not charged with <base>'s newer commits.
+    const [mergeBase] = git('merge-base', base, 'HEAD');
+    return [...new Set([...git('diff', '--name-only', mergeBase), ...git('ls-files', '--others', '--exclude-standard')])];
 }
 
 function main(argv) {

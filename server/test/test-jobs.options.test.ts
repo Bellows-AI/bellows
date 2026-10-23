@@ -50,6 +50,7 @@ esac
 exit 0`,
     // --changed maps real git output through the real map; git answers with $CHANGED_FILES.
     git: `case "$1" in
+    merge-base) echo deadbeef ;;
     diff) printf '%s' "$CHANGED_FILES" ;;
     ls-files) ;;
     *) exit 99 ;;
@@ -309,7 +310,12 @@ describe('test-jobs phase options', () => {
     });
     // Issue #950: phases that share one board fixture are named as a comma list.
     it('accepts a comma list of phases and rejects an unknown, empty or mixed-in one', async () => {
-        for (const list of ['board,driver', 'driver-kill,capacity,services']) {
+        for (const list of [
+            'board,driver',
+            'driver-kill,capacity,services',
+            'services,node-disruption',
+            'board,board',
+        ]) {
             const result = await fixture().run(['--phase', list], { JOBS_TEST_DB: 'factory_dev' });
             expect(result.status, list).toBe(2);
             expect(result.stdout, list).toContain('ending _test');
