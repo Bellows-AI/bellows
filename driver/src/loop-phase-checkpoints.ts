@@ -7,6 +7,7 @@
  * phase after it. Nothing here throws, and a checkpoint that cannot be written never fails the run.
  */
 
+import type { BoardJob } from './board.js';
 import type { CheckpointPhase, PhaseCheckpoint } from './board-phase-checkpoints.js';
 import type { HelperFailureReport } from './helpers.js';
 import type { GateFailure, GateReport } from './loop-gates.js';
@@ -30,6 +31,9 @@ export interface GatesCheckpoint {
     /** Whether the run's failed pre-agent setup stood fixed once the gates passed (`job.setupFailure` null). */
     setupCleared: boolean;
 }
+
+/** The setup phase's outcome: the failure the pre-agent `environment.setup` left, or null when it passed. */
+export type SetupFailure = NonNullable<BoardJob['setupFailure']>;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isString = (v: unknown): v is string => typeof v === 'string';
@@ -80,6 +84,14 @@ function gatesOf(raw: unknown): GatesCheckpoint | null {
     };
 }
 
+function setupOf(raw: unknown): { failure: SetupFailure | null } | null {
+    if (!isRecord(raw) || !('failure' in raw)) return null;
+    const { failure } = raw;
+    if (failure === null) return { failure: null };
+    if (!isRecord(failure) || !nullable(failure.exitCode, isNumber) || !isString(failure.output)) return null;
+    return { failure: { exitCode: failure.exitCode as number | null, output: failure.output } };
+}
+
 function postOf(raw: unknown): { failure: HelperFailureReport | null } | null {
     if (!isRecord(raw) || !('failure' in raw)) return null;
     const failure = raw.failure;
@@ -108,6 +120,13 @@ export interface PhaseChain {
      * The gates phase served from its checkpoint, or null when it must run. `applicable` is whether
      * the attempt gates at all: a phase that does not apply neither resumes nor breaks the chain.
      */
+    /**
+     * The pre-agent setup outcome the run this attempt resumed left on the board: its failure, null
+     * when it passed or nothing was declared, and `unknown` when the board's answer is missing or
+     * unreadable — which the caller treats as a failure to retry, never as a pass (issue #917). A
+     * fresh attempt resumes nothing and answers null.
+     */
+    carriedSetup(): SetupFailure | 'unknown' | null;
     resumeGates(applicable: boolean, treeAfter: string | null): GatesCheckpoint | null;
     resumePost(applicable: boolean): { failure: HelperFailureReport | null } | null;
     resumePublish(revision: string | null): PublishResult | null;
@@ -143,6 +162,13 @@ export async function openChain(ctx: AttemptCtx): Promise<PhaseChain> {
         rt.log(`job ${job.id}: resumed ${phase} from claim ${rows.get(phase)!.claimSeq}'s checkpoint`);
 
     return {
+        carriedSetup() {
+            if (!resuming || !job.gates?.setup) return null;
+            const carried = rows.has('setup') ? setupOf(rows.get('setup')!.result) : null;
+            if (carried) return carried.failure;
+            rt.log(`job ${job.id}: the setup outcome of claim ${runClaimSeq} is not on the board, retrying setup`);
+            return 'unknown';
+        },
         resumeGates(applicable, treeAfter) {
             if (!applicable) return null;
             const row = rows.get('gates');

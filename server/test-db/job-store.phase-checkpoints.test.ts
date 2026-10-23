@@ -113,6 +113,20 @@ describe.skipIf(!enabled)('phase checkpoints', () => {
         });
     });
 
+    it('keeps the setup checkpoint when a later phase is written, and reads it first (issue #917)', async () => {
+        const c = await claimed();
+        const write = (phase: 'setup' | 'gates', result: unknown) =>
+            store.writePhaseCheckpoint(c.id, c.leaseToken, { runClaimSeq: c.claimSeq, phase, tree: null, result });
+        const failure = { exitCode: 7, output: 'npm ERR!' };
+        await write('gates', { n: 1 });
+        await write('setup', { failure });
+        await write('gates', { n: 2 });
+        expect(await store.readPhaseCheckpoints(c.id, c.leaseToken, c.claimSeq)).toMatchObject({
+            result: 'ok',
+            checkpoints: [{ phase: 'setup', result: { failure } }, { phase: 'gates' }],
+        });
+    });
+
     it('keeps the checkpoints of another run of the same job', async () => {
         const c = await claimed();
         await sql`update job set claim_seq = claim_seq + 1 where id = ${c.id}`;
