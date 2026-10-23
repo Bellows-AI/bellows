@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { isBlockRuntimeId, parseRuntimeParams, runtimeIsValid } from '../src/db/workflows/workflow-blocks/runtime.js';
+import {
+    isBlockRuntimeId,
+    parseRuntimeParams,
+    runtimeIsValid,
+} from '../src/db/workflows/workflow-blocks/runtime-params.js';
 import type { WorkflowNode } from '../src/db/workflows/workflow-schema.js';
 
 /**

@@ -1,4 +1,4 @@
-import { UUID } from '../config.js';
+import { UUID } from '../identifiers.js';
 import type { JobStatus, TaskState } from './jobs/job-store-types.js';
 
 /**

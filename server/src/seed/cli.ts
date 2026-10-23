@@ -15,7 +15,7 @@
  * the same reason, which is that the failure leaves no trace to notice later.
  */
 import postgres from 'postgres';
-import { LOCAL_ORG_ID } from '../config.js';
+import { LOCAL_ORG_ID } from '../identifiers.js';
 import { resolveConfig } from '../config.js';
 import { migrate } from '../db/migrate.js';
 import {

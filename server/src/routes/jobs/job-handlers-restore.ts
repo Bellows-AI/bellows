@@ -1,6 +1,6 @@
 import { CLAUDE_CODE, CONTENT_TYPE_HEADER, ERROR_CODES, OCTET_STREAM_CONTENT_TYPE } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import {
     ArtifactIntegrityError,
     ArtifactObjectMissingError,
@@ -14,6 +14,7 @@ import { artifactsFor } from './job-context.js';
 import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAVAILABLE, leaseLost, notFoundJob } from './job-limits.js';
 import { bad, body, guard } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
+import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 
 /**
  * The restore reads (issue #775): what a driver preparing a restored task volume reads of ITS OWN
@@ -36,7 +37,7 @@ interface Resolved {
 
 /** The preamble: the live lease's scope and the org's artifact store. Null once a refusal has landed. */
 async function resolve(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply): Promise<Resolved | null> {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return null;
     const fields = body(request.body);
     const { leaseToken } = fields;

@@ -1,7 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, body, guard } from '../helpers.js';
 import { validateAnswerBody, validateQuestionBody } from './job-field-validation-questions.js';
@@ -15,6 +15,7 @@ import {
     notFoundJob,
 } from './job-limits.js';
 import { resolveJobRoute } from '../route-guards.js';
+import type { JobQuestionStore } from '../../db/jobs/job-store-questions.js';
 
 /**
  * The agent's questions (050, issue #531). The question text and the answers are member content:
@@ -24,7 +25,7 @@ import { resolveJobRoute } from '../route-guards.js';
 // The driver reports a question the agent asked: lease-fenced like every worker write, and a 409
 // from it is not a kill order (the artifact rule) — the question is retention for the member.
 export async function handleQuestion(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobQuestionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -57,7 +58,7 @@ export async function handleQuestion(orgs: OrgRegistry, request: FastifyRequest,
 // Stop, the actor off the session, never the body. The store's one conditional update is what
 // makes a retried or concurrent answer land once; the loser is told what the winner left.
 export async function handleAnswer(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobQuestionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 

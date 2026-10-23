@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';
 import type { MetricRow } from '../src/telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../src/telemetry/store.js';
-import { githubAuth, memoryAuthStore, staticRegistry, testConfig } from './helpers.js';
+import { githubAuth, memoryAuthStore, staticRegistry, testConfig, jobStoreSlice } from './helpers.js';
 import {
     HTTP_ACCEPTED,
     HTTP_BAD_REQUEST,
@@ -55,14 +56,14 @@ async function harnessWith(store?: StoreStub, jobs?: JobStore) {
 }
 
 /** A board whose only working call is the lease-guarded session write, recording each one. */
-function sessionBoard(answer: Awaited<ReturnType<JobStore['session']>> = 'ok') {
+function sessionBoard(answer: Awaited<ReturnType<JobWorkerStore['session']>> = 'ok') {
     const calls: [string, string, string | null][] = [];
-    const jobs = {
+    const jobs = jobStoreSlice<JobWorkerStore>({
         async session(id: string, leaseToken: string, sessionId: string | null) {
             calls.push([id, leaseToken, sessionId]);
             return answer;
         },
-    } as unknown as JobStore;
+    });
     return { jobs, calls };
 }
 

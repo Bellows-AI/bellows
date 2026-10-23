@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { IdempotencyKeyReusedError } from '../../db/jobs/job-store-idempotency.js';
+import { canonical, IdempotencyKeyReusedError } from '../../db/jobs/job-store-idempotency.js';
 import type { IdempotentOperation } from '../../db/jobs/job-store-idempotency.js';
-import { canonical } from '../../db/jobs/job-store-receipts.js';
 import { bad, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_CREATED } from './job-limits.js';
 

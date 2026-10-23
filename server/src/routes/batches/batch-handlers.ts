@@ -1,13 +1,13 @@
 import { batchWaitResult, ERROR_CODES, type BatchWaitResult } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import {
     BATCH_CREATE,
     BATCH_DRAFT,
     BATCH_START,
     type BatchIdempotency,
     type BatchStore,
-} from '../../db/batches/batch-store.js';
+} from '../../db/batches/batch-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { launchChecks } from './batch-launch.js';
 import {

@@ -11,7 +11,7 @@ import {
 } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { Repo } from '../../config.js';
-import type { BatchRecord } from '../../db/batches/batch-store.js';
+import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';

@@ -28,6 +28,7 @@ import {
 } from './job-limits.js';
 import { bad, body, guard } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
+import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 
 /**
  * The artifact upload routes: a chunk put and a manifest finalize against the artifact index
@@ -58,7 +59,7 @@ async function resolveStream(
     reply: FastifyReply,
     named: Record<string, unknown>
 ) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return null;
     const artifacts = await artifactsFor(orgs, request);
     if (!artifacts) {
@@ -249,7 +250,7 @@ function parseQuery(query: ArtifactQuery, reply: FastifyReply): Parsed {
  * objects awaiting deletion) answers its streams as `deleted` rather than as nothing.
  */
 async function resolveStreams(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return null;
     const artifacts: ArtifactStore | undefined = (await orgs.for(orgOf(request)))?.artifacts;
     if (!artifacts) {

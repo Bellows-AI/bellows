@@ -9,6 +9,30 @@ import type { Sql, TransactionSql } from 'postgres';
 import { backsBatchTask, queueReclaimIfThreadDone } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
+/** The merged-PR close the webhook and the observer drive. */
+export interface JobMergeStore {
+    /**
+     * The merge half of issue #390: a verified `pull_request closed, merged: true` delivery names
+     * this operation with the delivery's GUID, and every thread whose recorded publication
+     * (`job_pr`) resolves to the (org, repo, pr number) closes — done-stamped like a manual Done,
+     * with NO local actor (`done_by` stays whatever it was, null on a pure merge close). Runs in
+     * one transaction keyed by the delivery: the `pr_merge` ledger insert is the dedupe gate (a
+     * redelivery answers `duplicate` and touches nothing, so a redelivered merge cannot undo a
+     * manual Reopen), the open waits cancel with reason `pr merged`, queued members settle
+     * `stopped`, and the worktree reclaim queues only through the shared terminal-only rule.
+     * `closedRoots` counts the threads this delivery actually closed — zero is an honest answer
+     * (nothing published to this PR yet; the ledger row keeps the fact for the publishing verdict
+     * to apply).
+     */
+    closeMergedPr(
+        repo: string,
+        prNumber: number,
+        deliveryId: string,
+        /** When GitHub says the merge happened; absent is "now", which is all a webhook knows. */
+        mergedAt?: Date
+    ): Promise<{ outcome: 'applied' | 'duplicate'; closedRoots: number }>;
+}
+
 export type CloseMergedPrResult = { outcome: 'applied' | 'duplicate'; closedRoots: number };
 
 /** The wait terminal reason a merge stamps — distinct from a plain close's `pr closed`. */

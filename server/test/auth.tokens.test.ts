@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { InjectOptions } from 'fastify';
 import type { AuthConfig } from '../src/config.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { MemoryAuthStore } from './helpers.js';
-import { buildWithAuth, githubAuth, memoryAuthStore, signedIn } from './helpers.js';
+import { buildWithAuth, githubAuth, jobStoreSlice, memoryAuthStore, signedIn } from './helpers.js';
 import {
     HTTP_ACCEPTED,
     HTTP_BAD_REQUEST,
@@ -31,26 +33,26 @@ const track = trackApps();
 /** Records the author every created job carries — the audit property this whole feature guards.
  *  `waits`, when given, records the settle long-poll's holds the same way (issue #323). */
 const jobStub = (authors: string[], waits: { id: string; timeoutMs: number }[] = []): JobStore => {
-    const stub: Partial<JobStore> = {
+    const stub: Partial<JobActionStore & JobReadStore> = {
         async create(_command, createdBy) {
             authors.push(String(createdBy));
             return { id: JOB_ID };
         },
         async get() {
-            return null as Awaited<ReturnType<JobStore['get']>>;
+            return null as Awaited<ReturnType<JobReadStore['get']>>;
         },
         async waitForSettle(id: string, timeoutMs: number) {
             waits.push({ id, timeoutMs });
-            return { result: 'terminal' } as Awaited<ReturnType<JobStore['waitForSettle']>>;
+            return { result: 'terminal' } as Awaited<ReturnType<JobReadStore['waitForSettle']>>;
         },
         async thread() {
-            return [] as Awaited<ReturnType<JobStore['thread']>>;
+            return [] as Awaited<ReturnType<JobReadStore['thread']>>;
         },
         async list() {
-            return [] as Awaited<ReturnType<JobStore['list']>>;
+            return [] as Awaited<ReturnType<JobReadStore['list']>>;
         },
     };
-    return stub as JobStore;
+    return jobStoreSlice<JobActionStore & JobReadStore>(stub);
 };
 
 async function build(

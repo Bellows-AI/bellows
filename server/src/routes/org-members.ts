@@ -2,7 +2,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { ADMIN_ROLE, ERROR_CODES, ROLES, type Role } from '@factory-ai/core';
 import { callerOf } from '../auth/plugin.js';
 import type { AuthStore, Caller } from '../auth/store.js';
-import { UUID } from '../config.js';
+import { UUID } from '../identifiers.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
 
 const HTTP_OK = 200;

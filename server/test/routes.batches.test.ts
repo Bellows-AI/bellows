@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {
@@ -11,6 +11,7 @@ import {
     staticRegistry,
     stubTelemetryClient,
     testConfig,
+    jobStoreSlice,
 } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
@@ -94,12 +95,12 @@ async function setup(
     const batches = memoryBatchStore();
     const otherBatches = memoryBatchStore();
     const jobCreates: string[] = [];
-    const jobs = {
+    const jobs = jobStoreSlice<JobActionStore>({
         async create(command: string) {
             jobCreates.push(command);
             return { id: 'never' };
         },
-    } as unknown as JobStore;
+    });
     const config = testConfig({ auth: githubAuth() });
     const repos = {
         ...reposWithDefaults(

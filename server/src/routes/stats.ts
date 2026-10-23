@@ -3,7 +3,8 @@ import type { DateRange, Organization, OrganizationMeta } from '@factory-ai/core
 import type { FastifyPluginAsync } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { AuthStore, Caller, OrgTokenIdentity } from '../auth/store.js';
-import { LOCAL_ORG_ID, type AppConfig } from '../config.js';
+import type { AppConfig } from '../config.js';
+import { LOCAL_ORG_ID } from '../identifiers.js';
 import type { OrgRegistry } from '../orgs.js';
 import type { StatsScope, StatsService } from '../stats-service.js';
 

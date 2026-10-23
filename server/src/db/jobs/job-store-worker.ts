@@ -20,19 +20,151 @@ import {
     stopReviewsOf,
 } from './job-store-rows.js';
 import type {
+    FailureCause,
+    FailureKind,
+    GateReport,
+    JobOutcome,
     JobStore,
     JobStoreContext,
-    RuntimeVitals,
-    JobOutcome,
     JobStorePrs,
-    GateReport,
-    FailureKind,
+    LeaseResult,
+    RuntimeVitals,
+    SettleRefusal,
 } from './job-store-types.js';
 import { type CompletedRun, nextTransition, primarySessionId } from '../workflows/workflow-engine.js';
 import { enterRuntimeBoundary } from '../workflows/workflow-blocks/runtime.js';
 import { entersBlockHelperNode, settleBlockWaits } from '../workflows/workflow-blocks/runtime-settle.js';
 import { applyMergeClosureIfMerged, mergeClosureMarkerSet, prLockKey, settleIfMergeClosed } from './job-store-merge.js';
 import type { WorkflowDefinition, ParamValues } from '../workflows/workflow-schema.js';
+import type { RecordedEvidence } from '../evidence-policy.js';
+
+/** The lease-fenced writes a running attempt reports: heartbeat, session, progress, gates, completion. */
+export interface JobWorkerStore {
+    heartbeat(
+        id: string,
+        leaseToken: string,
+        leaseSeconds: number
+    ): Promise<{
+        result: LeaseResult;
+        leaseExpiresAt: string | null;
+        cancelRequested: boolean;
+        /** Every `answered` question of this lease token — applied idempotently by the driver. */
+        answeredQuestions: { questionId: string; answers: Record<string, string> }[];
+    }>;
+
+    /**
+     * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
+     * like every other worker write: a superseded worker must not relabel the run that replaced it.
+     * Null clears it — a refused start whose minted session never ran.
+     */
+    session(id: string, leaseToken: string, sessionId: string | null): Promise<LeaseResult>;
+
+    /**
+     * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
+     * while it happens instead of a silent spinner — with the attempt's last sampled vitals riding
+     * beside it when the driver has one. Lease-guarded like every other worker write, and REPLACE,
+     * never append: the driver owns the tail window, and an unbounded append would grow the row for
+     * as long as a session runs. The final complete report overwrites whatever this last stored.
+     * A null `runtime` leaves the stored vitals alone — a missed sample costs freshness, not the
+     * last good answer.
+     */
+    progress(id: string, leaseToken: string, output: string, runtime?: RuntimeVitals | null): Promise<LeaseResult>;
+
+    /**
+     * Replaces the run's gate state — the checks `.bellows.yaml` declared, executed in the
+     * declared environment image. Lease-guarded like every other worker write, and REPLACE, never
+     * append: the issue's UI contract is current/last ran only, and this side cannot know where a
+     * previous report ended anyway.
+     */
+    gates(id: string, leaseToken: string, results: GateReport[]): Promise<LeaseResult>;
+
+    /**
+     * Records the verdict and answers it with whether the thread is DONE — computed in the same
+     * transaction: `threadDone` is true only when every job of the thread — the root and every
+     * follow-up — has reached `succeeded`, `failed`, `dead` or `stopped`, AND one of them carries the
+     * user's `done_at`. The tree is the user's to free, so a thread that merely finished keeps
+     * its worktree (a failed task's tree is exactly what a follow-up continues from); the
+     * completing attempt reclaims only when the user has closed the thread. This is the driver's
+     * worktree-reclaim signal (issue #47), and it rides the lease-guarded complete rather than a
+     * thread read so a worker credential never pulls audit data of jobs it does not hold. The
+     * verdict-moment answer also closes the read-after-verdict race: a follow-up inserted after
+     * the verdict commits cannot change an answer that was already given.
+     *
+     * A threadDone verdict queues the worktree reclaim claimed by the completing worker and answers
+     * its id (`reclaimId`; null when another worker holds a live claim on it, or a reopen won the
+     * race): the driver acks it after the removal, and the `worktree_reclaimed_at` marker follows
+     * that ack (issue #821). The answer is a settle receipt: the identical complete replayed under
+     * the same lease answers it again; any other request under a concluded lease answers `lost`.
+     */
+    complete(
+        id: string,
+        leaseToken: string,
+        result: {
+            status: JobOutcome;
+            exitCode: number | null;
+            output: string | null;
+            /**
+             * The context the run reached — token total and cost, scraped by the runner from the
+             * session database at close. Null when the runner scraped none (claude-code,
+             * kubernetes, a failed readout). Merged into the `runtime` vitals, creating them when
+             * no sample ever landed, so the finished row carries the context stats even with no
+             * CPU sample beside them.
+             */
+            contextTokens?: number | null;
+            contextCostUsd?: number | null;
+            /**
+             * The agent turns the run's root conversation took, counted by the executor from its
+             * own session records at close. Null means UNMEASURED — the read failed, the run was
+             * killed before it, or the mode keeps no record — and never zero; a genuine zero is
+             * reported as 0. The task statistics treat an unmeasured run as excluded, not empty.
+             */
+            agentTurns?: number | null;
+            /** How long `environment.setup` ran before the agent (issue #733); null when none ran. */
+            setupMs?: number | null;
+            /**
+             * What the run did, in the agent's own last words — lifted by the same close-time
+             * read that counts the turns. Null is UNMEASURED, never empty; a string is the
+             * agent's final text, already truncated by the driver and re-bounded by the route.
+             */
+            summary?: string | null;
+            /**
+             * The structured terminal reason (issue #339), validated at the route against the
+             * seven known kinds. Null (or absent) is "not a failure" — the column keeps null, so
+             * a success and a pre-column row read the same.
+             */
+            failureKind?: FailureKind | null;
+            /** The cause under a `gate`/`publish`/`helper` kind (issue #581); absent overwrites to null. */
+            failureCause?: FailureCause | null;
+            /**
+             * Whether the task tree changed since the attempt's startup sync, measured by the
+             * driver only after a declared gate failed. Not stored: the workflow transition in
+             * this same transaction reads it (a gate-fix round that changed nothing rests).
+             * Null or absent is unmeasured.
+             */
+            treeChanged?: boolean | null;
+            /**
+             * The attempt's evidence record: the tree it started from, the tree its gates assessed
+             * and how they ended. Stored on the row under the lease guard; absent overwrites to
+             * null, so a retry never inherits the killed attempt's evidence.
+             */
+            evidence?: RecordedEvidence | null;
+            /**
+             * The publication the run reports — the PR identity a successful publish landed.
+             * Omitted (or null) when the run published nothing, so no `job_pr` row is invented.
+             * When present it is recorded in the verdict's own transaction, and its `repo` is
+             * cross-checked against the leased job's own repo label: a payload may not claim
+             * another org's repository by spelling it in the report.
+             */
+            publication?: {
+                repo: string;
+                prNumber: number;
+                prUrl: string;
+                headBranch: string;
+                baseBranch: string;
+            } | null;
+        }
+    ): Promise<{ result: 'ok'; threadDone: boolean; reclaimId: string | null } | SettleRefusal>;
+}
 
 export type HeartbeatResult = Awaited<ReturnType<JobStore['heartbeat']>>;
 

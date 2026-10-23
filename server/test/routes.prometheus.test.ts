@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { JobClaimStore } from '../src/db/jobs/job-store-claim.js';
 import { createServerMetrics, type AdmissionOccupancy } from '../src/metrics.js';
 import { CONTENT_TYPE } from '../src/prometheus.js';
 import {
@@ -13,6 +13,7 @@ import {
     stubTelemetryClient,
     testConfig,
     TEST_JOB_BOARD_TOKEN,
+    jobStoreSlice,
 } from './helpers.js';
 import { HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAUTHORIZED, trackApps } from './helpers-http.js';
 
@@ -27,11 +28,15 @@ const metricsWith = (
     admission = { global: 8, org: 4 }
 ) => createServerMetrics({ admission, occupancy: read });
 
-async function build(deps: Partial<Parameters<typeof buildApp>[0]> = {}, jobs?: Partial<JobStore>) {
+async function build(deps: Partial<Parameters<typeof buildApp>[0]> = {}, jobs?: Partial<JobClaimStore>) {
     const config = testConfig();
     const app = await buildApp({
         config,
-        orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), ...(jobs ? { jobs: jobs as JobStore } : {}) }),
+        orgs: staticRegistry({
+            config,
+            telemetry: stubTelemetryClient(),
+            ...(jobs ? { jobs: jobStoreSlice<JobClaimStore>(jobs) } : {}),
+        }),
         ...deps,
     });
     track(app);
@@ -90,7 +95,7 @@ describe('GET /api/metrics', () => {
     });
 
     it('counts claim polls by outcome', async () => {
-        const claims: (() => ReturnType<JobStore['claim']>)[] = [
+        const claims: (() => ReturnType<JobClaimStore['claim']>)[] = [
             async () => makeClaim({ id: JOB_ID, command: 'echo', leaseToken: JOB_ID }),
             async () => null,
             async () => {

@@ -18,7 +18,7 @@ import {
     type BatchRecord,
     type BatchStore,
     type BatchTaskState,
-} from '../src/db/batches/batch-store.js';
+} from '../src/db/batches/batch-store-types.js';
 import { IdempotencyKeyReusedError } from '../src/db/jobs/job-store-idempotency.js';
 
 /**

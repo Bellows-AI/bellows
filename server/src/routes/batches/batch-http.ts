@@ -1,8 +1,8 @@
 import { ERROR_CODES, validateBatchPlan, type BatchPlan } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
-import { UUID } from '../../config.js';
-import type { BatchRecord, BatchStore, BatchWriteRefusal } from '../../db/batches/batch-store.js';
+import { UUID } from '../../identifiers.js';
+import type { BatchRecord, BatchStore, BatchWriteRefusal } from '../../db/batches/batch-store-types.js';
 import type { OrgRegistry, OrgRuntime } from '../../orgs.js';
 import { bad, body, guard } from '../helpers.js';
 import { HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNAVAILABLE } from '../jobs/job-limits.js';

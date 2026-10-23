@@ -1,5 +1,4 @@
 import { isAbsolute } from 'node:path';
-import { normalizePrefix } from './keys.js';
 
 /**
  * Where artifacts live (docs/configuration.md). Environment only, parsed by `loadConfig` like the
@@ -32,6 +31,12 @@ export interface ArtifactsConfig {
     readonly retentionDays: number;
     /** Per-org byte quota; 0 is off. */
     readonly orgQuotaBytes: number;
+}
+
+/** The configured prefix, normalized to "" or a single trailing slash. */
+export function normalizePrefix(raw: string): string {
+    const trimmed = raw.replace(/^\/+|\/+$/g, '');
+    return trimmed === '' ? '' : `${trimmed}/`;
 }
 
 const BACKENDS = ['s3', 'filesystem'] as const;

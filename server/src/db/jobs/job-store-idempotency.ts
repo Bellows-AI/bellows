@@ -76,3 +76,15 @@ export async function stampKey(
         where org_id = ${orgId} and id = ${id}
     `;
 }
+
+/** Stable JSON: object keys sorted at every depth, so key order never changes a fingerprint. */
+export function canonical(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+    if (typeof value === 'object' && value !== null) {
+        const entries = Object.entries(value as Record<string, unknown>)
+            .filter(([, v]) => v !== undefined)
+            .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(',')}}`;
+    }
+    return JSON.stringify(value) ?? 'null';
+}

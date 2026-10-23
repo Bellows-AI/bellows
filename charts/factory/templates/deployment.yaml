@@ -127,7 +127,7 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretName" . }}
                                 key: database-url
-                      # Where task artifacts go (server/src/artifacts/config.ts).
+                      # Where task artifacts go (server/src/config-artifacts.ts).
                       - name: ARTIFACTS_BACKEND
                         value: {{ .Values.artifacts.backend | quote }}
                       - name: ARTIFACTS_RETENTION_DAYS

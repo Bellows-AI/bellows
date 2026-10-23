@@ -8,6 +8,12 @@
 
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 
+/** The org's queue demand the shared admission budgets read. */
+export interface JobAdmissionStore {
+    /** This org's demand on the cluster, which orders the cross-org claim scan (issue #831). */
+    demand(): Promise<OrgDemand>;
+}
+
 /** Each limit a positive integer; an absent one is unlimited. */
 export interface AdmissionBudgets {
     readonly global?: number;

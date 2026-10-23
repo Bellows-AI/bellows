@@ -3,7 +3,8 @@
  * and the read models the dashboard polls. `createJobStore` binds a connection and an org into a
  * `JobStore` whose every method delegates to a free function over a `JobStoreContext`:
  *
- * - `job-store-types.ts` — every shape: `Job`, `Claim`, the `JobStore` contract, results, deps.
+ * - `job-store-types.ts` — every shape: `Job`, `Claim`, results, deps, and `JobStore`, the
+ *   intersection of the per-concern interfaces each file below declares beside its implementation.
  * - `job-store-rows.ts` — row shapes, mappers and the shared SQL fragments.
  * - `job-store-claim.ts` — the worker's claim and the reclaim claim/ack.
  * - `job-store-worker.ts` — heartbeat, reports, `complete` and the workflow walk.

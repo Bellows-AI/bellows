@@ -2,7 +2,7 @@ import { ERROR_CODES, executorSuspendedMessage, type ExecutorScope } from '@fact
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { type BoardScanner, boardsFor, executorsFor, reposFor, storeFor, workflowsFor } from './job-context.js';
+import { type FairBoardScanner, boardsFor, executorsFor, reposFor, storeFor, workflowsFor } from './job-context.js';
 import { resolveJiraConnection } from '../connections.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
@@ -19,7 +19,7 @@ import {
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import type { ClaimPollOutcome } from '../../metrics.js';
 import {
     HTTP_CONFLICT,
@@ -38,6 +38,12 @@ import {
     notFoundJob,
     runtimeVitals,
 } from './job-limits.js';
+import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobAdmissionStore } from '../../db/jobs/job-store-admission.js';
+import type { JobClaimStore } from '../../db/jobs/job-store-claim.js';
+import type { JobConclusionStore } from '../../db/jobs/job-store-conclusions.js';
+import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
+import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 
 /**
  * A suspended profile launches nothing (issue 440): refused with its own code, so a client is told
@@ -133,7 +139,7 @@ function selectedSkillsOf(reply: FastifyReply, raw: unknown): string[] | null {
 }
 
 export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
+    const store = await storeFor<keyof JobActionStore>(orgs, request);
     if (!store) return noBoard(reply);
     const fields = body(request.body);
     const commandResult = validateCommandField(fields.command);
@@ -214,12 +220,12 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
 }
 
 export async function handleClaimJob(
-    claiming: { orgs: OrgRegistry; firstJobClaim: BoardScanner; claimPoll?: (outcome: ClaimPollOutcome) => void },
+    claiming: { orgs: OrgRegistry; firstJobClaim: FairBoardScanner; claimPoll?: (outcome: ClaimPollOutcome) => void },
     request: FastifyRequest,
     reply: FastifyReply
 ) {
     const { orgs, firstJobClaim, claimPoll } = claiming;
-    const claimRoute = await resolveClaimRoute(orgs, request, reply);
+    const claimRoute = await resolveClaimRoute<keyof (JobClaimStore & JobAdmissionStore)>(orgs, request, reply);
     if (!claimRoute) return reply;
     const { boards, worker, lease } = claimRoute;
 
@@ -242,7 +248,7 @@ export async function handleClaimJob(
 }
 
 export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -279,7 +285,7 @@ export async function handleHeartbeat(orgs: OrgRegistry, request: FastifyRequest
 // session id at spawn time, and a run that is still going is exactly when a reader wants to open
 // it.
 export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -312,7 +318,7 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
 // dashboard's "is it stuck or working" answer. Absent (or null) means no fresh sample: the last
 // stored one stays. Replaced, never appended, like the tail.
 export async function handleOutput(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -342,7 +348,7 @@ export async function handleOutput(orgs: OrgRegistry, request: FastifyRequest, r
 // here; the report REPLACES the stored list, which is what makes the UI's "current/last ran only"
 // honest rather than a truncation somebody has to remember.
 export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -369,7 +375,7 @@ export async function handleGates(orgs: OrgRegistry, request: FastifyRequest, re
 // indistinguishable from a run that ended on its own. The row lands `stopped` — the park is the
 // user's stop landing — and the answer carries the status.
 export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -395,7 +401,7 @@ export async function handleSuspend(orgs: OrgRegistry, request: FastifyRequest, 
 // the receipt's, with the lease renewed by `leaseSeconds`. The board commits it should the lease
 // expire before the complete lands; a different one under the lease is a 409 of its own.
 export async function handleConclusion(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobConclusionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -448,7 +454,7 @@ function interruptionOf(
 // attempt refunded (`release`), or recorded by the claim that adopted it. Lease-guarded; a spent
 // interruption budget is a 409 of its own, and the driver then treats the attempt as before.
 export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -493,7 +499,7 @@ export async function handleInterrupt(orgs: OrgRegistry, request: FastifyRequest
  * actually answered.
  */
 export async function handleLeases(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const boards = await boardsFor(orgs, request);
+    const boards = await boardsFor<keyof JobReadStore>(orgs, request);
     if (!boards.length) return noBoard(reply);
     // Fail closed on the every-org worker path: boardsFor DROPS an org whose runtime failed to
     // build, and every id of a dropped board would read as "unknown to the board" — a reap

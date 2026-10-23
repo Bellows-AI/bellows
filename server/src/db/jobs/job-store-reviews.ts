@@ -32,6 +32,21 @@ import { reviewerPrompts } from '../review-prompt.js';
 import { tailMatches } from '../workflows/workflow-schema.js';
 import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../workflows/workflow-templates.js';
 
+/** Named-profile reviews an agent requests and reads back. */
+export interface JobReviewStore {
+    /**
+     * Starts a named reviewer's separate run over the revision the caller names (issue #549),
+     * under the caller's live lease. Idempotent on `(caller, key)`: a retried or reclaimed caller
+     * gets the stored review back (`existing`), never a second run. The profile must be one the
+     * repository declared when the caller was claimed (`unknown_profile`); a workflow thread's
+     * caller is `unsupported` — its graph owns its own review node.
+     */
+    requestReview(id: string, leaseToken: string, request: ReviewRequest): Promise<RequestReviewResult>;
+
+    /** The review the caller asked for under `key`, with the thread's review evidence; lease-fenced. */
+    readReview(id: string, leaseToken: string, key: string): Promise<ReadReviewResult>;
+}
+
 /**
  * The git ref one review's snapshot lives under in the shared clone, keyed by the CALLER ROW — the
  * same scope the board's uniqueness is, so a follow-up or retry (a new row of the same thread)

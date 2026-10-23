@@ -3,7 +3,8 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
 import { createBatchPrObserver, type BatchPrObserver, type PrReader } from '../src/batch-pr-observer.js';
-import { createBatchStore, type BatchStore } from '../src/db/batches/batch-store.js';
+import { createBatchStore } from '../src/db/batches/batch-store.js';
+import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import {
     claimDue,
     commitObservation,

@@ -35,7 +35,7 @@ function replica(
     const boards = [ORG_A, ORG_B].map((orgId) => wrap(createJobStore({ sql, orgId, admission }), orgId));
     const scan = fairBoardScan();
     return (worker: string) =>
-        scan<Claim>(boards, log, (board: JobStore, options) => board.claim(worker, LEASE_SECONDS, options));
+        scan<JobStore, Claim>(boards, log, (board: JobStore, options) => board.claim(worker, LEASE_SECONDS, options));
 }
 
 const runningOf = async (org: string): Promise<number> => {

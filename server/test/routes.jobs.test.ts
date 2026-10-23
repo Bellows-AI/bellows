@@ -2,7 +2,7 @@ import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import { LOCAL_ORG_ID } from '../src/config.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { type RepoSource, type StaticRepoSource, staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRuntime } from '../src/orgs.js';
 import { createStatsService } from '../src/stats-service.js';
@@ -43,7 +43,7 @@ import type {
 import type { OrgDemand } from '../src/db/jobs/job-store-admission.js';
 import type { WorkflowRecord, WorkflowStore } from '../src/db/workflows/workflow-store.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
-import type { BatchStore } from '../src/db/batches/batch-store.js';
+import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { memoryBatchStore } from './helpers-batch-store.js';
 import {
     githubAuth,

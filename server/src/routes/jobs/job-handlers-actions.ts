@@ -14,7 +14,7 @@ import {
 } from './job-field-validation.js';
 import { bad, body, guard } from '../helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
-import { UUID } from '../../config.js';
+import { UUID } from '../../identifiers.js';
 import type { SettleOutcome } from '../../db/jobs/job-store-types.js';
 import {
     HTTP_ACCEPTED,
@@ -30,6 +30,10 @@ import {
     noBoard,
     notFoundJob,
 } from './job-limits.js';
+import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
+import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
+import type { JobReclaimStore } from '../../db/jobs/job-store-reclaims.js';
+import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 
 // A person's action on a finished task: queue an adjustment as a continuation of the run it just
 // did. The store decides every refusal atomically with the insert, so a follow-up can never land
@@ -38,7 +42,7 @@ import {
 // the body: the adjustment is bound to the executor that ran the task, copied from the parent at
 // insert like the repo and the session.
 export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -69,7 +73,7 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
 // decides every refusal atomically with the insert, exactly as the follow-up's does. No lease
 // token: the task is finished, nobody holds it.
 export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -96,7 +100,7 @@ export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, re
 // text and the raw chat line was never stored) — so a row claimed as the request arrives
 // answers 409 NOT_QUEUED instead of editing a run's input underneath its worker.
 export async function handleEditJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -142,7 +146,7 @@ export async function handleEditJob(orgs: OrgRegistry, request: FastifyRequest, 
 // thread too (docs/batches.md): the batch stops it and cancels its task, 202 while the stopped run
 // settles, and the PR it opened stays open, named in the answer.
 export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
     const { force = false } = body(request.body);
@@ -174,7 +178,7 @@ export async function handleDone(orgs: OrgRegistry, request: FastifyRequest, rep
 // sees next. 202 for the moving case, because the request RIDES to the worker and the settle
 // lands moments later.
 export async function handleStop(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -243,7 +247,7 @@ const liveBatchThreadRefusal = (reply: FastifyReply) =>
 // job write here, not just because the driver has no use for it — the board secret deleting the
 // audit rows of jobs it never held would be exactly the thread-read hole again.
 export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -270,7 +274,7 @@ export async function handleRemove(orgs: OrgRegistry, request: FastifyRequest, r
 // wait no worker holds a lease on — no lease token, actor off the session like stop/done/remove.
 // Author-scoped in the store: the woken continuation would run in the author's worktree.
 export async function handleWaitCancel(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -290,7 +294,7 @@ export async function handleWaitCancel(orgs: OrgRegistry, request: FastifyReques
 // motivating case is one that never arrived. `woken: false` is an honest answer (nothing parked,
 // already woken, an active member), never an error.
 export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -310,7 +314,7 @@ export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest,
 // already removed (a follow-up would have nothing to resume in), and one whose worktree is being
 // removed right now (retry once the reclaim settles) are all conflicts.
 export async function handleReopen(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -350,7 +354,7 @@ export async function handleReclaimsClaim(
     request: FastifyRequest,
     reply: FastifyReply
 ) {
-    const claimRoute = await resolveClaimRoute(orgs, request, reply);
+    const claimRoute = await resolveClaimRoute<keyof JobReclaimStore>(orgs, request, reply);
     if (!claimRoute) return reply;
     const { boards, worker, lease } = claimRoute;
 
@@ -367,7 +371,7 @@ export async function handleReclaimsClaim(
 // ack it — its token, never the worker name — so a re-offered row survives a stale ack, and the
 // identical ack replayed after a lost response answers 200 again.
 export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReclaimStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -389,7 +393,7 @@ export async function handleReclaimsAck(orgs: OrgRegistry, request: FastifyReque
 // The driver's renewal of a reclaim it is still removing: the lease is extended while the token
 // still owns the row, so a deletion longer than the claim's lease is never re-offered under it.
 export async function handleReclaimsRenew(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReclaimStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -425,7 +429,7 @@ const reclaimNotYours = (reply: FastifyReply) =>
 // thread that merely finished keeps its tree. `reclaimId` names the reclaim row a threadDone verdict
 // queued claimed by this worker (issue #821): the driver acks it once the tree is gone.
 export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -458,7 +462,7 @@ export async function handleCompleteJob(orgs: OrgRegistry, request: FastifyReque
 }
 
 export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -497,7 +501,7 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
 // session telemetry the executor already reported. A person route, like the job read it extends —
 // the session arrived through this org's own job row, which is the whole org boundary.
 export async function handleJobActivity(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return reply;
     const { id } = route;
 
@@ -549,7 +553,7 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
 // conversation — the UI keeps one task per thread, so the URL may name the root or any adjustment
 // and the page must not change identity underneath the reader.
 export async function handleThread(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return reply;
     const { store, id } = route;
 
@@ -564,7 +568,7 @@ export async function handleThread(orgs: OrgRegistry, request: FastifyRequest, r
 }
 
 export async function handleListJobs(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const store = await storeFor(orgs, request);
+    const store = await storeFor<keyof JobReadStore>(orgs, request);
     if (!store) return noBoard(reply);
     const parsed = validateListQuery(request.query as { status?: string; limit?: string; repo?: string });
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
