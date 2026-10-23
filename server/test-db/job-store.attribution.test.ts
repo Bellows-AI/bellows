@@ -5,7 +5,7 @@ import type { CreateJobStoreDeps, JobStore } from '../src/db/job-store-types.js'
 import { createEnvVarStore } from '../src/db/env-var-store.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
-import { account, lapseDeferral, mustCreate, randomGithubId, testOrg } from './fixtures.js';
+import { account, lapseDeferral, mustCreate, randomGithubId, startRow, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -76,10 +76,12 @@ describe.runIf(enabled)('attribution', () => {
         // label, with nothing to lock or read first.
         const userId = await account(sql, randomGithubId(), 'lockless');
         const root = await mustCreate(store.create('echo hi', userId, { repo: 'acme/web', executor: null }));
+        await startRow(sql, root.id);
         await sql`update job set status = 'succeeded', finished_at = now() where id = ${root.id}`;
 
         const followUp = await store.createFollowUp(root.id, 'again', userId);
         expect(followUp).toMatchObject({ id: expect.any(String) });
+        await startRow(sql, (followUp as { id: string }).id);
         await sql`update job set status = 'succeeded', finished_at = now() where id = ${(followUp as { id: string }).id}`;
         expect(await store.createRetry(root.id, userId)).toMatchObject({ id: expect.any(String) });
     });

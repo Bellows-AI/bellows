@@ -263,6 +263,9 @@ export async function completeInTx(
     const { orgId, wallTick } = ctx;
     const { id, leaseToken, result, staged } = attempt;
     const { status, exitCode, output } = result;
+    // A verdict ends the attempt as an outcome; every other move off `running` belongs to another
+    // operation (084). Thrown, not filtered, so it never reads as a stale settle's `lost`.
+    if (status !== 'succeeded' && status !== 'failed') throw new Error(`job ${id}: ${status} is not a verdict`);
     const {
         setupMs,
         agentTurnsPatch,

@@ -8,7 +8,7 @@ import { reviewRefOf } from '../src/db/job-store-reviews.js';
 import type { Claim, JobStore, ReviewerSpec } from '../src/db/job-store-types.js';
 import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflow-templates.js';
 import { useTestDb } from './harness.js';
-import { randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
+import { randomGithubId, spendInterruptionBudget, testOrg, withoutTransitionGuard } from './fixtures.js';
 
 /** Independent reviewer invocation (issue #549) on a real database: the SQL is what is under test. */
 
@@ -381,7 +381,8 @@ describe.runIf(enabled)('named reviewer invocation on the job store', () => {
             values (${ORG}, 'review it', ${orphan}, ${orphan}, 'objective', ${caller.id}, 'old', 'security',
                     ${sql.json(SECURITY as never)}, ${REVIEWED}, ${reviewRefOf(caller.id, 'old')})
         `;
-        await sql.unsafe(readFileSync(INBAND, 'utf8'));
+        // 077 ran before the transition guard (084) existed; its queued → failed predates the graph.
+        await withoutTransitionGuard(sql, (tx) => tx.unsafe(readFileSync(INBAND, 'utf8')));
         expect(await rowOf(orphan)).toMatchObject({ status: 'failed', lease_token: null });
         expect((await rowOf(live.review.id)).status).toBe('running');
     });
