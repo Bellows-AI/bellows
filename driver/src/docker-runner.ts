@@ -282,7 +282,7 @@ async function ensureGroup(
     const startedAt = new Date().toISOString();
     const execDocker = attemptExecOf(deps, job);
     try {
-        await createGroup({ ...deps, execDocker, teardown: deps.execDocker }, job, session, { startedAt });
+        await createGroup({ ...deps, execDocker, teardown: deps.execDocker }, job, session);
         await startGroup(execDocker, job, session);
     } catch (e) {
         await removeGroup(deps.execDocker, job);

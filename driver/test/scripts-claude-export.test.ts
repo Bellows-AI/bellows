@@ -332,8 +332,15 @@ describe('the continuous claude-code exporter', () => {
         const file = fileOf(h);
         const earlier = records(5);
         writeFileSync(file, earlier);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        h.start({ RUN_STARTED_AT: new Date().toISOString() });
+        // An earlier exporter ran, uploaded the session and saved its state.
+        const first = h.start();
+        await until('the earlier records', () => h.stored(SESSION).length === Buffer.byteLength(earlier));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const gone = new Promise((resolve) => first.on('close', resolve));
+        first.kill('SIGKILL');
+        await gone;
+        const before = h.chunks.length;
+        h.start();
         await new Promise((resolve) => setTimeout(resolve, 300));
         const appended = records(2, 5);
         appendFileSync(file, appended);
@@ -341,8 +348,9 @@ describe('the continuous claude-code exporter', () => {
         writeFileSync(fileOf(h, 'brand-new.jsonl'), fresh);
         h.drain('complete', null);
         expect(await h.exited()).toBe(0);
-        expect(h.stored(SESSION).toString()).toBe(appended);
-        expect(h.chunks.find((c) => c.session === SESSION)?.offset).toBe(Buffer.byteLength(earlier));
+        const mine = h.chunks.slice(before).filter((c) => c.session === SESSION);
+        expect(Buffer.concat(mine.map((c) => c.body)).toString()).toBe(appended);
+        expect(mine[0]?.offset).toBe(Buffer.byteLength(earlier));
         expect(h.stored('brand-new').toString()).toBe(fresh);
     });
 
@@ -356,7 +364,7 @@ describe('the continuous claude-code exporter', () => {
         it('uploads every record the lost one never had acknowledged, from the offset it reached', async () => {
             const h = await harness();
             const file = fileOf(h);
-            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            const lost = h.start();
             await new Promise((resolve) => setTimeout(resolve, 50));
             const acked = records(5);
             writeFileSync(file, acked);
@@ -368,23 +376,35 @@ describe('the continuous claude-code exporter', () => {
             await kill(lost);
             h.board.down = false;
             await new Promise((resolve) => setTimeout(resolve, 50));
-            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.start();
             h.drain('complete', null);
             expect(await h.exited()).toBe(0);
             expect(h.stored(SESSION).toString()).toBe(acked + records(7, 5));
             expect(h.chunks.filter((c) => c.session === SESSION)[0]?.offset).toBe(0);
         });
 
+        it('a session the first pod wrote before its exporter ever started is exported whole by the next claim', async () => {
+            const h = await harness();
+            const all = records(6);
+            writeFileSync(fileOf(h), all);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start();
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(all);
+            expect(h.chunks.find((c) => c.session === SESSION)?.offset).toBe(0);
+        });
+
         it('exports a session born under the lost attempt whole, though that exporter never saw it', async () => {
             const h = await harness();
-            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            const lost = h.start();
             await until('the lost exporter running', () => h.status() !== null);
             await kill(lost);
             // The agent wrote its session after the exporter's last scan; then the pod was lost.
             const all = records(9);
             writeFileSync(fileOf(h), all);
             await new Promise((resolve) => setTimeout(resolve, 50));
-            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.start();
             h.drain('complete', null);
             expect(await h.exited()).toBe(0);
             expect(h.stored(SESSION).toString()).toBe(all);
@@ -404,7 +424,7 @@ describe('the continuous claude-code exporter', () => {
             const earlier = records(3);
             writeFileSync(file, earlier);
             await new Promise((resolve) => setTimeout(resolve, 50));
-            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            const lost = h.start();
             await new Promise((resolve) => setTimeout(resolve, 300));
             h.board.down = true;
             appendFileSync(file, records(4, 3));
@@ -416,24 +436,12 @@ describe('the continuous claude-code exporter', () => {
             );
             h.board.down = false;
             const before = h.chunks.length;
-            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.start();
             h.drain('complete', null);
             expect(await h.exited()).toBe(0);
             const resent = h.chunks.slice(before).sort((a, b) => a.offset - b.offset);
             expect(resent[0]?.offset).toBe(0);
             expect(Buffer.concat(resent.map((c) => c.body)).toString()).toBe(earlier + records(4, 3));
-        });
-
-        it('exports an unseen session whole when the volume’s floor cannot be read, never skipping it', async () => {
-            const h = await harness();
-            const all = records(4);
-            writeFileSync(fileOf(h), all);
-            writeFileSync(join(h.dir, 'export-floor.json'), '{"startedMs": tr');
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            h.start({ RUN_STARTED_AT: new Date().toISOString() });
-            h.drain('complete', null);
-            expect(await h.exited()).toBe(0);
-            expect(h.stored(SESSION).toString()).toBe(all);
         });
     });
 

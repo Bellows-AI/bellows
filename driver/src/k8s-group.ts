@@ -207,7 +207,7 @@ export async function ensureGroup(
     // A fresh supervisor answers the token from here: not one a kill already took away.
     attachSteps(stepHostOf(deps), job);
     const startedAt = new Date().toISOString();
-    const uids = await launch(deps, job, runnerJobSpec(deps.config, job, session, startedAt), kill);
+    const uids = await launch(deps, job, runnerJobSpec(deps.config, job, session), kill);
     const group: TaskGroup = { startedAt, session, agent: job.agent !== false, uids };
     groupsOf(deps).set(job.leaseToken, group);
     await awaitSupervisor(deps, job, runnerName(job));

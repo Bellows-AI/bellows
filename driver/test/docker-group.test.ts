@@ -81,7 +81,6 @@ const job: BoardJob = {
         SUPERVISOR_EXPORT_TOKEN: 'tok-export',
     },
 };
-const START = '2026-09-01T00:00:00Z';
 
 const mounts = (argv: string[]): string[] => argv.filter((_arg, i) => argv[i - 1] === '--mount');
 /** The same attempt, whose checkout declares a gate: its group holds a gate container. */
@@ -126,7 +125,7 @@ describe('the supervisor container', () => {
 
     it('is told the orphan bound the lease allows, and the exporter waits out a takeover before giving up', () => {
         expect(argv).toContain(`SUPERVISOR_ORPHAN_MS=${orphanBoundMs(config)}`);
-        const exporter = exporterCreateArgs(config, job, START);
+        const exporter = exporterCreateArgs(config, job);
         const bound = takeoverBoundMs(config);
         expect(exporter).toContain(`EXPORT_DRAIN_GIVEUP_MS=${bound}`);
         expect(exporter).toContain(`EXPORT_GIVEUP_MS=${Math.max(600_000, bound)}`);
@@ -271,7 +270,7 @@ describe('the claim env and the supervisor’s credential names', () => {
 
 describe('the exporter container', () => {
     it('mounts the thread’s task volume and only the mailbox it shares with the supervisor', () => {
-        const mounted = mounts(exporterCreateArgs(config, job, START));
+        const mounted = mounts(exporterCreateArgs(config, job));
         expect(mounted).toHaveLength(2);
         expect(mounted.some((mount) => mount.includes(`src=${taskVolumeName(job)},target=${TASK_MOUNT}`))).toBe(true);
         expect(mounted.some((mount) => mount.includes(volumeOf('export')))).toBe(true);
@@ -308,7 +307,7 @@ describe('creating and starting the group', () => {
 
     it('creates the labelled mailbox volumes, then the supervisor, then the exporter', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, job, SESSION, { startedAt: START });
+        await createGroup(deps, job, SESSION);
         // Without a reviewer the review mailbox has no volume (issue #774).
         expect(ctlVolumeArgs(job)).toHaveLength(Object.keys(MAILBOXES).length);
         expect(calls.slice(0, ctlVolumeArgs(job).length)).toEqual(ctlVolumeArgs(job));
@@ -319,7 +318,7 @@ describe('creating and starting the group', () => {
 
     it('creates no container when the task volume is gone: a transient refusal, never an empty volume made by a mount', async () => {
         const { calls, deps } = recorder(() => false, true);
-        const refused = await createGroup(deps, job, SESSION, { startedAt: START }).catch((e: unknown) => e);
+        const refused = await createGroup(deps, job, SESSION).catch((e: unknown) => e);
         expect(refused).toBeInstanceOf(StartupRefused);
         expect((refused as StartupRefused).startupCause).toBe('transient');
         expect(calls.some((argv) => argv[0] === 'create')).toBe(false);
@@ -330,7 +329,7 @@ describe('creating and starting the group', () => {
 
     it('writes the supervisor the control pair and the two tokens it relays under to a 0600 env file removed after, the exporter no credential at all', async () => {
         const { calls, written, removed, deps } = recorder();
-        await createGroup(deps, job, SESSION, { startedAt: START });
+        await createGroup(deps, job, SESSION);
         expect(written.map((w) => w.body)).toEqual([
             'SUPERVISOR_CONTROL_URL=http://driver:7000\nSUPERVISOR_CONTROL_TOKEN=tok-supervisor\nSUPERVISOR_AGENT_TOKEN=tok-agent\nSUPERVISOR_EXPORT_TOKEN=tok-export\n',
         ]);
@@ -341,14 +340,14 @@ describe('creating and starting the group', () => {
 
     it('creates no exporter for a run without a transcript to export, and the supervisor still', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, { ...job, executorType: 'opencode' }, null, { startedAt: START });
+        await createGroup(deps, { ...job, executorType: 'opencode' }, null);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job)]);
     });
 
     it('removes what it created and throws when the daemon refuses a container', async () => {
         const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(exporterName(job)));
-        await expect(createGroup(deps, job, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
+        await expect(createGroup(deps, job, SESSION)).rejects.toThrow('daemon said no');
         expect(calls).toContainEqual(['rm', '-f', supervisorName(job)]);
         for (const box of Object.values(MAILBOXES)) {
             expect(calls).toContainEqual(['volume', 'rm', '-f', ctlVolumeName(job, box)]);
@@ -368,7 +367,7 @@ describe('creating and starting the group', () => {
     // mailbox mount points the volumes take their owner from — told by the supervisor's env it is there.
     it('creates and starts the gate container of a gated checkout after the supervisor, and tells the supervisor', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, gated, SESSION, { startedAt: START });
+        await createGroup(deps, gated, SESSION);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(gated), exporterName(gated), gateName(gated)]);
         expect(gateName(gated)).toBe(`factory-gate-${gated.id}-${gated.leaseToken}`);
@@ -389,14 +388,14 @@ describe('creating and starting the group', () => {
 
     it('creates no gate container, and tells the supervisor of none, for a checkout that declares no gates', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, job, SESSION, { startedAt: START });
+        await createGroup(deps, job, SESSION);
         expect(calls.some((argv) => argv.includes(gateName(job)) && argv[0] === 'create')).toBe(false);
         expect(calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_GATE=1');
     });
 
     it('removes the whole group, the gate container included, when the daemon refuses the gate', async () => {
         const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(gateName(gated)));
-        await expect(createGroup(deps, gated, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
+        await expect(createGroup(deps, gated, SESSION)).rejects.toThrow('daemon said no');
         expect(calls).toContainEqual(['rm', '-f', gateName(gated)]);
         expect(calls).toContainEqual(['rm', '-f', supervisorName(gated)]);
     });
@@ -405,7 +404,7 @@ describe('creating and starting the group', () => {
     // and started after it, and only a claim that lists reviewer profiles has one.
     it('creates and starts the reviewer container, with its mailbox volume, only for a claim that lists reviewer profiles', async () => {
         const { calls, deps } = recorder();
-        await createGroup(deps, reviewing, SESSION, { startedAt: START });
+        await createGroup(deps, reviewing, SESSION);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(reviewing), exporterName(reviewing), reviewerName(reviewing)]);
         expect(calls.slice(0, Object.keys(MAILBOXES).length + 1)).toEqual(
@@ -430,14 +429,14 @@ describe('creating and starting the group', () => {
         ]);
 
         const plain = recorder();
-        await createGroup(plain.deps, job, SESSION, { startedAt: START });
+        await createGroup(plain.deps, job, SESSION);
         expect(plain.calls.some((argv) => argv.includes(reviewerName(job)))).toBe(false);
         expect(plain.calls.find((argv) => argv.includes(supervisorName(job)))).not.toContain('SUPERVISOR_REVIEWER=1');
     });
 
     it('removes the whole group, the reviewer container included, when the daemon refuses the reviewer', async () => {
         const { calls, deps } = recorder((argv) => argv[0] === 'create' && argv.includes(reviewerName(reviewing)));
-        await expect(createGroup(deps, reviewing, SESSION, { startedAt: START })).rejects.toThrow('daemon said no');
+        await expect(createGroup(deps, reviewing, SESSION)).rejects.toThrow('daemon said no');
         expect(calls).toContainEqual(['rm', '-f', reviewerName(reviewing)]);
         expect(calls).toContainEqual(['rm', '-f', supervisorName(reviewing)]);
     });
@@ -612,7 +611,7 @@ describe('the gate container (issue #773)', () => {
                 files: { writeFile: (async () => undefined) as never, rm: (async () => undefined) as never },
             };
             await expect(
-                createGroup(deps, { ...gated, gates: { ...gated.gates!, image } }, SESSION, { startedAt: START }),
+                createGroup(deps, { ...gated, gates: { ...gated.gates!, image } }, SESSION),
                 image
             ).rejects.toThrow(/image/);
             expect(calls.filter((line) => line[0] === 'create' && line.includes(gateName(gated)))).toEqual([]);
@@ -665,7 +664,7 @@ describe('the holder binding (#829)', () => {
         expect(mounts(supervisorArgs)).toContain(mount);
         const others = [
             dockerArgs(config, reviewing, SESSION, { envFile: '/tmp/env-file' }),
-            exporterCreateArgs(config, reviewing, START),
+            exporterCreateArgs(config, reviewing),
             gateCreateArgs(config, gated, 'node:24'),
             reviewerCreateArgs(config, reviewing),
         ];

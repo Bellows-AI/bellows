@@ -424,14 +424,14 @@ function taskInitContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
  * mounts the member's workspace (the transcripts, its own cursor files) and the one mailbox it
  * shares with the supervisor.
  */
-function exporterContainer(config: DriverConfig, job: BoardJob, startedAt: string): RunnerPodContainer {
+function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContainer {
     return {
         name: EXPORTER_CONTAINER,
         image: executorImage(config, job.executorType),
         imagePullPolicy: config.imagePullPolicy,
         ...containerHardeningField(),
         command: ['node', '-e', claudeExportScript],
-        env: exportEnv(config, job, startedAt).map(([name, value]) => ({ name, value })),
+        env: exportEnv(config, job).map(([name, value]) => ({ name, value })),
         volumeMounts: [taskMount(), mailboxMount(MAILBOXES.export, 'rw')],
     };
 }
@@ -515,12 +515,7 @@ function agentPart(
  * re-asserted here rather than trusted from the board — the same refusals the docker runner makes,
  * because the API server changing the runtime does not change who is trusted with what.
  */
-export function runnerJobSpec(
-    config: DriverConfig,
-    job: BoardJob,
-    session: RunSession | null,
-    startedAt: string = new Date().toISOString()
-): RunnerJobSpec {
+export function runnerJobSpec(config: DriverConfig, job: BoardJob, session: RunSession | null): RunnerJobSpec {
     // The id becomes the Job object's name; assert it before it lands in the spec, the same way
     // the workspace path is asserted before it becomes a working directory.
     if (!JOB_ID.test(job.id)) {
@@ -627,7 +622,7 @@ export function runnerJobSpec(
                             reviewing,
                             services,
                         }),
-                        ...(exporting ? [exporterContainer(config, job, startedAt)] : []),
+                        ...(exporting ? [exporterContainer(config, job)] : []),
                     ],
                     volumes: [
                         ...volumes,
