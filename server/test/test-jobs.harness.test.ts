@@ -142,13 +142,14 @@ describe('the test-jobs harness', () => {
             '"$work/Dockerfile.fail"',
             '"$work/run/Dockerfile"',
             '"$work/kill/Dockerfile"',
+            '"$work/acc/Dockerfile"',
         ]) {
             const line = SCRIPT.split('\n').find((l) => l.includes(`>${file}`)) ?? '';
             expect(line).toMatch(/^printf 'FROM %s\\n/);
             expect(line).toContain(`"$IMAGE_BASE" >${file}`);
         }
         expect(SCRIPT).toContain(
-            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_BASE"'
+            'docker image rm -f "$IMAGE_OK" "$IMAGE_FAIL" "$IMAGE_SVC" "$IMAGE_RUN" "$IMAGE_REVIEW" "$IMAGE_GH" "$IMAGE_KILL" "$IMAGE_ACC" "$IMAGE_BASE"'
         );
     });
 

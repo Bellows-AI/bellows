@@ -3859,6 +3859,9 @@ begin_phase acceptance
 echo
 echo '# acceptance: the failure matrix'
 
+# The shared helpers, and the board credential the artifact read sends (scripts/acceptance-lib.sh).
+. "$REPO/scripts/acceptance-lib.sh"
+export ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}"
 ACC_N=5
 ACC_REL="/task/.lane-acc"
 
@@ -3868,19 +3871,6 @@ fetch(process.argv[1], { method: "POST", headers, body: process.argv[2] || "{}" 
     .then(async (r) => { const b = await r.json().catch(() => ({})); if (r.status === 201) process.stdout.write(String(b.id ?? "")); else require("fs").writeFileSync(process.argv[3], r.status + " " + JSON.stringify(b)); })
     .catch((e) => require("fs").writeFileSync(process.argv[3], "unanswered: " + e.message));
 ' "$BASE$1" "${2-}" "$work/acc-post.refusal"
-}
-
-acc_poll() { # acc_poll <want> <seconds> <function> [arg...] -> the function's last answer, once it equals <want> or the time is up
-    # A read that failed on a loaded cluster answers "unread" or nothing and is asked again; only the last answer is judged.
-    local want="$1" until=$(($(date +%s) + $2)) got=''
-    shift 2
-    while :; do
-        got="$("$@")"
-        [ "$got" = "$want" ] && break
-        [ "$(date +%s)" -lt "$until" ] || break
-        sleep 3
-    done
-    printf '%s' "$got"
 }
 
 acc_session() { # acc_session <id> -> its session id, asked again until the board answered with one
@@ -3902,46 +3892,6 @@ fetch(process.argv[1], { headers })
 ' "$BASE/api/jobs/$1" "$2"
 }
 
-acc_transcript() { # acc_transcript <id> <session> <first> <last> [lossy] -> "exact" when the job's artifact read is records first..last, whole
-    # Every page of the read, followed by cursor; the streams must be complete, the chunks gapless from the
-    # byte where record <first> starts, and the text exactly those records. Anything else says why;
-    # a read that did not answer 200 with a well-formed body says "unread: ..." and is never "no transcript".
-    node -e "$JS_HEADERS"'
-const [base, session, first, last, lossy] = [process.argv[1], process.argv[2], Number(process.argv[3]), Number(process.argv[4]), process.argv[5] === "lossy"];
-const record = (i) => JSON.stringify({ type: "user", uuid: "stub-record-" + i, sessionId: session, message: { role: "user", content: "stub record " + i } }) + "\n";
-const want = (a, b) => { let t = ""; for (let i = a; i <= b; i++) t += record(i); return t; };
-const url = (cursor) => base + "/read?session=" + encodeURIComponent(session) + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
-(async () => {
-    let cursor = "", text = "", segments = [], streams = [];
-    for (let page = 0; page < 100; page++) {
-        const r = await fetch(url(cursor), { headers });
-        if (r.status !== 200) return "unread: status " + r.status;
-        const b = await r.json().catch(() => null);
-        if (!b || !Array.isArray(b.segments) || !Array.isArray(b.streams)) return "unread: malformed body";
-        streams = b.streams;
-        segments.push(...b.segments);
-        if (!b.nextCursor) break;
-        cursor = b.nextCursor;
-    }
-    if (streams.length === 0) return "bad: no stream for the session";
-    // The last attempt'"'"'s stream must be closed complete. An earlier one a lost pod never finalized stays
-    // partial (not_finalized, or agent_killed once a drain closed it) — only when the caller says a pod was lost — and its chunks are still read.
-    const ordered = [...streams].sort((x, y) => x.attempt - y.attempt);
-    const states = ordered.map((s) => s.state + (s.terminalCause ? "/" + s.terminalCause : ""));
-    const closed = (s, i) => s.state === "complete" || (lossy && i < ordered.length - 1 && s.state === "partial" && ["not_finalized", "agent_killed"].includes(s.terminalCause));
-    if (!ordered.every(closed)) return "bad: stream states " + states.join(",");
-    let at = Buffer.byteLength(want(1, first - 1));
-    const start = at;
-    for (const s of segments) {
-        if (s.state !== "ok" || typeof s.text !== "string") return "bad: segment " + s.offset + " is " + s.state;
-        if (s.offset !== at) return "bad: segment at " + s.offset + ", expected " + at + " (start " + start + ")";
-        at += s.length;
-        text += s.text;
-    }
-    return text === want(first, last) ? "exact" : "bad: " + text.length + " chars read, expected records " + first + ".." + last + ": " + JSON.stringify(text.slice(0, 160));
-})().then((v) => process.stdout.write(v), (e) => process.stdout.write("unread: " + e.message));
-' "$BASE/api/jobs/$1/artifacts" "$2" "$3" "$4" "${5-}"
-}
 
 acc_volume_records() { # acc_volume_records <pod> <id> <session> -> the lines of the session file on the volume; ? when unread
     local out
@@ -4013,7 +3963,7 @@ until tk_left_out="$(tk_left "$acc_a")"; do
 done
 [ -z "$tk_left_out" ] && ok 'acceptance: a. the runner Job and pod are reaped' ||
     bad 'acceptance: a. the runner Job and pod are reaped' "${tk_left_out:-unconfirmed}"
-tk_check "acceptance: a. the artifact read holds the $ACC_N records, whole" "$(acc_poll exact 90 acc_transcript "$acc_a" "$acc_a_session" 1 "$ACC_N")" exact
+tk_check "acceptance: a. the artifact read holds the $ACC_N records, whole" "$(acc_poll exact 90 acc_transcript "$BASE" "$acc_a" "$acc_a_session" 1 "$ACC_N")" exact
 
 # b. A task whose agent exits non-zero fails, with a recorded cause.
 # c. POST /retry on it: a driver claims the fresh attempt and it succeeds.
@@ -4054,7 +4004,7 @@ else
     esac
     expect_contains 'acceptance: d. the follow-up resumes the first run'"'"'s session' "$(job_output "$acc_d")" "--resume $acc_a_session"
     tk_check 'acceptance: d. the follow-up read continues at the prior offset' \
-        "$(acc_poll exact 90 acc_transcript "$acc_d" "$acc_a_session" $((ACC_N + 1)) $((ACC_N + 2)))" exact
+        "$(acc_poll exact 90 acc_transcript "$BASE" "$acc_d" "$acc_a_session" $((ACC_N + 1)) $((ACC_N + 2)))" exact
 fi
 
 # e. The runner pod is force-deleted once its records are on the volume and the agent is at its
@@ -4082,7 +4032,7 @@ else
     *) bad 'acceptance: e. the next claim succeeds: one attempt, one interruption' "status|attempts|count|claimSeq|reason: $acc_e_end" ;;
     esac
     tk_check "acceptance: e. the artifact read holds all $ACC_N records after the pod loss" \
-        "$(acc_poll exact 90 acc_transcript "$acc_e" "$acc_e_session" 1 "$ACC_N" lossy)" exact
+        "$(acc_poll exact 90 acc_transcript "$BASE" "$acc_e" "$acc_e_session" 1 "$ACC_N" lossy)" exact
 fi
 
 # f. No EFS or RWX: every claim of the namespace is the state's or a task volume, none is

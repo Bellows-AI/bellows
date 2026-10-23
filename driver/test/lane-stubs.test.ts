@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -62,9 +63,12 @@ describe('the lane stub executor images', () => {
             '"$work/Dockerfile.fail"',
             '"$work/run/Dockerfile"',
             '"$work/kill/Dockerfile"',
+            '"$work/acc/Dockerfile"',
         ]) {
             expect(dockerfile(script, target)).toContain(ENTRY);
         }
+        // The acceptance phase runs the kind lane's own stub (#779), so both lanes answer the same words.
+        expect(script).toContain('cp scripts/k8s-stub.sh "$work/acc/stub.sh"');
         // The service stub is no agent: no supervisor watches it.
         expect(dockerfile(script, '"$work/svc/Dockerfile"')).not.toContain('stub-agent.sh');
     });
@@ -564,5 +568,63 @@ describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
             'task-2 https://github.com/factory-smoke/demo/pull/1\n'
         );
         expect(call('pr', 'view', 'task-2', '--json', 'url', '-q', '.url').code).toBe(0);
+    });
+});
+
+// #779: both acceptance phases judge the artifact read with this one verifier, and a read that did not
+// answer is `unread`, never a verdict about the transcript.
+describe('scripts/acceptance-transcript.mjs', () => {
+    const records = (a: number, b: number): string => {
+        let text = '';
+        for (let i = a; i <= b; i++) {
+            text += `${JSON.stringify({ type: 'user', uuid: `stub-record-${i}`, sessionId: 's', message: { role: 'user', content: `stub record ${i}` } })}\n`;
+        }
+        return text;
+    };
+    const judge = async (reply: (url: string) => { status: number; body: unknown }, args: string[]) => {
+        const server = createServer((req, res) => {
+            const { status, body } = reply(req.url ?? '');
+            res.writeHead(status).end(typeof body === 'string' ? body : JSON.stringify(body));
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address() as { port: number };
+        try {
+            return await new Promise<string>((resolve, reject) => {
+                const child = spawn('node', [
+                    join(ROOT, 'scripts/acceptance-transcript.mjs'),
+                    `http://127.0.0.1:${port}/artifacts`,
+                    's',
+                    ...args,
+                ]);
+                let out = '';
+                child.stdout.on('data', (d) => (out += d));
+                child.on('error', reject);
+                child.on('close', () => resolve(out));
+            });
+        } finally {
+            server.close();
+        }
+    };
+    const page = (first: number, last: number) => {
+        const text = records(first, last);
+        const offset = Buffer.byteLength(records(1, first - 1));
+        return {
+            status: 200,
+            body: {
+                streams: [{ attempt: 1, state: 'complete' }],
+                segments: [{ state: 'ok', offset, length: Buffer.byteLength(text), text }],
+            },
+        };
+    };
+
+    it('says exact for the records read whole, from the byte where the first begins', async () => {
+        expect(await judge(() => page(1, 3), ['1', '3'])).toBe('exact');
+        expect(await judge(() => page(3, 4), ['3', '4'])).toBe('exact');
+    });
+
+    it('says bad for other records, and unread for a refused or malformed read', async () => {
+        expect(await judge(() => page(1, 2), ['1', '3'])).toMatch(/^bad:/);
+        expect(await judge(() => ({ status: 503, body: {} }), ['1', '3'])).toBe('unread: status 503');
+        expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3'])).toBe('unread: malformed body');
     });
 });
