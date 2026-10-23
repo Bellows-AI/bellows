@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { BatchPrObserver } from '../src/batch-pr-observer.js';
-import type { RefreshHint } from '../src/db/batch-store-observation.js';
+import type { RefreshHint } from '../src/db/batches/batch-store-observation.js';
 import { githubAuth, memoryAuthStore, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import { HTTP_OK, HTTP_UNAUTHORIZED } from './helpers-http.js';
 

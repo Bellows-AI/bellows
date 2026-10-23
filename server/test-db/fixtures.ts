@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { expect } from 'vitest';
-import { INTERRUPTION_BUDGET } from '../src/db/job-store.js';
+import { INTERRUPTION_BUDGET } from '../src/db/jobs/job-store.js';
 import type { TestUser } from './harness.js';
 
 /**

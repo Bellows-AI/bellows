@@ -4,8 +4,8 @@ import { UUID } from '../config.js';
 import type { OrgRegistry } from '../orgs.js';
 import { flattenMetrics } from '../telemetry/otlp.js';
 import type { SessionBranchReport, TelemetryStore } from '../telemetry/store.js';
-import { storeFor } from './job-context.js';
-import { SESSION_ID } from './job-limits.js';
+import { storeFor } from './jobs/job-context.js';
+import { SESSION_ID } from './jobs/job-limits.js';
 import { CLAUDE_CODE, CONTENT_TYPE_HEADER, OPENCODE } from '@factory-ai/core';
 
 /**

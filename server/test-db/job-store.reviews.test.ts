@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { EvidencePolicy, RecordedEvidence } from '../src/db/evidence-policy.js';
-import { createJobStore } from '../src/db/job-store.js';
-import { reviewRefOf } from '../src/db/job-store-reviews.js';
-import type { Claim, JobStore, ReviewerSpec } from '../src/db/job-store-types.js';
-import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflow-templates.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
+import type { Claim, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
+import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from '../src/db/workflows/workflow-templates.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, spendInterruptionBudget, testOrg, withoutTransitionGuard } from './fixtures.js';
 

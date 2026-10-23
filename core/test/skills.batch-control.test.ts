@@ -13,7 +13,7 @@ const read = (path: string): string => readFileSync(new URL(path, import.meta.ur
 
 const skill = read('../../.claude/skills/batch-control/SKILL.md');
 const example: unknown = JSON.parse(read('../../.claude/skills/batch-control/plan.example.json'));
-const routes = read('../../server/src/routes/batches.ts');
+const routes = read('../../server/src/routes/batches/batches.ts');
 const usage = read('../../cli/src/usage.ts');
 
 describe('the batch-control skill', () => {

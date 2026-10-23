@@ -4,13 +4,13 @@ import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
 import type { AuthConfig } from '../src/config.js';
-import type { Job } from '../src/db/job-store-types.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { Job } from '../src/db/jobs/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { AppDeps } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
-import { batchRoutes } from '../src/routes/batches.js';
-import { jobRoutes } from '../src/routes/jobs.js';
+import { batchRoutes } from '../src/routes/batches/batches.js';
+import { jobRoutes } from '../src/routes/jobs/jobs.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
 import {

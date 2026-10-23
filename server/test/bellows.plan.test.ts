@@ -298,7 +298,7 @@ describe('the server reads no .bellows.yaml from disk', () => {
 
     it('exports no checkout reader and routes no post-sync re-read', async () => {
         expect(Object.keys(await import('../src/workspace/bellows.js'))).not.toContain('readGatesFile');
-        const routes = await readFile(new URL('../src/routes/jobs.ts', import.meta.url), 'utf8');
+        const routes = await readFile(new URL('../src/routes/jobs/jobs.ts', import.meta.url), 'utf8');
         expect(routes).not.toContain('gates-reread');
     });
 });

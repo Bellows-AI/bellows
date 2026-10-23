@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore } from '../src/db/job-store.js';
-import type { Claim, JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import { sweepRuntimeWakes } from '../src/db/workflow-blocks/runtime.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, randomGithubId, spendInterruptionBudget, testOrg } from './fixtures.js';
 

@@ -1,13 +1,13 @@
 import { COMMAND_LIMIT } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
-import { nextTransition, primarySessionId } from '../src/db/workflow-engine.js';
+import { nextTransition, primarySessionId } from '../src/db/workflows/workflow-engine.js';
 import {
     INTERP_TAIL_LIMIT,
     TRUNCATION_MARKER,
     boundedTail,
     interpolate,
     tailMatches,
-} from '../src/db/workflow-schema.js';
+} from '../src/db/workflows/workflow-schema.js';
 import { done, gate, row, snapshot } from './workflow-engine-fixtures.js';
 
 describe('nextTransition: marker and gate matching', () => {

@@ -6,8 +6,8 @@ import {
     type ConnectionOfLease,
     type ConnectionStore,
 } from '../src/db/connection-store.js';
-import { createJobStore } from '../src/db/job-store.js';
-import type { Claim, JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 

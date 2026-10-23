@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { resolveClaimGates, resolveClaimPublish } from '../src/db/job-store-claim.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { resolveClaimGates, resolveClaimPublish } from '../src/db/jobs/job-store-claim.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 
 const definition: WorkflowDefinition = {
     entry: 'review',

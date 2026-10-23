@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import {

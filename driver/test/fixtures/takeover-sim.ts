@@ -2,7 +2,7 @@
  * A compressed world for driver loss, takeover and adoption (#829). Real: the claim loop, the gate
  * server and step broker (the supervisor's control endpoint), `supervisor.cjs` and the binding it
  * follows, `settleEnd`'s callers, the takeover and adoption decisions of `loop-adopt.ts`. Played:
- * the board (`server/src/db/job-store-claim.ts` semantics, copied as shapes: a claim of an expired
+ * the board (`server/src/db/jobs/job-store-claim.ts` semantics, copied as shapes: a claim of an expired
  * lease records the interruption and moves the claim sequence; a heartbeat or complete under the
  * current token holds; a staged conclusion of an expired lease commits), the cluster (a group is a
  * supervisor in this process; its binding Secret reaches the mounted file `refreshMs` after a

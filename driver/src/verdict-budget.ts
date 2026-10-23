@@ -7,7 +7,7 @@
 
 const BODY_LIMIT_KIB = 128;
 const BYTES_PER_KIB = 1024;
-/** The board's `BODY_LIMIT` (server/src/routes/job-limits.ts), copied: the driver imports nothing. */
+/** The board's `BODY_LIMIT` (server/src/routes/jobs/job-limits.ts), copied: the driver imports nothing. */
 export const COMPLETE_BODY_LIMIT_BYTES = BODY_LIMIT_KIB * BYTES_PER_KIB;
 /** The board's `SUMMARY_LIMIT` in code points: it keeps no more, so a longer summary only costs bytes. */
 const SUMMARY_LIMIT = 512;

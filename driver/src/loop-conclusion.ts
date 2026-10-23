@@ -20,7 +20,7 @@ const MS_PER_SECOND = 1_000;
 
 /**
  * The longest reason the board records for an interruption: its `INTERRUPTION_REASON_MAX`
- * (server/src/routes/job-handlers-worker.ts), copied per this package's zero-dependency rule. A
+ * (server/src/routes/jobs/job-handlers-worker.ts), copied per this package's zero-dependency rule. A
  * longer one is refused, and would leave the attempt to the lease for its length alone.
  */
 const INTERRUPTION_REASON_MAX = 500;
