@@ -380,6 +380,41 @@ describe('the continuous claude-code exporter', () => {
             expect(await h.exited()).toBe(0);
             expect(h.stored(SESSION).toString()).toBe(all);
         });
+
+        it('exports a resumed session whole when its saved state cannot be read, never skipping its tail', async () => {
+            const h = await harness();
+            const file = fileOf(h);
+            const earlier = records(3);
+            writeFileSync(file, earlier);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            h.board.down = true;
+            appendFileSync(file, records(4, 3));
+            await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
+            await kill(lost);
+            writeFileSync(join(h.dir, 'export-state', `${SESSION}.json`), '{"ino": 1, "ac');
+            h.board.down = false;
+            const before = h.chunks.length;
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            const resent = h.chunks.slice(before).sort((a, b) => a.offset - b.offset);
+            expect(resent[0]?.offset).toBe(0);
+            expect(Buffer.concat(resent.map((c) => c.body)).toString()).toBe(earlier + records(4, 3));
+        });
+
+        it('exports an unseen session whole when the volume’s floor cannot be read, never skipping it', async () => {
+            const h = await harness();
+            const all = records(4);
+            writeFileSync(fileOf(h), all);
+            writeFileSync(join(h.dir, 'export-floor.json'), '{"startedMs": tr');
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(all);
+        });
     });
 
     it('gives a subagent its own session', async () => {

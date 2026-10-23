@@ -132,7 +132,9 @@ The cloud half of `scripts/test-k8s.sh --phase acceptance`; not walked yet. `CLI
    (`kubectl -n $NS get jobs`), `CLI job streams $T` and `CLI job read $T` still return the transcript.
 3. Failure, retry, follow-up: a task that fails → `CLI job retry $T` succeeds; `CLI job follow-up $T …` on
    a succeeded one resumes its session on the same task claim (same `factory.task-root` claim, same generation).
-4. Agent kill: `kubectl -n $NS exec <runner pod> -c agent -- kill -KILL -1` mid-run. Observe the attempt
+4. Agent kill, as the CLI's own uid (root holds no `CAP_KILL` there and would hit the tool broker):
+   `kubectl -n $NS exec <runner pod> -c agent -- /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups kill -KILL -1`
+   mid-run; confirm the agent container's CLI is gone. Observe the attempt
    ends with the agent killed, `CLI job retry $T` (or a follow-up) runs on the surviving task claim, and
    `CLI job read $T` holds every record the agent wrote before the kill.
 5. Pod loss: `kubectl -n $NS delete pod <runner pod> --grace-period=0 --force` mid-run. Same observation as 4.

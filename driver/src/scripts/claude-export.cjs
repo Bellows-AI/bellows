@@ -189,11 +189,12 @@ const abandonDrain = () => {
 
 const statePath = (session) => path.join(DIR, 'export-state', `${session}.json`);
 
+// Null only when there is no state; one that is there but unreadable says `unreadable`.
 const loadState = (session) => {
     try {
         return JSON.parse(fs.readFileSync(statePath(session), 'utf8'));
-    } catch {
-        return null;
+    } catch (e) {
+        return e?.code === 'ENOENT' ? null : { unreadable: true };
     }
 };
 
@@ -267,14 +268,15 @@ const blankTrack = (file, fd, stat) => ({
 // its attempt's pod was lost before a scan reached it, and none of its bytes were exported.
 const floorPath = () => path.join(DIR, 'export-floor.json');
 
-// A floor that is there but unreadable is left alone: this attempt falls back to its own start.
+// A floor that is there but unreadable is left alone and proves nothing: every unseen file is then
+// exported whole, since a byte sent twice is harmless and a byte skipped is lost.
 const volumeFloor = () => {
     if (Number.isNaN(STARTED_MS)) return STARTED_MS;
     try {
         const saved = JSON.parse(fs.readFileSync(floorPath(), 'utf8')).startedMs;
-        return Number.isFinite(saved) ? Math.min(saved, STARTED_MS) : STARTED_MS;
+        return Number.isFinite(saved) ? Math.min(saved, STARTED_MS) : Number.NEGATIVE_INFINITY;
     } catch (e) {
-        if (e?.code !== 'ENOENT') return STARTED_MS;
+        if (e?.code !== 'ENOENT') return Number.NEGATIVE_INFINITY;
     }
     fs.mkdirSync(DIR, { recursive: true });
     fs.writeFileSync(`${floorPath()}.tmp`, JSON.stringify({ startedMs: STARTED_MS }));
@@ -303,7 +305,10 @@ const open = (file) => {
     const stat = fs.fstatSync(fd);
     const track = blankTrack(file, fd, stat);
     const saved = loadState(track.session);
-    if (saved && saved.ino === stat.ino) {
+    if (saved?.unreadable) {
+        // Where the last exporter stopped is unknown: the file again, whole, rather than a byte skipped.
+        saveState(track);
+    } else if (saved && saved.ino === stat.ino) {
         // A restarted exporter resumes at the acknowledged point; nothing past it was lost, it is on disk.
         track.base = saved.base;
         track.acked = saved.acked;
