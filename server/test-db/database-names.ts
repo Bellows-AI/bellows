@@ -25,14 +25,14 @@ function withDatabase(raw: string, name: string): string {
 const MAX_NAME_BYTES = 63;
 
 /** Suffixes the run derives from the base: a base already shaped like one could collide with another run's. */
-const DERIVED_SHAPE = /_(tpl|w\d+)_test$/;
+const DERIVED_SHAPE = /_(tpl|w\d+|iso[0-9a-f]{8})_test$/;
 
 function baseStem(raw: string): string {
     assertTestDatabase(raw);
     const base = new URL(raw).pathname.replace(/^\//, '');
     if (DERIVED_SHAPE.test(base)) {
         throw new Error(
-            `"${base}" looks like a derived test database (_tpl_test, _w<N>_test); name the base differently.`
+            `"${base}" looks like a derived test database (_tpl_test, _w<N>_test, _iso<hex>_test); name the base differently.`
         );
     }
     return base.replace(/_test$/, '');

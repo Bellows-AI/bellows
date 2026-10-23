@@ -36,7 +36,7 @@ describe('per-worker test databases', () => {
     });
 
     it('refuses a base that looks like a derived name, so two runs cannot drop each other', () => {
-        for (const name of ['factory_tpl_test', 'factory_w2_test']) {
+        for (const name of ['factory_tpl_test', 'factory_w2_test', 'factory_iso0a1b2c3d_test']) {
             const url = `postgres://factory:factory@127.0.0.1:5432/${name}`;
             expect(() => testDatabaseNames(url)).toThrow(/derived test database/);
             expect(() => workerDatabaseName(url, 1)).toThrow(/derived test database/);
