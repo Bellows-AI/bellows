@@ -6,6 +6,7 @@
 // migrations, charts and skills by path. `npm test` and the lanes stay the gate before shipping.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DEFAULT_BASE = 'origin/main';
@@ -45,9 +46,10 @@ const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]
  *
  * - `changed`: repo-relative paths changed since the base.
  * - `spawn`: the spawn-tier test files (`vitest.spawn-tests.json`).
+ * - `importers(files)`: every file that imports one of `files`, directly or through others.
  * - `namedBy(names)`: files under a `test/` directory that mention any of `names`.
  */
-export function plan({ base, changed, spawn, namedBy }) {
+export function plan({ base, changed, spawn, namedBy, importers }) {
     const spawning = new Set(spawn);
     const steps = [];
     const coreChanged = changed.some((file) => file.startsWith('core/src/'));
@@ -86,33 +88,20 @@ export function plan({ base, changed, spawn, namedBy }) {
     );
     const helpers = new Set();
     const looked = new Set();
-    const lookup = (names, helpersOnly) => {
+    const lookup = (names) => {
         const fresh = [...new Set(names)].filter((name) => !looked.has(name));
         for (const name of fresh) looked.add(name);
-        const found = [];
         for (const hit of fresh.length > 0 ? namedBy(fresh) : []) {
-            if (UNIT_TEST.test(hit)) {
-                if (!helpersOnly) named.add(hit);
-            } else if (TEST_TREE.test(hit)) {
-                if (!helpers.has(hit)) found.push(hit);
-                helpers.add(hit);
-            }
+            if (UNIT_TEST.test(hit)) named.add(hit);
+            else if (TEST_TREE.test(hit)) helpers.add(hit);
         }
-        return found;
     };
     const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
-    lookup(changed.map(baseName), false);
-    // A helper or fixture under test/ may import a changed source and then be launched by path, which
-    // no import graph connects: find it by the import specifier, then the suites that name it.
-    let frontier = [
-        ...lookup(
-            changed.filter((file) => GRAPH_FILE.test(file)).map((file) => `${baseName(file).replace(GRAPH_FILE, '')}.js`),
-            true
-        ),
-    ];
-    for (let depth = 0; depth < 3 && frontier.length > 0; depth += 1) {
-        frontier = lookup(frontier.map(baseName), false);
-    }
+    lookup(changed.map(baseName));
+    // A fixture under test/ that imports a changed source, however deep, may be launched by path
+    // (`spawn`, `fork`), which no import graph connects: the suites that name it are reached too.
+    const reaching = importers(changed.filter((file) => GRAPH_FILE.test(file)));
+    lookup(reaching.filter((file) => TEST_TREE.test(file) && !UNIT_TEST.test(file)).map(baseName));
     const inCovered = (file) => {
         const pkg = file.split('/')[0];
         return coreChanged && (pkg === 'server' || pkg === 'web') && !spawning.has(file);
@@ -126,6 +115,34 @@ export function plan({ base, changed, spawn, namedBy }) {
         });
     }
     return steps;
+}
+
+/** `importers` over `texts` ({ path: source }): the relative imports of TypeScript files, reversed. */
+export function reverseImports(texts) {
+    const paths = new Set(Object.keys(texts));
+    const importedBy = new Map();
+    for (const [file, text] of Object.entries(texts)) {
+        const dir = file.includes('/') ? file.slice(0, file.lastIndexOf('/')) : '';
+        for (const [, specifier] of text.matchAll(/(?:from|import\()\s*['"](\.[^'"]*)['"]/g)) {
+            const target = posix.normalize(posix.join(dir, specifier.replace(/\.[cm]?jsx?$/, '')));
+            for (const candidate of [`${target}.ts`, `${target}.tsx`, `${target}/index.ts`]) {
+                if (paths.has(candidate)) importedBy.set(candidate, [...(importedBy.get(candidate) ?? []), file]);
+            }
+        }
+    }
+    return (files) => {
+        const seen = new Set();
+        const queue = [...files];
+        while (queue.length > 0) {
+            for (const parent of importedBy.get(queue.pop()) ?? []) {
+                if (!seen.has(parent)) {
+                    seen.add(parent);
+                    queue.push(parent);
+                }
+            }
+        }
+        return [...seen];
+    };
 }
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).split('\n').filter(Boolean);
@@ -168,7 +185,16 @@ function main(argv) {
         changed = changedFiles(mergeBase);
     }
     const spawn = JSON.parse(readFileSync(new URL('../vitest.spawn-tests.json', import.meta.url), 'utf8')).tests;
-    const steps = plan({ base: mergeBase, changed, spawn, namedBy });
+    const texts = Object.fromEntries(
+        git('ls-files', '*.ts', '*.tsx').map((file) => {
+            try {
+                return [file, readFileSync(file, 'utf8')];
+            } catch {
+                return [file, '']; // listed but deleted in the working tree
+            }
+        })
+    );
+    const steps = plan({ base: mergeBase, changed, spawn, namedBy, importers: reverseImports(texts) });
     if (show) {
         process.stdout.write(`${JSON.stringify({ changed, steps }, null, 2)}\n`);
         return 0;

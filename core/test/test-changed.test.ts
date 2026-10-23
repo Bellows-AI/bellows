@@ -12,10 +12,12 @@ interface PlanInput {
     changed: string[];
     spawn: string[];
     namedBy: (names: string[]) => string[];
+    importers: (files: string[]) => string[];
 }
 const SCRIPT = new URL('../../scripts/test-changed.mjs', import.meta.url).href;
-const { plan, DIRECTORY_READERS } = (await import(/* @vite-ignore */ SCRIPT)) as {
+const { plan, reverseImports, DIRECTORY_READERS } = (await import(/* @vite-ignore */ SCRIPT)) as {
     plan: (input: PlanInput) => Step[];
+    reverseImports: (texts: Record<string, string>) => (files: string[]) => string[];
     DIRECTORY_READERS: [RegExp, string[]][];
 };
 
@@ -28,7 +30,8 @@ const NAMED: Record<string, string[]> = {
     'sessions.json': ['core/test/task-usage.test.ts'],
 };
 const lookup = (names: string[]) => names.flatMap((name) => NAMED[name] ?? []);
-const run = (changed: string[], namedBy = lookup): Step[] => plan({ base: 'abc123', changed, spawn: SPAWN, namedBy });
+const run = (changed: string[], namedBy = lookup, importers = (_files: string[]): string[] => []): Step[] =>
+    plan({ base: 'abc123', changed, spawn: SPAWN, namedBy, importers });
 const vitestArgs = (steps: Step[]) => steps.flatMap((step) => (step.vitest ? [step.vitest] : []));
 
 describe('test:changed plan', () => {
@@ -120,16 +123,25 @@ describe('test:changed plan', () => {
         expect(vitestArgs(steps).at(-1)).toContain('driver/test/loop-containment.test.ts');
     });
 
-    it('follows a changed source into a fixture that imports it, then to the suites that launch it', () => {
-        const byName: Record<string, string[]> = {
-            'board-retry.js': ['driver/test/fixtures/suspend-outage.ts', 'driver/test/board-retry.test.ts'],
-            'suspend-outage.ts': ['driver/test/loop-containment.test.ts'],
-        };
-        const steps = run(['driver/src/board-retry.ts'], (names) => names.flatMap((name) => byName[name] ?? []));
-        const last = vitestArgs(steps).at(-2) ?? [];
-        expect(last).toContain('driver/test/loop-containment.test.ts');
-        // The importer the graph already runs is not queued twice.
-        expect(last).not.toContain('driver/test/board-retry.test.ts');
+    it('follows a changed source, through any depth of imports, into a fixture the suites launch by path', () => {
+        const importers = reverseImports({
+            'driver/src/loop-run.ts': '',
+            'driver/src/loop.ts': "import { run } from './loop-run.js';",
+            'driver/test/fixtures/suspend-outage.ts': "import { loop } from '../../src/loop.js';",
+            'driver/test/loop.test.ts': "import { loop } from '../src/loop.js';",
+        });
+        expect(importers(['driver/src/loop-run.ts']).sort()).toEqual([
+            'driver/src/loop.ts',
+            'driver/test/fixtures/suspend-outage.ts',
+            'driver/test/loop.test.ts',
+        ]);
+        const byName: Record<string, string[]> = { 'suspend-outage.ts': ['driver/test/loop-containment.test.ts'] };
+        const steps = run(
+            ['driver/src/loop-run.ts'],
+            (names) => names.flatMap((name) => byName[name] ?? []),
+            importers
+        );
+        expect(vitestArgs(steps).at(-1)).toContain('driver/test/loop-containment.test.ts');
     });
 
     it('runs a suite that enumerates the changed directory though it never names the file', () => {
@@ -143,6 +155,7 @@ describe('test:changed plan', () => {
             changed: ['core/src/metrics.ts'],
             spawn: [...SPAWN, 'server/test/local-origin-plan.test.ts'],
             namedBy: lookup,
+            importers: () => [],
         });
         expect(vitestArgs(steps)).toContainEqual(['run', 'server/test/local-origin-plan.test.ts']);
     });
@@ -155,7 +168,13 @@ describe('test:changed plan', () => {
 
     it('routes the paths whose scanners import nothing from them', () => {
         const scanners = (path: string) => {
-            const steps = plan({ base: 'abc123', changed: [path], spawn: SPAWN, namedBy: () => [] });
+            const steps = plan({
+                base: 'abc123',
+                changed: [path],
+                spawn: SPAWN,
+                namedBy: () => [],
+                importers: () => [],
+            });
             return vitestArgs(steps).at(-1)?.slice(1) ?? [];
         };
         expect(scanners('docs/design-system/composer.md')).toContain('web/test/styles.test.ts');
