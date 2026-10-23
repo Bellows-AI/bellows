@@ -68,6 +68,7 @@ import {
     ERROR_DETAIL_MAX_CHARS,
     assertJobNotKilled,
     dockerErrorDetail,
+    tellAgentOver,
     dockerRunVerdict,
     CONTAINER_ID,
     DOCKER_NAME,
@@ -622,7 +623,13 @@ async function dockerRun(
             // supervisor lost, an infrastructure loss (`settleEnd`).
             void (resumed ? resumedExit(teardown, job, code) : Promise.resolve(code))
                 .then((exit) =>
-                    closeEndOf(execDocker, job, { code: exit, output, reported }).then((ended) => ({ ended, exit }))
+                    closeEndOf(execDocker, job, {
+                        code: exit,
+                        output,
+                        reported,
+                        // A followed log's exit came from `docker wait` and an attached start's 0 from the container.
+                        onAgentOver: () => tellAgentOver(execDocker, job, host.sink, resumed || exit === 0),
+                    }).then((ended) => ({ ended, exit }))
                 )
                 .then(({ ended, exit }) => {
                     proven = ended.proven;

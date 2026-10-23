@@ -26,6 +26,8 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { supervisorName } from './docker-mailbox.js';
+import type { StepSink } from './step-control.js';
+import { controlTokenOf } from './supervised-steps.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
 import { awaitServicesRunning, throwIfStoodDown } from './service-restart.js';
 import { type HeldContainer, heldWords, type StartupCause, startupCauseOf, StartupRefused } from './startup-cause.js';
@@ -427,6 +429,37 @@ export async function dockerRunVerdict(
         // accumulator actually ran — a refused start has no log and uploads nothing.
         ...(ctx.fullLog !== undefined ? { fullLog: ctx.fullLog, logTruncated: ctx.logTruncated === true } : {}),
     };
+}
+
+/**
+ * Whether the daemon confirms the runner container over (#920): `exited` or `dead`, never running, created or
+ * paused. A failed, timed-out or unparsable answer is no confirmation — the container may still run — so the
+ * caller says nothing to the supervisor and its own windows stay the bound.
+ */
+export async function agentContainerEnded(execDocker: ExecDocker, job: BoardJob): Promise<boolean> {
+    try {
+        const state: unknown = JSON.parse(
+            (await execDocker(['inspect', '--format', '{{json .State}}', containerName(job)])).stdout
+        );
+        const status = typeof state === 'object' && state !== null && 'Status' in state ? state.Status : undefined;
+        return status === 'exited' || status === 'dead';
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Tells the supervisor, which cannot see the container, that the agent container is over (#920): an agent that died
+ * before it wrote an exit marker is read as lost in seconds, not at its start or heartbeat window. `confirmed` is
+ * an end the caller already holds the daemon's word for; otherwise the daemon is asked, and no answer says nothing.
+ */
+export async function tellAgentOver(
+    execDocker: ExecDocker,
+    job: BoardJob,
+    sink: Pick<StepSink, 'agentEnded'>,
+    confirmed: boolean
+): Promise<void> {
+    if (confirmed || (await agentContainerEnded(execDocker, job))) sink.agentEnded(controlTokenOf(job));
 }
 
 /**

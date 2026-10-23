@@ -220,6 +220,7 @@ function steps(answer: (step: StepRequest) => StepResult = () => ok(), contacted
             return answer(step);
         },
         awaitReport: () => reported,
+        agentEnded: () => undefined,
         contacted: () => contacted,
         release: (token) => {
             released.push(token);

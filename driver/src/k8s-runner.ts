@@ -394,7 +394,11 @@ async function run0(deps: K8sDeps, job: BoardJob, req: RunRequest): Promise<RunO
 
     let polled: { timedOut: boolean; jobSucceeded: boolean };
     try {
-        polled = await pollRunnerJobUntilTerminal(deps, job, { onOutput, over: () => watch.report !== null });
+        polled = await pollRunnerJobUntilTerminal(deps, job, {
+            onOutput,
+            over: () => watch.report !== null,
+            agentEnded: () => host.sink.agentEnded(controlTokenOf(job)),
+        });
     } catch (e) {
         // A Stop deleted the Job: the loop parks a resolved outcome (docker's killed container
         // resolves exit 137), where a rejection would be left to the lease.

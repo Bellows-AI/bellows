@@ -157,6 +157,8 @@ interface Driver {
     url: string;
     stop: boolean;
     kill: boolean;
+    /** The driver read the agent container ended (#920): `/control` says so beside the stop and the kill. */
+    agentEnded: boolean;
     /** The gate steps the driver cancelled: what `/control` answers beside the stop and the kill. */
     cancel: string[];
     /** A driver that no longer knows the token: every route answers 401. */
@@ -263,6 +265,7 @@ async function startDriver({
         relayAnswer: null,
         stop: false,
         kill: false,
+        agentEnded: false,
         cancel: [],
         closed: false,
         posted: [],
@@ -306,7 +309,8 @@ async function startDriver({
             if (driver.closed || request.headers.authorization !== `Bearer ${driver.token}`) return send(401, {});
             if (request.method === 'GET' && request.url === '/control') {
                 const cancel = driver.cancel.length > 0 ? { cancel: driver.cancel } : {};
-                return send(200, { stop: driver.stop, kill: driver.kill, ...cancel });
+                const ended = driver.agentEnded ? { agentEnded: true } : {};
+                return send(200, { stop: driver.stop, kill: driver.kill, ...ended, ...cancel });
             }
             if (request.method === 'GET' && request.url?.startsWith('/step?')) {
                 if (driver.hold) {
@@ -489,6 +493,27 @@ describe('the supervisor run: agent exit with the supervisor alive', () => {
         writeFileSync(join(supervised.agent.out, MAILBOX_FILES.agentAlive), `${Date.now() - 10_000}\n`);
         await supervised.done;
         expect(supervised.report()).toMatchObject({ outcome: 'lost', cause: 'agent_lost', agentEnd: 'lost' });
+    });
+
+    it('reads an agent container the driver saw end with no exit marker as lost at once, inside the start window (#920)', async () => {
+        const driver = await startDriver();
+        // The start and heartbeat windows are minutes: only the driver's reading of the container can end this in seconds.
+        const supervised = run(driver, { SUPERVISOR_AGENT_START_MS: '600000', SUPERVISOR_AGENT_LOST_MS: '600000' });
+        await until('the agent to be released', () => existsSync(join(supervised.agent.in, MAILBOX_FILES.go)));
+        const began = Date.now();
+        driver.agentEnded = true;
+        await supervised.done;
+        expect(Date.now() - began).toBeLessThan(10_000);
+        expect(supervised.report()).toMatchObject({ outcome: 'lost', cause: 'agent_lost', agentEnd: 'lost' });
+    });
+
+    it("keeps the exit marker above the driver's reading: an agent that wrote agent.exit ended on its own (#920)", async () => {
+        const driver = await startDriver();
+        driver.agentEnded = true;
+        const supervised = run(driver);
+        supervised.agentExits(3);
+        await supervised.done;
+        expect(supervised.report()).toMatchObject({ outcome: 'failed', agentExit: 3, agentEnd: 'exit' });
     });
 });
 

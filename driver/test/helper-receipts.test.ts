@@ -95,6 +95,7 @@ function supervisor(config: ReturnType<typeof volume>['config'], remote: { write
             return { exitCode: 0, stdout: `${REPLIED}\n`, stderr: '', timedOut: false };
         },
         awaitReport: () => Promise.reject(new Error('not used')),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,
