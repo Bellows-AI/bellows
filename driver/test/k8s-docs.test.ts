@@ -39,6 +39,12 @@ describe('the EKS prerequisites record', () => {
         expect(kubernetesDocs).toContain('Fargate');
     });
 
+    // Issue #887: the reaper's scope is the release on kubernetes, the board label on docker.
+    it('states that the reaper is scoped to its own driver, and the unscoped limit', () => {
+        expect(prose(kubernetesDocs)).toContain('The orphan reaper is scoped to its own driver on both executors');
+        expect(prose(kubernetesDocs)).toContain('a driver started with no `K8S_RELEASE` is unscoped');
+    });
+
     it('states the VPC-endpoint answer for the blocked private ranges', () => {
         expect(kubernetesDocs).toContain('VPC endpoint');
         expect(kubernetesDocs).toContain('allowedCidrs');

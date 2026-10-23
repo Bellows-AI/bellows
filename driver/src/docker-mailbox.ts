@@ -1,6 +1,6 @@
 import type { BoardJob } from './board.js';
 import { UUID } from './claim.js';
-import { ROLE_LABEL } from './labels.js';
+import { BOARD_LABEL, ROLE_LABEL } from './labels.js';
 import { AGENT_CONTAINER, type Mailbox, MAILBOXES, SUPERVISOR_BINDING } from './supervisor-contract.js';
 import { agentMailboxEnv } from './supervisor-plan.js';
 
@@ -51,4 +51,6 @@ export const agentMailboxArgs = (job: BoardJob): string[] => [
 ];
 
 /** The role label the agent container carries beside the job and lease pair. */
+/** The board the group object is made for (`boardIdentity`): what the docker reaper scopes its scan and removals by. */
+export const boardLabelArgs = (board: string): string[] => ['--label', `${BOARD_LABEL}=${board}`];
 export const agentRoleArgs = (): string[] => ['--label', `${ROLE_LABEL}=${AGENT_CONTAINER}`];

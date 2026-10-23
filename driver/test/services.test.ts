@@ -1,11 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
+import { boardIdentity } from '../src/task-volume.js';
+
 import { plannedServices, serviceContainerName, servicePlanRefusal, serviceRunArgs } from '../src/services.js';
 import { supervisorName } from '../src/docker-mailbox.js';
 import { awaitServicesRunning, ServicesNotRunning } from '../src/service-restart.js';
 import { Inconclusive, SERVICE_READY_POLL_MS } from '../src/runner.js';
 import { StepChannelClosed } from '../src/step-control.js';
+
+const BOARD = boardIdentity(loadDriverConfig({}));
 
 const USER = '44444444-4444-4444-8444-444444444444';
 
@@ -48,8 +52,8 @@ describe('the planned services (issue #769)', () => {
 
     it('leave the container argv untouched by a declared port', () => {
         const bare = { name: 'db', image: 'postgres:16', environment: [] };
-        expect(serviceRunArgs(job, { ...bare, ports: [5432] }, supervisorName(job))).toEqual(
-            serviceRunArgs(job, bare, supervisorName(job))
+        expect(serviceRunArgs(job, { ...bare, ports: [5432] }, supervisorName(job), BOARD)).toEqual(
+            serviceRunArgs(job, bare, supervisorName(job), BOARD)
         );
     });
 });
@@ -80,7 +84,8 @@ describe('the service container arguments', () => {
                 image: 'redis',
                 environment: [{ key: 'ALLOW_EMPTY', value: 'yes' }],
             },
-            supervisorName(job)
+            supervisorName(job),
+            BOARD
         );
         expect(line).toEqual([
             'run',
@@ -92,6 +97,8 @@ describe('the service container arguments', () => {
             'no-new-privileges',
             '--name',
             serviceContainerName(job, 'cache'),
+            '--label',
+            `factory.board=${BOARD}`,
             '--label',
             `factory.job=${job.id}`,
             '--label',
@@ -110,7 +117,12 @@ describe('the service container arguments', () => {
         // Parse refuses the `ports:` key; this pins that the argv side has no way to publish one
         // either. The daemon running this argv is root on the host — a published port is the one
         // step from "a service for my tests" to "a listener on somebody's machine".
-        const line = serviceRunArgs(job, { name: 'db', image: 'postgres', environment: [] }, supervisorName(job));
+        const line = serviceRunArgs(
+            job,
+            { name: 'db', image: 'postgres', environment: [] },
+            supervisorName(job),
+            BOARD
+        );
         expect(line).not.toContain('-p');
         expect(line).not.toContain('--publish');
     });
@@ -119,17 +131,18 @@ describe('the service container arguments', () => {
         // parseBellows enforces all three; this is the same assertion the runner makes about a
         // session id it is about to interpolate — the argv builder does not trust its caller.
         expect(() =>
-            serviceRunArgs(job, { name: 'bad name', image: 'redis', environment: [] }, supervisorName(job))
+            serviceRunArgs(job, { name: 'bad name', image: 'redis', environment: [] }, supervisorName(job), BOARD)
         ).toThrow(/not a safe service name/);
         expect(() =>
             serviceRunArgs(
                 job,
                 { name: 'db', image: 'redis', environment: [{ key: 'A B', value: '1' }] },
-                supervisorName(job)
+                supervisorName(job),
+                BOARD
             )
         ).toThrow(/not a valid environment variable name/);
         expect(() =>
-            serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] }, supervisorName(job))
+            serviceRunArgs(job, { name: 'db', image: '--privileged', environment: [] }, supervisorName(job), BOARD)
         ).toThrow(/not a safe image reference/);
     });
 });

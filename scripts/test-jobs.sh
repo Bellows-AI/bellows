@@ -17,6 +17,8 @@ PHASE=all
 PHASE_GIVEN=''
 CHANGED_BASE=''
 CLI_WORKERS=2
+PARALLEL=''
+PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
@@ -49,9 +51,15 @@ while [ "$#" -gt 0 ]; do
         CLI_WORKERS="${1:-}"
         case "$CLI_WORKERS" in 1|2) ;; *) echo 'test-jobs: --cli-workers must be 1 or 2'; exit 2 ;; esac
         ;;
+    --parallel) PARALLEL=1 ;;
+    --slots)
+        shift
+        PARALLEL_SLOTS="${1:-}"
+        case "$PARALLEL_SLOTS" in 2|3|4) ;; *) echo 'test-jobs: --slots must be 2, 3 or 4'; exit 2 ;; esac
+        ;;
     --watch-stalls) WATCH_STALLS=1 ;;
     --help)
-        echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls]'
+        echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
         echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill, capacity'
@@ -62,6 +70,9 @@ while [ "$#" -gt 0 ]; do
         echo '        (no flag) runs at the end of a PR series and on main.'
         echo 'Each phase provisions its own prerequisites; standalone CLI phases need no database or build.'
         echo 'Standalone CLI cases use at most two workers; --cli-workers 1 runs them serially.'
+        echo '--parallel runs the selected phases as groups (scripts/test-jobs-groups.mjs) on --slots concurrent slots (default 2): each group is'
+        echo '        its own test-jobs.sh run with its own board fixture, database, run-specific names and a ten-port slice from PORT;'
+        echo '        core, server and driver are built once, and the summary lists every group. Default stays serial.'
         echo 'TIMINGS_FILE overrides artifacts/jobs/<run>.tsv; check timings and process logs are saved beside it.'
         echo '--watch-stalls (or LANE_WATCH_STALLS=1) dumps every job container alive past LANE_STALL_S (default 120) seconds.'
         echo 'The run ends with a slow-jobs summary of attempts past LANE_SLOW_S (default 30) seconds, beside the timings.'
@@ -100,6 +111,10 @@ needs_board() {
 RUN_ID="$(date +%s)-$$"
 PORT="${PORT:-8129}"
 BASE="http://127.0.0.1:$PORT"
+# The identity the host drivers of this run stamp on what they create (driver/src/task-volume.ts
+# boardIdentity: a digest of JOB_BOARD_URL), so a check can look at its own board's objects only
+# when other groups share the daemon (--parallel).
+board_id() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 16))' "$BASE"; }
 DB="${JOBS_TEST_DB:-factory_jobs_${RUN_ID//-/_}_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
 IMAGE_BASE="factory-jobs-$RUN_ID-base"
@@ -167,6 +182,109 @@ if needs_board; then
     done
     compose version >/dev/null 2>&1 || { echo 'test-jobs: the compose plugin is required'; exit 1; }
     [[ "$DB" =~ ^[a-z_][a-z0-9_]*_test$ ]] || { echo 'test-jobs: JOBS_TEST_DB must be a SQL identifier ending _test'; exit 2; }
+fi
+
+# Bring Postgres up and wait until it answers. --no-recreate: the stack's postgres is shared, and a
+# run from another checkout carries another config hash, so a plain `up` would replace the container
+# mid-write. A replaced one can spend most of a minute in crash recovery, hence the wait.
+start_postgres() { # start_postgres <log>
+    compose up -d --no-recreate postgres >"$1" 2>&1 || {
+        echo 'test-jobs: could not start postgres'
+        exit 1
+    }
+    local ready=''
+    for _ in $(seq 1 120); do
+        compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && { ready=1; break; }
+        sleep 1
+    done
+    [ -n "$ready" ] || { echo 'test-jobs: postgres never became ready'; exit 1; }
+}
+
+build_workspaces() { # build_workspaces <log>
+    npm run build -w core >"$1" 2>&1 && npm run build -w server >>"$1" 2>&1 &&
+        npm run build -w driver >>"$1" 2>&1 || {
+        echo 'test-jobs: build failed'
+        exit 1
+    }
+}
+
+# --parallel (issue #887): the selected phases as groups (scripts/test-jobs-groups.mjs), each one
+# a separate `test-jobs.sh --phase` run — its own board fixture, database, images, network and
+# volumes (RUN_ID) and a ten-port slice from PORT — dealt to --slots concurrent slots. The shared
+# parts are done once here: Postgres, and the build of core, server and driver (every group runs from
+# the same dist). The docker reaper of each group's driver sees only its own board's containers
+# (the factory.board label), so groups on one daemon do not reap each other.
+run_parallel() {
+    local base_port="$PORT" stamp dir plan started slot slots pids='' pid code=0
+    [ -z "${JOBS_TEST_DB:-}" ] ||
+        { echo 'test-jobs: --parallel gives every group its own database; unset JOBS_TEST_DB'; exit 2; }
+    plan="$(node "$REPO/scripts/test-jobs-groups.mjs" "$PARALLEL_SLOTS" "$PHASE")" ||
+        { echo 'test-jobs: could not plan --parallel'; exit 2; }
+    [ -n "$plan" ] || { echo 'test-jobs: --parallel has no phase to run'; exit 2; }
+    stamp="$(date +%Y%m%d-%H%M%S)-$$"
+    # TIMINGS_FILE names the run: its logs and each group's timings land beside it, in <name>-parallel/.
+    dir="${TIMINGS_FILE:+${TIMINGS_FILE%.tsv}-parallel}"
+    dir="${dir:-$REPO/artifacts/jobs/$stamp-parallel}"
+    mkdir -p "$dir" || exit 1
+    started=$SECONDS
+    local prebuilt='' watch_flag=''
+    [ "$WATCH_STALLS" = 1 ] && watch_flag=--watch-stalls
+    if needs_board; then
+        echo 'starting postgres'
+        start_postgres "$dir/postgres.log"
+        echo 'building core, server, driver'
+        build_workspaces "$dir/build.log"
+        prebuilt=1
+    fi
+    printf '%s\n' "$plan" | while IFS="$(printf '\t')" read -r slot name phases; do
+        printf '[parallel] slot %s (PORT %s): %s = %s\n' "$slot" "$((base_port + 10 * slot))" "$name" "$phases"
+    done
+    slots="$(printf '%s\n' "$plan" | cut -f1 | sort -u)"
+    : >"$dir/results.tsv"
+    for slot in $slots; do
+        (
+            child=''
+            trap '[ -z "$child" ] || kill -TERM "$child" 2>/dev/null; wait; exit 143' INT TERM
+            while IFS="$(printf '\t')" read -r s name phases; do
+                [ "$s" = "$slot" ] || continue
+                group_started=$SECONDS
+                env -u JOBS_TEST_DB TIMINGS_FILE="$dir/$name.tsv" PORT="$((base_port + 10 * slot))" TEST_JOBS_PREBUILT="$prebuilt" \
+                    "$REPO/scripts/test-jobs.sh" --phase "$phases" --cli-workers "$CLI_WORKERS" \
+                    $watch_flag \
+                    >"$dir/$name.log" 2>&1 </dev/null &
+                child=$!
+                wait "$child"
+                group_exit=$?
+                printf '%s\t%s\t%s\t%s\n' "$name" "$phases" "$group_exit" "$((SECONDS - group_started))" >>"$dir/results.tsv"
+                child=''
+            done <<EOF_PLAN
+$plan
+EOF_PLAN
+        ) &
+        pids="$pids $!"
+    done
+    trap 'for pid in $pids; do kill -TERM "$pid" 2>/dev/null; done; wait; exit 130' INT TERM
+    for pid in $pids; do wait "$pid"; done
+    trap - INT TERM
+    local passed=0 failed=0 name phases group_code seconds
+    while IFS="$(printf '\t')" read -r name phases group_code seconds; do
+        printf '[parallel] %s: exit %s in %ss (%s)\n' "$name" "$group_code" "$seconds" "$phases"
+        [ "$group_code" -eq 0 ] || code=1
+        passed=$((passed + $(grep -c '^ok ' "$dir/$name.log")))
+        failed=$((failed + $(grep -c '^FAIL ' "$dir/$name.log")))
+        if [ "$group_code" -ne 0 ]; then
+            grep -A1 '^FAIL ' "$dir/$name.log" | head -n 40
+            [ "$(grep -c '^FAIL ' "$dir/$name.log")" -gt 0 ] || tail -n 15 "$dir/$name.log"
+        fi
+    done <"$dir/results.tsv"
+    [ "$(wc -l <"$dir/results.tsv" | tr -d ' ')" = "$(printf '%s\n' "$plan" | wc -l | tr -d ' ')" ] || code=1
+    printf '[timing] parallel total: %ss over %s slots; logs and timings: %s\n' "$((SECONDS - started))" "$PARALLEL_SLOTS" "$dir"
+    printf '\n%d passed, %d failed\n' "$passed" "$failed"
+    return "$code"
+}
+if [ -n "$PARALLEL" ]; then
+    run_parallel
+    exit $?
 fi
 
 TIMINGS_FILE="${TIMINGS_FILE:-$REPO/artifacts/jobs/$(date +%Y%m%d-%H%M%S)-$$.tsv}"
@@ -802,19 +920,7 @@ lane_pair() { # lane_pair <first case function> <second case function>; at most 
 if needs_board; then
 begin_phase postgres
 echo 'starting postgres'
-# --no-recreate: the stack's postgres is shared, and a run from another checkout carries another
-# config hash, so a plain `up` would replace the container mid-write. A replaced one can spend most
-# of a minute in crash recovery, hence the wait.
-compose up -d --no-recreate postgres >"$work/postgres.log" 2>&1 || {
-    echo 'test-jobs: could not start postgres'
-    exit 1
-}
-postgres_ready=''
-for _ in $(seq 1 120); do
-    compose exec -T postgres pg_isready -U factory >/dev/null 2>&1 && { postgres_ready=1; break; }
-    sleep 1
-done
-[ -n "$postgres_ready" ] || { echo 'test-jobs: postgres never became ready'; exit 1; }
+start_postgres "$work/postgres.log"
 
 # The name ends in _test on purpose: it marks the database disposable, and the drop in cleanup()
 # refuses anything this run did not create.
@@ -832,11 +938,11 @@ fi
 
 begin_phase build
 echo 'building core, server, driver'
-npm run build -w core >"$work/build.log" 2>&1 && npm run build -w server >>"$work/build.log" 2>&1 &&
-    npm run build -w driver >>"$work/build.log" 2>&1 || {
-    echo 'test-jobs: build failed'
-    exit 1
-}
+if [ -n "${TEST_JOBS_PREBUILT:-}" ]; then
+    echo 'build skipped: --parallel built it once for every group'
+else
+    build_workspaces "$work/build.log"
+fi
 
 begin_phase stub-images
 echo 'building the stub runner images'
@@ -2548,7 +2654,7 @@ write_bellows 'reviewers:
     timeout: 5'
 start_driver "$IMAGE_REVIEW" 0 1
 
-jobs_seen() { docker ps -a --filter 'label=factory.job' --format '{{.ID}} {{.Label "factory.job"}} {{.Label "factory.role"}}'; }
+jobs_seen() { docker ps -a --filter 'label=factory.job' --filter "label=factory.board=$(board_id)" --format '{{.ID}} {{.Label "factory.job"}} {{.Label "factory.role"}}'; }
 jobs_seen | cut -d' ' -f1 | sort -u >"$work/review-before"
 
 rv="$(create_job 'review REVIEW-SECOND')"
@@ -2876,7 +2982,7 @@ process.stdout.write(bad.length ? "bad: " + bad.join("; ") : task ? "ok" : "bad:
 
 acc_volumes() { # acc_volumes -> "ok <task volumes>" or why not: every task volume is a local, option-free docker volume
     local names
-    names="$(timeout 30 docker volume ls -q --filter 'label=factory.task-root' 2>/dev/null)" || { printf 'unread: volume ls'; return 0; }
+    names="$(timeout 30 docker volume ls -q --filter 'label=factory.task-root' --filter "label=factory.task-board=$(board_id)" 2>/dev/null)" || { printf 'unread: volume ls'; return 0; }
     # shellcheck disable=SC2086 # one name per word
     timeout 30 docker volume inspect $names >"$work/acc-vols.json" 2>/dev/null || { printf 'unread: volume inspect'; return 0; }
     node -e '

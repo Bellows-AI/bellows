@@ -1,6 +1,6 @@
 import { type BoardJob, UUID_SHAPE } from './board.js';
 import { containerName } from './docker.js';
-import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
+import { BOARD_LABEL, JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
 import { CONTAINER_ID, DOCKER_NAME, type ExecDocker, noSuchObject, readDocker } from './docker-runner-support.js';
 import { Inconclusive } from './runner.js';
 import type { OrphanGroup, OrphanObject, ReapInconclusive, ReaperArm, VolumeListing, VolumeThread } from './reaper.js';
@@ -61,10 +61,15 @@ const fieldsOf = (
  * null for a row whose job or lease label is present but no uuid (#869) — it would become the attempt
  * identity the grouping files the row under, so the whole listing is inconclusive.
  */
-const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken: string } | 'out-of-scope' | null => {
-    // The scope label is checked here as well as in the argv filter, because the argv is the
-    // daemon's instruction and this is the row's proof.
-    if (!labelOf(labels, scopeLabel)) return 'out-of-scope';
+const pairOf = (
+    labels: string,
+    scopeLabel: string,
+    board: string
+): { jobId: string; leaseToken: string } | 'out-of-scope' | null => {
+    // The scope and board labels are checked here as well as in the argv filter, because the argv is the
+    // daemon's instruction and this is the row's proof. Another board's group on a shared daemon, or a
+    // group no board made, is never this reaper's to remove.
+    if (!labelOf(labels, scopeLabel) || labelOf(labels, BOARD_LABEL) !== board) return 'out-of-scope';
     const jobId = labelOf(labels, JOB_LABEL);
     const leaseToken = labelOf(labels, LEASE_LABEL);
     if ([jobId, leaseToken].some((label) => label !== undefined && !UUID_SHAPE.test(label))) return null;
@@ -77,7 +82,7 @@ const pairOf = (labels: string, scopeLabel: string): { jobId: string; leaseToken
  * which makes the whole listing inconclusive; `'out-of-scope'` for a well-formed row whose labels
  * put it outside the reaper's scope.
  */
-const parsePsRow = (line: string, scopeLabel: string): PsRow | 'out-of-scope' | null => {
+const parsePsRow = (line: string, scopeLabel: string, board: string): PsRow | 'out-of-scope' | null => {
     const fields = fieldsOf(line);
     if (!fields || typeof fields.ID !== 'string' || !CONTAINER_ID.test(fields.ID)) return null;
     // A name that is no name is none the removal argv could address.
@@ -85,7 +90,7 @@ const parsePsRow = (line: string, scopeLabel: string): PsRow | 'out-of-scope' | 
         return null;
     }
     if (scopeLabel === ROLE_LABEL && typeof fields.State !== 'string') return null;
-    const pair = pairOf(fields.Labels, scopeLabel);
+    const pair = pairOf(fields.Labels, scopeLabel, board);
     if (pair === null || pair === 'out-of-scope') return pair;
     const createdAtMs = typeof fields.CreatedAt === 'string' ? parseDockerCreatedAt(fields.CreatedAt) : null;
     if (createdAtMs === null) return null;
@@ -108,11 +113,11 @@ const parsePsRow = (line: string, scopeLabel: string): PsRow | 'out-of-scope' | 
 };
 
 /** A listing's in-scope rows, or null when any row is structurally invalid. */
-const psRowsOf = (stdout: string, scopeLabel: string): PsRow[] | null => {
+const psRowsOf = (stdout: string, scopeLabel: string, board: string): PsRow[] | null => {
     const rows: PsRow[] = [];
     for (const line of stdout.split('\n')) {
         if (!line.trim()) continue;
-        const row = parsePsRow(line.trim(), scopeLabel);
+        const row = parsePsRow(line.trim(), scopeLabel, board);
         if (row === null) return null;
         if (row !== 'out-of-scope') rows.push(row);
     }
@@ -143,26 +148,38 @@ const addRow = (groups: Groups, row: PsRow): void => {
  * refused the list or a row of it is unreadable: neither is the daemon answering "nothing is
  * orphaned".
  */
-const scanScope = async (execDocker: ExecDocker, scopeLabel: string, groups: Groups): Promise<void> => {
+const scanScope = async (execDocker: ExecDocker, scopeLabel: string, board: string, groups: Groups): Promise<void> => {
     const read = await readDocker(
         execDocker,
-        ['ps', '-a', '--filter', `label=${scopeLabel}`, '--format', '{{json .}}'],
+        [
+            'ps',
+            '-a',
+            '--filter',
+            `label=${scopeLabel}`,
+            '--filter',
+            `label=${BOARD_LABEL}=${board}`,
+            '--format',
+            '{{json .}}',
+        ],
         `listing the ${scopeLabel} containers`,
-        { parse: (stdout) => psRowsOf(stdout, scopeLabel) }
+        { parse: (stdout) => psRowsOf(stdout, scopeLabel, board) }
     );
     if (read.kind !== 'value') throw new Inconclusive(read.kind === 'inconclusive' ? read.reason : 'absent');
     for (const row of read.value) addRow(groups, row);
 };
 
 /** A listing's in-scope volumes, or null when any row is structurally invalid. */
-const volumeRowsOf = (stdout: string): { name: string; pair: { jobId: string; leaseToken: string } }[] | null => {
+const volumeRowsOf = (
+    stdout: string,
+    board: string
+): { name: string; pair: { jobId: string; leaseToken: string } }[] | null => {
     const found: { name: string; pair: { jobId: string; leaseToken: string } }[] = [];
     for (const line of stdout.split('\n')) {
         if (!line.trim()) continue;
         const fields = fieldsOf(line.trim());
         if (!fields || typeof fields.Name !== 'string' || !DOCKER_NAME.test(fields.Name)) return null;
         if (typeof fields.Labels !== 'string') return null;
-        const pair = pairOf(fields.Labels, LEASE_LABEL);
+        const pair = pairOf(fields.Labels, LEASE_LABEL, board);
         if (pair === null) return null;
         if (pair !== 'out-of-scope') found.push({ name: fields.Name, pair });
     }
@@ -175,7 +192,7 @@ const volumeRowsOf = (stdout: string): { name: string; pair: { jobId: string; le
  * volume gone before its inspect is skipped; throws `Inconclusive` when any other call was refused
  * or answered what is not a row or a date.
  */
-const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void> => {
+const scanVolumes = async (execDocker: ExecDocker, board: string, groups: Groups): Promise<void> => {
     const listed = await readDocker(
         execDocker,
         [
@@ -185,11 +202,13 @@ const scanVolumes = async (execDocker: ExecDocker, groups: Groups): Promise<void
             `label=${JOB_LABEL}`,
             '--filter',
             `label=${LEASE_LABEL}`,
+            '--filter',
+            `label=${BOARD_LABEL}=${board}`,
             '--format',
             '{{json .}}',
         ],
         'listing the attempt volumes',
-        { parse: volumeRowsOf }
+        { parse: (stdout) => volumeRowsOf(stdout, board) }
     );
     if (listed.kind !== 'value') throw new Inconclusive(listed.kind === 'inconclusive' ? listed.reason : 'absent');
     for (const { name, pair } of listed.value) {
@@ -213,12 +232,12 @@ const volumeCreatedAt = async (execDocker: ExecDocker, name: string): Promise<nu
     return read.kind === 'absent' ? null : read.value;
 };
 
-const scan = async (execDocker: ExecDocker): Promise<OrphanGroup[] | null> => {
+const scan = async (execDocker: ExecDocker, board: string): Promise<OrphanGroup[] | null> => {
     const groups: Groups = new Map();
     try {
-        await scanScope(execDocker, SERVICE_LABEL, groups);
-        await scanScope(execDocker, ROLE_LABEL, groups);
-        await scanVolumes(execDocker, groups);
+        await scanScope(execDocker, SERVICE_LABEL, board, groups);
+        await scanScope(execDocker, ROLE_LABEL, board, groups);
+        await scanVolumes(execDocker, board, groups);
     } catch {
         // Any one list refused: the round reaps nothing rather than a group missing its pieces, and
         // says so (null), so an empty scan is never read as "nothing is orphaned".
@@ -337,10 +356,10 @@ const reapTaskVolumes = async (
     return unconfirmed === null ? removed : { removed, inconclusive: unconfirmed };
 };
 
-/** The docker arm of the orphan reaper: every group piece it finds by label, reaped on the lease lookup. */
+/** The docker arm of the orphan reaper: every group piece of `board` (`boardIdentity`) it finds by label, reaped on the lease lookup. */
 export function createDockerReaper(execDocker: ExecDocker, board: string): ReaperArm {
     return {
-        scan: () => scan(execDocker),
+        scan: () => scan(execDocker, board),
         reap: (group) => reap(execDocker, group),
         scanVolumes: () => scanTaskVolumes(execDocker, board),
         reapVolumes: (thread) => reapTaskVolumes(execDocker, thread),

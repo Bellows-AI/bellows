@@ -2,7 +2,7 @@ import type { BoardJob } from './board.js';
 import type { KillLedger } from './kill-ledger.js';
 import type { DriverConfig } from './config.js';
 import { awaitSupervisor } from './docker-group.js';
-import { killMarkName } from './docker-mailbox.js';
+import { boardLabelArgs, killMarkName } from './docker-mailbox.js';
 import type { ExecDocker } from './docker-runner-support.js';
 import { idLines, noSuchObject, readDocker } from './docker-runner-support.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from './labels.js';
@@ -10,6 +10,7 @@ import { Inconclusive } from './runner.js';
 import { forgetDeclaredServices } from './services.js';
 import type { StepSink } from './step-control.js';
 import { releaseSteps } from './supervised-steps.js';
+import { boardIdentity } from './task-volume.js';
 import { AGENT_CONTAINER, KILL_WINDDOWN_MS } from './supervisor-contract.js';
 import { KILL_REASONS, type KillRecord, killMarkOf, killRecordsOf } from './termination.js';
 
@@ -43,11 +44,17 @@ export interface TeardownDeps {
  * sweeps it with the attempt's other volumes. One volume per reason, so two that both fired are
  * both kept. Rejects when the daemon refuses.
  */
-export async function recordDockerKill(execDocker: ExecDocker, job: BoardJob, kill: KillRecord): Promise<void> {
+export async function recordDockerKill(
+    execDocker: ExecDocker,
+    config: DriverConfig,
+    job: BoardJob,
+    kill: KillRecord
+): Promise<void> {
     await execDocker(
         [
             'volume',
             'create',
+            ...boardLabelArgs(boardIdentity(config)),
             '--label',
             `${JOB_LABEL}=${job.id}`,
             '--label',

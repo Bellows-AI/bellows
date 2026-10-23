@@ -174,8 +174,11 @@ Operational facts behind those:
   workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
   Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
   before board phases. Do not recreate Postgres or prune images while a lane is active. Board phases
-  use `PORT` through `PORT + 2` (default 8129–8131). Keep separate `test:jobs` runs serial on one Docker daemon:
-  the reaper scans daemon-wide (`driver/src/docker-reaper.ts`), and one checkout also shares `dist`.
+  use `PORT` through `PORT + 2` (default 8129–8131). Keep separate `test:jobs` invocations serial on one Docker
+  daemon: they share the default ports and one checkout's `dist`. `--parallel [--slots N]` is the supported
+  fan-out: it builds once and runs phase groups (`scripts/test-jobs-groups.mjs`) as runs of their own, each on
+  a ten-port slice of `PORT` with its own database and names; each driver's reaper scans only its own board's
+  containers (`factory.board`, `driver/test/docker-reaper-boards.test.ts`), so groups never reap each other.
   Phase totals, check intervals and process logs stay under `artifacts/jobs/`; `TIMINGS_FILE` overrides
   the output path (`server/test/test-jobs.options.test.ts`).
 - `verify:ui` needs `factory_e2e` **and** `factory_auth_e2e` to exist; Playwright boots every

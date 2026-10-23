@@ -12,6 +12,7 @@
  * Nothing here imports docker.ts, which imports this module: one direction only, so the argv
  * stays testable without a daemon and the modules cannot knot.
  */
+import { boardLabelArgs } from './docker-mailbox.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
 import type { BoardJob, ServiceStatus } from './board.js';
 import { type DriverConfig, gateAdvertiseUrlFor } from './config.js';
@@ -206,7 +207,7 @@ export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
  * daemon executing this argv is root on the host, and a published port is the one step from "a
  * service for my tests" to "a listener on somebody's machine".
  */
-export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string): string[] {
+export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string, board: string): string[] {
     assertServiceSpec(job, spec);
     const args = [
         'run',
@@ -215,6 +216,7 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string)
         ...(spec.user ? ['--user', `${spec.user.uid}:${spec.user.gid}`] : []),
         '--name',
         serviceContainerName(job, spec.name),
+        ...boardLabelArgs(board),
         '--label',
         `${JOB_LABEL}=${job.id}`,
         '--label',

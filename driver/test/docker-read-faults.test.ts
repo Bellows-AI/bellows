@@ -203,7 +203,7 @@ const psRow = (pair: BoardJob, id: string, fields: { label: string; name?: strin
     JSON.stringify({
         ID: id,
         Names: fields.name ?? id,
-        Labels: `factory.job=${pair.id},factory.lease=${pair.leaseToken},${fields.label}`,
+        Labels: `factory.board=${BOARD},factory.job=${pair.id},factory.lease=${pair.leaseToken},${fields.label}`,
         CreatedAt: fields.created,
         State: fields.state,
         Image: 'postgres:17',
@@ -233,7 +233,7 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
             }
             if (is(args, 'volume', 'ls')) {
                 return ok(
-                    `${JSON.stringify({ Name: mailbox, Labels: `factory.job=${pair.id},factory.lease=${pair.leaseToken}` })}\n`
+                    `${JSON.stringify({ Name: mailbox, Labels: `factory.board=${BOARD},factory.job=${pair.id},factory.lease=${pair.leaseToken}` })}\n`
                 );
             }
             if (is(args, 'volume', 'inspect')) return ok(`${created.volume}\n`);
