@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
+import type { GateRun } from '../src/gates.js';
 import type { PhaseCheckpoint } from '../src/board-phase-checkpoints.js';
 import { PHASE_CHECKPOINT_READ_MS } from '../src/loop-phase-checkpoints.js';
 import type { HelperPlan } from '../src/helpers.js';
@@ -85,11 +86,14 @@ interface Scene {
     probe?: (signal: AbortSignal) => Promise<string | null>;
     policy?: BoardJob['policy'];
     deadServices?: DeadService[];
+    /** A job that declares an `environment.setup` and no gates, its setup runs answered in order. */
+    setupOnly?: { setups: GateRun[] };
 }
 
 async function run(scene: Scene = {}) {
     const claimed: BoardJob = {
         ...(scene.gated === false ? { ...gatedJob(1), gates: null } : gatedJob(1)),
+        ...(scene.setupOnly ? { gates: { image: 'node:24', setup: 'npm ci', gates: [] } } : {}),
         attempts: 2,
         claimSeq: 3,
         ...(scene.post === false ? {} : { helperPlans: [postPlan] }),
@@ -103,6 +107,13 @@ async function run(scene: Scene = {}) {
         ...(scene.leaseGone ? { leaseGone: scene.leaseGone } : {}),
     });
     const stack = stubGateStack({}, { control: Boolean(scene.adopted && 'live' in scene.adopted) });
+    if (scene.setupOnly) {
+        const answers = [...scene.setupOnly.setups];
+        stack.stack.manager.runSetup = async (_key, setupOptions = {}) => {
+            stack.stack.setups.push(setupOptions);
+            return answers.shift() ?? null;
+        };
+    }
     const helperRuns: string[] = [];
     const runner = stubRunner(async () => ok(), {
         sync: { ok: true, reason: null, fingerprint: 'h:before' },
@@ -471,5 +482,83 @@ describe('writing the phase checkpoints', () => {
 
         expect(r.board.githubAsks.length).toBeGreaterThan(0);
         expect(JSON.stringify(r.board.phaseCheckpointsWritten)).not.toContain(GITHUB_TOKEN);
+    });
+});
+
+// Issue #917: a failed `environment.setup` lived only in the first driver's memory, so a holder that
+// adopted or took the run over could skip the end-of-run pass that would have refused it.
+describe('the setup outcome an adopted or taken-over run carries', () => {
+    const SETUP_FAILED: GateRun = { exitCode: 7, output: 'npm ERR! registry down' };
+    const SETUP_OK: GateRun = { exitCode: 0, output: 'installed' };
+    const setupCp = (failure: { exitCode: number | null; output: string } | null): PhaseCheckpoint => ({
+        phase: 'setup',
+        claimSeq: 1,
+        tree: null,
+        result: { failure },
+    });
+    const live: LiveRun = {
+        live: true,
+        prior: { ...gatedJob(1), claimSeq: 1 } as BoardJob,
+        claimSeq: 1,
+        session: 'sess',
+        startedAt: 'then',
+        forget: () => undefined,
+    };
+    // An adopter re-runs the pre-agent setup itself (one run, which passes here); a takeover does not.
+    const holders = [
+        ['adopted', adopted, [SETUP_OK]],
+        ['taken over', live, []],
+    ] as const;
+
+    it.each(holders)(
+        'a %s run whose earlier driver recorded a failed setup still runs its end pass',
+        async (_h, how, before) => {
+            const r = await run({
+                adopted: how,
+                post: false,
+                checkpoints: [setupCp({ exitCode: 7, output: 'npm ERR! registry down' })],
+                setupOnly: { setups: [...before, SETUP_FAILED] },
+            });
+
+            expect(r.stack.setups).toHaveLength(before.length + 1);
+            expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate', exitCode: 7 });
+            expect(r.board.completed[0]!.output).toContain('[setup failed — the gate did not run]');
+        }
+    );
+
+    it.each(holders)('a %s run whose setup outcome cannot be read runs its end pass too', async (_h, how, before) => {
+        const r = await run({
+            adopted: how,
+            post: false,
+            checkpoints: null,
+            setupOnly: { setups: [...before, SETUP_OK] },
+        });
+
+        expect(r.stack.setups).toHaveLength(before.length + 1);
+        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it.each(holders)('a %s run whose setup stood recorded as passed skips the end pass', async (_h, how, before) => {
+        const r = await run({
+            adopted: how,
+            post: false,
+            checkpoints: [setupCp(null)],
+            setupOnly: { setups: [...before] },
+        });
+
+        expect(r.stack.setups).toHaveLength(before.length);
+        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('a fresh run records the setup outcome before the agent starts, failed or passed', async () => {
+        const failed = await run({ post: false, setupOnly: { setups: [SETUP_FAILED, SETUP_OK] } });
+        expect(failed.board.phaseCheckpointsWritten[0]).toMatchObject({
+            phase: 'setup',
+            tree: null,
+            runClaimSeq: 3,
+            result: { failure: { exitCode: 7, output: 'npm ERR! registry down' } },
+        });
+        const passed = await run({ post: false, setupOnly: { setups: [SETUP_OK] } });
+        expect(passed.board.phaseCheckpointsWritten[0]).toMatchObject({ phase: 'setup', result: { failure: null } });
     });
 });
