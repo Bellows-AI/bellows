@@ -627,4 +627,94 @@ describe('scripts/acceptance-transcript.mjs', () => {
         expect(await judge(() => ({ status: 503, body: {} }), ['1', '3'])).toBe('unread: status 503');
         expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3'])).toBe('unread: malformed body');
     });
+
+    it('says unread, never exact, for a body whose streams, segments or cursor are misshapen', async () => {
+        const good = page(1, 3).body;
+        const text = records(1, 3);
+        const segment = { state: 'ok', offset: 0, length: Buffer.byteLength(text), text };
+        const bodies: Record<string, unknown> = {
+            'a stream without an attempt': { ...good, streams: [{ state: 'complete' }] },
+            'a stream without a state': { ...good, streams: [{ attempt: 1 }] },
+            'a non-object stream': { ...good, streams: ['complete'] },
+            'a segment without a length': { ...good, segments: [{ state: 'ok', offset: 0, text }] },
+            'a segment with a wrong length': { ...good, segments: [{ ...segment, length: 1 }] },
+            'a segment with a fractional offset': { ...good, segments: [{ ...segment, offset: 0.5 }] },
+            'a non-object segment': { ...good, segments: [null] },
+            'a zero cursor': { ...good, nextCursor: 0 },
+            'an object cursor': { ...good, nextCursor: {} },
+        };
+        for (const [name, body] of Object.entries(bodies)) {
+            expect(await judge(() => ({ status: 200, body }), ['1', '3']), name).toMatch(/^unread:/);
+        }
+    });
+
+    it('says unread when the page limit ends the read with a cursor still pending', async () => {
+        const body = { ...page(1, 3).body, nextCursor: 'more' };
+        expect(await judge(() => ({ status: 200, body }), ['1', '3'])).toMatch(/^unread:.*page limit/);
+    });
+});
+
+// #779: the job reads of the acceptance phases are judged by shape; a failed or misshapen read is `unread`.
+describe('scripts/acceptance-job.mjs', () => {
+    const read = async (status: number, body: unknown, method: string, kind: string) => {
+        const server = createServer((_req, res) => {
+            res.writeHead(status).end(typeof body === 'string' ? body : JSON.stringify(body));
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address() as { port: number };
+        try {
+            return await new Promise<string>((resolve, reject) => {
+                const child = spawn('node', [
+                    join(ROOT, 'scripts/acceptance-job.mjs'),
+                    method,
+                    `http://127.0.0.1:${port}/api/jobs/x`,
+                    kind,
+                ]);
+                let out = '';
+                child.stdout.on('data', (d) => (out += d));
+                child.on('error', reject);
+                child.on('close', () => resolve(out));
+            });
+        } finally {
+            server.close();
+        }
+    };
+    const job = { status: 'succeeded', attempts: 1, interruptions: [] };
+
+    it('prints the brief of a well-formed job, with its first interruption', async () => {
+        expect(await read(200, job, 'GET', 'brief')).toBe('succeeded|1|0||');
+        const hit = { ...job, interruptions: [{ claimSeq: 1, reason: 'infrastructure loss: x' }] };
+        expect(await read(200, hit, 'GET', 'brief')).toBe('succeeded|1|1|1|infrastructure loss: x');
+    });
+
+    it.each([
+        ['no interruptions', { status: 'succeeded', attempts: 1 }],
+        ['an object for interruptions', { ...job, interruptions: {} }],
+        ['an interruption without a claimSeq', { ...job, interruptions: [{ reason: 'r' }] }],
+        ['an object status', { ...job, status: {} }],
+        ['a string attempts', { ...job, attempts: '1' }],
+        ['an array body', []],
+    ])('says unread for a job with %s', async (_name, body) => {
+        expect(await read(200, body, 'GET', 'brief')).toMatch(/^unread:/);
+    });
+
+    it('says unread for a refused read and for a body that is not JSON', async () => {
+        expect(await read(503, job, 'GET', 'brief')).toBe('unread: status 503');
+        expect(await read(200, 'nope', 'GET', 'brief')).toBe('unread: malformed body');
+    });
+
+    it('reads a session and a failure cause only when they are non-empty strings', async () => {
+        expect(await read(200, { sessionId: 's1' }, 'GET', 'session')).toBe('s1');
+        expect(await read(200, { sessionId: {} }, 'GET', 'session')).toMatch(/^unread:/);
+        expect(await read(200, { failureKind: 'agent_exit' }, 'GET', 'cause')).toBe('agent_exit');
+        expect(await read(200, { failureKind: {} }, 'GET', 'cause')).toMatch(/^unread:/);
+        expect(await read(200, {}, 'GET', 'cause')).toMatch(/^unread:/);
+    });
+
+    it('takes an id from a 201 only, as a string', async () => {
+        expect(await read(201, { id: 'j1' }, 'POST', 'id')).toBe('j1');
+        expect(await read(201, { id: {} }, 'POST', 'id')).toMatch(/^unread:/);
+        expect(await read(201, {}, 'POST', 'id')).toMatch(/^unread:/);
+        expect(await read(409, { error: 'no' }, 'POST', 'id')).toMatch(/^refused: 409/);
+    });
 });

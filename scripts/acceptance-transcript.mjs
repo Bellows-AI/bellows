@@ -12,18 +12,26 @@ const [base, session, first, last, lossy] = [process.argv[2], process.argv[3], N
 const record = (i) => JSON.stringify({ type: "user", uuid: "stub-record-" + i, sessionId: session, message: { role: "user", content: "stub record " + i } }) + "\n";
 const want = (a, b) => { let t = ""; for (let i = a; i <= b; i++) t += record(i); return t; };
 const url = (cursor) => base + "/read?session=" + encodeURIComponent(session) + (cursor ? "&cursor=" + encodeURIComponent(cursor) : "");
+const whole = (n) => Number.isSafeInteger(n) && n >= 0;
+const sound = (b) => b && Array.isArray(b.segments) && Array.isArray(b.streams)
+    && (b.nextCursor === undefined || b.nextCursor === null || (typeof b.nextCursor === "string" && b.nextCursor !== ""))
+    && b.streams.every((s) => s && typeof s === "object" && whole(s.attempt) && typeof s.state === "string")
+    && b.segments.every((s) => s && typeof s === "object" && typeof s.state === "string" && whole(s.offset)
+        && (s.state !== "ok" || (typeof s.text === "string" && s.length === Buffer.byteLength(s.text))));
 (async () => {
-    let cursor = "", text = "", segments = [], streams = [];
-    for (let page = 0; page < 100; page++) {
+    if (!whole(first) || !whole(last) || first < 1 || last < first) return "unread: bad record range";
+    let cursor = "", text = "", segments = [], streams = [], ended = false;
+    for (let page = 0; page < 100 && !ended; page++) {
         const r = await fetch(url(cursor), { headers });
         if (r.status !== 200) return "unread: status " + r.status;
         const b = await r.json().catch(() => null);
-        if (!b || !Array.isArray(b.segments) || !Array.isArray(b.streams)) return "unread: malformed body";
+        if (!sound(b)) return "unread: malformed body";
         streams = b.streams;
         segments.push(...b.segments);
-        if (!b.nextCursor) break;
-        cursor = b.nextCursor;
+        if (b.nextCursor) cursor = b.nextCursor;
+        else ended = true;
     }
+    if (!ended) return "unread: page limit reached with a cursor still pending";
     if (streams.length === 0) return "bad: no stream for the session";
     // The last attempt's stream must be closed complete. An earlier one a lost pod never finalized stays
     // partial (not_finalized, or agent_killed once a drain closed it) — only when the caller says a pod was lost — and its chunks are still read.

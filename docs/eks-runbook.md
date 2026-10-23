@@ -140,9 +140,9 @@ The cloud half of `scripts/test-k8s.sh --phase acceptance`; not walked yet. `CLI
 5. Pod loss: `kubectl -n $NS delete pod <runner pod> --grace-period=0 --force` mid-run. Same observation as 4.
 6. Node loss: `kubectl drain <runner node> --ignore-daemonsets --delete-emptydir-data` mid-run. One
    interruption, never a failure; the replacement adopts the claim.
-7. Driver restart: `kubectl -n $NS rollout restart deploy/<release>-driver` mid-run and again during the
+7. Driver restart: `kubectl -n $NS rollout restart deploy -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=driver` mid-run and again during the
    publish step. The new driver takes the run over; at most one pull request or push results.
-8. Upload outage: `kubectl -n $NS scale deploy/<release> --replicas=0` for under the lease,
+8. Upload outage: `kubectl -n $NS scale deploy -l app.kubernetes.io/instance=<release>,app.kubernetes.io/component=dashboard --replicas=0` for under the lease,
    then back. The run continues and the transcript read is whole afterwards.
 9. Cross-AZ restore: scale **every** runner node in the task claim's zone to zero — not a cordon; the
    restore fires only when every node the scheduler weighed reports `volume node affinity conflict`, so

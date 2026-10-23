@@ -1,5 +1,14 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
+import {
+    appendFileSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    renameSync,
+    statSync,
+    truncateSync,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { type AddressInfo, createServer as createTcpServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -385,6 +394,10 @@ describe('the continuous claude-code exporter', () => {
             ['cannot be parsed', '{"ino": 1, "ac'],
             ['is null', 'null'],
             ['has no offsets', '{}'],
+            ['has a negative base', '{"ino": INO, "base": -2, "acked": 0, "stopCause": null}'],
+            ['has acked below base', '{"ino": INO, "base": 5, "acked": 2, "stopCause": null}'],
+            ['has a fractional offset', '{"ino": INO, "base": 0, "acked": 1.5, "stopCause": null}'],
+            ['has an object stop cause', '{"ino": INO, "base": 0, "acked": 0, "stopCause": {}}'],
         ])('exports a resumed session whole when its saved state %s, never skipping its tail', async (_name, state) => {
             const h = await harness();
             const file = fileOf(h);
@@ -397,7 +410,10 @@ describe('the continuous claude-code exporter', () => {
             appendFileSync(file, records(4, 3));
             await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
             await kill(lost);
-            writeFileSync(join(h.dir, 'export-state', `${SESSION}.json`), state);
+            writeFileSync(
+                join(h.dir, 'export-state', `${SESSION}.json`),
+                state.replace('INO', String(statSync(file).ino))
+            );
             h.board.down = false;
             const before = h.chunks.length;
             h.start({ RUN_STARTED_AT: new Date().toISOString() });

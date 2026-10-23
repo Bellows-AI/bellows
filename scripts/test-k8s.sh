@@ -2018,20 +2018,16 @@ if [ -n "${runner_log_pid:-}" ]; then
 fi
 
 # The board's jobs, as the admission and recovery phases queue and read them.
-queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: process.argv[2], executor: "claude", repo: process.argv[3] }) })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
-    .catch(() => {});
-' "$BASE/api/jobs" "$1" "$SMOKE_REPO"
+queue_job() { # queue_job <command> -> the new job's id, empty when the board refused it or answered without a string id
+    local id
+    id="$(ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}" node "$REPO/scripts/acceptance-job.mjs" POST "$BASE/api/jobs" id \
+        "$(node -e 'process.stdout.write(JSON.stringify({ command: process.argv[1], executor: "claude", repo: process.argv[2] }))' "$1" "$SMOKE_REPO")")"
+    case "$id" in unread:* | refused:*) ;; *) printf '%s' "$id" ;; esac
 }
 
-job_brief() { # job_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { headers })
-    .then(async (r) => { const j = await r.json(); const l = j.interruptions ?? []; process.stdout.write([j.status, j.attempts, l.length, l[0]?.claimSeq ?? "", l[0]?.reason ?? ""].join("|")); })
-    .catch(() => process.stdout.write("unread"));
-' "$BASE/api/jobs/$1"
+job_brief() { # job_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"; "unread: ..." for a failed or misshapen read
+    # scripts/acceptance-job.mjs validates the shape; a body without its fields is never a brief a check can pass on.
+    ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}" node "$REPO/scripts/acceptance-job.mjs" GET "$BASE/api/jobs/$1" brief
 }
 
 job_output() { # job_output <id>
@@ -3865,44 +3861,35 @@ export ACC_AUTH="${FACTORY_TOKEN:+Bearer $FACTORY_TOKEN}"
 ACC_N=5
 ACC_REL="/task/.lane-acc"
 
-acc_post() { # acc_post <path> [json body] -> the new job's id, empty unless the board answered 201 with one
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { method: "POST", headers, body: process.argv[2] || "{}" })
-    .then(async (r) => { const b = await r.json().catch(() => ({})); if (r.status === 201) process.stdout.write(String(b.id ?? "")); else require("fs").writeFileSync(process.argv[3], r.status + " " + JSON.stringify(b)); })
-    .catch((e) => require("fs").writeFileSync(process.argv[3], "unanswered: " + e.message));
-' "$BASE$1" "${2-}" "$work/acc-post.refusal"
+acc_post() { # acc_post <path> [json body] -> the new job's id, empty unless the board answered 201 with a string one
+    acc_post_id "$BASE" "$1" "${2-}"
 }
 
 acc_session() { # acc_session <id> -> its session id, asked again until the board answered with one
     local got until=$(($(date +%s) + 60))
     while :; do
-        got="$(acc_job_field "$1" sessionId)"
-        case "$got" in '' | unread) ;; *) break ;; esac
+        got="$(acc_job_read "$BASE" "$1" session)"
+        case "$got" in '' | unread*) ;; *) break ;; esac
         [ "$(date +%s)" -lt "$until" ] || break
         sleep 3
     done
     printf '%s' "$got"
 }
 
-acc_job_field() { # acc_job_field <id> <field> -> the field of the job read; "unread" when the read failed
-    node -e "$JS_HEADERS"'
-fetch(process.argv[1], { headers })
-    .then(async (r) => { const j = await r.json(); process.stdout.write(r.status === 200 ? String(j[process.argv[2]] ?? "") : "unread"); })
-    .catch(() => process.stdout.write("unread"));
-' "$BASE/api/jobs/$1" "$2"
-}
-
-
 acc_volume_records() { # acc_volume_records <pod> <id> <session> -> the lines of the session file on the volume; ? when unread
     local out
+    # wc reads the file itself, so a failed read is its own status; one file only, never a glob's several.
     out="$(kubectl exec "$1" -c supervisor -n "$NAMESPACE" --request-timeout=10s -- sh -c \
-        'cat /task/.factory/transcripts/"$1"/projects/*/"$2".jsonl | wc -l' sh "$2" "$3" 2>/dev/null | tr -d ' ')" &&
-        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+        'set -- /task/.factory/transcripts/"$1"/projects/*/"$2".jsonl; [ "$#" -eq 1 ] && [ -f "$1" ] && n="$(wc -l <"$1")" && echo "$n"' sh "$2" "$3" 2>/dev/null)" &&
+        out="${out//[[:space:]]/}" && case "$out" in '' | *[!0-9]*) false ;; esac && printf '%s' "$out" || printf '?'
 }
 
 acc_containers() { # acc_containers <pod> -> the pod's container names; "unread" when kubectl did not answer
-    kubectl get pod "$1" -n "$NAMESPACE" --request-timeout=10s \
-        -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2>/dev/null || printf unread
+    local out
+    # Names a failed read printed before it failed are dropped: only a read that ended well is a listing.
+    out="$(kubectl get pod "$1" -n "$NAMESPACE" --request-timeout=10s \
+        -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2>/dev/null)" || { printf unread; return 0; }
+    printf '%s' "$out"
 }
 
 acc_pvcs() { # acc_pvcs -> "ok <task claims>" or why not: the claims of this namespace must be the state's or a task volume
@@ -3916,11 +3903,18 @@ if (!Array.isArray(claims?.items) || !Array.isArray(volumes?.items)) { process.s
 const state = process.argv[1];
 const bad = [];
 let tasks = 0;
+const pvs = new Map(volumes.items.map((v) => [v?.metadata?.name, v]));
+const shared = (v) => v.spec?.nfs || /nfs|efs/i.test((v.metadata?.annotations?.["pv.kubernetes.io/provisioned-by"] ?? "") + (v.spec?.csi?.driver ?? ""));
 for (const c of claims.items) {
-    const name = c.metadata.name;
+    const name = c?.metadata?.name, modes = c?.spec?.accessModes;
+    // A claim is judged only once its access modes and the volume behind it were both read.
+    if (typeof name !== "string" || !Array.isArray(modes) || modes.length === 0 || !modes.every((m) => typeof m === "string")) { process.stdout.write("unread: malformed claim " + name); process.exit(0); }
+    const volume = pvs.get(c.spec.volumeName);
+    if (typeof c.spec.volumeName !== "string" || !volume) { process.stdout.write("unread: claim " + name + " has no readable volume (" + c.spec.volumeName + ")"); process.exit(0); }
     if (/^factory-task-/.test(name)) tasks++;
     else if (!name.includes(state)) bad.push("claim " + name);
-    if ((c.spec.accessModes ?? []).includes("ReadWriteMany")) bad.push("RWX " + name);
+    if (modes.includes("ReadWriteMany")) bad.push("RWX " + name);
+    if (shared(volume)) bad.push("shared volume " + volume.metadata.name + " behind " + name);
 }
 for (const v of volumes.items) {
     if (v.spec.claimRef?.namespace !== process.argv[2]) continue;
@@ -3974,9 +3968,9 @@ case "$acc_b_end" in
 failed*) ok 'acceptance: b. the task with a failing agent fails' ;;
 *) bad 'acceptance: b. the task with a failing agent fails' "status|attempts|count|claimSeq|reason: $acc_b_end" ;;
 esac
-acc_b_kind="$(acc_job_field "$acc_b" failureKind)"
+acc_b_kind="$(acc_job_read "$BASE" "$acc_b" cause)"
 case "$acc_b_kind" in
-'' | unread) bad 'acceptance: b. the failure carries its cause' "failureKind '$acc_b_kind'" ;;
+'' | unread*) bad 'acceptance: b. the failure carries its cause' "failureKind '$acc_b_kind'" ;;
 *) ok "acceptance: b. the failure carries its cause ($acc_b_kind)" ;;
 esac
 acc_c="$(acc_post "/api/jobs/$acc_b/retry")"

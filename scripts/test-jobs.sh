@@ -2302,21 +2302,12 @@ acc_job() { # acc_job <command> -> the new job's id (create_job records it for t
 }
 
 acc_post() { # acc_post <path> [json] -> the new job's id, empty unless the board answered 201 with one; why in $work/acc-post.refusal
-    local r payload="${2-}"
-    [ -n "$payload" ] || payload='{}'
-    r="$(api POST "$1" "$payload")"
-    if [ "$(status "$r")" = 201 ]; then
-        field "$(body "$r")" id | tee -a "$work/created-jobs"
-    else
-        printf '%s' "$r" >"$work/acc-post.refusal"
-    fi
+    # acceptance-lib.sh does the POST and the shape check: an id that is not a string is a refusal.
+    acc_post_id "$BASE" "$1" "${2-}" | tee -a "$work/created-jobs"
 }
 
-acc_brief() { # acc_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"; "unread" when the read failed
-    local r
-    r="$(api GET "/api/jobs/$1")"
-    [ "$(status "$r")" = 200 ] || { printf unread; return; }
-    printf '%s|%s|%s' "$(field "$(body "$r")" status)" "$(field "$(body "$r")" attempts)" "$(interruptions_of "$(body "$r")")"
+acc_brief() { # acc_brief <id> -> "status|attempts|interruptions|first claimSeq|first reason"; "unread: ..." when the read failed or was misshapen
+    acc_job_read "$BASE" "$1" brief
 }
 
 acc_await() { # acc_await <id> <case pattern> <seconds> -> the last brief; returns 0 once it matched
@@ -2339,8 +2330,8 @@ acc_check() { # acc_check <name> <got> <want>
 acc_session() { # acc_session <id> -> its session id, asked again until the board answered with one
     local got until=$(($(date +%s) + 60))
     while :; do
-        got="$(field "$(body "$(api GET "/api/jobs/$1")")" sessionId)"
-        [ -z "$got" ] || break
+        got="$(acc_job_read "$BASE" "$1" session)"
+        case "$got" in '' | unread*) ;; *) break ;; esac
         [ "$(date +%s)" -lt "$until" ] || break
         sleep 3
     done
@@ -2350,8 +2341,9 @@ acc_session() { # acc_session <id> -> its session id, asked again until the boar
 acc_volume_records() { # acc_volume_records <id> <session> -> the lines of the session file on the volume; ? when unread
     local out
     lane_use "$1"
-    out="$(lane_run 'cat /task/.factory/transcripts/"$1"/projects/*/"$2".jsonl | wc -l' "$1" "$2" 2>/dev/null | tr -d ' ')" &&
-        [ -n "$out" ] && printf '%s' "$out" || printf '?'
+    # wc reads the file itself, so a failed read is its own status; one file only, never a glob's several.
+    out="$(lane_run 'set -- /task/.factory/transcripts/"$1"/projects/*/"$2".jsonl; [ "$#" -eq 1 ] && [ -f "$1" ] && n="$(wc -l <"$1")" && echo "$n"' "$1" "$2" 2>/dev/null)" &&
+        out="${out//[[:space:]]/}" && case "$out" in '' | *[!0-9]*) false ;; esac && printf '%s' "$out" || printf '?'
 }
 
 acc_ready() { # acc_ready <release path> -> 0 once the stub marked itself waiting there, 1 when absent, 2 unconfirmed
@@ -2370,7 +2362,10 @@ acc_barrier() { # acc_barrier <id> <release path> -> success once the volume exi
 }
 
 acc_containers() { # acc_containers <id> <role> -> the ids of the group's containers of that role; "unread" when docker did not answer
-    timeout 30 docker ps -aq --filter "label=factory.job=$1" --filter "label=factory.role=$2" 2>/dev/null || printf unread
+    local out
+    # Whatever a failed listing printed first is dropped: only a listing that ended well is one.
+    out="$(timeout 30 docker ps -aq --filter "label=factory.job=$1" --filter "label=factory.role=$2" 2>/dev/null)" || { printf unread; return 0; }
+    printf '%s' "$out"
 }
 
 acc_mounts() { # acc_mounts <agent container> <task volume> <out file> -> "ok" or why not: every mount a named local volume, the task volume among them
@@ -2457,9 +2452,9 @@ case "$acc_b_end" in
 failed*) ok 'acceptance: b. the task with a failing agent fails' ;;
 *) bad 'acceptance: b. the task with a failing agent fails' "status|attempts|count|claimSeq|reason: $acc_b_end" ;;
 esac
-acc_b_kind="$(field "$(body "$(api GET "/api/jobs/$acc_b")")" failureKind)"
+acc_b_kind="$(acc_job_read "$BASE" "$acc_b" cause)"
 case "$acc_b_kind" in
-'') bad 'acceptance: b. the failure carries its cause' "failureKind '$acc_b_kind'" ;;
+'' | unread*) bad 'acceptance: b. the failure carries its cause' "failureKind '$acc_b_kind'" ;;
 *) ok "acceptance: b. the failure carries its cause ($acc_b_kind)" ;;
 esac
 acc_c="$(acc_post "/api/jobs/$acc_b/retry")"

@@ -1,9 +1,8 @@
-// The continuous claude-code transcript exporter: runs beside the agent as its own container of the
-// run's pod (docker: its container group), under the task supervisor, over the same volume, tails every session file under
-// <CLAUDE_TRANSCRIPT_DIR>/projects and uploads byte-range chunks of it, cut at record boundaries,
-// through the driver's run-control channel (the driver relays them to the board's chunk route).
-// The raw files on the volume are the spool: nothing is ever dropped, an unacknowledged byte just
-// stays on disk and is retried.
+// The continuous claude-code transcript exporter: runs beside the agent as its own container of the run's pod
+// (docker: its container group), under the task supervisor, over the same volume, tails every session file under
+// <CLAUDE_TRANSCRIPT_DIR>/projects and uploads byte-range chunks of it, cut at record boundaries, through the
+// driver's run-control channel (the driver relays them to the board's chunk route). The raw files on the volume
+// are the spool: nothing is ever dropped, an unacknowledged byte just stays on disk and is retried.
 //
 // Environment (set by the driver; paths and literals, no credential):
 //   CLAUDE_TRANSCRIPT_DIR  — the thread's transcript directory (the runner's CLAUDE_CONFIG_DIR).
@@ -32,11 +31,11 @@
 //   EXPORT_DRAIN_GIVEUP_MS — once drained, how long an unreachable driver is tolerated before the
 //                            exporter ends with its bytes left on the volume for the next claim.
 //
-// Protocol (all keyed by the token the relay, or the one-shot's env, supplies): PUT /export/chunk?session&offset (raw bytes) -> 200 stored, 413
-// refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a session; POST
-// /export/state reports the vitals. `drain.json` ({state, cause}, written by the supervisor) says the
-// agent is gone: flush everything, close every session's manifest, report `done`, exit 0. A token the
-// endpoint no longer knows, or an endpoint dead past the give-up window, ends the exporter too.
+// Protocol (all keyed by the token the relay, or the one-shot's env, supplies): PUT /export/chunk?session&offset
+// (raw bytes) -> 200 stored, 413 refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a
+// session; POST /export/state reports the vitals. `drain.json` ({state, cause}, written by the supervisor) says the
+// agent is gone: flush everything, close every session's manifest, report `done`, exit 0. A token the endpoint no
+// longer knows, or an endpoint dead past the give-up window, ends the exporter too.
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -197,7 +196,11 @@ const loadState = (session) => {
     } catch (e) {
         return e?.code === 'ENOENT' ? null : { unreadable: true };
     }
-    return ['ino', 'base', 'acked'].every((key) => Number.isFinite(state?.[key])) ? state : { unreadable: true };
+    const { ino, base, acked, stopCause } = state ?? {};
+    const whole = (value) => Number.isSafeInteger(value) && value >= 0;
+    return [ino, base, acked].every(whole) && acked >= base && (stopCause === null || typeof stopCause === 'string')
+        ? state
+        : { unreadable: true };
 };
 
 const saveState = (track) => {
@@ -209,35 +212,26 @@ const saveState = (track) => {
     fs.renameSync(tmp, file);
 };
 
-const listJsonl = (dir) => {
+const listDir = (dir, keep) => {
     try {
-        return fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
+        return fs.readdirSync(dir, { withFileTypes: true }).filter(keep);
     } catch {
         return [];
     }
 };
+
+const listJsonl = (dir) => listDir(dir, (e) => e.name.endsWith('.jsonl')).map((e) => e.name);
 
 // Every session file the CLI keeps: projects/<dir>/<session>.jsonl and, in the newer layout, its
 // subagents' own files under projects/<dir>/<session>/subagents/. Each is a session of its own.
 const discover = () => {
     const projects = path.join(DIR, 'projects');
     const found = [];
-    let dirs = [];
-    try {
-        dirs = fs.readdirSync(projects, { withFileTypes: true }).filter((e) => e.isDirectory());
-    } catch {
-        return found;
-    }
-    for (const dir of dirs) {
+    const isDir = (e) => e.isDirectory();
+    for (const dir of listDir(projects, isDir)) {
         const root = path.join(projects, dir.name);
         for (const name of listJsonl(root)) found.push(path.join(root, name));
-        let entries = [];
-        try {
-            entries = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
-        } catch {
-            entries = [];
-        }
-        for (const entry of entries) {
+        for (const entry of listDir(root, isDir)) {
             const sub = path.join(root, entry.name, 'subagents');
             for (const name of listJsonl(sub)) found.push(path.join(sub, name));
         }

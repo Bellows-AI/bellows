@@ -20,3 +20,19 @@ acc_transcript() { # acc_transcript <board base> <id> <session> <first> <last> [
     # a read that did not answer 200 with a well-formed body says "unread: ..." and is never "no transcript".
     node "$(dirname "${BASH_SOURCE[0]}")/acceptance-transcript.mjs" "$1/api/jobs/$2/artifacts" "$3" "$4" "$5" "${6-}"
 }
+
+acc_job_read() { # acc_job_read <board base> <id> <brief|session|cause> -> the validated value, or "unread: <why>"
+    # "brief" is "status|attempts|interruptions|first claimSeq|first reason". A non-200, a body that is not a
+    # job object or a field of the wrong shape says "unread"; it is never a value a check can pass on.
+    node "$(dirname "${BASH_SOURCE[0]}")/acceptance-job.mjs" GET "$1/api/jobs/$2" "$3"
+}
+
+acc_post_id() { # acc_post_id <board base> <path> [json] -> the new job's id, empty unless the board answered 201 with one
+    # Why not, in $work/acc-post.refusal. Callers read $work from their lane.
+    local out
+    out="$(node "$(dirname "${BASH_SOURCE[0]}")/acceptance-job.mjs" POST "$1$2" id "${3-}")"
+    case "$out" in
+    unread:* | refused:*) printf '%s' "$out" >"$work/acc-post.refusal" ;;
+    *) printf '%s' "$out" ;;
+    esac
+}
