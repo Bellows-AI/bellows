@@ -13,7 +13,11 @@ export interface RunLock {
 
 /** The one connection that holds the lock; `max: 1` keeps the lock on a session nothing else reuses. */
 export async function acquireRunLock(baseUrl: string, name: string): Promise<RunLock> {
-    const sql: Sql = postgres(baseUrl, { max: 1, onnotice: () => {} });
+    // The lock lives as long as this session: no idle or lifetime timer may recycle it, whatever the URL says.
+    const url = new URL(baseUrl);
+    url.searchParams.delete('idle_timeout');
+    url.searchParams.delete('max_lifetime');
+    const sql: Sql = postgres(url.toString(), { max: 1, idle_timeout: 0, max_lifetime: null, onnotice: () => {} });
     try {
         const [row] = await sql<{ locked: boolean }[]>`
             select pg_try_advisory_lock(hashtextextended(${`factory-test-db:${name}`}, 0)) as locked

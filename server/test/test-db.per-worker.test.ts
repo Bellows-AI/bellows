@@ -35,6 +35,22 @@ describe('per-worker test databases', () => {
         for (const id of [0, -1, 1.5, Number.NaN]) expect(() => workerDatabaseName(BASE, id)).toThrow(/worker id/);
     });
 
+    it('refuses a base that looks like a derived name, so two runs cannot drop each other', () => {
+        for (const name of ['factory_tpl_test', 'factory_w2_test']) {
+            const url = `postgres://factory:factory@127.0.0.1:5432/${name}`;
+            expect(() => testDatabaseNames(url)).toThrow(/derived test database/);
+            expect(() => workerDatabaseName(url, 1)).toThrow(/derived test database/);
+        }
+    });
+
+    it('refuses a base whose derived names would pass the 63-byte identifier limit', () => {
+        const at = (stem: number) => `postgres://u:p@h/${'a'.repeat(stem)}_test`;
+        expect(testDatabaseNames(at(54)).template).toHaveLength(63);
+        const long = at(55);
+        expect(() => testDatabaseNames(long)).toThrow(/exceeds 63 bytes/);
+        expect(() => workerDatabaseName(at(56), 1)).toThrow(/exceeds 63 bytes/);
+    });
+
     it('names the environment variable that carries the base URL to the workers', () => {
         expect(BASE_URL_ENV).toBe('FACTORY_TEST_DB_BASE_URL');
     });

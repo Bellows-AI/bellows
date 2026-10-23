@@ -2,7 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
-import { BASE_URL_ENV, templateUrl, testDatabaseNames, workerDatabaseName } from './database-names.js';
+import {
+    BASE_URL_ENV,
+    scratchDatabaseName,
+    scratchUrl,
+    testDatabaseNames,
+    workerDatabaseName,
+} from './database-names.js';
 import { useTestDb } from './harness.js';
 
 // Creating and dropping a database waits on the server's own I/O, which the other workers keep busy.
@@ -14,16 +20,15 @@ const db = useTestDb();
 // Another worker's rows must survive this worker's per-test truncate. The sibling here is a scratch
 // clone of the run's template, standing in for a concurrent worker's database.
 describe.skipIf(!baseUrl)('worker database isolation', () => {
-    const sibling = `${testDatabaseNames(baseUrl as string).template.replace(/_tpl_test$/, '')}_iso${randomUUID()
-        .replaceAll('-', '')
-        .slice(0, 8)}_test`;
+    const tag = `iso${randomUUID().replaceAll('-', '').slice(0, 8)}`;
+    const sibling = scratchDatabaseName(baseUrl as string, tag);
     let admin: Sql;
     let other: Sql;
 
     beforeAll(async () => {
         admin = postgres(baseUrl as string, { max: 1, onnotice: () => {} });
         await admin.unsafe(`create database "${sibling}" template "${testDatabaseNames(baseUrl as string).template}"`);
-        other = postgres(new URL(`/${sibling}`, templateUrl(baseUrl as string)).toString(), { max: 1 });
+        other = postgres(scratchUrl(baseUrl as string, tag), { max: 1 });
         await other`insert into organization (id, name) values ('survivor', 'survivor')`;
     }, DDL_TIMEOUT);
 
