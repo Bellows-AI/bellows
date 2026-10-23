@@ -10,7 +10,7 @@
  * glitches (a call that throws or answers nothing, shorter than the lease: an inconclusive read).
  */
 import { takeoverBoundMs } from '../../src/supervisor-plan.js';
-import { type Group, nap, Sim, type Timing, until } from './takeover-sim.js';
+import { type Group, nap, type Row, Sim, type Timing, until } from './takeover-sim.js';
 
 /** mulberry32: small, seedable, the same stream on every platform. */
 export function rng(seed: number) {
@@ -63,7 +63,15 @@ export interface Plan {
     /** When the publish latch opens. */
     publishAtMs: number;
     faults: Fault[];
+    /** Host stall stand-in: the process busy-waits `ms` once, `afterMs` after the board hands out claim `claimSeq`. */
+    hostStall?: { claimSeq: number; afterMs: number; ms: number };
+    /** Product-bug stand-in, not a fault: the live lease lapses `afterMs` after claim `claimSeq`, with nothing in the host to blame. */
+    leaseLapse?: { claimSeq: number; afterMs: number };
 }
+
+/** The loop watcher's tick, and the least lag it counts as a stall (a smaller one is scheduling noise). */
+const STALL_TICK_MS = 25;
+const STALL_MIN_MS = 30;
 
 /** At most four infrastructure hits: the board's interruption budget is five. */
 const MAX_HITS = 4;
@@ -152,11 +160,56 @@ export class Cluster {
     }
 }
 
+/** Holds the whole process, as a host that takes the CPU away does: no timer, socket or heartbeat runs meanwhile. */
+function busyWait(ms: number) {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+        /* held on purpose */
+    }
+}
+
+/** A stretch in which the event loop did not turn: `ms` long, ending at `at` (wall clock). */
+export interface Stall {
+    at: number;
+    ms: number;
+}
+
+/**
+ * The least stalled loop time that could explain a lost lease or orphan bound: a heartbeat is due every third of a
+ * lease (every two seconds in setup), the supervisor answers a lost driver after the orphan bound less one poll, and
+ * a released group waits one rebind grace for a newer holder. A lower bound on purpose: the ticker sees the loop,
+ * not every turn of a heartbeat's call, so a stall near the margin is counted rather than judged.
+ */
+export const stallMarginMs = (t: Timing) =>
+    Math.min((t.leaseSeconds * 1_000) / 3, t.orphanMs - t.controlMs, t.rebindGraceMs);
+
+/** How much of the window `[from, to]` the loop spent stalled. */
+export function stalledIn(stalls: readonly Stall[], from: number, to: number): number {
+    return stalls.reduce((sum, s) => sum + Math.max(0, Math.min(s.at, to) - Math.max(s.at - s.ms, from)), 0);
+}
+
+/**
+ * Whether the stalls inside an interruption's own silence (the lease's last renewal to its recording, a tick of slack
+ * for a stall ending in the recording turn) reach the margin. Many slips of a few tens of milliseconds are scheduling
+ * noise: one stall must also be a real share of the margin. A stall outside that silence explains nothing.
+ */
+export function stallExplains(stalls: readonly Stall[], i: { since: number; at: number }, margin: number) {
+    const lost = stalledIn(stalls, i.since, i.at + STALL_TICK_MS);
+    const worst = worstStallIn(stalls, i.since, i.at);
+    return { lost, worst, explained: lost >= margin && worst >= margin / 4 };
+}
+
+/** The longest single stall in the window `[from, to]`. */
+export const worstStallIn = (stalls: readonly Stall[], from: number, to: number) =>
+    Math.max(0, ...stalls.filter((s) => s.at > from && s.at - s.ms < to).map((s) => s.ms));
+
 export interface Verdict {
     seed: number;
     plan: Plan;
     trace: string[];
     violations: string[];
+    /** Interruptions no fault hit that a host stall of at least the plan's margin explains: logged, not failed. */
+    excused: string[];
 }
 
 /** One run: the plan played against the simulation, then the invariants. */
@@ -255,14 +308,40 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
             }, plan.agentMs);
         }
     }, 20);
-    // A host too loaded to keep a heartbeat in time loses leases nobody injected; such a run cannot say whom to blame.
+    // A host too loaded to turn the loop in time loses leases nobody injected: the stalls are kept so an interruption
+    // no fault hit can be matched against the loop time lost in the silence before it.
+    const stalls: Stall[] = [];
     let lastBeat = Date.now();
-    let worstLag = 0;
     const lagWatch = setInterval(() => {
-        worstLag = Math.max(worstLag, Date.now() - lastBeat - 50);
-        lastBeat = Date.now();
-    }, 50);
+        const now = Date.now();
+        const lag = now - lastBeat - STALL_TICK_MS;
+        if (lag >= STALL_MIN_MS) stalls.push({ at: now, ms: lag });
+        lastBeat = now;
+    }, STALL_TICK_MS);
     const latch = setTimeout(() => sim.release(), plan.publishAtMs);
+    // Both are timed from a claim, not the run's start: a loaded host reaches the claim late, and the point is the lease.
+    const afterClaim = (at: { claimSeq: number; afterMs: number } | undefined, act: () => void) => {
+        if (!at) return;
+        const watch = setInterval(() => {
+            if (!sim.claimSeqs.includes(at.claimSeq)) return;
+            clearInterval(watch);
+            timers.push(setTimeout(act, at.afterMs));
+        }, 10);
+        return watch;
+    };
+    const timers: ReturnType<typeof setTimeout>[] = [];
+    // After a stall the driver's overdue heartbeat can run before its overdue claim poll and renew the lease unseen;
+    // the stall is repeated until the board has reclaimed, so what the run proves does not hang on that timer order.
+    const stallUntilReclaimed = async (ms: number) => {
+        for (let i = 0; i < 6 && sim.row.interruptions.length === 0; i++) {
+            busyWait(ms);
+            await nap(200);
+        }
+    };
+    const watches = [
+        afterClaim(plan.hostStall, () => void stallUntilReclaimed(plan.hostStall!.ms)),
+        afterClaim(plan.leaseLapse, sim.expireLease),
+    ];
     void rr;
 
     try {
@@ -299,23 +378,42 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         clearInterval(agentWatch);
         clearInterval(lagWatch);
         clearTimeout(latch);
+        for (const w of watches) clearInterval(w);
+        for (const t of timers) clearTimeout(t);
     }
 
     // A heartbeat call that hangs for the glitch (its own cadence is a third of the lease, twice that in setup)
     // delays the next beat past what the lease leaves, so the board may rightly reclaim it.
-    const leaseMs = plan.timing.leaseSeconds * 1_000;
     const blackout = plan.faults.some(
         (f) => f.kind === 'glitch' && f.mode === 'timeout' && f.ops.includes('heartbeat')
     );
-    const jittery = worstLag > leaseMs / 3 || blackout;
-    if (jittery)
-        trace.push(
-            `host lag ${worstLag}ms, heartbeat blackout ${blackout}: unexplained lease losses are not blamed on the product`
+    const margin = stallMarginMs(plan.timing);
+    const excused: string[] = [];
+    const explained = (i: Row['interruptions'][number]) => {
+        if (blackout) {
+            excused.push(`interruption of claim ${i.claimSeq} (${i.reason}): a heartbeat call hung in this plan`);
+            return true;
+        }
+        // The silence before the board recorded it, and a tick of slack for the stall that ends in the recording turn.
+        const from = i.since;
+        const { lost, worst, explained: hostDid } = stallExplains(stalls, i, margin);
+        if (!hostDid) {
+            trace.push(
+                `no host stall explains claim ${i.claimSeq}: ${lost}ms stalled in ${i.at - from}ms (worst ${worst}ms), margin ${margin}ms`
+            );
+            return false;
+        }
+        excused.push(
+            `interruption of claim ${i.claimSeq} (${i.reason}): the loop stalled ${lost}ms in its silence, margin ${margin}ms`
         );
-    const violations = check(sim, required, allowed, jittery);
-    const verdict = {
+        return true;
+    };
+    const violations = check(sim, required, allowed, explained);
+    if (excused.length) trace.push(...excused.map((m) => `host stall: ${m}`));
+    const verdict: Verdict = {
         seed,
         plan,
+        excused,
         trace: [
             ...trace,
             '--- driver and board',
@@ -332,16 +430,21 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
 }
 
 /** What every run owes, whatever hit it. */
-function check(sim: Sim, required: Set<number>, allowed: Set<number>, jittery: boolean): string[] {
+function check(
+    sim: Sim,
+    required: Set<number>,
+    allowed: Set<number>,
+    explained: (i: Row['interruptions'][number]) => boolean
+): string[] {
     const bad: string[] = [];
     const row = sim.row;
     const recorded = row.interruptions.map((i) => i.claimSeq);
     if (row.status !== 'succeeded') bad.push(`the task ended ${row.status}, not succeeded`);
     for (const c of required)
         if (!recorded.includes(c)) bad.push(`claim ${c} was hit by a fault but no interruption was recorded for it`);
-    for (const c of recorded)
-        if (!jittery && !required.has(c) && !allowed.has(c))
-            bad.push(`interruption of claim ${c} that no injected fault hit`);
+    for (const i of row.interruptions)
+        if (!required.has(i.claimSeq) && !allowed.has(i.claimSeq) && !explained(i))
+            bad.push(`interruption of claim ${i.claimSeq} that no injected fault hit`);
     if (new Set(recorded).size !== recorded.length) bad.push(`an attempt interrupted twice: ${recorded.join(',')}`);
     if (sim.claimSeqs.some((c, i) => c !== i + 1))
         bad.push(`claim sequence not strictly increasing: ${sim.claimSeqs.join(',')}`);
