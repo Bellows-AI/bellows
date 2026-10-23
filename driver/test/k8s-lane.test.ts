@@ -711,4 +711,29 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(bench).toContain('held_s');
         expect(bench).toContain('settled_s');
     });
+
+    // Codex round 1 on S6: evidence from an earlier run or an unconfirmed kill is never evidence.
+    it('starts from a fresh directory and drops every destination file before a scrape', () => {
+        expect(bench).toContain('rm -rf -- "${BENCH_DIR:?}" "${BENCH_TSV:?}"');
+        expect(bench.indexOf('rm -rf -- "${BENCH_DIR:?}"')).toBeLessThan(bench.indexOf('mkdir -p "$BENCH_DIR"'));
+        const scrape = bench.slice(bench.indexOf('bench_scrape() {'), bench.indexOf('bench_count() {'));
+        expect(scrape.indexOf('rm -f -- "${list:?}"')).toBeLessThan(scrape.indexOf('bench_pods "$comp"'));
+        expect(scrape.indexOf('rm -f -- "${file:?}.prom" "${file:?}.at"')).toBeLessThan(scrape.indexOf('kubectl exec'));
+        expect(scrape).toContain('date +%s >"$file.at"');
+    });
+
+    it('records each pod answer time and no shared window', () => {
+        expect(bench).not.toMatch(/bench_meta "\$cell" [ab]_at/);
+    });
+
+    it('ends a recovery cell whose driver kill is not confirmed', () => {
+        expect(bench).toContain('bench_meta "$cell" kill_confirmed yes');
+        const refused = bench.slice(bench.indexOf('bench_meta "$cell" kill_confirmed no'));
+        expect(refused.slice(0, 600)).toContain('return 1');
+        expect(bench).toMatch(/kill_driver_pods; \}/);
+    });
+
+    it('moves the pod timeline into place only when it was read', () => {
+        expect(bench).toContain('mv "$BENCH_DIR/$cell.pods.tsv.tmp" "$BENCH_DIR/$cell.pods.tsv"');
+    });
 });

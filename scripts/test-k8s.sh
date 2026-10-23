@@ -4354,6 +4354,8 @@ echo '# bench'
 
 BENCH_DIR="${TIMINGS_FILE%.tsv}.bench"
 BENCH_TSV="${TIMINGS_FILE%.tsv}.bench.tsv"
+# A fresh directory: a file left by an earlier run is never evidence for this one.
+rm -rf -- "${BENCH_DIR:?}" "${BENCH_TSV:?}"
 mkdir -p "$BENCH_DIR"
 bench_sampler_pid=''
 BENCH_TASK_S=60
@@ -4408,17 +4410,23 @@ BENCH_SCRAPE_JS='fetch(process.argv[1], { headers: { authorization: "Bearer " + 
     .then(async (r) => { if (r.status !== 200) process.exit(3); process.stdout.write(await r.text()); })
     .catch(() => process.exit(4));'
 
-bench_scrape() { # bench_scrape <cell> <s|a|b|c> -> every ready board and driver pod's metrics in <cell>.<board|driver>-<pod>.<stage>.prom; a pod that did not answer leaves no file
-    local spec comp name container port path pod file
+bench_scrape() { # bench_scrape <cell> <s|a|b|c> -> the pods listed (<cell>.<board|driver>.<stage>.list) and each one's metrics (<pod>.prom) with the epoch second it answered (<pod>.at); every file is dropped first, so a scrape that fails leaves none
+    local spec comp name container port path pod pods file list
     for spec in dashboard:board:dashboard:8080:/api/metrics driver:driver:driver:9464:/metrics; do
         IFS=: read -r comp name container port path <<<"$spec"
-        for pod in $(bench_pods "$comp"); do
-            file="$BENCH_DIR/$1.$name-$pod.$2.prom"
-            if bounded 30 kubectl exec "$pod" -c "$container" -n "$NAMESPACE" --request-timeout=10s -- node -e "$BENCH_SCRAPE_JS" "http://127.0.0.1:$port$path" >"$file.tmp" 2>/dev/null &&
-                [ -s "$file.tmp" ]; then
-                mv "$file.tmp" "$file"
+        list="$BENCH_DIR/$1.$name.$2.list"
+        rm -f -- "${list:?}"
+        pods="$(bench_pods "$comp")" || continue
+        printf '%s\n' "$pods" >"$list"
+        for pod in $pods; do
+            file="$BENCH_DIR/$1.$name-$pod.$2"
+            rm -f -- "${file:?}.prom" "${file:?}.at" "${file:?}.prom.tmp"
+            if bounded 30 kubectl exec "$pod" -c "$container" -n "$NAMESPACE" --request-timeout=10s -- node -e "$BENCH_SCRAPE_JS" "http://127.0.0.1:$port$path" >"$file.prom.tmp" 2>/dev/null &&
+                [ -s "$file.prom.tmp" ]; then
+                date +%s >"$file.at"
+                mv "$file.prom.tmp" "$file.prom"
             else
-                rm -f -- "${file:?}.tmp"
+                rm -f -- "${file:?}.prom.tmp" "${file:?}.at"
             fi
         done
     done
@@ -4531,8 +4539,6 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
         b_at="$(date +%s)"
         bench_scrape "$cell" b
         running_at_b="$(bench_count "$ids_sql" "status = 'running'")" || running_at_b=''
-        bench_meta "$cell" a_at "$a_at"
-        bench_meta "$cell" b_at "$b_at"
         bench_meta "$cell" running_at_b "$running_at_b"
         [ "$running" = yes ] && ok "bench $cell: all $n tasks run at once" || bad "bench $cell: all $n tasks run at once" "$running_at_b of $n running at the steady scrape"
         settle_deadline=420
@@ -4564,7 +4570,17 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
         t_kill="$(date +%s)"
         bench_meta "$cell" kill_at "$t_kill"
         bench_meta "$cell" victim_tasks "$victim_count"
-        if [ "$r" = 1 ]; then kill_driver_pods; else kill_driver_pods "pod/$victim_pod"; fi
+        if { [ "$r" = 1 ] && kill_driver_pods; } || { [ "$r" != 1 ] && kill_driver_pods "pod/$victim_pod"; }; then
+            bench_meta "$cell" kill_confirmed yes
+        else
+            # No recovery evidence from a kill nobody confirmed: the cell ends here and says so.
+            bench_meta "$cell" kill_confirmed no
+            bad "bench $cell: the driver kill is confirmed" "the driver identity read or the termination proof failed"
+            bench_wait $((BENCH_LEASE_S + 600)) "$ids_sql" 'finished_at is not null' "$n" || true
+            bench_stop_sampler
+            bench_dump "$cell" "$ids_sql"
+            return 1
+        fi
         held_deadline=$((t_kill + BENCH_LEASE_S + 200))
         while [ "$(date +%s)" -lt "$held_deadline" ]; do
             got="$(bench_psql "select count(*) from job j join (values $moved) v(id, seq) on j.id = v.id::uuid where j.claim_seq > v.seq")" || got=''
@@ -4596,8 +4612,12 @@ bench_cell() { # bench_cell <throughput|recovery> <n> <r>
     bench_stop_sampler
     bench_scrape "$cell" c
     bench_dump "$cell" "$ids_sql"
-    bounded 40 kubectl get events -n "$NAMESPACE" -o json --request-timeout=20s 2>/dev/null |
-        node scripts/k8s-pod-timeline.mjs "$since" '^factory-runner-' >"$BENCH_DIR/$cell.pods.tsv" 2>/dev/null
+    if bounded 40 kubectl get events -n "$NAMESPACE" -o json --request-timeout=20s 2>/dev/null |
+        node scripts/k8s-pod-timeline.mjs "$since" '^factory-runner-' >"$BENCH_DIR/$cell.pods.tsv.tmp" 2>/dev/null; then
+        mv "$BENCH_DIR/$cell.pods.tsv.tmp" "$BENCH_DIR/$cell.pods.tsv"
+    else
+        rm -f -- "${BENCH_DIR:?}/$cell.pods.tsv.tmp"
+    fi
 }
 
 BENCH_POLL_MS="$(bench_default pollMs)"

@@ -8,12 +8,18 @@
 //
 // Per cell `<c>`, in <dir>:
 //   <c>.meta.tsv                  key<TAB>value: kind (throughput|recovery), n, r, the effective driver values,
-//                                 a_at/b_at (epoch seconds of the two steady-state scrapes), running_at_b,
-//                                 held_s/settled_s (recovery cells)
+//                                 running_at_b, kill_confirmed/held_s/settled_s (recovery cells)
 //   <c>.db.tsv                    header, then id, created, started, finished (epoch seconds), status, attempts, claim_seq
 //   <c>.sampler.tsv               epoch|lock waiters|ungranted locks|active backends, or epoch|?
 //   <c>.pods.tsv                  scripts/k8s-pod-timeline.mjs output for the cell's runner pods
+//   <c>.<board|driver>.<s|a|b|c>.list         the pods listed at that stage, one a line (absent when the list was not read)
 //   <c>.<board|driver>-<pod>.<s|a|b|c>.prom   one scrape: s before queueing, a all running, b thirty seconds on, c settled
+//   <c>.<board|driver>-<pod>.<s|a|b|c>.at     the epoch second that scrape answered
+//
+// Every figure needs all its evidence: one board pod and R driver pods, each present in every stage with its
+// scrape and time, N distinct task rows with their timestamps, and the metric families it is computed from.
+// Rates divide each pod's own delta by that pod's own observation interval, and a per-task rate divides by the
+// task-seconds that ran inside that interval, not by the count at one instant.
 //
 // Saturation, by rule: throughput(N) / throughput(N/2) < 1.2 (when the N/2 cell of the same replica
 // count exists), or the claim-wait p95 above twice the N=1 cell's, or any task stalled or failed.
@@ -72,47 +78,70 @@ export function parseProm(text) {
 }
 
 const seriesKey = (s) => `${s.name}|${JSON.stringify(Object.entries(s.labels).sort())}`;
+const STAGES = ['s', 'a', 'b', 'c'];
 
-/**
- * The scrapes of one component at one stage as {pod: samples}; null when a pod has the other stage
- * missing or unparseable. Returns the per-series deltas summed over pods, or null (`?`).
- */
-function loadPods(cell, comp, stage, files) {
-    const pods = new Map();
-    for (const f of files) {
-        const m = new RegExp(`^${cell.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.${comp}-(.+)\\.${stage}\\.prom$`).exec(f);
-        if (m) pods.set(m[1], parseProm(read(f) ?? ''));
+/** The pods of one component at every stage, each with its samples and answer time; null unless all of it is present and agrees. */
+function loadSet(cell, comp, expected) {
+    const set = new Map();
+    let names = null;
+    for (const stage of STAGES) {
+        const list = read(`${cell}.${comp}.${stage}.list`);
+        if (list === null) return null;
+        const pods = list.split('\n').filter((l) => l !== '').sort();
+        if (pods.length !== expected || new Set(pods).size !== expected) return null;
+        if (names !== null && names.join('\n') !== pods.join('\n')) return null;
+        names = pods;
+        for (const pod of pods) {
+            const prom = read(`${cell}.${comp}-${pod}.${stage}.prom`);
+            const at = Number(read(`${cell}.${comp}-${pod}.${stage}.at`));
+            const samples = prom === null ? [] : parseProm(prom);
+            if (samples.length === 0 || !Number.isFinite(at) || at <= 0) return null;
+            set.set(`${pod}/${stage}`, { samples, at });
+        }
     }
-    return pods;
+    return { pods: names, get: (pod, stage) => set.get(`${pod}/${stage}`) };
 }
 
-/** Per-series delta end - start across the pods of one component; null when any read is unconfirmed. */
-function delta(cell, comp, from, to, files) {
-    const a = loadPods(cell, comp, from, files);
-    const b = loadPods(cell, comp, to, files);
-    if (a.size === 0 || a.size !== b.size) return null;
+/**
+ * The per-series delta from one stage to another, summed over pods, and each pod's own interval. Null (`?`)
+ * when a counter went down, a series vanished, or a pod lacks a required family at the end (or at both ends
+ * when `both` is set).
+ */
+function delta(set, from, to, required, both = false) {
+    if (set === null) return null;
     const total = new Map();
-    for (const [pod, end] of b) {
-        const start = a.get(pod);
-        if (!start || start.length === 0 || end.length === 0) return null;
-        const before = new Map(start.map((s) => [seriesKey(s), s]));
-        for (const s of end) {
-            const k = seriesKey(s);
-            const first = before.get(k);
-            const base = first ? first.value : 0;
-            if (s.value < base) return null; // a counter that went down: a restart, so no delta
-            const prev = total.get(k) ?? { name: s.name, labels: s.labels, value: 0 };
-            prev.value += s.value - base;
-            total.set(k, prev);
+    const pods = [];
+    for (const pod of set.pods) {
+        const start = set.get(pod, from);
+        const end = set.get(pod, to);
+        for (const name of required) {
+            if (!end.samples.some((x) => x.name === name)) return null;
+            if (both && !start.samples.some((x) => x.name === name)) return null;
         }
-        for (const [k, s] of before) if (!end.some((e) => seriesKey(e) === k)) total.set(`${k}#gone`, { ...s, value: Number.NaN });
+        const before = new Map(start.samples.map((x) => [seriesKey(x), x]));
+        const own = [];
+        for (const x of end.samples) {
+            const first = before.get(seriesKey(x));
+            const base = first ? first.value : 0;
+            if (x.value < base) return null; // a counter that went down: a restart, so no delta
+            own.push({ name: x.name, labels: x.labels, value: x.value - base });
+            const prev = total.get(seriesKey(x)) ?? { name: x.name, labels: x.labels, value: 0 };
+            prev.value += x.value - base;
+            total.set(seriesKey(x), prev);
+        }
+        const ended = new Set(end.samples.map(seriesKey));
+        if ([...before.keys()].some((k) => !ended.has(k))) return null;
+        pods.push({ samples: own, seconds: end.at - start.at, from: start.at, to: end.at });
     }
-    if ([...total.values()].some((s) => Number.isNaN(s.value))) return null;
-    return [...total.values()];
+    if (pods.some((x) => !(x.seconds > 0))) return null;
+    return { samples: [...total.values()], pods };
 }
 
 const sum = (samples, name, where = () => true) =>
     samples.filter((s) => s.name === name && where(s.labels)).reduce((n, s) => n + s.value, 0);
+
+/** The sum over pods of each pod's own rate for `name`. */
+const rate = (d, name, where = () => true) => d.pods.reduce((n, p) => n + sum(p.samples, name, where) / p.seconds, 0);
 
 /** Histogram `<base>` over the samples matching `where`: { count, sum, p95Le } with p95Le `?` past the last bucket. */
 function histogram(samples, base, where = () => true) {
@@ -145,16 +174,17 @@ function meta(cell) {
     return out;
 }
 
-function dbRows(cell) {
+/** The N task rows, or null unless there are N distinct ones with a finite creation time. */
+function dbRows(cell, n) {
     const text = read(`${cell}.db.tsv`);
-    if (text === null) return null;
+    if (text === null || !Number.isInteger(n) || n < 1) return null;
     const rows = text
         .split('\n')
         .slice(1)
         .filter((l) => l.trim() !== '')
         .map((l) => l.split('\t'));
-    if (rows.length === 0 || rows.some((r) => r.length < 7)) return null;
-    return rows.map(([id, created, started, finished, status, attempts, claimSeq]) => ({
+    if (rows.length !== n || rows.some((r) => r.length < 7) || new Set(rows.map((r) => r[0])).size !== n) return null;
+    const mapped = rows.map(([id, created, started, finished, status, attempts, claimSeq]) => ({
         id,
         created: created === '' ? Number.NaN : Number(created),
         started: started === '' ? Number.NaN : Number(started),
@@ -163,7 +193,16 @@ function dbRows(cell) {
         attempts,
         claimSeq,
     }));
+    return mapped.every((x) => Number.isFinite(x.created) && x.id !== '' && x.status !== '') ? mapped : null;
 }
+
+/** Task-seconds that ran inside [from, to]: a task is active from its claim to its end (or the window's end). */
+const activeSeconds = (rows, from, to) =>
+    rows.reduce((n, x) => {
+        if (!Number.isFinite(x.started)) return n;
+        const end = Number.isFinite(x.finished) ? x.finished : to;
+        return n + Math.max(0, Math.min(end, to) - Math.max(x.started, from));
+    }, 0);
 
 function sampler(cell) {
     const text = read(`${cell}.sampler.tsv`);
@@ -200,9 +239,14 @@ const COLUMNS = [
     'sync_mean_s', 'sync_p95_le_s', 'runner_start_mean_s', 'held_s', 'settled_s', 'saturated',
 ];
 
-function row(cell, files) {
+const HTTP = 'factory_http_request_duration_seconds_count';
+const POLLS = 'factory_claim_polls_total';
+const K8S = 'factory_driver_k8s_request_duration_seconds_count';
+
+function row(cell) {
     const m = meta(cell);
     const r = Object.fromEntries(COLUMNS.map((c) => [c, UNKNOWN]));
+    const raw = { throughput: Number.NaN, wait95: Number.NaN, stalled: Number.NaN, failed: Number.NaN };
     r.cell = cell;
     r.kind = m.kind ?? UNKNOWN;
     r.n = m.n ?? UNKNOWN;
@@ -211,69 +255,94 @@ function row(cell, files) {
     r.lease_s = m.leaseSeconds ?? UNKNOWN;
     r.reap_interval_ms = m.reapIntervalMs ?? UNKNOWN;
     r.reap_grace_ms = m.reapGraceMs ?? UNKNOWN;
-    const rows = dbRows(cell);
-    r.held_s = m.held_s ?? NONE;
-    r.settled_s = m.settled_s ?? NONE;
-    r.stalled = rows ? String(rows.filter((x) => Number.isNaN(x.finished)).length) : UNKNOWN;
-    r.failed = rows ? String(rows.filter((x) => !Number.isNaN(x.finished) && x.status !== 'succeeded').length) : UNKNOWN;
-    const settledAll = rows !== null && rows.every((x) => !Number.isNaN(x.finished));
-    const windowS = Number(m.b_at) - Number(m.a_at);
-    const running = Number(m.running_at_b);
-    r.running_at_b = Number.isFinite(running) && m.running_at_b !== '' && m.running_at_b !== undefined ? String(running) : UNKNOWN;
-    const perTask = (value) => (Number.isFinite(running) && running > 0 ? fixed(value / running, 3) : UNKNOWN);
-
+    const n = Number(m.n);
+    const replicas = Number(m.r);
+    const rows = dbRows(cell, n);
+    r.held_s = NONE;
+    r.settled_s = NONE;
+    if (rows) {
+        raw.stalled = rows.filter((x) => !Number.isFinite(x.finished)).length;
+        raw.failed = rows.filter((x) => Number.isFinite(x.finished) && x.status !== 'succeeded').length;
+        r.stalled = String(raw.stalled);
+        r.failed = String(raw.failed);
+    }
     if (m.kind === 'throughput') {
-        if (rows && settledAll) {
+        if (rows && raw.stalled === 0) {
             const span = Math.max(...rows.map((x) => x.finished)) - Math.min(...rows.map((x) => x.created));
-            r.throughput_per_min = span > 0 ? fixed((rows.length * 60) / span, 2) : UNKNOWN;
+            if (span > 0) {
+                raw.throughput = (rows.length * 60) / span;
+                r.throughput_per_min = fixed(raw.throughput, 2);
+            }
         }
-        if (rows && rows.every((x) => !Number.isNaN(x.started))) {
+        if (rows && rows.every((x) => Number.isFinite(x.started))) {
             const waits = rows.map((x) => x.started - x.created).sort((x, y) => x - y);
+            raw.wait95 = quantile(waits, 0.95);
             r.wait_p50_s = fixed(quantile(waits, 0.5));
-            r.wait_p95_s = fixed(quantile(waits, 0.95));
+            r.wait_p95_s = fixed(raw.wait95);
             r.wait_max_s = fixed(waits[waits.length - 1]);
         }
-        const whole = delta(cell, 'board', 's', 'c', files);
-        if (whole) {
-            r.claim_wait_p95_le_s = histogram(whole, 'factory_claim_wait_seconds').p95Le;
-            r.claim_lock_wait_p95_le_s = histogram(whole, 'factory_claim_lock_wait_seconds').p95Le;
-        }
-        const driverWhole = delta(cell, 'driver', 's', 'c', files);
-        if (driverWhole) {
-            const sweep = histogram(driverWhole, 'factory_driver_reaper_sweep_seconds');
-            r.reaper_sweep_p95_le_s = sweep.count > 0 ? sweep.p95Le : UNKNOWN;
-            r.reaper_objects_per_sweep = sweep.count > 0 ? fixed(sum(driverWhole, 'factory_driver_reaper_scanned_total') / sweep.count) : UNKNOWN;
-            const sync = histogram(driverWhole, 'factory_driver_step_seconds', (l) => l.kind === 'sync');
-            r.sync_mean_s = sync.count > 0 ? fixed(sync.sum / sync.count, 3) : UNKNOWN;
-            r.sync_p95_le_s = sync.p95Le;
-        }
-        const boardSteady = windowS > 0 ? delta(cell, 'board', 'a', 'b', files) : null;
-        if (boardSteady) {
-            const rps = sum(boardSteady, 'factory_http_request_duration_seconds_count') / windowS;
-            r.board_rps = fixed(rps, 3);
-            r.board_rps_per_task = perTask(rps);
-            const beats = sum(boardSteady, 'factory_http_request_duration_seconds_count', (l) => (l.route ?? '').includes('heartbeat'));
-            r.heartbeats_per_task_min = perTask((beats * 60) / windowS);
-            r.claim_polls_per_min = fixed((sum(boardSteady, 'factory_claim_polls_total') * 60) / windowS, 1);
-        }
-        const driverSteady = windowS > 0 ? delta(cell, 'driver', 'a', 'b', files) : null;
-        if (driverSteady) {
-            const by = new Map();
-            for (const s of driverSteady) {
-                if (s.name !== 'factory_driver_k8s_request_duration_seconds_count') continue;
-                const k = `${s.labels.client}/${s.labels.verb}/${s.labels.resource}`;
-                by.set(k, (by.get(k) ?? 0) + s.value);
+        const running = Number(m.running_at_b);
+        r.running_at_b = m.running_at_b !== undefined && m.running_at_b !== '' && Number.isFinite(running) ? String(running) : UNKNOWN;
+        const board = loadSet(cell, 'board', 1);
+        const driver = Number.isInteger(replicas) ? loadSet(cell, 'driver', replicas) : null;
+
+        const wait = delta(board, 's', 'c', ['factory_claim_wait_seconds_count', 'factory_claim_wait_seconds_bucket']);
+        if (wait) r.claim_wait_p95_le_s = histogram(wait.samples, 'factory_claim_wait_seconds').p95Le;
+        const lock = delta(board, 's', 'c', ['factory_claim_lock_wait_seconds_count', 'factory_claim_lock_wait_seconds_bucket']);
+        if (lock) r.claim_lock_wait_p95_le_s = histogram(lock.samples, 'factory_claim_lock_wait_seconds').p95Le;
+        const sweepD = delta(driver, 's', 'c', ['factory_driver_reaper_sweep_seconds_count', 'factory_driver_reaper_scanned_total']);
+        if (sweepD) {
+            const sweep = histogram(sweepD.samples, 'factory_driver_reaper_sweep_seconds');
+            if (sweep.count > 0) {
+                r.reaper_sweep_p95_le_s = sweep.p95Le;
+                r.reaper_objects_per_sweep = fixed(sum(sweepD.samples, 'factory_driver_reaper_scanned_total') / sweep.count);
             }
-            const total = [...by.values()].reduce((a, b) => a + b, 0) / windowS;
+        }
+        const stepD = delta(driver, 's', 'c', ['factory_driver_step_seconds_count', 'factory_driver_step_seconds_sum']);
+        if (stepD && stepD.samples.some((x) => x.name === 'factory_driver_step_seconds_count' && x.labels.kind === 'sync')) {
+            const sync = histogram(stepD.samples, 'factory_driver_step_seconds', (l) => l.kind === 'sync');
+            if (sync.count > 0) {
+                r.sync_mean_s = fixed(sync.sum / sync.count, 3);
+                r.sync_p95_le_s = sync.p95Le;
+            }
+        }
+
+        // Per-task rates: requests over the interval each pod was observed for, per task-second that ran in it.
+        const perTask = (d, value) => {
+            if (!rows || !d) return UNKNOWN;
+            const avg = d.pods.reduce((x, p) => x + activeSeconds(rows, p.from, p.to) / p.seconds, 0) / d.pods.length;
+            return avg > 0 ? fixed(value / avg, 3) : UNKNOWN;
+        };
+        const steadyBoard = delta(board, 'a', 'b', [HTTP, POLLS], true);
+        if (steadyBoard) {
+            const rps = rate(steadyBoard, HTTP);
+            r.board_rps = fixed(rps, 3);
+            r.board_rps_per_task = perTask(steadyBoard, rps);
+            r.claim_polls_per_min = fixed(rate(steadyBoard, POLLS) * 60, 1);
+            if (steadyBoard.samples.some((x) => x.name === HTTP && (x.labels.route ?? '').includes('heartbeat'))) {
+                r.heartbeats_per_task_min = perTask(
+                    steadyBoard,
+                    rate(steadyBoard, HTTP, (l) => (l.route ?? '').includes('heartbeat')) * 60
+                );
+            }
+        }
+        const steadyDriver = delta(driver, 'a', 'b', [K8S], true);
+        if (steadyDriver) {
+            const by = new Map();
+            for (const p of steadyDriver.pods) {
+                for (const x of p.samples) {
+                    if (x.name !== K8S) continue;
+                    const k = `${x.labels.client}/${x.labels.verb}/${x.labels.resource}`;
+                    by.set(k, (by.get(k) ?? 0) + x.value / p.seconds);
+                }
+            }
+            const total = [...by.values()].reduce((a, b) => a + b, 0);
             r.k8s_rps = fixed(total, 3);
-            r.k8s_rps_per_task = perTask(total);
-            r.k8s_by_client_verb_resource =
-                by.size === 0
-                    ? NONE
-                    : [...by]
-                          .sort((x, y) => y[1] - x[1])
-                          .map(([k, v]) => `${k}=${fixed(v / windowS, 3)}`)
-                          .join(';');
+            r.k8s_rps_per_task = perTask(steadyDriver, total);
+            r.k8s_by_client_verb_resource = [...by]
+                .sort((x, y) => y[1] - x[1])
+                .map(([k, v]) => `${k}=${fixed(v, 3)}`)
+                .join(';');
         }
         const lanes = sampler(cell);
         if (lanes) {
@@ -292,44 +361,51 @@ function row(cell, files) {
         for (const c of COLUMNS.slice(10, 34)) r[c] = NONE;
         r.running_at_b = NONE;
         r.runner_start_mean_s = runnerStart(cell);
+        // Only a confirmed kill makes the seconds after it recovery evidence.
+        const confirmed = m.kill_confirmed === 'yes';
+        r.held_s = confirmed && m.held_s !== undefined ? m.held_s : UNKNOWN;
+        r.settled_s = confirmed && m.settled_s !== undefined ? m.settled_s : UNKNOWN;
     }
-    return r;
+    return { cells: r, raw };
 }
 
-/** saturated=yes|no|? for each throughput row, by the rule in the header comment. */
+/**
+ * saturated=yes|no|? for each throughput row, by the rule in the header comment, on unrounded values: yes when
+ * any applicable condition is confirmed, ? when none is but one is unknown, no when all are confirmed false.
+ */
 function judge(rows) {
-    const by = new Map(rows.filter((x) => x.kind === 'throughput').map((x) => [`${x.r}/${x.n}`, x]));
+    const by = new Map(rows.filter((x) => x.cells.kind === 'throughput').map((x) => [`${x.cells.r}/${x.cells.n}`, x]));
     for (const x of rows) {
-        if (x.kind === 'recovery') {
-            x.saturated = NONE;
+        const c = x.cells;
+        if (c.kind === 'recovery') {
+            c.saturated = NONE;
             continue;
         }
-        if (x.stalled === UNKNOWN || x.failed === UNKNOWN) continue;
-        if (Number(x.stalled) > 0 || Number(x.failed) > 0) {
-            x.saturated = 'yes';
-            continue;
+        if (c.kind !== 'throughput') continue;
+        const verdicts = []; // true | false | undefined (unknown), one per applicable condition
+        verdicts.push(Number.isNaN(x.raw.stalled) || Number.isNaN(x.raw.failed) ? undefined : x.raw.stalled > 0 || x.raw.failed > 0);
+        const half = by.get(`${c.r}/${Number(c.n) / 2}`);
+        const one = by.get(`${c.r}/1`);
+        if (half) {
+            const ok = Number.isFinite(x.raw.throughput) && Number.isFinite(half.raw.throughput);
+            verdicts.push(ok ? x.raw.throughput / half.raw.throughput < 1.2 : undefined);
         }
-        const half = by.get(`${x.r}/${Number(x.n) / 2}`);
-        const one = by.get(`${x.r}/1`);
-        const checks = [];
-        if (half && x.throughput_per_min !== UNKNOWN && half.throughput_per_min !== UNKNOWN) {
-            checks.push(Number(x.throughput_per_min) / Number(half.throughput_per_min) < 1.2);
+        if (one && c.n !== '1') {
+            const ok = Number.isFinite(x.raw.wait95) && Number.isFinite(one.raw.wait95);
+            verdicts.push(ok ? x.raw.wait95 > 2 * one.raw.wait95 : undefined);
         }
-        if (one && x.n !== '1' && x.wait_p95_s !== UNKNOWN && one.wait_p95_s !== UNKNOWN) {
-            checks.push(Number(x.wait_p95_s) > 2 * Number(one.wait_p95_s));
-        }
-        if (checks.length === 0) {
-            x.saturated = x.n === '1' ? 'no' : UNKNOWN;
-        } else {
-            x.saturated = checks.some(Boolean) ? 'yes' : 'no';
-        }
+        if (verdicts.includes(true)) c.saturated = 'yes';
+        else if (verdicts.includes(undefined)) c.saturated = UNKNOWN;
+        else c.saturated = 'no';
     }
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
     const files = readdirSync(dir);
-    const cells = [...new Set(files.filter((f) => f.endsWith('.meta.tsv')).map((f) => f.slice(0, -'.meta.tsv'.length)))].sort((x, y) => x.localeCompare(y, 'en', { numeric: true }));
-    const rows = cells.map((c) => row(c, files));
+    const cells = [...new Set(files.filter((f) => f.endsWith('.meta.tsv')).map((f) => f.slice(0, -'.meta.tsv'.length)))].sort((x, y) =>
+        x.localeCompare(y, 'en', { numeric: true })
+    );
+    const rows = cells.map((c) => row(c));
     judge(rows);
-    process.stdout.write(`${COLUMNS.join('\t')}\n${rows.map((x) => COLUMNS.map((c) => x[c]).join('\t')).join('\n')}\n`);
+    process.stdout.write(`${COLUMNS.join('\t')}\n${rows.map((x) => COLUMNS.map((c) => x.cells[c]).join('\t')).join('\n')}\n`);
 }
