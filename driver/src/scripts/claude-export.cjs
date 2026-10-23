@@ -189,13 +189,15 @@ const abandonDrain = () => {
 
 const statePath = (session) => path.join(DIR, 'export-state', `${session}.json`);
 
-// Null only when there is no state; one that is there but unreadable says `unreadable`.
+// Null only when there is no state; one that is there but unreadable or misshapen says `unreadable`.
 const loadState = (session) => {
+    let state;
     try {
-        return JSON.parse(fs.readFileSync(statePath(session), 'utf8'));
+        state = JSON.parse(fs.readFileSync(statePath(session), 'utf8'));
     } catch (e) {
         return e?.code === 'ENOENT' ? null : { unreadable: true };
     }
+    return ['ino', 'base', 'acked'].every((key) => Number.isFinite(state?.[key])) ? state : { unreadable: true };
 };
 
 const saveState = (track) => {

@@ -381,7 +381,11 @@ describe('the continuous claude-code exporter', () => {
             expect(h.stored(SESSION).toString()).toBe(all);
         });
 
-        it('exports a resumed session whole when its saved state cannot be read, never skipping its tail', async () => {
+        it.each([
+            ['cannot be parsed', '{"ino": 1, "ac'],
+            ['is null', 'null'],
+            ['has no offsets', '{}'],
+        ])('exports a resumed session whole when its saved state %s, never skipping its tail', async (_name, state) => {
             const h = await harness();
             const file = fileOf(h);
             const earlier = records(3);
@@ -393,7 +397,7 @@ describe('the continuous claude-code exporter', () => {
             appendFileSync(file, records(4, 3));
             await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
             await kill(lost);
-            writeFileSync(join(h.dir, 'export-state', `${SESSION}.json`), '{"ino": 1, "ac');
+            writeFileSync(join(h.dir, 'export-state', `${SESSION}.json`), state);
             h.board.down = false;
             const before = h.chunks.length;
             h.start({ RUN_STARTED_AT: new Date().toISOString() });
