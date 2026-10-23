@@ -371,5 +371,10 @@ jobs:
             # The license the package declares ships with it; the repository keeps one copy.
             - name: cp LICENSE cli/LICENSE
               run: cp LICENSE cli/LICENSE
+            # npm refuses a pre-release without --tag; `next` keeps `latest` on the last plain release.
             - name: npm publish -w cli --access public
-              run: npm publish -w cli --access public
+              run: |
+                  case "$(cat VERSION)" in
+                      *-*) npm publish -w cli --access public --tag next ;;
+                      *) npm publish -w cli --access public ;;
+                  esac
