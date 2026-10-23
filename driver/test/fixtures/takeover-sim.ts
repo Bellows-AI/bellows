@@ -38,6 +38,15 @@ const supervisor = createRequire(import.meta.url)('../../src/scripts/supervisor.
     supervise(env: Record<string, string>, log: (line: string) => void): Promise<number>;
 };
 
+/** What a deleted pod's supervisor is pointed at (`deleteGroup`): a holder newer than any claim, on a port nothing listens on. */
+const GONE_BINDING = bindingBody({
+    claimSeq: Number.MAX_SAFE_INTEGER,
+    url: 'http://127.0.0.1:9',
+    token: 'gone',
+    agentToken: 'gone',
+    exportToken: 'gone',
+});
+
 export interface Timing {
     leaseSeconds: number;
     rebindGraceMs: number;
@@ -341,7 +350,10 @@ export class Sim {
         if (!group) return;
         group.secretWrites += 1;
         group.tokens.add((JSON.parse(body) as { token: string }).token);
-        setTimeout(() => writeFileSync(group.file, body), this.t.refreshMs);
+        // A pod deleted meanwhile has no mount for the refresh to reach.
+        setTimeout(() => {
+            if (this.groups.get(lease) === group) writeFileSync(group.file, body);
+        }, this.t.refreshMs);
     }
 
     /** The agent container ends on its own. */
@@ -355,6 +367,9 @@ export class Sim {
     /** The pod is gone: the supervisor stops answering anything. */
     deleteGroup(g: Group) {
         g.logs.push('POD DELETED');
+        // The supervisor runs in this process and has no process to kill, so it is cut off from every holder instead: a
+        // binding naming a newer one nobody answers for. A pod that is gone follows no later rebind and serves no one.
+        writeFileSync(g.file, GONE_BINDING);
         this.groups.delete(g.lease);
         this.deleted.push(g);
         // The supervisor is gone with its pod: whatever waits on it, the report or a step, is released at once.
