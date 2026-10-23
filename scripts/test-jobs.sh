@@ -111,6 +111,10 @@ needs_board() {
 RUN_ID="$(date +%s)-$$"
 PORT="${PORT:-8129}"
 BASE="http://127.0.0.1:$PORT"
+# The identity the host drivers of this run stamp on what they create (driver/src/task-volume.ts
+# boardIdentity: a digest of JOB_BOARD_URL), so a check can look at its own board's objects only
+# when other groups share the daemon (--parallel).
+board_id() { node -e 'process.stdout.write(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex").slice(0, 16))' "$BASE"; }
 DB="${JOBS_TEST_DB:-factory_jobs_${RUN_ID//-/_}_test}"
 DATABASE_URL="postgres://factory:factory@127.0.0.1:5432/$DB"
 IMAGE_BASE="factory-jobs-$RUN_ID-base"
@@ -2650,7 +2654,7 @@ write_bellows 'reviewers:
     timeout: 5'
 start_driver "$IMAGE_REVIEW" 0 1
 
-jobs_seen() { docker ps -a --filter 'label=factory.job' --format '{{.ID}} {{.Label "factory.job"}} {{.Label "factory.role"}}'; }
+jobs_seen() { docker ps -a --filter 'label=factory.job' --filter "label=factory.board=$(board_id)" --format '{{.ID}} {{.Label "factory.job"}} {{.Label "factory.role"}}'; }
 jobs_seen | cut -d' ' -f1 | sort -u >"$work/review-before"
 
 rv="$(create_job 'review REVIEW-SECOND')"
@@ -2978,7 +2982,7 @@ process.stdout.write(bad.length ? "bad: " + bad.join("; ") : task ? "ok" : "bad:
 
 acc_volumes() { # acc_volumes -> "ok <task volumes>" or why not: every task volume is a local, option-free docker volume
     local names
-    names="$(timeout 30 docker volume ls -q --filter 'label=factory.task-root' 2>/dev/null)" || { printf 'unread: volume ls'; return 0; }
+    names="$(timeout 30 docker volume ls -q --filter 'label=factory.task-root' --filter "label=factory.task-board=$(board_id)" 2>/dev/null)" || { printf 'unread: volume ls'; return 0; }
     # shellcheck disable=SC2086 # one name per word
     timeout 30 docker volume inspect $names >"$work/acc-vols.json" 2>/dev/null || { printf 'unread: volume inspect'; return 0; }
     node -e '
