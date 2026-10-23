@@ -3,8 +3,12 @@ import type { BoardJob } from '../src/board.js';
 import { cpuQuantityToCores, gateAdvertiseUrlFor, loadDriverConfig, memoryQuantityToBytes } from '../src/config.js';
 import { dockerArgs } from '../src/docker.js';
 import { runnerJobSpec } from '../src/k8s-podspec.js';
-import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
-import { takeoverBoundMs } from '../src/supervisor-plan.js';
+import {
+    SUPERVISOR_ORPHAN_MIN_MS,
+    SUPERVISOR_REBIND_GRACE_MS,
+    SUPERVISOR_STEP_WAIT_MS,
+} from '../src/supervisor-contract.js';
+import { orphanBoundMs, supervisorLiterals, takeoverBoundMs } from '../src/supervisor-plan.js';
 
 describe('the driver config: basics', () => {
     it('runs on defaults, so a driver next to the dashboard needs no environment at all', () => {
@@ -484,6 +488,56 @@ describe('the driver config: the rebind grace', () => {
     it('refuses a grace under a second or unreadable', () => {
         expect(() => loadDriverConfig({ DRIVER_REBIND_GRACE_MS: '999' })).toThrow(/DRIVER_REBIND_GRACE_MS/);
         expect(() => loadDriverConfig({ DRIVER_REBIND_GRACE_MS: 'soon' })).toThrow(/DRIVER_REBIND_GRACE_MS/);
+    });
+});
+
+// #950: the kind lane runs a 15 s lease. The orphan floor and the `GET /step` long poll it is floored above are the
+// lane's to lower; the production defaults stay, and a combination that lets a lost driver's group outlive the lease is refused.
+describe('the driver config: the orphan floor and the step long poll (#950)', () => {
+    const lane = { DRIVER_LEASE_SECONDS: '15', DRIVER_ORPHAN_MIN_MS: '10000', DRIVER_STEP_WAIT_MS: '2000' };
+
+    it('keeps the production floor and long poll by default', () => {
+        const config = loadDriverConfig({});
+        expect([config.orphanMinMs, config.stepWaitMs]).toEqual([SUPERVISOR_ORPHAN_MIN_MS, SUPERVISOR_STEP_WAIT_MS]);
+        expect(orphanBoundMs(loadDriverConfig({ DRIVER_LEASE_SECONDS: '120' }))).toBe(30_000);
+        expect(supervisorLiterals(config, { claimSeq: 1 } as BoardJob, { exporting: false })).toContainEqual([
+            'SUPERVISOR_STEP_WAIT_MS',
+            String(SUPERVISOR_STEP_WAIT_MS),
+        ]);
+    });
+
+    it('lowers the orphan bound to what a 15 s lease holds: the lease outlasts the bound plus one heartbeat', () => {
+        const config = loadDriverConfig(lane);
+        expect(orphanBoundMs(config)).toBe(10_000);
+        expect(config.leaseSeconds * 1000).toBeGreaterThanOrEqual(
+            orphanBoundMs(config) + (config.leaseSeconds * 1000) / 3
+        );
+        expect(supervisorLiterals(config, { claimSeq: 1 } as BoardJob, { exporting: false })).toContainEqual([
+            'SUPERVISOR_STEP_WAIT_MS',
+            '2000',
+        ]);
+    });
+
+    it('refuses a lowered floor under the long poll it must outlast', () => {
+        expect(() => loadDriverConfig({ ...lane, DRIVER_STEP_WAIT_MS: '9000' })).toThrow(/DRIVER_ORPHAN_MIN_MS/);
+        expect(() => loadDriverConfig({ DRIVER_ORPHAN_MIN_MS: '15000' })).toThrow(/DRIVER_ORPHAN_MIN_MS/);
+    });
+
+    it('refuses a lowered floor whose orphan bound outlasts the lease less one heartbeat', () => {
+        expect(() => loadDriverConfig({ ...lane, DRIVER_ORPHAN_MIN_MS: '11000' })).toThrow(/DRIVER_LEASE_SECONDS/);
+        expect(() => loadDriverConfig({ ...lane, DRIVER_LEASE_SECONDS: '10' })).toThrow(/DRIVER_LEASE_SECONDS/);
+    });
+
+    it('does not recheck the lease where the floor is the production default, as the chart always sets it', () => {
+        expect(loadDriverConfig({ DRIVER_LEASE_SECONDS: '30', DRIVER_ORPHAN_MIN_MS: '30000' }).orphanMinMs).toBe(
+            30_000
+        );
+    });
+
+    it('reads unreadable or out-of-range values as the variable that caused them', () => {
+        expect(() => loadDriverConfig({ DRIVER_STEP_WAIT_MS: 'soon' })).toThrow(/DRIVER_STEP_WAIT_MS/);
+        expect(() => loadDriverConfig({ DRIVER_STEP_WAIT_MS: '100' })).toThrow(/DRIVER_STEP_WAIT_MS/);
+        expect(() => loadDriverConfig({ DRIVER_ORPHAN_MIN_MS: '999' })).toThrow(/DRIVER_ORPHAN_MIN_MS/);
     });
 });
 

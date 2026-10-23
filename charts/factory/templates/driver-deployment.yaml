@@ -165,6 +165,13 @@ spec:
                       # What a released run's group waits for a newer holder on top of the lease (#829).
                       - name: DRIVER_REBIND_GRACE_MS
                         value: {{ $.Values.driver.rebindGraceMs | quote }}
+                      # The orphan floor of a lost driver's group and the GET /step long poll it outlasts (#950).
+                      # Production keeps both defaults; the kind lane lowers them with its lease, and the driver
+                      # refuses a pair the lease cannot hold.
+                      - name: DRIVER_ORPHAN_MIN_MS
+                        value: {{ $.Values.driver.orphanMinMs | quote }}
+                      - name: DRIVER_STEP_WAIT_MS
+                        value: {{ $.Values.driver.stepWaitMs | quote }}
                       # The ad-hoc gate endpoint runs in the driver and binds an ephemeral port; the
                       # runner reaches it at THIS pod's IP, the driver appending the bound port. A
                       # Service name would resolve to every driver replica — and, during a rollout,

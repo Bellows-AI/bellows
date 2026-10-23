@@ -620,6 +620,11 @@ expect_contains 'the driver writes the heartbeat it reads' "$gh_driver" 'DRIVER_
 expect_contains 'the driver drains before SIGKILL'     "$gh_driver" 'terminationGracePeriodSeconds: 600'
 expect_contains 'the driver hands over a minute before SIGKILL' "$(grep -A1 'name: DRIVER_HANDOVER_MS' <<<"$gh_driver")" 'value: "540000"'
 expect_contains 'the driver gives a released group the default rebind grace' "$(grep -A1 'name: DRIVER_REBIND_GRACE_MS' <<<"$gh_driver")" 'value: "240000"'
+expect_contains 'the driver keeps the production orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver")" 'value: "30000"'
+expect_contains 'the driver keeps the production step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver")" 'value: "15000"'
+gh_driver_lane="$(awk '/^# Source: factory\/templates\/driver-deployment.yaml/,/^---/' <<<"$(gh_render --set-string driver.orphanMinMs=10000 --set-string driver.stepWaitMs=2000)")"
+expect_contains 'a lane lowers the orphan floor' "$(grep -A1 'name: DRIVER_ORPHAN_MIN_MS' <<<"$gh_driver_lane")" 'value: "10000"'
+expect_contains 'a lane lowers the step long poll' "$(grep -A1 'name: DRIVER_STEP_WAIT_MS' <<<"$gh_driver_lane")" 'value: "2000"'
 # The driver's scrape listener (issue #831): on by default behind the board token, and '' turns it off.
 expect_contains 'the driver scrape port defaults to 9464' "$(grep -A1 'name: DRIVER_METRICS_PORT' <<<"$gh_driver")" 'value: "9464"'
 expect_contains 'the driver names its scrape container port' "$(grep -B1 -A1 'name: metrics' <<<"$gh_driver")" 'containerPort: 9464'
@@ -1495,8 +1500,13 @@ helm install "$STATE_RELEASE" charts/factory-local-state \
 }
 state_installed=1
 # The lease outlasts the orphan bound (a lost driver's group ends inside it) plus one heartbeat period
-# (a third of the lease): L >= 30 + L/3, so 45 s. Below it the group's end can land after the lease's.
-LANE_LEASE_S=45
+# (a third of the lease): L >= orphan + L/3, so the bound is L - L/3 and the lease can be as short as the
+# bound allows. The orphan floor and the GET /step long poll are lowered with it (driver.orphanMinMs /
+# driver.stepWaitMs, #950): the floor outlasts the long poll by 5 s, and the driver refuses a pair the lease
+# cannot hold. 15 s: a 10 s bound over a 2 s long poll. Production keeps 30 s / 15 s.
+LANE_LEASE_S=15
+LANE_ORPHAN_S=$((LANE_LEASE_S - LANE_LEASE_S / 3))
+LANE_STEP_WAIT_MS=$((LANE_ORPHAN_S * 200))
 # A rebind reaches the supervisor through the kubelet's Secret refresh (64 s measured on the kind nodes
 # at the default one-minute sync, docs/kubernetes.md): the grace outlasts two syncs, or the group ends
 # before it can follow the new holder. scripts/kind-cluster.yaml syncs every 5 s: the 30 s floor below.
@@ -1505,8 +1515,6 @@ LANE_REBIND_GRACE_S=$((2 * ${KUBELET_SYNC_S:-60} + 10))
 # (the supervisor ends before it polls the new endpoint, three runs in three), a 30 s grace delivers it.
 [ "$LANE_REBIND_GRACE_S" -ge 30 ] || LANE_REBIND_GRACE_S=30
 LANE_MARGIN_S=40
-# A group whose driver went silent runs on for the orphan bound first (max(30s, a quarter of the lease)).
-LANE_ORPHAN_S=30
 # Fresh throwaway secrets per run; the board token is what the driver presents on every claim, so a
 # job that comes back succeeded proves it end to end. The origin is the port-forward's below.
 PORT=18080
@@ -1522,6 +1530,7 @@ helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set driver.reapIntervalMs=3000 --set driver.reapGraceMs=1000 \
     --set "driver.repoCloneBase=git://$RELEASE-origin:9418" \
     --set-string driver.leaseSeconds="$LANE_LEASE_S" --set driver.terminationGracePeriodSeconds=70 \
+    --set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))" --set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS" \
     --set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))" \
     -n "$NAMESPACE" >/dev/null || {
     echo 'test-k8s: helm install failed'
@@ -2508,16 +2517,16 @@ JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
 
-expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's live lease is expired, as waiting it out would
+expire_claim_one() { # expire_claim_one <id> -> "1" once claim 1's lease is expired: by this call, or already on its own
+    # A short lease (15 s, #950) can run out while a case waits for the lost supervisor to end, and the next claim
+    # may have taken it since (claim_seq > 1): either way claim 1's lease is over, which is all the callers need.
     bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
         env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$1" \
         postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
-with expired as (
-    update job set lease_expires_at = now() - interval '1 second'
-    where id = :'job' and status = 'running' and claim_seq = 1 and lease_expires_at > now()
-    returning id
-)
-select count(*) from expired;
+update job set lease_expires_at = now() - interval '1 second'
+where id = :'job' and status = 'running' and claim_seq = 1 and lease_expires_at > now();
+select count(*) from job
+where id = :'job' and status = 'running' and (claim_seq > 1 or lease_expires_at <= now());
 SQL
 }
 
@@ -2602,7 +2611,7 @@ else
     kubectl rollout status "$DRIVER_DEPLOY" -n "$NAMESPACE" --timeout=120s >/dev/null 2>&1
     # Two and more 3s reaper rounds of the replacement driver while the agent is still blocked at its
     # barrier under the dead driver's live lease: the live runner Job is no orphan, and stays.
-    sleep 8
+    sleep 6
     hard_live="$(job_brief "$hard")"
     case "$hard_live" in
     running*) ok 'the job is still running under the dead driver lease' ;;
@@ -2682,7 +2691,7 @@ else
     evicted_mid="$(await_brief "$evicted" "*|1|1|$POD_LOST*" 45)"
     took=$(($(date +%s) - deleted_at))
     case "$evicted_mid" in
-    *"|1|1|$POD_LOST"*) [ "$took" -lt 30 ] && ok "a deleted runner pod is an interruption (${took}s, inside the ${LANE_LEASE_S}s lease)" ||
+    *"|1|1|$POD_LOST"*) [ "$took" -lt $((2 * LANE_LEASE_S)) ] && ok "a deleted runner pod is an interruption (${took}s, inside two ${LANE_LEASE_S}s leases)" ||
         bad 'a deleted runner pod is an interruption inside the lease' "took ${took}s: $evicted_mid" ;;
     *) bad 'a deleted runner pod is an interruption inside the lease' "status|attempts|count|claimSeq|reason: $evicted_mid" ;;
     esac

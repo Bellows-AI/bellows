@@ -95,7 +95,7 @@ export const RULES = [
     // --- scripts --------------------------------------------------------------------------------
     [/^scripts\/fake-model-endpoint\.mjs$/, REAL, 'scripted model endpoint'],
     [/^scripts\/lane-capacity-samples\.mjs$/, ['capacity'], 'capacity verdict'],
-    [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|release\.sh|lint-changed\.sh|gate-jq\.sh)$/, NONE, 'not part of the docker lane'],
+    [/^scripts\/(test-k8s\.sh|kind-cluster[a-z-]*\.(sh|yaml)|k8s-[a-z-]+\.(mjs|sh)|bench-summary\.mjs|release\.sh|lint-changed\.sh|gate-jq\.sh)$/, NONE, 'not part of the docker lane'],
 
     [/^(docker-compose\.yml|package\.json|package-lock\.json|tsconfig(\.base)?\.json|VERSION|Makefile|\.dockerignore)$/, FULL, 'what the lane builds and boots'],
 

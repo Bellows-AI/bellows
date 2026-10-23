@@ -7,7 +7,13 @@
  * workspace a job belongs to, so it does not even need to know the organization.
  */
 import { CLAUDE_CODE, type ExecutorType, OPENCODE } from './executors.js';
-import { SUPERVISOR_REBIND_GRACE_MS } from './supervisor-contract.js';
+import {
+    orphanConfigFault,
+    SUPERVISOR_ORPHAN_MAX_MS,
+    SUPERVISOR_ORPHAN_MIN_MS,
+    SUPERVISOR_REBIND_GRACE_MS,
+    SUPERVISOR_STEP_WAIT_MS,
+} from './supervisor-contract.js';
 
 export interface DriverConfig {
     /** Where the board is. The driver is a client of it, never of the database. */
@@ -225,6 +231,14 @@ export interface DriverConfig {
      * driver replaced by a scheduler; the lanes shorten it so a waited-out takeover costs seconds.
      */
     rebindGraceMs: number;
+    /**
+     * The floor of a lost driver's group's orphan bound (DRIVER_ORPHAN_MIN_MS, #950), above the long poll
+     * (`stepWaitMs`) a live driver answers inside. The default is the production contract; a lane that
+     * compresses the lease lowers it, and `loadDriverConfig` refuses a floor the lease cannot hold.
+     */
+    orphanMinMs: number;
+    /** One `GET /step` long poll a supervisor makes (DRIVER_STEP_WAIT_MS); the orphan floor outlasts it. */
+    stepWaitMs: number;
     /**
      * Resource requests and limits (RUNNER_CPU_REQUEST / RUNNER_MEMORY_REQUEST /
      * RUNNER_CPU_LIMIT / RUNNER_MEMORY_LIMIT, kubernetes quantity strings) rendered onto every
@@ -611,6 +625,24 @@ const RESOURCE_SLOTS = [
 ] as const;
 
 /**
+ * The orphan floor and the step long poll (#950), checked against the lease: `orphanConfigFault` refuses a pair the lease
+ * cannot hold, and the lease-wide check applies only where the production floor was lowered (the chart always sets the default).
+ */
+function loadOrphanBound(env: NodeJS.ProcessEnv, leaseSeconds: number): { orphanMinMs: number; stepWaitMs: number } {
+    const orphanMinMs = int(env.DRIVER_ORPHAN_MIN_MS, 'DRIVER_ORPHAN_MIN_MS', SUPERVISOR_ORPHAN_MIN_MS, {
+        min: 1_000,
+        max: SUPERVISOR_ORPHAN_MAX_MS,
+    });
+    const stepWaitMs = int(env.DRIVER_STEP_WAIT_MS, 'DRIVER_STEP_WAIT_MS', SUPERVISOR_STEP_WAIT_MS, {
+        min: 500,
+        max: SUPERVISOR_ORPHAN_MAX_MS,
+    });
+    const fault = orphanConfigFault({ leaseSeconds, orphanMinMs, stepWaitMs }, orphanMinMs < SUPERVISOR_ORPHAN_MIN_MS);
+    if (fault) throw new Error(fault);
+    return { orphanMinMs, stepWaitMs };
+}
+
+/**
  * One block of four resource variables (`RUNNER_*`, or `GATE_*` over the runner's block), each
  * shape-validated by runnerResource, then the request/limit pairs validated against each other —
  * shape is per-variable, but request>limit is only visible across the two. With a `fallback`,
@@ -682,6 +714,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
     const network = (env.RUNNER_NETWORK ?? '').trim() || null;
     const boardToken = (env.JOB_BOARD_TOKEN ?? '').trim();
     const gateHost = text(env.GATE_LISTEN_HOST, 'GATE_LISTEN_HOST', '127.0.0.1');
+
+    const { orphanMinMs, stepWaitMs } = loadOrphanBound(env, leaseSeconds);
 
     return {
         boardUrl,
@@ -762,6 +796,8 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             min: 1_000,
             max: 24 * MS_PER_HOUR,
         }),
+        orphanMinMs,
+        stepWaitMs,
         // Validated here, stored verbatim: the pod specs render these strings as-is, and the
         // docker flags take them translated by cpuQuantityToCores/memoryQuantityToBytes. A
         // request above its limit is refused by the apiserver only per attempt, so the pair is

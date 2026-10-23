@@ -15,9 +15,8 @@ import {
     SUPERVISOR_DRAIN_MS,
     SUPERVISOR_BINDING_PATH,
     SUPERVISOR_ENV,
-    SUPERVISOR_ORPHAN_LEASE_SHARE,
-    SUPERVISOR_ORPHAN_MAX_MS,
-    SUPERVISOR_ORPHAN_MIN_MS,
+    SUPERVISOR_HEARTBEAT_DIVISOR,
+    orphanBoundOf,
     SUPERVISOR_STEPS_MS,
     type SupervisorBinding,
     SUPERVISOR_WINDDOWN_MS,
@@ -33,14 +32,9 @@ import {
 
 const MS_PER_SECOND = 1000;
 const MIN_HEARTBEAT_PERIOD_MS = 1_000;
-const HEARTBEAT_PERIOD_DIVISOR = 3;
 
 /** How long a group whose driver stopped answering keeps going: a share of the lease, so it ends inside it. */
-export const orphanBoundMs = (config: DriverConfig): number =>
-    Math.min(
-        SUPERVISOR_ORPHAN_MAX_MS,
-        Math.max(SUPERVISOR_ORPHAN_MIN_MS, (config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_ORPHAN_LEASE_SHARE)
-    );
+export const orphanBoundMs = (config: DriverConfig): number => orphanBoundOf(config.leaseSeconds, config.orphanMinMs);
 
 /** How long a released group waits for a newer holder: its lease, then the grace to find the group and bind it (#829). */
 export const takeoverBoundMs = (config: DriverConfig): number =>
@@ -48,7 +42,7 @@ export const takeoverBoundMs = (config: DriverConfig): number =>
 
 /** The pace a lease is renewed at while the driver holds it: a third of the lease, never under a second. */
 export const heartbeatPeriodMs = (config: DriverConfig): number =>
-    Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / HEARTBEAT_PERIOD_DIVISOR));
+    Math.max(MIN_HEARTBEAT_PERIOD_MS, Math.floor((config.leaseSeconds * MS_PER_SECOND) / SUPERVISOR_HEARTBEAT_DIVISOR));
 
 /**
  * How long the next claim waits for the supervisor of a group it adopts to end (#829): a lost driver
@@ -84,6 +78,7 @@ export function supervisorLiterals(
         [SUPERVISOR_ENV.deadlineMs, String(runTimeoutMs(config, job))],
         [SUPERVISOR_ENV.drainMs, String(SUPERVISOR_DRAIN_MS)],
         [SUPERVISOR_ENV.orphanMs, String(orphanBoundMs(config))],
+        [SUPERVISOR_ENV.stepWaitMs, String(config.stepWaitMs)],
         [SUPERVISOR_ENV.claimSeq, String(job.claimSeq)],
         [SUPERVISOR_ENV.bindingFile, SUPERVISOR_BINDING_PATH],
         [SUPERVISOR_ENV.takeoverMs, String(takeoverBoundMs(config))],

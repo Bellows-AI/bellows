@@ -9,6 +9,7 @@
  * and a task volume pinned to one node, a hard driver kill, a driver drain's handover, and board
  * glitches (a call that throws or answers nothing, shorter than the lease: an inconclusive read).
  */
+import { takeoverBoundMs } from '../../src/supervisor-plan.js';
 import { type Group, nap, Sim, type Timing, until } from './takeover-sim.js';
 
 /** mulberry32: small, seedable, the same stream on every platform. */
@@ -279,9 +280,19 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         sim.release();
         await until('a driver', sim, () => restarting === 0, 8_000);
         if (!drivers.some((d) => !d.dead)) await startDriver();
-        await until('the task to settle', sim, () => sim.row.status === 'succeeded', 25_000);
+        await until(
+            'the task to settle',
+            sim,
+            () => sim.row.status === 'succeeded',
+            25_000 + takeoverBoundMs(sim.config)
+        );
         // Pods over, after the verdict: every supervisor ends or is a pod already gone.
-        await until('no group left running', sim, () => [...sim.groups.values()].every((g) => g.exit !== null), 8_000);
+        await until(
+            'no group left running',
+            sim,
+            () => [...sim.groups.values()].every((g) => g.exit !== null),
+            8_000 + plan.timing.orphanMs
+        );
     } catch (e) {
         trace.push(`run ended early: ${(e as Error).message.split('\n')[0]}`);
     } finally {
