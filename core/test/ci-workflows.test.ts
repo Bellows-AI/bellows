@@ -464,7 +464,10 @@ describe('ci workflows', () => {
         const commands = runs(npm);
         expect(commands).toContain('npm ci --ignore-scripts');
         const stamp = commands.findIndex((run) => run.includes('npm pkg set version="$VERSION" -w cli'));
-        const publish = commands.indexOf('npm publish -w cli --access public');
+        const publish = commands.findIndex((run) => run.includes('npm publish -w cli --access public'));
+        expect(publish, 'the CLI is never published').toBeGreaterThan(-1);
+        // npm refuses a pre-release without --tag; `next` keeps `latest` on the last plain release.
+        expect(commands[publish]).toContain('*-*) npm publish -w cli --access public --tag next ;;');
         expect(stamp, 'the published package.json is never stamped').toBeGreaterThan(-1);
         expect(stamp).toBeLessThan(publish);
         expect(commands[stamp]).toContain('test "v$VERSION" = "$TAG"');
