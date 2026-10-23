@@ -4,7 +4,7 @@
  * `GREMLIN_SEED=<n>` replays that one run, `GREMLIN_RUNS=<n>` raises the count for a local soak.
  */
 import { describe, expect, it } from 'vitest';
-import { planOf, runGremlin, type Fault, type Verdict } from './fixtures/gremlin.js';
+import { planOf, runGremlin, stallExplains, type Fault, type Verdict } from './fixtures/gremlin.js';
 import { lane15 } from './fixtures/takeover-sim.js';
 
 const RUNS = Number(process.env.GREMLIN_RUNS ?? 200);
@@ -117,6 +117,16 @@ describe('takeover gremlins', () => {
             expect(verdict.violations.join('\n')).toMatch(/interruption of claim 2 that no injected fault hit/);
         expect(verdict.violations.join('\n')).not.toMatch(/claim 1 that no injected/);
     }, 60_000);
+
+    // The rule itself, with no timing in it: a stall explains an interruption only inside that interruption's silence.
+    it("a stall outside an interruption's silence does not explain it", () => {
+        const stall = { at: 4_000, ms: 3_500 }; // [500, 4000]
+        expect(stallExplains([stall], { since: 1_000, at: 3_800 }, 800).explained).toBe(true);
+        expect(stallExplains([stall], { since: 4_100, at: 5_600 }, 800).explained).toBe(false);
+        // Scheduling noise adds up to the margin but is no stall.
+        const noise = Array.from({ length: 40 }, (_, k) => ({ at: 1_000 + k * 50, ms: 30 }));
+        expect(stallExplains(noise, { since: 900, at: 3_000 }, 800).explained).toBe(false);
+    });
 
     // #950: the kind lane's 15 s lease in real time. The faults still land in the first seconds of a run and the
     // takeover waits out the lease, so a seed plays for a minute; a few seeds at the lane's timing, not the soak.

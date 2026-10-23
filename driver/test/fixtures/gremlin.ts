@@ -188,6 +188,17 @@ export function stalledIn(stalls: readonly Stall[], from: number, to: number): n
     return stalls.reduce((sum, s) => sum + Math.max(0, Math.min(s.at, to) - Math.max(s.at - s.ms, from)), 0);
 }
 
+/**
+ * Whether the stalls inside an interruption's own silence (the lease's last renewal to its recording, a tick of slack
+ * for a stall ending in the recording turn) reach the margin. Many slips of a few tens of milliseconds are scheduling
+ * noise: one stall must also be a real share of the margin. A stall outside that silence explains nothing.
+ */
+export function stallExplains(stalls: readonly Stall[], i: { since: number; at: number }, margin: number) {
+    const lost = stalledIn(stalls, i.since, i.at + STALL_TICK_MS);
+    const worst = worstStallIn(stalls, i.since, i.at);
+    return { lost, worst, explained: lost >= margin && worst >= margin / 4 };
+}
+
 /** The longest single stall in the window `[from, to]`. */
 export const worstStallIn = (stalls: readonly Stall[], from: number, to: number) =>
     Math.max(0, ...stalls.filter((s) => s.at > from && s.at - s.ms < to).map((s) => s.ms));
@@ -385,10 +396,8 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         }
         // The silence before the board recorded it, and a tick of slack for the stall that ends in the recording turn.
         const from = i.since;
-        const lost = stalledIn(stalls, from, i.at + STALL_TICK_MS);
-        // Many slips of a few tens of milliseconds are scheduling noise: one stall must be a real share of the margin.
-        if (lost < margin || worstStallIn(stalls, from, i.at) < margin / 4) {
-            const worst = worstStallIn(stalls, from, i.at);
+        const { lost, worst, explained: hostDid } = stallExplains(stalls, i, margin);
+        if (!hostDid) {
             trace.push(
                 `no host stall explains claim ${i.claimSeq}: ${lost}ms stalled in ${i.at - from}ms (worst ${worst}ms), margin ${margin}ms`
             );
