@@ -120,6 +120,11 @@ describe('test-jobs --changed path-to-phase map', () => {
         ).toEqual(['run-deadline']);
     });
 
+    it('selects acceptance for the stub agent it builds, while other kubernetes-only scripts select nothing', () => {
+        expect(classify(['scripts/k8s-stub.sh']).selected).toEqual(['acceptance']);
+        expect(classify(['scripts/k8s-local-values.mjs']).selected).toEqual([]);
+    });
+
     it('selects nothing when only unexecuted files changed, and when nothing changed', () => {
         expect(classify(['docs/executor-testing.md', 'driver/src/k8s-gate.ts']).selected).toEqual([]);
         expect(classify([]).selected).toEqual([]);
