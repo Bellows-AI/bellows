@@ -120,7 +120,35 @@ interruption is the trace.
 An offline deployment's driver 503s with `JOBS_UNAVAILABLE` (no org materialized yet); a 401 there
 would be the credential instead.
 
-## 8. Teardown
+## 8. The failure matrix, no EFS
+
+The cloud half of `scripts/test-k8s.sh --phase acceptance`; not walked yet. `CLI` is
+`npm run dev -w cli --`, `NS` the release namespace, `T` a task id. Record each row's outcome in the header.
+
+1. No shared file system anywhere — every claim is the state DB's or a task's, none `ReadWriteMany`:
+   `kubectl -n $NS get pvc -o custom-columns=NAME:.metadata.name,MODES:.spec.accessModes,CLASS:.spec.storageClassName`
+   and `kubectl get pv -o custom-columns=NAME:.metadata.name,DRIVER:.spec.csi.driver` (no `efs.csi.aws.com`).
+2. One task end to end: `CLI job create …`, `CLI job wait $T`, then after its runner Job is gone
+   (`kubectl -n $NS get jobs`), `CLI job streams $T` and `CLI job read $T` still return the transcript.
+3. Failure, retry, follow-up: a task that fails → `CLI job retry $T` succeeds; `CLI job follow-up $T …` on
+   a succeeded one resumes its session on the same task claim (same `factory.task-root` claim, same generation).
+4. Agent kill: `kubectl -n $NS exec <runner pod> -c agent -- kill -KILL -1` mid-run. Observe the attempt
+   ends with the agent killed, `CLI job retry $T` (or a follow-up) runs on the surviving task claim, and
+   `CLI job read $T` holds every record the agent wrote before the kill.
+5. Pod loss: `kubectl -n $NS delete pod <runner pod> --grace-period=0 --force` mid-run. Same observation as 4.
+6. Node loss: `kubectl drain <runner node> --ignore-daemonsets --delete-emptydir-data` mid-run. One
+   interruption, never a failure; the replacement adopts the claim.
+7. Driver restart: `kubectl -n $NS rollout restart deploy/<release>-driver` mid-run and again during the
+   publish step. The new driver takes the run over; at most one pull request or push results.
+8. Upload outage: `kubectl -n $NS scale deploy/<release> --replicas=0` for under the lease,
+   then back. The run continues and the transcript read is whole afterwards.
+9. Cross-AZ restore: scale **every** runner node in the task claim's zone to zero — not a cordon; the
+   restore fires only when every node the scheduler weighed reports `volume node affinity conflict`, so
+   a tainted node in another group blocks it today. Queue a follow-up. Observe a new
+   `factory.task-root` claim generation in another zone, the session resumed and the checkout restored.
+10. Cleanup protection: after 2, the task claim survives its run; it goes only after the idle TTL.
+
+## 9. Teardown
 
 Runner Jobs first, then `helm uninstall`, then the release's task claims — they have no owner, and the reaper
 stops with the driver: `kubectl -n <ns> delete pvc -l app.kubernetes.io/instance=<release>,factory.task-root`
