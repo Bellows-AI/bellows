@@ -1,9 +1,8 @@
-// The continuous claude-code transcript exporter: runs beside the agent as its own container of the
-// run's pod (docker: its container group), under the task supervisor, over the same volume, tails every session file under
-// <CLAUDE_TRANSCRIPT_DIR>/projects and uploads byte-range chunks of it, cut at record boundaries,
-// through the driver's run-control channel (the driver relays them to the board's chunk route).
-// The raw files on the volume are the spool: nothing is ever dropped, an unacknowledged byte just
-// stays on disk and is retried.
+// The continuous claude-code transcript exporter: runs beside the agent as its own container of the run's pod
+// (docker: its container group), under the task supervisor, over the same volume, tails every session file under
+// <CLAUDE_TRANSCRIPT_DIR>/projects and uploads byte-range chunks of it, cut at record boundaries, through the
+// driver's run-control channel (the driver relays them to the board's chunk route). The raw files on the volume
+// are the spool: nothing is ever dropped, an unacknowledged byte just stays on disk and is retried.
 //
 // Environment (set by the driver; paths and literals, no credential):
 //   CLAUDE_TRANSCRIPT_DIR  — the thread's transcript directory (the runner's CLAUDE_CONFIG_DIR).
@@ -12,9 +11,6 @@
 //                            so this process holds no credential. A socket not there yet is retried.
 //   BELLOWS_CONTROL_URL / BELLOWS_CONTROL_TOKEN — one-shot mode only (a review's close-time export,
 //                            run by the holder itself): the endpoint and the token it issued.
-//   RUN_STARTED_AT         — ISO instant the attempt began. A file that existed before it is a
-//                            resumed session: only what is appended past its size at first sight
-//                            belongs to this attempt (offsets stay the file's own byte offsets).
 //   EXPORT_FLUSH_BYTES / EXPORT_FLUSH_MS — flush at this much pending, or this long after the
 //                            oldest unflushed byte.
 //   EXPORT_SPOOL_MAX_BYTES — unacknowledged bytes allowed before `spoolFull` is reported.
@@ -31,11 +27,11 @@
 //   EXPORT_DRAIN_GIVEUP_MS — once drained, how long an unreachable driver is tolerated before the
 //                            exporter ends with its bytes left on the volume for the next claim.
 //
-// Protocol (all keyed by the token the relay, or the one-shot's env, supplies): PUT /export/chunk?session&offset (raw bytes) -> 200 stored, 413
-// refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a session; POST
-// /export/state reports the vitals. `drain.json` ({state, cause}, written by the supervisor) says the
-// agent is gone: flush everything, close every session's manifest, report `done`, exit 0. A token the
-// endpoint no longer knows, or an endpoint dead past the give-up window, ends the exporter too.
+// Protocol (all keyed by the token the relay, or the one-shot's env, supplies): PUT /export/chunk?session&offset
+// (raw bytes) -> 200 stored, 413 refused {cause}, 409/400 permanent, 5xx retry; PUT /export/manifest (json) closes a
+// session; POST /export/state reports the vitals. `drain.json` ({state, cause}, written by the supervisor) says the
+// agent is gone: flush everything, close every session's manifest, report `done`, exit 0. A token the endpoint no
+// longer knows, or an endpoint dead past the give-up window, ends the exporter too.
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
@@ -83,7 +79,6 @@ const ONCE = process.env.EXPORT_ONCE;
 const CONTROL_SOCKET = process.env.EXPORT_CONTROL_SOCKET;
 const CONTROL_URL = process.env.BELLOWS_CONTROL_URL;
 const TOKEN = process.env.BELLOWS_CONTROL_TOKEN;
-const STARTED_MS = Date.parse(process.env.RUN_STARTED_AT ?? '');
 const FLUSH_BYTES = positive('EXPORT_FLUSH_BYTES', DEFAULT_FLUSH_KIB * KIB);
 const FLUSH_MS = positive('EXPORT_FLUSH_MS', DEFAULT_FLUSH_MS);
 const SPOOL_MAX = positive('EXPORT_SPOOL_MAX_BYTES', DEFAULT_SPOOL_BYTES);
@@ -187,12 +182,19 @@ const abandonDrain = () => {
 
 const statePath = (session) => path.join(DIR, 'export-state', `${session}.json`);
 
+// Null only when there is no state; one that is there but unreadable or misshapen says `unreadable`.
 const loadState = (session) => {
+    let state;
     try {
-        return JSON.parse(fs.readFileSync(statePath(session), 'utf8'));
-    } catch {
-        return null;
+        state = JSON.parse(fs.readFileSync(statePath(session), 'utf8'));
+    } catch (e) {
+        return e?.code === 'ENOENT' ? null : { unreadable: true };
     }
+    const { ino, base, acked, stopCause } = state ?? {};
+    const whole = (value) => Number.isSafeInteger(value) && value >= 0;
+    return [ino, base, acked].every(whole) && acked >= base && (stopCause === null || typeof stopCause === 'string')
+        ? state
+        : { unreadable: true };
 };
 
 const saveState = (track) => {
@@ -204,35 +206,26 @@ const saveState = (track) => {
     fs.renameSync(tmp, file);
 };
 
-const listJsonl = (dir) => {
+const listDir = (dir, keep) => {
     try {
-        return fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
+        return fs.readdirSync(dir, { withFileTypes: true }).filter(keep);
     } catch {
         return [];
     }
 };
+
+const listJsonl = (dir) => listDir(dir, (e) => e.name.endsWith('.jsonl')).map((e) => e.name);
 
 // Every session file the CLI keeps: projects/<dir>/<session>.jsonl and, in the newer layout, its
 // subagents' own files under projects/<dir>/<session>/subagents/. Each is a session of its own.
 const discover = () => {
     const projects = path.join(DIR, 'projects');
     const found = [];
-    let dirs = [];
-    try {
-        dirs = fs.readdirSync(projects, { withFileTypes: true }).filter((e) => e.isDirectory());
-    } catch {
-        return found;
-    }
-    for (const dir of dirs) {
+    const isDir = (e) => e.isDirectory();
+    for (const dir of listDir(projects, isDir)) {
         const root = path.join(projects, dir.name);
         for (const name of listJsonl(root)) found.push(path.join(root, name));
-        let entries = [];
-        try {
-            entries = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory());
-        } catch {
-            entries = [];
-        }
-        for (const entry of entries) {
+        for (const entry of listDir(root, isDir)) {
             const sub = path.join(root, entry.name, 'subagents');
             for (const name of listJsonl(sub)) found.push(path.join(sub, name));
         }
@@ -260,13 +253,12 @@ const blankTrack = (file, fd, stat) => ({
     failures: 0,
 });
 
-// Where an unseen file starts. A file born during this attempt is exported whole; one that predates
-// it is a resumed session whose existing bytes belong to earlier attempts.
-const firstSight = (track, stat) => {
-    const born = stat.birthtimeMs > 0 ? stat.birthtimeMs : Number.POSITIVE_INFINITY;
-    const fresh = Number.isNaN(STARTED_MS) || born >= STARTED_MS;
-    track.pos = fresh ? 0 : stat.size;
-    track.acked = track.pos;
+// Where an unseen file starts: whole, from offset 0. A session file with no saved state is exported whole
+// whatever its age, since a byte sent twice is harmless (the checkpoint restore tolerates identical
+// overlap) and a byte skipped is lost.
+const firstSight = (track) => {
+    track.pos = 0;
+    track.acked = 0;
     saveState(track);
 };
 
@@ -281,14 +273,17 @@ const open = (file) => {
     const stat = fs.fstatSync(fd);
     const track = blankTrack(file, fd, stat);
     const saved = loadState(track.session);
-    if (saved && saved.ino === stat.ino) {
+    if (saved?.unreadable) {
+        // Where the last exporter stopped is unknown: the file again, whole, rather than a byte skipped.
+        saveState(track);
+    } else if (saved && saved.ino === stat.ino) {
         // A restarted exporter resumes at the acknowledged point; nothing past it was lost, it is on disk.
         track.base = saved.base;
         track.acked = saved.acked;
         track.pos = saved.acked - saved.base;
         track.stopCause = saved.stopCause ?? null;
     } else {
-        firstSight(track, stat);
+        firstSight(track);
     }
     return track;
 };

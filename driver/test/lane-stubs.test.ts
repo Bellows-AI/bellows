@@ -1,4 +1,5 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -62,9 +63,12 @@ describe('the lane stub executor images', () => {
             '"$work/Dockerfile.fail"',
             '"$work/run/Dockerfile"',
             '"$work/kill/Dockerfile"',
+            '"$work/acc/Dockerfile"',
         ]) {
             expect(dockerfile(script, target)).toContain(ENTRY);
         }
+        // The acceptance phase runs the kind lane's own stub (#779), so both lanes answer the same words.
+        expect(script).toContain('cp scripts/k8s-stub.sh "$work/acc/stub.sh"');
         // The service stub is no agent: no supervisor watches it.
         expect(dockerfile(script, '"$work/svc/Dockerfile"')).not.toContain('stub-agent.sh');
     });
@@ -439,6 +443,68 @@ describe('scripts/k8s-stub.sh factory-stub-commit', () => {
     });
 });
 
+// #779: the acceptance lanes need a runner that leaves a transcript on the volume, as the real CLI does.
+describe('scripts/k8s-stub.sh factory-stub-transcript', () => {
+    const stub = join(ROOT, 'scripts/k8s-stub.sh');
+    const fixture = () => {
+        const root = mkdtempSync(join(tmpdir(), 'lane-transcript-'));
+        dirs.push(root);
+        const store = join(root, 'store');
+        const env = {
+            PATH: process.env.PATH ?? '',
+            WORKDIR: '/task/work.tree/repo',
+            FACTORY_TRANSCRIPT_DIR: store,
+            BELLOWS_SESSION_ID: 'sess-1',
+        };
+        const file = join(store, 'projects', '-task-work-tree-repo', 'sess-1.jsonl');
+        return { store, env, file };
+    };
+
+    it('tops the session file up to n records under the working directory\u2019s project segment, then marks ready', () => {
+        const { store, env, file } = fixture();
+        execFileSync('sh', [stub, 'factory-stub-transcript-3'], { env });
+        const lines = readFileSync(file, 'utf8').trimEnd().split('\n');
+        expect(lines.map((l) => JSON.parse(l).uuid)).toEqual(['stub-record-1', 'stub-record-2', 'stub-record-3']);
+        expect(existsSync(join(store, 'stub-transcript-ready'))).toBe(true);
+        execFileSync('sh', [stub, 'factory-stub-transcript-3'], { env });
+        expect(readFileSync(file, 'utf8').trimEnd().split('\n')).toHaveLength(3);
+        execFileSync('sh', [stub, 'factory-stub-transcript-5'], { env });
+        expect(readFileSync(file, 'utf8').trimEnd().split('\n')).toHaveLength(5);
+    });
+
+    it('fails instead of reporting success when the records cannot be written', () => {
+        const { store, env } = fixture();
+        writeFileSync(store, 'a file where the store directory should be');
+        expect(() => execFileSync('sh', [stub, 'factory-stub-transcript-1'], { env, stdio: 'pipe' })).toThrow();
+    });
+
+    it('ends non-zero on factory-stub-fail, after its records', () => {
+        const { env, file } = fixture();
+        let code: number | null = 0;
+        try {
+            execFileSync('sh', [stub, 'factory-stub-transcript-1 factory-stub-fail'], { env, stdio: 'pipe' });
+        } catch (e) {
+            code = (e as { status: number }).status;
+        }
+        expect(code).toBe(1);
+        expect(readFileSync(file, 'utf8').trimEnd().split('\n')).toHaveLength(1);
+    });
+
+    it('fails only the first run on a volume under factory-stub-fail-once', () => {
+        const { store, env } = fixture();
+        mkdirSync(store, { recursive: true });
+        const attempt = () => {
+            try {
+                execFileSync('sh', [stub, 'factory-stub-fail-once'], { env, stdio: 'pipe' });
+                return 0;
+            } catch (e) {
+                return (e as { status: number }).status;
+            }
+        };
+        expect([attempt(), attempt()]).toEqual([1, 0]);
+    });
+});
+
 describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
     const gh = join(ROOT, 'scripts/lane-gh.sh');
     /** A state directory standing for /task/.lane-gh, and a working directory: where the stub keeps its state. */
@@ -502,6 +568,187 @@ describe('scripts/lane-gh.sh, run locally under /bin/sh', () => {
             'task-2 https://github.com/factory-smoke/demo/pull/1\n'
         );
         expect(call('pr', 'view', 'task-2', '--json', 'url', '-q', '.url').code).toBe(0);
+    });
+});
+
+// #779: both acceptance phases judge the artifact read with this one verifier, and a read that did not
+// answer is `unread`, never a verdict about the transcript.
+describe('scripts/acceptance-transcript.mjs', () => {
+    const records = (a: number, b: number): string => {
+        let text = '';
+        for (let i = a; i <= b; i++) {
+            text += `${JSON.stringify({ type: 'user', uuid: `stub-record-${i}`, sessionId: 's', message: { role: 'user', content: `stub record ${i}` } })}\n`;
+        }
+        return text;
+    };
+    const judge = async (reply: (url: string) => { status: number; body: unknown }, args: string[]) => {
+        const server = createServer((req, res) => {
+            const { status, body } = reply(req.url ?? '');
+            res.writeHead(status).end(typeof body === 'string' ? body : JSON.stringify(body));
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address() as { port: number };
+        try {
+            return await new Promise<string>((resolve, reject) => {
+                const child = spawn('node', [
+                    join(ROOT, 'scripts/acceptance-transcript.mjs'),
+                    `http://127.0.0.1:${port}/artifacts`,
+                    's',
+                    ...args,
+                ]);
+                let out = '';
+                child.stdout.on('data', (d) => (out += d));
+                child.on('error', reject);
+                child.on('close', () => resolve(out));
+            });
+        } finally {
+            server.close();
+        }
+    };
+    const page = (first: number, last: number) => {
+        const text = records(first, last);
+        const offset = Buffer.byteLength(records(1, first - 1));
+        return {
+            status: 200,
+            body: {
+                streams: [{ attempt: 1, state: 'complete' }],
+                segments: [{ state: 'ok', offset, length: Buffer.byteLength(text), text }],
+            },
+        };
+    };
+
+    it('says exact for the records read whole, from the byte where the first begins', async () => {
+        expect(await judge(() => page(1, 3), ['1', '3'])).toBe('exact');
+        expect(await judge(() => page(3, 4), ['3', '4'])).toBe('exact');
+    });
+
+    it('says bad for other records, and unread for a refused or malformed read', async () => {
+        expect(await judge(() => page(1, 2), ['1', '3'])).toMatch(/^bad:/);
+        expect(await judge(() => ({ status: 503, body: {} }), ['1', '3'])).toBe('unread: status 503');
+        expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3'])).toBe('unread: malformed body');
+    });
+
+    it('before-loss says short only for a confirmed partial store; all records, or a failed read, never proceed', async () => {
+        const open = (a: number, b: number) => {
+            const text = records(a, b);
+            return {
+                status: 200,
+                body: {
+                    streams: [{ attempt: 1, state: 'open' }],
+                    segments: a > b ? [] : [{ state: 'ok', offset: 0, length: Buffer.byteLength(text), text }],
+                },
+            };
+        };
+        expect(await judge(() => open(1, 2), ['1', '3', 'before-loss'])).toBe('short');
+        expect(await judge(() => open(1, 0), ['1', '3', 'before-loss'])).toBe('short');
+        expect(await judge(() => open(1, 3), ['1', '3', 'before-loss'])).toMatch(/^bad: inconclusive:/);
+        expect(await judge(() => ({ status: 503, body: {} }), ['1', '3', 'before-loss'])).toBe('unread: status 503');
+        expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3', 'before-loss'])).toBe(
+            'unread: malformed body'
+        );
+        const segment = (s: object) => ({
+            status: 200,
+            body: { streams: [{ attempt: 1, state: 'open' }], segments: [s] },
+        });
+        expect(await judge(() => segment({ state: 'unreadable', offset: 0 }), ['1', '3', 'before-loss'])).toBe(
+            'unread: malformed body'
+        );
+        expect(await judge(() => segment({ state: 'deleted', offset: 0 }), ['1', '3', 'before-loss'])).toBe(
+            'unread: malformed body'
+        );
+        expect(await judge(() => segment({ state: 'deleted', offset: 0, length: 9 }), ['1', '3', 'before-loss'])).toBe(
+            'unread: a segment was deleted'
+        );
+    });
+
+    it('says unread, never exact, for a body whose streams, segments or cursor are misshapen', async () => {
+        const good = page(1, 3).body;
+        const text = records(1, 3);
+        const segment = { state: 'ok', offset: 0, length: Buffer.byteLength(text), text };
+        const bodies: Record<string, unknown> = {
+            'a stream without an attempt': { ...good, streams: [{ state: 'complete' }] },
+            'a stream without a state': { ...good, streams: [{ attempt: 1 }] },
+            'a non-object stream': { ...good, streams: ['complete'] },
+            'a segment without a length': { ...good, segments: [{ state: 'ok', offset: 0, text }] },
+            'a segment with a wrong length': { ...good, segments: [{ ...segment, length: 1 }] },
+            'a segment with a fractional offset': { ...good, segments: [{ ...segment, offset: 0.5 }] },
+            'a non-object segment': { ...good, segments: [null] },
+            'a zero cursor': { ...good, nextCursor: 0 },
+            'an object cursor': { ...good, nextCursor: {} },
+        };
+        for (const [name, body] of Object.entries(bodies)) {
+            expect(await judge(() => ({ status: 200, body }), ['1', '3']), name).toMatch(/^unread:/);
+        }
+    });
+
+    it('says unread when the page limit ends the read with a cursor still pending', async () => {
+        const body = { ...page(1, 3).body, nextCursor: 'more' };
+        expect(await judge(() => ({ status: 200, body }), ['1', '3'])).toMatch(/^unread:.*page limit/);
+    });
+});
+
+// #779: the job reads of the acceptance phases are judged by shape; a failed or misshapen read is `unread`.
+describe('scripts/acceptance-job.mjs', () => {
+    const read = async (status: number, body: unknown, method: string, kind: string) => {
+        const server = createServer((_req, res) => {
+            res.writeHead(status).end(typeof body === 'string' ? body : JSON.stringify(body));
+        });
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const { port } = server.address() as { port: number };
+        try {
+            return await new Promise<string>((resolve, reject) => {
+                const child = spawn('node', [
+                    join(ROOT, 'scripts/acceptance-job.mjs'),
+                    method,
+                    `http://127.0.0.1:${port}/api/jobs/x`,
+                    kind,
+                ]);
+                let out = '';
+                child.stdout.on('data', (d) => (out += d));
+                child.on('error', reject);
+                child.on('close', () => resolve(out));
+            });
+        } finally {
+            server.close();
+        }
+    };
+    const job = { status: 'succeeded', attempts: 1, interruptions: [] };
+
+    it('prints the brief of a well-formed job, with its first interruption', async () => {
+        expect(await read(200, job, 'GET', 'brief')).toBe('succeeded|1|0||');
+        const hit = { ...job, interruptions: [{ claimSeq: 1, reason: 'infrastructure loss: x' }] };
+        expect(await read(200, hit, 'GET', 'brief')).toBe('succeeded|1|1|1|infrastructure loss: x');
+    });
+
+    it.each([
+        ['no interruptions', { status: 'succeeded', attempts: 1 }],
+        ['an object for interruptions', { ...job, interruptions: {} }],
+        ['an interruption without a claimSeq', { ...job, interruptions: [{ reason: 'r' }] }],
+        ['an object status', { ...job, status: {} }],
+        ['a string attempts', { ...job, attempts: '1' }],
+        ['an array body', []],
+    ])('says unread for a job with %s', async (_name, body) => {
+        expect(await read(200, body, 'GET', 'brief')).toMatch(/^unread:/);
+    });
+
+    it('says unread for a refused read and for a body that is not JSON', async () => {
+        expect(await read(503, job, 'GET', 'brief')).toBe('unread: status 503');
+        expect(await read(200, 'nope', 'GET', 'brief')).toBe('unread: malformed body');
+    });
+
+    it('reads a session and a failure cause only when they are non-empty strings', async () => {
+        expect(await read(200, { sessionId: 's1' }, 'GET', 'session')).toBe('s1');
+        expect(await read(200, { sessionId: {} }, 'GET', 'session')).toMatch(/^unread:/);
+        expect(await read(200, { failureKind: 'agent_exit' }, 'GET', 'cause')).toBe('agent_exit');
+        expect(await read(200, { failureKind: {} }, 'GET', 'cause')).toMatch(/^unread:/);
+        expect(await read(200, {}, 'GET', 'cause')).toMatch(/^unread:/);
+    });
+
+    it('takes an id from a 201 only, as a string', async () => {
+        expect(await read(201, { id: 'j1' }, 'POST', 'id')).toBe('j1');
+        expect(await read(201, { id: {} }, 'POST', 'id')).toMatch(/^unread:/);
+        expect(await read(201, {}, 'POST', 'id')).toMatch(/^unread:/);
+        expect(await read(409, { error: 'no' }, 'POST', 'id')).toMatch(/^refused: 409/);
     });
 });
 

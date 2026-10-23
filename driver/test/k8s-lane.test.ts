@@ -38,7 +38,15 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|takeover|control|capacity|drain|bench]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|drain|bench]');
+    });
+
+    it('runs the failure-matrix acceptance phase in the full cluster run, one named check per case (issue #779)', () => {
+        const script = readRepoFile('scripts/test-k8s.sh');
+        expect(script).toContain('if selected_phase acceptance; then');
+        for (const c of ['a', 'b', 'c', 'd', 'e', 'f', 'g']) expect(script).toContain(`'acceptance: ${c}. `);
+        expect(script).toContain('--grace-period=0 --force');
+        expect(script).toContain('the claim listing contains (a)');
     });
 });
 
@@ -428,7 +436,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|capacity\|drain\|bench\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|acceptance\|capacity\|drain\|bench\)/
         );
     });
 

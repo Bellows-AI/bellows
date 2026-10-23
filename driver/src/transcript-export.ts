@@ -49,16 +49,15 @@ export function exportsTranscript(job: BoardJob, session: RunSession | null): bo
 }
 
 /**
- * The exporter's env: literals only — paths, the attempt's start, the caps, its mailbox with the
+ * The exporter's env: literals only — paths, the caps, its mailbox with the
  * supervisor and the relay socket in it. It holds no credential: the supervisor attaches its own
  * export-only token to what the exporter sends (#829). A drain or a flush whose holder stays
  * unreachable gives up only after a takeover has had its whole bound to land.
  */
-export function exportEnv(config: DriverConfig, job: BoardJob, startedAt: string): [string, string][] {
+export function exportEnv(config: DriverConfig, job: BoardJob): [string, string][] {
     const giveUp = takeoverBoundMs(config);
     return [
         ['CLAUDE_TRANSCRIPT_DIR', transcriptDir(job)],
-        ['RUN_STARTED_AT', startedAt],
         ['EXPORT_FLUSH_BYTES', String(EXPORT_FLUSH_BYTES)],
         ['EXPORT_FLUSH_MS', String(EXPORT_FLUSH_MS)],
         ['EXPORT_SPOOL_MAX_BYTES', String(EXPORT_SPOOL_MAX_BYTES)],

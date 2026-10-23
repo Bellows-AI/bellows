@@ -162,7 +162,7 @@ async function exportReview(host: StepHost, toRun: ReviewRun, result: StepResult
     if (!exporter) return;
     const step =
         review.executorType === CLAUDE_CODE
-            ? claudeExportRequest(toRun, result, startedAt)
+            ? claudeExportRequest(toRun, result)
             : {
                   argv: ['node', '-e', opencodeReadoutScript],
                   env: {
@@ -192,8 +192,7 @@ async function exportReview(host: StepHost, toRun: ReviewRun, result: StepResult
 
 function claudeExportRequest(
     { caller, review, exporter }: ReviewRun,
-    result: StepResult,
-    startedAt: Date
+    result: StepResult
 ): { argv: string[]; env: Record<string, string> } | null {
     const controlUrl = caller.supervisorEnv?.[SUPERVISOR_ENV.controlUrl];
     if (!controlUrl || !exporter) return null;
@@ -202,7 +201,6 @@ function claudeExportRequest(
         argv: ['node', '-e', claudeExportScript],
         env: {
             CLAUDE_TRANSCRIPT_DIR: `${REVIEWER_HOME}/${reviewerTranscriptName(review)}`,
-            RUN_STARTED_AT: startedAt.toISOString(),
             EXPORT_FLUSH_BYTES: String(EXPORT_FLUSH_BYTES),
             EXPORT_FLUSH_MS: String(EXPORT_FLUSH_MS),
             EXPORT_SPOOL_MAX_BYTES: String(EXPORT_SPOOL_MAX_BYTES),

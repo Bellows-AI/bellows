@@ -143,7 +143,7 @@ export function supervisorCreateArgs(
 }
 
 /** The exporter's `docker create` argv: the member's workspace and the one mailbox it shares with the supervisor. */
-export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedAt: string): string[] {
+export function exporterCreateArgs(config: DriverConfig, job: BoardJob): string[] {
     return [
         'create',
         ...containerHardeningArgs(),
@@ -152,7 +152,7 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob, startedA
         ...labelArgs(job, EXPORTER_CONTAINER),
         ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
-        ...exportEnv(config, job, startedAt).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
+        ...exportEnv(config, job).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
         '--entrypoint',
         'node',
         executorImage(config, job.executorType),
@@ -279,12 +279,7 @@ export function groupShape(
  * failure removes what was created and throws: a run whose supervisor cannot exist is an
  * infrastructure refusal the loop leaves to its lease, never a run that silently loses its record.
  */
-export async function createGroup(
-    deps: GroupDeps,
-    job: BoardJob,
-    session: RunSession | null,
-    { startedAt }: { startedAt: string }
-): Promise<void> {
+export async function createGroup(deps: GroupDeps, job: BoardJob, session: RunSession | null): Promise<void> {
     const shape = groupShape(job, session);
     const { exporting } = shape;
     try {
@@ -299,7 +294,7 @@ export async function createGroup(
             (file) => supervisorCreateArgs(deps.config, job, shape, file)
         );
         if (exporting) {
-            await deps.execDocker(exporterCreateArgs(deps.config, job, startedAt));
+            await deps.execDocker(exporterCreateArgs(deps.config, job));
         }
     } catch (e) {
         await removeGroup(deps.teardown ?? deps.execDocker, job);

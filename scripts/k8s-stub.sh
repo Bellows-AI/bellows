@@ -21,6 +21,30 @@ case "$*" in
     git -C "$WORKDIR" -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit
     ;;
 esac
+# `factory-stub-transcript-<n>` (issue #779): the session file the
+# real CLI writes under the runner's transcript store (projects/<working dir with every non-alphanumeric
+# as '-'>/<session>.jsonl) topped up to <n> claude JSONL records, so a replacement run on the same volume
+# adds none, as a resumed session would not repeat its history; then `stub-transcript-ready` beside it, so a lane that holds the run at a
+# wait (`factory-stub-wait-...`) knows the records are on the volume. A write that fails fails the run.
+case "$*" in
+*factory-stub-transcript-*)
+    count="${*##*factory-stub-transcript-}"
+    count="${count%%[!0-9]*}"
+    [ -n "$count" ] && [ -n "${FACTORY_TRANSCRIPT_DIR:-}" ] && [ -n "${BELLOWS_SESSION_ID:-}" ] || exit 1
+    segment="$(printf '%s' "$WORKDIR" | sed 's/[^A-Za-z0-9]/-/g')"
+    session_file="$FACTORY_TRANSCRIPT_DIR/projects/$segment/$BELLOWS_SESSION_ID.jsonl"
+    mkdir -p "$FACTORY_TRANSCRIPT_DIR/projects/$segment"
+    have=0
+    [ ! -f "$session_file" ] || have="$(wc -l <"$session_file")"
+    while [ "$have" -lt "$count" ]; do
+        have=$((have + 1))
+        printf '{"type":"user","uuid":"stub-record-%s","sessionId":"%s","message":{"role":"user","content":"stub record %s"}}\n' \
+            "$have" "$BELLOWS_SESSION_ID" "$have" >>"$session_file"
+    done
+    : >"$FACTORY_TRANSCRIPT_DIR/stub-transcript-ready"
+    echo "transcript $session_file records $have"
+    ;;
+esac
 # `factory-stub-services` (issue #773): the names a task pod's hosts file puts on its loopback, then
 # a TCP connect to each declared service of the services lane, retried while one still boots.
 reach() { # reach <host> <port>
@@ -165,3 +189,16 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         ;;
     esac
 done
+# `factory-stub-fail` (issue #779): the run ends non-zero, after any records and wait above.
+# `factory-stub-fail-once`: only the first run on the task volume does; a retry finds the mark and passes.
+case "$*" in
+*factory-stub-fail-once*)
+    [ -n "${FACTORY_TRANSCRIPT_DIR:-}" ] || exit 1
+    if [ ! -f "$FACTORY_TRANSCRIPT_DIR/stub-fail-once" ]; then
+        mkdir -p "$FACTORY_TRANSCRIPT_DIR"
+        : >"$FACTORY_TRANSCRIPT_DIR/stub-fail-once"
+        exit 1
+    fi
+    ;;
+*factory-stub-fail*) exit 1 ;;
+esac

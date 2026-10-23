@@ -5696,14 +5696,14 @@ describe('the transcript artifact Jobs under kubernetes (issue #325)', () => {
     const config = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: namespace });
 
     it('claude: the exporter is a container of the run’s pod that holds no credential, only the supervisor’s relay socket', () => {
-        const spec = runnerJobSpec(config, { ...job, ...SUPERVISED }, { id: SESSION, resume: false }, START);
+        const spec = runnerJobSpec(config, { ...job, ...SUPERVISED }, { id: SESSION, resume: false });
         const container = spec.spec.template.spec.containers.find((c) => c.name === EXPORTER_CONTAINER)!;
         expect(container.command).toEqual(['node', '-e', claudeExportScript]);
         expect(container.env).toContainEqual({
             name: 'CLAUDE_TRANSCRIPT_DIR',
             value: `${TASK_MOUNT}/.factory/transcripts/${job.id}`,
         });
-        expect(container.env).toContainEqual({ name: 'RUN_STARTED_AT', value: START });
+        expect(container.env?.map((e) => e.name)).not.toContain('RUN_STARTED_AT');
         expect(container.env).toContainEqual({ name: 'FACTORY_EXPORT_DIR', value: '/factory/export' });
         expect(container.env).toContainEqual({ name: 'EXPORT_CONTROL_SOCKET', value: EXPORT_RELAY_SOCKET });
         expect(JSON.stringify(container.env)).not.toMatch(/secretKeyRef|BELLOWS_CONTROL/);

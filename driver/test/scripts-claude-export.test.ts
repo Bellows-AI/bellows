@@ -1,5 +1,14 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, truncateSync, writeFileSync } from 'node:fs';
+import {
+    appendFileSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    renameSync,
+    statSync,
+    truncateSync,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { type AddressInfo, createServer as createTcpServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -323,8 +332,15 @@ describe('the continuous claude-code exporter', () => {
         const file = fileOf(h);
         const earlier = records(5);
         writeFileSync(file, earlier);
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        h.start({ RUN_STARTED_AT: new Date().toISOString() });
+        // An earlier exporter ran, uploaded the session and saved its state.
+        const first = h.start();
+        await until('the earlier records', () => h.stored(SESSION).length === Buffer.byteLength(earlier));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const gone = new Promise((resolve) => first.on('close', resolve));
+        first.kill('SIGKILL');
+        await gone;
+        const before = h.chunks.length;
+        h.start();
         await new Promise((resolve) => setTimeout(resolve, 300));
         const appended = records(2, 5);
         appendFileSync(file, appended);
@@ -332,9 +348,101 @@ describe('the continuous claude-code exporter', () => {
         writeFileSync(fileOf(h, 'brand-new.jsonl'), fresh);
         h.drain('complete', null);
         expect(await h.exited()).toBe(0);
-        expect(h.stored(SESSION).toString()).toBe(appended);
-        expect(h.chunks.find((c) => c.session === SESSION)?.offset).toBe(Buffer.byteLength(earlier));
+        const mine = h.chunks.slice(before).filter((c) => c.session === SESSION);
+        expect(Buffer.concat(mine.map((c) => c.body)).toString()).toBe(appended);
+        expect(mine[0]?.offset).toBe(Buffer.byteLength(earlier));
         expect(h.stored('brand-new').toString()).toBe(fresh);
+    });
+
+    describe('a pod lost with its volume kept: the next claim’s exporter over the same volume', () => {
+        const kill = async (child: ChildProcess): Promise<void> => {
+            const gone = new Promise((resolve) => child.on('close', resolve));
+            child.kill('SIGKILL');
+            await gone;
+        };
+
+        it('uploads every record the lost one never had acknowledged, from the offset it reached', async () => {
+            const h = await harness();
+            const file = fileOf(h);
+            const lost = h.start();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const acked = records(5);
+            writeFileSync(file, acked);
+            await until('the first records', () => h.stored(SESSION).length === Buffer.byteLength(acked));
+            h.board.down = true;
+            const unacked = `${records(7, 5)}{"n":12,"cut mid-wri`;
+            appendFileSync(file, unacked);
+            await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
+            await kill(lost);
+            h.board.down = false;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start();
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(acked + records(7, 5));
+            expect(h.chunks.filter((c) => c.session === SESSION)[0]?.offset).toBe(0);
+        });
+
+        it('a session the first pod wrote before its exporter ever started is exported whole by the next claim', async () => {
+            const h = await harness();
+            const all = records(6);
+            writeFileSync(fileOf(h), all);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(all);
+            expect(h.chunks.find((c) => c.session === SESSION)?.offset).toBe(0);
+        });
+
+        it('exports a session born under the lost attempt whole, though that exporter never saw it', async () => {
+            const h = await harness();
+            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            await until('the lost exporter running', () => h.status() !== null);
+            await kill(lost);
+            // The agent wrote its session after the exporter's last scan; then the pod was lost.
+            const all = records(9);
+            writeFileSync(fileOf(h), all);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(all);
+        });
+
+        it.each([
+            ['cannot be parsed', '{"ino": 1, "ac'],
+            ['is null', 'null'],
+            ['has no offsets', '{}'],
+            ['has a negative base', '{"ino": INO, "base": -2, "acked": 0, "stopCause": null}'],
+            ['has acked below base', '{"ino": INO, "base": 5, "acked": 2, "stopCause": null}'],
+            ['has a fractional offset', '{"ino": INO, "base": 0, "acked": 1.5, "stopCause": null}'],
+            ['has an object stop cause', '{"ino": INO, "base": 0, "acked": 0, "stopCause": {}}'],
+        ])('exports a resumed session whole when its saved state %s, never skipping its tail', async (_name, state) => {
+            const h = await harness();
+            const file = fileOf(h);
+            const earlier = records(3);
+            writeFileSync(file, earlier);
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            const lost = h.start();
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            h.board.down = true;
+            appendFileSync(file, records(4, 3));
+            await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
+            await kill(lost);
+            writeFileSync(
+                join(h.dir, 'export-state', `${SESSION}.json`),
+                state.replace('INO', String(statSync(file).ino))
+            );
+            h.board.down = false;
+            const before = h.chunks.length;
+            h.start();
+            h.drain('complete', null);
+            expect(await h.exited()).toBe(0);
+            const resent = h.chunks.slice(before).sort((a, b) => a.offset - b.offset);
+            expect(resent[0]?.offset).toBe(0);
+            expect(Buffer.concat(resent.map((c) => c.body)).toString()).toBe(earlier + records(4, 3));
+        });
     });
 
     it('gives a subagent its own session', async () => {

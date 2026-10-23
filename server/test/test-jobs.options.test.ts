@@ -134,6 +134,7 @@ describe('test-jobs phase options', () => {
         expect(result.stdout).toContain('question-round-trip');
         expect(result.stdout).toContain('run-deadline');
         expect(result.stdout).toContain('run-deadline, review,');
+        expect(result.stdout).toContain('acceptance');
         expect(lane.trace()).toBe('');
     });
 
