@@ -184,8 +184,14 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
 
     const evict = (g: Group, why: string) => {
         const running = sim.row.status === 'running' && !sim.row.staged;
-        // A pod over (its supervisor ended) loses nothing; a Pending one never ran an attempt but still a claim's.
-        if (running && g.exit === null) required.add(sim.row.claimSeq);
+        // A pod over (its supervisor ended) loses nothing; a Pending one never ran an attempt but still a claim's. The
+        // pod of an earlier claim is the row's claim's loss only once that claim holds it (a holder's token the driver
+        // answered to): lost before that contact, the claim finds it over and redoes the group, which hit no attempt of it (#943).
+        // `tokens` is insertion-ordered: index 0 is the owner's own token, the rest are holders' after a rebind.
+        const holds =
+            g.claimSeq === sim.row.claimSeq ||
+            [...g.tokens].slice(1).some((t) => drivers.some((d) => d.steps.contacted(t)));
+        if (running && g.exit === null) (holds ? required : allowed).add(sim.row.claimSeq);
         say(
             `${why}: pod of claim ${g.claimSeq} (node ${g.node ?? 'none'}) gone, row claim ${sim.row.claimSeq} ${sim.row.status}`
         );
