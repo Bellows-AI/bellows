@@ -319,8 +319,16 @@ export async function runGremlin(seed: number, over: Partial<Plan> = {}): Promis
         return watch;
     };
     const timers: ReturnType<typeof setTimeout>[] = [];
+    // After a stall the driver's overdue heartbeat can run before its overdue claim poll and renew the lease unseen;
+    // the stall is repeated until the board has reclaimed, so what the run proves does not hang on that timer order.
+    const stallUntilReclaimed = async (ms: number) => {
+        for (let i = 0; i < 6 && sim.row.interruptions.length === 0; i++) {
+            busyWait(ms);
+            await nap(200);
+        }
+    };
     const watches = [
-        afterClaim(plan.hostStall, () => busyWait(plan.hostStall!.ms)),
+        afterClaim(plan.hostStall, () => void stallUntilReclaimed(plan.hostStall!.ms)),
         afterClaim(plan.leaseLapse, sim.expireLease),
     ];
     void rr;
