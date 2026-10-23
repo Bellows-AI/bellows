@@ -4,9 +4,12 @@
  * each across a timing matrix of lease, rebind grace and the kubelet's Secret refresh. A scenario
  * names the lane case it mirrors; its expectations are the lane's.
  */
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { takeoverBoundMs } from '../src/supervisor-plan.js';
-import { ADOPTED, lane15, scaled, Sim, TOOK_OVER, type Timing, until } from './fixtures/takeover-sim.js';
+import { ADOPTED, type Group, lane15, scaled, Sim, TOOK_OVER, type Timing, until } from './fixtures/takeover-sim.js';
 
 const released = (s: Sim) => [...s.groups.values()].find((g) => s.released(g));
 const firstGroup = (s: Sim) => [...s.groups.values()][0]!;
@@ -232,4 +235,17 @@ describe('takeover simulation, a pod evicted under a takeover (#943)', () => {
             await s.teardown();
         }
     }, 60_000);
+
+    it('a binding refresh still pending at the teardown never writes into the removed group', async () => {
+        const s = new Sim({ ...scaled(1), refreshMs: 50 });
+        const dir = mkdtempSync(join(tmpdir(), 'takeover-refresh-'));
+        s.dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        s.groups.set('lease', { secretWrites: 0, tokens: new Set<string>(), file } as unknown as Group);
+        s.rebind('lease', JSON.stringify({ token: 't' }));
+        await s.teardown();
+        // An uncaught ENOENT from the timer fails the run; the file must not reappear either.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(existsSync(file)).toBe(false);
+    });
 });
