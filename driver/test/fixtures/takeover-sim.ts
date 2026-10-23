@@ -126,13 +126,14 @@ export interface Group {
     markGone: () => void;
 }
 
-interface Row {
+export interface Row {
     id: string;
     status: 'queued' | 'running' | 'succeeded' | 'dead';
     claimSeq: number;
     leaseToken: string | null;
     leaseExpiresAt: number;
-    interruptions: { claimSeq: number; reason: string }[];
+    /** `at` is when the board recorded it; `since` is the start of the silence it answers (the lease's last renewal). */
+    interruptions: { claimSeq: number; reason: string; at: number; since: number }[];
     staged: { lease: string; result: unknown } | null;
     checkpoints: { runClaimSeq: number; phase: string; tree: string | null; result: unknown }[];
     output: string;
@@ -209,6 +210,7 @@ export class Sim {
 
     /** `expire_claim_one`: the live lease of the current claim is expired at once. */
     expireLease = () => {
+        this.renewed = Date.now();
         this.row.leaseExpiresAt = Date.now() - 1000;
     };
     /** Claims answer nothing: a replacement is absent, and the old driver's own claim poll cannot beat its heartbeat. */
@@ -226,6 +228,7 @@ export class Sim {
         r.status = 'running';
         r.leaseToken = randomUUID();
         r.leaseExpiresAt = Date.now() + this.t.leaseSeconds * 1000;
+        this.renewed = Date.now();
         const continues = r.interruptions.at(-1)?.claimSeq === r.claimSeq - 1;
         return {
             ...baseJob(1),
@@ -236,6 +239,10 @@ export class Sim {
             continuesInterrupted: continues,
         };
     }
+
+    /** When the live lease was last renewed (a claim or a heartbeat), whatever `expireLease` did to its expiry since. */
+    private renewed = 0;
+    private readonly silence = () => ({ at: Date.now(), since: this.renewed });
 
     readonly holds = (claimed: BoardJob) => this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
 
@@ -248,16 +255,21 @@ export class Sim {
                 if (r.status === 'queued') return this.take();
                 if (r.status !== 'running' || r.leaseExpiresAt > Date.now()) return null;
                 if (r.staged && r.staged.lease === r.leaseToken) {
-                    r.interruptions.push({ claimSeq: r.claimSeq, reason: 'the driver was lost after staging' });
+                    r.interruptions.push({
+                        claimSeq: r.claimSeq,
+                        reason: 'the driver was lost after staging',
+                        ...this.silence(),
+                    });
                     r.status = 'succeeded';
                     return null;
                 }
-                r.interruptions.push({ claimSeq: r.claimSeq, reason: 'lease expired' });
+                r.interruptions.push({ claimSeq: r.claimSeq, reason: 'lease expired', ...this.silence() });
                 return this.take();
             },
             heartbeat: async (claimed) => {
                 if (!this.holds(claimed)) return 'lost';
                 r.leaseExpiresAt = Date.now() + this.t.leaseSeconds * 1000;
+                this.renewed = Date.now();
                 return { result: 'held', cancelRequested: false };
             },
             progress: async (claimed) => hold(claimed),
@@ -268,7 +280,12 @@ export class Sim {
                 // An adopted earlier attempt is recorded once (the claim that superseded it already did).
                 const seq = interruption.claimSeq ?? claimed.claimSeq;
                 if (!r.interruptions.some((i) => i.claimSeq === seq))
-                    r.interruptions.push({ claimSeq: seq, reason: interruption.reason });
+                    r.interruptions.push({
+                        claimSeq: seq,
+                        reason: interruption.reason,
+                        at: Date.now(),
+                        since: this.renewed,
+                    });
                 if (interruption.release) r.status = 'queued';
                 return 'held';
             },
