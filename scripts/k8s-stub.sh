@@ -195,6 +195,7 @@ case "$*" in
 *factory-stub-fail-once*)
     [ -n "${FACTORY_TRANSCRIPT_DIR:-}" ] || exit 1
     if [ ! -f "$FACTORY_TRANSCRIPT_DIR/stub-fail-once" ]; then
+        mkdir -p "$FACTORY_TRANSCRIPT_DIR"
         : >"$FACTORY_TRANSCRIPT_DIR/stub-fail-once"
         exit 1
     fi
