@@ -67,7 +67,7 @@ export const RULES = [
     [/^driver\/src\/(review|review-[a-z-]+|loop-review)\.ts$/, ['review'], 'reviewer'],
     [/^driver\/src\/scripts\/(review-[a-z-]+\.(cjs|sh)|git-review-snapshot\.cjs)$/, ['review'], 'reviewer'],
     [/^driver\/src\/(question-control|question-validation|loop-questions)\.ts$/, ['ask-user-question', 'question-round-trip'], 'questions'],
-    [/^driver\/src\/(publish|publish-[a-z]+|loop-publish)\.ts$/, ['driver', 'compose-driver'], 'publish'],
+    [/^driver\/src\/(publish|publish-[a-z]+|loop-publish)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop-gates|gates|gate-cause|docker-gate|loop-agentless|loop-phase|loop-phase-checkpoints|board-phase-checkpoints)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell)\.sh$/, ['driver', 'workflows'], 'gates'],
@@ -129,7 +129,7 @@ function changedFiles(base) {
     const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).split('\n').filter(Boolean);
     // From the merge base, so a branch behind <base> is not charged with <base>'s newer commits.
     const [mergeBase] = git('merge-base', base, 'HEAD');
-    return [...new Set([...git('diff', '--name-only', mergeBase), ...git('ls-files', '--others', '--exclude-standard')])];
+    return [...new Set([...git('diff', '--no-renames', '--name-only', mergeBase), ...git('ls-files', '--others', '--exclude-standard')])];
 }
 
 function main(argv) {

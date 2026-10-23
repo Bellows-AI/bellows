@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -132,5 +133,29 @@ describe('test-jobs --changed path-to-phase map', () => {
         const none = spawnSync('node', [MAP, '--files'], { input: '', encoding: 'utf8' });
         expect(none.stdout).toBe('');
         expect(none.stderr).toContain('no changed files');
+    });
+
+    it('selects publish changes into the recovery phase that checks a repeated push', () => {
+        expect(classify(['driver/src/publish-pr.ts']).selected).toEqual(['driver', 'driver-kill', 'compose-driver']);
+    });
+
+    // A rename reports only its destination by default, which would hide a file leaving driver/src.
+    it('counts both ends of a rename read from real git', () => {
+        const repo = mkdtempSync(join(tmpdir(), 'jobs-changed-'));
+        try {
+            const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
+            git('init', '-q');
+            mkdirSync(join(repo, 'driver/src'), { recursive: true });
+            mkdirSync(join(repo, 'cli/src'), { recursive: true });
+            writeFileSync(join(repo, 'driver/src/loop-adopt.ts'), 'export const adopt = 1;\n'.repeat(20));
+            git('add', '.');
+            git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'seed');
+            renameSync(join(repo, 'driver/src/loop-adopt.ts'), join(repo, 'cli/src/loop-adopt.ts'));
+            git('add', '-A');
+            const out = spawnSync('node', [MAP, 'HEAD'], { cwd: repo, encoding: 'utf8' });
+            expect(out.stdout).toBe('node-disruption,driver-kill');
+        } finally {
+            rmSync(repo, { recursive: true, force: true });
+        }
     });
 });
