@@ -5,11 +5,13 @@
  * names the lane case it mirrors; its expectations are the lane's.
  */
 import { describe, expect, it } from 'vitest';
-import { ADOPTED, scaled, Sim, TOOK_OVER, type Timing, until } from './fixtures/takeover-sim.js';
+import { takeoverBoundMs } from '../src/supervisor-plan.js';
+import { ADOPTED, lane15, scaled, Sim, TOOK_OVER, type Timing, until } from './fixtures/takeover-sim.js';
 
 const released = (s: Sim) => [...s.groups.values()].find((g) => s.released(g));
 const firstGroup = (s: Sim) => [...s.groups.values()][0]!;
-const settled = (s: Sim) => until('the job to settle', s, () => s.row.status === 'succeeded', 25_000);
+const settled = (s: Sim) =>
+    until('the job to settle', s, () => s.row.status === 'succeeded', 25_000 + takeoverBoundMs(s.config));
 
 const scenarios: Record<string, (s: Sim) => Promise<void>> = {
     't2: a hard kill while the agent runs: the next claim takes the running agent over': async (s) => {
@@ -70,7 +72,7 @@ const scenarios: Record<string, (s: Sim) => Promise<void>> = {
         await a.loop.handover('the driver is draining');
         await s.kill(a);
         s.agentExits(g, 0);
-        await until('the group to end', s, () => g.exit !== null, 25_000);
+        await until('the group to end', s, () => g.exit !== null, 25_000 + takeoverBoundMs(s.config));
         await s.start('B');
         await settled(s);
         expect(s.brief()).toBe('succeeded|1|1');
@@ -137,25 +139,31 @@ const scenarios: Record<string, (s: Sim) => Promise<void>> = {
     },
 };
 
-// The kind lane runs lease 45 s / grace 20 s / refresh 10 s (2 x the 5 s kubelet sync); each row is that
+// The kind lane ran lease 45 s / grace 20 s / refresh 10 s (2 x the 5 s kubelet sync); each row is that
 // divided down (not past /15: a 2 s lease is inside the scheduling jitter of a loaded host), then the relations the lane's numbers hide: a refresh longer than the grace, a short lease.
 const matrix: [string, Timing][] = [
     ['lane / 15', scaled(15)],
     ['lane / 9', scaled(9)],
     ['refresh 2 x grace', { ...scaled(15), refreshMs: 2 * scaled(15).rebindGraceMs }],
     ['grace under the control poll', { ...scaled(15), rebindGraceMs: 1_000, refreshMs: 700, controlMs: 800 }],
+    // #950: the lane's 15 s lease in real time (a 10 s orphan bound over a 2 s long poll), from the production derivation.
+    ['lane 15 s lease', lane15()],
 ];
 
 describe.each(matrix)('takeover simulation, %s', (_name, timing) => {
     describe.concurrent.each(Object.entries(scenarios))('%s', (_scenario, play) => {
-        it('holds', async () => {
-            const s = new Sim(timing);
-            try {
-                await play(s);
-            } finally {
-                await s.teardown();
-            }
-        }, 40_000);
+        it(
+            'holds',
+            async () => {
+                const s = new Sim(timing);
+                try {
+                    await play(s);
+                } finally {
+                    await s.teardown();
+                }
+            },
+            40_000 + 2 * (timing.leaseSeconds * 1000 + timing.rebindGraceMs)
+        );
     });
 });
 

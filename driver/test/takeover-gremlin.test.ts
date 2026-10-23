@@ -5,10 +5,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { planOf, runGremlin, type Verdict } from './fixtures/gremlin.js';
+import { lane15 } from './fixtures/takeover-sim.js';
 
 const RUNS = Number(process.env.GREMLIN_RUNS ?? 200);
 const ONE = process.env.GREMLIN_SEED === undefined ? null : Number(process.env.GREMLIN_SEED);
 const WIDTH = 40;
+const LANE_RUNS = Number(process.env.GREMLIN_LANE_RUNS ?? 12);
 
 const report = (v: Verdict) =>
     `seed ${v.seed} (replay: GREMLIN_SEED=${v.seed})\n${v.violations.join('\n')}\n--- plan\n${JSON.stringify(v.plan)}\n--- trace\n${v.trace.join('\n')}`;
@@ -65,4 +67,14 @@ describe('takeover gremlins', () => {
         });
         expect(verdict.violations).toEqual([]);
     }, 60_000);
+
+    // #950: the kind lane's 15 s lease in real time. The faults still land in the first seconds of a run and the
+    // takeover waits out the lease, so a seed plays for a minute; a few seeds at the lane's timing, not the soak.
+    it("seeded runs at the lane's 15 s lease hold every invariant", async () => {
+        const seeds = ONE === null ? Array.from({ length: LANE_RUNS }, (_, i) => i + 1) : [ONE];
+        const failed = (await Promise.all(seeds.map((seed) => runGremlin(seed, { timing: lane15() }))))
+            .filter((v) => v.violations.length > 0)
+            .sort((a, b) => a.seed - b.seed);
+        expect(failed.map(report).slice(0, 3).join('\n\n=====\n\n')).toBe('');
+    }, 240_000);
 });

@@ -30,7 +30,9 @@ import {
 } from '../../src/supervisor-contract.js';
 import { StartupRefused } from '../../src/startup-cause.js';
 import { reportFinalized } from '../../src/termination.js';
-import { bindingBody, supervisorLiterals } from '../../src/supervisor-plan.js';
+import { loadDriverConfig } from '../../src/config.js';
+import { RUN_CONTROL_POLL_MS } from '../../src/supervisor-contract.js';
+import { bindingBody, orphanBoundMs, supervisorLiterals, takeoverBoundMs } from '../../src/supervisor-plan.js';
 import { config as baseConfig, job as baseJob, ok, stubBoard, stubRunner } from './loop-stubs.js';
 
 process.env.SUPERVISOR_NO_MAIN = '1';
@@ -60,6 +62,8 @@ export interface Timing {
     pollMs: number;
     /** The supervisor's own tick (`SUPERVISOR_TICK_MS`); the default is a fast one for a few runs at a time. */
     tickMs?: number;
+    /** The `GET /step` long poll (`DRIVER_STEP_WAIT_MS`); the production 15 s where unset. */
+    stepWaitMs?: number;
 }
 
 /** The kind lane's timing (lease 45, grace 20, sync 5) divided by `by`; the lease stays whole seconds. */
@@ -71,6 +75,30 @@ export const scaled = (by: number): Timing => ({
     controlMs: Math.round(5_000 / by),
     pollMs: Math.round(5_000 / by),
 });
+
+/**
+ * The kind lane's 15 s lease (#950) in real time, not divided down: the orphan bound, long poll and heartbeat come from
+ * the production derivation (`loadDriverConfig` and `orphanBoundMs`) at the lane's `DRIVER_*` values, so a floor the lease
+ * cannot hold throws here rather than passing a hand-copied number. The rebind grace is the lane's 30 s floor and the
+ * refresh two 5 s kubelet syncs; the control and claim polls keep their production 5 s.
+ */
+export const lane15 = (): Timing => {
+    const config = loadDriverConfig({
+        DRIVER_LEASE_SECONDS: '15',
+        DRIVER_ORPHAN_MIN_MS: '10000',
+        DRIVER_STEP_WAIT_MS: '2000',
+        DRIVER_REBIND_GRACE_MS: '30000',
+    });
+    return {
+        leaseSeconds: config.leaseSeconds,
+        rebindGraceMs: config.rebindGraceMs,
+        refreshMs: 10_000,
+        orphanMs: orphanBoundMs(config),
+        controlMs: RUN_CONTROL_POLL_MS,
+        pollMs: config.pollMs,
+        stepWaitMs: config.stepWaitMs,
+    };
+};
 
 export const TOOK_OVER = 'took over the running agent of claim 1, whose driver was lost';
 export const ADOPTED = 'adopted the finished runner of claim 1, whose driver was lost';
@@ -158,6 +186,7 @@ export class Sim {
             leaseSeconds: t.leaseSeconds,
             rebindGraceMs: t.rebindGraceMs,
             pollMs: t.pollMs,
+            ...(t.stepWaitMs === undefined ? {} : { stepWaitMs: t.stepWaitMs }),
         };
         const dir = mkdtempSync(join(tmpdir(), 'takeover-sim-'));
         this.dirs.push(dir);
@@ -567,7 +596,12 @@ export class Sim {
     }
 }
 
-export async function until(what: string, sim: Sim, ready: () => boolean, ms = 15_000): Promise<void> {
+export async function until(
+    what: string,
+    sim: Sim,
+    ready: () => boolean,
+    ms = 15_000 + takeoverBoundMs(sim.config)
+): Promise<void> {
     const end = Date.now() + ms;
     while (!ready()) {
         if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${sim.brief()}\n${sim.text()}`);

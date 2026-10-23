@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
+import {
+    SUPERVISOR_ORPHAN_MIN_MS,
+    SUPERVISOR_REBIND_GRACE_MS,
+    SUPERVISOR_STEP_WAIT_MS,
+} from '../src/supervisor-contract.js';
 import { REPO_ROOT, readRepoFile } from './fixtures/repo-files.js';
 
 describe('kind lane argument validation', () => {
@@ -483,7 +487,7 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
     const installCall = install.slice(0, install.indexOf('>/dev/null'));
 
     it('installs the driver with a short lease, a short handover and a short rebind grace', () => {
-        expect(script).toContain('LANE_LEASE_S=45');
+        expect(script).toContain('LANE_LEASE_S=15');
         expect(installCall).toContain('--set-string driver.leaseSeconds="$LANE_LEASE_S"');
         // The chart derives DRIVER_HANDOVER_MS as the grace period less a minute: 70 s hands over after 10 s.
         expect(installCall).toContain('driver.terminationGracePeriodSeconds=70');
@@ -491,6 +495,29 @@ describe('kind lane compressed timers and stall evidence (issue #829)', () => {
         // nodes, docs/kubernetes.md): the grace must outlast it, or the group ends before it can follow.
         expect(script).toContain(`LANE_REBIND_GRACE_S=$((2 * $\{KUBELET_SYNC_S:-60} + 10))`);
         expect(installCall).toContain('--set-string driver.rebindGraceMs="$((LANE_REBIND_GRACE_S * 1000))"');
+    });
+
+    // #950: the 15 s lease needs an orphan bound of 10 s (L >= orphan + L/3), under the 30 s production floor
+    // and over a long poll the floor outlasts by 5 s. All three derive from the lease, and the driver refuses a mismatch.
+    it('derives the orphan floor and the step long poll from the lease, and installs both', () => {
+        expect(script).toContain('LANE_ORPHAN_S=$((LANE_LEASE_S - LANE_LEASE_S / 3))');
+        expect(script).toContain('LANE_STEP_WAIT_MS=$((LANE_ORPHAN_S * 200))');
+        expect(installCall).toContain('--set-string driver.orphanMinMs="$((LANE_ORPHAN_S * 1000))"');
+        expect(installCall).toContain('--set-string driver.stepWaitMs="$LANE_STEP_WAIT_MS"');
+        expect(script).not.toContain('LANE_ORPHAN_S=30');
+    });
+
+    it('renders DRIVER_ORPHAN_MIN_MS and DRIVER_STEP_WAIT_MS from chart values whose defaults are the production ones', () => {
+        const values = readRepoFile('charts/factory/values.yaml');
+        const template = readRepoFile('charts/factory/templates/driver-deployment.yaml');
+        expect(template).toContain('- name: DRIVER_ORPHAN_MIN_MS');
+        expect(template).toContain('value: {{ $.Values.driver.orphanMinMs | quote }}');
+        expect(template).toContain('- name: DRIVER_STEP_WAIT_MS');
+        expect(template).toContain('value: {{ $.Values.driver.stepWaitMs | quote }}');
+        expect(values).toContain(`    orphanMinMs: '${SUPERVISOR_ORPHAN_MIN_MS}'`);
+        expect(values).toContain(`    stepWaitMs: '${SUPERVISOR_STEP_WAIT_MS}'`);
+        expect(script).toContain(`'value: "${SUPERVISOR_ORPHAN_MIN_MS}"'`);
+        expect(script).toContain(`'value: "${SUPERVISOR_STEP_WAIT_MS}"'`);
     });
 
     it('waits out a handed-over runner for the takeover bound (lease plus rebind grace), and expects the takeover', () => {

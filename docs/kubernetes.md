@@ -41,10 +41,13 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - **The fence orders contenders by `claim_seq`, never by a clock or the refundable attempt counter.**
   `driver/test/k8s.test.ts` (`after its attempt was refunded`, `no claim sequence`).
 - **A runner group whose driver is lost ends inside its lease** (`orphanBoundMs`, `driver/src/supervisor-plan.ts`;
-  30 s floor under a 120 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
+  30 s floor under a 120 s lease; a lane lowers the floor and the `GET /step` long poll with `driver.orphanMinMs` and
+  `driver.stepWaitMs`, and `loadDriverConfig` refuses a pair the lease cannot hold: lease >= orphan + lease / 3, floor
+  >= long poll + 5 s, `orphanConfigFault`; the docker lane keeps the 30 s floor at its 10 s lease) and is adopted; lost before `go`, its supervisor exits `SUPERVISOR_EXIT.lost` and
   the run is redone, never adopted; a released group (its agent went, `supervisor: released the agent`) waits
   `takeoverBoundMs` (the lease plus `SUPERVISOR_REBIND_GRACE_MS`) for a newer holder instead.
-  `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`, `driver/test/k8s.test.ts`.
+  `driver/test/supervisor.test.ts`, `driver/test/scripts-claude-export.test.ts`, `driver/test/k8s.test.ts`,
+  `driver/test/config.test.ts`, `driver/test/takeover-sim.test.ts` (the lane's 15 s lease in real time).
 - **The driver never reads a Secret back** — the Role grants no `get`/`list`; attempt Secrets are reaped by
   derived name; the binding patch's answer is discarded unread.
 - **`make start` refuses a state claim initialised without `PGDATA`** and a pre-StatefulSet state release; both name
