@@ -34,7 +34,7 @@ export default defineConfig({
                 },
             })),
             // Every file that spawns a real process (`vitest.spawn-tests.json`): git fixtures, shell
-            // scripts, a tree-wide biome, the lane harnesses. Slow and CPU-bound, so a package's
+            // scripts, biome, the lane harnesses. Slow and CPU-bound, so a package's
             // in-process suites run without it; `npm test` runs it with the rest.
             {
                 extends: true,
@@ -72,7 +72,7 @@ export default defineConfig({
             },
         },
         // The suite is spawn-heavy — real git fixtures, node children, loopback listeners, a
-        // tree-wide biome pass — and vitest's 5s default assumes a quiet box. Two runs sharing
+        // biome scan — and vitest's 5s default assumes a quiet box. Two runs sharing
         // one machine (an agent's suite beside the gate's) starve the workers enough to tip
         // tests that pass in isolation, and the failures rotated across files run to run.
         // 30s bounds a genuinely hung test while absorbing contention; hooks get the same
