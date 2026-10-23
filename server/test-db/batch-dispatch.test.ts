@@ -10,7 +10,7 @@ import type { Claim, JobStore } from '../src/db/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
-import { expireLease, testOrg, testUser } from './fixtures.js';
+import { expireLease, startRow, testOrg, testUser } from './fixtures.js';
 import {
     batchPlan,
     headOf as sharedHeadOf,
@@ -91,6 +91,7 @@ const setStatus = async (root: string, status: 'running' | 'succeeded' | 'failed
     if (status === 'running') {
         await sql`update job set status = 'running', claimed_by = 'w1', started_at = now() where id = ${head.id}`;
     } else {
+        await startRow(sql, head.id);
         await sql`update job set status = ${status}, finished_at = now(), lease_token = null where id = ${head.id}`;
     }
 };
@@ -946,6 +947,7 @@ async function failWith(
     failureCause: string | null = null
 ) {
     const head = await headOf(root);
+    await startRow(sql, head.id);
     await sql`
         update job set status = ${status}, failure_kind = ${failureKind}, failure_cause = ${failureCause},
             finished_at = now(), lease_token = null

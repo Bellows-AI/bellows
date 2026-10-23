@@ -3,6 +3,7 @@ import type { Sql } from 'postgres';
 import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type PrFacts } from '@factory-ai/core';
 import type { BatchStore } from '../src/db/batch-store.js';
 import type { PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
+import { startRow } from './fixtures.js';
 
 /** Builders the batch-* db suites share; each suite binds them to its own stores and author. */
 
@@ -60,6 +61,7 @@ export async function headOf(sql: Sql, root: string) {
 
 export async function setSucceeded(sql: Sql, root: string) {
     const head = await headOf(sql, root);
+    await startRow(sql, head.id);
     await sql`update job set status = 'succeeded', finished_at = now(), lease_token = null where id = ${head.id}`;
 }
 

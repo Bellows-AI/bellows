@@ -4,7 +4,7 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/job-store.js';
 import type { JobStore } from '../src/db/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { account, expireLease, mustCreate, randomGithubId, testOrg } from './fixtures.js';
+import { account, expireLease, mustCreate, randomGithubId, testOrg, withoutTransitionGuard } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 
@@ -263,8 +263,9 @@ describe.skipIf(!enabled).each([
     // The rule is "any member unfinished", not "the head unfinished".
     it('refuses a finished head while an older member is unfinished', async () => {
         const { root, head } = await finishedThread();
-        // Crafted: no write path reaches it, since every insert into a thread needs a terminal head.
-        await sql`update job set status = 'running' where id = ${root}`;
+        // Crafted: no write path reaches it, since every insert into a thread needs a terminal head —
+        // and storage refuses the move (084), so it is written past the guard.
+        await withoutTransitionGuard(sql, (tx) => tx`update job set status = 'running' where id = ${root}`);
 
         expect(await run(head, null)).toBe('not_finished');
         expect(await threadSize(root)).toBe(2);

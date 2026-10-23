@@ -48,6 +48,23 @@ export const account = async (sql: Sql, githubUserId: number, login: string): Pr
     return row!.id;
 };
 
+/**
+ * Moves a queued row to `running`, the only way into a verdict (084's transition graph); a row
+ * already running is left alone. Call it before a crafted terminal write.
+ */
+export const startRow = (sql: Sql | TransactionSql, id: string) =>
+    sql`update job set status = 'running' where id = ${id} and status = 'queued'`;
+
+/**
+ * Runs `fn` with no trigger firing, as the schema ran before 084: for a state no transition reaches
+ * any more, or a migration replayed that predates the guard. Test setup only.
+ */
+export const withoutTransitionGuard = (sql: Sql, fn: (tx: TransactionSql) => Promise<unknown>) =>
+    sql.begin(async (tx) => {
+        await tx`set local session_replication_role = replica`;
+        await fn(tx);
+    });
+
 /** Lets the job's lease lapse, so the next claim may take it over. */
 export const expireLease = (sql: Sql, id: string) =>
     sql`update job set lease_expires_at = now() - interval '1 second' where id = ${id}`;

@@ -106,6 +106,8 @@ export async function enforceCompletionPolicy(
         output: `${verdict.output ?? ''}\n[board] completion refused — ${refusal}`,
         failureKind: 'policy',
     };
+    // The one succeeded → failed move storage accepts (084): marked as this transaction's refusal of this row.
+    await tx`select set_config('factory.policy_refusal', ${row.id}, true)`;
     await tx`
         update job set status = ${refused.status}, failure_kind = ${refused.failureKind}, failure_cause = null,
             output = ${refused.output}
