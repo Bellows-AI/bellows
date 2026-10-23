@@ -29,6 +29,12 @@ The primary executor â€” runners are Jobs the driver reconciles itself, no CRD â
 ## Invariants
 
 - **Executor parity** (AGENTS.md): a `k8s-*.ts` importing from `docker*.ts` belongs in a neutral file.
+- **The orphan reaper is scoped to its own driver on both executors, by an identity that survives a restart.**
+  Docker stamps `factory.board` (`boardIdentity`, a digest of `JOB_BOARD_URL`) and scans and removes only that;
+  kubernetes selects `app.kubernetes.io/instance=<K8S_RELEASE>`, the helm release name the chart always sets, so a
+  rescheduled driver pod still adopts its own orphans. Stated limit: a driver started with no `K8S_RELEASE` is
+  unscoped, so one namespace holds one board. `driver/src/k8s-reaper.ts` (`selectorFor`),
+  `driver/test/k8s-reaper.test.ts`, `driver/test/docker-reaper-boards.test.ts`.
 - **An unconfirmed read is inconclusive, never empty**: a failed, timed-out, null or malformed answer stays a typed
   `Read` the caller leaves alone. `lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`.
 - **Credentials go by reference, never by value**, and **runner pods hold no ServiceAccount token**

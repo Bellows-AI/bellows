@@ -23,9 +23,9 @@ import { opencodeReadoutScript } from './container-scripts.js';
 import { parseLastJsonLine } from './json-parse.js';
 import type { ServiceStatus } from './board.js';
 import { BYTES_PER_KIB, commandMark, OPENCODE_EXPORT_LIMIT, type RuntimeSample, type RunSession } from './runner.js';
-import { taskMountArgs } from './task-volume.js';
+import { boardIdentity, taskMountArgs } from './task-volume.js';
 import { assertWorktreeResolvable, runnerPlan } from './runner-plan.js';
-import { agentMailboxArgs, agentRoleArgs, groupNetworkArgs } from './docker-mailbox.js';
+import { agentMailboxArgs, agentRoleArgs, boardLabelArgs, groupNetworkArgs } from './docker-mailbox.js';
 
 /**
  * The docker twin of the kubernetes pod hardening (issue #382), on EVERY container this driver
@@ -324,6 +324,7 @@ export function dockerArgs(
         // Which container of the run's group this is: a kill of the agent alone, or the teardown
         // of the supervisor and exporter beside it, tells them apart by it.
         ...agentRoleArgs(),
+        ...boardLabelArgs(boardIdentity(config)),
         '-e',
         // The thread's checkout on its own task volume: nothing of any other thread is mounted.
         `WORKDIR=${runWorkingDir(job)}`,

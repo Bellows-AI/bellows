@@ -56,7 +56,7 @@ exit 0`,
     *) exit 99 ;;
 esac`,
     node: `case "$1" in
-    */scripts/test-jobs-changed.mjs) exec "$REAL_NODE" "$@" ;;
+    */scripts/test-jobs-changed.mjs | */scripts/test-jobs-groups.mjs) exec "$REAL_NODE" "$@" ;;
     scripts/fake-model-endpoint.mjs) printf '1234\n' ;;
     -e) printf '1\n' ;;
     *) exit 99 ;;
@@ -403,6 +403,42 @@ describe('test-jobs phase options', () => {
         const bare = await fixture().run(['--changed']);
         expect(bare.status).toBe(2);
         expect(bare.stdout).toContain('needs a base ref');
+    });
+
+    // Issue #887: --parallel fans the selected phases out as groups; serial stays the default.
+    it('documents --parallel and --slots in --help, and refuses a slot count outside 2-4', async () => {
+        const help = await fixture().run(['--help']);
+        expect(help.stdout).toContain('--parallel [--slots 2|3|4]');
+        const bad = await fixture().run(['--parallel', '--slots', '5']);
+        expect(bad.status).toBe(2);
+        expect(bad.stdout).toContain('--slots must be 2, 3 or 4');
+    });
+
+    it('refuses --parallel with one fixed database, which every group would share', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--parallel', '--phase', 'cooperative-stop'], {
+            JOBS_TEST_DB: 'factory_x_test',
+        });
+        expect(result.status).toBe(2);
+        expect(result.stdout).toContain('unset JOBS_TEST_DB');
+    });
+
+    it('runs a group per slot as its own test-jobs run, with the sums of the groups in one summary', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--parallel', '--phase', 'cooperative-stop']);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('[parallel] slot 0 (PORT 8129): cli-stop = cooperative-stop');
+        expect(result.stdout).toMatch(/\[parallel\] cli-stop: exit 0 in \d+s \(cooperative-stop\)/);
+        expect(result.stdout).toContain('8 passed, 0 failed');
+        expect(lane.trace()).not.toMatch(/compose|unexpected-npm/);
+    });
+
+    it('fails when a group fails, and shows the failed checks', async () => {
+        const lane = fixture();
+        const result = await lane.run(['--parallel', '--phase', 'cooperative-stop'], { AGENT_TIMEOUT: '1' });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toMatch(/\[parallel\] cli-stop: exit 1/);
+        expect(result.stdout).toContain('FAIL ');
     });
 
     it('documents both flags and the policy in --help', async () => {

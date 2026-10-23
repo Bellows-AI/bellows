@@ -93,7 +93,8 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - **A `409` from heartbeat means the container must be killed**; `cancelRequested` during the agent's run
   drains to the next step boundary instead. `driver/test/loop.test.ts`.
 - **Every resource an attempt creates is scoped by its lease token**, so no sweep touches a sibling
-  attempt — `driver/src/labels.ts`, `driver/test/docker.test.ts`.
+  attempt — `driver/src/labels.ts`, `driver/test/docker.test.ts`. On docker each also carries the board's
+  `factory.board`, the only objects that board's reaper scans — `driver/test/docker-reaper-boards.test.ts`.
 - **A supervisor lost under a publish is an interruption, never `publishFailed`** (`stepLost` is rethrown by `publishCheckout` and `publishBranch`, ended in `loop-post-run.ts`) — `driver/test/publish-reconcile.test.ts`, `loop.test.ts`.
 - **The publish decision is made in `driver/src/loop-verdict.ts` and `loop-publish.ts` only** —
   `driver/test/docker.test.ts`, `k8s.test.ts`.

@@ -700,7 +700,7 @@ export function createDockerRunner(
 ): Runner {
     const deadlines = createDeadlineRegistry();
     const ledger = createKillLedger({
-        write: (job, kill) => recordDockerKill(execDocker, job, kill),
+        write: (job, kill) => recordDockerKill(execDocker, config, job, kill),
     });
     const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep, checkpoints } = extras;
     const deps: RunnerDeps = {
@@ -742,7 +742,7 @@ export function createDockerRunner(
         abandon: (job) => ledger.abandon(job),
         sampleRuntime: (job) => dockerSampleRuntime(deps, job),
         deadServices: (job) => dockerDeadServices(deps, job),
-        restartServices: (job, signal) => restartJobServices(job, execDocker, anyOf(signal, ledger.signal(job))),
+        restartServices: (job, signal) => restartJobServices(job, deps, anyOf(signal, ledger.signal(job))),
         startServices: (job, signal) => dockerStartServices(deps, job, signal),
         run: (job, session, onOutput) => dockerRun(deps, job, session, onOutput),
         adopt: (job, signal) =>

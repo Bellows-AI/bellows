@@ -19,9 +19,10 @@ import {
     supervisorScript,
 } from './container-scripts.js';
 import { containerHardeningArgs, resourceArgs } from './docker.js';
-import { taskMountArgs } from './task-volume.js';
+import { boardIdentity, taskMountArgs } from './task-volume.js';
 import {
     bindingVolumeName,
+    boardLabelArgs,
     ctlVolumeName,
     groupNetworkArgs,
     idsOf,
@@ -73,7 +74,8 @@ export const exporterName = (job: BoardJob): string => `factory-export-${idsOf(j
 export const gateName = (job: BoardJob): string => `factory-gate-${idsOf(job)}`;
 export const reviewerName = (job: BoardJob): string => `factory-reviewer-${idsOf(job)}`;
 
-const labelArgs = (job: BoardJob, role: string): string[] => [
+const labelArgs = (config: DriverConfig, job: BoardJob, role: string): string[] => [
+    ...boardLabelArgs(boardIdentity(config)),
     '--label',
     `${JOB_LABEL}=${job.id}`,
     '--label',
@@ -83,10 +85,15 @@ const labelArgs = (job: BoardJob, role: string): string[] => [
 ];
 
 /** The `docker volume create` argv of each mailbox and the supervisor's binding volume: labelled with the job and lease, so a fence can find them. */
-export const ctlVolumeArgs = (job: BoardJob, { reviewing = false }: { reviewing?: boolean } = {}): string[][] =>
+export const ctlVolumeArgs = (
+    config: DriverConfig,
+    job: BoardJob,
+    { reviewing = false }: { reviewing?: boolean } = {}
+): string[][] =>
     [...mailboxesOf(reviewing).map((box) => ctlVolumeName(job, box)), bindingVolumeName(job)].map((name) => [
         'volume',
         'create',
+        ...boardLabelArgs(boardIdentity(config)),
         '--label',
         `${JOB_LABEL}=${job.id}`,
         '--label',
@@ -122,7 +129,7 @@ export function supervisorCreateArgs(
         ...containerHardeningArgs(),
         '--name',
         supervisorName(job),
-        ...labelArgs(job, SUPERVISOR_CONTAINER),
+        ...labelArgs(config, job, SUPERVISOR_CONTAINER),
         ...reachDriverArgs(config),
         ...serviceHostArgs(config, job),
         ...(envFile ? ['--env-file', envFile] : []),
@@ -149,7 +156,7 @@ export function exporterCreateArgs(config: DriverConfig, job: BoardJob): string[
         ...containerHardeningArgs(),
         '--name',
         exporterName(job),
-        ...labelArgs(job, EXPORTER_CONTAINER),
+        ...labelArgs(config, job, EXPORTER_CONTAINER),
         ...taskMountArgs(job),
         ...mailboxMountArgs(job, MAILBOXES.export, 'rw'),
         ...exportEnv(config, job).flatMap(([name, value]) => ['-e', `${name}=${value}`]),
@@ -177,7 +184,7 @@ export function gateCreateArgs(config: DriverConfig, job: BoardJob, image: strin
         ...containerHardeningArgs(),
         '--name',
         gateName(job),
-        ...labelArgs(job, GATE_CONTAINER),
+        ...labelArgs(config, job, GATE_CONTAINER),
         '--user',
         `${GATE_UID}:${GATE_GID}`,
         ...gateEnv(job).flatMap((pair) => ['-e', pair.join('=')]),
@@ -208,7 +215,7 @@ export function reviewerCreateArgs(config: DriverConfig, job: BoardJob): string[
         ...containerHardeningArgs(),
         '--name',
         reviewerName(job),
-        ...labelArgs(job, REVIEWER_CONTAINER),
+        ...labelArgs(config, job, REVIEWER_CONTAINER),
         '--user',
         `${REVIEWER_UID}:${GATE_GID}`,
         '-e',
@@ -285,7 +292,7 @@ export async function createGroup(deps: GroupDeps, job: BoardJob, session: RunSe
     try {
         // The supervisor and exporter create mounts the task volume: a reaped one would be made empty by the mount.
         await assertTaskVolumeIsOurs(deps.execDocker, job);
-        for (const args of ctlVolumeArgs(job, shape)) await deps.execDocker(args);
+        for (const args of ctlVolumeArgs(deps.config, job, shape)) await deps.execDocker(args);
         const supervisorPair = supervisorControlNames(job).map((name) => ({ name, source: name }));
         await createWithEnvFile(
             deps,

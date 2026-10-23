@@ -26,7 +26,8 @@ import {
     parseDockerStats,
 } from '../src/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
-import { TASK_MOUNT, TASK_ROOT_LABEL, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
+import { TASK_MOUNT, TASK_ROOT_LABEL, boardIdentity, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
+
 import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import {
@@ -114,6 +115,9 @@ import {
     remoteUrl,
     taskCheckoutScript,
 } from '../src/publish.js';
+
+/** The board identity the default test config stamps on its group objects. */
+const BOARD = boardIdentity(loadDriverConfig({}));
 
 const MISMATCH_ROW = 'a run specced for another session than its group' as const;
 const SILENT_ROW = 'a supervisor that started and never answered' as const;
@@ -2780,7 +2784,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         expect(supervisorAt).toBeGreaterThanOrEqual(0);
         expect(serviceAt).toBeGreaterThan(supervisorAt);
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
-        expect(calls[serviceAt]).toEqual(serviceRunArgs(job, STUB, supervisorName(job)));
+        expect(calls[serviceAt]).toEqual(serviceRunArgs(job, STUB, supervisorName(job), BOARD));
         // The runner shares the namespace — that is the whole feature: inside the job, `stub`
         // resolves to the service on loopback.
         expect(seen[0]).toEqual(['start', '-a', containerName(job)]);
@@ -2814,12 +2818,14 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
             serviceRunArgs(
                 planned,
                 { name: 'postgres', image: 'postgres:1', environment: [] },
-                supervisorName(planned)
+                supervisorName(planned),
+                BOARD
             ),
             serviceRunArgs(
                 planned,
                 { name: 'redis', image: 'redis:1', environment: [], user: { uid: 999, gid: 999 } },
-                supervisorName(planned)
+                supervisorName(planned),
+                BOARD
             ),
         ]);
         expect(started.every((a) => !a.includes('5432'))).toBe(true);
@@ -2833,7 +2839,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
 
         const calls = exec.mock.calls.map((call) => call[0]);
         const runs = calls.filter((a) => a[0] === 'run');
-        expect(runs).toEqual([serviceRunArgs(job, STUB, supervisorName(job))]);
+        expect(runs).toEqual([serviceRunArgs(job, STUB, supervisorName(job), BOARD)]);
         expect(runs.some((a) => a.includes('--entrypoint') || a.includes('sh'))).toBe(false);
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
         expect(calls.findIndex((a) => a.join(' ') === `start ${supervisorName(job)}`)).toBeLessThan(
@@ -3132,8 +3138,8 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         // service, in its own supervisor's namespace — labeled like everything the attempt stands up.
         const services = exec.mock.calls.map((call) => call[0]).filter((a) => isServiceRun(a));
         expect(services).toEqual([
-            serviceRunArgs(attemptA, STUB, supervisorName(attemptA)),
-            serviceRunArgs(attemptB, STUB, supervisorName(attemptB)),
+            serviceRunArgs(attemptA, STUB, supervisorName(attemptA), BOARD),
+            serviceRunArgs(attemptB, STUB, supervisorName(attemptB), BOARD),
         ]);
         expect(seen).toHaveLength(1);
     });
@@ -3191,7 +3197,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const outcome = await runner.run(attemptB, { id: SESSION, resume: false });
         expect(outcome).toMatchObject({ exitCode: 0, started: true });
         const calls = exec.mock.calls.map((call) => call[0]);
-        expect(calls).toContainEqual(serviceRunArgs(attemptB, STUB, supervisorName(attemptB)));
+        expect(calls).toContainEqual(serviceRunArgs(attemptB, STUB, supervisorName(attemptB), BOARD));
         expect(seen).toHaveLength(1);
     });
 
@@ -3819,9 +3825,9 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         const calls = exec.mock.calls.slice(before).map((call) => call[0]);
         expect(calls.slice(0, 4)).toEqual([
             ['rm', '-f', serviceContainerName(fleet, 'stub')],
-            serviceRunArgs(fleet, STUB, supervisorName(fleet)),
+            serviceRunArgs(fleet, STUB, supervisorName(fleet), BOARD),
             ['rm', '-f', serviceContainerName(fleet, 'db')],
-            serviceRunArgs(fleet, DB, supervisorName(fleet)),
+            serviceRunArgs(fleet, DB, supervisorName(fleet), BOARD),
         ]);
         expect(calls.some((a) => a[0] === 'network')).toBe(false);
         expect(await runner.deadServices(fleet)).toEqual([]);
@@ -5078,7 +5084,7 @@ describe('every container the driver runs is hardened (#382)', () => {
         ['the claude transcript exporter', () => exporterCreateArgs(config(), job)],
         [
             'a declared service',
-            () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] }, supervisorName(job)),
+            () => serviceRunArgs(job, { name: 'cache', image: 'redis', environment: [] }, supervisorName(job), BOARD),
         ],
     ];
 
@@ -5179,7 +5185,8 @@ describe('every container the driver runs is hardened (#382)', () => {
                 environment: [],
                 user: { uid: 999, gid: 999 },
             },
-            supervisorName(job)
+            supervisorName(job),
+            BOARD
         );
         expect(hasPair(argv, '--user', '999:999')).toBe(true);
         expect(hasPair(argv, '--cap-drop', 'ALL')).toBe(true);
@@ -5189,7 +5196,7 @@ describe('every container the driver runs is hardened (#382)', () => {
 
     it('passes no --user to a service that declared none', () => {
         expect(
-            serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] }, supervisorName(job))
+            serviceRunArgs(job, { name: 'db', image: 'postgres:17', environment: [] }, supervisorName(job), BOARD)
         ).not.toContain('--user');
     });
 });
