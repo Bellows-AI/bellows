@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { readFileSync } from 'node:fs';
 import type { request as httpsRequest, RequestOptions } from 'node:https';
-import { inClusterRequest, type K8sMethod, type K8sRequest } from '../../src/k8s-transport.js';
+import { inClusterRequest, type K8sMethod, type K8sRequest } from '../../src/k8s/k8s-transport.js';
 
 /** The size of each chunk an answer streams back in — far below any buffer the transport keeps. */
 const CHUNK_CHARS = 64 * 1024;

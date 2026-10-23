@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 
 const CONTINUATION_LEAD =
     'Your previous run of this task was interrupted before it finished. ' +

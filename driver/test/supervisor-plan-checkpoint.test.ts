@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { checkpointScript } from '../src/container-scripts.js';
 import { supervisorLiterals } from '../src/supervisor-plan.js';

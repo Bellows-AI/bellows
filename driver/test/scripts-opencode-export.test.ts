@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { uploadRunArtifacts } from '../src/artifact-upload.js';
-import type { ArtifactStreamRef, BoardJob } from '../src/board.js';
+import type { ArtifactStreamRef, BoardJob } from '../src/board/board.js';
 import { mergeOpencodeOutcome, parseOpencodeExport, parseOpencodeRunOutcome } from '../src/close-read.js';
 import type { RunOutcome } from '../src/runner.js';
 import { insertMessage, insertPart, MINE, seedOpencodeDb } from './fixtures/opencode-db.js';

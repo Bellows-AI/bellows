@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HELPER_REGISTRY, parseHelperOutput } from '../src/helpers.js';
-import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
 import { cleanupTempDirs, fixture, runSource, writeFixture } from './fixtures/review-script-support.js';
 
 /**

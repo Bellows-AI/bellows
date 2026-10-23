@@ -1,10 +1,10 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import { loadDriverConfig } from '../src/config.js';
-import { createDockerRunner } from '../src/docker-runner.js';
-import { createKubernetesRunner } from '../src/k8s-runner.js';
-import { jobPath } from '../src/k8s-auxspec.js';
-import { runnerJobName } from '../src/k8s-podspec.js';
-import type { BoardJob } from '../src/board.js';
+import { createDockerRunner } from '../src/docker/docker-runner.js';
+import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
+import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { runnerJobName } from '../src/k8s/k8s-podspec.js';
+import type { BoardJob } from '../src/board/board.js';
 import { onOwnGroup, ownGroup, type Runner } from '../src/runner.js';
 
 /**

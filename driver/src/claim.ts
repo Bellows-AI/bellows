@@ -6,10 +6,10 @@
  */
 
 import type { DriverConfig } from './config.js';
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
-import { WORKSPACE_PATH, checkoutDir } from './publish.js';
+import { WORKSPACE_PATH, checkoutDir } from './publish/publish.js';
 import { TASK_MOUNT, UUID, taskRootOf } from './task-volume.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 

@@ -5,9 +5,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { rm, writeFile } from 'node:fs/promises';
 import type { ChildProcess, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
+import type { Board, BoardJob, ReviewClaim } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { ctlVolumeName, killMarkName } from '../src/docker-mailbox.js';
+import { ctlVolumeName, killMarkName } from '../src/docker/docker-mailbox.js';
 import {
     carriedPastLoss,
     decisionOf,
@@ -24,7 +24,7 @@ import {
     opencodeSessionReadoutArgs,
     parseDockerServicePs,
     parseDockerStats,
-} from '../src/docker.js';
+} from '../src/docker/docker.js';
 import { claimEnv, envFileBody, transcriptDir } from '../src/claim.js';
 import { TASK_MOUNT, TASK_ROOT_LABEL, boardIdentity, taskMountArgs, taskVolumeName } from '../src/task-volume.js';
 
@@ -41,7 +41,7 @@ import {
     tailKept,
     type AdoptedRun,
 } from '../src/runner.js';
-import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker-close-read.js';
+import { claudeTurnsArgs, opencodeCacheProbeArgs } from '../src/docker/docker-close-read.js';
 import {
     CACHE_WATCH_TURNS,
     CLAUDE_READ_NONE,
@@ -61,9 +61,9 @@ import {
     SERVICE_RESTART_TIMEOUT_MS,
 } from '../src/runner.js';
 import { claudeTurnsScript, opencodeReadoutScript } from '../src/container-scripts.js';
-import { createDockerRunner } from '../src/docker-runner.js';
-import { ATTEMPT_COMMAND_TIMEOUT_MS } from '../src/docker-runner-support.js';
-import { untilStandDown } from '../src/docker-runner-support.js';
+import { createDockerRunner } from '../src/docker/docker-runner.js';
+import { ATTEMPT_COMMAND_TIMEOUT_MS } from '../src/docker/docker-runner-support.js';
+import { untilStandDown } from '../src/docker/docker-runner-support.js';
 import {
     exporterCreateArgs,
     exporterName,
@@ -71,8 +71,8 @@ import {
     gateName,
     reviewerName,
     supervisorCreateArgs,
-} from '../src/docker-group.js';
-import { supervisorName } from '../src/docker-mailbox.js';
+} from '../src/docker/docker-group.js';
+import { supervisorName } from '../src/docker/docker-mailbox.js';
 import { HELPER_TIMEOUT_MS, lookupHelper, type HelperPlan } from '../src/helpers.js';
 import { forgetDeclaredServices, type ServiceSpec, serviceContainerName, serviceRunArgs } from '../src/services.js';
 import {
@@ -83,9 +83,9 @@ import {
     type RunnerFiles,
     startJobServices,
     tabRows,
-} from '../src/docker-runner-support.js';
+} from '../src/docker/docker-runner-support.js';
 import { createStepBroker, StepChannelClosed, type StepSink, type SupervisorEndpoint } from '../src/step-control.js';
-import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
 import {
     MAILBOXES,
@@ -114,7 +114,7 @@ import {
     checkoutKey,
     remoteUrl,
     taskCheckoutScript,
-} from '../src/publish.js';
+} from '../src/publish/publish.js';
 
 /** The board identity the default test config stamps on its group objects. */
 const BOARD = boardIdentity(loadDriverConfig({}));

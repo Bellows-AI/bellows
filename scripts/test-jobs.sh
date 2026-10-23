@@ -3180,7 +3180,7 @@ compose_pid=$!
 mounted=""
 deadline=$((SECONDS + 300))
 while [ "$SECONDS" -lt "$deadline" ]; do
-    if docker exec "$COMPOSE_DRIVER" grep -q '/fix' /app/driver/src/publish.ts 2>/dev/null; then
+    if docker exec "$COMPOSE_DRIVER" grep -q '/fix' /app/driver/src/publish/publish.ts 2>/dev/null; then
         mounted=1
         break
     fi

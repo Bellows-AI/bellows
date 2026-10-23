@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createDockerReaper } from '../src/docker-reaper.js';
-import type { ExecDocker } from '../src/docker-runner-support.js';
+import { createDockerReaper } from '../src/docker/docker-reaper.js';
+import type { ExecDocker } from '../src/docker/docker-runner-support.js';
 import { createReaper } from '../src/reaper.js';
 import { boardIdentity } from '../src/task-volume.js';
 

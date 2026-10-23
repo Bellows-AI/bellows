@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFile
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { gitProbeScript } from '../src/publish.js';
+import { gitProbeScript } from '../src/publish/publish.js';
 import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**

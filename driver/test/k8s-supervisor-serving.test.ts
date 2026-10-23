@@ -5,12 +5,12 @@
  * before the member existed: they pin the unconfirmed-read rule.
  */
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { jobPath } from '../src/k8s-auxspec.js';
-import { supervisorServing } from '../src/k8s-adopt.js';
-import { runnerName } from '../src/k8s-podspec.js';
-import type { K8sDeps, K8sResponse } from '../src/k8s-transport.js';
+import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { supervisorServing } from '../src/k8s/k8s-adopt.js';
+import { runnerName } from '../src/k8s/k8s-podspec.js';
+import type { K8sDeps, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, SUPERVISOR_SERVED_LINE } from '../src/supervisor-contract.js';
 
 const NS = 'factory';

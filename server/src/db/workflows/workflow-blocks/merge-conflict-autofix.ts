@@ -21,7 +21,7 @@
  *   own words for precisely this block's scenario.
  * - `verify` (`agent: false`, `publish: true`, gates default on) launches no agent at all: the
  *   driver's own claim machinery runs the declared gates and publishes through the existing
- *   publisher (`driver/src/publish.ts`) once claimed — the block adds no publish logic of its
+ *   publisher (`driver/src/publish/publish.ts`) once claimed — the block adds no publish logic of its
  *   own. Publish already reuses the thread's existing PR for free (its branch is always
  *   `factory/<rootJobId>`, the same branch this thread published from originally), so "never
  *   `gh pr create`" needs no code beyond the agent instruction above.

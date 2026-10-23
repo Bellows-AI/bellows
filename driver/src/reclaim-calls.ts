@@ -1,4 +1,4 @@
-import type { Board } from './board.js';
+import type { Board } from './board/board.js';
 
 /**
  * One row of the board's removed-thread queue (issue #41): a Remove deleted the thread and left

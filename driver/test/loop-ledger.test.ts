@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { FailureCause, FailureKind } from '../src/board.js';
+import type { FailureCause, FailureKind } from '../src/board/board.js';
 import type { HelperFailureReason, HelperFailureReport } from '../src/helpers.js';
 import {
     agentFaults,
@@ -14,7 +14,7 @@ import {
     skipWhyOf,
     statusOf,
     type LedgerParts,
-} from '../src/loop-ledger.js';
+} from '../src/loop/loop-ledger.js';
 import type { DeadService, RunOutcome } from '../src/runner.js';
 
 const outcome = (over: Partial<RunOutcome> = {}): RunOutcome => ({

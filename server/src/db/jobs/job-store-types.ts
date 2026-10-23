@@ -534,7 +534,7 @@ export interface Claim {
      * that mounts the volume somewhere else.
      *
      * Null when the job has no author, or when this deployment has no workspace root. The driver
-     * FAILS such a job rather than falling back — see driver/src/loop.ts.
+     * FAILS such a job rather than falling back — see driver/src/loop/loop.ts.
      */
     workspacePath: string | null;
     /**

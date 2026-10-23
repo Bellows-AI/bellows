@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob, ReviewAnswer, ReviewReport, ReviewRequest } from '../src/board.js';
+import type { BoardJob, ReviewAnswer, ReviewReport, ReviewRequest } from '../src/board/board.js';
 import { createGateServer } from '../src/gates.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { recordEnding, transition } from '../src/loop-phase.js';
-import { createReviewRelay } from '../src/loop-review.js';
-import type { LoopRuntime } from '../src/loop-types.js';
-import type { ReviewRelay, ReviewVerdict } from '../src/review-control.js';
-import type { SnapshotResult } from '../src/review-snapshot.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { recordEnding, transition } from '../src/loop/loop-phase.js';
+import { createReviewRelay } from '../src/loop/loop-review.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
+import type { ReviewRelay, ReviewVerdict } from '../src/review/review-control.js';
+import type { SnapshotResult } from '../src/review/review-snapshot.js';
 
 /** The named-reviewer routes on the control endpoint, and the relay behind them (issue #549). */
 

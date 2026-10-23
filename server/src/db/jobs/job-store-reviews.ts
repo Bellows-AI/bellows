@@ -51,7 +51,7 @@ export interface JobReviewStore {
  * The git ref one review's snapshot lives under in the shared clone, keyed by the CALLER ROW — the
  * same scope the board's uniqueness is, so a follow-up or retry (a new row of the same thread)
  * never meets a ref an earlier row made. The driver builds the same string
- * (`driver/src/review-snapshot.ts`) before it asks — a copy, not an import — and the board refuses
+ * (`driver/src/review/review-snapshot.ts`) before it asks — a copy, not an import — and the board refuses
  * any other, so a request can never point a reviewer at a ref that is not this caller's.
  */
 export const reviewRefOf = (callerId: string, key: string): string => `refs/factory/review/${callerId}/${key}`;

@@ -1,10 +1,10 @@
-import type { Board, BoardJob } from './board.js';
-import type { CheckpointPointer, CheckpointRead } from './board-checkpoint.js';
+import type { Board, BoardJob } from './board/board.js';
+import type { CheckpointPointer, CheckpointRead } from './board/board-checkpoint.js';
 import { claimContinuesSession, opencodeDbPath, runWorkingDir, transcriptDir } from './claim.js';
 import { checkpointRestoreScript } from './container-scripts.js';
 import { CLAUDE_CODE, OPENCODE } from './executors.js';
 import { parseLastJsonLine } from './json-parse.js';
-import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish.js';
+import { checkoutDir, CREDENTIAL_HELPER, remoteUrl, type SyncResult, worktreeBranch } from './publish/publish.js';
 import { claimStepEnv, detailOf, type StepHost, stepRequest, submitStep } from './supervised-steps.js';
 import { FIRST_GENERATION } from './task-volume.js';
 

@@ -12,9 +12,9 @@
  * Nothing here imports docker.ts, which imports this module: one direction only, so the argv
  * stays testable without a daemon and the modules cannot knot.
  */
-import { boardLabelArgs } from './docker-mailbox.js';
+import { boardLabelArgs } from './docker/docker-mailbox.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
-import type { BoardJob, ServiceStatus } from './board.js';
+import type { BoardJob, ServiceStatus } from './board/board.js';
 import { type DriverConfig, gateAdvertiseUrlFor } from './config.js';
 
 /** One service of the claim's plan, as the board resolved it. `environment` preserves the file's order. */

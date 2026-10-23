@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { PUBLISH_MOVED_REASON, type PublishOptions, type PublishStep, publishCheckout } from '../src/publish.js';
+import type { BoardJob } from '../src/board/board.js';
+import {
+    PUBLISH_MOVED_REASON,
+    type PublishOptions,
+    type PublishStep,
+    publishCheckout,
+} from '../src/publish/publish.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
 
 /**

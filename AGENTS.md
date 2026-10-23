@@ -59,7 +59,7 @@ commit message needs a force-push to fix.
 | `config.ts`, `.env.example`, compose env blocks, `server/src/github/app-*`, `offline.ts` | [docs/configuration.md](docs/configuration.md) |
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping | [docs/repos.md](docs/repos.md) |
 | `server/src/workspace/*`, `server/src/routes/workspace.ts`, executor profiles, task volumes | [docs/workspace.md](docs/workspace.md) |
-| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
+| `driver/src/k8s/`, `EXECUTOR`, `charts/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | EKS installs, the EFS storage class, the pre-release cloud walk | [docs/eks-runbook.md](docs/eks-runbook.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |

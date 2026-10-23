@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { createSupervisedGateManager, type GateManager } from '../src/gates.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { recordEnding } from '../src/loop-phase.js';
-import { runDeclaredGates, type GateSession } from '../src/loop-gates.js';
-import type { LoopRuntime } from '../src/loop-types.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { recordEnding } from '../src/loop/loop-phase.js';
+import { runDeclaredGates, type GateSession } from '../src/loop/loop-gates.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
 import type { StepResult } from '../src/supervisor-contract.js';
 
 const KEY = '55555555-5555-4555-8555-555555555555/factory';

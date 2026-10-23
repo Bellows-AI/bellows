@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Board, BoardJob, HeartbeatVerdict, Reclaim, ReclaimRenewal } from '../src/board.js';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
+import type { Board, BoardJob, HeartbeatVerdict, Reclaim, ReclaimRenewal } from '../src/board/board.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js';
 import type { DeadService, RunOutcome, RunSession, Runner } from '../src/runner.js';
 import { AdoptionBlocked, Inconclusive } from '../src/runner.js';
 import type { GateClaim, GateRun } from '../src/gates.js';
@@ -8,16 +8,16 @@ import { setupTimeoutMs } from '../src/claim.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
 import { readQuestion, recordQuestion } from '../src/question-control.js';
 import type { ControlEntry } from '../src/question-control.js';
-import { servePublish } from '../src/publish-control.js';
+import { servePublish } from '../src/publish/publish-control.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import type { PublishResult, ReclaimResult } from '../src/publish.js';
-import { createLoop, type Loop, wait } from '../src/loop.js';
-import { processReclaim, type ReclaimContext } from '../src/loop-reclaim.js';
-import type { GateStack, LoopRuntime } from '../src/loop-types.js';
-import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop-attempt.js';
-import { transition } from '../src/loop-phase.js';
+import type { PublishResult, ReclaimResult } from '../src/publish/publish.js';
+import { createLoop, type Loop, wait } from '../src/loop/loop.js';
+import { processReclaim, type ReclaimContext } from '../src/loop/loop-reclaim.js';
+import type { GateStack, LoopRuntime } from '../src/loop/loop-types.js';
+import { newJobState, RUN_CONTROL_POLL_MS, watchOutput } from '../src/loop/loop-attempt.js';
+import { transition } from '../src/loop/loop-phase.js';
 import {
     type BoardStub,
     config,
@@ -733,7 +733,7 @@ describe('the poll loop', () => {
         const runner = stubRunner(async () => ok(), {
             sync: {
                 ok: false,
-                reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop.ts',
+                reason: 'the task branch could not be rebased onto origin/main: conflict in driver/src/loop/loop.ts',
             },
         });
 
@@ -744,7 +744,7 @@ describe('the poll loop', () => {
         // environment, not the agent's work (issue #339).
         expect(board.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'runner_error' });
         expect(board.board.completed[0]?.output).toContain('could not be synced with the remote');
-        expect(board.board.completed[0]?.output).toContain('conflict in driver/src/loop.ts');
+        expect(board.board.completed[0]?.output).toContain('conflict in driver/src/loop/loop.ts');
     });
 
     // A poll that exhausted its patience is infrastructure, not a verdict (issue #308): the
@@ -2151,7 +2151,7 @@ describe('the poll loop', () => {
         const runner = stubRunner(async () => ok(), {
             sync: {
                 ok: false,
-                reason: 'conflict in driver/src/loop.ts',
+                reason: 'conflict in driver/src/loop/loop.ts',
             },
         });
         const { events } = releaseEvents(board.board, runner);
@@ -4285,7 +4285,7 @@ describe('block-helper steps (issue #207)', () => {
     );
 
     it('a non-zero exit is named after the agent, not a post-helper failure', async () => {
-        const { kindOf, ledgerOf } = await import('../src/loop-ledger.js');
+        const { kindOf, ledgerOf } = await import('../src/loop/loop-ledger.js');
         const helperFailure = {
             helperId: 'noop',
             result: { ok: false as const, reason: 'malformed_output' as const, message: 'x' },

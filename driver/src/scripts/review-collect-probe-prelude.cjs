@@ -7,7 +7,7 @@
  * reach the real stdout — review-collect-probe-postlude.cjs (concatenated after it, with the
  * unmodified review-collect.cjs content sandwiched between the two inside a bare block) restores
  * stdout and reshapes that verdict into the envelope driver/src/helpers.ts's parseHelperOutput
- * expects. driver/src/review-helpers.ts assembles the three pieces at DRIVER LOAD TIME — never in
+ * expects. driver/src/review/review-helpers.ts assembles the three pieces at DRIVER LOAD TIME — never in
  * the container, and never by mounting a path — so review-collect.cjs itself ships byte-identical
  * to issue #201's own file; only this prelude and its postlude are new.
  *

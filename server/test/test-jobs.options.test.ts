@@ -364,7 +364,7 @@ describe('test-jobs phase options', () => {
     it('runs nothing when only files no lane executes changed', async () => {
         const lane = fixture();
         const result = await lane.run(['--changed', 'origin/main'], {
-            CHANGED_FILES: 'docs/jobs.md\ndriver/src/k8s-gate.ts\n',
+            CHANGED_FILES: 'docs/jobs.md\ndriver/src/k8s/k8s-gate.ts\n',
         });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('nothing to run');
@@ -374,12 +374,12 @@ describe('test-jobs phase options', () => {
     it('selects the mapped phases and prints the reason for each file', async () => {
         const lane = fixture();
         const result = await lane.run(['--changed', 'origin/main'], {
-            CHANGED_FILES: 'driver/src/loop-adopt.ts\n',
+            CHANGED_FILES: 'driver/src/loop/loop-adopt.ts\n',
             JOBS_TEST_DB: 'factory_dev',
         });
         expect(result.stdout).toContain('--changed origin/main runs: node-disruption,driver-kill');
         expect(result.stderr).toContain(
-            '[changed] driver/src/loop-adopt.ts -> node-disruption,driver-kill (adoption and takeover)'
+            '[changed] driver/src/loop/loop-adopt.ts -> node-disruption,driver-kill (adoption and takeover)'
         );
         expect(result.status).toBe(2);
         expect(result.stdout).toContain('ending _test');

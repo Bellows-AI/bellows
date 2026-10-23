@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 
 type Fetch = typeof globalThis.fetch;
 

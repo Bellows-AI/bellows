@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { containerName } from '../src/docker.js';
+import { containerName } from '../src/docker/docker.js';
 import { serviceContainerName } from '../src/services.js';
-import type { BoardJob } from '../src/board.js';
-import { createDockerReaper, parseDockerCreatedAt } from '../src/docker-reaper.js';
-import type { ExecDocker } from '../src/docker-runner-support.js';
+import type { BoardJob } from '../src/board/board.js';
+import { createDockerReaper, parseDockerCreatedAt } from '../src/docker/docker-reaper.js';
+import type { ExecDocker } from '../src/docker/docker-runner-support.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
 
 /**

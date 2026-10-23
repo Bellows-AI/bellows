@@ -15,8 +15,8 @@ both the route and the web editors render from. The driver keeps its own copy in
 | Whole-list PUT, validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
 | Claim-time resolution, with `GITHUB_TOKEN`/`GH_TOKEN` dropped from it (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
 | `claimEnv`: the driver's filter and the synthesized executor-config names | `driver/src/claim.ts` | `driver/test/docker.test.ts`, `k8s.test.ts` |
-| Docker: a 0600 `--env-file` written and removed around the run | `driver/src/docker.ts` | `driver/test/docker.test.ts` |
-| Kubernetes: a per-attempt Secret, values in `stringData`, referenced by `secretKeyRef` | `driver/src/k8s-podspec.ts` | `driver/test/k8s.test.ts` |
+| Docker: a 0600 `--env-file` written and removed around the run | `driver/src/docker/docker.ts` | `driver/test/docker.test.ts` |
+| Kubernetes: a per-attempt Secret, values in `stringData`, referenced by `secretKeyRef` | `driver/src/k8s/k8s-podspec.ts` | `driver/test/k8s.test.ts` |
 | Driver literals in every runner and gate env, both executors: `npmQuietEnv` and `repoCacheEnv` (defaults a claim overrides), `gateEnv` | `driver/src/claim.ts`, `runner-plan.ts`, `docker.ts`, `k8s-podspec.ts` | `driver/test/docker.test.ts`, `k8s.test.ts`, `runner-plan.test.ts` |
 | Jira: `ATLASSIAN_*` are reserved names; the credential is a managed connection, see [connections.md](connections.md) | `core/src/env.ts`, `driver/src/claim.ts` | `server/test/routes.env.test.ts`, `driver/test/executor-images.test.ts` |
 | GitHub: `GITHUB_TOKEN` and `GH_TOKEN` are reserved names in every scope, stored rows deleted by `072_github_env_reserved.sql`; the runner's token comes from the board, see [connections.md](connections.md) | `core/src/env.ts`, `driver/src/claim.ts` | `server/test/routes.env.test.ts`, `server/test-db/env-var-store.test.ts` |

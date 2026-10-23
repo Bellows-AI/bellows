@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import {
     claimEnv,
     GATE_GID,
@@ -9,7 +9,7 @@ import {
     REVIEWER_UID,
 } from '../src/claim.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
-import { dockerArgs } from '../src/docker.js';
+import { dockerArgs } from '../src/docker/docker.js';
 import {
     awaitSupervisor,
     createGroup,
@@ -25,11 +25,11 @@ import {
     startGroup,
     supervisorCreateArgs,
     supervisorLossOf,
-} from '../src/docker-group.js';
-import { bindingVolumeName, ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
-import { recordDockerKill } from '../src/docker-teardown.js';
+} from '../src/docker/docker-group.js';
+import { bindingVolumeName, ctlVolumeName, supervisorName } from '../src/docker/docker-mailbox.js';
+import { recordDockerKill } from '../src/docker/docker-teardown.js';
 import { serviceRunArgs } from '../src/services.js';
-import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
+import { type RunnerFiles, startupRefusalOf } from '../src/docker/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { TASK_MOUNT, TASK_ROOT_LABEL, boardIdentity, taskRootOf, taskVolumeName } from '../src/task-volume.js';
 import { bindingWriteArgv, gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';

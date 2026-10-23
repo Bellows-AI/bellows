@@ -1,5 +1,5 @@
-import { neverStartedWhy } from '../../src/loop-fence.js';
-import { agentFaults, kindOf } from '../../src/loop-ledger.js';
+import { neverStartedWhy } from '../../src/loop/loop-fence.js';
+import { agentFaults, kindOf } from '../../src/loop/loop-ledger.js';
 import type { RunOutcome } from '../../src/runner.js';
 
 /**

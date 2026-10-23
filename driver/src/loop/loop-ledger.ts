@@ -1,0 +1,304 @@
+/**
+ * The attempt's fault ledger: every terminal condition one attempt hit, as data. The verdict's
+ * status, failure kind, gate eligibility, publish eligibility and annotated output are all
+ * functions of this list, so no path can forget one check — adding a condition is adding a
+ * `Fault`, never another if-chain. Pure: nothing here touches the board, a runner or the clock.
+ */
+
+import type { FailureCause, FailureKind } from '../board/board.js';
+import type { HelperFailureReason, HelperFailureReport } from '../helpers.js';
+import { gateCauseOf } from '../gate-cause.js';
+import type { GateFailure } from './loop-gates.js';
+import type { PublishResult } from '../publish/publish.js';
+import { serviceHint } from '../runner.js';
+import { SPOOL_FULL_CAUSE } from '../transcript-export.js';
+import { MISSING_SERVICE_STATE } from '../services.js';
+import type { DeadService, RunOutcome } from '../runner.js';
+
+/** One terminal condition of the attempt. */
+export interface Fault {
+    kind: FailureKind;
+    /** The line the verdict output carries (after `[driver] `), or null when the kind needs none. */
+    note: string | null;
+    /** Whether the declared gates still run over this fault — a timeout leaves work worth judging. */
+    gatesStillRun: boolean;
+    /** Why the gates were skipped over this fault; set exactly when `gatesStillRun` is false. */
+    skipWhy: string | null;
+    /** What lies under a `gate`, `publish` or `helper` fault (issue #581); absent on every other kind. */
+    cause?: FailureCause;
+}
+
+export type Ledger = readonly Fault[];
+
+/**
+ * Which kind a verdict names when several faults stand, most decisive first. A non-zero exit
+ * outranks a helper failure: post-helpers run after an unclean run too, so the exit is the cause.
+ */
+export const RANK: readonly FailureKind[] = [
+    'timeout',
+    'cache_lost',
+    'blocked',
+    'services',
+    'gate',
+    'runner_error',
+    'helper',
+    'policy',
+    'publish',
+];
+
+/** A failed helper's cause by its named reason: a refused token needs a person, a dead run is transport. */
+const HELPER_CAUSES: Readonly<Record<HelperFailureReason, FailureCause>> = {
+    auth_failed: 'denied',
+    timeout: 'transport',
+    runner_error: 'transport',
+    unknown_helper: 'config',
+    wrong_version: 'config',
+    invalid_control: 'config',
+    invalid_composite_plan: 'config',
+    malformed_output: 'unknown',
+    oversized_output: 'unknown',
+};
+
+/** The cause a failed helper names, pre-run or post-run alike. */
+export const helperCauseOf = (reason: HelperFailureReason): FailureCause => HELPER_CAUSES[reason];
+
+/** The line the master prompt (server/src/db/master-prompt.ts) tells a blocked agent to end on. */
+export const BLOCKED_MARKER = 'FACTORY_BLOCKED:';
+/** How far back in the output tail a marker line still counts as the run's final message. */
+const BLOCKED_TAIL_LINES = 20;
+const BLOCKED_REASON_MAX_CHARS = 300;
+
+/** `FACTORY_BLOCKED: none …` or `… not blocked …` — an agent that prints the marker to say it is NOT blocked. */
+const NOT_BLOCKED = /^(none|not blocked)\b/i;
+
+const blockedText = (rest: string): string | null =>
+    NOT_BLOCKED.test(rest.trim()) ? null : rest.trim().slice(0, BLOCKED_REASON_MAX_CHARS) || 'no reason given';
+
+/**
+ * The reason the agent reported it is blocked, or null. A close-time read that found the final
+ * message settles it (`blockedLine`, its last line — never a mention inside the collapsed
+ * summary); only a run with no such read falls back to a marker line among the output tail's last.
+ */
+function blockedReason(outcome: RunOutcome): string | null {
+    if (outcome.blockedLine !== undefined) return blockedText(outcome.blockedLine);
+    if (outcome.summary) return null;
+    const lines = outcome.output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(-BLOCKED_TAIL_LINES);
+    const marker = lines.findLast((line) => line.startsWith(BLOCKED_MARKER));
+    return marker === undefined ? null : blockedText(marker.slice(BLOCKED_MARKER.length));
+}
+
+const skips = (kind: FailureKind, note: string | null, skipWhy: string): Fault => ({
+    kind,
+    note,
+    gatesStillRun: false,
+    skipWhy,
+});
+
+/** The fault for a run that stopped talking before a completed final message, when it did. */
+function prematureFinish(outcome: RunOutcome): Fault | null {
+    const finish = outcome.finishReason;
+    // A cache-killed run was cut mid-tool-call, so its finish reason reads as one more
+    // premature stop — the cache fault already says the whole story.
+    if (typeof finish !== 'string' || finish === 'stop' || outcome.cacheLost) return null;
+    // The finish reason says the run stopped talking; the session's last provider error,
+    // when the scrape lifted one, says WHY.
+    const cause = outcome.providerError ? ` The session's last provider error: ${outcome.providerError}.` : '';
+    return skips(
+        'runner_error',
+        `the agent's run ended before it finished (opencode finish reason: "${finish}") — ` +
+            `exit 0, but no completed final message.${cause} Re-queue the task, or follow up to continue the session.`,
+        "the agent's run ended before it finished"
+    );
+}
+
+/**
+ * What the agent's own run left behind. An agent that did not finish cleanly left no work for a
+ * gate to judge — a failed gate over it would fire the workflow's `gate-failed` edge on work that
+ * never happened — so only a timeout keeps the gates running.
+ */
+export function agentFaults(outcome: RunOutcome): Fault[] {
+    const faults: Fault[] = [];
+    if (outcome.timedOut) faults.push({ kind: 'timeout', note: null, gatesStillRun: true, skipWhy: null });
+    if (outcome.cacheLost) {
+        faults.push(
+            skips(
+                'cache_lost',
+                `killed — the model provider stopped serving prompt cache: ${outcome.cacheLost}. ` +
+                    'Every turn was re-reading the whole context, so the run was burning its time budget ' +
+                    'without progressing. Retry when the cache is healthy again, or on another model.',
+                'the run was killed for prompt-cache loss'
+            )
+        );
+    }
+    if (outcome.artifactSpoolFull) {
+        faults.push(
+            skips(
+                'runner_error',
+                `${SPOOL_FULL_CAUSE} — the transcript exporter held ${outcome.artifactSpoolFull} unacknowledged ` +
+                    'on the task volume and the board stayed out of reach, so the run was stopped before any ' +
+                    'record could be dropped. Retry when the board accepts uploads again.',
+                'the run was stopped for a full transcript spool'
+            )
+        );
+    }
+    if (outcome.exitCode !== 0) {
+        const why = `the agent's run exited ${outcome.exitCode ?? 'without an exit code'}`;
+        faults.push(
+            outcome.timedOut
+                ? { kind: 'runner_error', note: null, gatesStillRun: true, skipWhy: null }
+                : skips('runner_error', null, why)
+        );
+    }
+    const premature = prematureFinish(outcome);
+    if (premature) faults.push(premature);
+    const blocked = blockedReason(outcome);
+    if (blocked !== null) {
+        faults.push(
+            skips('blocked', `the agent reported it is blocked: ${blocked}`, 'the agent reported it is blocked')
+        );
+    }
+    return faults;
+}
+
+/**
+ * One dead service in the verdict output: how it ended — or, for one the platform no longer lists,
+ * why it went — what became of the pre-gate restart (issue #560), then what it last printed.
+ */
+export function deadServiceNote(dead: DeadService, gatesSkipped: boolean, restarted = false): string {
+    const how =
+        dead.state === MISSING_SERVICE_STATE
+            ? (dead.reason ?? 'gone')
+            : `exit ${dead.exitCode ?? 'unknown'}${dead.reason ? ` (${dead.reason})` : ''}`;
+    const restart = dead.restartFailure
+        ? `; restart failed: ${dead.restartFailure}`
+        : restarted
+          ? '; restarted before the declared gates'
+          : '';
+    const tail = dead.logTail.trim() ? `\n${dead.logTail.trimEnd()}` : '';
+    const hint = serviceHint(dead.logTail);
+    const skipped = gatesSkipped ? '; declared gates skipped' : '';
+    return `service "${dead.name}" (${dead.image}) ${dead.state} — ${how}${restart}${skipped}${tail}${hint ? `\nhint: ${hint}` : ''}`;
+}
+
+/**
+ * Whether only the declared services failed finished work — or, with `gatesToo`, the declared
+ * gates — which then publishes as a draft (issues #560, #573): a failed gate is a finding to
+ * report, not a publication refusal. A repository's explicit `policy: gates: required` still
+ * refuses it (`evidenceDecision`).
+ */
+export const draftable = (ledger: Ledger, gatesToo: boolean): boolean =>
+    ledger.length > 0 && ledger.every((fault) => fault.kind === 'services' || (gatesToo && fault.kind === 'gate'));
+
+/** Everything the phases after the agent found, beside its own outcome. */
+export interface LedgerParts {
+    outcome: RunOutcome;
+    failure: GateFailure | null;
+    deadServices: readonly DeadService[];
+    helperFailure: HelperFailureReport | null;
+    /** The publish result, once a publish has been attempted; null before or without one. */
+    published: PublishResult | null;
+    /** Why the evidence policy refused the publish before anything was pushed; null when it did not. */
+    policyRefusal?: string | null;
+}
+
+/** The whole ledger, in the order its notes read in the verdict output. */
+export function ledgerOf(parts: LedgerParts): Ledger {
+    const { outcome, failure, deadServices, helperFailure, published, policyRefusal } = parts;
+    const faults = agentFaults(outcome);
+    const done = { gatesStillRun: true, skipWhy: null };
+    if (published && !published.ok) {
+        // A stale publish pushed nothing because the evidence no longer fits the tree: a policy
+        // failure, not a transport one, and the thread rests rather than retrying the push.
+        faults.unshift(
+            published.stale
+                ? { kind: 'policy', note: `publication refused — ${published.reason}`, ...done }
+                : {
+                      kind: 'publish',
+                      note: `publish failed — the work did not land: ${published.reason}`,
+                      ...done,
+                      cause: published.cause ?? 'unknown',
+                  }
+        );
+    }
+    if (policyRefusal) {
+        faults.unshift({ kind: 'policy', note: `publication refused — ${policyRefusal}`, ...done });
+    }
+    // The note claims the gates were skipped for the service only when nothing else already skipped them.
+    const skippedForService = gatesEligible(faults);
+    for (const dead of deadServices) {
+        faults.push({ kind: 'services', note: deadServiceNote(dead, skippedForService), ...done });
+    }
+    if (failure) {
+        faults.push({
+            kind: 'gate',
+            note: `gate "${failure.name}" failed (exit ${failure.exitCode})\n${failure.output}`,
+            ...done,
+            // A gate failure always carries the gate's real exit; a harness that lost it threw instead.
+            cause: gateCauseOf(failure),
+        });
+    }
+    if (helperFailure) {
+        faults.push({
+            kind: 'helper',
+            note: `helper "${helperFailure.helperId}" failed (${helperFailure.result.reason}): ${helperFailure.result.message}`,
+            ...done,
+            cause: helperCauseOf(helperFailure.result.reason),
+        });
+    }
+    return faults;
+}
+
+/** Succeeded only when nothing at all went wrong: the run, the gates, the helpers, the publish. */
+export const statusOf = (ledger: Ledger): 'succeeded' | 'failed' => (ledger.length === 0 ? 'succeeded' : 'failed');
+
+/** The structured failure kind the most decisive fault names; a success carries none. */
+export function kindOf(ledger: Ledger): FailureKind | null {
+    return RANK.find((kind) => ledger.some((fault) => fault.kind === kind)) ?? null;
+}
+
+/** The cause of the fault `kindOf` names (issue #581); null when that kind carries none. */
+export function causeOf(ledger: Ledger): FailureCause | null {
+    const kind = kindOf(ledger);
+    return ledger.find((fault) => fault.kind === kind)?.cause ?? null;
+}
+
+/** Whether the declared gates run over this ledger. */
+export const gatesEligible = (ledger: Ledger): boolean => ledger.every((fault) => fault.gatesStillRun);
+
+/** Why the gates were skipped, or null when they were eligible — the most decisive blocking fault's reason. */
+export function skipWhyOf(ledger: Ledger): string | null {
+    const blocking = ledger.filter((fault) => !fault.gatesStillRun);
+    const top = [...blocking].sort((a, b) => RANK.indexOf(a.kind) - RANK.indexOf(b.kind))[0];
+    return top?.skipWhy ?? null;
+}
+
+/**
+ * Why the post-run helpers must not run, or null when they should: a run that did not finish
+ * cleanly has no verdict for a helper to contribute, and a github-writing one would speak for
+ * work that did not land. Unlike the gates, a timeout counts; a failed gate over a clean run
+ * does not, since that failure is what such a helper reports on.
+ */
+export function postHelperSkipWhy(outcome: RunOutcome): string | null {
+    if (outcome.timedOut) return 'the agent timed out';
+    return skipWhyOf(agentFaults(outcome));
+}
+
+/** Whether a finished run is publish-due: nothing at all went wrong before the publish. */
+export const publishEligible = (ledger: Ledger): boolean => ledger.length === 0;
+
+/**
+ * The `[driver]` lines the ledger's faults add to the verdict output. `gatesSkipped`, when the
+ * declared gates were skipped, reads right after the last fault that skipped them.
+ */
+export function outputOf(ledger: Ledger, gatesSkipped: string | null = null): string {
+    const lines = ledger.flatMap((fault) => (fault.note === null ? [] : [`\n[driver] ${fault.note}`]));
+    if (gatesSkipped === null) return lines.join('');
+    const lastSkip = ledger.findLastIndex((fault) => !fault.gatesStillRun);
+    const at = ledger.slice(0, lastSkip + 1).filter((fault) => fault.note !== null).length;
+    lines.splice(at, 0, `\n[driver] gates skipped — ${gatesSkipped}`);
+    return lines.join('');
+}

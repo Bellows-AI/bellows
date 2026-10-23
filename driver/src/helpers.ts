@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseLastJsonLine } from './json-parse.js';
-import { REVIEW_HELPER_DESCRIPTORS } from './review-helpers.js';
+import { REVIEW_HELPER_DESCRIPTORS } from './review/review-helpers.js';
 
 /**
  * The generic block-helper transport (issue #207): one allowlisted, board-owned script an
@@ -163,7 +163,7 @@ const DESCRIPTORS: readonly HelperDescriptor[] = [
         outputCapBytes: MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES,
     },
     // The github-review-reconcile block's own helpers (issue #133), registered the same additive
-    // way — driver/src/review-helpers.ts owns their script assembly and caps.
+    // way — driver/src/review/review-helpers.ts owns their script assembly and caps.
     ...REVIEW_HELPER_DESCRIPTORS,
 ];
 

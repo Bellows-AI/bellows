@@ -1,6 +1,5 @@
-import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { Board, BoardJob, ReviewClaim } from '../src/board.js';
+import type { Board, BoardJob, ReviewClaim } from '../src/board/board.js';
 import { type DriverConfig, loadDriverConfig } from '../src/config.js';
 import {
     AGENT_CONTAINER,
@@ -26,9 +25,9 @@ import {
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
 import { StepChannelClosed, type StepSink } from '../src/step-control.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { createReviewRelay } from '../src/loop-review.js';
-import type { LoopRuntime } from '../src/loop-types.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { createReviewRelay } from '../src/loop/loop-review.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
 import {
     claudeTurnsScript,
     claudeExportScript,
@@ -48,16 +47,17 @@ import {
     type AdoptedRun,
 } from '../src/runner.js';
 import { lookupHelper } from '../src/helpers.js';
-import { REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
+import { driverSources } from './fixtures/driver-sources.js';
 import { receiptedAnswer, receiptOrder } from './fixtures/helper-receipt-steps.js';
 import { claudeManagedSettings, opencodeOtelConfig } from '../src/telemetry-config.js';
 import type { HelperPlan } from '../src/helpers.js';
-import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
-import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s-transport.js';
-import { GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
-import { ledgerOf, RunnerKilled } from '../src/k8s-kill.js';
+import type { K8sDeps, K8sMethod, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
+import { LOG_TAIL_LINES, POLL_MAX_CONSECUTIVE_FAILURES, parsePodMetrics, POLL_MS } from '../src/k8s/k8s-transport.js';
+import { GROUP_END_WAIT_MS } from '../src/k8s/k8s-teardown.js';
+import { ledgerOf, RunnerKilled } from '../src/k8s/k8s-kill.js';
 import { REBIND_DEADLINE_MS } from '../src/runner.js';
-import { pollRunnerJobUntilTerminal, readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s-poll.js';
+import { pollRunnerJobUntilTerminal, readImagePullStatus, readVerdict, runnerLossOf } from '../src/k8s/k8s-poll.js';
 import {
     bindingBody,
     finalizeWaitMs,
@@ -73,9 +73,9 @@ import {
     readerJobSpec,
     runnerJobSpec,
     secretName,
-} from '../src/k8s-podspec.js';
-import { claimName, jobPath, podLogPath } from '../src/k8s-auxspec.js';
-import { KUBELET_RESTART_NOTE, readSidecars, sidecarStatuses } from '../src/k8s-services.js';
+} from '../src/k8s/k8s-podspec.js';
+import { claimName, jobPath, podLogPath } from '../src/k8s/k8s-auxspec.js';
+import { KUBELET_RESTART_NOTE, readSidecars, sidecarStatuses } from '../src/k8s/k8s-services.js';
 import {
     GATE_GID,
     GATE_UID,
@@ -86,9 +86,9 @@ import {
     REVIEWER_UID,
     TOOL_UID,
 } from '../src/claim.js';
-import { reviewerRequests } from '../src/k8s-podfields.js';
-import { createKubernetesReaper } from '../src/k8s-reaper.js';
-import { createKubernetesRunner } from '../src/k8s-runner.js';
+import { reviewerRequests } from '../src/k8s/k8s-podfields.js';
+import { createKubernetesReaper } from '../src/k8s/k8s-reaper.js';
+import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
 import { throughTransport } from './fixtures/k8s-transport-bridge.js';
 import { type Call, k8sApiserver } from './fixtures/k8s-apiserver.js';
 import {
@@ -103,7 +103,7 @@ import { STARTUP_ROWS, type StartupRow, startupDecisionOf } from './fixtures/sta
 import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';
 import { ServicesNotRunning } from '../src/service-restart.js';
-import { CREDENTIAL_HELPER, gitProbeScript, taskCheckoutScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, taskCheckoutScript } from '../src/publish/publish.js';
 import {
     FIRST_GENERATION,
     TASK_GENERATION_LABEL,
@@ -733,9 +733,7 @@ const gateView = (config: DriverConfig, of: BoardJob): PodView => {
  * (the live close-time readouts, the probe, the snapshot) is a supervised step.
  */
 describe('no pod but the task pod mounts the task volume', () => {
-    const sources = readdirSync(new URL('../src/', import.meta.url))
-        .filter((name) => name.endsWith('.ts'))
-        .map((name) => ({ name, text: readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8') }));
+    const sources = driverSources().map(([name, text]) => ({ name, text }));
     const filesWith = (needle: string): string[] =>
         sources.filter(({ text }) => text.includes(needle)).map(({ name }) => name);
 

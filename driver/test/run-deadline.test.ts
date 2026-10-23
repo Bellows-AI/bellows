@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess, spawn } from 'node:child_process';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { createDockerRunner } from '../src/docker-runner.js';
+import { createDockerRunner } from '../src/docker/docker-runner.js';
 import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import { startDeadline } from '../src/run-deadline.js';
 import type { StepSink } from '../src/step-control.js';
