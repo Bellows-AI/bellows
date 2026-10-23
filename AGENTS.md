@@ -141,6 +141,7 @@ DATABASE_URL=…/factory_test  npm run test:db    # resets every table
 DATABASE_URL=…/factory_dev   npm run backfill   # import ~/.claude/projects/*/*.jsonl, idempotent
 npm run test:jobs               # all phases; real containers + scripted model, no quota
 npm run test:jobs -- --phase workflows # focused rerun with its own fixtures; --help lists phases
+npm run test:jobs -- --changed origin/main # only the phases the diff maps to (also --phase a,b)
 npm run test:k8s                # helm assertions; --cluster installs into kind
 npm run release                 # patch-bump VERSION, commit, tag vX.Y.Z, atomic push to main
 
@@ -164,8 +165,10 @@ Operational facts behind those:
 - **Iterate with a job phase, validate with the full lane.** Selected `test:jobs` phases provision
   their own fixtures; standalone CLI phases skip Postgres and TypeScript builds and use at most
   two isolated workers (`--cli-workers 1` selects serial cases). Board/driver phases stay sequential.
-  The full default lane remains required for Docker runner behavior.
-  `scripts/test-jobs.sh`, `docs/executor-testing.md`.
+  `--phase a,b` shares one fixture; `--changed <base>` runs the phases mapped from the diff and is
+  what iteration and per-PR checks use. The full default lane runs at the end of a PR series and on
+  `main`, and whenever the harness or a shared runner file changed (the map says so).
+  `scripts/test-jobs.sh`, `scripts/test-jobs-changed.mjs`, `docs/executor-testing.md`.
 - **Job fixtures are per run; the host is shared.** Stub image tags, the default disposable database,
   workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
   Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
