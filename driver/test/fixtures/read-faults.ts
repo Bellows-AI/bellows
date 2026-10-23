@@ -462,6 +462,7 @@ const stepOk = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', 
 export const quietSteps = (): StepSink => ({
     submit: async (_token, step: StepRequest) => stepOk(step.kind === 'sync' ? '{"ok":true,"reason":null}\n' : ''),
     awaitReport: () => new Promise(() => undefined),
+    agentEnded: () => undefined,
     contacted: () => true,
     release: () => undefined,
     attach: () => undefined,

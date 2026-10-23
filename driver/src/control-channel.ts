@@ -156,10 +156,14 @@ function serveSupervisorStep(
     return serveStepPoll(steps, token, request, hangup.signal);
 }
 
-/** `GET /control`'s answer: the stop and kill orders, and the gate steps the driver cancelled when there are any. */
+/**
+ * `GET /control`'s answer: the stop and kill orders, the gate steps the driver cancelled when there are any,
+ * and `agentEnded` once the runner read the agent container over (#920).
+ */
 function controlAnswer(steps: StepBroker, token: string, orders: { stop: boolean; kill: boolean }) {
     const cancel = steps.cancels(token);
-    return cancel.length > 0 ? { ...orders, cancel } : orders;
+    const ended = steps.agentWasEnded(token) ? { agentEnded: true } : {};
+    return cancel.length > 0 ? { ...orders, ...ended, cancel } : { ...orders, ...ended };
 }
 
 /**

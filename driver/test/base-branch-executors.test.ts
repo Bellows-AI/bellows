@@ -56,6 +56,7 @@ const dockerSync = async (job: BoardJob): Promise<Record<string, string>> => {
             return { exitCode: 0, stdout: '{"ok":true,"reason":null}', stderr: '', timedOut: false };
         },
         awaitReport: () => new Promise(() => undefined),
+        agentEnded: () => undefined,
         contacted: () => true,
         release: () => undefined,
         attach: () => undefined,

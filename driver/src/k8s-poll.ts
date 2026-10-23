@@ -245,6 +245,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
     const agentStarted = containers.some(
         (c) => c.name === AGENT_CONTAINER && (c.state?.terminated !== undefined || c.state?.running !== undefined)
     );
+    const agentEnded = containers.some((c) => c.name === AGENT_CONTAINER && c.state?.terminated !== undefined);
     const podState: PodStartState =
         items === null ? 'unread' : !livePodOfItems(items) ? 'none' : startedAny ? 'started' : 'starting';
     const disrupted = isDisrupted(pod);
@@ -257,6 +258,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
             held,
             podState,
             agentStarted,
+            agentEnded,
             volumeAffinity: null,
             disrupted,
         };
@@ -271,6 +273,7 @@ export async function readImagePullStatus(deps: K8sDeps, jobName: string): Promi
         held,
         podState,
         agentStarted,
+        agentEnded,
         volumeAffinity: volumeAffinityOf(pod),
         disrupted,
     };
@@ -293,6 +296,8 @@ export interface ImagePullStatus {
     podState: PodStartState;
     /** The agent container is running or ended: once released, the run has happened. */
     agentStarted: boolean;
+    /** The pod list was read and the agent container's state is `terminated` (#920): the one proof it is over. */
+    agentEnded: boolean;
     /** The scheduler's words when the pod is held Pending by its volume's node affinity (#775); else null. */
     volumeAffinity: string | null;
     /** The control plane marked the pod a disruption target, or the kubelet evicted it: it is being taken away. */
@@ -545,7 +550,11 @@ function readUnlessKilled(deps: K8sDeps, job: BoardJob): Promise<JobStatusResult
  * executor image the node cannot pull (issue #302) and fails the run naming it, instead of
  * burning the deadline and reporting a timeout over what is really "no such image".
  */
-async function runStartSeen(deps: K8sDeps, job: BoardJob, image: string): Promise<boolean> {
+async function runStartSeen(
+    deps: K8sDeps,
+    job: BoardJob,
+    image: string
+): Promise<{ seen: boolean; agentEnded: boolean }> {
     // A held container is the run's start refused (#824 D11): typed when its words prove a cause,
     // plain (the lease) otherwise — with no bound here but the Job's deadline, a back-off that names
     // no cause is no reason to wait. A released agent that is running or ended has run: a container
@@ -553,7 +562,22 @@ async function runStartSeen(deps: K8sDeps, job: BoardJob, image: string): Promis
     const pull = await readImagePullStatus(deps, runnerName(job));
     const refused = pull.agentStarted ? null : startRefusalOf(image, pull, false);
     if (refused) throw refused;
-    return pull.containerSeen || pull.agentStarted;
+    return { seen: pull.containerSeen || pull.agentStarted, agentEnded: pull.agentEnded };
+}
+
+/** One pod read of the poll: the start seen, and the agent container's end told once (#920). */
+async function watchStart(
+    deps: K8sDeps,
+    job: BoardJob,
+    image: string,
+    seen: { container: boolean; told: boolean; agentEnded: (() => void) | undefined }
+): Promise<void> {
+    const start = await runStartSeen(deps, job, image);
+    seen.container = start.seen;
+    if (start.agentEnded && seen.agentEnded) {
+        seen.agentEnded();
+        seen.told = true;
+    }
 }
 
 export async function pollRunnerJobUntilTerminal(
@@ -563,13 +587,15 @@ export async function pollRunnerJobUntilTerminal(
         onOutput?: ((tail: string) => void) | undefined;
         /** True once the task supervisor reported the agent over and its exporter drained: the group outlives it. */
         over?: (() => boolean) | undefined;
+        /** Called once the pod list proves the agent container terminated before the supervisor reported (#920). */
+        agentEnded?: (() => void) | undefined;
         podName?: string | null;
     } = {}
 ): Promise<{ timedOut: boolean; jobSucceeded: boolean }> {
-    const { onOutput, over } = watch;
+    const { onOutput, over, agentEnded } = watch;
     const podName = watch.podName ?? null;
     const image = executorImage(deps.config, job.executorType);
-    const seen = { container: false };
+    const seen = { container: false, told: false, agentEnded };
     let pod = podName;
     const terminal = { timedOut: false, jobSucceeded: false };
     // No bound of its own, on purpose: the kubelet's activeDeadlineSeconds and the run deadline
@@ -600,7 +626,7 @@ export async function pollRunnerJobUntilTerminal(
             // The task group outlives the agent: its supervisor's report — the agent is over and the
             // exporter drained — is the end of the run, with the Job still serving the attempt's steps.
             if (over?.()) return terminal;
-            if (!seen.container) seen.container = await runStartSeen(live, job, image);
+            if (!seen.container || (agentEnded && !seen.told)) await watchStart(live, job, image, seen);
             if (onOutput) pod = await tailRunnerOutput(live, job, pod, onOutput);
         }
     );
