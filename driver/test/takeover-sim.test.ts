@@ -212,8 +212,11 @@ describe('takeover simulation, a pod evicted under a takeover (#943)', () => {
             await until('the redo released', s, () => s.spawned === 2 && Boolean(released(s)), 25_000);
             const redo = [...s.groups.values()].find((x) => x !== g)!;
             s.agentExits(redo, 0);
+            // The evicted pod's agent ends too, so its cut-off supervisor winds down before the teardown.
+            s.agentExits(g, 0);
             await settled(s);
             await until('no group left running', s, () => [...s.groups.values()].every((x) => x.exit !== null), 8_000);
+            await until('the evicted supervisor to end', s, () => g.exit !== null, 15_000);
             expect(g.logs.some((l) => l === 'supervisor: rebound to claim 2')).toBe(false);
             expect(s.brief()).toBe('succeeded|1|1');
             expect(s.agentRuns).toBe(2);
