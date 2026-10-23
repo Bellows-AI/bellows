@@ -20,7 +20,7 @@ const whole = (n) => Number.isSafeInteger(n) && n >= 0;
 const sound = (b) => b && Array.isArray(b.segments) && Array.isArray(b.streams)
     && (b.nextCursor === undefined || b.nextCursor === null || (typeof b.nextCursor === "string" && b.nextCursor !== ""))
     && b.streams.every((s) => s && typeof s === "object" && whole(s.attempt) && typeof s.state === "string")
-    && b.segments.every((s) => s && typeof s === "object" && typeof s.state === "string" && whole(s.offset)
+    && b.segments.every((s) => s && typeof s === "object" && ["ok", "deleted"].includes(s.state) && whole(s.offset) && whole(s.length)
         && (s.state !== "ok" || (typeof s.text === "string" && s.length === Buffer.byteLength(s.text))));
 (async () => {
     if (!whole(first) || !whole(last) || first < 1 || last < first) return "unread: bad record range";
@@ -37,7 +37,9 @@ const sound = (b) => b && Array.isArray(b.segments) && Array.isArray(b.streams)
     }
     if (!ended) return "unread: page limit reached with a cursor still pending";
     if (beforeLoss) {
-        const stored = segments.reduce((n, s) => n + (s.state === "ok" && whole(s.length) ? s.length : 0), 0);
+        // A deleted segment's bytes were stored once: how many is not knowable, so nothing is judged.
+        if (segments.some((s) => s.state !== "ok")) return "unread: a segment was deleted";
+        const stored = segments.reduce((n, s) => n + s.length, 0);
         const need = Buffer.byteLength(want(first, last));
         return stored < need ? "short" : "bad: inconclusive: the exporter flushed every record before the loss (" + stored + " of " + need + " bytes)";
     }

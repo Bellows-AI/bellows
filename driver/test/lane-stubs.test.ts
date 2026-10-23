@@ -646,6 +646,16 @@ describe('scripts/acceptance-transcript.mjs', () => {
         expect(await judge(() => ({ status: 200, body: 'not json' }), ['1', '3', 'before-loss'])).toBe(
             'unread: malformed body'
         );
+        const segment = (s: object) => ({ status: 200, body: { streams: [{ attempt: 1, state: 'open' }], segments: [s] } });
+        expect(await judge(() => segment({ state: 'unreadable', offset: 0 }), ['1', '3', 'before-loss'])).toBe(
+            'unread: malformed body'
+        );
+        expect(await judge(() => segment({ state: 'deleted', offset: 0 }), ['1', '3', 'before-loss'])).toBe(
+            'unread: malformed body'
+        );
+        expect(await judge(() => segment({ state: 'deleted', offset: 0, length: 9 }), ['1', '3', 'before-loss'])).toBe(
+            'unread: a segment was deleted'
+        );
     });
 
     it('says unread, never exact, for a body whose streams, segments or cursor are misshapen', async () => {

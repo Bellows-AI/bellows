@@ -388,7 +388,7 @@ describe('the continuous claude-code exporter', () => {
             const all = records(6);
             writeFileSync(fileOf(h), all);
             await new Promise((resolve) => setTimeout(resolve, 50));
-            h.start();
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
             h.drain('complete', null);
             expect(await h.exited()).toBe(0);
             expect(h.stored(SESSION).toString()).toBe(all);
@@ -397,14 +397,14 @@ describe('the continuous claude-code exporter', () => {
 
         it('exports a session born under the lost attempt whole, though that exporter never saw it', async () => {
             const h = await harness();
-            const lost = h.start();
+            const lost = h.start({ RUN_STARTED_AT: new Date().toISOString() });
             await until('the lost exporter running', () => h.status() !== null);
             await kill(lost);
             // The agent wrote its session after the exporter's last scan; then the pod was lost.
             const all = records(9);
             writeFileSync(fileOf(h), all);
             await new Promise((resolve) => setTimeout(resolve, 50));
-            h.start();
+            h.start({ RUN_STARTED_AT: new Date().toISOString() });
             h.drain('complete', null);
             expect(await h.exited()).toBe(0);
             expect(h.stored(SESSION).toString()).toBe(all);
