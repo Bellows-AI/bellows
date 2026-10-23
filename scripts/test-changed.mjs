@@ -35,7 +35,7 @@ export const DIRECTORY_READERS = [
     [/^server\/test-db\//, ['server/test/test-db.harness.test.ts']],
     [/^charts\//, ['core/test/docs.eks-storage.test.ts']],
     // A test file added, moved or removed moves the project lists.
-    [/^((core|server|web|driver|cli)\/test\/.*\.test\.tsx?|vitest\.spawn-tests\.json)$/, ['core/test/vitest-projects.test.ts']],
+    [/^((core|server|web|driver|cli)\/test\/.*\.tsx?|vitest\.spawn-tests\.json)$/, ['core/test/vitest-projects.test.ts']],
 ];
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
@@ -85,16 +85,33 @@ export function plan({ base, changed, spawn, namedBy }) {
         changed.flatMap((file) => DIRECTORY_READERS.filter(([pattern]) => pattern.test(file)).flatMap(([, tests]) => tests))
     );
     const helpers = new Set();
-    const names = [
-        ...new Set(
-            changed
-                .filter((file) => !(TEST_TREE.test(file) && GRAPH_FILE.test(file)))
-                .map((file) => file.slice(file.lastIndexOf('/') + 1))
+    const looked = new Set();
+    const lookup = (names, helpersOnly) => {
+        const fresh = [...new Set(names)].filter((name) => !looked.has(name));
+        for (const name of fresh) looked.add(name);
+        const found = [];
+        for (const hit of fresh.length > 0 ? namedBy(fresh) : []) {
+            if (UNIT_TEST.test(hit)) {
+                if (!helpersOnly) named.add(hit);
+            } else if (TEST_TREE.test(hit)) {
+                if (!helpers.has(hit)) found.push(hit);
+                helpers.add(hit);
+            }
+        }
+        return found;
+    };
+    const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
+    lookup(changed.map(baseName), false);
+    // A helper or fixture under test/ may import a changed source and then be launched by path, which
+    // no import graph connects: find it by the import specifier, then the suites that name it.
+    let frontier = [
+        ...lookup(
+            changed.filter((file) => GRAPH_FILE.test(file)).map((file) => `${baseName(file).replace(GRAPH_FILE, '')}.js`),
+            true
         ),
     ];
-    for (const hit of names.length > 0 ? namedBy(names) : []) {
-        if (UNIT_TEST.test(hit)) named.add(hit);
-        else if (TEST_TREE.test(hit)) helpers.add(hit);
+    for (let depth = 0; depth < 3 && frontier.length > 0; depth += 1) {
+        frontier = lookup(frontier.map(baseName), false);
     }
     const inCovered = (file) => {
         const pkg = file.split('/')[0];

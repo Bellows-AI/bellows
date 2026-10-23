@@ -113,13 +113,23 @@ describe('test:changed plan', () => {
         ]);
     });
 
-    it('does not look up a changed test file, which the graph follows', () => {
-        let asked = 0;
-        run(['driver/test/loop.test.ts', 'driver/test/fixtures/loop-stubs.ts'], () => {
-            asked += 1;
-            return [];
-        });
-        expect(asked).toBe(0);
+    it('finds the suite that launches a changed test fixture by path', () => {
+        const steps = run(['driver/test/fixtures/suspend-outage.ts'], (names) =>
+            names.includes('suspend-outage.ts') ? ['driver/test/loop-containment.test.ts'] : []
+        );
+        expect(vitestArgs(steps).at(-1)).toContain('driver/test/loop-containment.test.ts');
+    });
+
+    it('follows a changed source into a fixture that imports it, then to the suites that launch it', () => {
+        const byName: Record<string, string[]> = {
+            'board-retry.js': ['driver/test/fixtures/suspend-outage.ts', 'driver/test/board-retry.test.ts'],
+            'suspend-outage.ts': ['driver/test/loop-containment.test.ts'],
+        };
+        const steps = run(['driver/src/board-retry.ts'], (names) => names.flatMap((name) => byName[name] ?? []));
+        const last = vitestArgs(steps).at(-2) ?? [];
+        expect(last).toContain('driver/test/loop-containment.test.ts');
+        // The importer the graph already runs is not queued twice.
+        expect(last).not.toContain('driver/test/board-retry.test.ts');
     });
 
     it('runs a suite that enumerates the changed directory though it never names the file', () => {
@@ -157,6 +167,7 @@ describe('test:changed plan', () => {
         expect(scanners('server/src/routes/jobs/job-limits.ts')).toContain('server/test/import-boundaries.test.ts');
         expect(scanners('scripts/stub-agent.sh')).toContain('server/test/test-jobs.harness.test.ts');
         expect(scanners('web/test/panels.render.test.tsx')).toContain('web/test/no-shared-module-spies.test.ts');
+        expect(scanners('driver/test/fixtures/new-helper.ts')).toContain('core/test/vitest-projects.test.ts');
         expect(scanners('driver/test/brand-new.test.ts')).toContain('core/test/vitest-projects.test.ts');
     });
 
