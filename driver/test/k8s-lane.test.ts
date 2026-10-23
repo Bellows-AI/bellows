@@ -34,7 +34,7 @@ describe('kind lane argument validation', () => {
             timeout: 5000,
         });
         expect(result.status).toBe(0);
-        expect(result.stdout).toContain('|recovery|services|takeover|control|capacity|drain]');
+        expect(result.stdout).toContain('|recovery|services|takeover|control|capacity|drain|bench]');
     });
 });
 
@@ -424,7 +424,7 @@ describe('kind lane takeover and drain phases (issue #829)', () => {
         );
         expect(script).not.toMatch(/selected_phase drain/);
         expect(script).toMatch(
-            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|capacity\|drain\)/
+            /all\|smoke\|admission\|workspace\|recovery\|services\|takeover\|control\|capacity\|drain\|bench\)/
         );
     });
 
@@ -534,7 +534,7 @@ describe('kind lane capacity phase (issue #831)', () => {
     const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
     const capacity = script.slice(
         script.indexOf('if selected_phase capacity; then'),
-        script.lastIndexOf("printf '\\n%d passed")
+        script.indexOf('if [ "$PHASE" = bench ]; then')
     );
 
     it('runs in all, after control, and is not the drain phase', () => {
@@ -636,5 +636,79 @@ esac
         const deadline = Number(/PG_READY_SECONDS:-(\d+)/.exec(fn)?.[1]);
         const request = Number(/--request-timeout=(\d+)s/.exec(fn)?.[1]);
         expect(deadline + request + 1).toBeLessThanOrEqual(lifetime / 2);
+    });
+});
+
+describe('kind lane bench phase (issue #831)', () => {
+    const script = readRepoFile('scripts/test-k8s.sh');
+    const cleanup = script.slice(script.indexOf('cleanup() {'), script.indexOf('trap cleanup EXIT'));
+    const bench = script.slice(
+        script.indexOf('if [ "$PHASE" = bench ]; then'),
+        script.lastIndexOf("printf '\\n%d passed")
+    );
+
+    it('runs only when asked for, after capacity, and never through selected_phase', () => {
+        expect(bench.length).toBeGreaterThan(0);
+        expect(script.indexOf('if [ "$PHASE" = bench ]; then')).toBeGreaterThan(
+            script.indexOf('if selected_phase capacity; then')
+        );
+        expect(script).not.toMatch(/selected_phase bench/);
+    });
+
+    it('offers the phase in --help and says it is left out of all', () => {
+        const result = spawnSync('bash', ['scripts/test-k8s.sh', '--help'], {
+            cwd: REPO_ROOT,
+            encoding: 'utf8',
+            timeout: 5000,
+        });
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('|drain|bench]');
+        expect(result.stdout).toMatch(/leaves out drain .* and bench/);
+    });
+
+    it('measures the cells the issue asks for at the chart production pace', () => {
+        expect(bench).toContain('for bench_n in 1 4 8 16');
+        expect(bench).toContain('for bench_r in 1 2');
+        expect(bench).toContain('for bench_n in 1 8; do bench_cell recovery');
+        expect(bench).toContain('helm upgrade "$RELEASE" charts/factory --reuse-values');
+        expect(bench).toContain('driver.replicas=$1');
+        for (const key of ['pollMs', 'leaseSeconds', 'reapIntervalMs', 'reapGraceMs']) {
+            expect(bench).toContain(`bench_default ${key}`);
+        }
+        expect(bench).toContain('factory-stub-sleep-$task_s');
+        expect(bench).toContain('.bench.tsv');
+        expect(bench).toContain('scripts/bench-summary.mjs');
+    });
+
+    it('keeps the board token out of every argv and reads it inside the pod', () => {
+        expect(bench).toContain('process.env.JOB_BOARD_TOKEN');
+        expect(bench).not.toMatch(/JOB_BOARD_TOKEN=|\$JOB_BOARD_TOKEN|\$\{JOB_BOARD_TOKEN/);
+    });
+
+    it('bounds every cluster call and every wait, and reads a failed read as another poll', () => {
+        const calls = bench
+            .split('\n')
+            .filter((l) => /\bkubectl (exec|get|rollout)\b/.test(l) && !l.trim().startsWith('#'));
+        expect(calls.length).toBeGreaterThan(0);
+        for (const call of calls) expect(call, call).toMatch(/bounded |\| node|--request-timeout/);
+        expect(bench).toContain('--request-timeout');
+        for (const wait of bench.split('\n').filter((l) => /^\s*while \[/.test(l))) {
+            expect(wait, wait).toMatch(/date \+%s/);
+        }
+    });
+
+    it('stops the sampler at the cell and in cleanup, and never reads a failed sample as a count', () => {
+        expect(cleanup).toMatch(/kill "\$bench_sampler_pid"/);
+        expect(bench).toContain('bench_stop_sampler');
+        expect(bench).toContain("row='?'");
+        expect(bench).toContain('bench_sample "$BENCH_DIR/$cell.sampler.tsv" "$deadline"');
+    });
+
+    it('fails a recovery cell on a task that does not succeed, and reads the kill from the claim rows', () => {
+        expect(bench).toContain("status = 'succeeded'");
+        expect(bench).toContain('kill_driver_pods');
+        expect(bench).toContain('j.claim_seq > v.seq');
+        expect(bench).toContain('held_s');
+        expect(bench).toContain('settled_s');
     });
 });

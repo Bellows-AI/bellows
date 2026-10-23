@@ -120,6 +120,16 @@ const call = (method, path, body) => new Promise((resolve, reject) => {
         echo 'agent survived'
         break
         ;;
+    *factory-stub-sleep-*)
+        # `factory-stub-sleep-<seconds>` (issue #831): holds a slot for a fixed time and ends, writing no
+        # barrier file, so the benchmark phase needs no `kubectl exec` while it measures.
+        seconds="${arg##*factory-stub-sleep-}"
+        seconds="${seconds%%[!0-9]*}"
+        [ -n "$seconds" ] || exit 1
+        sleep "$seconds"
+        echo "slept in ${HOSTNAME:-stub}"
+        break
+        ;;
     *factory-stub-pass-*)
         # The pass of an agent that must not wait (issue #829): its ready file, so a lane counts the runs.
         release="${arg##*factory-stub-pass-}"
