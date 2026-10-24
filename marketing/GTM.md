@@ -1,4 +1,4 @@
-# Bellows — Go-to-Market 3.1 (MEDDPICC)
+# Bellows — Go-to-Market 3.2 (MEDDPICC + Delivery Metrics + Objections)
 
 **Стратегічний документ • Жовтень 2026 • Робоча версія для ухвалення рішень**  
 **Тема:** Product задає зміни, Engineering — правила, Bellows — виконання. **MCP у коробці open source, Cloud = zero-infrastructure-ops / ready-to-run, Economic Buyer = CTO.** GTM-кваліфікація через MEDDPICC.
@@ -226,6 +226,120 @@
 
 **Методичний орієнтир:** [MEDDICC — FAQ / MEDDPICC](https://meddicc.com/faqs) (визначення літер і роль Paper Process / Competition).
 
+
+## 9. Метрики цінності — CTO, Engineering та Product
+
+**Визначення North Star:** не «скільки агентів/рядків/PR створено», а **кількість корисних продуктних змін, які пройшли інженерні перевірки та були прийняті до human review / delivery без погіршення якості, при прийнятному інженерному зусиллі**. Product, Engineering та CTO дивляться на той самий результат крізь різні запитання.
+
+### 9.1. DORA — стратегічні метрики для CTO
+
+Поточна модель DORA — **п'ять** delivery-метрик, розбитих на throughput та instability (див. [DORA software delivery performance metrics](https://dora.dev/guides/dora-metrics/) та [історію п'ятої метрики](https://dora.dev/insights/dora-metrics-history/)).
+
+| CTO outcome / DORA | Точне визначення | Очікуване спрямування | Умови інтерпретації |
+| --- | --- | --- | --- |
+| **Deployment frequency** | Частота **deployment у production** на один конкретний сервіс / застосунок за тиждень чи місяць | Більше невеликих безпечних змін (якщо це відповідає бізнесу) | Не плутати з релізами фіч або кількістю PR; release cadence іноді визначає бізнес |
+| **Change lead time** | Час від **commit до deployment у production** — p50 і p75 | Менше, без падіння якості | **Не** дорівнює часу від PM brief до PR; вимірюємо їх окремо |
+| **Change failure rate** | Частка production deployments, що викликали failure/rollback/hotfix | Не збільшується; бажано знижується | Дефекти на 100 deployments або 100 delivered changes; severity зберігати окремо |
+| **Failed deployment recovery time** | Час до відновлення після невдалого deployment | Не збільшується | На малих вибірках може не бути інцидентів, не робимо висновків про «нульовий MTTR» |
+| **Deployment rework rate** | Частка deployments, які були позаплановими fixes для production bugs | Не збільшується; бажано знижується | П'ята метрика DORA (додано у 2024); не змішувати з PR review fixes |
+
+**Додатково для CTO:** *escape defect density* (дефекти, що дійшли до production, за severity і на нормований обсяг змін), частота rollback, customer-impact incidents. **Сира кількість дефектів не годиться:** при зростанні deployment frequency може змінитися і абсолютне число дефектів, і їх виявлення. Порівнюємо однакові сервіси та класи змін.
+
+### 9.2. Метрики, які Bellows може вплинути швидше — під час пілота
+
+| Роль | Метрика / формула | Дані | Бажаний сигнал |
+| --- | --- | --- | --- |
+| **Product** | **Brief-to-reviewable-PR lead time** = p50/p75 часу від погоджених acceptance criteria до PR, придатного для human review | Issue / brief timestamp → repo PR timestamp | Зменшується, при незмінній якості |
+| **Product** | **Accepted change throughput** = scoped changes / тиждень, що пройшли перевірки і отримали review acceptance | Ticket + GitHub PR + check status | Більше корисної роботи, а не просто створених PR |
+| **Engineering** | **Human touch time** = активний час на prompt, handoff, fixing, review, babysitting для однієї зміни | Time sampling або короткий log review effort | Менше повторюваної рутини |
+| **Engineering** | **Reviewer rework ratio** = PR, які потребували суттєвої ручної переробки / усі agent-assisted PR | PR review / labels / follow-up commit | Не росте; окремо track reviewer minutes / PR |
+| **Engineering** | **Gate pass + policy adherence** = частка runs, що пройшли визначені CI / approval gates, і кількість bypass/architecture violations | CI events, logs, branch protection, audit | **Нуль заборонених bypass**, не обов'язково 100% first-pass tests |
+| **Platform/CTO** | **Self-host ops burden** = engineer/platform hours/month для runners, upgrades, monitoring, incidents + compute | On-call, tickets, logs, cloud bills | Відомий baseline для Cloud buy-vs-build |
+| **Cloud** | **Time to first value** = від створення account до першого реального repo run із gates; **support cost per customer** | Onboarding timestamps, support tickets, infra billing | Коротший setup; операційно стійка собівартість |
+
+**Класи змін окремо:** UI/copy, звичайна business logic, інтеграції, security/payment/PII (для ризикових завдань не запускаємо пілот без додаткового review). Великі PR та дрібні задачі не порівнюємо одним середнім.
+
+### 9.3. Обмеження атрибуції й дизайн експерименту
+
+- **Baseline:** 4–8 тижнів історичних даних за конкретним repo/service для deployment/review і вручну заміряний або оцінений touch time; бажано порівняти схожі категорії завдань.
+- **Pilot:** 2–4 тижні, 1 repo, PM + Engineering owner + CTO sponsor, декілька типових scoped changes. Виміряти brief-to-PR, reviewer minutes, gates, rework, setup/support.
+- **Post-pilot:** DORA і escaped defects — **лагові**, для висновків потрібні більша кількість deployments, достатній період та контроль інших змін. Не стверджуємо «Bellows зменшив production defects» після двох PR.
+- **Guardrails:** speed/throughput ніколи не розглядаються без stability, human approval, security і engineering effort. Зростання review queue чи severity defects — **stop/rework pilot**.
+- **Приклад success criteria (лише переговорні цілі, не результати):** у пілоті brief-to-PR p50 коротший на 20%+, engineer manual touch/PR зменшився на 20%+, всі зафіксовані gates виконані, немає bypass. CTO має **узгодити власні пороги до запуску**, а не прийняти наші як industry standard.
+- **Не KPI для бонусів окремих інженерів:** рядки коду, кількість промптів/агентів, кількість PR, відсоток «AI generated» або deploys/day як самоціль. DORA застерігає від одиночних метрик і неконтекстного порівняння між командами.
+
+**Чому guardrails — ключове повідомлення:** DORA 2025 зауважив, що вищий AI adoption може підвищувати throughput, але погіршувати stability без сильних системних перевірок. Це **не доказ ефекту Bellows**, а аргумент, чому оцінювати продукт потрібно за спільним throughput + instability + human effort ([2025 DORA report](https://dora.dev/research/2025/dora-report/), [DORA 2026: balancing AI tensions](https://dora.dev/insights/balancing-ai-tensions/)).
+
+### 9.4. MEDDPICC-M: що показуємо CTO
+
+До комерційного пілота збираємо **два окремі business cases**:
+1. **Бізнес / engineering productivity:** скорочення brief-to-reviewed-PR часу та manual touch hours, accepted throughput, стабільна якість і review workload.
+2. **Managed Cloud buy-vs-build:** self-host TCO (compute + maintenance + upgrades + troubleshooting + інциденти + engineer time) проти Cloud subscription/usage + retained customer-side engineering work.
+
+**Потенційна грошова оцінка, тільки на основі customer baseline:** години ручного orchestration, вивільнені для architecture/product × loaded hourly rate; додатково *не* припускати, що всі вивільнені години автоматично конвертуються в дохід. CTO повинен підтвердити, що зекономлений час має реальну цінність.
+
+## 10. Робота із запереченнями, якщо продаємо напряму Product / бізнесу
+
+### 10.1. Головне правило маршруту
+
+**Business-led introduction ≠ engineering bypass.** Сильна історія: Product/CEO/CPO відкриває розмову через проблему delivery speed → CTO **Economic Buyer** та owner бюджету в нашому ICP → Engineering/Staff Engineer визначає *technical acceptance, security constraints, code ownership* → Bellows виконує роботу лише в затверджених межах.
+
+**Не кажемо:** «Продакт більше не потребує розробників», «відтепер кожен пушить зміни в production» чи «технічна команда — гальмо бізнесу». **Кажемо:** «Продакти можуть ініціювати зміни; інженери один раз задають стандарти і залишаються власниками approve/merge/release. Bellows бере на себе повторювану реалізацію».
+
+Якщо ініціатор — CPO/CEO й саме він має фактичну фінальну бюджетну владу, MEDDPICC **Economic Buyer для конкретної угоди треба оновити**: CTO залишається критичним technical approver/sponsor, але не вигадуємо його повноваження.
+
+### 10.2. CTO objections — відповідь і перевірка доказами
+
+| Заперечення CTO | Як відповідаємо | Що доводимо / пропонуємо |
+| --- | --- | --- |
+| **«Це shadow IT: бізнес обійде Engineering»** | «Ні. PM задає intent, але code owners задають repo scope, CI gates, права та обов'язковий human approval. Bellows не отримує право обходити merge/release». | Живий PR без push у main, mandatory checks, branch protection, право Engineering зупинити run |
+| **«AI-код додасть дефектів і technical debt»** | «Ми не просимо повірити в якість AI; порівняємо reviewer effort, rework, DORA stability та defect escape із baseline. Pilot зупиняємо, якщо стабільність погіршується». | Тести, review log, окреме вимірювання escaped defects та gate bypass |
+| **«Інфраструктура і доступ до коду небезпечні»** | «Інженери визначають доступи, execution boundary і дозволені репозиторії. Для Cloud обговорюємо secrets, retention, data flows і support до підключення». | Security walkthrough, мінімальні permissions, code/data boundary, юридичні документи; не заявляємо непідтверджені certifications |
+| **«Навіщо Cloud, якщо open source безкоштовний?»** | «Можна self-host назавжди. Cloud — це коли ви не хочете утримувати runners, оновлення, моніторинг, incident response та підтримку». | Чесний Cloud vs self-host TCO, time-to-first-run, support scope |
+| **«Ми вже використовуємо Cursor/Claude Code»** | «Bellows не конкурує за інтерфейс editor/chat або модель. Він стандартизує запуск, перевірки, передачу контексту і результат на рівні команди». | Демо поверх наявних інструментів, не вимагаємо міграції coding assistant |
+| **«Занадто рано, MCP/Cloud/SSO ще нестабільні»** | «У пілот беремо тільки перевірену версію й чітко узгоджений scope; не підмінюємо production гарантії roadmap». | Release + install check MCP, Cloud pilot scope, transparent roadmap / security blockers |
+| **«Тепер відповідальність за quality розмита»** | «Власник рішення не змінюється. Engineering визначає gates і reviewer, приймає PR, дає approval на merge/release; Bellows лише виконує workflow». | RACI, audit trail та чітке право вето engineering |
+
+### 10.3. Engineer / Staff Engineer objections
+
+| Заперечення | Відповідь | Перевірка |
+| --- | --- | --- |
+| **«Нас хочуть замінити, PM буде писати код без нас»** | «Роль інженера стає більш архітектурною: ви визначаєте правила, boundaries та приймаєте результат. Ми прибираємо рутинний handoff, не engineering ownership». | Технічний co-design пілота із senior engineer; не позиціонуємо інженерів як bottleneck |
+| **«Мені доведеться лагодити весь згенерований код»** | «Це головний ризик пілота. Вимірюємо reviewer minutes/PR, rework, CI failures. Якщо ручна робота росте — pilot неуспішний». | Порівнянні задачі, baseline review/repair effort, stop rule |
+| **«Агенти не розуміють нашу архітектуру / brownfield»** | «Не очікуємо магії. Використовуємо реальний repo, версіонований workflow, checks і scoped changes. Розширені architecture policies / golden paths — окремі roadmap, не підміняємо ними поточні можливості». | Невелика реальна brownfield задача, boundary checks і review |
+| **«Новий platform layer — ще один сервіс, який підтримувати»** | «Для self-host це свідомий trade-off; Cloud бере runtime, upgrades і monitoring на себе». | Умови support, реальний onboarding, support ownership |
+| **«Ми втратимо контроль / можна буде обійти approvals»** | «Код і merge залишаються під наявними branch protection, CI і code owners. Human review не опція, яку бізнес може вимкнути». | Реальна заборона merge/bypass, restricted repo permissions, kill switch / rollback plan (якщо підтримується) |
+| **«Навіщо нам вірити демо?»** | «Не треба: запускаємо на вашому обмеженому repo із вашими тестами, документуємо результати та інциденти; якщо не працює — не розгортаємо». | Двосторонній pilot scorecard і прозорі logs |
+
+### 10.4. Заперечення бізнесу під час direct sales
+
+- **«Чому не зробити все в Lovable / іншому AI builder?»** — «Greenfield prototype добре доводить ідею. Якщо потрібно змінити існуючу систему, потрібно врахувати справжні permissions, тести, code owner і delivery процес. Bellows спеціалізується на цьому. Не стверджуємо, що всі інші продукти не вміють brownfield».
+- **«Чому інженери все одно потрібні?»** — «Тому що без architecture, quality gates і accountability швидке написання коду не означає безпечну доставку змін. Ви отримуєте менше ручних handoff, не відсутність Engineering».
+- **«Коли можна дозволити PM запускати зміни?»** — «Після короткого co-design із CTO/Engineering: whitelist repositories, scopes, tests, approval rules, human review. Перші задачі — low-risk».
+- **«Чому ми маємо платити?»** — «Щоб отримати turnkey-систему без своєї команди інфраструктури AI-агентів. Якщо хочете самі обслуговувати, Community справді безкоштовний».
+- **«Як швидко побачимо business value?»** — «Погодимо baseline, success criteria і real repo pilot. Не обіцяємо конкретний відсоток speedup без даних».
+
+### 10.5. Покроковий sales motion без конфлікту
+
+1. **Business meeting:** CPO/PM/CEO формулює конкретне невдоволення швидкістю змін; не обіцяємо deploy без Engineering.
+2. **Joint problem framing:** залучаємо CTO і Staff/Tech Lead, записуємо gates, риски, доступи, reviewer та acceptance criteria. CTO знає, хто і що ініціюватиме.
+3. **Mutual action plan:** критерії успіху за Product + Engineering + Cloud/TCO, дата review, власники blockers і Paper Process. Без technical sign-off не запускаємо пілот.
+4. **Pilot:** один repo, low-risk changes, чітка ізоляція, PR та human review; вимірюємо touch time і rework. Kill switch/rollback тільки якщо технічно доступні та перевірені.
+5. **CTO decision:** demo результатів, quality floor, self-host vs managed TCO, roadmap gaps та security review; **CTO купує operations**, а не право бізнесу обійти engineers.
+
+**Основна sales-фраза:** *“Product teams request the change. Engineers stay in charge of how it’s built and approved. Bellows handles the execution. Cloud handles the operations.”*
+
+### 10.6. MEDDPICC qualification для direct-business входу
+
+- **M / Pain:** business delay + engineering toil + Cloud operations cost у тих самих scoped changes.
+- **E:** CTO як цільовий Economic Buyer; перевірити authority, особливо якщо перша розмова йшла із CEO/CPO.
+- **D:** окремі критерії Product (швидкість), Engineering (безпека), CTO (TCO/reliability), Security (permissions/data), Legal (paper).
+- **Champion:** бізнес-ентузіаст сам по собі недостатній. Потрібен **Engineering Champion**, який має довіру CTO. Не намагаємось перетворити технічний veto на політичний конфлікт.
+- **Competition:** не лише інші постачальники; CTO може вирішити залишити full self-host, поточний toolchain, DIY middleware або status quo.
+- **Deal warning:** CTO або code owner не має доступу до обговорення; business наполягає на bypass approvals; «пілот» вимірює тільки кількість PR; Cloud support/security scope невизначений.
+
+*Методичні джерела: [DORA metrics](https://dora.dev/guides/dora-metrics/), [DORA 2025](https://dora.dev/research/2025/dora-report/), [DORA on AI tensions](https://dora.dev/insights/balancing-ai-tensions/) та [MEDDPICC FAQ](https://meddicc.com/faqs).*
+
 ---
 
-*Версія 3.1 (MEDDPICC), 24 жовтня 2026. Рішення засновника: MCP з коробки у Community, Cloud ready-to-run / managed operations, CTO — Economic Buyer. Business metrics, ціни, Enterprise roadmap та sales evidence залишаються гіпотезами до customer validation.*
+*Версія 3.2 (MEDDPICC + Metrics + Direct-business objections), 24 жовтня 2026. Рішення засновника: MCP з коробки у Community, Cloud ready-to-run / managed operations, CTO — Economic Buyer. Business metrics, ціни, Enterprise roadmap та sales evidence залишаються гіпотезами до customer validation.*
