@@ -53,8 +53,8 @@ The lead form includes `interest=product-chat` and `interest=enterprise` in the 
 - **Cloud:** paid hosting, managed executors, upgrades, observability, troubleshooting, onboarding and support. No MCP feature paywall. Early access only.
 - **Enterprise:** planned SSO/SAML/OIDC, advanced auditing, policy and role controls, private environments, contractual support; features are not claimed live. Self-hosted support arrangements can be discussed.
 
-See [GTM.md](GTM.md) for positioning, funnel and validation plan.
 
-## GTM 3.0 alignment
 
-The main message is **Product teams drive change. Engineers define the guardrails. Bellows does the work.** The landing page has three-role cards and an engineering section: **Own the architecture. Not every implementation detail.** Current foundations (repo-defined workflows, remote execution, checks, telemetry) are distinguished from proposed architecture policies, risk-aware reviews and golden paths. Paid Cloud remains managed operations/support; Enterprise identity/audit features are roadmap. The lead form and database binding are unchanged.
+## Public product positioning
+
+The public website uses **Product teams drive change. Engineers define the guardrails. Bellows does the work.** It describes open-source agent workflows and the optional managed Cloud service. Enterprise identity and audit enhancements are product-roadmap items. Internal sales strategy, metrics, qualification playbooks and pricing research must be maintained outside the public repository.
