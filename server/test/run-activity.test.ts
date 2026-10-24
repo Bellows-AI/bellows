@@ -161,6 +161,76 @@ describe('bucketizeActivity', () => {
         expect(buckets.map((b) => b.tokens.output)).toEqual([100, 0, 40]);
     });
 
+    describe('cumulative reduction', () => {
+        const window = { from: FROM, to: '2026-09-22T10:45:00.000Z', bucketMs: FIFTEEN_MIN };
+        const cum = (over: Partial<ActivityPoint>): ActivityPoint =>
+            delta({ temporality: 'cumulative', startTime: FROM, field: 'tokens_input', ...over });
+        const total = (points: ActivityPoint[]): number => totalTokens(bucketizeActivity(points, window)).input;
+
+        it('counts a rebound from the running maximum: 100, 80, 120 is 120, not 140', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T10:05:00.000Z' }),
+                cum({ value: 80, time: '2026-09-22T10:20:00.000Z' }),
+                cum({ value: 120, time: '2026-09-22T10:40:00.000Z' }),
+            ];
+            expect(bucketizeActivity(points, window).map((b) => b.tokens.input)).toEqual([100, 0, 20]);
+            expect(total(points)).toBe(120);
+        });
+
+        it('gives the same answer whatever order the points arrive in', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T10:05:00.000Z' }),
+                cum({ value: 80, time: '2026-09-22T10:20:00.000Z' }),
+                cum({ value: 120, time: '2026-09-22T10:40:00.000Z' }),
+            ];
+            expect(bucketizeActivity([...points].reverse(), window)).toEqual(bucketizeActivity(points, window));
+        });
+
+        it('treats reordered attributes as one series', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T10:05:00.000Z', attrs: { model: 'm', query_source: 'q' } }),
+                cum({ value: 150, time: '2026-09-22T10:20:00.000Z', attrs: { query_source: 'q', model: 'm' } }),
+            ];
+            expect(total(points)).toBe(150);
+        });
+
+        it('starts a new series on a distinct start time, so a restart adds its own total', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T10:05:00.000Z' }),
+                cum({ value: 40, startTime: '2026-09-22T10:30:00.000Z', time: '2026-09-22T10:35:00.000Z' }),
+            ];
+            expect(total(points)).toBe(140);
+        });
+
+        it('never sums an unspecified temporality as a delta', () => {
+            const points = [
+                delta({ temporality: 'unspecified', value: 500, time: '2026-09-22T10:05:00.000Z' }),
+                delta({ value: 7, time: '2026-09-22T10:06:00.000Z' }),
+            ];
+            expect(total(points)).toBe(7);
+        });
+
+        it('keeps equal session counters of two agents apart', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T10:05:00.000Z' }),
+                cum({ value: 60, agent: 'opencode', time: '2026-09-22T10:06:00.000Z' }),
+                cum({ value: 130, time: '2026-09-22T10:20:00.000Z' }),
+            ];
+            expect(total(points)).toBe(190);
+        });
+
+        it('does not count the baseline reached before the window, across adjacent windows', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T09:50:00.000Z' }),
+                cum({ value: 160, time: '2026-09-22T10:20:00.000Z' }),
+                cum({ value: 200, time: '2026-09-22T10:50:00.000Z' }),
+            ];
+            const next = { from: '2026-09-22T10:45:00.000Z', to: '2026-09-22T11:30:00.000Z', bucketMs: FIFTEEN_MIN };
+            expect(total(points)).toBe(60);
+            expect(totalTokens(bucketizeActivity(points, next)).input).toBe(40);
+        });
+    });
+
     it('drops points outside the run window', () => {
         const points: ActivityPoint[] = [
             delta({ value: 5, time: '2026-09-22T09:55:00.000Z' }),
