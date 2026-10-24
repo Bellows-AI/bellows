@@ -226,6 +226,14 @@ describe('bucketizeActivity', () => {
             expect(total(points)).toBe(7);
         });
 
+        it('folds a counter written before the series digest existed into its digest series, counting it once', () => {
+            const points = [
+                cum({ value: 100, time: '2026-09-22T10:05:00.000Z', attrs: { model: 'm' } }),
+                cum({ value: 150, time: '2026-09-22T10:20:00.000Z', attrs: { model: 'm', series: 'abc' } }),
+            ];
+            expect(total(points)).toBe(150);
+        });
+
         it('keeps equal session counters of two agents apart', () => {
             const points = [
                 cum({ value: 100, time: '2026-09-22T10:05:00.000Z' }),
