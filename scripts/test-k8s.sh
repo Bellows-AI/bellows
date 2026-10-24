@@ -2509,6 +2509,8 @@ HANDOVER_S=$((LANE_LEASE_S + LANE_REBIND_GRACE_S + LANE_MARGIN_S))
 ORPHANED_S=$((LANE_ORPHAN_S + HANDOVER_S))
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
+# What a gate or setup whose supervisor was lost records (`gateLossReason`, driver/src/loop-run.ts); the cause follows in parentheses.
+GATE_LOST='infrastructure loss: the task supervisor running the gates was lost'
 JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
@@ -3495,15 +3497,15 @@ else
     tk_await "$TK_D$n.gate.count" 1 300 && ok 't4b: the gate is running' || bad 't4b: the gate is running' "$(tk_count "$TK_D$n.gate.count")"
     deleted_at="$(date +%s)"
     kubectl delete pod "$t4b_pod" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
-    t4b_mid="$(await_brief "$t4b" "*|1|1|$POD_LOST*" $((2 * LANE_LEASE_S + 30)))"
+    t4b_mid="$(await_brief "$t4b" "*|1|1|$GATE_LOST*" $((2 * LANE_LEASE_S + 30)))"
     took=$(($(date +%s) - deleted_at))
     case "$t4b_mid" in
-    *"|1|1|$POD_LOST"*) [ "$took" -lt $((2 * LANE_LEASE_S)) ] && ok "t4b: a deleted runner pod under a gate is an interruption (${took}s, inside two ${LANE_LEASE_S}s leases)" ||
+    *"|1|1|$GATE_LOST"*) [ "$took" -lt $((2 * LANE_LEASE_S)) ] && ok "t4b: a deleted runner pod under a gate is an interruption (${took}s, inside two ${LANE_LEASE_S}s leases)" ||
         bad 't4b: a deleted runner pod under a gate is an interruption inside two leases' "took ${took}s: $t4b_mid" ;;
     *) bad 't4b: a deleted runner pod under a gate is an interruption inside two leases' "status|attempts|count|claimSeq|reason: $t4b_mid" ;;
     esac
     tk_touch "$TK_D$n.go" || bad 't4b: the barrier is released' 'the touch failed'
-    tk_settled t4b "$t4b" "$POD_LOST"
+    tk_settled t4b "$t4b" "$GATE_LOST"
     tk_check 't4b: the gate ran again, once' "$(tk_final tk_count "$TK_D$n.gate.count")" 2
     tk_check 't4b: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
 fi

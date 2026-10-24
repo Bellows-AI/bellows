@@ -41,6 +41,7 @@ import { GROUP_WATCH_MS, watchGroupEnd } from './group-watch.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
 import type { KillLedger } from './kill-ledger.js';
 import type { StepSink } from './step-control.js';
+import { anyOf } from './poll.js';
 import { releaseSteps, stepHostOf } from './supervised-steps.js';
 import { Inconclusive, REBIND_DEADLINE_MS, type RunSession } from './runner.js';
 import {
@@ -534,7 +535,7 @@ export function rememberGroup(deps: GroupWatchDeps, job: BoardJob, group: GroupS
     deps.groups.set(held, group);
     void watchGroupEnd({
         everyMs: deps.groupWatchMs ?? GROUP_WATCH_MS,
-        signal: deps.ledger.signal(job),
+        signal: anyOf(deps.ledger.signal(job), deps.ledger.abandoned(job)),
         isCurrent: () => deps.groups.get(held) === group,
         confirmedEnd: (signal) => supervisorEnded(deps.execDocker, { ...job, leaseToken: held }, signal),
         release: () => releaseSteps(stepHostOf(deps), job),

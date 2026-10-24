@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
@@ -670,6 +670,7 @@ describe('the task group of one attempt', () => {
         const api = cluster({ ended: true });
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
+        const released = vi.spyOn(broker, 'release');
         const supervisor = supervisedBy(broker, (step) =>
             step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok()
         );
@@ -905,6 +906,7 @@ describe('a step in flight when the runner Job ends under a reporting group (#96
         };
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
+        const released = vi.spyOn(broker, 'release');
         const supervisor = supervisedBy(broker, (step) =>
             step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : step.kind === 'gate' ? null : ok()
         );
@@ -918,7 +920,19 @@ describe('a step in flight when the runner Job ends under a reporting group (#96
         const gating = k8s.runGate(job, GATE);
         gating.catch(() => undefined);
         while (!supervisor.pulled.some((step) => step.kind === 'gate')) await settle(5);
-        return { k8s, gating, supervisor, requested, broker };
+        return {
+            k8s,
+            gating,
+            supervisor,
+            requested,
+            broker,
+            released,
+            /** Ends the group this test made, so no watch outlives it. */
+            end: async () => {
+                await k8s.kill(job).catch(() => undefined);
+                await supervisor.stop();
+            },
+        };
     }
 
     it.each([
@@ -933,7 +947,7 @@ describe('a step in flight when the runner Job ends under a reporting group (#96
             expect(await lostWithin(held.gating)).toBe('lost');
         } finally {
             script.answer = () => json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 1 } });
-            await held.supervisor.stop();
+            await held.end();
         }
     });
 
@@ -945,7 +959,7 @@ describe('a step in flight when the runner Job ends under a reporting group (#96
             expect(await lostWithin(held.gating)).toBe('lost');
         } finally {
             script.answer = () => json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 1 } });
-            await held.supervisor.stop();
+            await held.end();
         }
     });
 
@@ -979,21 +993,82 @@ describe('a step in flight when the runner Job ends under a reporting group (#96
             expect(await lostWithin(held.gating)).toBe('lost');
         } finally {
             script.answer = () => json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 1 } });
-            await held.supervisor.stop();
+            await held.end();
         }
     });
 
-    it('stops watching once the group is finished', async () => {
+    it('fails a gate in flight at once when the Job read is another incarnation of the same name', async () => {
+        const script: { answer?: () => K8sResponse | undefined } = {};
+        const held = await gateHeld(script);
+        try {
+            script.answer = () => json({ metadata: { uid: 'uid-a-replacement' }, status: { active: 1 } });
+            expect(await lostWithin(held.gating)).toBe('lost');
+        } finally {
+            script.answer = () => json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 1 } });
+            await held.end();
+        }
+    });
+
+    it('never ends a group on a Job read that carries no uid', async () => {
+        const script: { answer?: () => K8sResponse | undefined } = {};
+        const held = await gateHeld(script);
+        try {
+            const before = held.requested.groupJobGets;
+            script.answer = () => json({ metadata: {}, status: { active: 1 } });
+            await settle(WATCH_MS * 20);
+            expect(held.requested.groupJobGets).toBeGreaterThan(before);
+            expect(await lostWithin(held.gating, 50)).toBe('hung');
+        } finally {
+            script.answer = () => json({ metadata: { uid: GROUP_JOB_UID }, status: { succeeded: 1 } });
+            await held.end();
+        }
+    });
+
+    /** Reads stop growing and a later confirmed end releases nothing: the group is no longer this watch's. */
+    async function stopsWatching(
+        held: Awaited<ReturnType<typeof gateHeld>>,
+        script: { answer?: () => K8sResponse | undefined }
+    ) {
+        await settle(WATCH_MS * 3);
+        const after = held.requested.groupJobGets;
+        const released = held.released.mock.calls.length;
+        script.answer = () => NOT_FOUND;
+        await settle(WATCH_MS * 20);
+        expect(held.requested.groupJobGets).toBe(after);
+        expect(held.released.mock.calls.length).toBe(released);
+    }
+
+    it('stops watching, and releases nothing, once the group is killed', async () => {
         const script: { answer?: () => K8sResponse | undefined } = {};
         const held = await gateHeld(script);
         try {
             await held.k8s.kill(job);
-            await settle(WATCH_MS * 3);
-            const after = held.requested.groupJobGets;
-            await settle(WATCH_MS * 20);
-            expect(held.requested.groupJobGets).toBe(after);
+            await stopsWatching(held, script);
         } finally {
-            await held.supervisor.stop();
+            await held.end();
+        }
+    });
+
+    it('stops watching, and releases nothing, once the group is finished', async () => {
+        const script: { answer?: () => K8sResponse | undefined } = {};
+        const held = await gateHeld(script);
+        try {
+            await held.k8s.finish(job);
+            await stopsWatching(held, script);
+        } finally {
+            await held.end();
+        }
+    });
+
+    it('stops watching, and releases nothing, once the attempt is abandoned to the next holder', async () => {
+        const script: { answer?: () => K8sResponse | undefined } = {};
+        const held = await gateHeld(script);
+        try {
+            held.k8s.abandon(job);
+            await stopsWatching(held, script);
+            expect(await lostWithin(held.gating, 50)).toBe('hung');
+        } finally {
+            await held.end();
         }
     });
 });

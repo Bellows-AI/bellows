@@ -226,7 +226,12 @@ const GROUP_WATCH_READ_MS = 10_000;
  * as failing (`FailureTarget`/`Failed` True — the pod already counted failed, still terminating). A read that
  * fails, times out or is malformed throws, and is no end (#967).
  */
-async function runnerJobEnded(deps: K8sDeps, jobName: string, signal?: AbortSignal): Promise<boolean> {
+async function runnerJobEnded(
+    deps: K8sDeps,
+    jobName: string,
+    ourUid: string | undefined,
+    signal?: AbortSignal
+): Promise<boolean> {
     const read = await readObject(
         withSignal(boundedBy(deps, Date.now() + GROUP_WATCH_READ_MS), signal),
         jobPath(deps.config.k8sNamespace, jobName),
@@ -234,6 +239,8 @@ async function runnerJobEnded(deps: K8sDeps, jobName: string, signal?: AbortSign
         { shape: asJob, once: true }
     );
     if (read === ABSENT) return true;
+    // A Job of the same name under another uid is not ours: ours is gone.
+    if (ourUid && read.metadata.uid && read.metadata.uid !== ourUid) return true;
     if (jobOutcome(read.status) !== 'pending') return true;
     return (read.status.conditions ?? []).some(
         (c) => (c.type === 'FailureTarget' || c.type === 'Failed') && c.status === 'True'
@@ -248,9 +255,9 @@ async function runnerJobEnded(deps: K8sDeps, jobName: string, signal?: AbortSign
 export function watchRunnerGroup(deps: K8sDeps, job: BoardJob, group: TaskGroup, held: string): void {
     void watchGroupEnd({
         everyMs: deps.groupWatchMs ?? GROUP_WATCH_MS,
-        signal: ledgerOf(deps).signal(job),
+        signal: anyOf(ledgerOf(deps).signal(job), ledgerOf(deps).abandoned(job)),
         isCurrent: () => groupsOf(deps).get(held) === group,
-        confirmedEnd: (signal) => runnerJobEnded(deps, runnerName({ ...job, leaseToken: held }), signal),
+        confirmedEnd: (signal) => runnerJobEnded(deps, runnerName({ ...job, leaseToken: held }), group.uids.job, signal),
         release: () => releaseSteps(stepHostOf(deps), job),
     });
 }

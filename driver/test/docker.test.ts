@@ -5341,6 +5341,7 @@ describe('a step in flight when the supervisor container ends under a reporting 
     async function gateHeld(script: { supervisor: () => string | Error }, reported = true) {
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
+        const released = vitest.spyOn(broker, 'release');
         let serving = true;
         let gated = false;
         const loop = (async () => {
@@ -5369,7 +5370,9 @@ describe('a step in flight when the supervisor container ends under a reporting 
             runner,
             gating,
             inspected: d.inspected,
+            released,
             stop: async () => {
+                await runner.kill(repoJob).catch(() => undefined);
                 serving = false;
                 await loop;
             },
@@ -5436,15 +5439,49 @@ describe('a step in flight when the supervisor container ends under a reporting 
         }
     });
 
-    it('stops watching once the group is killed', async () => {
+    /** Reads stop growing and a later confirmed end releases nothing: the group is no longer this watch's. */
+    async function stopsWatching(
+        held: Awaited<ReturnType<typeof gateHeld>>,
+        script: { supervisor: () => string | Error }
+    ) {
+        await settle(WATCH_MS * 3);
+        const after = held.inspected.length;
+        const released = held.released.mock.calls.length;
+        script.supervisor = () => new Error('Error: No such object: ' + supervisorName(repoJob));
+        await settle(WATCH_MS * 20);
+        expect(held.inspected.length).toBe(after);
+        expect(held.released.mock.calls.length).toBe(released);
+    }
+
+    it('stops watching, and releases nothing, once the group is killed', async () => {
         const script = { supervisor: (): string | Error => RUNNING };
         const held = await gateHeld(script);
         try {
             await held.runner.kill(repoJob);
-            await settle(WATCH_MS * 3);
-            const after = held.inspected.length;
-            await settle(WATCH_MS * 20);
-            expect(held.inspected.length).toBe(after);
+            await stopsWatching(held, script);
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it('stops watching, and releases nothing, once the group is finished', async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            await held.runner.finish(repoJob);
+            await stopsWatching(held, script);
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it('stops watching, and releases nothing, once the attempt is abandoned to the next holder', async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            held.runner.abandon(repoJob);
+            await stopsWatching(held, script);
+            expect(await lostWithin(held.gating, 50)).toBe('hung');
         } finally {
             await held.stop();
         }
