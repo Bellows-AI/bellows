@@ -262,12 +262,13 @@ function reduceCumulative(series: readonly TokenObservation[], out: TokenContrib
     }
 }
 
-/** Checks every reading and returns copies whose start time is canonical ISO, so one instant is one series. */
+/** Checks every reading and returns copies whose times are canonical ISO, so one instant is one series. */
 function validate(observations: readonly TokenObservation[]): TokenObservation[] {
     return observations.map((o) => {
-        epoch(o.time);
+        const time = new Date(epoch(o.time)).toISOString();
         if (!Number.isFinite(o.value) || o.value < 0) throw new RangeError(`invalid token value: ${o.value}`);
-        return o.startTime === null ? o : { ...o, startTime: new Date(epoch(o.startTime)).toISOString() };
+        const startTime = o.startTime === null ? null : new Date(epoch(o.startTime)).toISOString();
+        return { ...o, time, startTime };
     });
 }
 
@@ -330,21 +331,31 @@ export function reduceTokenObservations(observations: readonly TokenObservation[
         }
     }
     out.push(...suppressed.map(reduceSuppressed));
-    return out.sort(compareContributions);
+    return sortContributions(out);
 }
 
-function compareContributions(a: TokenContribution, b: TokenContribution): number {
-    const at = a.observedAt === null ? Number.NEGATIVE_INFINITY : epoch(a.observedAt);
-    const bt = b.observedAt === null ? Number.NEGATIVE_INFINITY : epoch(b.observedAt);
-    const kinds = ['timed', 'unlocated', 'unresolved', 'suppressed'];
-    return (
-        at - bt ||
-        kinds.indexOf(a.kind) - kinds.indexOf(b.kind) ||
-        compareText(seriesId(a.series), seriesId(b.series)) ||
-        compareText(JSON.stringify(a.tokens), JSON.stringify(b.tokens)) ||
-        compareText(a.source, b.source) ||
-        compareText(a.reasons.join(), b.reasons.join())
+const KIND_ORDER = ['timed', 'unlocated', 'unresolved', 'suppressed'];
+
+/** Sorts on keys computed once per contribution, not once per comparison. */
+function sortContributions(out: TokenContribution[]): TokenContribution[] {
+    const keyed = out.map((c) => ({
+        c,
+        at: c.observedAt === null ? Number.NEGATIVE_INFINITY : epoch(c.observedAt),
+        kind: KIND_ORDER.indexOf(c.kind),
+        series: seriesId(c.series),
+        tokens: JSON.stringify(c.tokens),
+        reasons: c.reasons.join(),
+    }));
+    keyed.sort(
+        (a, b) =>
+            a.at - b.at ||
+            a.kind - b.kind ||
+            compareText(a.series, b.series) ||
+            compareText(a.tokens, b.tokens) ||
+            compareText(a.c.source, b.c.source) ||
+            compareText(a.reasons, b.reasons)
     );
+    return keyed.map((k) => k.c);
 }
 
 export interface RangePartition {
