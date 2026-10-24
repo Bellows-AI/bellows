@@ -1153,11 +1153,13 @@ interface GateRequestSeen {
     cwd: string;
     env: string;
 }
-/** How the fake loop answers one request: its exit and output, after `holdMs`. */
+/** How the fake loop answers one request: its exit and output, after `holdMs`, or once `heldUntil` says so. */
 interface GatePlan {
     exitCode: number;
     output: string;
     holdMs?: number;
+    /** A latch in place of the clock: the answer waits for the test to release it. */
+    heldUntil?: () => boolean;
 }
 
 /**
@@ -1208,7 +1210,10 @@ function fakeGateLoop(
             if (existsSync(at(GATE_FILES.running, id, GATE_FILES.cancel))) {
                 loop.cancelled.push(id);
                 answer(id, 137, 'killed');
-            } else if (loop.beating && Date.now() - since >= (answerPlan.holdMs ?? 0)) {
+            } else if (
+                loop.beating &&
+                (answerPlan.heldUntil ? answerPlan.heldUntil() : Date.now() - since >= (answerPlan.holdMs ?? 0))
+            ) {
                 answer(id, answerPlan.exitCode, answerPlan.output);
             }
         }
@@ -2077,10 +2082,22 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         it('replays a gate that landed while a second invocation of it waited in the lane: the request is posted once', async () => {
             const driver = await startDriver();
             const supervised = run(driver, GATED);
-            const loop = fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'passed', holdMs: 400 }));
+            let released = false;
+            const loop = fakeGateLoop(supervised.box.gate, () => ({
+                exitCode: 0,
+                output: 'passed',
+                heldUntil: () => released,
+            }));
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000 }));
             await until('the gate to be taken', () => loop.seen.length === 1);
             driver.order(gateStep('gate-1', 'npm test', { timeoutMs: 60_000, invocation: 'i-2' }));
+            // A second call that reached the supervisor after the first settled is replayed from the landed effect
+            // and would pass below too: only a `running` record written while the first is held proves it queued.
+            await until('the second call to queue in the lane', () => {
+                return supervised.ledger('gate-1').invocations['i-2']?.state === 'running';
+            });
+            expect(loop.seen).toHaveLength(1);
+            released = true;
             await until('both answers', () => driver.answerBodies.length === 3);
             expect(loop.seen).toHaveLength(1);
             // The first body is the release's.
