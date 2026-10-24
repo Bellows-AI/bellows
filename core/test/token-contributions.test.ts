@@ -88,6 +88,7 @@ describe('legacy rows without an ingest series digest', () => {
         ]);
         expect(total(timed(cs), 'output')).toBe(150);
         expect(total(cs, 'output')).toBe(150);
+        expect(new Set(cs.map((c) => c.series.attrsKey)).size).toBe(1);
     });
 
     it('is order independent and keeps a legacy reading above the digest reading as the high-water mark', () => {

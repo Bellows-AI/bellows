@@ -206,11 +206,11 @@ function splitBySource(observations: readonly TokenObservation[]): {
     return { selected, suppressed };
 }
 
-function reduceCumulative(series: readonly TokenObservation[], out: TokenContribution[]): void {
+/** `key` is the group's series: a folded legacy reading reports the digest series it joined. */
+function reduceCumulative(key: SeriesKey, series: readonly TokenObservation[], out: TokenContribution[]): void {
     let highWater: number | null = null;
     let highWaterAt = '';
     for (const o of series) {
-        const key = seriesKeyOf(o);
         if (highWater === null) {
             highWater = o.value;
             highWaterAt = o.time;
@@ -310,17 +310,21 @@ const hasDigest = (o: TokenObservation): boolean => o.attrs[SERIES_ATTR] !== und
  * Rows stored before the ingest digest carry no `series`; a counter live across that deploy has both
  * kinds. A legacy series folds into the one digest series equal in every other component (one counter,
  * never counted twice); with none it stands alone; with several it is ambiguous and never added.
+ * The verdict depends on the siblings in the observations given: a sibling first seen after the
+ * window can turn a fold into ambiguous in a later query — never into a double count.
  */
 function groupCumulative(cumulative: readonly TokenObservation[]): {
-    groups: Map<string, TokenObservation[]>;
+    groups: Map<string, { key: SeriesKey; series: TokenObservation[] }>;
     ambiguous: TokenObservation[];
 } {
-    const siblings = new Map<string, Set<string>>();
+    const siblings = new Map<string, Map<string, SeriesKey>>();
     for (const o of cumulative.filter(hasDigest)) {
         const fold = foldIdOf(o);
-        siblings.set(fold, (siblings.get(fold) ?? new Set()).add(seriesId(seriesKeyOf(o))));
+        const key = seriesKeyOf(o);
+        const found = siblings.get(fold) ?? new Map<string, SeriesKey>();
+        siblings.set(fold, found.set(seriesId(key), key));
     }
-    const groups = new Map<string, TokenObservation[]>();
+    const groups = new Map<string, { key: SeriesKey; series: TokenObservation[] }>();
     const ambiguous: TokenObservation[] = [];
     for (const o of cumulative) {
         const found = hasDigest(o) ? undefined : siblings.get(foldIdOf(o));
@@ -328,8 +332,10 @@ function groupCumulative(cumulative: readonly TokenObservation[]): {
             ambiguous.push(o);
             continue;
         }
-        const id = found ? [...found][0]! : seriesId(seriesKeyOf(o));
-        groups.set(id, [...(groups.get(id) ?? []), o]);
+        const [id, key] = found ? [...found][0]! : [seriesId(seriesKeyOf(o)), seriesKeyOf(o)];
+        const group = groups.get(id);
+        if (group) group.series.push(o);
+        else groups.set(id, { key, series: [o] });
     }
     return { groups, ambiguous };
 }
@@ -369,7 +375,7 @@ export function reduceTokenObservations(observations: readonly TokenObservation[
         cumulative.push(o);
     }
     const { groups, ambiguous } = groupCumulative(cumulative);
-    for (const series of groups.values()) reduceCumulative(series, out);
+    for (const { key, series } of groups.values()) reduceCumulative(key, series, out);
     out.push(...ambiguous.map(reduceAmbiguousLegacy));
 
     for (const c of out) {
