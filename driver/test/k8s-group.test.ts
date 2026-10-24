@@ -670,7 +670,6 @@ describe('the task group of one attempt', () => {
         const api = cluster({ ended: true });
         const broker = createStepBroker();
         broker.open(CONTROL_TOKEN);
-        const released = vi.spyOn(broker, 'release');
         const supervisor = supervisedBy(broker, (step) =>
             step.kind === 'sync' ? ok('{"ok":true,"reason":null}') : ok()
         );

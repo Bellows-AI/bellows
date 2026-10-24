@@ -240,7 +240,7 @@ async function runnerJobEnded(
     );
     if (read === ABSENT) return true;
     // A Job of the same name under another uid is not ours: ours is gone.
-    if (ourUid && read.metadata.uid && read.metadata.uid !== ourUid) return true;
+    if (ourUid && read.metadata.uid !== ourUid) return true;
     if (jobOutcome(read.status) !== 'pending') return true;
     return (read.status.conditions ?? []).some(
         (c) => (c.type === 'FailureTarget' || c.type === 'Failed') && c.status === 'True'
@@ -257,7 +257,8 @@ export function watchRunnerGroup(deps: K8sDeps, job: BoardJob, group: TaskGroup,
         everyMs: deps.groupWatchMs ?? GROUP_WATCH_MS,
         signal: anyOf(ledgerOf(deps).signal(job), ledgerOf(deps).abandoned(job)),
         isCurrent: () => groupsOf(deps).get(held) === group,
-        confirmedEnd: (signal) => runnerJobEnded(deps, runnerName({ ...job, leaseToken: held }), group.uids.job, signal),
+        confirmedEnd: (signal) =>
+            runnerJobEnded(deps, runnerName({ ...job, leaseToken: held }), group.uids.job, signal),
         release: () => releaseSteps(stepHostOf(deps), job),
     });
 }

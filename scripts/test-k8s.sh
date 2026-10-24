@@ -3484,10 +3484,11 @@ fi
 
 # T4b. The gates: the runner pod is deleted while a gate runs (issue #967). The pod's supervisor goes with
 #      it, so the waiting gate step is released at once and the attempt ends as an interruption inside two
-#      leases, never failed or dead; the next claim reruns the gate that never finished, not the agent.
-begin_phase recovery-gate-pod-lost
+#      leases, never failed or dead; the pod's agent is gone with it, so the next claim resumes the session
+#      in a new runner and reruns the gate that never finished.
+begin_phase takeover-gate-pod-lost
 n="$RELEASE-t4b"
-commit_plan recovery-gate-pod-lost "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
+commit_plan takeover-gate-pod-lost "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
 t4b="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
 tk_use "$t4b"
 t4b_pod="$(await_runner_pod "$t4b")"
@@ -3507,7 +3508,8 @@ else
     tk_touch "$TK_D$n.go" || bad 't4b: the barrier is released' 'the touch failed'
     tk_settled t4b "$t4b" "$GATE_LOST"
     tk_check 't4b: the gate ran again, once' "$(tk_final tk_count "$TK_D$n.gate.count")" 2
-    tk_check 't4b: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
+    tk_check 't4b: the agent ran again in a new runner, once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 2
+    expect_contains 't4b: the next claim resumes the session' "$(driver_logs)" "job $t4b: attempt 1 resuming session"
 fi
 
 # T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next
