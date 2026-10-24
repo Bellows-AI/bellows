@@ -10,7 +10,8 @@ import { runJob } from '../src/loop/loop-run.js';
 import type { SyncResult } from '../src/publish/publish.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { gatedJob, job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
+import { gatedJob, job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 type RunnerOptions = NonNullable<Parameters<typeof stubRunner>[1]>;
 
@@ -208,5 +209,93 @@ describe('how a run ends', () => {
         expect(r.board.interrupted).toHaveLength(1);
         expect(r.board.interrupted[0]?.reason).toContain('registry unreachable');
         expect(r.board.completed).toEqual([]);
+    });
+});
+
+describe('the session an attempt runs under, reported to the board (issue #845)', () => {
+    it('reports a resumed session as well as a new one', async () => {
+        const resumed = job(1, 'sess-prev');
+        const r = await attempt(resumed);
+
+        expect(r.board.sessions).toEqual([{ id: resumed.id, sessionId: 'sess-prev' }]);
+    });
+
+    // The report precedes the spawn: a start the platform then refuses must stay "requested".
+    it('sends the pre-launch report without launch evidence', async () => {
+        const r = await attempt(job(1, 'sess-prev'));
+
+        expect(r.board.sessionEvidence[0]).toBe(false);
+    });
+
+    it('sends the scraped session of a finished run as launch evidence', async () => {
+        const r = await attempt({ ...job(1), executorType: 'opencode' }, {}, async () => ok({ sessionId: 'ses_ran' }));
+
+        expect(r.board.sessions.at(-1)).toEqual({ id: job(1).id, sessionId: 'ses_ran' });
+        expect(r.board.sessionEvidence.at(-1)).toBe(true);
+    });
+
+    it('does not claim launch evidence for a session scraped from a start that never ran', async () => {
+        const r = await attempt({ ...job(1), executorType: 'opencode' }, {}, async () =>
+            ok({ sessionId: 'ses_never', started: false })
+        );
+
+        // A start that never ran reports no session at all, so no launch is claimed for it.
+        expect(r.board.sessions.some((s) => s.sessionId === 'ses_never')).toBe(false);
+        expect(r.board.sessionEvidence).not.toContain(true);
+    });
+
+    it('does not claim launch evidence for the session of an adopted run: adoption launches nothing', async () => {
+        const r = await attempt(
+            { ...job(1), executorType: 'opencode' },
+            { adopt: async () => ({ outcome: ok({ sessionId: 'ses_adopted' }), claimSeq: 4 }) }
+        );
+
+        const at = r.board.sessions.findIndex((s) => s.sessionId === 'ses_adopted');
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(r.board.sessionEvidence[at]).toBe(false);
+    });
+
+    it('does not claim launch evidence for the session of a taken-over run', async () => {
+        const prior = { ...job(1), leaseToken: 'lease-prior' };
+        const live = {
+            live: true as const,
+            prior,
+            claimSeq: 4,
+            session: 'ses_live',
+            startedAt: 'then',
+            forget: () => {},
+        };
+        const board = stubBoard([]).board;
+        const runner = stubRunner(async () => ok({ sessionId: 'ses_live' }), { adopt: async () => live });
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        const rt = stubRuntime(board, runner, { gates });
+        await runJob(rt, {
+            ...job(1),
+            executorType: 'opencode',
+            claimSeq: 5,
+            supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/', [SUPERVISOR_ENV.controlToken]: 'tok' },
+        });
+
+        const at = board.sessions.findIndex((s) => s.sessionId === 'ses_live');
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(board.sessionEvidence[at]).toBe(false);
+    });
+
+    it('runs and completes the attempt when the board cannot take the resumed session report', async () => {
+        const resumed = job(1, 'sess-prev');
+        const board = stubBoard([], { failSession: true }).board;
+        const logs: string[] = [];
+        await runJob(
+            stubRuntime(
+                board,
+                stubRunner(async () => ok()),
+                { log: (m) => logs.push(m) }
+            ),
+            resumed
+        );
+
+        expect(logs.some((m) => m.includes('could not report the session, continuing'))).toBe(true);
+        expect(board.completed).toHaveLength(1);
+        expect(board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 });

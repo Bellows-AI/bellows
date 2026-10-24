@@ -72,7 +72,8 @@ async function reportScrapedSession(
     const { board, log } = rt;
     if (outcome.sessionId) {
         try {
-            await board.session(job, outcome.sessionId);
+            // A start that never ran or was refused: whatever it scraped is no evidence of a launch.
+            await board.session(job, outcome.sessionId, outcome.started && !outcome.refused);
             log(`job ${job.id}: session ${outcome.sessionId}`);
         } catch (e) {
             log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
@@ -309,7 +310,10 @@ async function reportRunTail(
     if (isAgentless(job)) return;
     // A spool-cap stop is stamped on the outcome the session report reads.
     drainTranscriptExport(ctx, outcome);
-    await reportScrapedSession(rt, job, executorType, outcome);
+    // A run an earlier claim launched (adopted or taken over) is no launch by this claim: the board
+    // would otherwise count the adopting claim as a new token-producing execution.
+    const launchedHere = !ctx.adopted && !ctx.takeover;
+    await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
     await uploadRunArtifacts({ board: rt.board, job, executorType, outcome }, rt);
@@ -586,13 +590,16 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     };
 }
 
-/** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
+/**
+ * Tells the board the id of the session this attempt runs under, a resumed one included (the board
+ * upgrades its claim-time inference to a report); a failed report never blocks the run.
+ */
 async function reportNewSession(
     rt: LoopRuntime,
     job: BoardJob,
     session: ReturnType<typeof pickSession>
 ): Promise<void> {
-    if (!session || session.resume) return;
+    if (!session) return;
     try {
         await rt.board.session(job, session.id);
     } catch (e) {

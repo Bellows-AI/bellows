@@ -89,6 +89,8 @@ export interface BoardStub extends Board {
     /** The final envelopes the loop staged before each verdict (issue #821). */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
+    /** Whether each session report claimed post-launch evidence, in report order. */
+    sessionEvidence: boolean[];
     progressed: { id: string; output: string; runtime: RuntimeReport | null }[];
     suspended: string[];
     /** The interrupted attempts the loop reported (issue #792). */
@@ -166,6 +168,7 @@ export function stubBoard(
         phaseCheckpointsWritten: [],
         phaseCheckpointReads: [],
         sessions: [],
+        sessionEvidence: [],
         progressed: [],
         suspended: [],
         interrupted: [],
@@ -222,9 +225,10 @@ export function stubBoard(
             board.interrupted.push({ id: claimed.id, ...interruption });
             return options.interruptVerdict ?? 'held';
         },
-        async session(claimed, sessionId) {
+        async session(claimed, sessionId, observed = false) {
             if (options.failSession) throw new Error('board unreachable');
             board.sessions.push({ id: claimed.id, sessionId });
+            board.sessionEvidence.push(observed);
             return 'held';
         },
         async progress(claimed, output, runtime) {

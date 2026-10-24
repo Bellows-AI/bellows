@@ -1,4 +1,4 @@
-import { ERROR_CODES, executorSuspendedMessage, type ExecutorScope } from '@factory-ai/core';
+import { ERROR_CODES, EXECUTOR_TYPES, executorSuspendedMessage, type ExecutorScope } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
@@ -289,7 +289,7 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     if (!route) return reply;
     const { store, id } = route;
 
-    const { leaseToken, sessionId } = body(request.body);
+    const { leaseToken, sessionId, agent, observed } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
         return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
@@ -301,7 +301,12 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job session failed'),
-        () => store.session(id, leaseToken, sessionId)
+        () =>
+            store.session(id, leaseToken, sessionId, {
+                agent:
+                    typeof agent === 'string' && (EXECUTOR_TYPES as readonly string[]).includes(agent) ? agent : null,
+                observed: observed === true,
+            })
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
