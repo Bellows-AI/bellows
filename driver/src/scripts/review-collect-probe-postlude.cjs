@@ -5,7 +5,7 @@
  * stdout, reshapes the embedded review-collect.cjs's own verdict (captured by
  * review-collect-probe-prelude.cjs) into the versioned envelope the generic helper transport
  * expects, and decides the block's own outcome deterministically — no model judgment involved.
- * Shared by the block's `collect` and `wait` internal nodes (server/src/db/workflow-blocks/
+ * Shared by the block's `collect` and `wait` internal nodes (server/src/db/workflows/workflow-blocks/
  * github-review-reconcile.ts): both run this exact helper, so re-entering the wait always
  * re-fetches full state before deciding again.
  *

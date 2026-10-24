@@ -5,8 +5,8 @@
  * (publishing, questions, gates), and the text must not promise it any.
  */
 
-import type { ReviewerSpec } from './job-store-types.js';
-import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from './workflow-templates.js';
+import type { ReviewerSpec } from './jobs/job-store-types.js';
+import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from './workflows/workflow-templates.js';
 
 /** How much of the task's command a review quotes — enough to say what the work was for. */
 export const TASK_COMMAND_LIMIT = 2_000;

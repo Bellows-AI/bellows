@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { claimEnv, claimContinuesSession, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { serviceRestartArgv } from './container-scripts.js';
@@ -30,8 +30,8 @@ import {
     taskCheckoutScript,
     worktreeBranch,
     checkoutDir,
-} from './publish.js';
-import { snapshotTree } from './review-snapshot.js';
+} from './publish/publish.js';
+import { snapshotTree } from './review/review-snapshot.js';
 import type { Runner } from './runner.js';
 import { noStepChannel, StepTimedOut, type StepSink, stepLost } from './step-control.js';
 import { SUPERVISOR_ENV, type StepKind, type StepRequest, type StepResult } from './supervisor-contract.js';

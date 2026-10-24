@@ -6,11 +6,11 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { BoardJob, ReviewClaim, ServiceStatus } from './board.js';
+import type { BoardJob, ReviewClaim, ServiceStatus } from './board/board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { Bound } from './poll.js';
-import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish.js';
-import type { SnapshotResult } from './review-snapshot.js';
+import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish/publish.js';
+import type { SnapshotResult } from './review/review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
 import type { GateStepRequest, ReviewControl } from './supervised-steps.js';
 import type { StepResult, SupervisorBinding } from './supervisor-contract.js';

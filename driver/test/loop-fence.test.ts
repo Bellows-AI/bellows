@@ -1,14 +1,13 @@
 import { getEventListeners } from 'node:events';
-import { readdirSync, readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import type { BoardJob, LeaseState } from '../src/board.js';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
-import { newJobState, raceStep } from '../src/loop-attempt.js';
-import { end, endIfDown } from '../src/loop-conclusion.js';
-import { recordEnding } from '../src/loop-phase.js';
-import { handBackFence, setupDecision, standDown } from '../src/loop-fence.js';
-import type { AttemptCtx, SetupHalt } from '../src/loop-types.js';
+import { driverSources } from './fixtures/driver-sources.js';
+import type { BoardJob, LeaseState } from '../src/board/board.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js';
+import { newJobState, raceStep } from '../src/loop/loop-attempt.js';
+import { end, endIfDown } from '../src/loop/loop-conclusion.js';
+import { recordEnding } from '../src/loop/loop-phase.js';
+import { handBackFence, setupDecision, standDown } from '../src/loop/loop-fence.js';
+import type { AttemptCtx, SetupHalt } from '../src/loop/loop-types.js';
 
 const JOB = { id: 'job-1' } as BoardJob;
 
@@ -96,10 +95,7 @@ const TEARDOWN = ['quiesce', 'finish', 'release:job-1'];
  * same way `scripts-*.test.ts` pins the bytes the images ship.
  */
 const loopSources = (): readonly (readonly [string, string])[] => {
-    const dir = fileURLToPath(new URL('../src/', import.meta.url));
-    return readdirSync(dir)
-        .filter((file) => /^loop-.*\.ts$/.test(file))
-        .map((file) => [file, readFileSync(`${dir}/${file}`, 'utf8')] as const);
+    return driverSources().filter(([file]) => /^loop-.*\.ts$/.test(file));
 };
 
 describe('the attempt fences have exactly one owner (issue #472)', () => {
@@ -259,12 +255,6 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
     // #828: the lifecycle has one owner. Teardown is `end()`'s (loop-conclusion.ts); the claim's
     // release is the fence's (loop-fence.ts); the attempt's phase and ending are written by
     // loop-phase.ts alone. A runner's `run()` and every other step only report facts.
-    const driverSources = (): readonly (readonly [string, string])[] => {
-        const dir = fileURLToPath(new URL('../src/', import.meta.url));
-        return readdirSync(dir)
-            .filter((file) => /\.ts$/.test(file))
-            .map((file) => [file, readFileSync(`${dir}/${file}`, 'utf8')] as const);
-    };
     const filesMatching = (pattern: RegExp): string[] =>
         driverSources()
             .filter(([file, source]) => !/^(docker|k8s)/.test(file) && pattern.test(source))

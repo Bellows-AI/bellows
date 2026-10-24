@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { ReviewPlan } from '../src/review.js';
+import type { ReviewPlan } from '../src/review/review.js';
 import { collectRef } from './fixtures/review-fixtures.js';
 import { cleanupTempDirs, runScript, TEST_TOKEN } from './fixtures/review-script-support.js';
 

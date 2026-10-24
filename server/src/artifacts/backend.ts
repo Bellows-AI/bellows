@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises';
-import type { ArtifactsConfig } from './config.js';
+import type { ArtifactsConfig } from '../config-artifacts.js';
 import { createFilesystemStore } from './fs-store.js';
 import type { ObjectStore } from './object-store.js';
 import { createCredentialProvider } from './s3-credentials.js';

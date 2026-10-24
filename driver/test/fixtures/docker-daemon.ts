@@ -2,7 +2,7 @@
  * The docker twin of the kubernetes fake API server (`k8s-apiserver.ts`): a router over argv whose
  * unscripted calls reject, so a test that passes is one whose every daemon call was accounted for.
  */
-import type { ExecDocker } from '../../src/docker-runner-support.js';
+import type { ExecDocker } from '../../src/docker/docker-runner-support.js';
 
 /**
  * A test's routes for one daemon call: an answer, an Error the call rejects with, or `undefined`

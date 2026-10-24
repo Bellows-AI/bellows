@@ -1,10 +1,10 @@
-import { neverStartedWhy } from '../../src/loop-fence.js';
-import { agentFaults, kindOf } from '../../src/loop-ledger.js';
+import { neverStartedWhy } from '../../src/loop/loop-fence.js';
+import { agentFaults, kindOf } from '../../src/loop/loop-ledger.js';
 import type { RunOutcome } from '../../src/runner.js';
 
 /**
  * How a started run ends, one row per way, with the decision the loop takes on its outcome — the
- * conformance table both executors run (`docker.test.ts`, `k8s.test.ts`), each row through its own
+ * conformance table both executors run (`docker/`, `k8s/`), each row through its own
  * harness. Typed as a `Record`, so neither suite can leave a row out. Not rows here: a cache loss
  * (the watch is docker-only, refused at boot under kubernetes — `config.test.ts`) and a refused
  * start (`startup-table.ts`).

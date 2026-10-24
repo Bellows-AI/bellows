@@ -7,11 +7,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { envFileBody, GITHUB_CACHE_DIR, runnerClaimEnv, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { dockerArgs } from '../src/docker.js';
-import { runnerJobSpec } from '../src/k8s-podspec.js';
+import { dockerArgs } from '../src/docker/docker.js';
+import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import { AGENT_CONTAINER } from '../src/supervisor-contract.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 

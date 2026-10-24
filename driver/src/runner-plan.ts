@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
 import {
     npmQuietEnv,
@@ -19,7 +19,7 @@ import {
     opencodeAgentArgs,
     opencodeTurnPrompt,
 } from './master-prompt.js';
-import { baseBranchOf, checkoutDir } from './publish.js';
+import { baseBranchOf, checkoutDir } from './publish/publish.js';
 import { randomUUID } from 'node:crypto';
 import type { RunSession } from './runner.js';
 

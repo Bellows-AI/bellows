@@ -18,8 +18,8 @@ import {
     type BatchRecord,
     type BatchStore,
     type BatchTaskState,
-} from '../src/db/batch-store.js';
-import { IdempotencyKeyReusedError } from '../src/db/job-store-idempotency.js';
+} from '../src/db/batches/batch-store-types.js';
+import { IdempotencyKeyReusedError } from '../src/db/jobs/job-store-idempotency.js';
 
 /**
  * The in-memory double the route tests drive: the same version/status/idempotency semantics as

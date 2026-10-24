@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { runTimeoutMs, setupTimeoutMs } from '../src/claim.js';
-import { setupSpentNote } from '../src/loop-verdict.js';
+import { setupSpentNote } from '../src/loop/loop-verdict.js';
 import { agentBackstopMs } from '../src/supervisor-plan.js';
 import { SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 

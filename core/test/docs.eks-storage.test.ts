@@ -30,7 +30,7 @@ const podSpecSources = [
     '../../charts/factory/templates/deployment.yaml',
     '../../charts/factory/templates/driver-deployment.yaml',
     '../../charts/factory/templates/collector.yaml',
-    '../../driver/src/k8s-podspec.ts',
+    '../../driver/src/k8s/k8s-podspec.ts',
 ];
 
 describe('the task volume storage prerequisites', () => {
@@ -70,7 +70,7 @@ describe('the task volume storage prerequisites', () => {
      */
     it('is telling the truth that only the driver pod specs set fsGroup', () => {
         for (const source of podSpecSources) {
-            if (source.endsWith('driver/src/k8s-podspec.ts')) {
+            if (source.endsWith('driver/src/k8s/k8s-podspec.ts')) {
                 expect(read(source), source).toContain('fsGroup');
             } else {
                 expect(read(source), source).not.toContain('fsGroup');

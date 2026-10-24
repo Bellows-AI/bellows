@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Bound } from '../src/poll.js';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { runTimeoutMs } from '../src/claim.js';
-import { dockerArgs } from '../src/docker.js';
-import { supervisorCreateArgs } from '../src/docker-group.js';
-import { runnerJobSpec } from '../src/k8s-podspec.js';
-import { CREDENTIAL_HELPER, worktreeBranch, type PublishStep } from '../src/publish.js';
-import { pushWithLease } from '../src/publish-stale.js';
+import { dockerArgs } from '../src/docker/docker.js';
+import { supervisorCreateArgs } from '../src/docker/docker-group.js';
+import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
+import { CREDENTIAL_HELPER, worktreeBranch, type PublishStep } from '../src/publish/publish.js';
+import { pushWithLease } from '../src/publish/publish-stale.js';
 import { TASK_MOUNT, TASK_VOLUME, taskVolumeName } from '../src/task-volume.js';
 import { createStepBroker, StepChannelClosed, StepTimedOut, type StepSink } from '../src/step-control.js';
 import {

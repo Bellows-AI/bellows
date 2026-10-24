@@ -4,9 +4,24 @@
  * each across a timing matrix of lease, rebind grace and the kubelet's Secret refresh. A scenario
  * names the lane case it mirrors; its expectations are the lane's.
  */
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { BoardJob } from '../src/board/board.js';
 import { takeoverBoundMs } from '../src/supervisor-plan.js';
-import { ADOPTED, lane15, scaled, Sim, TOOK_OVER, type Timing, until } from './fixtures/takeover-sim.js';
+import { busyWait } from './fixtures/host-stall.js';
+import {
+    ADOPTED,
+    type Group,
+    lane15,
+    nap,
+    scaled,
+    Sim,
+    TOOK_OVER,
+    type Timing,
+    until,
+} from './fixtures/takeover-sim.js';
 
 const released = (s: Sim) => [...s.groups.values()].find((g) => s.released(g));
 const firstGroup = (s: Sim) => [...s.groups.values()][0]!;
@@ -232,4 +247,84 @@ describe('takeover simulation, a pod evicted under a takeover (#943)', () => {
             await s.teardown();
         }
     }, 60_000);
+
+    it('a binding refresh still pending at the teardown never writes into the removed group', async () => {
+        const s = new Sim({ ...scaled(1), refreshMs: 50 });
+        const dir = mkdtempSync(join(tmpdir(), 'takeover-refresh-'));
+        s.dirs.push(dir);
+        const file = join(dir, 'binding.json');
+        s.groups.set('lease', { secretWrites: 0, tokens: new Set<string>(), file } as unknown as Group);
+        s.rebind('lease', JSON.stringify({ token: 't' }));
+        await s.teardown();
+        // An uncaught ENOENT from the timer fails the run; the file must not reappear either.
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        expect(existsSync(file)).toBe(false);
+    });
+});
+
+// #972: the simulated board shares this process with every driver and supervisor, so a host stall holds them all. The
+// lease is judged against loop time, which a stall does not advance; a lease nobody renews still lapses in it.
+describe('takeover simulation, the board clock under a host stall (#972)', () => {
+    const lease = { ...scaled(15), leaseSeconds: 1 };
+
+    it('a stall longer than the lease is not a lapse: the next claim finds the lease held', async () => {
+        const s = new Sim(lease);
+        try {
+            const board = s.directBoard();
+            const job = (await board.claim!({} as never)) as BoardJob;
+            busyWait(2.5 * lease.leaseSeconds * 1000);
+            expect(await board.claim!({} as never)).toBeNull();
+            expect(s.brief()).toBe('running|0|');
+            expect(s.holds(job)).toBe(true);
+        } finally {
+            await s.teardown();
+        }
+    });
+
+    it('the same holds once the watcher has recorded the stall', async () => {
+        const s = new Sim(lease);
+        try {
+            const board = s.directBoard();
+            await board.claim!({} as never);
+            busyWait(2.5 * lease.leaseSeconds * 1000);
+            await nap(100);
+            expect(s.host.stalls.length).toBeGreaterThan(0);
+            expect(await board.claim!({} as never)).toBeNull();
+            expect(s.brief()).toBe('running|0|');
+        } finally {
+            await s.teardown();
+        }
+    });
+
+    it('a lease nobody renews still lapses in loop time and the claim records the interruption', async () => {
+        const s = new Sim(lease);
+        try {
+            const board = s.directBoard();
+            await board.claim!({} as never);
+            const claimed = s.host.loopNow();
+            // Loop time, not the wall clock: a stall of a loaded host in this wait lengthens it, and the lease still lapses.
+            while (s.host.loopNow() - claimed < lease.leaseSeconds * 1000 + 100) await nap(20);
+            const next = (await board.claim!({} as never)) as BoardJob | null;
+            expect(next?.claimSeq).toBe(2);
+            expect(s.brief()).toBe('running|1|1');
+        } finally {
+            await s.teardown();
+        }
+    });
+
+    it('a driver whose host stalls past the lease keeps its claim: nothing is interrupted', async () => {
+        const s = new Sim({ ...lease, orphanMs: 30_000, rebindGraceMs: 30_000 });
+        try {
+            s.release();
+            await s.start('A');
+            await until('the agent released', s, () => Boolean(released(s)));
+            busyWait(2.5 * lease.leaseSeconds * 1000);
+            s.agentExits(firstGroup(s), 0);
+            await settled(s);
+            expect(s.brief()).toBe('succeeded|0|');
+            expect(s.agentRuns).toBe(1);
+        } finally {
+            await s.teardown();
+        }
+    }, 40_000);
 });

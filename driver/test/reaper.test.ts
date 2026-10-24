@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardLease, BoardThreadFacts } from '../src/board.js';
-import { LEASE_BATCH_MAX } from '../src/board.js';
+import type { BoardLease, BoardThreadFacts } from '../src/board/board.js';
+import { LEASE_BATCH_MAX } from '../src/board/board.js';
 import {
     createReaper,
     reapDecision,

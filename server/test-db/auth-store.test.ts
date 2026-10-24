@@ -2,7 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore, type AuthStore } from '../src/auth/store.js';
-import { LOCAL_ORG_ID } from '../src/config.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { trackedRepos } from '../src/db/tracked-repos.js';
 import { LOCAL_LOGIN, migrate, reapPendingSignIns, reapSessions } from '../src/db/migrate.js';
 import { useTestDb } from './harness.js';

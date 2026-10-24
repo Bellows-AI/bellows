@@ -5,8 +5,8 @@
  * that package depends on nothing; `server/test/evidence-policy.test.ts` pins the shared spellings.
  */
 
-import { type WorkflowDefinition, tailMatches } from './workflow-schema.js';
-import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from './workflow-templates.js';
+import { type WorkflowDefinition, tailMatches } from './workflows/workflow-schema.js';
+import { REVIEW_BLOCKERS_MARKER, REVIEW_VERDICT_MARKER } from './workflows/workflow-templates.js';
 
 export interface EvidencePolicy {
     gates?: boolean;

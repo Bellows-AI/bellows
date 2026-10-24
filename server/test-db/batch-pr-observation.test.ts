@@ -3,15 +3,16 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { BatchPlan, PrFacts } from '@factory-ai/core';
 import { createBatchPrObserver, type BatchPrObserver, type PrReader } from '../src/batch-pr-observer.js';
-import { createBatchStore, type BatchStore } from '../src/db/batch-store.js';
+import { createBatchStore } from '../src/db/batches/batch-store.js';
+import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import {
     claimDue,
     commitObservation,
     OBSERVATION_LEASE_MS,
     requestRefresh,
-} from '../src/db/batch-store-observation.js';
-import { createJobStore } from '../src/db/job-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+} from '../src/db/batches/batch-store-observation.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { GitHubReadError } from '../src/github/pr-read.js';
 import { useTestDb } from './harness.js';

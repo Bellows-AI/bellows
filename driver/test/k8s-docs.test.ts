@@ -39,6 +39,12 @@ describe('the EKS prerequisites record', () => {
         expect(kubernetesDocs).toContain('Fargate');
     });
 
+    // Issue #887: the reaper's scope is the release on kubernetes, the board label on docker.
+    it('states that the reaper is scoped to its own driver, and the unscoped limit', () => {
+        expect(prose(kubernetesDocs)).toContain('The orphan reaper is scoped to its own driver on both executors');
+        expect(prose(kubernetesDocs)).toContain('a driver started with no `K8S_RELEASE` is unscoped');
+    });
+
     it('states the VPC-endpoint answer for the blocked private ranges', () => {
         expect(kubernetesDocs).toContain('VPC endpoint');
         expect(kubernetesDocs).toContain('allowedCidrs');
@@ -195,7 +201,7 @@ describe('the executor isolation record (#382)', () => {
             "A taken-over run's agent and exporter reach the new holder through the supervisor's relay (`serveRelay`); a request in flight across the rebind is hung up on (the exporter retries it; the agent's proxy answers 502), and the transcript continues under the new claim from its first unacknowledged byte. `driver/test/supervisor.test.ts`, `driver/test/control-proxy.test.ts`."
         );
         expect(prose(kubernetesDocs)).toContain(
-            "Stated limit: a taken-over run's agent gate requests (`BELLOWS_GATE_*`) keep the lost driver's endpoint; the end-of-run gates run on the new holder (follow-up #909). `driver/src/loop-gates.ts`."
+            "Stated limit: a taken-over run's agent gate requests (`BELLOWS_GATE_*`) keep the lost driver's endpoint; the end-of-run gates run on the new holder (follow-up #909). `driver/src/loop/loop-gates.ts`."
         );
     });
 
@@ -213,7 +219,7 @@ describe('the executor isolation record (#382)', () => {
     // Issue #829: a driver the board cannot reach never learns its lease was lost.
     it('states that a cut-off driver keeps contact past the adopter’s finalize wait', () => {
         expect(prose(kubernetesDocs)).toContain(
-            "Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker). `driver/src/loop-attempt.ts`."
+            "Stated limit: a driver cut off from the board but still reachable by its supervisor never learns its lease was lost (`beat()` swallows failed heartbeats), so it keeps contact past the adopter's finalize wait; the adopter then sweeps and redoes the run (kubernetes) or is blocked until the supervisor ends (docker). `driver/src/loop/loop-attempt.ts`."
         );
     });
 

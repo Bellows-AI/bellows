@@ -5,12 +5,12 @@
  * read is never an empty one: any checkpoint the driver cannot vouch for runs its phase again.
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import type { GateRun } from '../src/gates.js';
-import type { PhaseCheckpoint } from '../src/board-phase-checkpoints.js';
-import { PHASE_CHECKPOINT_READ_MS } from '../src/loop-phase-checkpoints.js';
+import type { PhaseCheckpoint } from '../src/board/board-phase-checkpoints.js';
+import { PHASE_CHECKPOINT_READ_MS } from '../src/loop/loop-phase-checkpoints.js';
 import type { HelperPlan } from '../src/helpers.js';
-import type { PublishResult } from '../src/publish.js';
+import type { PublishResult } from '../src/publish/publish.js';
 import type { AdoptedRun, DeadService, LiveRun } from '../src/runner.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
 

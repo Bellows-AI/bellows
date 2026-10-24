@@ -1,8 +1,8 @@
-import type { AskedQuestion } from './board.js';
+import type { AskedQuestion } from './board/board.js';
 
 /**
  * The question report's validation, the driver's copy of the board's
- * (`server/src/routes/job-field-validation-questions.ts`, limits in `job-limits.ts`): the control
+ * (`server/src/routes/jobs/job-field-validation-questions.ts`, limits in `job-limits.ts`): the control
  * endpoint refuses what the board would, so a malformed ask never reaches the wire. Copied, not
  * imported — this package depends on nothing. Unknown keys are dropped.
  */

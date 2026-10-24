@@ -6,7 +6,7 @@
  * `k8s-runner.ts`. The kubernetes runner does not run the cache watch yet (docs/kubernetes.md).
  */
 
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { UUID } from './claim.js';
 import { pollFor, type Sleep } from './poll.js';
 import { CLOSE_READ_DEADLINE_MS, type RunOutcome, type RunSession } from './runner.js';

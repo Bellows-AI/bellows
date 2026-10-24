@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
 import {
     githubAuth,
     memoryAuthStore,
@@ -10,6 +10,7 @@ import {
     staticRegistry,
     stubTelemetryClient,
     testConfig,
+    jobStoreSlice,
 } from './helpers.js';
 import {
     HTTP_BAD_REQUEST,
@@ -49,12 +50,12 @@ async function boot() {
     // executor refusal rather than the repository's.
     const repos = staticRepoSource([READY_REPO]);
     const queued: { command: string; executor: string | null; scope: string | undefined }[] = [];
-    const jobs = {
+    const jobs = jobStoreSlice<JobActionStore>({
         async create(command: string, _by: string | null, target?: { executor?: string; executorScope?: string }) {
             queued.push({ command, executor: target?.executor ?? null, scope: target?.executorScope });
             return { id: '11111111-1111-4111-8111-111111111111' };
         },
-    } as unknown as JobStore;
+    });
     const config = testConfig({ auth: githubAuth() });
     const instance = await buildApp({
         config,

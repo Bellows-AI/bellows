@@ -20,7 +20,7 @@ beside this file prevent that; call them by absolute path from the main checkout
 cover every command this skill names below.
 
 - Heavy commands run as `sh HEAVY <command>`: `npm test`, `npm run typecheck`, `npm run build`, a
-  directory-wide `npx vitest run <dir>`, `npx vitest run --changed`, `docker build`, `make runners`
+  directory-wide `npx vitest run <dir>`, `npx vitest run --changed`, `npm run test:changed`, `docker build`, `make runners`
   and `codex exec`. A
   single-file `npx vitest run <path>` and `npm run lint:changed` run bare.
 - Lanes with fixed ports or project names run as `sh HEAVY --exclusive <command>`:
@@ -137,6 +137,11 @@ The suite commands here are the focused suite (below) and `npm run typecheck`. S
 
 **Focused suite** — every test the change can reach, run from WORKTREE with
 BASE=`git merge-base HEAD origin/<default-branch>`:
+
+`sh HEAVY npm run test:changed -- $BASE` runs all three of the following in one go: it builds core
+when `core/src` changed, and maps a changed non-TypeScript file to the suites that name it. Spawn-tier
+suites (`vitest.spawn-tests.json`) run only when a file they import or name changed. To iterate on
+one package, `npx vitest run --project <pkg>`.
 
 - `sh HEAVY npx vitest run --changed $BASE` — each test file whose import graph reaches a file
   changed since BASE, uncommitted work included.

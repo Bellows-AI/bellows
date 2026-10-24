@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { GIT_STAGE_STEPS, gitProbeScript } from '../src/publish.js';
+import { GIT_STAGE_STEPS, gitProbeScript } from '../src/publish/publish.js';
 import { GIT_FIXTURE_CONFIG, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**

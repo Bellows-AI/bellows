@@ -216,7 +216,7 @@
             }
         },
         {
-            "includes": ["driver/src/k8s-podspec.ts", "driver/src/scripts/supervisor.cjs"],
+            "includes": ["driver/src/k8s/k8s-podspec.ts", "driver/src/scripts/supervisor.cjs"],
             "linter": {
                 "rules": {
                     "style": {

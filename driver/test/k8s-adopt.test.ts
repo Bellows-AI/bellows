@@ -1,20 +1,20 @@
 /**
  * `adoptFinishedRunner` (`k8s-adopt.ts`) called directly, the contracts the runner-level suites in
- * `k8s.test.ts` cannot state: what the injected `CloseReads` receive, a supervisor log that answers
+ * `k8s/` cannot state: what the injected `CloseReads` receive, a supervisor log that answers
  * 404 or "never started", a pod list that fails only after the Job list admitted the run, and a
  * sweep that fails after the read. Assertions are on requests and on what the adoption answers or
  * throws, never on how many polls a read took.
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { jobPath } from '../src/k8s-auxspec.js';
-import { releaseClaimAfterGroupEnd } from '../src/k8s-fence.js';
-import { ensureGroup, finishGroup } from '../src/k8s-group.js';
-import { type CloseReads, adoptFinishedRunner } from '../src/k8s-adopt.js';
-import { pollRunnerJobUntilTerminal } from '../src/k8s-poll.js';
-import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import type { K8sDeps } from '../src/k8s-transport.js';
+import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { releaseClaimAfterGroupEnd } from '../src/k8s/k8s-fence.js';
+import { ensureGroup, finishGroup } from '../src/k8s/k8s-group.js';
+import { type CloseReads, adoptFinishedRunner } from '../src/k8s/k8s-adopt.js';
+import { pollRunnerJobUntilTerminal } from '../src/k8s/k8s-poll.js';
+import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
+import type { K8sDeps } from '../src/k8s/k8s-transport.js';
 import { AdoptionBlocked, commandMark, ownGroup, type AdoptedRun } from '../src/runner.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';

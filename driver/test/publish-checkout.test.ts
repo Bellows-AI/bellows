@@ -1,12 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { PUBLISH_MOVED_REASON, type PublishOptions, type PublishStep, publishCheckout } from '../src/publish.js';
+import type { BoardJob } from '../src/board/board.js';
+import {
+    PUBLISH_MOVED_REASON,
+    type PublishOptions,
+    type PublishStep,
+    publishCheckout,
+} from '../src/publish/publish.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
 
 /**
  * The publish workflow both executors run (`publishCheckout`), over a fake transport: every
  * decision — step order, branch, commit, push, PR reuse, draft, the no-ops, the stale refusal and
- * the failure causes — is pinned here once. docker.test.ts and k8s.test.ts keep one end-to-end
+ * the failure causes — is pinned here once. docker/ and k8s/ keep one end-to-end
  * publish each plus what only their transport decides (`docker run` argv and env file; step Jobs
  * and the publish Secret).
  */

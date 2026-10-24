@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { GATE_GID, GATE_UID, REVIEWER_TREE_PATH } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { applyCloseTimeReadout, tickCacheWatch } from '../src/docker-close-read.js';
+import { applyCloseTimeReadout, tickCacheWatch } from '../src/docker/docker-close-read.js';
 import { CheckpointUnrestorable } from '../src/task-restore.js';
-import { ensureTaskVolume, removeTaskVolumes, taskVolumeIsOurs } from '../src/docker-task-volume.js';
+import { ensureTaskVolume, removeTaskVolumes, taskVolumeIsOurs } from '../src/docker/docker-task-volume.js';
 import { OPENCODE } from '../src/executors.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import type { RunOutcome } from '../src/runner.js';

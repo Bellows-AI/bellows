@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import type { CheckpointRead } from '../src/board-checkpoint.js';
+import type { BoardJob } from '../src/board/board.js';
+import type { CheckpointRead } from '../src/board/board-checkpoint.js';
 import { TASK_ROOT_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { k8sSyncRun } from './k8s-sync-step.js';
 
 /**
  * The kubernetes runner restoring a thread's task tree (issue #775): the docker twins live in
- * docker.test.ts. The restore step precedes the sync step, the older claim goes only after the restore
+ * docker/. The restore step precedes the sync step, the older claim goes only after the restore
  * reports ok, and a follow-up that cannot be rebuilt ends `checkpoint_unrestorable`.
  */
 

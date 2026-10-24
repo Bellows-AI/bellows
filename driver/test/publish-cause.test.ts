@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { FailureCause } from '../src/board.js';
-import { publishCauseOf, publishFailed, publishNothing } from '../src/publish.js';
+import type { FailureCause } from '../src/board/board.js';
+import { publishCauseOf, publishFailed, publishNothing } from '../src/publish/publish.js';
 
 /**
  * Issue #581: `publish` is a coarse label. The board recovers a publish failure by its cause — a

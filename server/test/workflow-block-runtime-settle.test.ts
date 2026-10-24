@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TransactionSql } from 'postgres';
-import { entersBlockHelperNode, settleBlockWaits } from '../src/db/workflow-blocks/runtime-settle.js';
-import type { JobStorePrs } from '../src/db/job-store-types.js';
-import type { Transition } from '../src/db/workflow-engine.js';
-import type { WorkflowDefinition, WorkflowNode } from '../src/db/workflow-schema.js';
+import { entersBlockHelperNode, settleBlockWaits } from '../src/db/workflows/workflow-blocks/runtime-settle.js';
+import type { JobStorePrs } from '../src/db/jobs/job-store-types.js';
+import type { Transition } from '../src/db/workflows/workflow-engine.js';
+import type { WorkflowDefinition, WorkflowNode } from '../src/db/workflows/workflow-schema.js';
 
 /**
  * The generic settle rule (issue #133's resolution of the "who calls finishWait" question): a

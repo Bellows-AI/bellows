@@ -2,7 +2,7 @@
 
 /*
  * The github-review-reconcile block's reply adapter (issue #133) — MIDDLE half, run between the
- * embedded review-collect.cjs and review-reply.cjs (driver/src/review-helpers.ts assembles the
+ * embedded review-collect.cjs and review-reply.cjs (driver/src/review/review-helpers.ts assembles the
  * five pieces — review-collect-probe-prelude.cjs, review-collect.cjs, this file,
  * review-reply.cjs, review-reply-probe-postlude.cjs — at driver load time). The `reply` node
  * always follows a SUCCEEDED, published `repair` row (the block's own edge grammar only routes
@@ -24,7 +24,7 @@
  * proceeding with an empty plan would falsely conclude REVIEW-REPLIED without ever having
  * validated a single target against live state. `__reviewReplyProbeSkip`, declared at this
  * composed script's TOP LEVEL (visible to the `review-reply.cjs` block and the postlude
- * concatenated after this file — driver/src/review-helpers.ts), is what short-circuits both: this
+ * concatenated after this file — driver/src/review/review-helpers.ts), is what short-circuits both: this
  * file emits the final ok:false envelope itself and neither the embedded review-reply.cjs nor the
  * postlude do anything further.
  */

@@ -5,8 +5,8 @@
  * outcome) — never a job, lease, pod, org or repo id. docs/telemetry.md.
  */
 
-import type { ExecDocker } from './docker-runner-support.js';
-import type { K8sMethod, K8sRequest } from './k8s-transport.js';
+import type { ExecDocker } from './docker/docker-runner-support.js';
+import type { K8sMethod, K8sRequest } from './k8s/k8s-transport.js';
 import { buckets, createRegistry, secondsSince, type Registry } from './prometheus.js';
 import type { ReaperObserver } from './reaper.js';
 import type { StepOutcome } from './step-control.js';

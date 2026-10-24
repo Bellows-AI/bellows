@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CREDENTIAL_HELPER, gitProbeScript, prSummaryScript, taskCheckoutScript } from '../src/publish.js';
+import { CREDENTIAL_HELPER, gitProbeScript, prSummaryScript, taskCheckoutScript } from '../src/publish/publish.js';
 import { taskInitScript } from '../src/task-volume.js';
 import {
     BODY_MAX,
@@ -18,7 +18,7 @@ import {
     TRUNCATED_MARKER,
     reviewCollectScript,
     reviewReplyScript,
-} from '../src/review.js';
+} from '../src/review/review.js';
 import {
     bindingWriteScript,
     checkpointRestoreScript,
@@ -33,7 +33,7 @@ import {
     serviceGenerationProbeScript,
 } from '../src/container-scripts.js';
 import { HELPER_REGISTRY } from '../src/helpers.js';
-import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
 import { SCRIPTS_DIR, pathOf } from './fixtures/scripts-support.js';
 
 /**
@@ -146,7 +146,7 @@ describe('the container scripts', () => {
     });
 
     // The github-review-reconcile block's two helpers (issue #133) are COMPOSED bodies, never a
-    // single file's content — driver/src/review-helpers.ts assembles each from real adapter files
+    // single file's content — driver/src/review/review-helpers.ts assembles each from real adapter files
     // plus the unmodified review-collect.cjs/review-reply.cjs, joined with the bare `{ }` blocks
     // that keep the embedded script's own top-level names from colliding with the adapter's own.
     // This pin is on the ASSEMBLY, not just the pieces: a byte drift in either adapter file, or in

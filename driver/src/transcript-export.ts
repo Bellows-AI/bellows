@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import type { DriverConfig } from './config.js';
 import { transcriptDir } from './claim.js';
 import { CLAUDE_CODE } from './executors.js';

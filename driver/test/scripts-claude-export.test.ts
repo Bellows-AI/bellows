@@ -61,6 +61,8 @@ interface Harness {
     /** The directory shared with the supervisor, and what the exporter wrote there last. */
     exportDir: string;
     status: () => ExporterStatus | null;
+    /** The offset the exporter has saved as acknowledged for one session; 0 until it has saved any. */
+    savedAck: (session: string) => number;
     close: () => void;
     /** The control endpoint goes away: the board, and the driver in front of it, are unreachable. */
     stopServer: () => void;
@@ -141,6 +143,14 @@ async function harness(): Promise<Harness> {
         // The supervisor's drain order: a file in the directory only it and the exporter mount.
         drain: (state, cause) => writeFileSync(join(exportDir, 'drain.json'), JSON.stringify({ state, cause })),
         exportDir,
+        savedAck: (session) => {
+            try {
+                const state = JSON.parse(readFileSync(join(dir, 'export-state', `${session}.json`), 'utf8'));
+                return typeof state?.acked === 'number' ? state.acked : 0;
+            } catch {
+                return 0;
+            }
+        },
         status: () => {
             try {
                 return JSON.parse(readFileSync(join(exportDir, 'status.json'), 'utf8')) as ExporterStatus;
@@ -335,7 +345,7 @@ describe('the continuous claude-code exporter', () => {
         // An earlier exporter ran, uploaded the session and saved its state.
         const first = h.start();
         await until('the earlier records', () => h.stored(SESSION).length === Buffer.byteLength(earlier));
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await until('the earlier records acknowledged', () => h.savedAck(SESSION) === Buffer.byteLength(earlier));
         const gone = new Promise((resolve) => first.on('close', resolve));
         first.kill('SIGKILL');
         await gone;
@@ -369,6 +379,9 @@ describe('the continuous claude-code exporter', () => {
             const acked = records(5);
             writeFileSync(file, acked);
             await until('the first records', () => h.stored(SESSION).length === Buffer.byteLength(acked));
+            // The board holding them is not the exporter having acknowledged them: a kill before the
+            // exporter saves its ack leaves them unacknowledged, and the next one sends them again.
+            await until('the first records acknowledged', () => h.savedAck(SESSION) === Buffer.byteLength(acked));
             h.board.down = true;
             const unacked = `${records(7, 5)}{"n":12,"cut mid-wri`;
             appendFileSync(file, unacked);

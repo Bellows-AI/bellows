@@ -180,7 +180,7 @@ spec:
         Issue #773. A declared service is a sidecar of the task pod, reached on the pod's own
         loopback by its name: `hostAliases` may point nowhere else, or a name the agent dials could
         be sent off the pod. Only a restartable init container may be a `svc-` service, and the
-        restartable ones are the gate, the reviewer and the services, nothing else (driver/src/k8s-podspec.ts).
+        restartable ones are the gate, the reviewer and the services, nothing else (driver/src/k8s/k8s-podspec.ts).
         */}}
         - expression: >-
               !has(variables.spec.hostAliases) || variables.spec.hostAliases.all(h, h.ip == '127.0.0.1')

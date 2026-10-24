@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { createBoard, type VerdictEvidence } from '../src/board.js';
-import { BoardHttpError } from '../src/board-retry.js';
+import { createBoard, type VerdictEvidence } from '../src/board/board.js';
+import { BoardHttpError } from '../src/board/board-retry.js';
 import { COMPLETE_BODY_LIMIT_BYTES } from '../src/verdict-budget.js';
 import { boardJob } from './fixtures/board-job.js';
 
@@ -761,7 +761,7 @@ describe('the complete verdict: the request budget', () => {
     const note = '\n[driver] published fix/1 — https://github.com/o/r/pull/1';
 
     it('is the route limit the board enforces', () => {
-        const limits = readFileSync(new URL('../../server/src/routes/job-limits.ts', import.meta.url), 'utf8');
+        const limits = readFileSync(new URL('../../server/src/routes/jobs/job-limits.ts', import.meta.url), 'utf8');
         expect(limits).toContain('const BODY_LIMIT_KIB = 128;');
         expect(COMPLETE_BODY_LIMIT_BYTES).toBe(128 * 1024);
     });
@@ -861,7 +861,7 @@ describe('the staged conclusion', () => {
     });
 
     it('is a route limit the board leaves room for beside complete’s', () => {
-        const limits = readFileSync(new URL('../../server/src/routes/job-limits.ts', import.meta.url), 'utf8');
+        const limits = readFileSync(new URL('../../server/src/routes/jobs/job-limits.ts', import.meta.url), 'utf8');
         expect(limits).toContain('export const CONCLUSION_BODY_LIMIT = BODY_LIMIT + CONTROL_BODY_LIMIT;');
     });
 

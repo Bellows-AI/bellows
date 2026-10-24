@@ -2,14 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { EvidencePolicy, RecordedEvidence } from '../src/db/evidence-policy.js';
-import { createJobStore } from '../src/db/job-store.js';
-import { STAGED_COMMIT_REASON } from '../src/db/job-store-conclusions.js';
-import { reviewRefOf } from '../src/db/job-store-reviews.js';
-import type { Claim, CreateJobStoreDeps, JobStore, ReviewerSpec } from '../src/db/job-store-types.js';
-import { createWorkflowStore } from '../src/db/workflow-store.js';
-import type { WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import { STAGED_COMMIT_REASON } from '../src/db/jobs/job-store-conclusions.js';
+import { reviewRefOf } from '../src/db/jobs/job-store-reviews.js';
+import type { Claim, CreateJobStoreDeps, JobStore, ReviewerSpec } from '../src/db/jobs/job-store-types.js';
+import { createWorkflowStore } from '../src/db/workflows/workflow-store.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { useTestDb } from './harness.js';
-import { fingerprintOf } from '../src/db/job-store-receipts.js';
+import { fingerprintOf } from '../src/db/jobs/job-store-receipts.js';
 import {
     account,
     expectStillLocked,

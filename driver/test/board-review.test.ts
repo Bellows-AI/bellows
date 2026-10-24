@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type BoardJob, createBoard } from '../src/board.js';
+import { type BoardJob, createBoard } from '../src/board/board.js';
 import { boardJob } from './fixtures/board-job.js';
 
 /** The board client's review calls (issue #549) and how a claim's `reviewRun` arrives. */

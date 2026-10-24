@@ -5,10 +5,10 @@
  * Authored here, in the test tree — the board no longer ships a code-owned default workflow.
  */
 import { randomUUID } from 'node:crypto';
-import { validateDefinition } from '../src/db/workflow-schema-validate.js';
-import type { AuthoredWorkflowDefinition, WorkflowDefinition } from '../src/db/workflow-schema.js';
-import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflow-blocks/index.js';
-import { REVIEW_MARKERS } from '../src/db/workflow-blocks/github-review-reconcile.js';
+import { validateDefinition } from '../src/db/workflows/workflow-schema-validate.js';
+import type { AuthoredWorkflowDefinition, WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
+import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflows/workflow-blocks/index.js';
+import { REVIEW_MARKERS } from '../src/db/workflows/workflow-blocks/github-review-reconcile.js';
 import { gateFixPrompt } from '../test/fix-issue-workflow.js';
 
 export const GATE_FIX_WORKFLOW_NAME = 'gate-fix-loop';

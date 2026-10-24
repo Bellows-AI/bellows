@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob, ReviewClaim } from '../src/board.js';
+import type { BoardJob, ReviewClaim } from '../src/board/board.js';
 import { RESERVED_ENV_NAMES } from '../src/claim.js';
-import { reviewBudgetMs } from '../src/review-step.js';
-import type { PublishStep } from '../src/publish.js';
+import { reviewBudgetMs } from '../src/review/review-step.js';
+import type { PublishStep } from '../src/publish/publish.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
-import { gitReviewSnapshotScript, reviewRefOf, snapshotTree } from '../src/review-snapshot.js';
+import { gitReviewSnapshotScript, reviewRefOf, snapshotTree } from '../src/review/review-snapshot.js';
 
 /** The review snapshot step and the claim rules a named reviewer's run follows (issue #549). */
 

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isBlockRuntimeId, parseRuntimeParams, runtimeIsValid } from '../src/db/workflow-blocks/runtime.js';
-import type { WorkflowNode } from '../src/db/workflow-schema.js';
+import {
+    isBlockRuntimeId,
+    parseRuntimeParams,
+    runtimeIsValid,
+} from '../src/db/workflows/workflow-blocks/runtime-params.js';
+import type { WorkflowNode } from '../src/db/workflows/workflow-schema.js';
 
 /**
  * The runtime dispatcher's pure half (issue #231): the allowlist and the params parser, exercised

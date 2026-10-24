@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { type PublishStep, publishCheckout } from '../src/publish.js';
+import type { BoardJob } from '../src/board/board.js';
+import { type PublishStep, publishCheckout } from '../src/publish/publish.js';
 import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 
 /**

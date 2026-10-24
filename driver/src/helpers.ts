@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseLastJsonLine } from './json-parse.js';
-import { REVIEW_HELPER_DESCRIPTORS } from './review-helpers.js';
+import { REVIEW_HELPER_DESCRIPTORS } from './review/review-helpers.js';
 
 /**
  * The generic block-helper transport (issue #207): one allowlisted, board-owned script an
@@ -144,7 +144,7 @@ const MERGE_CONFLICT_PROBE_SCRIPT = script('merge-conflict-probe.cjs');
  * The shipped descriptors: `noop` is a fixture that echoes its bounded input back as its output,
  * proving the transport (argv/env secrecy, output parsing, cleanup, failure semantics) without any
  * real board-owned side effect. `merge-conflict-probe` is the first real one (issue #122's
- * merge-conflict-autofix block, `server/src/db/workflow-blocks/merge-conflict-autofix.ts`) —
+ * merge-conflict-autofix block, `server/src/db/workflows/workflow-blocks/merge-conflict-autofix.ts`) —
  * registered here exactly the same way, additive to the transport #207 shipped.
  */
 const DESCRIPTORS: readonly HelperDescriptor[] = [
@@ -163,7 +163,7 @@ const DESCRIPTORS: readonly HelperDescriptor[] = [
         outputCapBytes: MERGE_CONFLICT_PROBE_OUTPUT_CAP_BYTES,
     },
     // The github-review-reconcile block's own helpers (issue #133), registered the same additive
-    // way — driver/src/review-helpers.ts owns their script assembly and caps.
+    // way — driver/src/review/review-helpers.ts owns their script assembly and caps.
     ...REVIEW_HELPER_DESCRIPTORS,
 ];
 

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { readBody, respondJson } from './http.js';
-import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish-control.js';
+import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish/publish-control.js';
 import {
     type CheckpointRelay,
     type ExportRelay,
@@ -12,7 +12,7 @@ import {
 } from './export-control.js';
 import { createStepBroker, serveReport, serveStepPoll, serveStepResult, type StepBroker } from './step-control.js';
 import { REPORT_PATH, STEP_PATH } from './supervisor-contract.js';
-import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review-control.js';
+import { REVIEW_BODY_LIMIT, type ReviewRelay, serveReviewRead, serveReviewRequest } from './review/review-control.js';
 import {
     cancelPendingQuestions,
     type ControlEntry,
