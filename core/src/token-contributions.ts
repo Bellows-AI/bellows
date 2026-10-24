@@ -60,6 +60,7 @@ export type ContributionReason =
     | 'unspecified-temporality'
     | 'mixed-temporality'
     | 'null-session'
+    | 'legacy-series-ambiguous'
     | 'source-suppressed'
     | 'unknown-model'
     | 'unknown-query-source';
@@ -87,6 +88,7 @@ export const UNKNOWN_BUCKET = 'unknown';
 const MODEL_ATTR = 'model';
 const QUERY_SOURCE_ATTR = 'query_source';
 const SESSION_ATTR = 'session.id';
+const SERIES_ATTR = 'series';
 const TYPE_ATTR = 'type';
 const LONG_CONTEXT_SUFFIX = '[1m]';
 
@@ -204,11 +206,11 @@ function splitBySource(observations: readonly TokenObservation[]): {
     return { selected, suppressed };
 }
 
-function reduceCumulative(series: readonly TokenObservation[], out: TokenContribution[]): void {
+/** `key` is the group's series: a folded legacy reading reports the digest series it joined. */
+function reduceCumulative(key: SeriesKey, series: readonly TokenObservation[], out: TokenContribution[]): void {
     let highWater: number | null = null;
     let highWaterAt = '';
     for (const o of series) {
-        const key = seriesKeyOf(o);
         if (highWater === null) {
             highWater = o.value;
             highWaterAt = o.time;
@@ -296,6 +298,59 @@ function reduceSuppressed(o: TokenObservation): TokenContribution {
     });
 }
 
+/** The series identity with the ingest `series` digest left out: what a pre-digest (legacy) row can match on. */
+function foldIdOf(o: TokenObservation): string {
+    const { [SERIES_ATTR]: _digest, ...rest } = o.attrs;
+    return seriesId({ ...seriesKeyOf(o), attrsKey: canonicalAttrs(rest) });
+}
+
+const hasDigest = (o: TokenObservation): boolean => o.attrs[SERIES_ATTR] !== undefined;
+
+/**
+ * Rows stored before the ingest digest carry no `series`; a counter live across that deploy has both
+ * kinds. A legacy series folds into the one digest series equal in every other component (one counter,
+ * never counted twice); with none it stands alone; with several it is ambiguous and never added.
+ * The verdict depends on the siblings in the observations given: a sibling first seen after the
+ * window can turn a fold into ambiguous in a later query — never into a double count.
+ */
+function groupCumulative(cumulative: readonly TokenObservation[]): {
+    groups: Map<string, { key: SeriesKey; series: TokenObservation[] }>;
+    ambiguous: TokenObservation[];
+} {
+    const siblings = new Map<string, Map<string, SeriesKey>>();
+    for (const o of cumulative.filter(hasDigest)) {
+        const fold = foldIdOf(o);
+        const key = seriesKeyOf(o);
+        const found = siblings.get(fold) ?? new Map<string, SeriesKey>();
+        siblings.set(fold, found.set(seriesId(key), key));
+    }
+    const groups = new Map<string, { key: SeriesKey; series: TokenObservation[] }>();
+    const ambiguous: TokenObservation[] = [];
+    for (const o of cumulative) {
+        const found = hasDigest(o) ? undefined : siblings.get(foldIdOf(o));
+        if (found && found.size > 1) {
+            ambiguous.push(o);
+            continue;
+        }
+        const [id, key] = found ? [...found][0]! : [seriesId(seriesKeyOf(o)), seriesKeyOf(o)];
+        const group = groups.get(id);
+        if (group) group.series.push(o);
+        else groups.set(id, { key, series: [o] });
+    }
+    return { groups, ambiguous };
+}
+
+function reduceAmbiguousLegacy(o: TokenObservation): TokenContribution {
+    return build(o, seriesKeyOf(o), {
+        kind: 'unresolved',
+        precision: 'unlocated',
+        observedAt: o.time,
+        support: null,
+        tokens: tokensOf(o.field, o.value),
+        reasons: ['legacy-series-ambiguous'],
+    });
+}
+
 const mixKeyOf = (k: SelectionKey & { field: TokenType }): string => JSON.stringify([k.agent, k.sessionId, k.field]);
 
 /**
@@ -307,7 +362,7 @@ const mixKeyOf = (k: SelectionKey & { field: TokenType }): string => JSON.string
 export function reduceTokenObservations(observations: readonly TokenObservation[]): TokenContribution[] {
     const { selected, suppressed } = splitBySource(sortObservations(validate(observations)));
     const out: TokenContribution[] = [];
-    const cumulative = new Map<string, TokenObservation[]>();
+    const cumulative: TokenObservation[] = [];
     const temporalities = new Map<string, Set<TokenTemporality>>();
 
     for (const o of selected) {
@@ -317,12 +372,11 @@ export function reduceTokenObservations(observations: readonly TokenObservation[
             out.push(reducePoint(o));
             continue;
         }
-        const id = seriesId(seriesKeyOf(o));
-        const series = cumulative.get(id);
-        if (series) series.push(o);
-        else cumulative.set(id, [o]);
+        cumulative.push(o);
     }
-    for (const series of cumulative.values()) reduceCumulative(series, out);
+    const { groups, ambiguous } = groupCumulative(cumulative);
+    for (const { key, series } of groups.values()) reduceCumulative(key, series, out);
+    out.push(...ambiguous.map(reduceAmbiguousLegacy));
 
     for (const c of out) {
         const seen = temporalities.get(mixKeyOf(c.series));

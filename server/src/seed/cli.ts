@@ -140,7 +140,7 @@ try {
             start_time: null,
             time: mid,
             // The disambiguating attribute is not decoration. Four token fields share one metric
-            // name, and metric_point_dedup is (metric, session_id, time, source, md5(attrs)) — so
+            // name, and metric_point_dedup includes md5(attrs) (086_metric_point_identity.sql) — so
             // with an empty attrs object the four rows collide and three are silently dropped by
             // `on conflict do nothing`, leaving tokens_input populated and the other three null.
             // Real OTLP carries these, which is exactly why the dedup key can afford to.
