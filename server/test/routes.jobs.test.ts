@@ -108,6 +108,7 @@ interface StoreStub extends JobStore {
         evidence: unknown;
     }[];
     sessions: { id: string; sessionId: string | null }[];
+    sessionEvidence: unknown[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     interrupted: { id: string; interruption: { reason: string; release: boolean; claimSeq?: number | null } }[];
@@ -230,6 +231,7 @@ function stubStore(
         commands: [],
         completed: [],
         sessions: [],
+        sessionEvidence: [],
         progressed: [],
         suspended: [],
         interrupted: [],
@@ -396,9 +398,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
-        async session(id, _token, sessionId) {
+        async session(id, _token, sessionId, evidence) {
             boom();
             stub.sessions.push({ id, sessionId });
+            stub.sessionEvidence.push(evidence);
             return options.verdict ?? 'ok';
         },
         async progress(id: string, _token: string, output: string, runtime: RuntimeVitals | null) {
@@ -1515,6 +1518,20 @@ describe('POST /api/jobs/:id/session', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION }]);
+    });
+
+    it('passes the reported agent and launch evidence on, defaulting to neither', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const path = `/api/jobs/${ID}/session`;
+
+        await post(instance, path, { leaseToken: TOKEN, sessionId: SESSION, agent: 'claude-code', observed: true });
+        await post(instance, path, { leaseToken: TOKEN, sessionId: SESSION, agent: 'martian', observed: 'yes' });
+
+        expect(store.sessionEvidence).toEqual([
+            { agent: 'claude-code', observed: true },
+            { agent: null, observed: false },
+        ]);
     });
 
     /**
