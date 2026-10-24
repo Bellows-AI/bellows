@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflow-blocks/index.js';
-import type { AuthoredWorkflowDefinition, BlockConfigValue } from '../src/db/workflow-schema.js';
+import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflows/workflow-blocks/index.js';
+import type { AuthoredWorkflowDefinition, BlockConfigValue } from '../src/db/workflows/workflow-schema.js';
 
 /**
  * The `builtin/merge-conflict-autofix` block's own expansion (issue #122) — what

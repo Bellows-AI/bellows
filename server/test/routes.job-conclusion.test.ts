@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../src/app.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobConclusionStore } from '../src/db/jobs/job-store-conclusions.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
+import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';
 import { trackApps } from './helpers-http.js';
-import { staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import { staticRegistry, stubTelemetryClient, testConfig, jobStoreSlice } from './helpers.js';
 
 /**
  * Issue #821 (D1): `POST /api/jobs/:id/conclusion` stages the attempt's final envelope under its
@@ -15,7 +18,12 @@ const track = trackApps();
 const ID = '11111111-1111-4111-8111-111111111111';
 const TOKEN = '22222222-2222-4222-8222-222222222222';
 
-type Staged = { id: string; leaseToken: string; result: Parameters<JobStore['complete']>[2]; leaseSeconds: number };
+type Staged = {
+    id: string;
+    leaseToken: string;
+    result: Parameters<JobWorkerStore['complete']>[2];
+    leaseSeconds: number;
+};
 type Answer = 'ok' | 'lost' | 'missing' | 'conflict';
 
 function stubStore(answer: Answer = 'ok'): JobStore & { staged: Staged[]; completed: Staged['result'][] } {
@@ -23,20 +31,21 @@ function stubStore(answer: Answer = 'ok'): JobStore & { staged: Staged[]; comple
     const completed: Staged['result'][] = [];
     const settled = async () =>
         answer === 'ok' ? { result: 'ok' as const, status: 'queued' as const } : { result: answer };
-    return {
-        staged,
-        completed,
-        async stageConclusion(id: string, leaseToken: string, result: Staged['result'], leaseSeconds: number) {
-            staged.push({ id, leaseToken, result, leaseSeconds });
-            return { result: answer };
-        },
-        async complete(_id: string, _token: string, result: Staged['result']) {
-            completed.push(result);
-            return answer === 'ok' ? { result: 'ok', threadDone: false, reclaimId: null } : { result: answer };
-        },
-        suspend: settled,
-        interrupt: settled,
-    } as unknown as JobStore & { staged: Staged[]; completed: Staged['result'][] };
+    return Object.assign(
+        jobStoreSlice<JobConclusionStore & JobWorkerStore & JobActionStore>({
+            async stageConclusion(id: string, leaseToken: string, result: Staged['result'], leaseSeconds: number) {
+                staged.push({ id, leaseToken, result, leaseSeconds });
+                return { result: answer };
+            },
+            async complete(_id: string, _token: string, result: Staged['result']) {
+                completed.push(result);
+                return answer === 'ok' ? { result: 'ok', threadDone: false, reclaimId: null } : { result: answer };
+            },
+            suspend: settled,
+            interrupt: settled,
+        }),
+        { staged, completed }
+    );
 }
 
 async function harnessWith(jobs: JobStore): Promise<FastifyInstance> {

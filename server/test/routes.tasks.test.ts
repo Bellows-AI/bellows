@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { JobStore, TaskListFilters, TaskListResponse, TaskSummary } from '../src/db/job-store-types.js';
+import type { JobStore, TaskListFilters, TaskListResponse, TaskSummary } from '../src/db/jobs/job-store-types.js';
 import { encodeCursor } from '../src/db/task-summary.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import { HTTP_BAD_REQUEST, HTTP_OK, HTTP_SERVICE_UNAVAILABLE, trackApps } from './helpers-http.js';

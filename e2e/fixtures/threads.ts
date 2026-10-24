@@ -1,8 +1,8 @@
 /**
  * Task threads shaped like the board's own `GET /api/jobs/:id/thread` payload — every field
- * `toJob()` (server/src/db/job-store-rows.ts) writes, in its order, spelled the way it spells
+ * `toJob()` (server/src/db/jobs/job-store-rows.ts) writes, in its order, spelled the way it spells
  * them (ISO stamps with milliseconds, the wait triple on every member of the thread, as
- * `threadOf()` in server/src/db/job-store-reads.ts reads it). The seed only writes succeeded
+ * `threadOf()` in server/src/db/jobs/job-store-reads.ts reads it). The seed only writes succeeded
  * jobs, so every other state a spec needs lives here instead of in an ad-hoc `page.route` object.
  *
  * `task-detail.spec.ts` seeds `nullAuthorThread` into the real board and asserts the thread
@@ -51,7 +51,7 @@ export interface ThreadPublication {
     baseBranch: string;
 }
 
-/** One AskUserQuestion call of a run (`JobQuestion` in server/src/db/job-store-types.ts). */
+/** One AskUserQuestion call of a run (`JobQuestion` in server/src/db/jobs/job-store-types.ts). */
 export interface ThreadQuestion {
     id: string;
     attempt: number;
@@ -241,7 +241,7 @@ function thread(runs: ThreadJob[], wait: Wait = NO_WAIT): ThreadJob[] {
     }));
 }
 
-/** The line the driver appends to a run's output when a gate fails it (driver/src/loop-run.ts). */
+/** The line the driver appends to a run's output when a gate fails it (driver/src/loop/loop-run.ts). */
 const gateFailedLine = (gate: ThreadGate) =>
     `[driver] gate "${gate.name}" failed (exit ${gate.exitCode})\n${gate.output}`;
 

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { containerName } from '../src/docker.js';
+import { containerName } from '../src/docker/docker.js';
 import { serviceContainerName } from '../src/services.js';
-import type { BoardJob } from '../src/board.js';
-import { createDockerReaper, parseDockerCreatedAt } from '../src/docker-reaper.js';
-import type { ExecDocker } from '../src/docker-runner-support.js';
+import type { BoardJob } from '../src/board/board.js';
+import { createDockerReaper, parseDockerCreatedAt } from '../src/docker/docker-reaper.js';
+import type { ExecDocker } from '../src/docker/docker-runner-support.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
 
 /**
@@ -31,13 +31,22 @@ const psLine = (fields: { id: string; jobId: string; lease: string; created: str
     JSON.stringify({
         ID: fields.id,
         Names: 'factory-svc',
-        Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.service=${fields.service ?? 'postgres'}`,
+        Labels: `factory.board=${BOARD},factory.job=${fields.jobId},factory.lease=${fields.lease},factory.service=${fields.service ?? 'postgres'}`,
         CreatedAt: fields.created,
         State: 'running',
         Image: 'postgres:16',
     });
 
-const PS_ARGS = ['ps', '-a', '--filter', 'label=factory.service', '--format', '{{json .}}'];
+const PS_ARGS = [
+    'ps',
+    '-a',
+    '--filter',
+    'label=factory.service',
+    '--filter',
+    `label=factory.board=${BOARD}`,
+    '--format',
+    '{{json .}}',
+];
 
 const router = (answers: string[][]): { execDocker: ExecDocker; calls: string[][] } => {
     const calls: string[][] = [];
@@ -113,7 +122,7 @@ describe('the docker reaper arm: scan', () => {
                 JSON.stringify({
                     ID: hexId('runner'),
                     Names: 'factory-runner',
-                    Labels: `factory.job=${JOB},factory.lease=${LEASE}`,
+                    Labels: `factory.board=${BOARD},factory.job=${JOB},factory.lease=${LEASE}`,
                     CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
                 }),
                 // Unlabelled junk.
@@ -133,7 +142,16 @@ describe('the docker reaper arm: scan', () => {
         // job+lease volumes, neither of which this daemon holds.
         expect(calls).toEqual([
             PS_ARGS,
-            ['ps', '-a', '--filter', 'label=factory.role', '--format', '{{json .}}'],
+            [
+                'ps',
+                '-a',
+                '--filter',
+                'label=factory.role',
+                '--filter',
+                `label=factory.board=${BOARD}`,
+                '--format',
+                '{{json .}}',
+            ],
             [
                 'volume',
                 'ls',
@@ -141,6 +159,8 @@ describe('the docker reaper arm: scan', () => {
                 'label=factory.job',
                 '--filter',
                 'label=factory.lease',
+                '--filter',
+                `label=factory.board=${BOARD}`,
                 '--format',
                 '{{json .}}',
             ],
@@ -177,7 +197,7 @@ describe('the docker reaper arm: a group’s gate container (issue #773)', () =>
         JSON.stringify({
             ID: id,
             Names: `factory-gate-${JOB}-${lease}`,
-            Labels: `factory.role=gate,factory.job=${JOB},factory.lease=${lease}`,
+            Labels: `factory.board=${BOARD},factory.role=gate,factory.job=${JOB},factory.lease=${lease}`,
             State: 'running',
             CreatedAt: OLD,
         });
@@ -284,14 +304,14 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
         JSON.stringify({
             ID: fields.id,
             Names: fields.name,
-            Labels: `factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}`,
+            Labels: `factory.board=${BOARD},factory.job=${fields.jobId},factory.lease=${fields.lease},factory.role=${fields.role}`,
             CreatedAt: OLD,
             State: fields.state,
         });
     const volumeLine = (name: string, jobId: string, lease: string) =>
         JSON.stringify({
             Name: name,
-            Labels: `factory.job=${jobId},factory.lease=${lease}`,
+            Labels: `factory.board=${BOARD},factory.job=${jobId},factory.lease=${lease}`,
         });
 
     /** A daemon holding role-labelled containers and job+lease volumes; `refuse` names one verb to refuse. */
@@ -449,7 +469,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             JSON.stringify({
                 ID: 'a1a1a1a1a1a1',
                 Names: 'x',
-                Labels: `factory.role=agent,factory.job=${JOB},factory.lease=corrupt`,
+                Labels: `factory.board=${BOARD},factory.role=agent,factory.job=${JOB},factory.lease=corrupt`,
                 State: 'exited',
                 CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
             }),
@@ -459,7 +479,7 @@ describe('the docker reaper arm: task groups (#821 D16)', () => {
             JSON.stringify({
                 ID: 'a1a1a1a1a1a1',
                 Names: 'x',
-                Labels: `factory.role=agent,factory.job=${JOB},factory.lease=${LEASE}`,
+                Labels: `factory.board=${BOARD},factory.role=agent,factory.job=${JOB},factory.lease=${LEASE}`,
                 CreatedAt: '2026-09-01 00:00:00 +0000 UTC',
             }),
         ],
@@ -576,7 +596,7 @@ describe('the docker reaper arm: a live job’s task group is the fence’s (#82
         JSON.stringify({
             ID: hexId('agent-old'),
             Names: containerName({ id: JOB, leaseToken: LEASE } as BoardJob),
-            Labels: `factory.job=${JOB},factory.lease=${LEASE},factory.role=agent`,
+            Labels: `factory.board=${BOARD},factory.job=${JOB},factory.lease=${LEASE},factory.role=agent`,
             CreatedAt: OLD,
             State: 'running',
         }),

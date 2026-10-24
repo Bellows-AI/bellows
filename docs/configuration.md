@@ -11,7 +11,7 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
 | `DATABASE_URL`, disposable-database refusal | `server/src/config.ts` | `server/test/config.persistence.test.ts` |
 | `TASK_VOLUME_TTL_MS`, `TASK_VOLUME_BOUND_MS` (chart `taskVolume.{ttlMs,boundMs}`): how long the reaper keeps an idle thread's task volume ([workspace.md](workspace.md)) | `driver/src/config.ts`, `charts/factory/templates/driver-deployment.yaml` | `driver/test/config.test.ts`, `scripts/test-k8s.sh` |
 | `ADMISSION_MAX_RUNNING`, `_PER_ORG`, `_PER_REPO` (chart `dashboard.admission.*`): unset is unlimited ([jobs.md](jobs.md)) | `server/src/config.ts`, `charts/factory/templates/deployment.yaml` | `server/test/config.admission.test.ts`, `scripts/test-k8s.sh` |
-| `ARTIFACTS_BACKEND` (`s3`, or `filesystem` by default), `ARTIFACTS_FS_ROOT`, `ARTIFACTS_S3_{BUCKET,REGION,ENDPOINT,FORCE_PATH_STYLE,PREFIX,KMS_KEY_ID}`, `ARTIFACTS_ACCESS_KEY_ID` / `ARTIFACTS_SECRET_ACCESS_KEY`, `ARTIFACTS_RETENTION_DAYS`, `ARTIFACTS_ORG_QUOTA_BYTES`; the chart's `artifacts:` values render to them | `server/src/artifacts/config.ts`, `charts/factory/values.yaml`, `charts/factory/templates/deployment.yaml` | `server/test/artifacts.unit.test.ts`, `scripts/test-k8s.sh` |
+| `ARTIFACTS_BACKEND` (`s3`, or `filesystem` by default), `ARTIFACTS_FS_ROOT`, `ARTIFACTS_S3_{BUCKET,REGION,ENDPOINT,FORCE_PATH_STYLE,PREFIX,KMS_KEY_ID}`, `ARTIFACTS_ACCESS_KEY_ID` / `ARTIFACTS_SECRET_ACCESS_KEY`, `ARTIFACTS_RETENTION_DAYS`, `ARTIFACTS_ORG_QUOTA_BYTES`; the chart's `artifacts:` values render to them | `server/src/config-artifacts.ts`, `charts/factory/values.yaml`, `charts/factory/templates/deployment.yaml` | `server/test/artifacts.unit.test.ts`, `scripts/test-k8s.sh` |
 | S3 credentials: static keys, then EKS Pod Identity, then IRSA; the dashboard's own ServiceAccount carries the role | `server/src/artifacts/s3-credentials.ts`, `charts/factory/templates/dashboard-serviceaccount.yaml` | `server/test/artifacts.unit.test.ts`, `scripts/test-k8s.sh` |
 | Object store backends (S3 over a minimal SigV4 client, filesystem), bucket created on boot; compose's `s3` service (RustFS) is the dev store | `server/src/artifacts/s3-store.ts`, `fs-store.ts`, `backend.ts`, `docker-compose.yml` | `server/test/artifacts.object-store.test.ts` |
 | The credential-free entry point | `server/src/offline.ts` | `server/test/routes.repos.test.ts` |
@@ -40,7 +40,7 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
   `server/test/artifacts.object-store.test.ts`, `server/test-db/artifact-store.test.ts`.
 - **`GITHUB_API_URL` and `GITHUB_OAUTH_*_URL` are test seams, undocumented on purpose**; `server/src/main.ts`
   warns when the API URL is not `api.github.com`, and `playwright.config.ts` points them at `e2e/stub-idp.mjs`.
-- **Never log the merged environment** — it holds the App private key. `driver/test/loop.test.ts` pins the
+- **Never log the merged environment** — it holds the App private key. `driver/test/loop/` pins the
   driver's side.
 
 ## Stated limits

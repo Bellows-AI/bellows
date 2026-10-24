@@ -1,7 +1,7 @@
 import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import { UUID } from '../config.js';
+import { UUID } from '../identifiers.js';
 import type { ConnectionAccess } from '../db/connection-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, body as jsonBody, guard } from './helpers.js';

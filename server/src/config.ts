@@ -1,20 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { loadArtifactsConfig, type ArtifactsConfig } from './artifacts/config.js';
+import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
     readonly owner: string;
     readonly name: string;
 }
-
-/**
- * "owner/name" — the form every repo identity takes in this system, and the key sessions are
- * scoped by.
- *
- * Next to the type rather than in `github/`, because `db/` and `routes/` need it too and reaching
- * into the GitHub adapter for a string join would be a layering inversion.
- */
-export const fullName = (repo: Repo): string => `${repo.owner}/${repo.name}`;
 
 /**
  * The credential the repo-read path uses, and the source of the repo list itself.
@@ -159,12 +150,12 @@ export interface AppConfig {
      * verifies, not the session machinery, so this does not live inside `[auth]`.
      */
     readonly webhookSecret: string | null;
-    /** Where task artifacts are stored (070); see `artifacts/config.ts`. */
+    /** Where task artifacts are stored (070); see `config-artifacts.ts`. */
     readonly artifacts: ArtifactsConfig;
     /**
      * The shared admission budgets every claim enforces (issue #831): the most rows running at once
      * across every org (ADMISSION_MAX_RUNNING), per org (ADMISSION_MAX_RUNNING_PER_ORG) and per repo
-     * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/job-store-admission.ts`.
+     * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/jobs/job-store-admission.ts`.
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
 }
@@ -179,24 +170,6 @@ const DEFAULT_TELEMETRY_TTL_SECONDS = 30;
  * fills it with synthetic agent sessions. Either would destroy or counterfeit real history.
  */
 const DISPOSABLE_DATABASE = /_(test|seed|synthetic|demo|e2e)$/;
-
-/**
- * The one organization AUTH_MODE=none has.
- *
- * With no GitHub sign-in there is nothing to derive an installation id from, so the offline and
- * local tooling — seed, verify:ui, test-jobs, the route tests — all live in this one partition.
- * Github mode never uses it: there the org ids are the installation ids GitHub reports.
- */
-export const LOCAL_ORG_ID = 'default';
-
-/**
- * A uuid, as `app_user.id` and `job.id` are.
- *
- * The shape of an identifier that ends up in a path, a URL and a shell command; both `routes/`
- * and `workspace/` legitimately depend on this module, where neither should depend on the other.
- * `driver/` keeps its own copy, deliberately: that package depends on nothing.
- */
-export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function databaseName(url: string): string | null {
     try {

@@ -200,7 +200,7 @@ const handOver = () => {
     ensureIdentity();
     synced(unmergedPaths());
 };
-// The kinds a deterministic refusal names (driver/src/publish.ts, SYNC_FAILURE_KINDS — a .cjs cannot
+// The kinds a deterministic refusal names (driver/src/publish/publish.ts, SYNC_FAILURE_KINDS — a .cjs cannot
 // import it, so the literals are pinned by scripts-task-checkout.test.ts): no retry fixes any of them.
 const KIND_BRANCH_UNRESTORABLE = 'branch_unrestorable';
 const KIND_MISSING_BASE_BRANCH = 'missing_base_branch';

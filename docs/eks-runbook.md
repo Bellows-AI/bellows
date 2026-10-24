@@ -122,8 +122,12 @@ would be the credential instead.
 
 ## 8. The failure matrix, no EFS
 
-The cloud half of `scripts/test-k8s.sh --phase acceptance`; not walked yet. `CLI` is
+The cloud half of `scripts/test-k8s.sh --phase acceptance`. `CLI` is
 `npm run dev -w cli --`, `NS` the release namespace, `T` a task id. Record each row's outcome in the header.
+
+Walked 2026-10-23 on a staging EKS deployment (v0.0.9-rc), runner nodes shared with other workloads:
+1–6 and 8 pass; 7 passes mid-run, during publish not walked; 9 not walked (#954); 10 survival passes,
+TTL expiry not walked. A runner pod lost during gates stalls the task until the step timeout (#967).
 
 1. No shared file system anywhere — every claim is the state DB's or a task's, none `ReadWriteMany`:
    `kubectl -n $NS get pvc -o custom-columns=NAME:.metadata.name,MODES:.spec.accessModes,CLASS:.spec.storageClassName`
@@ -133,7 +137,8 @@ The cloud half of `scripts/test-k8s.sh --phase acceptance`; not walked yet. `CLI
 3. Failure, retry, follow-up: a task that fails → `CLI job retry $T` succeeds; `CLI job follow-up $T …` on
    a succeeded one resumes its session on the same task claim (same `factory.task-root` claim, same generation).
 4. Agent kill, as the CLI's own uid (root holds no `CAP_KILL` there and would hit the tool broker):
-   `kubectl -n $NS exec <runner pod> -c agent -- /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups kill -KILL -1`
+   `kubectl -n $NS exec <runner pod> -c agent -- /usr/bin/setpriv --reuid=1000 --regid=1000 --clear-groups /bin/sh -c 'kill -KILL -1'`
+   (the image ships no `kill` binary)
    mid-run; confirm the agent container's CLI is gone. Observe the attempt
    ends with the agent killed, `CLI job retry $T` (or a follow-up) runs on the surviving task claim, and
    `CLI job read $T` holds every record the agent wrote before the kill.

@@ -2,9 +2,17 @@ import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ConnectionStore, ConnectionView, NewConnection } from '../src/db/connection-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
-import { githubAuth, memoryAuthStore, signedIn, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
+import {
+    githubAuth,
+    memoryAuthStore,
+    signedIn,
+    staticRegistry,
+    jobStoreSlice,
+    stubTelemetryClient,
+    testConfig,
+} from './helpers.js';
 import {
     HTTP_BAD_GATEWAY,
     HTTP_BAD_REQUEST,
@@ -75,12 +83,12 @@ async function boot() {
     const other = auth.seedMember('test-org', 'hubot');
     const connections = memoryConnections();
     const created: { connection: string | null | undefined }[] = [];
-    const jobs = {
+    const jobs = jobStoreSlice<JobActionStore>({
         async create(_command: string, _by: string | null, target: { jiraConnectionId?: string | null }) {
             created.push({ connection: target.jiraConnectionId });
             return { id: crypto.randomUUID() };
         },
-    } as unknown as JobStore;
+    });
     const config = testConfig({ auth: githubAuth() });
     const app = await buildApp({
         config,

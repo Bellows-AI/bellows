@@ -1,5 +1,5 @@
-import { UUID } from '../config.js';
-import type { JobStatus, TaskState } from './job-store-types.js';
+import { UUID } from '../identifiers.js';
+import type { JobStatus, TaskState } from './jobs/job-store-types.js';
 
 /**
  * The task read model's pure half: the terminal set and the cursor that pages `GET /api/tasks`.

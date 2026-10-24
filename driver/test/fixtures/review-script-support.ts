@@ -51,7 +51,7 @@ export const runScript = async (
 /**
  * Run an arbitrary script FILE (never a review script under `src/scripts/` by name) against the
  * stub `gh` — the github-review-reconcile block's composed helper bodies (issue #133,
- * `driver/src/review-helpers.ts`) are assembled strings, not files under `src/scripts/`, so their
+ * `driver/src/review/review-helpers.ts`) are assembled strings, not files under `src/scripts/`, so their
  * own suite writes one to a temp file first and hands the path here.
  */
 export const runSource = async (

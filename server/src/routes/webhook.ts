@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import type { AuthStore } from '../auth/store.js';
+import type { JobMergeStore } from '../db/jobs/job-store-merge.js';
 import type { OrgRegistry } from '../orgs.js';
 import { ERROR_CODES, JSON_CONTENT_TYPE } from '@factory-ai/core';
 
@@ -229,12 +230,13 @@ async function handlePrMerged(
     // The org is the installation the delivery addresses, exactly as the fold/cancel path
     // resolves it; a runtime without both stores (an older deployment, or no job store) acks.
     const runtime = await orgs.for(String(activity.installation));
-    if (runtime?.prs === undefined || runtime?.jobs === undefined) {
+    const merges: JobMergeStore | undefined = runtime?.jobs;
+    if (runtime?.prs === undefined || merges === undefined) {
         reply.code(HTTP_OK).send({ ok: true });
         return;
     }
 
-    await runtime.jobs.closeMergedPr(activity.repo, activity.number, activity.deliveryId);
+    await merges.closeMergedPr(activity.repo, activity.number, activity.deliveryId);
     reply.code(HTTP_OK).send({ ok: true });
 }
 

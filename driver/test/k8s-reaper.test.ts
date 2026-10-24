@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from '../src/labels.js';
-import { configmapsPath, podsPath, secretsPath } from '../src/k8s-auxspec.js';
-import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import { createKubernetesReaper } from '../src/k8s-reaper.js';
-import { holderPodsPath } from '../src/k8s-teardown.js';
-import { taskVolumesPath } from '../src/k8s-task-volume.js';
+import { configmapsPath, podsPath, secretsPath } from '../src/k8s/k8s-auxspec.js';
+import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
+import { createKubernetesReaper } from '../src/k8s/k8s-reaper.js';
+import { holderPodsPath } from '../src/k8s/k8s-teardown.js';
+import { taskVolumesPath } from '../src/k8s/k8s-task-volume.js';
 import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, boardIdentity } from '../src/task-volume.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { createReaper, type OrphanGroup } from '../src/reaper.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 

@@ -12,13 +12,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Readable } from 'node:stream';
 import { describe, expect } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { containerName } from '../src/docker.js';
-import { supervisorName } from '../src/docker-mailbox.js';
-import { createDockerReaper } from '../src/docker-reaper.js';
-import type { ExecDocker } from '../src/docker-runner-support.js';
-import { createDockerRunner } from '../src/docker-runner.js';
+import { containerName } from '../src/docker/docker.js';
+import { supervisorName } from '../src/docker/docker-mailbox.js';
+import { createDockerReaper } from '../src/docker/docker-reaper.js';
+import type { ExecDocker } from '../src/docker/docker-runner-support.js';
+import { createDockerRunner } from '../src/docker/docker-runner.js';
 import { createReaper } from '../src/reaper.js';
 import { commandMark } from '../src/runner.js';
 import { forgetDeclaredServices, recordDeclaredServices } from '../src/services.js';
@@ -203,7 +203,7 @@ const psRow = (pair: BoardJob, id: string, fields: { label: string; name?: strin
     JSON.stringify({
         ID: id,
         Names: fields.name ?? id,
-        Labels: `factory.job=${pair.id},factory.lease=${pair.leaseToken},${fields.label}`,
+        Labels: `factory.board=${BOARD},factory.job=${pair.id},factory.lease=${pair.leaseToken},${fields.label}`,
         CreatedAt: fields.created,
         State: fields.state,
         Image: 'postgres:17',
@@ -233,7 +233,7 @@ function reaperDaemon(pair: BoardJob, alias: Alias, created: { ps: string; volum
             }
             if (is(args, 'volume', 'ls')) {
                 return ok(
-                    `${JSON.stringify({ Name: mailbox, Labels: `factory.job=${pair.id},factory.lease=${pair.leaseToken}` })}\n`
+                    `${JSON.stringify({ Name: mailbox, Labels: `factory.board=${BOARD},factory.job=${pair.id},factory.lease=${pair.leaseToken}` })}\n`
                 );
             }
             if (is(args, 'volume', 'inspect')) return ok(`${created.volume}\n`);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { PublishStep } from '../src/publish.js';
-import { pushWithLease } from '../src/publish-stale.js';
+import type { PublishStep } from '../src/publish/publish.js';
+import { pushWithLease } from '../src/publish/publish-stale.js';
 
 const BRANCH = 'factory/a457474a-0191-492d-8cda-d52679466966';
 const REMOTE_SHA = '2c99ed1aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';

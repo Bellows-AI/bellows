@@ -1,4 +1,4 @@
-import type { ServiceStatus } from './board.js';
+import type { ServiceStatus } from './board/board.js';
 import {
     DEAD_SERVICE_STATES,
     Inconclusive,

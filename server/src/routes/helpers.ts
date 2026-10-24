@@ -1,6 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply } from 'fastify';
-import { fullName, type Repo } from '../config.js';
+import type { Repo } from '../config.js';
+import { fullName } from '../identifiers.js';
 import type { OrgRuntime } from '../orgs.js';
 
 const HTTP_UNAVAILABLE = 503;
@@ -8,7 +9,7 @@ const HTTP_UNAVAILABLE = 503;
 /**
  * The shapes every route here repeats.
  *
- * Extracted when `routes/workspace.ts` arrived and copied them out of `routes/jobs.ts` — at which
+ * Extracted when `routes/workspace.ts` arrived and copied them out of `routes/jobs/jobs.ts` — at which
  * point the 503 body existed in four places and would have drifted in one of them.
  */
 

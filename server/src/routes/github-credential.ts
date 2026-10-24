@@ -1,7 +1,7 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
-import { UUID } from '../config.js';
+import { UUID } from '../identifiers.js';
 import type { GithubCredentialOfLease } from '../db/github-credential.js';
 import type { MintedToken } from '../github/app-token.js';
 import { bad } from './helpers.js';

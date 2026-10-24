@@ -47,9 +47,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
-import type { BoardJob } from '../../src/board.js';
-import type { ExecDocker } from '../../src/docker-runner-support.js';
-import type { K8sRequest, K8sResponse } from '../../src/k8s-transport.js';
+import type { BoardJob } from '../../src/board/board.js';
+import type { ExecDocker } from '../../src/docker/docker-runner-support.js';
+import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import type { StepSink } from '../../src/step-control.js';
 import type { StepRequest, StepResult } from '../../src/supervisor-contract.js';
 

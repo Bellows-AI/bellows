@@ -79,7 +79,7 @@ interface QuestionWait {
  * run's live in-flight segment while it is still going (`running` is passed only then — a
  * finished run's stale start stamp would double-count a segment the board already banked). The
  * live segment excludes the time the run waited for an answer, as the board's banking does
- * (`server/src/db/job-store-rows.ts`, `wallTickFragment`). A dash where nothing has been banked
+ * (`server/src/db/jobs/job-store-rows.ts`, `wallTickFragment`). A dash where nothing has been banked
  * and nothing is going: null means "no clock", which is not zero. Pure, like `runDuration` — the
  * caller decides what "now" is, and the detail page's 2s poll is the ticker.
  */

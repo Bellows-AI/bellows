@@ -2,12 +2,12 @@
  * `runJob` driven directly, with no claim loop around it: the module's own contracts — the order in
  * which claim refusals are decided, how a checkout sync's answer becomes a verdict or a
  * fault, and what each way a run can end leaves on the board. The claim loop's behavior end to end
- * is `loop.test.ts`; the phase-boundary faults are `loop-phase-faults.test.ts`.
+ * is `loop/`; the phase-boundary faults are `loop-phase-faults.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { runJob } from '../src/loop-run.js';
-import type { SyncResult } from '../src/publish.js';
+import type { BoardJob } from '../src/board/board.js';
+import { runJob } from '../src/loop/loop-run.js';
+import type { SyncResult } from '../src/publish/publish.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { gatedJob, job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';

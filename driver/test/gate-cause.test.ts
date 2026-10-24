@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { gateCauseOf } from '../src/gate-cause.js';
-import { causeOf, ledgerOf } from '../src/loop-ledger.js';
+import { causeOf, ledgerOf } from '../src/loop/loop-ledger.js';
 
 const WORKER_TIMEOUT_ERROR = 'Error: [vitest-worker]: Timeout calling "onTaskUpdate" with "[]"';
 const passedSummary = (errors: number) =>

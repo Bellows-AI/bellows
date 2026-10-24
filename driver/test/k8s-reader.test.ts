@@ -4,12 +4,12 @@
  * volume: the group's pod is terminal, which a ReadWriteOncePod claim does not count.
  */
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { readViaReaderJob } from '../src/k8s-reader.js';
-import { jobsPath, runnerName } from '../src/k8s-podspec.js';
-import { jobPodsPath } from '../src/k8s-auxspec.js';
-import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s-transport.js';
+import { readViaReaderJob } from '../src/k8s/k8s-reader.js';
+import { jobsPath, runnerName } from '../src/k8s/k8s-podspec.js';
+import { jobPodsPath } from '../src/k8s/k8s-auxspec.js';
+import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { taskVolumeName } from '../src/task-volume.js';
 
 const NS = 'factory';

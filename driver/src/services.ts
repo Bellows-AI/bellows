@@ -12,8 +12,9 @@
  * Nothing here imports docker.ts, which imports this module: one direction only, so the argv
  * stays testable without a daemon and the modules cannot knot.
  */
+import { boardLabelArgs } from './docker/docker-mailbox.js';
 import { JOB_LABEL, LEASE_LABEL, SERVICE_LABEL } from './labels.js';
-import type { BoardJob, ServiceStatus } from './board.js';
+import type { BoardJob, ServiceStatus } from './board/board.js';
 import { type DriverConfig, gateAdvertiseUrlFor } from './config.js';
 
 /** One service of the claim's plan, as the board resolved it. `environment` preserves the file's order. */
@@ -49,7 +50,7 @@ export const groupServices = (config: Pick<DriverConfig, 'servicesEnabled'>, job
  * The container hardening flags (issue #382), COPIED from docker.ts rather than imported — the
  * same one-direction rule the mount string and the workspace-path regexes already follow (docker
  * imports services, never the reverse). The two spellings are pinned together in
- * driver/test/docker.test.ts, which asserts both modules' argv against one expectation, so a
+ * driver/test/docker/, which asserts both modules' argv against one expectation, so a
  * change to one that is not made to the other fails there rather than in a container.
  */
 const HARDENING_ARGS = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];
@@ -206,7 +207,7 @@ export function assertServiceSpec(job: BoardJob, spec: ServiceSpec): void {
  * daemon executing this argv is root on the host, and a published port is the one step from "a
  * service for my tests" to "a listener on somebody's machine".
  */
-export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string): string[] {
+export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string, board: string): string[] {
     assertServiceSpec(job, spec);
     const args = [
         'run',
@@ -215,6 +216,7 @@ export function serviceRunArgs(job: BoardJob, spec: ServiceSpec, holder: string)
         ...(spec.user ? ['--user', `${spec.user.uid}:${spec.user.gid}`] : []),
         '--name',
         serviceContainerName(job, spec.name),
+        ...boardLabelArgs(board),
         '--label',
         `${JOB_LABEL}=${job.id}`,
         '--label',

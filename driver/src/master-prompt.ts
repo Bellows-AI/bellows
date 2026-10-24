@@ -4,7 +4,7 @@
  * SAYS (server/src/db/master-prompt.ts); this file owns nothing about meaning — only how each CLI
  * is told it, which is why it is the one thing docker and kubernetes must build identically.
  */
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { agentPrompt } from './continuation.js';
 
 /** Mirrors the server's own cap (server/src/db/master-prompt.ts) — the driver's own backstop

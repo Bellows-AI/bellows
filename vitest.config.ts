@@ -1,31 +1,46 @@
+import { readFileSync } from 'node:fs';
 import { configDefaults, defineConfig } from 'vitest/config';
 
 /** Component suites driven through Testing Library under jsdom (`web/test/dom.tsx`). */
 const DOM_TESTS = 'web/test/**/*.dom.test.tsx';
 
+/** One project per package; the keys are the names `--project` takes. */
+const PACKAGE_TESTS: Record<string, string[]> = {
+    core: ['core/test/**/*.test.ts'],
+    server: ['server/test/**/*.test.ts'],
+    // Renders panels with react-dom/server, so no DOM and no browser is needed. `.test.ts` too:
+    // web/test holds non-component suites (executor config validation) a `.tsx`-only pattern dropped.
+    web: ['web/test/**/*.test.tsx', 'web/test/**/*.test.ts'],
+    // Every docker call and every board request is injected: offline, no daemon, no network.
+    driver: ['driver/test/**/*.test.ts'],
+    cli: ['cli/test/**/*.test.ts'],
+};
+const PACKAGES = Object.keys(PACKAGE_TESTS);
+
+/** Spawning files, pinned against the tree by `core/test/vitest-projects.test.ts`. */
+const SPAWN_TESTS: string[] = (
+    JSON.parse(readFileSync(new URL('./vitest.spawn-tests.json', import.meta.url), 'utf8')) as { tests: string[] }
+).tests;
+
 export default defineConfig({
     test: {
         projects: [
+            ...PACKAGES.map((name) => ({
+                extends: true,
+                test: {
+                    name,
+                    include: PACKAGE_TESTS[name],
+                    exclude: [...configDefaults.exclude, DOM_TESTS, ...SPAWN_TESTS],
+                },
+            })),
+            // Every file that spawns a real process (`vitest.spawn-tests.json`): git fixtures, shell
+            // scripts, biome, the lane harnesses. Slow and CPU-bound, so a package's
+            // in-process suites run without it; `npm test` runs it with the rest.
             {
                 extends: true,
                 test: {
-                    name: 'node',
-                    include: [
-                        'core/test/**/*.test.ts',
-                        'server/test/**/*.test.ts',
-                        // Every docker call and every board request is injected; the one suite that
-                        // spawns real processes (the branch reporter's node children, git fixtures,
-                        // loopback HTTP) still touches nothing but its own temp dirs — offline, no
-                        // daemon, no network.
-                        'driver/test/**/*.test.ts',
-                        'cli/test/**/*.test.ts',
-                        // Renders panels with react-dom/server, so no DOM and no browser is needed.
-                        'web/test/**/*.test.tsx',
-                        // `.test.ts` too: web/test holds non-component suites (executor config
-                        // validation) that a `.tsx`-only pattern silently dropped.
-                        'web/test/**/*.test.ts',
-                    ],
-                    exclude: [...configDefaults.exclude, DOM_TESTS],
+                    name: 'spawn',
+                    include: SPAWN_TESTS,
                 },
             },
             {
@@ -57,7 +72,7 @@ export default defineConfig({
             },
         },
         // The suite is spawn-heavy — real git fixtures, node children, loopback listeners, a
-        // tree-wide biome pass — and vitest's 5s default assumes a quiet box. Two runs sharing
+        // biome scan — and vitest's 5s default assumes a quiet box. Two runs sharing
         // one machine (an agent's suite beside the gate's) starve the workers enough to tip
         // tests that pass in isolation, and the failures rotated across files run to run.
         // 30s bounds a genuinely hung test while absorbing contention; hooks get the same

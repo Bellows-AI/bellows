@@ -4,8 +4,9 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ArtifactStore, Manifest, ManifestInput } from '../src/artifacts/artifact-store.js';
 import type { StreamRef } from '../src/artifacts/keys.js';
-import type { JobArtifactScope, JobStore } from '../src/db/job-store-types.js';
-import { UNATTRIBUTED_MEMBER } from '../src/routes/job-handlers-artifacts.js';
+import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
+import type { JobArtifactScope, JobStore } from '../src/db/jobs/job-store-types.js';
+import { UNATTRIBUTED_MEMBER } from '../src/routes/jobs/job-handlers-artifacts.js';
 import { trackApps } from './helpers-http.js';
 import { staticRegistry, testConfig } from './helpers.js';
 
@@ -22,7 +23,7 @@ const STREAM = 'log';
  * other method — a status, session, gates, verdict or publication write — would throw.
  */
 function scopeOnlyStore(scope: JobArtifactScope | null) {
-    const base = { artifactScope: async () => scope };
+    const base = { artifactScope: async () => scope } satisfies Partial<JobReadStore>;
     return new Proxy(base, {
         get(target, name) {
             if (name in target) return target[name as keyof typeof target];

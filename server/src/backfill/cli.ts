@@ -1,5 +1,6 @@
 import postgres from 'postgres';
-import { LOCAL_ORG_ID, resolveConfig } from '../config.js';
+import { resolveConfig } from '../config.js';
+import { LOCAL_ORG_ID } from '../identifiers.js';
 import { migrate } from '../db/migrate.js';
 import { parseArgs, value } from '../admin/args.js';
 import { backfillTranscripts } from './transcripts.js';

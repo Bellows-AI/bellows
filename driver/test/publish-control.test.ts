@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { createGateServer } from '../src/gates.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { recordEnding, transition } from '../src/loop-phase.js';
-import { createPublishRelay } from '../src/loop-publish.js';
-import type { LoopRuntime } from '../src/loop-types.js';
-import type { PublishResult } from '../src/publish.js';
-import type { PublishRelay, PublishVerdict } from '../src/publish-control.js';
-import type { PublishOptions } from '../src/publish.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { recordEnding, transition } from '../src/loop/loop-phase.js';
+import { createPublishRelay } from '../src/loop/loop-publish.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
+import type { PublishResult } from '../src/publish/publish.js';
+import type { PublishRelay, PublishVerdict } from '../src/publish/publish-control.js';
+import type { PublishOptions } from '../src/publish/publish.js';
 
 const OK_STATUS = 200;
 const UNAUTHORIZED_STATUS = 401;

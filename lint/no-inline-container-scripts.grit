@@ -10,7 +10,7 @@ language js
 // argument for inlining it.
 //
 // Anchored on the interpreter, not on the flag: `docker run -e KEY=VAL` spells `-e` too
-// (driver/src/docker-runner-support.ts), and matching the flag alone reports it as a script.
+// (driver/src/docker/docker-runner-support.ts), and matching the flag alone reports it as a script.
 or {
     `['node', '-e', $body, $...]`,
     `[$..., 'node', '-e', $body, $...]`,

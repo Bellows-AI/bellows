@@ -107,7 +107,7 @@ describe('test-jobs --changed path-to-phase map', () => {
     });
 
     it('maps a loop-adopt change to its recovery phases only, in lane order', () => {
-        expect(classify(['driver/src/loop-adopt.ts', 'driver/test/loop-adopt.test.ts']).selected).toEqual([
+        expect(classify(['driver/src/loop/loop-adopt.ts', 'driver/test/loop-adopt.test.ts']).selected).toEqual([
             'node-disruption',
             'driver-kill',
         ]);
@@ -115,7 +115,7 @@ describe('test-jobs --changed path-to-phase map', () => {
 
     it('unions the phases of several files and ignores files no lane executes', () => {
         expect(
-            classify(['driver/src/run-deadline.ts', 'driver/src/k8s-runner.ts', 'docs/jobs.md', 'web/src/App.tsx'])
+            classify(['driver/src/run-deadline.ts', 'driver/src/k8s/k8s-runner.ts', 'docs/jobs.md', 'web/src/App.tsx'])
                 .selected
         ).toEqual(['run-deadline']);
     });
@@ -126,7 +126,7 @@ describe('test-jobs --changed path-to-phase map', () => {
     });
 
     it('selects nothing when only unexecuted files changed, and when nothing changed', () => {
-        expect(classify(['docs/executor-testing.md', 'driver/src/k8s-gate.ts']).selected).toEqual([]);
+        expect(classify(['docs/executor-testing.md', 'driver/src/k8s/k8s-gate.ts']).selected).toEqual([]);
         expect(classify([]).selected).toEqual([]);
     });
 
@@ -141,7 +141,11 @@ describe('test-jobs --changed path-to-phase map', () => {
     });
 
     it('selects publish changes into the recovery phase that checks a repeated push', () => {
-        expect(classify(['driver/src/publish-pr.ts']).selected).toEqual(['driver', 'driver-kill', 'compose-driver']);
+        expect(classify(['driver/src/publish/publish-pr.ts']).selected).toEqual([
+            'driver',
+            'driver-kill',
+            'compose-driver',
+        ]);
     });
 
     // A rename reports only its destination by default, which would hide a file leaving driver/src.
@@ -150,12 +154,12 @@ describe('test-jobs --changed path-to-phase map', () => {
         try {
             const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, encoding: 'utf8' });
             git('init', '-q');
-            mkdirSync(join(repo, 'driver/src'), { recursive: true });
+            mkdirSync(join(repo, 'driver/src/loop'), { recursive: true });
             mkdirSync(join(repo, 'cli/src'), { recursive: true });
-            writeFileSync(join(repo, 'driver/src/loop-adopt.ts'), 'export const adopt = 1;\n'.repeat(20));
+            writeFileSync(join(repo, 'driver/src/loop/loop-adopt.ts'), 'export const adopt = 1;\n'.repeat(20));
             git('add', '.');
             git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'seed');
-            renameSync(join(repo, 'driver/src/loop-adopt.ts'), join(repo, 'cli/src/loop-adopt.ts'));
+            renameSync(join(repo, 'driver/src/loop/loop-adopt.ts'), join(repo, 'cli/src/loop-adopt.ts'));
             git('add', '-A');
             const out = spawnSync('node', [MAP, 'HEAD'], { cwd: repo, encoding: 'utf8' });
             expect(out.stdout).toBe('node-disruption,driver-kill');

@@ -10,14 +10,14 @@
  */
 import { randomUUID } from 'node:crypto';
 import { describe } from 'vitest';
-import type { Board, BoardJob } from '../src/board.js';
+import type { Board, BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { commandMark } from '../src/runner.js';
-import type { K8sRequest, K8sResponse } from '../src/k8s-transport.js';
-import { jobsPath, runnerJobName } from '../src/k8s-podspec.js';
-import { jobPath } from '../src/k8s-auxspec.js';
-import { createKubernetesReaper } from '../src/k8s-reaper.js';
-import { createKubernetesRunner } from '../src/k8s-runner.js';
+import type { K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
+import { jobsPath, runnerJobName } from '../src/k8s/k8s-podspec.js';
+import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { createKubernetesReaper } from '../src/k8s/k8s-reaper.js';
+import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
 import { createReaper } from '../src/reaper.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, serviceContainerOf } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';

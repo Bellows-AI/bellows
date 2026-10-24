@@ -1,13 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createServerMetrics } from '../src/metrics.js';
-import { createJobStore } from '../src/db/job-store.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
 import {
     admissionLockKey,
     admissionOccupancy,
     type AdmissionBudgets,
     type ClaimObserver,
-} from '../src/db/job-store-admission.js';
+} from '../src/db/jobs/job-store-admission.js';
 import { useTestDb } from './harness.js';
 import { craftJob, testOrg } from './fixtures.js';
 

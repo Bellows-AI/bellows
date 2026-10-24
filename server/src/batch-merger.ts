@@ -31,7 +31,7 @@ import {
     type MergeIntent,
     type MergeOutcome,
     type VerificationJob,
-} from './db/batch-store-merge.js';
+} from './db/batches/batch-store-merge.js';
 import { GitHubMergeError, type MergeResult } from './github/pr-merge.js';
 import type { BranchState } from './github/pr-read.js';
 

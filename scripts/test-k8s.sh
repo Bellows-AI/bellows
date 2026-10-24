@@ -310,7 +310,7 @@ expect_not_contains 'the collector config stays inside its block scalar' "$(cat 
 # be `valueFrom:` — the pod spec carries the reference and never the value, so anything readable in
 # `kubectl get -o yaml` stays unreadable to whoever can list pods. (The runner-side half of the same
 # rule — the executor reading its credentials from RUNNER_CREDENTIALS_SECRET — is pinned in
-# driver/test/k8s.test.ts, where the runner spec lives.)
+# driver/test/k8s/, where the runner spec lives.)
 credentials_clean=1
 for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN DATABASE_URL; do
     next="$(grep -A1 -- "- name: $cred\$" "$work/rendered.yaml" | sed -n '2p' | tr -d ' ')"

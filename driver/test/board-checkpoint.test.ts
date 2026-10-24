@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { CheckpointChunkCorrupt, checkpointCalls } from '../src/board-checkpoint.js';
-import { syncFailureHalt } from '../src/loop-fence.js';
+import type { BoardJob } from '../src/board/board.js';
+import { CheckpointChunkCorrupt, checkpointCalls } from '../src/board/board-checkpoint.js';
+import { syncFailureHalt } from '../src/loop/loop-fence.js';
 
 const job = { id: '22222222-2222-4222-8222-222222222222', leaseToken: 'lease-1' } as BoardJob;
 const SHA = 'e'.repeat(64);

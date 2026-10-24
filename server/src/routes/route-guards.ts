@@ -2,13 +2,13 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../auth/plugin.js';
 import type { Caller } from '../auth/store.js';
-import { UUID } from '../config.js';
-import type { JobStore } from '../db/job-store-types.js';
+import { UUID } from '../identifiers.js';
+import type { JobStore } from '../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, body } from './helpers.js';
-import { boardsFor, storeFor } from './job-context.js';
-import { validateClaimBody } from './job-field-validation.js';
-import { noBoard } from './job-limits.js';
+import { boardsFor, storeFor } from './jobs/job-context.js';
+import { validateClaimBody } from './jobs/job-field-validation.js';
+import { noBoard } from './jobs/job-limits.js';
 
 /**
  * The preambles the `:id` and CLAIM routes open with.
@@ -30,12 +30,12 @@ const HTTP_UNAUTHORIZED = 401;
  * Extracted at 15 copies: the BAD_ID sentence was 15 independent string literals, which is 15
  * chances for one of them to say something else.
  */
-export async function resolveJobRoute(
+export async function resolveJobRoute<K extends keyof JobStore = keyof JobStore>(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply
-): Promise<{ store: JobStore; id: string } | null> {
-    const store = await storeFor(orgs, request);
+): Promise<{ store: Pick<JobStore, K>; id: string } | null> {
+    const store = await storeFor<K>(orgs, request);
     if (!store) {
         await noBoard(reply);
         return null;
@@ -53,12 +53,12 @@ export async function resolveJobRoute(
  * Byte-identical in both: the boards this credential may poll, then the claim body they share
  * (`validateClaimBody` is already the one spelling of that). Null means the refusal is sent.
  */
-export async function resolveClaimRoute(
+export async function resolveClaimRoute<K extends keyof JobStore = keyof JobStore>(
     orgs: OrgRegistry,
     request: FastifyRequest,
     reply: FastifyReply
-): Promise<{ boards: JobStore[]; worker: string; lease: number } | null> {
-    const boards = await boardsFor(orgs, request);
+): Promise<{ boards: Pick<JobStore, K>[]; worker: string; lease: number } | null> {
+    const boards = await boardsFor<K>(orgs, request);
     if (!boards.length) {
         await noBoard(reply);
         return null;
