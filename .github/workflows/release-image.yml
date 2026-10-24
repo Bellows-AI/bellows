@@ -133,6 +133,16 @@ jobs:
             TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0
         steps:
             - uses: actions/checkout@v4
+            # A release candidate's tag runs ahead of the committed VERSION (release.sh --rc), and
+            # the image copies VERSION to /app/VERSION, which /api/version serves. Stamped in this
+            # checkout only, before any build reads it; never committed. Build metadata (+build.1) is
+            # dropped: the server's VERSION_PATTERN refuses `+`, and an image it refuses cannot boot.
+            - name: stamp the tag into VERSION
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  version=${TAG#v}
+                  printf '%s\n' "${version%%+*}" >VERSION
             # The default builder uses the `docker` driver, which cannot --push. A docker-container
             # builder can, and is what produces an image a manifest list may reference. It boots
             # from the private mirror `buildkit` made, so the credential is on the runner for the
@@ -338,6 +348,8 @@ jobs:
     # workflow file, or the publish is refused.
     npm:
         needs: [validate]
+        # A release candidate's tag runs ahead of VERSION (release.sh --rc); it ships no CLI.
+        if: ${{ !contains(github.ref_name, '-rc') }}
         runs-on: ubuntu-latest
         timeout-minutes: 10
         # Job-level permissions replace the workflow's: no packages or security-events here, and
@@ -371,10 +383,5 @@ jobs:
             # The license the package declares ships with it; the repository keeps one copy.
             - name: cp LICENSE cli/LICENSE
               run: cp LICENSE cli/LICENSE
-            # npm refuses a pre-release without --tag; `next` keeps `latest` on the last plain release.
             - name: npm publish -w cli --access public
-              run: |
-                  case "$(cat VERSION)" in
-                      *-*) npm publish -w cli --access public --tag next ;;
-                      *) npm publish -w cli --access public ;;
-                  esac
+              run: npm publish -w cli --access public

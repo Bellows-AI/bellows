@@ -1,0 +1,23 @@
+{
+  "name": "bellows-cloud-landing",
+  "main": "worker.js",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "bellows.cloud",
+      "custom_domain": true
+    },
+    {
+      "pattern": "www.bellows.cloud",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "LEADS_DB",
+      "database_name": "bellows-marketing-leads",
+      "database_id": "c7fc16a6-8056-4e3b-b8f2-4a82b6e3878e"
+    }
+  ]
+}

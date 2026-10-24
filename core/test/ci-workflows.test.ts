@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -456,15 +457,15 @@ describe('ci workflows', () => {
     it('publishes the CLI to npmjs after validation, at the version release.sh bumped', () => {
         const npm = workflow(RELEASE).jobs.npm!;
         expect(needs(npm)).toEqual(['validate']);
+        // A release candidate (`npm run release -- --rc`) leaves VERSION behind its tag, so it
+        // publishes images and the chart but never the CLI.
+        expect(npm.if).toMatch(/^\$\{\{ !contains\(github\.ref_name, '-rc'\) \}\}$/);
         const setup = (npm.steps ?? []).find((step) => step.uses?.startsWith('actions/setup-node@'));
         expect(setup?.with?.['registry-url']).toBe('https://registry.npmjs.org');
         const commands = runs(npm);
         expect(commands).toContain('npm ci --ignore-scripts');
         const stamp = commands.findIndex((run) => run.includes('npm pkg set version="$VERSION" -w cli'));
-        const publish = commands.findIndex((run) => run.includes('npm publish -w cli --access public'));
-        expect(publish, 'the CLI is never published').toBeGreaterThan(-1);
-        // npm refuses a pre-release without --tag; `next` keeps `latest` on the last plain release.
-        expect(commands[publish]).toContain('*-*) npm publish -w cli --access public --tag next ;;');
+        const publish = commands.indexOf('npm publish -w cli --access public');
         expect(stamp, 'the published package.json is never stamped').toBeGreaterThan(-1);
         expect(stamp).toBeLessThan(publish);
         expect(commands[stamp]).toContain('test "v$VERSION" = "$TAG"');
@@ -515,6 +516,28 @@ describe('ci workflows', () => {
         // The tar may not land in the workspace: for the two images whose context is `.` it would
         // be swept into the push build's context.
         expect(commands).not.toMatch(/dest=\$?\{?(PWD|GITHUB_WORKSPACE)/);
+    });
+
+    // A candidate tag runs ahead of VERSION on main (release.sh --rc); the image's /app/VERSION is
+    // what /api/version reports, so the checkout is stamped with the tag before any build reads it.
+    it('stamps the tag into the checkout VERSION before the first image build', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        const steps = build.steps ?? [];
+        const stamp = steps.findIndex((step) => step.name === 'stamp the tag into VERSION');
+        const firstBuild = steps.findIndex((step) => (step.name ?? '').startsWith('docker buildx build'));
+        expect(stamp, 'the build job never stamps VERSION').toBeGreaterThan(-1);
+        expect(stamp).toBeLessThan(firstBuild);
+        expect(steps[stamp]!.env!.TAG).toBe(`${'$'}{{ github.ref_name }}`);
+        // A tag with build metadata (v1.0.0+build.1) still publishes; the server's VERSION_PATTERN
+        // rejects `+`, so the stamp drops it rather than ship an image that cannot boot.
+        const stamped = (tag: string) =>
+            execFileSync('sh', ['-c', steps[stamp]!.run!.replace('>VERSION', '')], {
+                env: { ...process.env, TAG: tag },
+                encoding: 'utf8',
+            }).trim();
+        expect(stamped('v0.0.9-rc-2')).toBe('0.0.9-rc-2');
+        expect(stamped('v1.0.0+build.1')).toBe('1.0.0');
+        expect(stamped('v1.0.0')).toBe('1.0.0');
     });
 
     it('gates on secrets and on CRITICAL and HIGH, and pins the scanner', () => {

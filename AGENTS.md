@@ -146,6 +146,7 @@ npm run test:jobs -- --phase workflows # focused rerun with its own fixtures; --
 npm run test:jobs -- --changed origin/main # only the phases the diff maps to (also --phase a,b)
 npm run test:k8s                # helm assertions; --cluster installs into kind
 npm run release                 # patch-bump VERSION, commit, tag vX.Y.Z, atomic push to main
+npm run release -- --rc         # tag HEAD vX.Y.Z-rc (then -rc-2, -rc-3); images + chart, no CLI
 
 docker compose up               # the same npm run dev against the bind-mounted tree
 docker compose up -d driver     # mounts the docker socket — see docs/security.md
