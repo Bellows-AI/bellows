@@ -37,33 +37,57 @@ export async function recordExecution(tx: TransactionSql, orgId: string, jobId: 
 }
 
 /**
+ * What a session report says beyond the id. `agent` is the telemetry identity of the run
+ * (first name wins). `observed` is true only for evidence the process ran — a live sample, a
+ * readout of a finished run — and false for a report made before the launch, which a refused
+ * start can still follow.
+ */
+export interface SessionEvidence {
+    agent?: string | null;
+    observed?: boolean;
+}
+
+/**
  * A driver or reporter named a session of the job's CURRENT claim (the caller has already proven
- * the lease). The association is kept idempotently: a repeat only advances `last_seen_at`, a
- * `resumed`-claim inference becomes `reported`, and nothing here ever deletes one — clearing the
- * job's session pointer leaves history alone. The first report also proves the process launched
- * (`requested`/`unknown` -> `observed`, never from a later state) and fills the telemetry `agent`
- * once. A claim with no execution row (claimed before 085) records nothing: no invention.
+ * the lease and holds the job row's lock). The association is kept idempotently: a repeat only
+ * advances `last_seen_at`, a `resumed`-claim inference becomes `reported`, and nothing here ever
+ * deletes one — clearing the job's session pointer leaves history alone. Only `observed` evidence
+ * moves the launch (`requested`/`unknown` -> `observed`, never from a later state): a report made
+ * before the spawn proves nothing, and a refused start must stay refusable. The telemetry `agent`
+ * is filled once. The execution row is written only when one of those changes. A claim with no
+ * execution row (claimed before 085) records nothing: no invention.
  */
 export async function recordReportedSession(
     tx: TransactionSql,
     orgId: string,
     jobId: string,
-    session: { sessionId: string; agent: string | null }
+    evidence: SessionEvidence & { sessionId: string }
 ): Promise<void> {
-    const { sessionId, agent } = session;
+    const { sessionId } = evidence;
+    const agent = evidence.agent ?? null;
+    const observed = evidence.observed === true;
     await tx`
-        with execution as (
+        with held as (
+            select org_id, id, claim_seq from job where org_id = ${orgId} and id = ${jobId}
+        ),
+        advanced as (
             update job_execution e set
-                launch = case when e.launch in ('requested', 'unknown') then 'observed' else e.launch end,
-                agent = coalesce(e.agent, ${agent}),
+                launch = case when ${observed}::boolean and e.launch in ('requested', 'unknown')
+                              then 'observed' else e.launch end,
+                agent = coalesce(e.agent, ${agent}::text),
                 updated_at = now()
-            from job j
+            from held j
             where e.org_id = j.org_id and e.job_id = j.id and e.claim_seq = j.claim_seq
-              and j.org_id = ${orgId} and j.id = ${jobId}
-            returning e.org_id, e.job_id, e.claim_seq
+              and ((${observed}::boolean and e.launch in ('requested', 'unknown'))
+                   or (e.agent is null and ${agent}::text is not null))
         )
         insert into job_execution_session (org_id, job_id, claim_seq, session_id, agent, origin)
-        select org_id, job_id, claim_seq, ${sessionId}, ${agent}, 'reported' from execution
+        select j.org_id, j.id, j.claim_seq, ${sessionId}, ${agent}::text, 'reported'
+        from held j
+        where exists (
+            select 1 from job_execution e
+            where e.org_id = j.org_id and e.job_id = j.id and e.claim_seq = j.claim_seq
+        )
         on conflict (org_id, job_id, claim_seq, session_id) do update set
             origin = 'reported',
             agent = coalesce(job_execution_session.agent, excluded.agent),

@@ -219,6 +219,29 @@ describe('the session an attempt runs under, reported to the board (issue #845)'
         expect(r.board.sessions).toEqual([{ id: resumed.id, sessionId: 'sess-prev' }]);
     });
 
+    // The report precedes the spawn: a start the platform then refuses must stay "requested".
+    it('sends the pre-launch report without launch evidence', async () => {
+        const r = await attempt(job(1, 'sess-prev'));
+
+        expect(r.board.sessionEvidence[0]).toBe(false);
+    });
+
+    it('sends the scraped session of a finished run as launch evidence', async () => {
+        const r = await attempt({ ...job(1), executorType: 'opencode' }, {}, async () => ok({ sessionId: 'ses_ran' }));
+
+        expect(r.board.sessions.at(-1)).toEqual({ id: job(1).id, sessionId: 'ses_ran' });
+        expect(r.board.sessionEvidence.at(-1)).toBe(true);
+    });
+
+    it('does not claim launch evidence for a session scraped from a start that never ran', async () => {
+        const r = await attempt({ ...job(1), executorType: 'opencode' }, {}, async () =>
+            ok({ sessionId: 'ses_never', started: false })
+        );
+
+        const at = r.board.sessions.findIndex((s) => s.sessionId === 'ses_never');
+        if (at >= 0) expect(r.board.sessionEvidence[at]).toBe(false);
+    });
+
     it('runs and completes the attempt when the board cannot take the resumed session report', async () => {
         const resumed = job(1, 'sess-prev');
         const board = stubBoard([], { failSession: true }).board;

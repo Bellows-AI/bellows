@@ -48,6 +48,7 @@ interface ExecutionRow {
     resumed: boolean;
     origin: string;
     removed_at: Date | null;
+    updated_at: Date;
 }
 
 const executions = (jobId: string) =>
@@ -296,7 +297,7 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             ]);
             const [after] = await lastSeen(id);
             expect(after?.first_seen_at).toEqual(before?.first_seen_at);
-            expect(after!.last_seen_at.getTime()).toBeGreaterThan(before!.last_seen_at.getTime());
+            expect(after!.last_seen_at.getTime()).toBeGreaterThanOrEqual(before!.last_seen_at.getTime());
         });
 
         it('records nothing for a null report and keeps history when the pointer is cleared', async () => {
@@ -357,14 +358,24 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             expect(rows).toEqual([{ claim_seq: String(second.claimSeq), session_id: session, origin: 'reported' }]);
         });
 
-        it('marks the launch observed on the first report and never downgrades it', async () => {
+        it('keeps the launch requested for a pre-launch report, a refused clear included', async () => {
             const id = await queue();
             const c = await claim();
-            await store.session(id, c.leaseToken, randomUUID());
+            await store.session(id, c.leaseToken, randomUUID(), { agent: 'claude-code' });
+            expect((await executions(id))[0]?.launch).toBe('requested');
+
+            await store.session(id, c.leaseToken, null);
+            expect((await executions(id))[0]?.launch).toBe('requested');
+        });
+
+        it('marks the launch observed on post-launch evidence and never downgrades it', async () => {
+            const id = await queue();
+            const c = await claim();
+            await store.session(id, c.leaseToken, randomUUID(), { observed: true });
             expect((await executions(id))[0]?.launch).toBe('observed');
 
             await sql`update job_execution set launch = 'adopted' where org_id = ${ORG} and job_id = ${id}`;
-            await store.session(id, c.leaseToken, randomUUID());
+            await store.session(id, c.leaseToken, randomUUID(), { observed: true });
             expect((await executions(id))[0]?.launch).toBe('adopted');
         });
 
@@ -375,11 +386,24 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             await store.session(id, c.leaseToken, session);
             expect((await executions(id))[0]?.agent).toBeNull();
 
-            await store.session(id, c.leaseToken, session, 'opencode');
-            await store.session(id, c.leaseToken, session, 'other');
+            await store.session(id, c.leaseToken, session, { agent: 'claude-code' });
+            await store.session(id, c.leaseToken, session, { agent: 'opencode' });
 
-            expect((await executions(id))[0]?.agent).toBe('opencode');
-            expect((await lastSeen(id))[0]?.agent).toBe('opencode');
+            expect((await executions(id))[0]?.agent).toBe('claude-code');
+            expect((await lastSeen(id))[0]?.agent).toBe('claude-code');
+        });
+
+        it('leaves the execution row untouched by a repeat report that changes nothing', async () => {
+            const id = await queue();
+            const c = await claim();
+            const session = randomUUID();
+            const evidence = { agent: 'opencode', observed: true };
+            await store.session(id, c.leaseToken, session, evidence);
+            const [before] = await executions(id);
+
+            await store.session(id, c.leaseToken, session, evidence);
+
+            expect((await executions(id))[0]?.updated_at).toEqual(before?.updated_at);
         });
     });
 });

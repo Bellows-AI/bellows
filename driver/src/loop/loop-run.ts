@@ -72,7 +72,8 @@ async function reportScrapedSession(
     const { board, log } = rt;
     if (outcome.sessionId) {
         try {
-            await board.session(job, outcome.sessionId);
+            // A start that never ran or was refused: whatever it scraped is no evidence of a launch.
+            await board.session(job, outcome.sessionId, outcome.started && !outcome.refused);
             log(`job ${job.id}: session ${outcome.sessionId}`);
         } catch (e) {
             log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);

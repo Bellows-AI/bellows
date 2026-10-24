@@ -169,7 +169,7 @@ export function openReviewExport(
             // opencode mints its own session id: the readout is where a fresh review's is discovered,
             // and recording it on the review row is what lets a re-leased review resume it.
             if (outcome.sessionId) {
-                await rt.board.session(review, outcome.sessionId).catch((e: Error) => {
+                await rt.board.session(review, outcome.sessionId, true).catch((e: Error) => {
                     rt.log(`review ${review.id}: the session was not recorded: ${e.message}`);
                 });
             }

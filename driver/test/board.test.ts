@@ -452,6 +452,23 @@ describe('asking the board for the orphan reaper lease lookups', () => {
     });
 });
 
+describe('the session report', () => {
+    it('names the agent the job runs and whether the report is launch evidence', async () => {
+        const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
+        const board = boardOn(fetch);
+
+        await board.session({ ...boardJob(), executorType: 'opencode' }, 'ses-1');
+        await board.session({ ...boardJob(), executorType: 'claude-code' }, 'ses-2', true);
+        await board.session({ ...boardJob(), executorType: null }, null);
+
+        expect(calls.map((c) => c.body)).toEqual([
+            { leaseToken: 'token-1', sessionId: 'ses-1', agent: 'opencode', observed: false },
+            { leaseToken: 'token-1', sessionId: 'ses-2', agent: 'claude-code', observed: true },
+            { leaseToken: 'token-1', sessionId: null, agent: null, observed: false },
+        ]);
+    });
+});
+
 describe('the heartbeat verdict', () => {
     const job = boardJob();
 

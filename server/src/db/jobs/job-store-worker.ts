@@ -8,7 +8,7 @@ import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import type { EvidencePolicy } from '../evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
-import { recordReportedSession } from './job-store-provenance.js';
+import { recordReportedSession, type SessionEvidence } from './job-store-provenance.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
 import { stagedFingerprint } from './job-store-staged.js';
@@ -58,7 +58,7 @@ export interface JobWorkerStore {
      * like every other worker write: a superseded worker must not relabel the run that replaced it.
      * Null clears it — a refused start whose minted session never ran.
      */
-    session(id: string, leaseToken: string, sessionId: string | null, agent?: string): Promise<LeaseResult>;
+    session(id: string, leaseToken: string, sessionId: string | null, evidence?: SessionEvidence): Promise<LeaseResult>;
 
     /**
      * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
@@ -211,10 +211,10 @@ export async function sessionReport(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    report: { sessionId: string | null; agent: string | null }
+    report: SessionEvidence & { sessionId: string | null }
 ): ReturnType<JobStore['session']> {
     const { sql, orgId } = ctx;
-    const { sessionId, agent } = report;
+    const { sessionId } = report;
     // The opencode reporter re-posts its session every sample (routes/ingest.ts): a session the row
     // already carries is no pointer write, and the answer is the lease's whether or not anything
     // changed. The history row (issue #845) rides the same transaction, guarded by the same lease.
@@ -229,7 +229,7 @@ export async function sessionReport(
         if (held[0].session_id !== sessionId) {
             await tx`update job set session_id = ${sessionId} where org_id = ${orgId} and id = ${id}`;
         }
-        if (sessionId !== null) await recordReportedSession(tx, orgId, id, { sessionId, agent });
+        if (sessionId !== null) await recordReportedSession(tx, orgId, id, { ...report, sessionId });
         return 'ok';
     });
 }

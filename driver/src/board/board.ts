@@ -592,8 +592,12 @@ export interface Board extends PhaseCheckpointBoard {
             output: string | null;
         }[]
     ): Promise<LeaseState>;
-    /** Tells the board which agent session this attempt runs as; null clears one that never ran. */
-    session(job: BoardJob, sessionId: string | null): Promise<LeaseState>;
+    /**
+     * Tells the board which agent session this attempt runs as; null clears one that never ran.
+     * `observed` is true only when the report is evidence the process ran (a readout of a finished
+     * run); a report made before the spawn leaves the launch undecided. The job's agent rides along.
+     */
+    session(job: BoardJob, sessionId: string | null, observed?: boolean): Promise<LeaseState>;
     /**
      * A GitHub token for this attempt, minted now by the board's credential endpoint
      * (`POST /api/jobs/:id/credentials/github`, docs/connections.md) — asked right before each
@@ -986,10 +990,12 @@ export function createBoard({
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },
 
-        async session(job, sessionId) {
+        async session(job, sessionId, observed = false) {
             const response = await post(`/api/jobs/${job.id}/session`, {
                 leaseToken: job.leaseToken,
                 sessionId,
+                agent: job.executorType,
+                observed,
             });
             return response.status === HTTP_CONFLICT ? 'lost' : 'held';
         },

@@ -218,6 +218,8 @@ describe('a review the board leased in-band (issue #774)', () => {
         await t.settled();
         expect(t.runner.reviewed[0]!.session).toEqual({ id: 'sess-prev', resume: true });
         expect(t.board.sessions).toEqual([{ id: REVIEW.id, sessionId: 'sess-prev' }]);
+        // Reported before the review runs: no launch evidence.
+        expect(t.board.sessionEvidence).toEqual([false]);
     });
 
     it('starts one supervision per key: a retried request whose answer was lost gets no second reviewer', async () => {
@@ -632,6 +634,8 @@ describe('the export of a review’s transcript', () => {
         for (const stream of streams) expect(stream.startsWith(`${REVIEW.id}:3:`)).toBe(true);
         // opencode mints its own session id: the readout is where it is discovered, and the review row records it.
         expect(t.board.sessions).toEqual([{ id: REVIEW.id, sessionId: 'ses_1' }]);
+        // The readout is read from a run that happened: launch evidence.
+        expect(t.board.sessionEvidence).toEqual([true]);
     });
 
     it('is not offered when the caller has no control channel', async () => {

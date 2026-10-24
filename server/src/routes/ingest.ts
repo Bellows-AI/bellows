@@ -58,7 +58,10 @@ async function recordLiveSession(orgs: OrgRegistry, request: FastifyRequest, rep
     if (typeof jobId !== 'string' || !UUID.test(jobId) || typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
         return;
     }
-    await (await storeFor(orgs, request))?.session(jobId, leaseToken, report.sessionId, report.agent);
+    await (await storeFor(orgs, request))?.session(jobId, leaseToken, report.sessionId, {
+        agent: report.agent,
+        observed: true,
+    });
 }
 
 export const ingestRoutes =
