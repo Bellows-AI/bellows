@@ -6,11 +6,11 @@
  *
  * The reduction lives here rather than in SQL for the same reason the week bucketing lives in
  * core (docs/metrics.md): the temporality-aware rule is the one correctness hazard in the feature,
- * and it is unit-testable only as plain code. A delta counter SUMS into its bucket; a cumulative
- * counter must be differenced per series — `sum(value)` over a cumulative series produces a
- * plausible, wildly wrong number (002_views.repeatable.sql's header, and test-db covers both
- * shapes).
+ * and it is unit-testable only as plain code. The rule itself is core's `reduceTokenObservations`;
+ * this file maps points to observations and drops the contributions into the run's buckets.
  */
+import { partitionByRange, reduceTokenObservations } from '@factory-ai/core';
+import type { TokenContribution, TokenObservation, TokenType } from '@factory-ai/core';
 
 /** One raw `metric_point_used` row, as the SQL read lifts it. */
 export interface ActivityPoint {
@@ -40,9 +40,6 @@ export interface ActivityBucket {
     edits: number;
 }
 
-/** What one charted field adds to: a token type, or the edit count. */
-type Slot = keyof TokenTypes | 'edits';
-
 /** The bucket-width ladder, narrow to wide. */
 const MINUTE_MS = 60_000;
 const FIVE_MINUTES_MS = 300_000;
@@ -61,121 +58,55 @@ export function pickBucketMs(runMs: number): number {
     return LADDER_MS[LADDER_MS.length - 1]!;
 }
 
-/** The fields this reduction charts, and the bucket slot each one adds to. */
-const SLOT_OF_FIELD: Readonly<Record<string, Slot>> = {
+/** The token fields this reduction charts, and the reducer type each one is. */
+const TOKEN_OF_FIELD: Readonly<Record<string, TokenType>> = {
     tokens_input: 'input',
     tokens_output: 'output',
     tokens_cacheRead: 'cacheRead',
     tokens_cacheCreation: 'cacheCreation',
-    edits_accept: 'edits',
-    edits_reject: 'edits',
 };
 
-/** A cumulative series is keyed by everything that distinguishes one counter from another. */
-const seriesKeyOf = (point: ActivityPoint): string =>
-    [point.agent, point.metric, point.field, point.startTime ?? '', JSON.stringify(point.attrs)].join('|');
+/**
+ * Edit decisions ride the same reducer; the `decision` attribute already keeps accept and reject
+ * apart, so the reducer's type slot only carries the count, never tokens.
+ */
+const EDIT_SLOT_OF_FIELD: Readonly<Record<string, TokenType>> = { edits_accept: 'input', edits_reject: 'input' };
 
 const emptyTokens = (): TokenTypes => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
 
-function addTo(bucket: ActivityBucket, slot: Slot, value: number): void {
-    if (slot === 'edits') bucket.edits += value;
-    else bucket.tokens[slot] += value;
-}
-
-/** One cumulative series parked for pass two: its bucket maxes, and the total it had reached at `from`. */
-interface Series {
-    slot: Slot;
-    maxes: (number | null)[];
-    baseline: number;
-}
-
-/**
- * Folds one parked cumulative series into the buckets as consecutive differences — the running
- * total's increment within each bucket, from the total the series had already reached when the
- * window opened (a follow-up run shares its session's counters, so its first reading is not its
- * own). A counter reset inside one series would difference negative; clamped to 0, which
- * undercounts rather than inverts a bar.
- */
-function foldCumulative(series: Series, buckets: ActivityBucket[], count: number): void {
-    let previous = series.baseline;
-    for (let i = 0; i < count; i += 1) {
-        const value = series.maxes[i] ?? null;
-        if (value === null) continue;
-        addTo(buckets[i]!, series.slot, Math.max(0, value - previous));
-        previous = value;
-    }
-}
-
-/** One cumulative point's parking slot: which series map, and which bucket slot it feeds. */
-interface ParkTarget {
-    cumulative: Map<string, Series>;
-    point: ActivityPoint;
-    slot: Slot;
-    /** The point's bucket; null when it predates the window and only sets the baseline. */
-    index: number | null;
-    count: number;
-}
-
-/**
- * Parks one cumulative point's value as its series' bucket max — the series keyed by everything
- * that distinguishes one counter from another — for pass two's differencing. A point before the
- * window raises the series' baseline instead.
- */
-function parkCumulative(target: ParkTarget): void {
-    const key = seriesKeyOf(target.point);
-    const series = target.cumulative.get(key) ?? {
-        slot: target.slot,
-        maxes: Array.from({ length: target.count }, () => null),
-        baseline: 0,
-    };
-    if (target.index === null) {
-        series.baseline = Math.max(series.baseline, target.point.value);
-    } else {
-        const current = series.maxes[target.index] ?? null;
-        series.maxes[target.index] = current === null ? target.point.value : Math.max(current, target.point.value);
-    }
-    target.cumulative.set(key, series);
-}
-
-/**
- * Pass one over the points: deltas sum straight into their bucket; cumulatives park their max
- * per bucket, per series, for pass two's differencing. Out-of-window delta points and
- * unchartable fields fall out here; a cumulative point before the window sets its baseline.
- */
-function parkPoints(
-    points: readonly ActivityPoint[],
-    buckets: ActivityBucket[],
-    window: { fromMs: number; toMs: number; count: number; bucketMs: number }
-): Map<string, Series> {
-    const cumulative = new Map<string, Series>();
+/** The points of ONE session, so the session id is a constant; the agent still keeps agents apart. */
+function toObservations(points: readonly ActivityPoint[], slots: Readonly<Record<string, TokenType>>) {
+    const observations: TokenObservation[] = [];
     for (const point of points) {
-        const timeMs = Date.parse(point.time);
-        const slot = SLOT_OF_FIELD[point.field];
-        if (!Number.isFinite(timeMs) || timeMs > window.toMs || slot === undefined) continue;
-        const before = timeMs < window.fromMs;
-        if (point.temporality === 'cumulative') {
-            const index = before ? null : bucketIndexOf(timeMs, window.fromMs, window.bucketMs, window.count);
-            parkCumulative({ cumulative, point, slot, index, count: window.count });
-        } else if (!before) {
-            addTo(buckets[bucketIndexOf(timeMs, window.fromMs, window.bucketMs, window.count)]!, slot, point.value);
-        }
+        const field = slots[point.field];
+        if (field === undefined || !Number.isFinite(Date.parse(point.time))) continue;
+        if (!Number.isFinite(point.value) || point.value < 0) continue;
+        const startTime =
+            point.startTime !== null && Number.isFinite(Date.parse(point.startTime)) ? point.startTime : null;
+        observations.push({
+            agent: point.agent,
+            sessionId: 'run',
+            source: 'otel',
+            metric: point.metric,
+            field,
+            temporality:
+                point.temporality === 'delta' || point.temporality === 'cumulative' ? point.temporality : 'unspecified',
+            startTime,
+            time: point.time,
+            value: point.value,
+            attrs: point.attrs,
+        });
     }
-    return cumulative;
-}
-
-/** The bucket a timestamp lands in, clamped into the seeded range. */
-function bucketIndexOf(timeMs: number, fromMs: number, bucketMs: number, count: number): number {
-    const index = Math.floor((timeMs - fromMs) / bucketMs);
-    return Math.min(Math.max(index, 0), count - 1);
+    return observations;
 }
 
 /**
  * Buckets the points over `[from, to]` at `bucketMs`, seeding every bucket in the window — a
- * quiet stretch renders as a quiet stretch, never a gap. Delta points sum into the bucket that
- * contains them; cumulative points are reduced per series (max per bucket, then consecutive
- * differences against the total the series had reached before `from`, 0 for a fresh series), with
- * a negative difference clamped to 0 rather than allowed to invert a bar. Delta points outside
- * the window, and fields this reduction does not chart, fall out.
+ * quiet stretch renders as a quiet stretch, never a gap. The points go through the shared token
+ * reducer whole, readings before `from` included: a cumulative series' running maximum already
+ * reached then is the baseline, so a follow-up run counts only what it added. Only timed
+ * contributions inside the window are added (unlocated and unspecified ones never are); fields
+ * this reduction does not chart fall out.
  */
 export function bucketizeActivity(
     points: readonly ActivityPoint[],
@@ -190,9 +121,24 @@ export function bucketizeActivity(
         tokens: emptyTokens(),
         edits: 0,
     }));
-    const cumulative = parkPoints(points, buckets, { fromMs, toMs, count, bucketMs: opts.bucketMs });
-    // Pass two: difference each cumulative series down the buckets and fold that in like a delta.
-    for (const series of cumulative.values()) foldCumulative(series, buckets, count);
+    // The window is closed at `to`; the partition's range is half-open.
+    const place = (observations: TokenObservation[], add: (bucket: ActivityBucket, c: TokenContribution) => void) => {
+        const { timed } = partitionByRange(
+            reduceTokenObservations(observations),
+            opts.from,
+            new Date(toMs + 1).toISOString()
+        );
+        for (const c of timed) {
+            const index = Math.floor((Date.parse(c.observedAt as string) - fromMs) / opts.bucketMs);
+            add(buckets[Math.min(index, count - 1)]!, c);
+        }
+    };
+    place(toObservations(points, TOKEN_OF_FIELD), (bucket, c) => {
+        for (const type of Object.keys(bucket.tokens) as TokenType[]) bucket.tokens[type] += c.tokens[type] ?? 0;
+    });
+    place(toObservations(points, EDIT_SLOT_OF_FIELD), (bucket, c) => {
+        bucket.edits += c.tokens.input ?? 0;
+    });
     return buckets;
 }
 
