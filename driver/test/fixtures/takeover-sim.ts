@@ -35,6 +35,7 @@ import { RUN_CONTROL_POLL_MS } from '../../src/supervisor-contract.js';
 import { bindingBody, orphanBoundMs, supervisorLiterals, takeoverBoundMs } from '../../src/supervisor-plan.js';
 import { StallWatch } from './host-stall.js';
 import { config as baseConfig, job as baseJob, ok, stubBoard, stubRunner } from './loop-stubs.js';
+import { stopSupervisorsOf, superviseTracked } from './supervisor-tracker.js';
 
 process.env.SUPERVISOR_NO_MAIN = '1';
 const supervisor = createRequire(import.meta.url)('../../src/scripts/supervisor.cjs') as {
@@ -399,7 +400,9 @@ export class Sim {
         group.start = () => {
             if (started || this.groups.get(job.leaseToken) !== group) return;
             started = true;
-            group.done = supervisor.supervise(env, (line) => logs.push(line)).then((code) => (group.exit = code));
+            group.done = superviseTracked(supervisor, env, (line) => logs.push(line), { scope: this }).then(
+                (code) => (group.exit = code)
+            );
         };
         this.groups.set(job.leaseToken, group);
         this.spawned += 1;
@@ -633,6 +636,7 @@ export class Sim {
             d.loop.stop();
             await d.server?.close().catch(() => undefined);
         }
+        await stopSupervisorsOf(this);
         for (const dir of this.dirs) rmSync(dir, { recursive: true, force: true });
     }
 }

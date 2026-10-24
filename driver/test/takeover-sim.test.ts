@@ -7,10 +7,11 @@
 import { existsSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { takeoverBoundMs } from '../src/supervisor-plan.js';
 import { busyWait } from './fixtures/host-stall.js';
+import { liveSupervisors } from './fixtures/supervisor-tracker.js';
 import {
     ADOPTED,
     type Group,
@@ -22,6 +23,8 @@ import {
     type Timing,
     until,
 } from './fixtures/takeover-sim.js';
+
+afterAll(() => expect(liveSupervisors()).toBe(0));
 
 const released = (s: Sim) => [...s.groups.values()].find((g) => s.released(g));
 const firstGroup = (s: Sim) => [...s.groups.values()][0]!;

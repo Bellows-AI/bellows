@@ -16,6 +16,7 @@ import {
     hangsUntilAborted,
     hangsUntilTimeout,
     endsSoon,
+    memoryFiles,
     SESSION,
     opencodeJob,
     fakeChild,
@@ -243,7 +244,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         };
         const stop = new AbortController();
 
-        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        const adopting = dockerRunner(exec, { spawn: logs, files: memoryFiles() }).adopt(adopter, stop.signal);
         await vitest.waitFor(() => expect(hung).toBe(true));
         stop.abort();
         expect(await endsSoon(adopting)).toBe(true);
@@ -315,7 +316,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         }) as unknown as typeof spawn;
         const stop = new AbortController();
 
-        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        const adopting = dockerRunner(exec, { spawn: logs, files: memoryFiles() }).adopt(adopter, stop.signal);
         await vitest.waitFor(() => expect(streamed).toBeDefined());
         stop.abort();
         expect(await endsSoon(adopting)).toBe(true);

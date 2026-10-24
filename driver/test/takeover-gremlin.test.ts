@@ -3,9 +3,12 @@
  * and the invariants every run owes (`fixtures/gremlin.ts`). A failure prints its seed and event trace;
  * `GREMLIN_SEED=<n>` replays that one run, `GREMLIN_RUNS=<n>` raises the count for a local soak.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { planOf, runGremlin, stallExplains, type Fault, type Verdict } from './fixtures/gremlin.js';
+import { liveSupervisors } from './fixtures/supervisor-tracker.js';
 import { lane15 } from './fixtures/takeover-sim.js';
+
+afterAll(() => expect(liveSupervisors()).toBe(0));
 
 const RUNS = Number(process.env.GREMLIN_RUNS ?? 200);
 const ONE = process.env.GREMLIN_SEED === undefined ? null : Number(process.env.GREMLIN_SEED);

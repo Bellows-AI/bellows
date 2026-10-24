@@ -20,6 +20,7 @@ import {
     hangsUntilAborted,
     hangsUntilTimeout,
     endsSoon,
+    memoryFiles,
     fakeSteps,
     SESSION,
     isServiceRun,
@@ -151,6 +152,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         dockerRunner(readyWhileStarting(exec), {
             env: { RUNNER_SERVICES: '1' },
             spawn: fn,
+            files: memoryFiles(),
         });
     const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) => asLoop(bareServicesRunner(exec, fn));
 
@@ -1372,13 +1374,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 () => (ended = true),
                 () => (ended = true)
             );
-            // The calls before the stalled one touch the disk: let the run reach it.
-            while (!stalled) await new Promise((resolve) => setImmediate(resolve));
+            // No call on this path touches the disk (memoryFiles): the run reaches the stalled one in microtasks.
+            await vitest.advanceTimersByTimeAsync(0);
+            expect(stalled).toBe(true);
 
             await vitest.advanceTimersByTimeAsync(ATTEMPT_COMMAND_TIMEOUT_MS + 1_000);
-            // What follows the refusal touches the disk.
-            for (let polls = 0; polls < 200 && !ended; polls += 1)
-                await new Promise((resolve) => setImmediate(resolve));
 
             expect(ended).toBe(true);
         } finally {

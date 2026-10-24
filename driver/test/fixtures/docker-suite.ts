@@ -71,14 +71,20 @@ export const hangsUntilTimeout = (options?: { timeout?: number }): Promise<never
         if (options?.timeout !== undefined) setTimeout(() => reject(new Error('timed out')), options.timeout);
     });
 
-/** Whether `pending` ended within a moment: a wait that ignores the kill signal stays pending. */
+/** The runner's env-file verbs held in memory: a run that touches them waits on no real disk (#905). */
+export const memoryFiles = (): RunnerFiles => ({ writeFile: async () => undefined, rm: async () => undefined });
+
+/**
+ * Whether `pending` ended within one macrotask turn: a wait that ignores the kill signal stays
+ * pending. Sound only for a run with no real I/O on its path (give it `memoryFiles()`).
+ */
 export const endsSoon = (pending: Promise<unknown>): Promise<boolean> =>
     Promise.race([
         pending.then(
             () => true,
             () => true
         ),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
     ]);
 
 export const FINALIZED: SupervisorReport = {
