@@ -45,6 +45,10 @@ current=$(cat VERSION)
 # A candidate on HEAD does not block the final release, which commits on top of it.
 if [ -n "$rc" ]; then
     [ -z "$(git tag --points-at HEAD --list 'v*')" ] || fail 'HEAD is already released'
+    # GitHub skips push-triggered workflows, tag pushes included, for these markers in the head
+    # commit's message: the tag would land, publish nothing, and be refused on every retry.
+    git log -1 --format=%B HEAD | grep -Eiq '\[(skip ci|ci skip|no ci|skip actions|actions skip)\]' \
+        && fail 'HEAD'"'"'s commit message carries a skip-CI marker, so GitHub would not run the release workflow'
 else
     git tag --points-at HEAD --list 'v*' | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+' && fail 'HEAD is already released'
 fi

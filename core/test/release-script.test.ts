@@ -259,6 +259,16 @@ describe('npm run release -- --rc', () => {
         );
     });
 
+    it.each(['[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]'])(
+        'refuses a HEAD whose message carries %s, which would make GitHub skip the release workflow',
+        (marker) => {
+            const fixture = setup();
+            publish(fixture, { 'README.md': 'docs only\n' }, `Fix typo ${marker}`);
+            git(fixture, fixture.work, 'pull', '-q');
+            expectRefusal(fixture, /skip/, '--rc');
+        }
+    );
+
     it('refuses a HEAD that already carries a candidate', () => {
         const fixture = setup();
         expect(release(fixture, '--rc').status).toBe(0);

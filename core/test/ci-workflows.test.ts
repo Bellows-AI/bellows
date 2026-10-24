@@ -517,6 +517,19 @@ describe('ci workflows', () => {
         expect(commands).not.toMatch(/dest=\$?\{?(PWD|GITHUB_WORKSPACE)/);
     });
 
+    // A candidate tag runs ahead of VERSION on main (release.sh --rc); the image's /app/VERSION is
+    // what /api/version reports, so the checkout is stamped with the tag before any build reads it.
+    it('stamps the tag into the checkout VERSION before the first image build', () => {
+        const build = workflow(RELEASE).jobs.build!;
+        const steps = build.steps ?? [];
+        const stamp = steps.findIndex((step) => step.name === 'stamp the tag into VERSION');
+        const firstBuild = steps.findIndex((step) => (step.name ?? '').startsWith('docker buildx build'));
+        expect(stamp, 'the build job never stamps VERSION').toBeGreaterThan(-1);
+        expect(stamp).toBeLessThan(firstBuild);
+        expect(steps[stamp]!.env!.TAG).toBe(`${'$'}{{ github.ref_name }}`);
+        expect(steps[stamp]!.run).toContain(`"${'$'}{TAG#v}" >VERSION`);
+    });
+
     it('gates on secrets and on CRITICAL and HIGH, and pins the scanner', () => {
         const build = workflow(RELEASE).jobs.build!;
         const gate = runSteps(build).find((step) => step.name!.includes('--exit-code 1'))!;

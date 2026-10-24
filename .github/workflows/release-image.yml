@@ -133,6 +133,13 @@ jobs:
             TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.74.0
         steps:
             - uses: actions/checkout@v4
+            # A release candidate's tag runs ahead of the committed VERSION (release.sh --rc), and
+            # the image copies VERSION to /app/VERSION, which /api/version serves. Stamped in this
+            # checkout only, before any build reads it; never committed.
+            - name: stamp the tag into VERSION
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: printf '%s\n' "${TAG#v}" >VERSION
             # The default builder uses the `docker` driver, which cannot --push. A docker-container
             # builder can, and is what produces an image a manifest list may reference. It boots
             # from the private mirror `buildkit` made, so the credential is on the runner for the

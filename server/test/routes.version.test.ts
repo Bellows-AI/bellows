@@ -9,7 +9,8 @@ import { readVersion, VERSION_PATTERN } from '../src/version.js';
 import { HTTP_OK } from './helpers-http.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
-const INVALID = ['v1.2.3', '1.2', '1.2.3-rc.1', '01.2.3', '', '1.2.3\n1.2.4\n'];
+const INVALID = ['v1.2.3', '1.2', '01.2.3', '', '1.2.3\n1.2.4\n', '1.2.3-', '1.2.3-rc..1', '1.2.3-01', '1.2.3+build'];
+const PRERELEASE = ['1.2.3-rc', '1.2.3-rc.1', '0.0.9-rc', '0.0.9-rc-2', '1.2.3-alpha-2.0'];
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -48,6 +49,10 @@ describe('readVersion', () => {
         const committed = readFileSync(join(root, 'VERSION'), 'utf8').trim();
         expect(committed).toMatch(VERSION_PATTERN);
         expect(readVersion()).toBe(committed);
+    });
+
+    it.each(PRERELEASE)('accepts the SemVer pre-release %j', (contents) => {
+        expect(readVersion(versionFile(contents))).toBe(contents);
     });
 
     it('accepts a trailing newline', () => {
