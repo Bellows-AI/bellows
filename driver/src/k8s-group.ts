@@ -29,7 +29,7 @@ import {
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from './labels.js';
 import { boundedBy, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
-import { GROUP_WATCH_MS, watchGroupEnd } from './group-watch.js';
+import { GROUP_WATCH_MS, GROUP_WATCH_READ_MS, watchGroupEnd } from './group-watch.js';
 import { anyOf, pollFor } from './poll.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { RunSession } from './runner.js';
@@ -217,9 +217,6 @@ export async function ensureGroup(
     watchRunnerGroup(deps, job, group, job.leaseToken);
     return group;
 }
-
-/** How long one look at the group's Job may take before it counts as unread. */
-const GROUP_WATCH_READ_MS = 10_000;
 
 /**
  * Whether the group's runner Job is confirmed over: gone (404), terminal, or marked by the Job controller

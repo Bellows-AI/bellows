@@ -37,7 +37,7 @@ import {
     startupRefusalOf,
 } from './docker-runner-support.js';
 import { assertTaskVolumeIsOurs } from './docker-task-volume.js';
-import { GROUP_WATCH_MS, watchGroupEnd } from './group-watch.js';
+import { GROUP_WATCH_MS, GROUP_WATCH_READ_MS, watchGroupEnd } from './group-watch.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from './labels.js';
 import type { KillLedger } from './kill-ledger.js';
 import type { StepSink } from './step-control.js';
@@ -486,9 +486,6 @@ export async function rebindGroup(
         throw new Error(`rebinding the task group of job ${job.id} failed`);
     }
 }
-
-/** How long one look at the group's supervisor container may take before it counts as unread. */
-const GROUP_WATCH_READ_MS = 10_000;
 
 /**
  * Whether the group's supervisor container is confirmed over: `exited`/`dead`, or gone (`No such object`).

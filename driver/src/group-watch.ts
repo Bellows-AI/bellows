@@ -3,6 +3,9 @@ import { setTimeout as pause } from 'node:timers/promises';
 /** How often a group's end is looked for (`K8sDeps.groupWatchMs` and its docker twin override it in tests only). */
 export const GROUP_WATCH_MS = 2_000;
 
+/** How long one look at a group may take before it counts as unread. */
+export const GROUP_WATCH_READ_MS = 10_000;
+
 /** What a group's watch is given: where to look, who it is for, and what to do on a confirmed end. */
 export interface GroupWatch {
     everyMs: number;
