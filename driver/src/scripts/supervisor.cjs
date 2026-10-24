@@ -480,7 +480,7 @@ function newRun(settings, now, log) {
 
 /**
  * A call to the current holder on this run's behalf: it ends with the run or with the holder it was
- * made to, and an answer counts as contact. An answer that lands after a rebind is dropped as if
+ * made to (or with the external stop, a test-only signal), and an answer counts as contact. An answer that lands after a rebind is dropped as if
  * the call never returned: the old holder neither hands a step nor counts as contact.
  */
 async function ask(run, method, route, options = {}) {
@@ -488,6 +488,7 @@ async function ask(run, method, route, options = {}) {
     const abort = AbortSignal.any([
         run.abort.signal,
         run.bindingAbort.signal,
+        run.stop.signal,
         ...(options.abort ? [options.abort] : []),
     ]);
     const answer = await call(run.binding, method, route, {
@@ -1581,6 +1582,7 @@ function relayRequest(run, role, request, response) {
     const signal = AbortSignal.any([
         run.abort.signal,
         run.bindingAbort.signal,
+        run.stop.signal,
         gone.signal,
         AbortSignal.timeout(run.settings.relayMs),
     ]);

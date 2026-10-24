@@ -17,7 +17,17 @@ interface Fixture {
 }
 
 const dirs: string[] = [];
-const live = new Set<{ kill: () => boolean; closed: Promise<void> }>();
+const live = new Set<{ kill: () => void; closed: Promise<void> }>();
+
+/** SIGKILLs the child's whole process group (it leads its own): a backgrounded descendant would hold the pipes open. */
+const killGroup = (pid: number | undefined): void => {
+    if (pid === undefined) return;
+    try {
+        process.kill(-pid, 'SIGKILL');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+};
 
 // The file's own teardown: kill and await every child still running, then remove the dirs they use.
 afterEach(async () => {
@@ -40,13 +50,13 @@ interface RunResult {
  */
 function run(cwd: string, env: NodeJS.ProcessEnv, command: string, args: string[]): Promise<RunResult> {
     return new Promise((resolve) => {
-        const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(command, args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
         let settled = false;
         let markClosed = (): void => undefined;
         const entry = {
-            kill: () => child.kill('SIGKILL'),
+            kill: () => killGroup(child.pid),
             closed: new Promise<void>((r) => {
                 markClosed = r;
             }),
@@ -174,6 +184,17 @@ describe('npm run release', () => {
         expect(new Set(seen)).toEqual(new Set(['seen']));
         expect(existsSync(barrier)).toBe(true);
     });
+    it('tears down a child whose backgrounded descendant holds the pipes open', async () => {
+        const running = run(tmpdir(), process.env, 'sh', ['-c', 'sleep 60 & wait']);
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const pending = [...live];
+        for (const child of pending) child.kill();
+        const bound = new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 3_000));
+        const closed = Promise.all(pending.map((child) => child.closed)).then(() => 'closed' as const);
+        expect(await Promise.race([closed, bound])).toBe('closed');
+        expect((await running).status).toBeNull();
+    });
+
     it('is wired to scripts/release.sh', () => {
         const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
         expect(pkg.scripts.release).toBe('sh scripts/release.sh');

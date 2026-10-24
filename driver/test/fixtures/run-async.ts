@@ -6,7 +6,17 @@ export interface AsyncResult {
     stderr: string;
 }
 
-const live = new Set<{ kill: (signal: NodeJS.Signals) => boolean; closed: Promise<void> }>();
+const live = new Set<{ kill: () => void; closed: Promise<void> }>();
+
+/** SIGKILLs the child's whole process group (it leads its own): a backgrounded descendant would hold the pipes open. */
+const killGroup = (pid: number | undefined): void => {
+    if (pid === undefined) return;
+    try {
+        process.kill(-pid, 'SIGKILL');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+};
 
 /**
  * Runs a real script without blocking the worker's event loop (spawnSync starves vitest's own
@@ -15,13 +25,13 @@ const live = new Set<{ kill: (signal: NodeJS.Signals) => boolean; closed: Promis
  */
 export const runAsync = (cmd: string, args: string[], opts: SpawnOptions = {}): Promise<AsyncResult> =>
     new Promise((resolve) => {
-        const child = spawn(cmd, args, { ...opts, stdio: ['ignore', 'pipe', 'pipe'] });
+        const child = spawn(cmd, args, { ...opts, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let stdout = '';
         let stderr = '';
         let settled = false;
         let markClosed = (): void => undefined;
         const entry = {
-            kill: (signal: NodeJS.Signals) => child.kill(signal),
+            kill: () => killGroup(child.pid),
             closed: new Promise<void>((r) => {
                 markClosed = r;
             }),
@@ -40,9 +50,9 @@ export const runAsync = (cmd: string, args: string[], opts: SpawnOptions = {}): 
         child.on('close', (code) => settle(code));
     });
 
-/** SIGKILLs every child still alive and waits for it to close. Call it from the test file's own afterEach. */
+/** SIGKILLs every child's process group still alive and waits for it to close. Call it from the test file's own afterEach. */
 export const killLiveChildren = async (): Promise<void> => {
     const pending = [...live];
-    for (const entry of pending) entry.kill('SIGKILL');
+    for (const entry of pending) entry.kill();
     await Promise.all(pending.map((entry) => entry.closed));
 };

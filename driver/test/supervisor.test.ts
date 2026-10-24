@@ -2532,3 +2532,20 @@ describe('a supervisor a test leaves running', () => {
         expect(liveSupervisors()).toBe(0);
     });
 });
+
+describe('a stop while the driver endpoint holds a request open', () => {
+    it('settles the supervisor without waiting out the request timeout', async () => {
+        let asked: () => void = () => undefined;
+        const requested = new Promise<void>((resolve) => (asked = resolve));
+        const server = createServer(() => asked());
+        servers.push(server);
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(null)));
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        const { done } = run({ url } as Driver);
+        await requested;
+        const started = Date.now();
+        await stopSupervisors();
+        await done;
+        expect(Date.now() - started).toBeLessThan(2_000);
+    });
+});
