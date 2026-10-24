@@ -1,6 +1,8 @@
 # Bellows
 
-**Standardize and monitor your agentic coding workflows across the organization.**
+**Product teams drive change. Engineers define the guardrails. Bellows does the work.**
+
+Bellows lets engineering teams encode how AI-assisted changes should happen: repository workflows, checks and human review. Product teams can initiate scoped changes while engineers retain architecture and release control. The planned MCP chat bridge is intended to be open source, not restricted to Cloud.
 
 Bellows runs your coding agent somewhere else. The same task you would type into a terminal —
 Claude Code or OpenCode, your repository, your test commands — runs on a cluster instead, against
@@ -17,6 +19,14 @@ pasted into a prompt.
   partitions every stored row.
 - **Vendor-agnostic.** Claude Code and OpenCode each run as a first-class executor, chosen per task.
 - **Close the laptop.** Tasks keep running; cluster size sets how many go at once, not your CPU.
+
+## Who does what
+
+- **Product** defines the desired change and acceptance criteria in an existing application.
+- **Engineering** owns architecture, versioned workflow gates, approvals and release. Advanced architecture policy checks, risk-aware review routing and golden paths are future product ideas.
+- **Bellows** orchestrates Claude Code/OpenCode execution against the real repository, with repeatable checks, telemetry and a human review path.
+
+**Open source remains a complete self-hosting choice.** The MCP chat-to-PR flow is planned for Community too. Teams seeking managed hosting, maintenance, updates and support can discuss [Bellows Cloud](https://bellows.cloud/); Enterprise SSO and advanced audit are roadmap capabilities, not shipping features.
 
 ## Quickstart
 
