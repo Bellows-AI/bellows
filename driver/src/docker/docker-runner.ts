@@ -9,6 +9,8 @@ import {
     removeGroup,
     startGroup,
     supervisorLossOf,
+    rememberGroup,
+    type GroupState,
 } from './docker-group.js';
 import { type DockerGateDeps, runDockerGate, runDockerReview } from './docker-gate.js';
 import {
@@ -106,14 +108,6 @@ export const defaultExecDocker: ExecDocker = (args, { input, ...options } = {}) 
  * helpers live in `docker-runner-support.ts`, the close-time reads in `docker-close-read.ts`.
  */
 
-/** What this process remembers of an attempt's container group: the run it was created for. */
-interface GroupState {
-    startedAt: string;
-    session: RunSession | null;
-    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
-    resumed?: boolean;
-}
-
 const GROUP_EXIT_WAIT_MS = 20_000;
 /**
  * How long `finish` waits for the group's supervisor to exit by itself before it kills the group:
@@ -134,6 +128,7 @@ interface RunnerDeps {
     endpoint?: SupervisorEndpoint;
     /** The board's checkpoint read, for a continuing claim whose task volume is gone (`task-restore.ts`). */
     checkpoints?: Pick<Board, 'checkpoint'>;
+    groupWatchMs?: number;
     /** The attempt groups this runner created, by lease token: one per attempt, never shared. */
     groups: Map<string, GroupState>;
     /**
@@ -297,7 +292,7 @@ async function ensureGroup(
         throw e;
     }
     const group: GroupState = { startedAt, session };
-    deps.groups.set(job.leaseToken, group);
+    rememberGroup(deps, job, group, job.leaseToken);
     return group;
 }
 
@@ -696,13 +691,14 @@ export function createDockerRunner(
         endpoint?: SupervisorEndpoint;
         sleep?: Sleep;
         checkpoints?: Pick<Board, 'checkpoint'>;
+        groupWatchMs?: number;
     } = {}
 ): Runner {
     const deadlines = createDeadlineRegistry();
     const ledger = createKillLedger({
         write: (job, kill) => recordDockerKill(execDocker, config, job, kill),
     });
-    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep, checkpoints } = extras;
+    const { files = { writeFile, rm }, steps, endpoint, sleep = abortableSleep, checkpoints, groupWatchMs } = extras;
     const deps: RunnerDeps = {
         config,
         execDocker,
@@ -716,6 +712,7 @@ export function createDockerRunner(
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
         ...(checkpoints ? { checkpoints } : {}),
+        ...(groupWatchMs ? { groupWatchMs } : {}),
     };
     return onOwnGroup({
         kill: (job) => dockerKill(deps, job),

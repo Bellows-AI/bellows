@@ -9,8 +9,10 @@ import { isLease } from './k8s-shapes.js';
 import { asIdentified } from './k8s-pod-shapes.js';
 import {
     asJob,
+    ABSENT,
     jobOutcome,
     type PodStartState,
+    readObject,
     readImagePullStatus,
     readTyped,
     readTypedList,
@@ -27,6 +29,7 @@ import {
 } from './k8s-teardown.js';
 import { HOLDER_LABEL, JOB_LABEL, LEASE_LABEL } from '../labels.js';
 import { boundedBy, POLL_MS, waitOf, withSignal } from './k8s-transport.js';
+import { GROUP_WATCH_MS, GROUP_WATCH_READ_MS, watchGroupEnd } from '../group-watch.js';
 import { anyOf, pollFor } from '../poll.js';
 import type { K8sDeps } from './k8s-transport.js';
 import type { RunSession } from '../runner.js';
@@ -211,7 +214,50 @@ export async function ensureGroup(
     const group: TaskGroup = { startedAt, session, agent: job.agent !== false, uids };
     groupsOf(deps).set(job.leaseToken, group);
     await awaitSupervisor(deps, job, runnerName(job));
+    watchRunnerGroup(deps, job, group, job.leaseToken);
     return group;
+}
+
+/**
+ * Whether the group's runner Job is confirmed over: gone (404), terminal, or marked by the Job controller
+ * as failing (`FailureTarget`/`Failed` True — the pod already counted failed, still terminating). A read that
+ * fails, times out or is malformed throws, and is no end (#967).
+ */
+async function runnerJobEnded(
+    deps: K8sDeps,
+    jobName: string,
+    ourUid: string | undefined,
+    signal?: AbortSignal
+): Promise<boolean> {
+    const read = await readObject(
+        withSignal(boundedBy(deps, Date.now() + GROUP_WATCH_READ_MS), signal),
+        jobPath(deps.config.k8sNamespace, jobName),
+        'watching the runner Job',
+        { shape: asJob, once: true }
+    );
+    if (read === ABSENT) return true;
+    // A Job of the same name under another uid is not ours: ours is gone.
+    if (ourUid && read.metadata.uid !== ourUid) return true;
+    if (jobOutcome(read.status) !== 'pending') return true;
+    return (read.status.conditions ?? []).some(
+        (c) => (c.type === 'FailureTarget' || c.type === 'Failed') && c.status === 'True'
+    );
+}
+
+/**
+ * Watches the group for its whole life, from its supervisor's first contact: a runner Job that ends
+ * under steps still waiting on its supervisor releases them at once (#967), however the agent's run stands.
+ * `held` is the token the group is recorded under, `job` the attempt whose steps it serves.
+ */
+export function watchRunnerGroup(deps: K8sDeps, job: BoardJob, group: TaskGroup, held: string): void {
+    void watchGroupEnd({
+        everyMs: deps.groupWatchMs ?? GROUP_WATCH_MS,
+        signal: anyOf(ledgerOf(deps).signal(job), ledgerOf(deps).abandoned(job)),
+        isCurrent: () => groupsOf(deps).get(held) === group,
+        confirmedEnd: (signal) =>
+            runnerJobEnded(deps, runnerName({ ...job, leaseToken: held }), group.uids.job, signal),
+        release: () => releaseSteps(stepHostOf(deps), job),
+    });
 }
 
 /**

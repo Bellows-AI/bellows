@@ -28,6 +28,7 @@ import {
     SPLIT_EURO_CASES,
     expectWholeEuro,
     dockerRunner,
+    fakeSteps,
 } from '../fixtures/docker-suite.js';
 
 /*
@@ -889,6 +890,29 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
             expect(removals(calls)).toEqual(['a5a5a5a5a5a5', 'older-mailbox']);
             expect(calls.some((args) => args[0] === 'logs')).toBe(false);
             expect(calls.some((args) => args[0] === 'wait')).toBe(false);
+        });
+
+        it('releases the steps of a taken-over group once its supervisor container is confirmed over (#967)', async () => {
+            const { exec: base, logs } = liveDaemon();
+            let supervisor = '{"Status":"running","Running":true}\n';
+            const exec = (args: string[]) =>
+                args[0] === 'inspect' && args.includes(supervisorName(job))
+                    ? Promise.resolve({ stdout: supervisor })
+                    : base(args);
+            const supervised = fakeSteps();
+            const runner = dockerRunner(exec, { spawn: logs, steps: supervised.sink, groupWatchMs: 10 });
+            expect(await runner.adopt(adopter)).toMatchObject({ live: true });
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(supervised.released).toEqual([]);
+
+            supervisor = '{"Status":"exited","ExitCode":137}\n';
+            const until = Date.now() + 3_000;
+            while (supervised.released.length === 0 && Date.now() < until) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            expect(supervised.released).toHaveLength(1);
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            expect(supervised.released).toHaveLength(1);
         });
 
         it('follows the live runner of the prior lease on a resumed run: no create, no env, no start, no go order', async () => {

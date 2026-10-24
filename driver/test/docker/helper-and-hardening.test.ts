@@ -16,7 +16,13 @@ import { supervisorName } from '../../src/docker/docker-mailbox.js';
 import { HELPER_TIMEOUT_MS, lookupHelper, type HelperPlan } from '../../src/helpers.js';
 import { serviceRunArgs } from '../../src/services.js';
 import type { RunnerFiles } from '../../src/docker/docker-runner-support.js';
-import { createStepBroker, StepChannelClosed, type StepSink, type SupervisorEndpoint } from '../../src/step-control.js';
+import {
+    createStepBroker,
+    StepChannelClosed,
+    stepLost,
+    type StepSink,
+    type SupervisorEndpoint,
+} from '../../src/step-control.js';
 import { REVIEW_REPLY_PROBE_ID } from '../../src/review/review-helpers.js';
 import { receiptedAnswer, receiptOrder } from '../fixtures/helper-receipt-steps.js';
 import { MAILBOXES, type StepRequest, type StepResult, type SupervisorReport } from '../../src/supervisor-contract.js';
@@ -466,6 +472,194 @@ describe('a group whose supervisor is gone releases its step channel', () => {
         await expect(runner.probeTree(repoJob)).rejects.toThrow(/killed while setting up services/);
         await expect(runner.syncCheckout(repoJob)).rejects.toThrow(/killed while setting up services/);
         expect(calls.slice(killedAt).filter((args) => ['create', 'run', 'start'].includes(args[0] ?? ''))).toEqual([]);
+    });
+});
+
+/**
+ * Issue #967: a gate in flight waits on the supervisor's answer, and the supervisor container is the
+ * only thing that says it is gone once the agent has reported. It is watched for the group's whole
+ * life; a confirmed end releases the steps, an unconfirmed read never does.
+ */
+describe('a step in flight when the supervisor container ends under a reporting group (#967)', () => {
+    const WATCH_MS = 10;
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const GATE = { command: 'npm test', cwd: '/task/factory', env: {}, timeoutMs: 600_000 };
+    const settle = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+    const lostWithin = async (gating: Promise<unknown>, ms = 3_000): Promise<'lost' | 'hung' | 'other'> =>
+        Promise.race([
+            gating.then(
+                () => 'other' as const,
+                (e: unknown) => (stepLost(e) ? ('lost' as const) : ('other' as const))
+            ),
+            settle(ms).then(() => 'hung' as const),
+        ]);
+    const RUNNING = '{"Status":"running","Running":true}\n';
+
+    /** A daemon answering `inspect` by container name: the supervisor's answer is scripted, anything else is absent. */
+    function daemon(script: { supervisor: () => string | Error }) {
+        const inspected: string[] = [];
+        const exec = async (args: string[]) => {
+            if (args[0] === 'inspect') {
+                const name = args[args.length - 1] ?? '';
+                if (name !== supervisorName(repoJob)) throw new Error('Error: No such object: ' + name);
+                inspected.push(name);
+                const answer = script.supervisor();
+                if (answer instanceof Error) throw answer;
+                return { stdout: answer };
+            }
+            return { stdout: args[0] === 'wait' ? '0\n' : '' };
+        };
+        return { exec: exec as unknown as (args: string[]) => Promise<{ stdout: string }>, inspected };
+    }
+
+    /** The supervisor holds every gate unanswered; the group is made on demand, or by a run that reported. */
+    async function gateHeld(script: { supervisor: () => string | Error }, reported = true) {
+        const broker = createStepBroker();
+        broker.open(CONTROL_TOKEN);
+        const released = vitest.spyOn(broker, 'release');
+        let serving = true;
+        let gated = false;
+        const loop = (async () => {
+            while (serving) {
+                const step = await broker.next(CONTROL_TOKEN, 20, new AbortController().signal);
+                if (!step || step === 'closed') continue;
+                if (step.kind === 'gate') gated = true;
+                else broker.settle(CONTROL_TOKEN, step.id, step.invocation, ok());
+                // The agent is released by `go` and reports once it is gone.
+                if (step.kind === 'go') broker.report(CONTROL_TOKEN, FINALIZED);
+            }
+        })();
+        const d = daemon(script);
+        const runner = dockerRunner(d.exec, {
+            steps: broker,
+            groupWatchMs: WATCH_MS,
+            sleep: () => new Promise((resolve) => setTimeout(resolve, 5)),
+        });
+        if (reported) {
+            await runner.run(repoJob, { id: SESSION, resume: false });
+        }
+        const gating = runner.runGate(repoJob, GATE);
+        gating.catch(() => undefined);
+        while (!gated) await settle(5);
+        return {
+            runner,
+            gating,
+            inspected: d.inspected,
+            released,
+            stop: async () => {
+                await runner.kill(repoJob).catch(() => undefined);
+                serving = false;
+                await loop;
+            },
+        };
+    }
+
+    it.each([
+        ['exits', () => '{"Status":"exited","ExitCode":137}\n'],
+        ['is dead', () => '{"Status":"dead"}\n'],
+    ])('fails a gate in flight at once when the supervisor container %s after the report', async (_n, ended) => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            script.supervisor = ended;
+            expect(await lostWithin(held.gating)).toBe('lost');
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it('fails a gate in flight at once when the supervisor container is removed', async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            script.supervisor = () => new Error('Error: No such object: ' + supervisorName(repoJob));
+            expect(await lostWithin(held.gating)).toBe('lost');
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it("fails a supervisor-only group's gate at once when its supervisor container exits", async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script, false);
+        try {
+            script.supervisor = () => '{"Status":"exited"}\n';
+            expect(await lostWithin(held.gating)).toBe('lost');
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it.each([
+        ['a daemon error', () => new Error('Cannot connect to the Docker daemon')],
+        ['a timeout', () => Object.assign(new Error('timed out'), { killed: true })],
+        ['garbage stdout', () => 'not json'],
+        ['empty stdout', () => ''],
+        ['null', () => 'null\n'],
+        ['a paused container', () => '{"Status":"paused"}\n'],
+        ['a restarting container', () => '{"Status":"restarting"}\n'],
+    ])('never fails a waiting gate on an unconfirmed inspect: %s', async (_n, unread) => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            const before = held.inspected.length;
+            script.supervisor = unread;
+            await settle(WATCH_MS * 20);
+            expect(held.inspected.length).toBeGreaterThan(before + 3);
+            expect(await lostWithin(held.gating, 50)).toBe('hung');
+            script.supervisor = () => '{"Status":"exited"}\n';
+            expect(await lostWithin(held.gating)).toBe('lost');
+        } finally {
+            await held.stop();
+        }
+    });
+
+    /** Reads stop growing and a later confirmed end releases nothing: the group is no longer this watch's. */
+    async function stopsWatching(
+        held: Awaited<ReturnType<typeof gateHeld>>,
+        script: { supervisor: () => string | Error }
+    ) {
+        await settle(WATCH_MS * 3);
+        const after = held.inspected.length;
+        const released = held.released.mock.calls.length;
+        script.supervisor = () => new Error('Error: No such object: ' + supervisorName(repoJob));
+        await settle(WATCH_MS * 20);
+        expect(held.inspected.length).toBe(after);
+        expect(held.released.mock.calls.length).toBe(released);
+    }
+
+    it('stops watching, and releases nothing, once the group is killed', async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            await held.runner.kill(repoJob);
+            await stopsWatching(held, script);
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it('stops watching, and releases nothing, once the group is finished', async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            await held.runner.finish(repoJob);
+            await stopsWatching(held, script);
+        } finally {
+            await held.stop();
+        }
+    });
+
+    it('stops watching, and releases nothing, once the attempt is abandoned to the next holder', async () => {
+        const script = { supervisor: (): string | Error => RUNNING };
+        const held = await gateHeld(script);
+        try {
+            held.runner.abandon(repoJob);
+            await stopsWatching(held, script);
+            expect(await lostWithin(held.gating, 50)).toBe('hung');
+        } finally {
+            await held.stop();
+        }
     });
 });
 

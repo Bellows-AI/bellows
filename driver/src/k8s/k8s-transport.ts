@@ -356,6 +356,8 @@ export interface K8sDeps {
     serviceBaselines?: Map<string, Map<string, number>>;
     /** What this runner did to each attempt (`k8s-kill.ts`); created on first use. */
     ledger?: KillLedger;
+    /** Test-only: how often a group's end is looked for (`group-watch.ts`); production never sets it. */
+    groupWatchMs?: number;
 }
 
 /** The ServiceAccount volume every pod gets, holding the token and the cluster CA. */
@@ -526,7 +528,7 @@ export function inClusterRequest(deps: InClusterRequestDeps = {}): K8sRequest {
 export interface K8sJobStatus {
     succeeded?: number;
     failed?: number;
-    conditions?: { type: string; reason?: string }[];
+    conditions?: { type: string; status?: string; reason?: string }[];
 }
 
 export interface K8sPod {

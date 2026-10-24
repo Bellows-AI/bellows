@@ -33,7 +33,8 @@ import {
 } from './docker-runner-support.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from '../poll.js';
 import { finalizeWaitMs } from '../supervisor-plan.js';
-import { supervisorLossOf, waitSupervisorExit } from './docker-group.js';
+import { supervisorLossOf, waitSupervisorExit, rememberGroup } from './docker-group.js';
+import type { StepSink } from '../step-control.js';
 import { supervisorName } from './docker-mailbox.js';
 import { readDockerKills } from './docker-teardown.js';
 import { type AdoptPrimitives, adoptEarlierRun, type EarlierRun } from '../adopt-skeleton.js';
@@ -473,6 +474,8 @@ interface AdoptDeps {
     ledger: KillLedger;
     fence: (job: BoardJob, signal: AbortSignal) => Promise<void>;
     adopted: Map<string, string>;
+    steps?: StepSink;
+    groupWatchMs?: number;
     /** The attempt groups this runner knows, by lease; a taken-over group is recorded under the prior lease (#829). */
     groups: Map<string, { startedAt: string; session: RunSession | null; resumed?: boolean }>;
 }
@@ -553,12 +556,13 @@ function dockerAdoption(deps: AdoptDeps): AdoptPrimitives<DockerEarlier> {
         sweep: (_found, job, signal) => deps.fence(job, anyOf(signal)),
         rollback: async () => undefined,
         // Docker keeps no map of the group's claim to forget: the runner addresses it by the prior lease alone.
-        adoptLive: ({ prior, session, live }) => {
-            deps.groups.set(prior.leaseToken, {
+        adoptLive: ({ prior, session, live }, job) => {
+            const group = {
                 startedAt: live?.startedAt ?? '',
                 session: session ? { id: session, resume: true } : null,
                 resumed: true,
-            });
+            };
+            rememberGroup(deps, job, group, prior.leaseToken);
             return () => {
                 deps.groups.delete(prior.leaseToken);
             };

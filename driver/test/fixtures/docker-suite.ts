@@ -345,6 +345,7 @@ export function dockerRunner(
         steps = fakeSteps().sink,
         endpoint,
         sleep = async () => {},
+        groupWatchMs,
     }: {
         env?: Parameters<typeof loadDriverConfig>[0];
         spawn?: typeof spawn;
@@ -352,6 +353,7 @@ export function dockerRunner(
         steps?: StepSink;
         endpoint?: SupervisorEndpoint;
         sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+        groupWatchMs?: number;
     } = {}
 ): ReturnType<typeof createDockerRunner> {
     return createDockerRunner(loadDriverConfig(env), spawnFn, exec ? withTaskVolume(exec) : exec, {
@@ -360,5 +362,6 @@ export function dockerRunner(
         ...(endpoint ? { endpoint } : {}),
         // No test waits out a real pause: a test that is about one passes its own.
         sleep,
+        ...(groupWatchMs ? { groupWatchMs } : {}),
     });
 }

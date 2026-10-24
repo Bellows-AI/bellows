@@ -59,7 +59,7 @@ export const RULES = [
     // --- docker executor, specific concerns ------------------------------------------------------
     [/^driver\/src\/(loop\/loop-adopt|loop\/loop-reclaim|loop\/loop-fence|adopt-skeleton|task-restore|reclaim-calls|kill-ledger|loop\/loop-ledger|operation-ledger)\.ts$/, RECOVERY, 'adoption and takeover'],
     [/^driver\/src\/scripts\/(checkpoint\.cjs|checkpoint-restore\.cjs|binding-write\.sh|operation-ledger\.cjs)$/, [...RECOVERY, 'driver'], 'checkpoints and the ledger'],
-    [/^driver\/src\/(supervisor-contract|supervisor-plan|supervised-steps|step-control|control-channel|docker\/docker-mailbox|docker\/docker-group|docker\/docker-group-probe|termination|startup-cause)\.ts$/, ['driver', ...RECOVERY], 'task supervisor protocol'],
+    [/^driver\/src\/(supervisor-contract|supervisor-plan|supervised-steps|step-control|control-channel|docker\/docker-mailbox|docker\/docker-group|docker\/docker-group-probe|group-watch|termination|startup-cause)\.ts$/, ['driver', ...RECOVERY], 'task supervisor protocol'],
     [/^driver\/src\/(run-deadline|docker\/docker-run-timers|timeout-note)\.ts$/, ['run-deadline'], 'run deadline'],
     [/^driver\/src\/(services|loop\/loop-services|service-restart)\.ts$/, ['services', 'node-disruption'], 'service containers'],
     [/^driver\/src\/scripts\/service-generation-(bump|probe)\.sh$/, ['services'], 'service generation'],

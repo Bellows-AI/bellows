@@ -4,7 +4,7 @@ import { mergeClaudeCloseRead } from '../close-read.js';
 import { CLAUDE_CODE, OPENCODE } from '../executors.js';
 import { jobPath, jobPodsPath, jobsSelectorPath, podLogPath } from './k8s-auxspec.js';
 import { acquireClaim, readClaim, releaseClaimAfterGroupEnd, sweepClaimedFleets } from './k8s-fence.js';
-import { groupsOf } from './k8s-group.js';
+import { groupsOf, type TaskGroup, watchRunnerGroup } from './k8s-group.js';
 import {
     agentRunJob,
     finishedAgentRun,
@@ -490,16 +490,18 @@ function k8sAdoption(deps: K8sDeps, reads: CloseReads): AdoptPrimitives<EarlierR
         rollback: async (job) => {
             await releaseClaimAfterGroupEnd(deps, job);
         },
-        adoptLive: ({ prior, session, live }) => {
+        adoptLive: ({ prior, session, live }, job) => {
             if (!live) return () => undefined;
             // The group's end is this process's from here, as if it had created it (`resumed`: it created nothing).
-            groupsOf(deps).set(prior.leaseToken, {
+            const group: TaskGroup = {
                 startedAt: live.startedAt,
                 session: session ? { id: session, resume: true } : null,
                 agent: true,
                 uids: { job: live.uid },
                 resumed: true,
-            });
+            };
+            groupsOf(deps).set(prior.leaseToken, group);
+            watchRunnerGroup(deps, job, group, prior.leaseToken);
             return () => {
                 groupsOf(deps).delete(prior.leaseToken);
             };

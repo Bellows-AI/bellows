@@ -16,7 +16,7 @@ import { pollRunnerJobUntilTerminal } from '../src/k8s/k8s-poll.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s/k8s-transport.js';
 import { AdoptionBlocked, commandMark, ownGroup, type AdoptedRun } from '../src/runner.js';
-import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
+import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 
 const NS = 'factory';
@@ -392,6 +392,49 @@ describe('a live run (#829)', () => {
 
         (adopted as { forget(): void }).forget();
         expect(deps.groups?.get(job.leaseToken)).toBeUndefined();
+    });
+
+    it("releases a taken-over group's waiting steps once its Job is confirmed gone, never on an unread Job (#967)", async () => {
+        let jobRead: { status: number; body: string } | undefined;
+        const { deps } = world(
+            [runnerItem({ active: 1 })],
+            (method, path) => (method === 'GET' && path === jobPath(NS, priorName) ? jobRead : undefined),
+            { pods: runningPods() }
+        );
+        // The supervisor's own log answers that it released the agent, as in the other live-run cases.
+        const released: string[] = [];
+        const token = 'adopter-control-token';
+        const watched: K8sDeps = {
+            ...deps,
+            request: (method, path, body, options) =>
+                method === 'GET' && supervisorLogPath(path)
+                    ? Promise.resolve({ status: 200, body: `supervisor: serving\n${RELEASED}\n` })
+                    : deps.request(method, path, body, options),
+            steps: {
+                submit: async () => {
+                    throw new Error('unused');
+                },
+                awaitReport: () => new Promise(() => undefined),
+                agentEnded: () => undefined,
+                contacted: () => true,
+                release: (t: string) => {
+                    released.push(t);
+                },
+                attach: () => undefined,
+                cancel: () => undefined,
+            },
+            groupWatchMs: 10,
+        };
+        const stepper: BoardJob = { ...adopter, supervisorEnv: { [SUPERVISOR_ENV.controlToken]: token } };
+        await adoptFinishedRunner(watched, stepper, reads());
+        const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+        jobRead = { status: 503, body: 'unavailable' };
+        await wait(150);
+        expect(released).toEqual([]);
+
+        jobRead = { status: 404, body: '{}' };
+        await vi.waitFor(() => expect(released).toEqual([token]), { timeout: 3_000 });
     });
 
     describe("the claim of a taken-over group is its holder's, the group the prior lease's", () => {

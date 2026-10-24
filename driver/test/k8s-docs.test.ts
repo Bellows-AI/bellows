@@ -230,6 +230,12 @@ describe('the executor isolation record (#382)', () => {
         );
     });
 
+    it('states that a NotReady node is seen only when the cluster acts on it', () => {
+        expect(prose(kubernetesDocs)).toContain(
+            "Stated limit: a node going NotReady is seen only when the cluster acts on it (taint-based eviction, default ~300 s, then the Job's `FailureTarget`/`Failed` or the pod's deletion); the driver never treats stale pod status as loss."
+        );
+    });
+
     it('states that a takeover needs the rebind grace to outlast the kubelet refresh', () => {
         expect(prose(kubernetesDocs)).toContain(
             "Stated limit: a takeover needs `driver.rebindGraceMs` to outlast that refresh (~60 s measured); a shorter grace ends the group before the new holder's binding arrives."

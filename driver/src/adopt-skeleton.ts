@@ -69,7 +69,7 @@ export interface AdoptPrimitives<F extends EarlierRun> {
     /** Gives back what `begin` took. */
     rollback(job: BoardJob): Promise<void>;
     /** A live run taken over: this driver's memory of its group, recorded under the prior lease; answers the undo. */
-    adoptLive(found: F): () => void;
+    adoptLive(found: F, job: BoardJob): () => void;
 }
 
 /** A throw that stands the attempt down to its lease: already blocked, an unproven read, or anything else, prefixed. */
@@ -199,7 +199,7 @@ async function takeOver<F extends EarlierRun>(
     await p.confirmOwnership(found, job, signal);
     adopted.set(job.leaseToken, p.recordKey(found));
     // Recorded before the sweep, which spares the live group by it; forgotten when the sweep fails.
-    const forget = p.adoptLive(found);
+    const forget = p.adoptLive(found, job);
     try {
         await p.sweep(found, job, signal);
         // Nothing is deleted once the attempt stood down, whatever the run it took.

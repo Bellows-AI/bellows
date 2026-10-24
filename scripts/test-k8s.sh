@@ -2509,6 +2509,8 @@ HANDOVER_S=$((LANE_LEASE_S + LANE_REBIND_GRACE_S + LANE_MARGIN_S))
 ORPHANED_S=$((LANE_ORPHAN_S + HANDOVER_S))
 DRAINED='the driver was drained'
 POD_LOST='infrastructure loss: the runner pod was deleted'
+# What a gate or setup whose supervisor was lost records (`gateLossReason`, driver/src/loop-run.ts); the cause follows in parentheses.
+GATE_LOST='infrastructure loss: the task supervisor running the gates was lost'
 JOB_LOST='infrastructure loss: the runner job '
 # The interruption the next claim records for an attempt whose lease expired (issue #822).
 EXPIRED='the lease expired: its driver went silent'
@@ -3478,6 +3480,36 @@ else
     tk_check 't4: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
     expect_contains 't4: the next claim takes over the group whose agent exited' "$(driver_logs)" "job $t4: $TOOK_OVER"
     expect_not_contains 't4: the finished runner was not waited out' "$(driver_logs)" "job $t4: $ADOPTED"
+fi
+
+# T4b. The gates: the runner pod is deleted while a gate runs (issue #967). The pod's supervisor goes with
+#      it, so the waiting gate step is released at once and the attempt ends as an interruption inside two
+#      leases, never failed or dead; the pod's agent is gone with it, so the next claim resumes the session
+#      in a new runner and reruns the gate that never finished.
+begin_phase takeover-gate-pod-lost
+n="$RELEASE-t4b"
+commit_plan takeover-gate-pod-lost "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
+t4b="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+tk_use "$t4b"
+t4b_pod="$(await_runner_pod "$t4b")"
+if [ -z "$t4b" ] || [ -z "$t4b_pod" ]; then
+    bad 't4b: the gate job is running' "job '$t4b': $(job_brief "$t4b")"
+else
+    tk_await "$TK_D$n.gate.count" 1 300 && ok 't4b: the gate is running' || bad 't4b: the gate is running' "$(tk_count "$TK_D$n.gate.count")"
+    deleted_at="$(date +%s)"
+    kubectl delete pod "$t4b_pod" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
+    t4b_mid="$(await_brief "$t4b" "*|1|1|$GATE_LOST*" $((2 * LANE_LEASE_S + 30)))"
+    took=$(($(date +%s) - deleted_at))
+    case "$t4b_mid" in
+    *"|1|1|$GATE_LOST"*) [ "$took" -lt $((2 * LANE_LEASE_S)) ] && ok "t4b: a deleted runner pod under a gate is an interruption (${took}s, inside two ${LANE_LEASE_S}s leases)" ||
+        bad 't4b: a deleted runner pod under a gate is an interruption inside two leases' "took ${took}s: $t4b_mid" ;;
+    *) bad 't4b: a deleted runner pod under a gate is an interruption inside two leases' "status|attempts|count|claimSeq|reason: $t4b_mid" ;;
+    esac
+    tk_touch "$TK_D$n.go" || bad 't4b: the barrier is released' 'the touch failed'
+    tk_settled t4b "$t4b" "$GATE_LOST"
+    tk_check 't4b: the gate ran again, once' "$(tk_final tk_count "$TK_D$n.gate.count")" 2
+    tk_check 't4b: the agent ran again in a new runner, once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 2
+    expect_contains 't4b: the next claim resumes the session' "$(driver_logs)" "job $t4b: attempt 1 resuming session"
 fi
 
 # T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next

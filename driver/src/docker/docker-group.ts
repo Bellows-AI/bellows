@@ -38,7 +38,12 @@ import {
     startupRefusalOf,
 } from './docker-runner-support.js';
 import { assertTaskVolumeIsOurs } from './docker-task-volume.js';
+import { GROUP_WATCH_MS, GROUP_WATCH_READ_MS, watchGroupEnd } from '../group-watch.js';
 import { JOB_LABEL, LEASE_LABEL, ROLE_LABEL } from '../labels.js';
+import type { KillLedger } from '../kill-ledger.js';
+import type { StepSink } from '../step-control.js';
+import { anyOf } from '../poll.js';
+import { releaseSteps, stepHostOf } from '../supervised-steps.js';
 import { Inconclusive, REBIND_DEADLINE_MS, type RunSession } from '../runner.js';
 import {
     EXPORTER_CONTAINER,
@@ -487,4 +492,64 @@ export async function rebindGroup(
     } catch {
         throw new Error(`rebinding the task group of job ${job.id} failed`);
     }
+}
+
+/**
+ * Whether the group's supervisor container is confirmed over: `exited`/`dead`, or gone (`No such object`).
+ * A daemon error, a timeout, an unparsable answer or any other status is no end (#967).
+ */
+async function supervisorEnded(execDocker: ExecDocker, job: BoardJob, signal?: AbortSignal): Promise<boolean> {
+    let out: string;
+    try {
+        out = (
+            await execDocker(['inspect', '--format', '{{json .State}}', supervisorName(job)], {
+                timeout: GROUP_WATCH_READ_MS,
+                ...(signal ? { signal } : {}),
+            })
+        ).stdout;
+    } catch (e) {
+        return noSuchObject(e, CONTAINER);
+    }
+    let state: unknown;
+    try {
+        state = JSON.parse(out);
+    } catch {
+        return false;
+    }
+    const status = typeof state === 'object' && state !== null ? (state as { Status?: unknown }).Status : null;
+    return status === 'exited' || status === 'dead';
+}
+
+/** What a docker group watch reads: the daemon, the attempt's kill signal, the groups map and the step channel. */
+interface GroupWatchDeps {
+    config: DriverConfig;
+    execDocker: ExecDocker;
+    ledger: KillLedger;
+    groups: Map<string, GroupState>;
+    steps?: StepSink;
+    groupWatchMs?: number;
+}
+
+/**
+ * Records the group under `held` and watches it for its whole life, from its supervisor's first contact: a supervisor container that
+ * exits or vanishes under steps still waiting on it releases them at once (#967). `held` is the lease
+ * the group is recorded under, `job` the attempt whose steps it serves.
+ */
+export function rememberGroup(deps: GroupWatchDeps, job: BoardJob, group: GroupState, held: string): void {
+    deps.groups.set(held, group);
+    void watchGroupEnd({
+        everyMs: deps.groupWatchMs ?? GROUP_WATCH_MS,
+        signal: anyOf(deps.ledger.signal(job), deps.ledger.abandoned(job)),
+        isCurrent: () => deps.groups.get(held) === group,
+        confirmedEnd: (signal) => supervisorEnded(deps.execDocker, { ...job, leaseToken: held }, signal),
+        release: () => releaseSteps(stepHostOf(deps), job),
+    });
+}
+
+/** What this process remembers of an attempt's container group: the run it was created for. */
+export interface GroupState {
+    startedAt: string;
+    session: RunSession | null;
+    /** Taken over from a lost driver (#829): this runner created none of it, and orders no `go`. */
+    resumed?: boolean;
 }
