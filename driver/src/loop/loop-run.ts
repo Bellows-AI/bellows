@@ -310,7 +310,10 @@ async function reportRunTail(
     if (isAgentless(job)) return;
     // A spool-cap stop is stamped on the outcome the session report reads.
     drainTranscriptExport(ctx, outcome);
-    await reportScrapedSession(rt, job, executorType, outcome);
+    // A run an earlier claim launched (adopted or taken over) is no launch by this claim: the board
+    // would otherwise count the adopting claim as a new token-producing execution.
+    const launchedHere = !ctx.adopted && !ctx.takeover;
+    await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
     await uploadRunArtifacts({ board: rt.board, job, executorType, outcome }, rt);

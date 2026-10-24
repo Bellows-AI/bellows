@@ -10,7 +10,8 @@ import { runJob } from '../src/loop/loop-run.js';
 import type { SyncResult } from '../src/publish/publish.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { gatedJob, job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
+import { gatedJob, job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 type RunnerOptions = NonNullable<Parameters<typeof stubRunner>[1]>;
 
@@ -238,8 +239,46 @@ describe('the session an attempt runs under, reported to the board (issue #845)'
             ok({ sessionId: 'ses_never', started: false })
         );
 
-        const at = r.board.sessions.findIndex((s) => s.sessionId === 'ses_never');
-        if (at >= 0) expect(r.board.sessionEvidence[at]).toBe(false);
+        // A start that never ran reports no session at all, so no launch is claimed for it.
+        expect(r.board.sessions.some((s) => s.sessionId === 'ses_never')).toBe(false);
+        expect(r.board.sessionEvidence).not.toContain(true);
+    });
+
+    it('does not claim launch evidence for the session of an adopted run: adoption launches nothing', async () => {
+        const r = await attempt(
+            { ...job(1), executorType: 'opencode' },
+            { adopt: async () => ({ outcome: ok({ sessionId: 'ses_adopted' }), claimSeq: 4 }) }
+        );
+
+        const at = r.board.sessions.findIndex((s) => s.sessionId === 'ses_adopted');
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(r.board.sessionEvidence[at]).toBe(false);
+    });
+
+    it('does not claim launch evidence for the session of a taken-over run', async () => {
+        const prior = { ...job(1), leaseToken: 'lease-prior' };
+        const live = {
+            live: true as const,
+            prior,
+            claimSeq: 4,
+            session: 'ses_live',
+            startedAt: 'then',
+            forget: () => {},
+        };
+        const board = stubBoard([]).board;
+        const runner = stubRunner(async () => ok({ sessionId: 'ses_live' }), { adopt: async () => live });
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        const rt = stubRuntime(board, runner, { gates });
+        await runJob(rt, {
+            ...job(1),
+            executorType: 'opencode',
+            claimSeq: 5,
+            supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/', [SUPERVISOR_ENV.controlToken]: 'tok' },
+        });
+
+        const at = board.sessions.findIndex((s) => s.sessionId === 'ses_live');
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(board.sessionEvidence[at]).toBe(false);
     });
 
     it('runs and completes the attempt when the board cannot take the resumed session report', async () => {
