@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -527,7 +528,16 @@ describe('ci workflows', () => {
         expect(stamp, 'the build job never stamps VERSION').toBeGreaterThan(-1);
         expect(stamp).toBeLessThan(firstBuild);
         expect(steps[stamp]!.env!.TAG).toBe(`${'$'}{{ github.ref_name }}`);
-        expect(steps[stamp]!.run).toContain(`"${'$'}{TAG#v}" >VERSION`);
+        // A tag with build metadata (v1.0.0+build.1) still publishes; the server's VERSION_PATTERN
+        // rejects `+`, so the stamp drops it rather than ship an image that cannot boot.
+        const stamped = (tag: string) =>
+            execFileSync('sh', ['-c', steps[stamp]!.run!.replace('>VERSION', '')], {
+                env: { ...process.env, TAG: tag },
+                encoding: 'utf8',
+            }).trim();
+        expect(stamped('v0.0.9-rc-2')).toBe('0.0.9-rc-2');
+        expect(stamped('v1.0.0+build.1')).toBe('1.0.0');
+        expect(stamped('v1.0.0')).toBe('1.0.0');
     });
 
     it('gates on secrets and on CRITICAL and HIGH, and pins the scanner', () => {
