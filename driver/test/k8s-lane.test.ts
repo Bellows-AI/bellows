@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +10,7 @@ import {
     SUPERVISOR_STEP_WAIT_MS,
 } from '../src/supervisor-contract.js';
 import { REPO_ROOT, readRepoFile } from './fixtures/repo-files.js';
+import { killLiveChildren, runAsync } from './fixtures/run-async.js';
 
 describe('kind lane argument validation', () => {
     it.each([
@@ -20,23 +21,51 @@ describe('kind lane argument validation', () => {
         ['--netpol', '--phase', 'recovery'],
         ['--netpol', '--cluster'],
         ['--unknown'],
-    ])('refuses %j before starting any lane', (...args) => {
-        const result = spawnSync('bash', ['scripts/test-k8s.sh', ...args], {
-            cwd: REPO_ROOT,
-            encoding: 'utf8',
-            timeout: 5000,
-        });
+    ])('refuses %j before starting any lane', async (...args) => {
+        const result = await runAsync('bash', ['scripts/test-k8s.sh', ...args], { cwd: REPO_ROOT });
         expect(result.status).toBe(2);
         expect(result.stdout).not.toContain('# chart');
         expect(result.stderr).toBe('');
     });
 
-    it('offers the supervisor control phase (issue #770)', () => {
-        const result = spawnSync('bash', ['scripts/test-k8s.sh', '--help'], {
+    // scripts/test-k8s.sh calls `dirname` before it parses an argument. The shim waits for a barrier file the
+    // test creates from a timer: a blocked event loop (spawnSync) cannot create it in time and logs `late`.
+    it('refuses arguments without blocking the worker', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'k8s-lane-barrier-'));
+        stubDirs.push(dir);
+        const realDirname = execFileSync('sh', ['-c', 'command -v dirname'], { encoding: 'utf8' }).trim();
+        const barrier = join(dir, 'barrier');
+        const log = join(dir, 'probe.log');
+        writeFileSync(
+            join(dir, 'dirname'),
+            `#!/bin/sh
+i=0
+while [ "$i" -lt 40 ] && [ ! -e "$PROBE_BARRIER" ]; do
+    node -e 'setTimeout(() => {}, 50)'
+    i=$((i + 1))
+done
+if [ -e "$PROBE_BARRIER" ]; then echo seen >>"$PROBE_LOG"; else echo late >>"$PROBE_LOG"; fi
+exec ${JSON.stringify(realDirname)} "$@"
+`
+        );
+        chmodSync(join(dir, 'dirname'), 0o755);
+        const pending = runAsync('bash', ['scripts/test-k8s.sh', '--unknown'], {
             cwd: REPO_ROOT,
-            encoding: 'utf8',
-            timeout: 5000,
+            env: {
+                ...process.env,
+                PATH: `${dir}:${process.env.PATH ?? ''}`,
+                PROBE_BARRIER: barrier,
+                PROBE_LOG: log,
+            },
         });
+        setTimeout(() => writeFileSync(barrier, ''), 0);
+        const result = await pending;
+        expect(readFileSync(log, 'utf8').trim()).toBe('seen');
+        expect(result.status).toBe(2);
+    });
+
+    it('offers the supervisor control phase (issue #770)', async () => {
+        const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('|recovery|services|takeover|control|acceptance|capacity|drain|bench]');
     });
@@ -95,7 +124,10 @@ const WIRED = {
 };
 
 const stubDirs: string[] = [];
-afterEach(() => {
+// One teardown: kill and await live children first, then remove the dirs they run from (nested afterEach
+// hooks run before this one, so the nested suites keep their dirs in stubDirs too).
+afterEach(async () => {
+    await killLiveChildren();
     for (const dir of stubDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -616,20 +648,13 @@ case "$*" in
     ;;
 esac
 `;
-    const dirs: string[] = [];
-    afterEach(() => {
-        for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-    });
-
-    const endSidecar = (notReady: number, env: Record<string, string> = {}) => {
+    const endSidecar = async (notReady: number, env: Record<string, string> = {}) => {
         const dir = mkdtempSync(join(tmpdir(), 'k8s-lane-pg-'));
-        dirs.push(dir);
+        stubDirs.push(dir);
         writeFileSync(join(dir, 'kubectl'), KUBECTL_STUB);
         chmodSync(join(dir, 'kubectl'), 0o755);
         const harness = `NAMESPACE=ns\nbad() { echo "BAD $1"; }\n${fn}\nend_postgres_sidecar pod-x; echo "rc=$?"\n`;
-        const result = spawnSync('bash', ['-c', harness], {
-            encoding: 'utf8',
-            timeout: 30000,
+        const result = await runAsync('bash', ['-c', harness], {
             env: {
                 ...process.env,
                 PATH: `${dir}:${process.env.PATH ?? ''}`,
@@ -650,16 +675,16 @@ esac
 
     // `kill 1` is dropped by the postgres image while its entrypoint (pid 1, no SIGTERM handler) still
     // initialises the data directory, so a kill sent before the server is ready restarts nothing.
-    it('ends the postgres sidecar only after pg_isready has succeeded', () => {
-        const { out, calls } = endSidecar(2);
+    it('ends the postgres sidecar only after pg_isready has succeeded', async () => {
+        const { out, calls } = await endSidecar(2);
         expect(out).toContain('rc=0');
         const kills = calls.flatMap((c, i) => (c.includes('kill 1') ? [i] : []));
         expect(kills).toEqual([3]);
         expect(calls.slice(0, 3).every((c) => c.includes('pg_isready'))).toBe(true);
     });
 
-    it('fails the case and never ends the sidecar when postgres is not ready by the deadline', () => {
-        const { out, calls } = endSidecar(1000, { PG_READY_SECONDS: '2' });
+    it('fails the case and never ends the sidecar when postgres is not ready by the deadline', async () => {
+        const { out, calls } = await endSidecar(1000, { PG_READY_SECONDS: '2' });
         expect(out).toContain('BAD the postgres sidecar accepts connections before it is ended');
         expect(out).toContain('rc=1');
         expect(calls.some((c) => c.includes('kill 1'))).toBe(false);
@@ -690,12 +715,8 @@ describe('kind lane bench phase (issue #831)', () => {
         expect(script).not.toMatch(/selected_phase bench/);
     });
 
-    it('offers the phase in --help and says it is left out of all', () => {
-        const result = spawnSync('bash', ['scripts/test-k8s.sh', '--help'], {
-            cwd: REPO_ROOT,
-            encoding: 'utf8',
-            timeout: 5000,
-        });
+    it('offers the phase in --help and says it is left out of all', async () => {
+        const result = await runAsync('bash', ['scripts/test-k8s.sh', '--help'], { cwd: REPO_ROOT });
         expect(result.status).toBe(0);
         expect(result.stdout).toContain('|drain|bench]');
         expect(result.stdout).toMatch(/leaves out drain .* and bench/);
