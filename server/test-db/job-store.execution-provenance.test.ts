@@ -193,8 +193,8 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
         expect((await executions(fix.id))[0]).toMatchObject({ root_job_id: root.id, resumed: true });
     });
 
-    it('resolves a named review to its requesting job and root, and a lost reviewer resumes its session', async () => {
-        const reviewStore = createJobStore({
+    const reviewingStore = () =>
+        createJobStore({
             sql,
             orgId: ORG,
             plan: {
@@ -207,6 +207,9 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
                 }),
             },
         });
+
+    it('resolves a named review to its requesting job and root, and a lost reviewer resumes its session', async () => {
+        const reviewStore = reviewingStore();
         const callerId = (await mustCreate(reviewStore.create('ship it', null, { repo: 'acme/web', executor: null })))
             .id;
         const caller = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
@@ -239,6 +242,25 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
         expect(rows).toHaveLength(2);
         expect(rows[1]).toMatchObject({ resumed: true, requesting_job_id: callerId });
         expect(await sessions(review.id)).toMatchObject([{ session_id: session, origin: 'inferred_at_claim' }]);
+    });
+
+    it('resolves the requesting root of a review asked by a follow-up caller', async () => {
+        const reviewStore = reviewingStore();
+        const rootId = (await mustCreate(reviewStore.create('ship it', null, { repo: 'acme/web', executor: null }))).id;
+        const first = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
+        await reviewStore.session(rootId, first.leaseToken, randomUUID());
+        await reviewStore.complete(rootId, first.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const followUp = await reviewStore.createFollowUp(rootId, 'and one more', null);
+        if (typeof followUp === 'string') throw new Error(followUp);
+        const caller = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
+        const request = { key: 'sec-2', profile: 'security', revision: 'abc', ref: reviewRefOf(followUp.id, 'sec-2') };
+
+        const asked = await reviewStore.requestReview(followUp.id, caller.leaseToken, request);
+        if (!('claim' in asked) || !asked.claim) throw new Error(`no review claim: ${asked.result}`);
+
+        const [row] = await executions(asked.claim.id);
+        expect(row).toMatchObject({ requesting_job_id: followUp.id, requesting_root_job_id: rootId });
+        expect(followUp.id).not.toBe(rootId);
     });
 
     it('survives removal of the job: no foreign key cascades into provenance', async () => {

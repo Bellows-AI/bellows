@@ -53,8 +53,9 @@ describe.skipIf(!enabled)('085_job_execution', () => {
     });
 
     it('refuses a launch state outside the enum', async () => {
+        await run();
         await expect(
             pool`insert into job_execution (org_id, job_id, claim_seq, root_job_id, launch) values ('o', ${randomUUID()}, 2, ${randomUUID()}, 'started')`
-        ).rejects.toThrow();
+        ).rejects.toThrow(/check constraint|job_execution_launch_check/);
     });
 });
