@@ -33,6 +33,7 @@ import { reportFinalized } from '../../src/termination.js';
 import { loadDriverConfig } from '../../src/config.js';
 import { RUN_CONTROL_POLL_MS } from '../../src/supervisor-contract.js';
 import { bindingBody, orphanBoundMs, supervisorLiterals, takeoverBoundMs } from '../../src/supervisor-plan.js';
+import { StallWatch } from './host-stall.js';
 import { config as baseConfig, job as baseJob, ok, stubBoard, stubRunner } from './loop-stubs.js';
 
 process.env.SUPERVISOR_NO_MAIN = '1';
@@ -132,7 +133,7 @@ export interface Row {
     claimSeq: number;
     leaseToken: string | null;
     leaseExpiresAt: number;
-    /** `at` is when the board recorded it; `since` is the start of the silence it answers (the lease's last renewal). */
+    /** `at` is when the board recorded it; `since` is the start of the silence it answers (the lease's last renewal); both in the board's time (`Sim.now`). */
     interruptions: { claimSeq: number; reason: string; at: number; since: number }[];
     staged: { lease: string; result: unknown } | null;
     checkpoints: { runClaimSeq: number; phase: string; tree: string | null; result: unknown }[];
@@ -183,7 +184,20 @@ export class Sim {
     /** A fault on one board call: the ms it takes to fail (0: at once), as a request timeout would; undefined: none. */
     boardFault?: ((op: string) => number | undefined) | undefined;
 
-    constructor(readonly t: Timing) {
+    /** The loop's stalls: they are the host's, so the board's clock leaves them out unless `wallClock` keeps them in. */
+    readonly host = new StallWatch();
+    /**
+     * The board's time. Default: loop time, which a host stall does not advance, because a stall freezes the board,
+     * the drivers and the supervisors alike; a lease is judged against time something could have run in. The gremlin
+     * passes `wallClock` to let a stall cost the lease, as it does a driver whose board is a separate process.
+     */
+    readonly now: () => number;
+
+    constructor(
+        readonly t: Timing,
+        opts: { wallClock?: boolean } = {}
+    ) {
+        this.now = opts.wallClock ? Date.now : this.host.loopNow;
         this.config = {
             ...baseConfig(),
             leaseSeconds: t.leaseSeconds,
@@ -212,8 +226,8 @@ export class Sim {
 
     /** `expire_claim_one`: the live lease of the current claim is expired at once. */
     expireLease = () => {
-        this.renewed = Date.now();
-        this.row.leaseExpiresAt = Date.now() - 1000;
+        this.renewed = this.now();
+        this.row.leaseExpiresAt = this.now() - 1000;
     };
     /** Claims answer nothing: a replacement is absent, and the old driver's own claim poll cannot beat its heartbeat. */
     claimsOff = false;
@@ -229,8 +243,8 @@ export class Sim {
         this.claimSeqs.push(r.claimSeq);
         r.status = 'running';
         r.leaseToken = randomUUID();
-        r.leaseExpiresAt = Date.now() + this.t.leaseSeconds * 1000;
-        this.renewed = Date.now();
+        r.leaseExpiresAt = this.now() + this.t.leaseSeconds * 1000;
+        this.renewed = this.now();
         const continues = r.interruptions.at(-1)?.claimSeq === r.claimSeq - 1;
         return {
             ...baseJob(1),
@@ -244,9 +258,12 @@ export class Sim {
 
     /** When the live lease was last renewed (a claim or a heartbeat), whatever `expireLease` did to its expiry since. */
     private renewed = 0;
-    private readonly silence = () => ({ at: Date.now(), since: this.renewed });
+    private readonly silence = () => ({ at: this.now(), since: this.renewed });
 
     readonly holds = (claimed: BoardJob) => this.row.status === 'running' && this.row.leaseToken === claimed.leaseToken;
+
+    /** The board's calls with no driver in between: a scenario that needs one call at one instant. */
+    readonly directBoard = () => this.boardImpl();
 
     private boardImpl(): Partial<Board> {
         const r = this.row;
@@ -255,7 +272,7 @@ export class Sim {
             claim: async () => {
                 if (this.claimsOff) return null;
                 if (r.status === 'queued') return this.take();
-                if (r.status !== 'running' || r.leaseExpiresAt > Date.now()) return null;
+                if (r.status !== 'running' || r.leaseExpiresAt > this.now()) return null;
                 if (r.staged && r.staged.lease === r.leaseToken) {
                     r.interruptions.push({
                         claimSeq: r.claimSeq,
@@ -270,8 +287,8 @@ export class Sim {
             },
             heartbeat: async (claimed) => {
                 if (!this.holds(claimed)) return 'lost';
-                r.leaseExpiresAt = Date.now() + this.t.leaseSeconds * 1000;
-                this.renewed = Date.now();
+                r.leaseExpiresAt = this.now() + this.t.leaseSeconds * 1000;
+                this.renewed = this.now();
                 return { result: 'held', cancelRequested: false };
             },
             progress: async (claimed) => hold(claimed),
@@ -285,7 +302,7 @@ export class Sim {
                     r.interruptions.push({
                         claimSeq: seq,
                         reason: interruption.reason,
-                        at: Date.now(),
+                        at: this.now(),
                         since: this.renewed,
                     });
                 if (interruption.release) r.status = 'queued';
@@ -575,7 +592,7 @@ export class Sim {
                 sim.driverKills.push({
                     claimSeq: job.claimSeq,
                     held: sim.holds(job),
-                    unexpired: sim.row.leaseExpiresAt > Date.now(),
+                    unexpired: sim.row.leaseExpiresAt > sim.now(),
                 });
                 const g = sim.groupOf(job);
                 if (g) sim.deleteGroup(g);
@@ -608,6 +625,7 @@ export class Sim {
     }
 
     async teardown() {
+        this.host.stop();
         for (const refresh of this.refreshes) clearTimeout(refresh);
         this.refreshes.clear();
         for (const d of this.drivers) {
@@ -625,9 +643,9 @@ export async function until(
     ready: () => boolean,
     ms = 15_000 + takeoverBoundMs(sim.config)
 ): Promise<void> {
-    const end = Date.now() + ms;
+    const end = sim.host.loopNow() + ms;
     while (!ready()) {
-        if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${sim.brief()}\n${sim.text()}`);
+        if (sim.host.loopNow() > end) throw new Error(`timed out waiting for ${what}\n${sim.brief()}\n${sim.text()}`);
         await nap(20);
     }
 }
