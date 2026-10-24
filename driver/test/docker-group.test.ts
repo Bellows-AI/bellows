@@ -48,7 +48,7 @@ import { REBIND_DEADLINE_MS } from '../src/runner.js';
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
  * group, the four mailboxes as named volumes. What is pinned is the shape the acceptance names —
  * the group holds all three, and the agent container reaches neither the supervisor's control nor
- * its credential. The pod's half is `k8s.test.ts`; the supervisor's own behavior is `supervisor.test.ts`.
+ * its credential. The pod's half is `k8s/`; the supervisor's own behavior is `supervisor.test.ts`.
  */
 const USER = '44444444-4444-4444-8444-444444444444';
 const SESSION = { id: '33333333-3333-4333-8333-333333333333', resume: false };

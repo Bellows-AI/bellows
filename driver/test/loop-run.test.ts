@@ -2,7 +2,7 @@
  * `runJob` driven directly, with no claim loop around it: the module's own contracts — the order in
  * which claim refusals are decided, how a checkout sync's answer becomes a verdict or a
  * fault, and what each way a run can end leaves on the board. The claim loop's behavior end to end
- * is `loop.test.ts`; the phase-boundary faults are `loop-phase-faults.test.ts`.
+ * is `loop/`; the phase-boundary faults are `loop-phase-faults.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';

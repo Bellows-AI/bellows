@@ -1,5 +1,5 @@
 /**
- * The claim loop's stub board, runner and gate stack, shared by `loop.test.ts` and the phase-boundary
+ * The claim loop's stub board, runner and gate stack, shared by `loop/` and the phase-boundary
  * fault harness (`loop-phase-faults.test.ts`): every call is recorded, every answer scripted.
  */
 import type {

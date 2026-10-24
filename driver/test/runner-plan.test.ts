@@ -7,7 +7,7 @@ import { reviewerPlan, runnerPlan } from '../src/runner-plan.js';
 /**
  * What a runner is asked to do, decided once for both platforms (runner-plan.ts). docker renders
  * `envPairs` as `-e` before the image and `cliArgs` after it; kubernetes as container env values
- * and `args`. Those renderings are pinned once each in docker.test.ts and k8s.test.ts; every
+ * and `args`. Those renderings are pinned once each in docker/ and k8s/; every
  * decision about the plan itself is pinned here.
  */
 const USER = '44444444-4444-4444-8444-444444444444';

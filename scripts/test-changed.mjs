@@ -26,7 +26,7 @@ const POLLING = 'core/test/polling-authority.test.ts';
 const SOURCE_SCANNERS = {
     core: ['core/test/core-index.test.ts', POLLING],
     server: [POLLING, 'server/test/import-boundaries.test.ts'],
-    driver: [POLLING, 'driver/test/loop-fence.test.ts', 'driver/test/k8s.test.ts'],
+    driver: [POLLING, 'driver/test/loop-fence.test.ts', 'driver/test/k8s/pod-spec.test.ts'],
     web: ['web/test/styles.test.ts'],
 };
 
