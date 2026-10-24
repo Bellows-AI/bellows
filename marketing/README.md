@@ -6,6 +6,8 @@ Product-led, public marketing page for **Bellows Cloud** at https://bellows.clou
 
 **Product teams drive change. Engineers define the guardrails. Bellows does the work.**
 
+Three audiences, one operating model: Product drives the request; engineering defines repository checks and human approval; Bellows executes the workflow. The site now provides dedicated PM, engineering, and operations narratives.
+
 Secondary use-case line: **Your AI chat. Your real codebase.**
 
 - Run coding agents like infrastructure: orchestration, repeatable workflows, remote Docker/Kubernetes execution, observability, quality gates and human reviews.
@@ -41,9 +43,9 @@ Run `schema.sql` once on new D1 instances. It has already been applied to the pr
 4. Verify Cloud packaging and pricing with design partners.
 ## Brownfield product work via AI chat (planned MCP integration)
 
-Bellows Cloud's product-led use case targets Product Managers who want to request changes to existing systems from their AI chat and follow a closed development loop: product intent → repository context → remote agent execution → team-defined quality gates → reviewable PR and status back in chat. This **MCP integration is planned for Bellows Cloud early access**, not generally available today. This is stated on the landing page; the underlying open-source agent execution and workflows are the current foundation. Human review remains explicit.
+Bellows Cloud's product-led use case targets Product Managers who want to request changes to existing systems from their AI chat and follow a closed development loop: product intent → repository context → remote agent execution → team-defined quality gates → reviewable PR and status back in chat. This **MCP integration is planned as an open-source capability**, not generally available today. This is stated on the landing page; the underlying open-source agent execution and workflows are the current foundation. Human review remains explicit.
 
-The lead form includes `interest=product-chat` on the frontend and in Worker validation; PM-focused CTAs preselect it. Do not remove planned/early access language until working chat/MCP integration is shipped.
+The lead form includes `interest=product-chat` and `interest=enterprise` in the frontend and Worker validation. PM calls-to-action preselect the relevant interest. Do not remove planned/early-access language until those features are shipped.
 
 ## Commercial packaging
 
@@ -52,3 +54,7 @@ The lead form includes `interest=product-chat` on the frontend and in Worker val
 - **Enterprise:** planned SSO/SAML/OIDC, advanced auditing, policy and role controls, private environments, contractual support; features are not claimed live. Self-hosted support arrangements can be discussed.
 
 See [GTM.md](GTM.md) for positioning, funnel and validation plan.
+
+## GTM 3.0 alignment
+
+The main message is **Product teams drive change. Engineers define the guardrails. Bellows does the work.** The landing page has three-role cards and an engineering section: **Own the architecture. Not every implementation detail.** Current foundations (repo-defined workflows, remote execution, checks, telemetry) are distinguished from proposed architecture policies, risk-aware reviews and golden paths. Paid Cloud remains managed operations/support; Enterprise identity/audit features are roadmap. The lead form and database binding are unchanged.
