@@ -25,30 +25,50 @@ describe.skipIf(!enabled)('086_metric_point_identity', () => {
             attrs: { series: 'x' },
             ...over,
         });
-        // Before 086 the unique key was narrower; duplicates under the new key are rows only the
-        // old index could have let in, so the index is dropped to put them in.
+        // Before 086 the unique key was the narrow one, which let null-session duplicates in (null <> null)
+        // and nothing else; the board is put in that state, and restored by re-running the migration.
         await sql`drop index metric_point_dedup`;
-        const nullTime = new Date(time.getTime() + 1);
-        await sql`insert into metric_point ${sql([
-            row({ received_at: new Date('2026-01-02T00:00:00Z') }),
-            row({ received_at: new Date('2026-01-01T00:00:00Z') }),
-            row({ agent: 'opencode', received_at: new Date('2026-01-03T00:00:00Z') }),
-            row({ start_time: new Date('2026-01-01T00:00:00Z'), received_at: new Date('2026-01-03T00:00:00Z') }),
-            row({ session_id: null, time: nullTime, received_at: new Date('2026-02-01T00:00:00Z') }),
-            row({ session_id: null, time: nullTime, received_at: new Date('2026-01-05T00:00:00Z') }),
-        ])}`;
+        await sql`create unique index metric_point_dedup on metric_point (metric, session_id, time, source, md5(attrs::text))`;
+        try {
+            const nullTime = new Date(time.getTime() + 1);
+            const laterTime = new Date(time.getTime() + 2);
+            await sql`insert into metric_point ${sql([
+                row({ received_at: new Date('2026-01-02T00:00:00Z') }),
+                row({ time: laterTime, received_at: new Date('2026-01-01T00:00:00Z') }),
+                row({ session_id: null, time: nullTime, received_at: new Date('2026-02-01T00:00:00Z') }),
+                row({ session_id: null, time: nullTime, received_at: new Date('2026-01-05T00:00:00Z') }),
+                row({
+                    session_id: null,
+                    time: nullTime,
+                    agent: 'opencode',
+                    received_at: new Date('2026-01-06T00:00:00Z'),
+                }),
+                row({
+                    session_id: null,
+                    time: nullTime,
+                    start_time: new Date('2026-01-01T00:00:00Z'),
+                    received_at: new Date('2026-01-07T00:00:00Z'),
+                }),
+            ])}`;
 
-        await sql.unsafe(MIGRATION);
-        await sql.unsafe(MIGRATION);
+            await sql.unsafe(MIGRATION);
+            await sql.unsafe(MIGRATION);
 
-        const kept = await sql<{ received_at: Date }[]>`
-            select received_at from metric_point where session_id = ${session} and agent = 'claude-code' and start_time is null`;
-        expect(kept.map((r) => r.received_at.toISOString())).toEqual(['2026-01-01T00:00:00.000Z']);
-        const [others] = await sql<{ n: string }[]>`
-            select count(*) as n from metric_point where session_id = ${session}`;
-        expect(Number(others!.n)).toBe(3);
-        const nulls = await sql<{ received_at: Date }[]>`
-            select received_at from metric_point where session_id is null and time = ${nullTime}`;
-        expect(nulls.map((r) => r.received_at.toISOString())).toEqual(['2026-01-05T00:00:00.000Z']);
+            const [sessionRows] = await sql<{ n: string }[]>`
+                select count(*) as n from metric_point where session_id = ${session}`;
+            expect(Number(sessionRows!.n)).toBe(2);
+            const nulls = await sql<{ agent: string; received_at: Date }[]>`
+                select agent, received_at from metric_point where session_id is null and time = ${nullTime}
+                order by received_at`;
+            expect(nulls.map((r) => [r.agent, r.received_at.toISOString()])).toEqual([
+                ['claude-code', '2026-01-05T00:00:00.000Z'],
+                ['opencode', '2026-01-06T00:00:00.000Z'],
+                ['claude-code', '2026-01-07T00:00:00.000Z'],
+            ]);
+            // The widened key: the same session row for another agent is no longer a conflict.
+            await sql`insert into metric_point ${sql([row({ agent: 'opencode' })])}`;
+        } finally {
+            await sql.unsafe(MIGRATION);
+        }
     });
 });

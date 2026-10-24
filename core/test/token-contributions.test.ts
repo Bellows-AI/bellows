@@ -78,6 +78,63 @@ describe('series identity', () => {
     });
 });
 
+describe('legacy rows without an ingest series digest', () => {
+    const digest = (series: string) => ({ model: 'm-1', query_source: 'main', series });
+
+    it('folds into the one digest series it matches, so a counter live across the deploy counts once', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 100 }),
+            obs({ time: T2, value: 150, attrs: digest('aa') }),
+        ]);
+        expect(total(timed(cs), 'output')).toBe(150);
+        expect(total(cs, 'output')).toBe(150);
+    });
+
+    it('is order independent and keeps a legacy reading above the digest reading as the high-water mark', () => {
+        const rows = [
+            obs({ time: T1, value: 100, attrs: digest('aa') }),
+            obs({ time: T2, value: 120 }),
+            obs({ time: T3, value: 130, attrs: digest('aa') }),
+        ];
+        const forward = reduceTokenObservations(rows);
+        expect(total(forward, 'output')).toBe(130);
+        expect(reduceTokenObservations([...rows].reverse())).toEqual(forward);
+    });
+
+    it('stays a series of its own with no digest sibling', () => {
+        const cs = reduceTokenObservations([obs({ time: T1, value: 100 }), obs({ time: T2, value: 150 })]);
+        expect(total(cs, 'output')).toBe(150);
+    });
+
+    it('does not fold across a different start time', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 100 }),
+            obs({ time: T2, value: 50, startTime: T1, attrs: digest('aa') }),
+        ]);
+        expect(total(cs, 'output')).toBe(150);
+    });
+
+    it('is never added when two digest series match it, and says why', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 100 }),
+            obs({ time: T2, value: 40, attrs: digest('aa') }),
+            obs({ time: T2, value: 60, attrs: digest('bb') }),
+        ]);
+        const legacy = cs.filter((c) => c.reasons.includes('legacy-series-ambiguous'));
+        expect(legacy).toHaveLength(1);
+        expect(legacy[0]?.kind).toBe('unresolved');
+        expect(total(timed(cs), 'output')).toBe(100);
+    });
+
+    it('needs no fold for delta points', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 10, temporality: 'delta', startTime: null }),
+            obs({ time: T2, value: 15, temporality: 'delta', startTime: null, attrs: digest('aa') }),
+        ]);
+        expect(total(timed(cs), 'output')).toBe(25);
+    });
+});
+
 describe('delta', () => {
     it('contributes each point at its own time, exactly', () => {
         const cs = reduceTokenObservations([

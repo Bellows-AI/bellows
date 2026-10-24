@@ -4,7 +4,8 @@
 -- Raw series that differ only in an allowlist-dropped attribute are told apart by attrs.series,
 -- a one-way digest written at ingest.
 
--- Exact duplicates under the new key would block the index: keep the earliest received_at.
+-- Exact duplicates under the new key would block the index: keep the earliest received_at. Only
+-- null-session rows can be duplicates (the old index already told session rows apart).
 -- (tableoid, ctid) names a row across partitions; ctid alone is only unique within one.
 delete from metric_point m
 using (
@@ -14,6 +15,7 @@ using (
                order by received_at, ctid
            ) as rn
     from metric_point
+    where session_id is null
 ) ranked
 where ranked.rn > 1 and m.tableoid = ranked.part and m.ctid = ranked.pos;
 
