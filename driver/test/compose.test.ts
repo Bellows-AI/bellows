@@ -93,9 +93,9 @@ describe('the driver image stages', () => {
         // runtime stage's are the same binary, and a split would let `docker compose up` exercise
         // a version the chart never ships. The major itself moves with the release scan — an old
         // client carries an old Go stdlib, which is 22 of the driver image's findings.
-        const clients = [
-            ...driverDockerfile.matchAll(/COPY --from=mirror\.gcr\.io\/library\/docker:(\S+) /g),
-        ].map((m) => m[1]);
+        const clients = [...driverDockerfile.matchAll(/COPY --from=mirror\.gcr\.io\/library\/docker:(\S+) /g)].map(
+            (m) => m[1]
+        );
         expect(clients).toHaveLength(2);
         expect(new Set(clients).size).toBe(1);
         expect(clients[0]).toMatch(/^\d+-cli$/);
