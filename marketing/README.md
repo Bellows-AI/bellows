@@ -4,6 +4,10 @@ Product-led, public marketing page for **Bellows Cloud** at https://bellows.clou
 
 ## Positioning
 
+**Product teams drive change. Engineers define the guardrails. Bellows does the work.**
+
+Secondary use-case line: **Your AI chat. Your real codebase.**
+
 - Run coding agents like infrastructure: orchestration, repeatable workflows, remote Docker/Kubernetes execution, observability, quality gates and human reviews.
 - Primary CTA: **Request a Cloud demo / early access**.
 - Community is free/open source, including the planned MCP chat connector when released. Cloud is the **paid managed infrastructure, maintenance, monitoring, onboarding and support** option in early-access discussions; MCP is **not** Cloud-exclusive. Enterprise SSO, advanced auditing, granular permissions and policies are roadmap items, not generally available. Pricing is deliberately not invented.

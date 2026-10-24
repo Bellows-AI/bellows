@@ -3,13 +3,26 @@
 **Стратегічний документ • Жовтень 2026 • Робоча версія для ухвалення рішень**  
 **Тема:** Bellows як open-source міст від AI-чату до змін у наявному продукті; Bellows Cloud та Enterprise — платні інфраструктура, експлуатація й підтримка.
 
-> **Your AI chat. Your real codebase.**  
-> From product idea to reviewed PR — without leaving the conversation.
+> **Product teams drive change. Engineers define the guardrails. Bellows does the work.**  
+> Your AI chat. Your real codebase. From product idea to reviewed PR — without leaving the conversation.
 
 **Теза.** Продаємо результат: product manager може ініціювати зміну в наявній системі зі свого AI-чату, а Bellows запускає інженерний цикл у реальному репозиторії — від задачі та середовища до перевірок і PR для людського review. **MCP-інтеграція має бути частиною open-source можливостей Bellows (планується, ще не доступна як готовий chat-to-PR сценарій).** Cloud не продає доступ до MCP: Cloud продає інфраструктуру, надійну експлуатацію, оновлення та підтримку. Хто хоче самостійно хостити й підтримувати Bellows — може робити це без підписки.
 
-**Нова формула зростання:** *Product teams initiate. Engineering teams govern. Companies choose how to run.*  
-**Технічний бренд-меседж зберігаємо:** *Run coding agents like infrastructure.*
+**Головний бренд-слоган:** *Product teams drive change. Engineers define the guardrails. Bellows does the work.*  
+**Use-case повідомлення:** *Your AI chat. Your real codebase.*  
+**Технічний підмеседж зберігаємо:** *Run coding agents like infrastructure.*  
+**Комерційна логіка незмінна:** Community / Open Source — self-hosted без paywall; Cloud — керована інфраструктура та підтримка; Enterprise — додаткові корпоративні вимоги.
+
+
+### Єдина розповідь для трьох ролей
+
+**Product teams drive change.** PM визначають продуктову проблему, бажаний результат та критерії приймання. Brownfield-сценарій з AI-чату — головний спосіб продемонструвати цю цінність.
+
+**Engineers define the guardrails.** Інженери встановлюють архітектурні межі, вимоги до якості, versioned workflows, перевірки та людське затвердження. Уже існуючі workflows / `.bellows.yaml` — основа; автоматичні architecture policy checks / risk-based review / golden paths як окремі фічі залишаються можливим roadmap, а не заявою про готовність.
+
+**Bellows does the work.** Агенти працюють у контрольованому середовищі й проходять необхідні перевірки, а люди відповідають за рішення щодо merge та release. Майбутній MCP адаптер має бути доступним і в open source; Cloud монетизує не доступ до нього, а експлуатацію.
+
+Використовуємо цю формулу послідовно на лендингу, демо, презентаціях і discovery. **Це не обіцянка автономного production-deploy чи заміни інженерів.**
 
 ## 1. Кому продаємо
 
