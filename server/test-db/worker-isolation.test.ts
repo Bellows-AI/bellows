@@ -11,14 +11,15 @@ import {
 } from './database-names.js';
 import { useTestDb } from './harness.js';
 
-// Creating and dropping a database waits on the server's own I/O, which the other workers keep busy.
+// Creating a database waits on the server's own I/O, which the other workers keep busy.
 const DDL_TIMEOUT = 60_000;
 
 const baseUrl = process.env[BASE_URL_ENV];
 const db = useTestDb();
 
 // Another worker's rows must survive this worker's per-test truncate. The sibling here is a scratch
-// clone of the run's template, standing in for a concurrent worker's database.
+// clone of the run's template, standing in for a concurrent worker's database. The run's teardown
+// drops it (run-databases.ts): a forced DROP DATABASE checkpoints, and under load that outlasts a hook.
 describe.skipIf(!baseUrl)('worker database isolation', () => {
     const tag = `iso${randomUUID().replaceAll('-', '').slice(0, 8)}`;
     const sibling = scratchDatabaseName(baseUrl as string, tag);
@@ -34,9 +35,8 @@ describe.skipIf(!baseUrl)('worker database isolation', () => {
 
     afterAll(async () => {
         await other.end({ timeout: 5 });
-        await admin.unsafe(`drop database if exists "${sibling}" with (force)`);
         await admin.end({ timeout: 5 });
-    }, DDL_TIMEOUT);
+    });
 
     it('runs this file on the clone its pool id names, never the base database', async () => {
         const [row] = await db.sql<{ name: string }[]>`select current_database() as name`;
