@@ -3480,6 +3480,34 @@ else
     expect_not_contains 't4: the finished runner was not waited out' "$(driver_logs)" "job $t4: $ADOPTED"
 fi
 
+# T4b. The gates: the runner pod is deleted while a gate runs (issue #967). The pod's supervisor goes with
+#      it, so the waiting gate step is released at once and the attempt ends as an interruption inside two
+#      leases, never failed or dead; the next claim reruns the gate that never finished, not the agent.
+begin_phase recovery-gate-pod-lost
+n="$RELEASE-t4b"
+commit_plan recovery-gate-pod-lost "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
+t4b="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+tk_use "$t4b"
+t4b_pod="$(await_runner_pod "$t4b")"
+if [ -z "$t4b" ] || [ -z "$t4b_pod" ]; then
+    bad 't4b: the gate job is running' "job '$t4b': $(job_brief "$t4b")"
+else
+    tk_await "$TK_D$n.gate.count" 1 300 && ok 't4b: the gate is running' || bad 't4b: the gate is running' "$(tk_count "$TK_D$n.gate.count")"
+    deleted_at="$(date +%s)"
+    kubectl delete pod "$t4b_pod" -n "$NAMESPACE" --grace-period=0 --force --wait=false >/dev/null 2>&1
+    t4b_mid="$(await_brief "$t4b" "*|1|1|$POD_LOST*" $((2 * LANE_LEASE_S + 30)))"
+    took=$(($(date +%s) - deleted_at))
+    case "$t4b_mid" in
+    *"|1|1|$POD_LOST"*) [ "$took" -lt $((2 * LANE_LEASE_S)) ] && ok "t4b: a deleted runner pod under a gate is an interruption (${took}s, inside two ${LANE_LEASE_S}s leases)" ||
+        bad 't4b: a deleted runner pod under a gate is an interruption inside two leases' "took ${took}s: $t4b_mid" ;;
+    *) bad 't4b: a deleted runner pod under a gate is an interruption inside two leases' "status|attempts|count|claimSeq|reason: $t4b_mid" ;;
+    esac
+    tk_touch "$TK_D$n.go" || bad 't4b: the barrier is released' 'the touch failed'
+    tk_settled t4b "$t4b" "$POD_LOST"
+    tk_check 't4b: the gate ran again, once' "$(tk_final tk_count "$TK_D$n.gate.count")" 2
+    tk_check 't4b: the agent ran once' "$(tk_final tk_ready "$TK_D$n.agent.ready-")" 1
+fi
+
 # T5. The publish: the agent commits, the stub gh holds `pr create`, the driver dies there. The next
 #     claim resumes from the gates' checkpoint and publishes without a second push or a second PR.
 begin_phase takeover-publish
