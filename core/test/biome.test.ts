@@ -158,7 +158,7 @@ describe('biome', () => {
      */
     describe('plugin compile guard', () => {
         const FIXTURES: Record<string, string> = {
-            'driver/src/k8s-probe.ts': [
+            'driver/src/k8s/k8s-probe.ts': [
                 "export const a = await deps.request('GET', '/x').catch(() => null);",
                 "import { y } from '@factory-ai/core';",
                 "export const c = 'claude-code';",
@@ -261,8 +261,8 @@ describe('biome', () => {
      * positive line is one refused shape; each negative line is a carve-out or a non-read.
      */
     describe('no-silent-empty-read', () => {
-        const probe = (source: string): Promise<PluginDiagnostics> =>
-            lintScratch({ 'driver/src/k8s-probe.ts': source });
+        const probe = (source: string, path = 'driver/src/k8s/k8s-probe.ts'): Promise<PluginDiagnostics> =>
+            lintScratch({ [path]: source });
 
         it(
             'refuses each shape of a failed read collapsed into an empty answer',
@@ -278,6 +278,18 @@ describe('biome', () => {
                 );
                 expect(found.errored).toEqual([]);
                 expect(found.messages).toHaveLength(5);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it(
+            'refuses an unchecked JSON.parse cast in the k8s and docker executor folders only',
+            async () => {
+                const cast = 'export const d = JSON.parse(text) as { a: string };';
+                const hits = async (path: string): Promise<number> => (await probe(cast, path)).messages.length;
+                expect(await hits('driver/src/k8s/k8s-probe.ts')).toBe(1);
+                expect(await hits('driver/src/docker/docker-probe.ts')).toBe(1);
+                expect(await hits('driver/src/loop/loop-probe.ts')).toBe(0);
             },
             BIOME_CHECK_TIMEOUT_MS
         );
