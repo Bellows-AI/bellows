@@ -5,6 +5,7 @@ import {
     mkdtempSync,
     readFileSync,
     renameSync,
+    rmSync,
     statSync,
     truncateSync,
     writeFileSync,
@@ -56,7 +57,7 @@ interface Harness {
     chunks: Chunk[];
     manifests: ExportManifestRequest[];
     reports: ExportReport[];
-    board: { down: boolean; delayMs: number };
+    board: { down: boolean; delayMs: number; replyDelayMs: number };
     drain: (state: 'complete' | 'partial', cause: string | null) => void;
     /** The directory shared with the supervisor, and what the exporter wrote there last. */
     exportDir: string;
@@ -92,6 +93,28 @@ const until = async (what: string, ready: () => boolean): Promise<void> => {
     }
 };
 
+/** The acknowledged offset the exporter last saved under the transcript dir, or null while it has saved none. */
+const savedAck = (h: Harness): { acked: number; stopCause: unknown } | null => {
+    let raw: string;
+    try {
+        raw = readFileSync(join(h.dir, 'export-state', `${SESSION}.json`), 'utf8');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+    }
+    try {
+        const state = JSON.parse(raw) as { acked?: unknown; stopCause?: unknown } | null;
+        return typeof state?.acked === 'number' ? { acked: state.acked, stopCause: state.stopCause } : null;
+    } catch {
+        return null; // read while the exporter was mid-write
+    }
+};
+
+const hasSavedAck = (h: Harness, uploaded: string): boolean => {
+    const saved = savedAck(h);
+    return saved?.acked === Buffer.byteLength(uploaded) && saved.stopCause === null;
+};
+
 async function harness(): Promise<Harness> {
     const dir = mkdtempSync(join(tmpdir(), 'claude-export-'));
     const projects = join(dir, 'projects', '-work-tree');
@@ -101,7 +124,7 @@ async function harness(): Promise<Harness> {
     const chunks: Chunk[] = [];
     const manifests: ExportManifestRequest[] = [];
     const reports: ExportReport[] = [];
-    const board = { down: false, delayMs: 0 };
+    const board = { down: false, delayMs: 0, replyDelayMs: 0 };
     channel.open(SUPERVISOR);
     channel.grantExporter(SUPERVISOR, TOKEN);
     channel.attachExporter(SUPERVISOR, {
@@ -109,6 +132,8 @@ async function harness(): Promise<Harness> {
             if (board.down) throw new Error('the board is down');
             await new Promise((resolve) => setTimeout(resolve, board.delayMs));
             chunks.push({ session, offset, body: Buffer.from(bytes) });
+            // The chunk is stored; the exporter learns of it, and saves its acknowledged offset, only after this.
+            await new Promise((resolve) => setTimeout(resolve, board.replyDelayMs));
             return { result: 'stored' };
         },
         finalize: async (manifest) => {
@@ -329,19 +354,22 @@ describe('the continuous claude-code exporter', () => {
 
     it('exports only what a resumed session appends, at its own byte offsets, and a new session whole', async () => {
         const h = await harness();
+        h.board.replyDelayMs = 500;
         const file = fileOf(h);
         const earlier = records(5);
         writeFileSync(file, earlier);
         // An earlier exporter ran, uploaded the session and saved its state.
         const first = h.start();
         await until('the earlier records', () => h.stored(SESSION).length === Buffer.byteLength(earlier));
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await until('the first exporter saved its acknowledged offset', () => hasSavedAck(h, earlier));
         const gone = new Promise((resolve) => first.on('close', resolve));
         first.kill('SIGKILL');
         await gone;
         const before = h.chunks.length;
+        // The first exporter's status file outlives it; only the second one's fresh write proves it is scanning.
+        rmSync(join(h.exportDir, 'status.json'), { force: true });
         h.start();
-        await new Promise((resolve) => setTimeout(resolve, 300));
+        await until('the second exporter running', () => h.status() !== null);
         const appended = records(2, 5);
         appendFileSync(file, appended);
         const fresh = records(3, 100);
@@ -365,17 +393,17 @@ describe('the continuous claude-code exporter', () => {
             const h = await harness();
             const file = fileOf(h);
             const lost = h.start();
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            await until('the lost exporter running', () => h.status() !== null);
             const acked = records(5);
             writeFileSync(file, acked);
             await until('the first records', () => h.stored(SESSION).length === Buffer.byteLength(acked));
+            await until('the lost exporter saved its offset', () => hasSavedAck(h, acked));
             h.board.down = true;
             const unacked = `${records(7, 5)}{"n":12,"cut mid-wri`;
             appendFileSync(file, unacked);
             await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
             await kill(lost);
             h.board.down = false;
-            await new Promise((resolve) => setTimeout(resolve, 50));
             h.start();
             h.drain('complete', null);
             expect(await h.exited()).toBe(0);
@@ -387,6 +415,7 @@ describe('the continuous claude-code exporter', () => {
             const h = await harness();
             const all = records(6);
             writeFileSync(fileOf(h), all);
+            // The session must be older than RUN_STARTED_AT; a longer gap only strengthens that.
             await new Promise((resolve) => setTimeout(resolve, 50));
             h.start({ RUN_STARTED_AT: new Date().toISOString() });
             h.drain('complete', null);
@@ -403,6 +432,7 @@ describe('the continuous claude-code exporter', () => {
             // The agent wrote its session after the exporter's last scan; then the pod was lost.
             const all = records(9);
             writeFileSync(fileOf(h), all);
+            // The session must be older than RUN_STARTED_AT; a longer gap only strengthens that.
             await new Promise((resolve) => setTimeout(resolve, 50));
             h.start({ RUN_STARTED_AT: new Date().toISOString() });
             h.drain('complete', null);
@@ -423,9 +453,9 @@ describe('the continuous claude-code exporter', () => {
             const file = fileOf(h);
             const earlier = records(3);
             writeFileSync(file, earlier);
-            await new Promise((resolve) => setTimeout(resolve, 50));
             const lost = h.start();
-            await new Promise((resolve) => setTimeout(resolve, 300));
+            await until('the earlier records', () => h.stored(SESSION).length === Buffer.byteLength(earlier));
+            await until('the lost exporter saved its offset', () => hasSavedAck(h, earlier));
             h.board.down = true;
             appendFileSync(file, records(4, 3));
             await until('a backlog on the volume', () => (h.status()?.pendingBytes ?? 0) > 0);
@@ -508,6 +538,7 @@ describe('the continuous claude-code exporter', () => {
         writeFileSync(join(h.exportDir, 'supervisor.alive'), `${Date.now()}\n`);
         h.start({ EXPORT_SUPERVISOR_LOST_MS: '60000' });
         await until('the records', () => h.stored(SESSION).length === Buffer.byteLength(records(2)));
+        // Negative check (no drain follows a fresh heartbeat): a longer wait only strengthens it, never flakes.
         await new Promise((resolve) => setTimeout(resolve, 300));
         expect(h.manifests).toEqual([]);
     });
@@ -585,6 +616,7 @@ describe('the continuous claude-code exporter', () => {
         writeFileSync(fileOf(h), all);
         h.start({ EXPORT_DRAIN_GIVEUP_MS: '200' });
         h.drain('complete', null);
+        // Must outlast EXPORT_DRAIN_GIVEUP_MS (200); a longer wait only strengthens the no-give-up claim.
         await new Promise((resolve) => setTimeout(resolve, 800));
         h.board.down = false;
         expect(await h.exited()).toBe(0);
@@ -655,6 +687,7 @@ describe('the continuous claude-code exporter', () => {
             const all = records(3);
             writeFileSync(fileOf(h), all);
             h.start({ ...NO_URL, EXPORT_CONTROL_SOCKET: socketIn(h) });
+            // Negative check (the exporter keeps retrying, not exiting): a longer wait only strengthens it.
             await new Promise((resolve) => setTimeout(resolve, 400));
             expect(running.child?.exitCode).toBeNull();
             await h.listenRelay(socketIn(h));
