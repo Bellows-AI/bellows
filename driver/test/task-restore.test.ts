@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import type { CheckpointPointer, CheckpointRead } from '../src/board-checkpoint.js';
+import type { BoardJob } from '../src/board/board.js';
+import type { CheckpointPointer, CheckpointRead } from '../src/board/board-checkpoint.js';
 import { loadDriverConfig } from '../src/config.js';
 import type { StepSink } from '../src/step-control.js';
 import { runSyncStep } from '../src/supervised-steps.js';

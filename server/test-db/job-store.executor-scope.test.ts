@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore } from '../src/db/job-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
@@ -174,7 +174,7 @@ describe.skipIf(!enabled)('claim resolution against a suspended profile (issue 4
         expect(refused?.id).toBe(followUp.id);
         expect(refused?.executorType).toBeNull();
         expect(refused?.executorRefusal).toContain('suspended');
-        // The driver fails a refused claim as config (driver/src/loop-run.ts failOnClaimRefusal);
+        // The driver fails a refused claim as config (driver/src/loop/loop-run.ts failOnClaimRefusal);
         // until it does the follow-up is the thread's moving head and a retry is not_finished.
         await store.complete(followUp.id, refused!.leaseToken, {
             status: 'failed',

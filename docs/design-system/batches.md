@@ -12,7 +12,7 @@ the batch contract: [../batches.md](../batches.md).
 | Inherited versus overridden, shown before launch | `web/src/panels/BatchPlanReview.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `e2e/batches.spec.ts` |
 | Monitor: stage rows, task cards, human gate, retry, accept, report | `web/src/panels/BatchMonitor.tsx` | `web/test/batch-pages.render.test.tsx`, `web/test/batch-detail.dom.test.tsx` |
 | Verdict, task state labels, retry eligibility, morning report | `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
-| Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
+| Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batches/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
 | Sidenav item | `web/src/nav-model.ts` | `web/test/nav-model.test.ts` |
 | Desktop and mobile widths without page overflow | — | `e2e/batches.spec.ts` |
 

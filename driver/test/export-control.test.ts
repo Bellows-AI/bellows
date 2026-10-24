@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { ChunkAnswer } from '../src/board.js';
+import type { ChunkAnswer } from '../src/board/board.js';
 import { createControlChannel, type ControlChannel } from '../src/control-channel.js';
 import type { ExportRelay } from '../src/export-control.js';
 

@@ -2,8 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveBatchPlan, validateBatchPlan, type BatchPlan, type ResolvedBatchPlan } from '@factory-ai/core';
-import { createBatchStore, type BatchStartInput, type BatchStore } from '../src/db/batch-store.js';
-import { IdempotencyKeyReusedError } from '../src/db/job-store-idempotency.js';
+import { createBatchStore } from '../src/db/batches/batch-store.js';
+import type { BatchStartInput, BatchStore } from '../src/db/batches/batch-store-types.js';
+import { IdempotencyKeyReusedError } from '../src/db/jobs/job-store-idempotency.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 

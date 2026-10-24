@@ -13,10 +13,10 @@ import {
     isRecord,
     readAnswer,
     refusalDiagnosis,
-} from '../src/k8s-transport.js';
-import { asNamed } from '../src/k8s-pod-shapes.js';
-import { asJob, readTypedList } from '../src/k8s-poll.js';
-import { withSignal, type K8sDeps, type K8sRequest } from '../src/k8s-transport.js';
+} from '../src/k8s/k8s-transport.js';
+import { asNamed } from '../src/k8s/k8s-pod-shapes.js';
+import { asJob, readTypedList } from '../src/k8s/k8s-poll.js';
+import { withSignal, type K8sDeps, type K8sRequest } from '../src/k8s/k8s-transport.js';
 
 const METRICS_PATH = '/apis/metrics.k8s.io/v1beta1/namespaces/factory/pods/runner-1';
 const LOG_PATH = '/api/v1/namespaces/factory/pods/runner-1/log?tailLines=1000';

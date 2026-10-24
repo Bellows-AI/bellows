@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { RESERVED_ENV_NAMES } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { dockerArgs } from '../src/docker.js';
-import { createDockerRunner } from '../src/docker-runner.js';
+import { dockerArgs } from '../src/docker/docker.js';
+import { createDockerRunner } from '../src/docker/docker-runner.js';
 import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
-import { runnerJobSpec } from '../src/k8s-podspec.js';
+import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import { k8sSyncStep } from './k8s-sync-step.js';
 
 /**

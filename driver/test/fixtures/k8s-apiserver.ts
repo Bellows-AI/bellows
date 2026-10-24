@@ -2,10 +2,10 @@
  * The fake kubernetes API server the runner suites test against: a router over (method, path) whose
  * unscripted calls reject, so a test that passes is one whose every call was accounted for. A factory
  * because the runner pod log route is named for one job: a test whose world mints its own ids builds
- * its own server; `k8s.test.ts` builds one for its fixture job.
+ * its own server; `k8s/` builds one for its fixture job.
  */
-import type { K8sMethod, K8sRequest, K8sResponse } from '../../src/k8s-transport.js';
-import { jobsPath } from '../../src/k8s-podspec.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
+import { jobsPath } from '../../src/k8s/k8s-podspec.js';
 
 export interface Call {
     method: string;

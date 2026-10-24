@@ -1,14 +1,14 @@
 /**
  * The re-claim fence (`k8s-fence.ts`) called directly, its own functions rather than through a
  * runner: the claim, its release, the sweep, and the pre/post-create verifies. What
- * a runner-level scenario in `k8s.test.ts` already pins (a stale claim taken over by uid, the Secret
+ * a runner-level scenario in `k8s/` already pins (a stale claim taken over by uid, the Secret
  * before the Job, the uid on every delete, the resume by uid) is not repeated here. Assertions are on
  * requests and on what is thrown or answered, never on how many times a read was retried.
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob, BoardLease } from '../src/board.js';
+import type { BoardJob, BoardLease } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { claimBody, claimPath, configmapsPath, jobPath } from '../src/k8s-auxspec.js';
+import { claimBody, claimPath, configmapsPath, jobPath } from '../src/k8s/k8s-auxspec.js';
 import {
     acquireClaim,
     launch,
@@ -16,15 +16,15 @@ import {
     readClaim,
     releaseClaimAfterGroupEnd,
     sweepClaimedFleets,
-} from '../src/k8s-fence.js';
-import { jobsPath, runnerJobName, runnerName, type RunnerJobSpec, secretName } from '../src/k8s-podspec.js';
+} from '../src/k8s/k8s-fence.js';
+import { jobsPath, runnerJobName, runnerName, type RunnerJobSpec, secretName } from '../src/k8s/k8s-podspec.js';
 import {
     CLAIM_ROUNDS,
     REPLACE_WAIT_MS,
     type K8sDeps,
     type K8sRequestOptions,
     type K8sResponse,
-} from '../src/k8s-transport.js';
+} from '../src/k8s/k8s-transport.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 

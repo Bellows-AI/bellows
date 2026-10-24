@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import {
     PUBLISH_MOVED_REASON,
     type PublishResult,
@@ -10,7 +10,7 @@ import {
     probeTreeFingerprint,
     publishCheckout,
     STALE_REVISION_REASON,
-} from '../src/publish.js';
+} from '../src/publish/publish.js';
 import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**

@@ -1,4 +1,4 @@
-import type { BoardJob } from '../../src/board.js';
+import type { BoardJob } from '../../src/board/board.js';
 
 /** The lease-holding job the board-client tests write against; `over` changes only what a test is about. */
 export const boardJob = (over: { attempts?: number; claimSeq?: number } = {}): BoardJob => ({

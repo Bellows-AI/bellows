@@ -56,7 +56,7 @@ or {
         )
     },
     `JSON.parse($v) as $t` where {
-        $filename <: or { r".*/driver/src/k8s-.*", r".*/driver/src/docker-.*" },
+        $filename <: or { r".*/driver/src/k8s/k8s-.*", r".*/driver/src/docker/docker-.*" },
         not $t <: r".*kind[?]: unknown.*",
         not $t <: r".*Status[?]: string.*",
         register_diagnostic(

@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore } from '../src/db/job-store.js';
-import type { AdmissionBudgets } from '../src/db/job-store-admission.js';
-import type { Claim, JobStore } from '../src/db/job-store-types.js';
-import { fairBoardScan } from '../src/routes/job-context.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { AdmissionBudgets } from '../src/db/jobs/job-store-admission.js';
+import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
+import { fairBoardScan } from '../src/routes/jobs/job-context.js';
 import { useTestDb } from './harness.js';
 import { type CraftShape, craftJob, expireLease, testOrg } from './fixtures.js';
 
@@ -35,7 +35,7 @@ function replica(
     const boards = [ORG_A, ORG_B].map((orgId) => wrap(createJobStore({ sql, orgId, admission }), orgId));
     const scan = fairBoardScan();
     return (worker: string) =>
-        scan<Claim>(boards, log, (board: JobStore, options) => board.claim(worker, LEASE_SECONDS, options));
+        scan<JobStore, Claim>(boards, log, (board: JobStore, options) => board.claim(worker, LEASE_SECONDS, options));
 }
 
 const runningOf = async (org: string): Promise<number> => {

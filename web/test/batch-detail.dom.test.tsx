@@ -17,7 +17,7 @@ import { renderApp, stubFetch } from './dom.js';
 /**
  * The started batch page, mounted on its route over a stubbed board: parallel progress, the human
  * gate, retry, the automatic continuation, cancellation and accept are each readable and operable.
- * The board below answers the way `server/src/routes/batches.ts` does — every control is a request
+ * The board below answers the way `server/src/routes/batches/batches.ts` does — every control is a request
  * and the page reads the answer back. The cross-page journey (draft → save → start → task-page
  * backlink → list) stays in `e2e/batches.spec.ts`.
  */

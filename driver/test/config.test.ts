@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { cpuQuantityToCores, gateAdvertiseUrlFor, loadDriverConfig, memoryQuantityToBytes } from '../src/config.js';
-import { dockerArgs } from '../src/docker.js';
-import { runnerJobSpec } from '../src/k8s-podspec.js';
+import { dockerArgs } from '../src/docker/docker.js';
+import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
 import {
     SUPERVISOR_ORPHAN_MIN_MS,
     SUPERVISOR_REBIND_GRACE_MS,

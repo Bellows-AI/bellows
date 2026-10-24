@@ -6,10 +6,10 @@
  */
 
 import type { DriverConfig } from './config.js';
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { OPENCODE } from './executors.js';
 import { opencodeConfigContent } from './master-prompt.js';
-import { WORKSPACE_PATH, checkoutDir } from './publish.js';
+import { WORKSPACE_PATH, checkoutDir } from './publish/publish.js';
 import { TASK_MOUNT, UUID, taskRootOf } from './task-volume.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
@@ -19,7 +19,7 @@ export { UUID };
  * What an agent session id may look like before it is interpolated into runner argv — claude's
  * uuids and opencode's `ses_…` both qualify, and nothing shell-shaped does. The id on a resume
  * claim comes from the board, and a board is not something this process trusts with a fragment of
- * a command. Copied from server/src/routes/jobs.ts, which states the same rule for the report:
+ * a command. Copied from server/src/routes/jobs/jobs.ts, which states the same rule for the report:
  * this package depends on nothing, deliberately. Exported because the kubernetes runner asserts
  * the same id before the same interpolation.
  */

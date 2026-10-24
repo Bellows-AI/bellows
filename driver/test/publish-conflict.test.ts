@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import {
     parseGitState,
     publishCheckout,
     unresolvedConflictReason,
     withConflictContext,
     type PublishStep,
-} from '../src/publish.js';
+} from '../src/publish/publish.js';
 
 /**
  * Issue #661: a conflict the sync hands to the agent is the agent's to resolve. A publish over a

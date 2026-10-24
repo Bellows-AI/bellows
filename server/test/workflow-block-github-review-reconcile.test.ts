@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflow-blocks/index.js';
-import { REVIEW_MARKERS } from '../src/db/workflow-blocks/github-review-reconcile.js';
-import { nextTransition, type EngineRow } from '../src/db/workflow-engine.js';
-import type { AuthoredWorkflowDefinition, BlockConfigValue, WorkflowDefinition } from '../src/db/workflow-schema.js';
+import { BLOCK_REGISTRY, compileDefinition } from '../src/db/workflows/workflow-blocks/index.js';
+import { REVIEW_MARKERS } from '../src/db/workflows/workflow-blocks/github-review-reconcile.js';
+import { nextTransition, type EngineRow } from '../src/db/workflows/workflow-engine.js';
+import type {
+    AuthoredWorkflowDefinition,
+    BlockConfigValue,
+    WorkflowDefinition,
+} from '../src/db/workflows/workflow-schema.js';
 
 /**
  * The `builtin/github-review-reconcile` block's own expansion (issue #133) — what

@@ -12,10 +12,10 @@
  * workflow or task author cannot supply, append, or interpolate a single byte of this text.
  */
 import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
-import type { ClaimHelperPlan } from './job-store-types.js';
-import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflow-blocks/github-review-reconcile.js';
-import { PROBE_HELPER_ID } from './workflow-blocks/merge-conflict-autofix.js';
-import { nodeOf, type WorkflowDefinition } from './workflow-schema.js';
+import type { ClaimHelperPlan } from './jobs/job-store-types.js';
+import { COLLECT_HELPER_ID, REPLY_HELPER_ID } from './workflows/workflow-blocks/github-review-reconcile.js';
+import { PROBE_HELPER_ID } from './workflows/workflow-blocks/merge-conflict-autofix.js';
+import { nodeOf, type WorkflowDefinition } from './workflows/workflow-schema.js';
 
 /** Versioned so tests and later migrations can name the exact behavior they expect. */
 export const MASTER_PROMPT_VERSION = 'factory-master-prompt/v6';

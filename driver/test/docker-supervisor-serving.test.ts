@@ -5,9 +5,9 @@
  * member existed: they pin the unconfirmed-read rule.
  */
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { supervisorServing } from '../src/docker-group-probe.js';
-import type { ExecDocker } from '../src/docker-runner-support.js';
+import type { BoardJob } from '../src/board/board.js';
+import { supervisorServing } from '../src/docker/docker-group-probe.js';
+import type { ExecDocker } from '../src/docker/docker-runner-support.js';
 import { SUPERVISOR_SERVED_LINE } from '../src/supervisor-contract.js';
 
 const group = {

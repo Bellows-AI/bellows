@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcess, spawn } from 'node:child_process';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { createDockerRunner } from '../src/docker-runner.js';
+import { createDockerRunner } from '../src/docker/docker-runner.js';
 import { withTaskVolume } from './fixtures/task-volume-daemon.js';
 import { startDeadline } from '../src/run-deadline.js';
 import type { StepSink } from '../src/step-control.js';
 import { SUPERVISOR_ENV, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 /**
- * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s.test.ts`.
+ * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s/`.
  */
 
 const SECOND = 1_000;

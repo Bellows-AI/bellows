@@ -7,6 +7,12 @@ export const JOB_LABEL = 'factory.job';
 export const LEASE_LABEL = 'factory.lease';
 export const SERVICE_LABEL = 'factory.service';
 /**
+ * Docker only: the board a group object was made for (`boardIdentity`), stable across restarts of the
+ * same driver. The docker reaper scans and removes only objects carrying its own, so two boards on one
+ * daemon never reap each other's groups; the kubernetes reaper is scoped by `K8S_RELEASE` instead.
+ */
+export const BOARD_LABEL = 'factory.board';
+/**
  * The claim sequence and session a runner ran under (issue #792) — a kubernetes runner Job's
  * annotations, a docker runner container's labels — so the claim that supersedes a dead driver
  * can adopt the newest finished runner and report its session.

@@ -84,9 +84,3 @@ export function parseChunkKey(prefix: string, key: string): { orgId: string; ref
     }
     return { orgId: orgId!, ref, offset: Number(offset) };
 }
-
-/** The configured prefix, normalized to "" or a single trailing slash. */
-export function normalizePrefix(raw: string): string {
-    const trimmed = raw.replace(/^\/+|\/+$/g, '');
-    return trimmed === '' ? '' : `${trimmed}/`;
-}

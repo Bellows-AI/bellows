@@ -1,13 +1,13 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createJobStore } from '../src/db/job-store.js';
-import type { JobStore } from '../src/db/job-store-types.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import {
     IDEMPOTENCY_RETENTION_HOURS,
     IdempotencyKeyReusedError,
     type IdempotencyInput,
     type IdempotentOperation,
-} from '../src/db/job-store-idempotency.js';
+} from '../src/db/jobs/job-store-idempotency.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
 

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_MAILBOX_DIR, GO_MARKER, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
-import { agentLaunchArgs, containerHardeningArgs } from '../src/docker.js';
+import { agentLaunchArgs, containerHardeningArgs } from '../src/docker/docker.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 

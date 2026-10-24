@@ -2,16 +2,16 @@
  * `adoptStep` and `recordAdopted` driven directly: what the step answers for each way
  * `Runner.adopt` can come back, which flags it leaves on the attempt, and what it hands back to the
  * fence when the attempt stood down while the adoption was still reading. The adoption through the
- * claim loop is `loop.test.ts`.
+ * claim loop is `loop/`.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { adoptStep, recordAdopted } from '../src/loop-adopt.js';
-import { type AttemptCtx, STOOD_DOWN } from '../src/loop-types.js';
+import type { BoardJob } from '../src/board/board.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { adoptStep, recordAdopted } from '../src/loop/loop-adopt.js';
+import { type AttemptCtx, STOOD_DOWN } from '../src/loop/loop-types.js';
 import { type AdoptedRun, AdoptionBlocked, type LiveRun, type Read } from '../src/runner.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../src/supervisor-contract.js';
-import { runJob } from '../src/loop-run.js';
+import { runJob } from '../src/loop/loop-run.js';
 import { createStepBroker } from '../src/step-control.js';
 import { job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 

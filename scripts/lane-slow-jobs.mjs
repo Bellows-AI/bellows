@@ -2,7 +2,7 @@
 //
 //   node scripts/lane-slow-jobs.mjs <driver.log> [threshold-seconds]
 //
-// Reads the driver's structured `attempt-transition` lines (driver/src/loop-phase.ts) and prints
+// Reads the driver's structured `attempt-transition` lines (driver/src/loop/loop-phase.ts) and prints
 // each job and claim whose launched-to-ended span passed the threshold (default 30), then each that
 // never ended: how long it was seen for after its launch, and the phase it was last in. The last
 // line is the one-line summary. Diagnostics only: it always exits 0, an unreadable log is an empty run.

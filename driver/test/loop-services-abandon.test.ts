@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { startServicesStep } from '../src/loop-services.js';
-import { STOOD_DOWN, type AttemptCtx } from '../src/loop-types.js';
+import type { BoardJob } from '../src/board/board.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { startServicesStep } from '../src/loop/loop-services.js';
+import { STOOD_DOWN, type AttemptCtx } from '../src/loop/loop-types.js';
 
 describe('an abandoned services start leaves its release to end() (issue #828)', () => {
     it('does not release when the start settles after the stand-down; end() decides under its retention', async () => {

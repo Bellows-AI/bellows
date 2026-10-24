@@ -22,7 +22,7 @@ import {
  * The shared, platform-agnostic half of the block-helper transport (issue #207): the registry
  * lookup, the versioned bounded-JSON parser both the docker and kubernetes runners call, and the
  * bounded input serializer. The docker/kubernetes transport SHAPES (argv, aux Job spec) are pinned
- * in docker.test.ts and k8s.test.ts; this file covers the platform-agnostic contract alone.
+ * in docker/ and k8s/; this file covers the platform-agnostic contract alone.
  */
 
 const DESCRIPTOR: HelperDescriptor = {

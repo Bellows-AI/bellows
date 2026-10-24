@@ -1,4 +1,4 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import {
     type AdoptedRun,
     AdoptionBlocked,

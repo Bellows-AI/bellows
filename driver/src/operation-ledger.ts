@@ -1,6 +1,6 @@
 import { containerScript } from './container-scripts.js';
 import { parseLastJsonLine } from './json-parse.js';
-import type { PublishStep, RunPublishStep } from './publish.js';
+import type { PublishStep, RunPublishStep } from './publish/publish.js';
 import { stepLost } from './step-control.js';
 
 /**

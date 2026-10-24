@@ -1,10 +1,10 @@
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { opencodeDbPath, runTimeoutMs } from './claim.js';
 import type { DriverConfig } from './config.js';
 import { checkpointScript } from './container-scripts.js';
 import { OPENCODE } from './executors.js';
-import { baseBranchOf } from './publish-base.js';
-import { GATE_IMAGE, checkoutDir, checkoutKey, worktreeBranch } from './publish.js';
+import { baseBranchOf } from './publish/publish-base.js';
+import { GATE_IMAGE, checkoutDir, checkoutKey, worktreeBranch } from './publish/publish.js';
 import { CHECKPOINT_DIR } from './task-volume.js';
 import {
     AGENT_IN,

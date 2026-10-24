@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import { afterEach, describe, expect, it } from 'vitest';
-import { resolveClaimSkills } from '../src/db/job-store-claim.js';
+import { resolveClaimSkills } from '../src/db/jobs/job-store-claim.js';
 import { skillRoutes } from '../src/routes/skills.js';
 import { readSkillCatalog, skillCatalog } from '../src/skills.js';
 

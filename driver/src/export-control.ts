@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
-import type { ChunkAnswer } from './board.js';
-import { CheckpointChunkCorrupt, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
+import type { ChunkAnswer } from './board/board.js';
+import { CheckpointChunkCorrupt, type TranscriptRef, type TranscriptStream } from './board/board-checkpoint.js';
 import { readBody, readBodyBytes } from './http.js';
 import { parseJsonObject } from './json-parse.js';
 

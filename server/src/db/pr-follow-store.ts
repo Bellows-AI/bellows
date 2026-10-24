@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { nextObservationDelayMs, OBSERVE_INTERVAL_MS, type ReadErrorKind } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
-import { OBSERVATION_LEASE_MS } from './batch-store-observation.js';
+import { OBSERVATION_LEASE_MS } from './batches/batch-store-observation.js';
 
 /**
  * The PR follower's cadence rows (082; docs/workflows.md): which PRs are due for a read. Nothing

@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob, HeartbeatVerdict, ReviewClaim, ReviewReport } from '../src/board.js';
+import type { BoardJob, HeartbeatVerdict, ReviewClaim, ReviewReport } from '../src/board/board.js';
 import { CONTROL_TOKEN_ENV, CONTROL_URL_ENV } from '../src/claim.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { createLoop } from '../src/loop.js';
-import { recordEnding } from '../src/loop-phase.js';
-import { cancelReviews, createReviewRelay, superviseReview } from '../src/loop-review.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { createLoop } from '../src/loop/loop.js';
+import { recordEnding } from '../src/loop/loop-phase.js';
+import { cancelReviews, createReviewRelay, superviseReview } from '../src/loop/loop-review.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import type { StepResult } from '../src/supervisor-contract.js';
-import { openRunControl } from '../src/loop-gates.js';
+import { openRunControl } from '../src/loop/loop-gates.js';
 import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
-import type { LoopRuntime } from '../src/loop-types.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
 import { config, job, ok, sleep, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
 
 /**

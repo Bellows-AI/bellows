@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import {
     claimEnv,
     GATE_GID,
@@ -9,7 +9,7 @@ import {
     REVIEWER_UID,
 } from '../src/claim.js';
 import { executorImage, loadDriverConfig } from '../src/config.js';
-import { dockerArgs } from '../src/docker.js';
+import { dockerArgs } from '../src/docker/docker.js';
 import {
     awaitSupervisor,
     createGroup,
@@ -25,11 +25,13 @@ import {
     startGroup,
     supervisorCreateArgs,
     supervisorLossOf,
-} from '../src/docker-group.js';
-import { bindingVolumeName, ctlVolumeName, supervisorName } from '../src/docker-mailbox.js';
-import { type RunnerFiles, startupRefusalOf } from '../src/docker-runner-support.js';
+} from '../src/docker/docker-group.js';
+import { bindingVolumeName, ctlVolumeName, supervisorName } from '../src/docker/docker-mailbox.js';
+import { recordDockerKill } from '../src/docker/docker-teardown.js';
+import { serviceRunArgs } from '../src/services.js';
+import { type RunnerFiles, startupRefusalOf } from '../src/docker/docker-runner-support.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { TASK_MOUNT, TASK_ROOT_LABEL, taskRootOf, taskVolumeName } from '../src/task-volume.js';
+import { TASK_MOUNT, TASK_ROOT_LABEL, boardIdentity, taskRootOf, taskVolumeName } from '../src/task-volume.js';
 import { bindingWriteArgv, gateLoopArgv, reviewLoopArgv } from '../src/container-scripts.js';
 import {
     EXPORT_RELAY_SOCKET,
@@ -46,7 +48,7 @@ import { REBIND_DEADLINE_MS } from '../src/runner.js';
  * The docker twin of the runner pod: the supervisor, the agent and the exporter as one container
  * group, the four mailboxes as named volumes. What is pinned is the shape the acceptance names —
  * the group holds all three, and the agent container reaches neither the supervisor's control nor
- * its credential. The pod's half is `k8s.test.ts`; the supervisor's own behavior is `supervisor.test.ts`.
+ * its credential. The pod's half is `k8s/`; the supervisor's own behavior is `supervisor.test.ts`.
  */
 const USER = '44444444-4444-4444-8444-444444444444';
 const SESSION = { id: '33333333-3333-4333-8333-333333333333', resume: false };
@@ -309,8 +311,8 @@ describe('creating and starting the group', () => {
         const { calls, deps } = recorder();
         await createGroup(deps, job, SESSION);
         // Without a reviewer the review mailbox has no volume (issue #774).
-        expect(ctlVolumeArgs(job)).toHaveLength(Object.keys(MAILBOXES).length);
-        expect(calls.slice(0, ctlVolumeArgs(job).length)).toEqual(ctlVolumeArgs(job));
+        expect(ctlVolumeArgs(config, job)).toHaveLength(Object.keys(MAILBOXES).length);
+        expect(calls.slice(0, ctlVolumeArgs(config, job).length)).toEqual(ctlVolumeArgs(config, job));
         expect(calls.some((argv) => argv.includes(ctlVolumeName(job, MAILBOXES.review)))).toBe(false);
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(job), exporterName(job)]);
@@ -408,7 +410,7 @@ describe('creating and starting the group', () => {
         const created = calls.filter((argv) => argv[0] === 'create').map((argv) => argv[argv.indexOf('--name') + 1]);
         expect(created).toEqual([supervisorName(reviewing), exporterName(reviewing), reviewerName(reviewing)]);
         expect(calls.slice(0, Object.keys(MAILBOXES).length + 1)).toEqual(
-            ctlVolumeArgs(reviewing, { reviewing: true })
+            ctlVolumeArgs(config, reviewing, { reviewing: true })
         );
         expect(calls.some((argv) => argv.includes(ctlVolumeName(reviewing, MAILBOXES.review)))).toBe(true);
         const supervisor = calls.find((argv) => argv.includes(supervisorName(reviewing)))!;
@@ -644,11 +646,13 @@ describe('the holder binding (#829)', () => {
     };
 
     it('creates one labelled binding volume for an attempt', () => {
-        const volumes = ctlVolumeArgs(job).filter((argv) => argv.includes(bindingVolumeName(job)));
+        const volumes = ctlVolumeArgs(config, job).filter((argv) => argv.includes(bindingVolumeName(job)));
         expect(volumes).toEqual([
             [
                 'volume',
                 'create',
+                '--label',
+                `factory.board=${boardIdentity(config)}`,
                 '--label',
                 `factory.job=${job.id}`,
                 '--label',
@@ -756,5 +760,50 @@ describe('the holder binding (#829)', () => {
             expect(String((error as Error).message)).not.toContain('has space');
             for (const secret of SECRETS) expect(String((error as Error).message)).not.toContain(secret);
         }
+    });
+});
+
+describe('the board label on every object the docker reaper scans (#887)', () => {
+    const labelsOf = (argv: string[]): string[] => argv.flatMap((arg, i) => (argv[i - 1] === '--label' ? [arg] : []));
+    const board = `factory.board=${boardIdentity(config)}`;
+
+    const builders: [string, () => string[]][] = [
+        ['the supervisor', () => supervisorCreateArgs(config, job, { exporting: true, agentless: false }, null)],
+        ['the exporter', () => exporterCreateArgs(config, job)],
+        ['the gate', () => gateCreateArgs(config, job, 'img')],
+        ['the reviewer', () => reviewerCreateArgs(config, job)],
+        ['the agent', () => dockerArgs(config, job, { id: 'a'.repeat(8), resume: false }, { envFile: '/tmp/e' })],
+        [
+            'a service',
+            () =>
+                serviceRunArgs(
+                    job,
+                    { name: 'db', image: 'postgres', environment: [] },
+                    'holder',
+                    boardIdentity(config)
+                ),
+        ],
+        ...ctlVolumeArgs(config, job).map((argv): [string, () => string[]] => [
+            `the volume ${argv.at(-1)}`,
+            () => argv,
+        ]),
+    ];
+
+    it.each(builders)('stamps %s', (_what, build) => {
+        expect(labelsOf(build())).toContain(board);
+    });
+
+    it('stamps a kill marker volume', async () => {
+        const calls: string[][] = [];
+        await recordDockerKill(
+            async (args) => {
+                calls.push(args);
+                return { stdout: '' };
+            },
+            config,
+            job,
+            { reason: 'operator', detail: 'stop' } as never
+        );
+        expect(labelsOf(calls[0]!)).toContain(board);
     });
 });

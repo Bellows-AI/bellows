@@ -59,13 +59,13 @@ commit message needs a force-push to fix.
 | `config.ts`, `.env.example`, compose env blocks, `server/src/github/app-*`, `offline.ts` | [docs/configuration.md](docs/configuration.md) |
 | The repo list, `repo-source.ts`, `db/stored-repos.ts`, session scoping | [docs/repos.md](docs/repos.md) |
 | `server/src/workspace/*`, `server/src/routes/workspace.ts`, executor profiles, task volumes | [docs/workspace.md](docs/workspace.md) |
-| `driver/src/k8s-*.ts`, `EXECUTOR`, `charts/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
+| `driver/src/k8s/`, `EXECUTOR`, `charts/`, `scripts/test-k8s.sh` | [docs/kubernetes.md](docs/kubernetes.md) |
 | EKS installs, the EFS storage class, the pre-release cloud walk | [docs/eks-runbook.md](docs/eks-runbook.md) |
 | Executor/runner tests, coverage gates, `scripts/test-jobs.sh` | [docs/executor-testing.md](docs/executor-testing.md) |
 | `server/src/telemetry/*`, OTLP routes, SQL views, collector config | [docs/telemetry.md](docs/telemetry.md) |
-| `server/src/routes/jobs.ts`, `db/job-store*.ts`, `006_jobs.sql`, `driver/*`, `cli/*` | [docs/jobs.md](docs/jobs.md) |
-| `core/src/batch-plan.ts`, `059_batches.sql`, `db/batch-*.ts`, `routes/batch*.ts` | [docs/batches.md](docs/batches.md) |
-| `workflow`, `027_workflows.sql`, `db/workflow-*.ts`, `routes/workflows.ts` | [docs/workflows.md](docs/workflows.md) |
+| `server/src/routes/jobs/*`, `db/jobs/*`, `006_jobs.sql`, `driver/*`, `cli/*` | [docs/jobs.md](docs/jobs.md) |
+| `core/src/batch-plan.ts`, `059_batches.sql`, `db/batches/*`, `routes/batches/*` | [docs/batches.md](docs/batches.md) |
+| `workflow`, `027_workflows.sql`, `db/workflows/*`, `routes/workflows.ts` | [docs/workflows.md](docs/workflows.md) |
 | `env_var`, `routes/env.ts`, the claim's `env`, driver env forwarding | [docs/env.md](docs/env.md) |
 | `parseRange`, `filterTelemetryInput()`, the range selector | [docs/date-range.md](docs/date-range.md) |
 | `web/src/styles/`, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) + [lanes](docs/design-system/) |
@@ -129,7 +129,9 @@ npm run driver                  # claims jobs; needs a docker daemon and JOB_BOA
 npm run dev -w cli -- job list --limit 5
 
 npm test                        # offline: no token, no quota, no database, no docker
+npm run test:changed            # iterate: suites the diff vs origin/main reaches (arg: other base); npm test stays the gate
 npm run test:executors          # focused board/driver/runner/telemetry suites
+npx vitest run --project driver   # one package's in-process suites; --project spawn: the spawning files
 npm run typecheck               # tsc -b: src, every <pkg>/tsconfig.test.json and e2e/tsconfig.json
 npm run lint                    # biome check; npm run format / lint:fix are the fixers
 npm run lint:changed            # biome on the branch's files only (vs origin/main), niced
@@ -174,8 +176,11 @@ Operational facts behind those:
   workspace/mailbox volumes and compose projects use run-specific names (`scripts/test-jobs.sh`).
   Postgres remains shared; worktrees set `COMPOSE_PROJECT_NAME` to the existing development stack
   before board phases. Do not recreate Postgres or prune images while a lane is active. Board phases
-  use `PORT` through `PORT + 2` (default 8129–8131). Keep separate `test:jobs` runs serial on one Docker daemon:
-  the reaper scans daemon-wide (`driver/src/docker-reaper.ts`), and one checkout also shares `dist`.
+  use `PORT` through `PORT + 2` (default 8129–8131). Keep separate `test:jobs` invocations serial on one Docker
+  daemon: they share the default ports and one checkout's `dist`. `--parallel [--slots N]` is the supported
+  fan-out: it builds once and runs phase groups (`scripts/test-jobs-groups.mjs`) as runs of their own, each on
+  a ten-port slice of `PORT` with its own database and names; each driver's reaper scans only its own board's
+  containers (`factory.board`, `driver/test/docker-reaper-boards.test.ts`), so groups never reap each other.
   Phase totals, check intervals and process logs stay under `artifacts/jobs/`; `TIMINGS_FILE` overrides
   the output path (`server/test/test-jobs.options.test.ts`).
 - `verify:ui` needs `factory_e2e` **and** `factory_auth_e2e` to exist; Playwright boots every

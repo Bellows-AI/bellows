@@ -1,9 +1,9 @@
-import { startupHaltOf } from '../../src/loop-fence.js';
+import { startupHaltOf } from '../../src/loop/loop-fence.js';
 import { StartupRefused } from '../../src/startup-cause.js';
 
 /**
  * How a group start that did not come up ends, one row per cause, with the decision the loop takes —
- * the conformance table both executors run (`docker.test.ts`, `k8s.test.ts`), each row through its own
+ * the conformance table both executors run (`docker/`, `k8s/`), each row through its own
  * harness and its own platform's words for the refusal. Typed as a `Record`, so neither suite can
  * leave a row out. `unclassified` is a refusal whose words prove no cause: the path keeps the
  * recovery it had (issue #824 D11).

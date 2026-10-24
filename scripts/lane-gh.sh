@@ -1,5 +1,5 @@
 #!/bin/sh
-# The lane's stand-in for `gh` (issue #829): the argv driver/src/publish-pr.ts sends, answered from
+# The lane's stand-in for `gh` (issue #829): the argv driver/src/publish/publish-pr.ts sends, answered from
 # state kept on the task's volume so it survives a killed driver and is counted from outside.
 #   lane-gh-prs   one `<branch> <url>` line per created PR
 #   lane-gh-bases one `<branch> <base>` line per `pr edit --base`

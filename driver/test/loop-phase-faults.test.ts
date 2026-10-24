@@ -29,9 +29,9 @@
  */
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { BoardJob, HeartbeatVerdict } from '../src/board.js';
+import type { BoardJob, HeartbeatVerdict } from '../src/board/board.js';
 import type { HelperPlan, HelperResult } from '../src/helpers.js';
-import type { Loop } from '../src/loop.js';
+import type { Loop } from '../src/loop/loop.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StepChannelClosed } from '../src/step-control.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
@@ -654,8 +654,8 @@ describe('an attempt faulted at each phase boundary (#828)', () => {
 
 describe('a drain never hands over an attempt whose end already started (#828)', () => {
     it('records no handover on it and leaves it to its own ending', async () => {
-        const { handoverOf } = await import('../src/loop.js');
-        const { newJobState } = await import('../src/loop-attempt.js');
+        const { handoverOf } = await import('../src/loop/loop.js');
+        const { newJobState } = await import('../src/loop/loop-attempt.js');
         const rt = {} as never;
         const handoff = handoverOf(rt);
         const state = newJobState();

@@ -5,10 +5,10 @@
  * tenant. docs/telemetry.md.
  */
 
-import type { AdmissionBudgets, AdmissionOccupancy, ClaimObserver } from './db/job-store-admission.js';
+import type { AdmissionBudgets, AdmissionOccupancy, ClaimObserver } from './db/jobs/job-store-admission.js';
 import { buckets, createRegistry, timed, type GaugeFamily, type Registry } from './prometheus.js';
 
-export type { AdmissionOccupancy } from './db/job-store-admission.js';
+export type { AdmissionOccupancy } from './db/jobs/job-store-admission.js';
 
 export type ClaimPollOutcome = 'claimed' | 'idle' | 'error';
 

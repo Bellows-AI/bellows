@@ -62,6 +62,8 @@ interface Harness {
     /** The directory shared with the supervisor, and what the exporter wrote there last. */
     exportDir: string;
     status: () => ExporterStatus | null;
+    /** The offset the exporter has saved as acknowledged for one session; 0 until it has saved any. */
+    savedAck: (session: string) => number;
     close: () => void;
     /** The control endpoint goes away: the board, and the driver in front of it, are unreachable. */
     stopServer: () => void;
@@ -166,6 +168,14 @@ async function harness(): Promise<Harness> {
         // The supervisor's drain order: a file in the directory only it and the exporter mount.
         drain: (state, cause) => writeFileSync(join(exportDir, 'drain.json'), JSON.stringify({ state, cause })),
         exportDir,
+        savedAck: (session) => {
+            try {
+                const state = JSON.parse(readFileSync(join(dir, 'export-state', `${session}.json`), 'utf8'));
+                return typeof state?.acked === 'number' ? state.acked : 0;
+            } catch {
+                return 0;
+            }
+        },
         status: () => {
             try {
                 return JSON.parse(readFileSync(join(exportDir, 'status.json'), 'utf8')) as ExporterStatus;

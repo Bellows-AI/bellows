@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { down, heartbeat, newJobState } from '../src/loop-attempt.js';
-import { lostOf, recordEnding, transition } from '../src/loop-phase.js';
-import type { AttemptTransition } from '../src/loop-phase.js';
-import type { LoopRuntime } from '../src/loop-types.js';
+import type { BoardJob } from '../src/board/board.js';
+import { down, heartbeat, newJobState } from '../src/loop/loop-attempt.js';
+import { lostOf, recordEnding, transition } from '../src/loop/loop-phase.js';
+import type { AttemptTransition } from '../src/loop/loop-phase.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
 import { config, drive, job, ok, sleep, stubBoard, stubRunner } from './fixtures/loop-stubs.js';
 
 /**

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { applyHeartbeatVerdict, newJobState } from '../src/loop-attempt.js';
-import { abandonOnHandover } from '../src/loop-conclusion.js';
-import { recordEnding } from '../src/loop-phase.js';
-import type { LoopRuntime } from '../src/loop-types.js';
+import type { BoardJob } from '../src/board/board.js';
+import { applyHeartbeatVerdict, newJobState } from '../src/loop/loop-attempt.js';
+import { abandonOnHandover } from '../src/loop/loop-conclusion.js';
+import { recordEnding } from '../src/loop/loop-phase.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
 
 const JOB = { id: 'job-1' } as BoardJob;
 

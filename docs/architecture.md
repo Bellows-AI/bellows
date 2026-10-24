@@ -19,6 +19,7 @@ Data flow: agent → OTEL collector → `POST /api/otlp/v1/metrics` → `flatten
 | --- | --- | --- |
 | Boot wiring and start order | `server/src/main.ts` | `server/test/helpers-harness.ts` drives `buildApp` |
 | Per-org runtimes (repo source, telemetry, stats cache, stores) | `server/src/orgs.ts` | `server/test/orgs.test.ts` |
+| `JobStore` is the intersection of one interface per concern, each beside its implementation; a handler asks `storeFor<keyof JobQuestionStore>` for the slice it calls; the value-import edges that keep `vitest related` narrow | `server/src/db/jobs/job-store-types.ts`, `server/src/routes/jobs/job-context.ts`, `server/src/routes/route-guards.ts` | `server/test/job-store-slices.test.ts`, `server/test/import-boundaries.test.ts` |
 | Read-time aggregation and the cache slot | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
 | Telemetry sources (`postgres`/`fixture`/`off`) | `server/src/telemetry/client.ts` | `server/test/telemetry.fixture-client.test.ts` |
 | Installation token, repo listing, repo source | `server/src/github/app-token.ts`, `app-client.ts`, `repo-source.ts` | `server/test/github.app-token.test.ts`, `server/test/repo-source.test.ts` |
@@ -48,5 +49,5 @@ Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations
   `pg_notify`, `LISTEN` or Kubernetes watch. The PR follower reads the PRs the webhook alone used to move
   (a parked wait, a merged non-batch thread). `core/test/polling-authority.test.ts`,
   `server/test-db/pr-follow.test.ts`, `server/test/batch-reconciler.test.ts`,
-  `server/test-db/job-store.settle.test.ts`, `driver/test/loop.test.ts`.
+  `server/test-db/job-store.settle.test.ts`, `driver/test/loop/`.
 - Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.

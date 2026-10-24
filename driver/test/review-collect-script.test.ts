@@ -8,7 +8,7 @@ import {
     THREAD_COMMENTS_LIMIT,
     TRUNCATED_MARKER,
     type ReviewCollection,
-} from '../src/review.js';
+} from '../src/review/review.js';
 import { collectRef } from './fixtures/review-fixtures.js';
 import { cleanupTempDirs, fixture, runScript, TEST_TOKEN, writeFixture } from './fixtures/review-script-support.js';
 

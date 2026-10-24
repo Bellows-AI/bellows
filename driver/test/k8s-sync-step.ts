@@ -1,7 +1,7 @@
-import type { Board, BoardJob } from '../src/board.js';
+import type { Board, BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { createKubernetesRunner } from '../src/k8s-runner.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import type { StepSink } from '../src/step-control.js';
 import { taskVolumeServer } from './fixtures/k8s-apiserver.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';

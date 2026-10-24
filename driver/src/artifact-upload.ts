@@ -1,5 +1,5 @@
-import type { ArtifactManifest, ArtifactStreamRef, Board, BoardJob } from './board.js';
-import { withBoardRetry } from './board-retry.js';
+import type { ArtifactManifest, ArtifactStreamRef, Board, BoardJob } from './board/board.js';
+import { withBoardRetry } from './board/board-retry.js';
 import type { RunOutcome } from './runner.js';
 
 /**

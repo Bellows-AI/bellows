@@ -62,6 +62,14 @@ describe('the fix skills', () => {
         expect(readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8')).toContain('re-run the focused suite');
     });
 
+    it('iterate on test:changed or one project, in AGENTS.md and both fix skills', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        expect(fix).toContain('`sh HEAVY npm run test:changed -- $BASE`');
+        expect(fix).toContain('`npx vitest run --project <pkg>`');
+        expect(readFileSync(join(skill, '../ui-fix/SKILL.md'), 'utf8')).toContain('`npm run test:changed`');
+        expect(readFileSync(join(skill, '../../../AGENTS.md'), 'utf8')).toContain('npm run test:changed ');
+    });
+
     it('fix a review finding by its class, sweep accepted classes and defer out-of-path defects', () => {
         const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
         expect(fix).toContain('**Fix the class, not the line.**');

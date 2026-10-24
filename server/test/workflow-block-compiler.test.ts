@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { EXPANDED_DEFINITION_LIMIT, type AuthoredWorkflowDefinition } from '../src/db/workflow-schema.js';
-import { BLOCK_REGISTRY, blockCatalog, compileDefinition } from '../src/db/workflow-blocks/index.js';
-import type { BlockDescriptor, BlockRegistry } from '../src/db/workflow-blocks/types.js';
+import { EXPANDED_DEFINITION_LIMIT, type AuthoredWorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
+import { BLOCK_REGISTRY, blockCatalog, compileDefinition } from '../src/db/workflows/workflow-blocks/index.js';
+import type { BlockDescriptor, BlockRegistry } from '../src/db/workflows/workflow-blocks/types.js';
 
 /**
  * The compiler is wholly new logic with no coverage anywhere else (workflow-schema.test.ts stays
@@ -363,7 +363,7 @@ describe('compileDefinition — private runtime attachment (issue #231)', () => 
     });
 
     it('refuses BAD_BLOCK_CONFIG when a runtime-carrying node resolves to the graph entry', () => {
-        // A thread's first row is inserted directly by routes/jobs.ts, never through
+        // A thread's first row is inserted directly by routes/jobs/jobs.ts, never through
         // runWorkflowTransition — so a wait boundary as the entry would run immediately as an
         // ordinary claimable job, silently skipping the wait. Refused at compile time instead.
         const withRuntime = fakeBlock('fake/waits', {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import type { CheckpointRead } from '../src/board-checkpoint.js';
+import type { BoardJob } from '../src/board/board.js';
+import type { CheckpointRead } from '../src/board/board-checkpoint.js';
 import { loadDriverConfig } from '../src/config.js';
 import {
     ensureTaskVolume,
@@ -8,8 +8,8 @@ import {
     markTaskVolumeUnschedulable,
     removeTaskVolumes,
     taskVolumesPath,
-} from '../src/k8s-task-volume.js';
-import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s-transport.js';
+} from '../src/k8s/k8s-task-volume.js';
+import type { K8sDeps, K8sMethod, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { CheckpointUnrestorable } from '../src/task-restore.js';
 import { TASK_ROOT_LABEL, TASK_UNSCHEDULABLE_LABEL, taskVolumeName } from '../src/task-volume.js';
 

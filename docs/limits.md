@@ -49,7 +49,7 @@ reporting a number as measured, or "fixing" anything listed here.
   3.2 (2 drivers) at 4; from 8 tasks throughput holds at 3.0 to 3.4 because the node fits about five runner pods
   ("Insufficient cpu, Insufficient memory"), with no lock waiter sampled, so the board's own ceiling is not
   reached. A queued task waits for a driver's next poll, then for one claim per task ahead of it on that driver
-  (`driver/src/loop.ts`): claim-wait p95 was 0.9 to 5.8 s up to 4 tasks and at most 9.2 s at 16 on one driver. A
+  (`driver/src/loop/loop.ts`): claim-wait p95 was 0.9 to 5.8 s up to 4 tasks and at most 9.2 s at 16 on one driver. A
   killed driver's claims moved on at lease + 2 to 7 s and every task settled within lease + 29 s. Targets:
   >= 2.7 tasks/min at 4 tasks on this laptop, claim-wait p95 <= `driver.pollMs` + 1 s per task queued at once per
   driver, claim lock-wait p95 <= 25 ms, <= 1 board and <= 2 cluster API requests/s per active task, claims moved on

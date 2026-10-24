@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 /**
  * The task-control skill is an instruction artifact: nothing it says is compiled, so the only
  * thing standing between it and a session POSTing to a route that does not exist is this file.
- * Every assertion below pins a contract the board actually serves (server/src/routes/jobs.ts and
+ * Every assertion below pins a contract the board actually serves (server/src/routes/jobs/jobs.ts and
  * job-handlers-actions.ts) — a route rename that leaves the skill behind fails here rather than
  * at someone's board.
  */

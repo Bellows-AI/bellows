@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { AGENT_LAUNCH_CAPS, GATE_UID, REVIEWER_UID, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
-import { readerJobSpec, runnerJobSpec, secretName } from '../src/k8s-podspec.js';
+import { readerJobSpec, runnerJobSpec, secretName } from '../src/k8s/k8s-podspec.js';
 import { SERVICE_ADDRESS } from '../src/services.js';
 import {
     AGENT_CONTAINER,

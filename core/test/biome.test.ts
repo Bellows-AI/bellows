@@ -1,5 +1,14 @@
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -61,6 +70,41 @@ const runBiome = (args: string[], options: { cwd?: string; input?: string } = {}
         child.stdin.end(options.input);
     });
 
+interface PluginDiagnostics {
+    messages: string[];
+    errored: string[];
+}
+
+/**
+ * `biome lint` over a scratch tree holding `files` (paths relative to its root), with the repo's
+ * `biome.json` and a `lint/` symlink to `lintDir`. Plugins key on `$filename`, so a probe has to be
+ * a real file under the path the plugin is scoped to — and never touches the repository. Empty or
+ * unparsable output throws: an unreadable report is not a clean one.
+ */
+const lintScratch = async (files: Record<string, string>, lintDir = join(root, 'lint')): Promise<PluginDiagnostics> => {
+    const dir = mkdtempSync(join(tmpdir(), 'biome-scratch-'));
+    try {
+        const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));
+        config.vcs.enabled = false;
+        writeFileSync(join(dir, 'biome.json'), JSON.stringify(config));
+        symlinkSync(lintDir, join(dir, 'lint'));
+        for (const [path, source] of Object.entries(files)) {
+            mkdirSync(dirname(join(dir, path)), { recursive: true });
+            writeFileSync(join(dir, path), source);
+        }
+        const result = await runBiome(['lint', '.', '--reporter=json', '--max-diagnostics=200'], { cwd: dir });
+        expect(result.stdout, `biome printed no JSON report:\n${result.stderr}`).not.toBe('');
+        const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
+        const plugin = (report.diagnostics ?? []).filter((d) => d.category === 'plugin');
+        return {
+            messages: plugin.map((d) => d.message ?? ''),
+            errored: plugin.filter((d) => /errored:/.test(d.message ?? '')).map((d) => d.message ?? ''),
+        };
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
+};
+
 describe('biome', () => {
     it('is configured at the root with the style the tree is written in', () => {
         expect(existsSync(join(root, 'biome.json')), 'biome.json missing at the repo root').toBe(true);
@@ -105,27 +149,111 @@ describe('biome', () => {
      * — Grit binds a group to a variable, so `(src|test)` compiles to "matched 1 variables, but
      * expected 0". Assert the absence of that message, not just the absence of hits.
      *
-     * Scoped to one directory rather than the tree: a plugin that fails to compile says so once per
-     * file it visits, so any non-empty file set proves it, and the tree-wide spawn below is already
-     * the suite's heaviest single operation — running a second one here timed out under the
-     * contention of a full run while passing in isolation.
+     * Run against a scratch tree of a few tiny files, never the repository: Biome's cost is its
+     * up-front project scan, so the guard takes about a second and the tree-wide pass stays with
+     * `npm run lint` (CI `validate`). The error surfaces only when a regex is evaluated and
+     * matches, so the fixtures sit on paths that reach each plugin's first path regex and hold a
+     * violation behind each of shared-literals' pre-check gates; the static case below covers the
+     * regexes no fixture reaches.
      */
-    it(
-        'runs every plugin without a compile error',
-        async () => {
-            const result = await runBiome(['check', 'driver/src', '--reporter=json', '--max-diagnostics=2000']);
-            expect(result.stdout, `biome printed no JSON report:\n${result.stderr}`).not.toBe('');
-            const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
-            const errored = (report.diagnostics ?? []).filter(
-                (d) => d.category === 'plugin' && /errored:/.test(d.message ?? '')
-            );
-            expect(
-                errored.map((d) => d.message),
-                'a lint plugin failed to compile'
-            ).toEqual([]);
-        },
-        BIOME_CHECK_TIMEOUT_MS
-    );
+    describe('plugin compile guard', () => {
+        const FIXTURES: Record<string, string> = {
+            'driver/src/k8s/k8s-probe.ts': [
+                "export const a = await deps.request('GET', '/x').catch(() => null);",
+                "import { y } from '@factory-ai/core';",
+                "export const c = 'claude-code';",
+                "export const d = 'factory.job';",
+                "export const e = 'NOT_FOUND';",
+            ].join('\n'),
+            'driver/src/probe-script.ts': "export const v = ['node', '-e', 'x'];",
+            'driver/test/probe-script.ts': "export const v = ['node', '-e', 'x'];",
+            'core/src/executors.ts': "export const w = 'claude-code';",
+            'server/src/probe.ts': "import { z } from '../../core/src/x.js';",
+        };
+        // One distinctive phrase per plugin message: each plugin must hit its fixture, so a plugin
+        // that loads but matches nothing fails here too.
+        const HITS: Record<string, RegExp> = {
+            'no-cross-package-imports': /copy the type instead/,
+            'no-inline-container-scripts': /Container script passed inline/,
+            'no-shared-literals': /^Shared literal/,
+            'no-silent-empty-read': /A failed read must stay inconclusive/,
+        };
+
+        it('has a fixture hit for every plugin in lint/', () => {
+            const plugins = readdirSync(join(root, 'lint'))
+                .filter((f) => f.endsWith('.grit'))
+                .map((f) => f.slice(0, -'.grit'.length))
+                .sort();
+            expect(plugins).toEqual(Object.keys(HITS).sort());
+        });
+
+        it(
+            'runs every plugin without a compile error and with a hit',
+            async () => {
+                const found = await lintScratch(FIXTURES);
+                expect(found.errored, 'a lint plugin failed to compile').toEqual([]);
+                for (const [plugin, hit] of Object.entries(HITS)) {
+                    expect(
+                        found.messages.some((m) => hit.test(m)),
+                        `${plugin} reported nothing on its fixtures`
+                    ).toBe(true);
+                }
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        // Deliberately broken plugin, one per file in lint/: the first path regex gains a capture
+        // group. The control proves the guard can fail, for every plugin, on every run.
+        it.each(Object.keys(HITS))(
+            'fails when %s is broken',
+            async (plugin) => {
+                const lintDir = mkdtempSync(join(tmpdir(), 'broken-lint-'));
+                try {
+                    for (const f of readdirSync(join(root, 'lint'))) {
+                        const text = readFileSync(join(root, 'lint', f), 'utf8');
+                        writeFileSync(
+                            join(lintDir, f),
+                            f === `${plugin}.grit` ? text.replace(/r"\.\*\//, 'r"(.*)/') : text
+                        );
+                    }
+                    const found = await lintScratch(FIXTURES, lintDir);
+                    expect(found.errored.some((m) => m.startsWith(`${plugin} errored:`))).toBe(true);
+                } finally {
+                    rmSync(lintDir, { recursive: true, force: true });
+                }
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        // Most regexes sit behind a predicate no fixture reaches, so the known break is also
+        // refused statically: a capture group in any `r"…"` of any plugin. Escapes and character
+        // classes are removed first, so `\(` and `[(]` are literals, not groups.
+        const hasCaptureGroup = (regex: string): boolean =>
+            /\((?!\?:)/.test(regex.replace(/\\.|\[(?:\\.|[^\]\\])*\]/g, ''));
+
+        it('tells a capture group from a literal parenthesis', () => {
+            expect(hasCaptureGroup('.*/(src|test)/.*')).toBe(true);
+            expect(hasCaptureGroup('.*/(?<dir>src)/.*')).toBe(true);
+            expect(hasCaptureGroup('.*/(?:src|test)/.*')).toBe(false);
+            expect(hasCaptureGroup('.*/roles\\(\\)\\.ts$')).toBe(false);
+            expect(hasCaptureGroup('.*/roles[(][)]\\.ts$')).toBe(false);
+            expect(hasCaptureGroup('.*/x[\\]()]')).toBe(false);
+            expect(hasCaptureGroup('.*/x[a](b)')).toBe(true);
+        });
+
+        it('has no capture group in any plugin regex', () => {
+            for (const f of readdirSync(join(root, 'lint')).filter((n) => n.endsWith('.grit'))) {
+                const regexes = [...readFileSync(join(root, 'lint', f), 'utf8').matchAll(/\br"((?:[^"\\]|\\.)*)"/g)];
+                expect(regexes.length, `${f} has no path regex to check`).toBeGreaterThan(0);
+                for (const [, body] of regexes) {
+                    expect(
+                        hasCaptureGroup(body ?? ''),
+                        `${f}: capture group in r"${body}" (use (?:…) or separate regexes)`
+                    ).toBe(false);
+                }
+            }
+        });
+    });
 
     /**
      * `lint/no-silent-empty-read.grit` is run against a scratch tree so the probe is a real file
@@ -133,28 +261,8 @@ describe('biome', () => {
      * positive line is one refused shape; each negative line is a carve-out or a non-read.
      */
     describe('no-silent-empty-read', () => {
-        const probe = async (source: string): Promise<{ messages: string[]; errored: string[] }> => {
-            const dir = mkdtempSync(join(tmpdir(), 'silent-read-'));
-            try {
-                mkdirSync(join(dir, 'driver', 'src'), { recursive: true });
-                const config = JSON.parse(readFileSync(join(root, 'biome.json'), 'utf8'));
-                config.vcs.enabled = false;
-                writeFileSync(join(dir, 'biome.json'), JSON.stringify(config));
-                symlinkSync(join(root, 'lint'), join(dir, 'lint'));
-                writeFileSync(join(dir, 'driver', 'src', 'k8s-probe.ts'), source);
-                const result = await runBiome(['lint', 'driver/src', '--reporter=json', '--max-diagnostics=100'], {
-                    cwd: dir,
-                });
-                const report = JSON.parse(result.stdout) as { diagnostics?: { category?: string; message?: string }[] };
-                const plugin = (report.diagnostics ?? []).filter((d) => d.category === 'plugin');
-                return {
-                    messages: plugin.map((d) => d.message ?? ''),
-                    errored: plugin.filter((d) => /errored:/.test(d.message ?? '')).map((d) => d.message ?? ''),
-                };
-            } finally {
-                rmSync(dir, { recursive: true, force: true });
-            }
-        };
+        const probe = (source: string, path = 'driver/src/k8s/k8s-probe.ts'): Promise<PluginDiagnostics> =>
+            lintScratch({ [path]: source });
 
         it(
             'refuses each shape of a failed read collapsed into an empty answer',
@@ -170,6 +278,18 @@ describe('biome', () => {
                 );
                 expect(found.errored).toEqual([]);
                 expect(found.messages).toHaveLength(5);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
+
+        it(
+            'refuses an unchecked JSON.parse cast in the k8s and docker executor folders only',
+            async () => {
+                const cast = 'export const d = JSON.parse(text) as { a: string };';
+                const hits = async (path: string): Promise<number> => (await probe(cast, path)).messages.length;
+                expect(await hits('driver/src/k8s/k8s-probe.ts')).toBe(1);
+                expect(await hits('driver/src/docker/docker-probe.ts')).toBe(1);
+                expect(await hits('driver/src/loop/loop-probe.ts')).toBe(0);
             },
             BIOME_CHECK_TIMEOUT_MS
         );
@@ -233,18 +353,4 @@ describe('biome', () => {
         expect(result.status).not.toBe(0);
         expect(`${result.stdout}${result.stderr}`).not.toBe('');
     });
-
-    it(
-        'passes biome check on the repository',
-        async () => {
-            // A vacuous pass (mis-shaped includes checking nothing) must fail, not pass.
-            const MIN_FILES_CHECKED = 50;
-            const result = await runBiome(['check', '.']);
-            expect(result.status, `biome check output:\n${result.stdout}${result.stderr}`).toBe(0);
-            const checked = /Checked (\d+) files/.exec(result.stdout)?.[1];
-            expect(checked, `biome check output:\n${result.stdout}${result.stderr}`).toBeDefined();
-            expect(Number(checked)).toBeGreaterThan(MIN_FILES_CHECKED);
-        },
-        BIOME_CHECK_TIMEOUT_MS
-    );
 });

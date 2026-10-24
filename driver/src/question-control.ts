@@ -1,6 +1,6 @@
-import type { AskedQuestion } from './board.js';
-import type { PublishRelay, PublishSlot } from './publish-control.js';
-import type { ReviewRelay, ReviewSlot } from './review-control.js';
+import type { AskedQuestion } from './board/board.js';
+import type { PublishRelay, PublishSlot } from './publish/publish-control.js';
+import type { ReviewRelay, ReviewSlot } from './review/review-control.js';
 import type { CheckpointSlot, ExportRelay, ExportSlot } from './export-control.js';
 import { parseJsonObject } from './json-parse.js';
 import { QUESTION_ID, validateQuestionReport } from './question-validation.js';

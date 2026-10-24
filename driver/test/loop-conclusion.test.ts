@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob, LeaseState } from '../src/board.js';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board-retry.js';
-import { end } from '../src/loop-conclusion.js';
-import { newJobState } from '../src/loop-attempt.js';
-import { recordEnding } from '../src/loop-phase.js';
-import type { AttemptCtx, EndDecision } from '../src/loop-types.js';
+import type { BoardJob, LeaseState } from '../src/board/board.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js';
+import { end } from '../src/loop/loop-conclusion.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import { recordEnding } from '../src/loop/loop-phase.js';
+import type { AttemptCtx, EndDecision } from '../src/loop/loop-types.js';
 import { SUPERVISOR_REBIND_GRACE_MS } from '../src/supervisor-contract.js';
 
 const JOB = { id: 'job-1', lastAttempt: false } as BoardJob;
