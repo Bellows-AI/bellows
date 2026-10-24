@@ -69,6 +69,7 @@ export function plan({ base, changed, added = [], spawn, namedBy, namedInSource,
         } else if (SRC_MODULE.test(file)) {
             if (addedSet.has(file)) widen(pkg, `${file} was added or removed: directory scans see it`);
             else for (const scanner of SOURCE_SCANNERS[pkg] ?? []) named.add(scanner);
+            classify(namedBy([baseName(file)])); // a test that reads the module by path
         } else if (/\.md$/.test(file) && !SHARED_NAME.test(baseName(file))) {
             classify(namedBy([baseName(file)]));
             if (file.startsWith('docs/design-system/')) named.add('web/test/styles.test.ts');

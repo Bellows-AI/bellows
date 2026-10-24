@@ -164,6 +164,13 @@ describe('test:changed plan', () => {
         });
     });
 
+    it('reaches a suite that reads a changed TypeScript source by path, with no import', () => {
+        const steps = run(['server/src/routes/jobs/job-limits.ts'], {
+            namedBy: (names) => (names.includes('job-limits.ts') ? ['driver/test/board.test.ts'] : []),
+        });
+        expect(vitestArgs(steps).at(-1)).toContain('driver/test/board.test.ts');
+    });
+
     it('plans only the graph step for an empty change', () => {
         expect(vitestArgs(run([]))).toHaveLength(1);
     });
