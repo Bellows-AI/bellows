@@ -4,8 +4,9 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { SUPERVISOR_ENV, SUPERVISOR_EXIT } from '../src/supervisor-contract.js';
+import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /**
  * The supervisor's finalize stage takes the attempt's checkpoint (issue #775) after the driver has
@@ -46,6 +47,8 @@ afterEach(async () => {
     }
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+afterEach(stopSupervisors);
+afterAll(() => expect(liveSupervisors()).toBe(0));
 
 const bodyOf = (request: IncomingMessage): Promise<Buffer> =>
     new Promise((resolve) => {
@@ -144,7 +147,8 @@ function run(driver: Driver | null, script: string | null, env: Record<string, s
     for (const name of ['in', 'out', 'export', 'supervisor', 'gate', 'review']) mkdirSync(join(root, name));
     const outDir = join(root, 'task-checkpoint');
     const logs: string[] = [];
-    const done = supervisor.supervise(
+    const done = superviseTracked(
+        supervisor,
         {
             FACTORY_CTL_ROOT: root,
             SUPERVISOR_TICK_MS: '10',

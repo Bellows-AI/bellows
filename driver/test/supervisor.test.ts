@@ -24,8 +24,9 @@ import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
+import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 import { bindingBody } from '../src/supervisor-plan.js';
 import {
     AGENT_MAILBOX_DIR,
@@ -223,6 +224,9 @@ afterEach(async () => {
     }
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
+// Registered after the removal above: afterEach hooks run last-in first-out, so supervisors stop first.
+afterEach(stopSupervisors);
+afterAll(() => expect(liveSupervisors()).toBe(0));
 
 const readBody = (request: IncomingMessage): Promise<string> =>
     new Promise((resolve) => {
@@ -384,7 +388,8 @@ function run(driver: Driver | null, env: Record<string, string> = {}) {
     // The agent's own directories inside its two mailboxes, which the supervisor creates (issue #814).
     const agent = { in: join(box.in, AGENT_MAILBOX_DIR), out: join(box.out, AGENT_MAILBOX_DIR) };
     const logs: string[] = [];
-    const done = supervisor.supervise(
+    const done = superviseTracked(
+        supervisor,
         {
             FACTORY_CTL_ROOT: root,
             SUPERVISOR_TICK_MS: '10',
@@ -2493,5 +2498,20 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
                 code: expect.stringMatching(/ENOENT|ECONNREFUSED/),
             });
         }
+    });
+});
+
+// Issue #905: a supervisor a test leaves running ticks on to its orphan bound and, under isolate:false,
+// into the next file's fake clock. The teardown stops it; the next test sees it settled.
+describe('a supervisor a test leaves running', () => {
+    let left: Promise<number> | undefined;
+    it('is started and abandoned by its test', () => {
+        left = run(null).done;
+        expect(liveSupervisors()).toBe(1);
+    });
+    it('has settled by the next test: the teardown stopped it', async () => {
+        const state = await Promise.race([left, new Promise((resolve) => setTimeout(() => resolve('running'), 50))]);
+        expect(state).not.toBe('running');
+        expect(liveSupervisors()).toBe(0);
     });
 });

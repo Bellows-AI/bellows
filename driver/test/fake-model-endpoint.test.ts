@@ -4,10 +4,11 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { AGENT_MAILBOX_DIR, GO_MARKER, MAILBOX_FILES, MAILBOXES } from '../src/supervisor-contract.js';
 import { agentLaunchArgs, containerHardeningArgs } from '../src/docker.js';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
+import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /*
  * The scripted model endpoint behind the `test:jobs` cooperative-Stop lane (issue #442). The lane
@@ -31,6 +32,8 @@ const open: Endpoint[] = [];
 afterEach(async () => {
     for (const endpoint of open.splice(0)) await endpoint.close();
 });
+afterEach(stopSupervisors);
+afterAll(() => expect(liveSupervisors()).toBe(0));
 
 async function start(
     options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean; askProse?: boolean; killTools?: boolean } = {}
@@ -300,7 +303,8 @@ describe('the scripted model endpoint as the step channel (issue #812)', () => {
         const root = mkdtempSync(join(tmpdir(), 'lane-group-'));
         const box = (name: keyof typeof MAILBOXES) => join(root, MAILBOXES[name].path.split('/').pop()!);
         try {
-            const done = supervisor.supervise(
+            const done = superviseTracked(
+                supervisor,
                 {
                     FACTORY_CTL_ROOT: root,
                     SUPERVISOR_CONTROL_URL: url,

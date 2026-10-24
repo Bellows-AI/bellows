@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createGateServer } from '../src/gates.js';
 import { createStepBroker, StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 import {
@@ -13,6 +13,7 @@ import {
     type StepResult,
     type SupervisorReport,
 } from '../src/supervisor-contract.js';
+import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 
 /**
  * The supervised-step channel (issue #771): the broker the runners submit to, the control routes
@@ -420,9 +421,11 @@ describe('the whole channel against the real supervisor', () => {
     const roots: string[] = [];
     const closing: (() => Promise<void>)[] = [];
     afterEach(async () => {
+        await stopSupervisors();
         for (const close of closing.splice(0)) await close();
         for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
     });
+    afterAll(() => expect(liveSupervisors()).toBe(0));
 
     /** A real control endpoint and the real supervisor polling it from a scratch mailbox root. */
     async function channel(env: Record<string, string> = {}) {
@@ -445,7 +448,8 @@ describe('the whole channel against the real supervisor', () => {
         roots.push(root);
         for (const dir of ['in', 'out', 'export', 'supervisor']) mkdirSync(join(root, dir), { recursive: true });
         const logs: string[] = [];
-        const done = supervisor.supervise(
+        const done = superviseTracked(
+            supervisor,
             {
                 FACTORY_CTL_ROOT: root,
                 SUPERVISOR_TICK_MS: '10',

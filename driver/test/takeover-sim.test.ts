@@ -4,9 +4,12 @@
  * each across a timing matrix of lease, rebind grace and the kubelet's Secret refresh. A scenario
  * names the lane case it mirrors; its expectations are the lane's.
  */
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { takeoverBoundMs } from '../src/supervisor-plan.js';
+import { liveSupervisors } from './fixtures/supervisor-tracker.js';
 import { ADOPTED, lane15, scaled, Sim, TOOK_OVER, type Timing, until } from './fixtures/takeover-sim.js';
+
+afterAll(() => expect(liveSupervisors()).toBe(0));
 
 const released = (s: Sim) => [...s.groups.values()].find((g) => s.released(g));
 const firstGroup = (s: Sim) => [...s.groups.values()][0]!;

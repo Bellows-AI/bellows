@@ -284,7 +284,20 @@ const writeAtomic = (file, text) => {
     fs.renameSync(tmp, file);
 };
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// A stop (the optional signal `supervise` takes) wakes the sleep early. Captured at load: fake timers must not freeze it.
+const yieldMacrotask = setImmediate;
+const sleep = (ms, run) =>
+    new Promise((resolve) => {
+        const timer = setTimeout(done, ms);
+        function done() {
+            clearTimeout(timer);
+            run.stop.signal.removeEventListener('abort', done);
+            resolve();
+        }
+        // Already stopped: still a macrotask, so a loop that sleeps in a hot cycle cannot starve the event loop.
+        if (run.stop.signal.aborted) yieldMacrotask(done);
+        else run.stop.signal.addEventListener('abort', done, { once: true });
+    });
 
 /** The checkpoint this attempt takes at finalize, or null when the driver configured none. */
 function checkpointOf(env) {
@@ -448,6 +461,7 @@ function newRun(settings, now, log) {
         bindingAbort: new AbortController(),
         refusedBinding: null,
         abort: new AbortController(),
+        stop: new AbortController(),
         // The relay servers by role, and how many requests each has in flight (`serveRelay`).
         relays: { agent: { server: null, active: 0 }, export: { server: null, active: 0 } },
         // Aborted when the group stops taking steps; `inflight` interrupts the one still running.
@@ -494,8 +508,9 @@ const waitsForHolder = (run) => run.goAt !== null && !run.settings.agentless && 
 
 /** The driver stopped answering for longer than the orphan bound (the takeover bound once released): nobody is left to give this group orders. */
 const orphaned = (run) =>
-    Boolean(run.binding.url) &&
-    run.now() - run.contactedAt > (waitsForHolder(run) ? run.settings.takeoverMs : run.settings.orphanMs);
+    run.stop.signal.aborted ||
+    (Boolean(run.binding.url) &&
+        run.now() - run.contactedAt > (waitsForHolder(run) ? run.settings.takeoverMs : run.settings.orphanMs));
 
 /** A binding file's text as a binding strictly newer than `claimSeq`; null for anything else. */
 function newerBinding(text, claimSeq) {
@@ -877,9 +892,9 @@ async function execGate(run, step) {
     postGateRequest(run, step, step.id);
     const flight = { startedAt: run.now(), why: null, stoppedAt: 0 };
     for (;;) {
-        const settled = gateTick(run, step, flight);
+        const settled = gateTick(run, step, flight) ?? (run.stop.signal.aborted ? lostGateResult(run, step) : null);
         if (settled) return settled;
-        await sleep(run.settings.tickMs);
+        await sleep(run.settings.tickMs, run);
     }
 }
 
@@ -1014,7 +1029,7 @@ async function postStepResult(run, step, result, gen) {
             if (answer.status === HTTP_UNAUTHORIZED) run.closed = true;
             return;
         }
-        await sleep(run.settings.tickMs * attempt);
+        await sleep(run.settings.tickMs * attempt, run);
     }
 }
 
@@ -1054,14 +1069,14 @@ function readLedgerResult(run, step) {
 async function serveSteps(run) {
     const { settings } = run;
     if (!run.binding.url) return;
-    const pulling = AbortSignal.any([run.abort.signal, run.pulling.signal]);
+    const pulling = AbortSignal.any([run.abort.signal, run.pulling.signal, run.stop.signal]);
     while (!pulling.aborted) {
         const wait = settings.stepWaitMs;
         const answer = await ask(run, 'GET', `${STEP_PATH}?wait=${wait}`, { holdMs: wait, abort: pulling });
         // A step handed over once the group stopped taking steps is dropped unrun: the driver refuses its waiter.
         if (pulling.aborted) return;
         if (!answer || answer.status >= HTTP_SERVER_ERROR) {
-            await sleep(settings.tickMs);
+            await sleep(settings.tickMs, run);
             continue;
         }
         if (answer.status === HTTP_UNAUTHORIZED) {
@@ -1307,7 +1322,12 @@ async function executeUntilAgentEnds(run) {
         tickBudget(run);
         watchExporter(run);
         watchAgent(run);
-        if (!run.agentEnd) await sleep(run.settings.tickMs);
+        if (!run.agentEnd && run.stop.signal.aborted) {
+            intend(run, 'lost', CAUSE.orphaned);
+            raiseKill(run, CAUSE.orphaned);
+            run.agentEnd = { exitCode: null, how: 'unlaunched' };
+        }
+        if (!run.agentEnd) await sleep(run.settings.tickMs, run);
     }
 }
 
@@ -1368,7 +1388,7 @@ async function awaitGo(run) {
             run.agentEnd = { exitCode: null, how: 'unlaunched' };
             return;
         }
-        await sleep(run.settings.tickMs);
+        await sleep(run.settings.tickMs, run);
     }
 }
 
@@ -1428,7 +1448,7 @@ async function serveUntilFinish(run) {
     const over = () => run.finishRequested || run.closed || !serving(run) || orphaned(run);
     while (!over()) {
         await tickDuties(run);
-        if (!over()) await sleep(run.settings.tickMs);
+        if (!over()) await sleep(run.settings.tickMs, run);
     }
 }
 
@@ -1442,7 +1462,7 @@ async function depart(run) {
     const until = run.now() + run.settings.reportMs;
     while (reportOwed(run) && !run.closed && !orphaned(run) && run.now() < until) {
         await tickDuties(run);
-        if (reportOwed(run)) await sleep(run.settings.tickMs);
+        if (reportOwed(run)) await sleep(run.settings.tickMs, run);
     }
 }
 
@@ -1462,7 +1482,7 @@ async function drainExporter(run) {
         beat(run);
         followBinding(run);
         if (readJson(file.exportStatus)?.done === true) return true;
-        await sleep(settings.tickMs);
+        await sleep(settings.tickMs, run);
     }
     return false;
 }
@@ -1655,7 +1675,7 @@ async function putCheckpoint(run, route, options, abort) {
         const answer = await ask(run, 'PUT', route, { ...options, abort });
         if (answer && answer.status < HTTP_SERVER_ERROR) return answer;
         if (abort.aborted || orphaned(run)) return answer;
-        await sleep(Math.min(run.settings.tickMs * tries, run.settings.controlMs));
+        await sleep(Math.min(run.settings.tickMs * tries, run.settings.controlMs), run);
     }
 }
 
@@ -1759,13 +1779,25 @@ function lastJson(text) {
     return null;
 }
 
+/** Wires the optional external stop to the run: aborting it stops the sleeps and the step pull. */
+function haltOn(run, stop) {
+    const halt = () => {
+        run.stop.abort();
+        run.pulling.abort();
+    };
+    if (stop?.aborted) halt();
+    else stop?.addEventListener('abort', halt, { once: true });
+}
+
 /**
  * Runs the supervisor to its report. Returns the exit status; `now` and `log` are test seams.
  * Never throws for the attempt's own failures: those are the outcome. A bug throws, and the
  * caller exits 70, which the driver reads as a lost supervisor — an infrastructure loss.
+ * `stop` is optional (tests): aborting it ends the run like a lost driver, waking every sleep and the step pull.
  */
-async function supervise(env = process.env, log = (line) => process.stdout.write(`${line}\n`), now = Date.now) {
+async function supervise(env = process.env, log = (line) => process.stdout.write(`${line}\n`), now = Date.now, stop) {
     const run = newRun(settingsOf(env), now, log);
+    haltOn(run, stop);
     // prepare: the mailbox exists before anything reads it.
     const { dirs } = run.settings;
     for (const dir of [dirs.in, dirs.out, dirs.export, dirs.own, run.file.agentIn, run.file.agentOut]) {
