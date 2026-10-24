@@ -284,13 +284,15 @@ function readAll(discovery: ReturnType<typeof discoverTranscripts>): {
     return out;
 }
 
-/** Each main transcript's session: the one session its records name (null when they name several). */
+/**
+ * Each main transcript's session: the one session its records name. Null when they name several, or
+ * none — a file name alone does not prove the parent, so its nested files stay quarantined.
+ */
 function mainSessions(parsed: Parsed[]): Map<string, string | null> {
     const out = new Map<string, string | null>();
     for (const { file, list } of parsed.filter((p) => p.file.layout === 'project')) {
         const sessions = [...new Set(list.map((o) => o.sessionId))];
-        const resolved =
-            sessions.length === 0 ? file.conversation : sessions.length === 1 ? (sessions[0] ?? null) : null;
+        const resolved = sessions.length === 1 ? (sessions[0] ?? null) : null;
         out.set(`${file.project}/${file.conversation}`, resolved);
     }
     return out;

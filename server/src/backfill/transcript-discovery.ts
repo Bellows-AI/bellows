@@ -141,7 +141,8 @@ function scanProject(scan: Scan, project: string): void {
     const names = listDir(scan, abs, project);
     if (names === null) return;
     addFiles(scan, names, { dir: abs, rel: project, project, layout: 'project', layoutParent: null });
-    for (const session of names) scanSubagents(scan, abs, project, session);
+    // A transcript file has no subagents dir under it; probing one would double-report an unenterable project.
+    for (const session of names.filter((n) => !n.endsWith('.jsonl'))) scanSubagents(scan, abs, project, session);
 }
 
 export function discoverTranscripts(root: string): Discovery {

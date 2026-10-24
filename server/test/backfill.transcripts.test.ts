@@ -73,7 +73,9 @@ describe('discovery', () => {
             const d = discoverTranscripts(root);
             expect(d.complete).toBe(false);
             expect(d.skipped.map((s) => s.reason)).toContain('unreadable-entry');
-            expect(d.skipped.map((s) => s.rel)).toEqual(expect.arrayContaining(['p1/s1.jsonl', 'p2/dangling.jsonl']));
+            // Running as root can enter p1 anyway; only the dangling symlink is unreadable then.
+            const expected = process.getuid?.() === 0 ? ['p2/dangling.jsonl'] : ['p1/s1.jsonl', 'p2/dangling.jsonl'];
+            expect(d.skipped.map((s) => s.rel)).toEqual(expect.arrayContaining(expected));
         } finally {
             chmodSync(join(root, 'p1'), 0o755);
         }
@@ -341,6 +343,12 @@ describe('scanTranscripts', () => {
         put('p2/s1.jsonl', [rec({ session: 's1', id: 'm0' })]);
         put('p1/s1/subagents/agent-a.jsonl', [rec({ session: 's1', id: 'm1' })]);
         expect(scanTranscripts(root).quarantined).toHaveLength(1);
+    });
+
+    it('quarantines when the parent transcript has no usage record to name its session', () => {
+        put('p1/s1.jsonl', '');
+        put('p1/s1/subagents/agent-a.jsonl', [rec({ session: 's1', id: 'm2' })]);
+        expect(scanTranscripts(root).quarantined.map((q) => q.reason)).toEqual(['parent-session-unresolved']);
     });
 
     it('quarantines when the parent transcript names more than one session', () => {
