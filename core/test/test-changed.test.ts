@@ -12,6 +12,7 @@ interface PlanInput {
     changed: string[];
     spawn: string[];
     namedBy: (names: string[]) => string[];
+    namedInSource: (names: string[]) => string[];
     importers: (files: string[]) => string[];
 }
 const SCRIPT = new URL('../../scripts/test-changed.mjs', import.meta.url).href;
@@ -30,8 +31,12 @@ const NAMED: Record<string, string[]> = {
     'sessions.json': ['core/test/task-usage.test.ts'],
 };
 const lookup = (names: string[]) => names.flatMap((name) => NAMED[name] ?? []);
-const run = (changed: string[], namedBy = lookup, importers = (_files: string[]): string[] => []): Step[] =>
-    plan({ base: 'abc123', changed, spawn: SPAWN, namedBy, importers });
+const run = (
+    changed: string[],
+    namedBy = lookup,
+    importers = (_files: string[]): string[] => [],
+    namedInSource = (_names: string[]): string[] => []
+): Step[] => plan({ base: 'abc123', changed, spawn: SPAWN, namedBy, namedInSource, importers });
 const vitestArgs = (steps: Step[]) => steps.flatMap((step) => (step.vitest ? [step.vitest] : []));
 
 describe('test:changed plan', () => {
@@ -144,6 +149,21 @@ describe('test:changed plan', () => {
         expect(vitestArgs(steps).at(-1)).toContain('driver/test/loop-containment.test.ts');
     });
 
+    it('reaches the suites that import the loader of a changed script body', () => {
+        const importers = reverseImports({
+            'driver/src/container-scripts.ts': '',
+            'driver/src/gate.ts': "import { gateShellScript } from './container-scripts.js';",
+            'driver/test/scripts-gate-shell.test.ts': "import { gateShellScript } from '../src/container-scripts.js';",
+        });
+        const steps = run(
+            ['driver/src/scripts/gate-shell.sh'],
+            () => [],
+            importers,
+            (names) => (names.includes('gate-shell.sh') ? ['driver/src/container-scripts.ts'] : [])
+        );
+        expect(vitestArgs(steps).flat()).toContain('driver/test/scripts-gate-shell.test.ts');
+    });
+
     it('runs a suite that enumerates the changed directory though it never names the file', () => {
         const steps = run(['server/migrations/999_new.sql']);
         expect(vitestArgs(steps).at(-1)).toEqual(['run', 'core/test/migrations.sql.test.ts']);
@@ -155,6 +175,7 @@ describe('test:changed plan', () => {
             changed: ['core/src/metrics.ts'],
             spawn: [...SPAWN, 'server/test/local-origin-plan.test.ts'],
             namedBy: lookup,
+            namedInSource: () => [],
             importers: () => [],
         });
         expect(vitestArgs(steps)).toContainEqual(['run', 'server/test/local-origin-plan.test.ts']);
@@ -173,6 +194,7 @@ describe('test:changed plan', () => {
                 changed: [path],
                 spawn: SPAWN,
                 namedBy: () => [],
+                namedInSource: () => [],
                 importers: () => [],
             });
             return vitestArgs(steps).at(-1)?.slice(1) ?? [];

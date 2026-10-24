@@ -15,6 +15,8 @@ const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
+// Names too common for a source to be said to load them: they would pull in every suite.
+const GENERIC_NAME = /^(package(-lock)?\.json|tsconfig[\w.]*\.json|[A-Z]+\.md|SKILL\.md|Makefile|VERSION|index\.[a-z]+)$/;
 const GRAPH_FILE = /\.(ts|tsx|mts|cts)$/;
 // Suites that scan a directory (`readdirSync`, a recursive read) and never name its files, so no grep
 // finds them. `core/test/test-changed.test.ts` pins that each one exists. A
@@ -47,9 +49,10 @@ const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]
  * - `changed`: repo-relative paths changed since the base.
  * - `spawn`: the spawn-tier test files (`vitest.spawn-tests.json`).
  * - `importers(files)`: every file that imports one of `files`, directly or through others.
+ * - `namedInSource(names)`: source files (outside every `test/` directory) that mention any of `names`.
  * - `namedBy(names)`: files under a `test/` directory that mention any of `names`.
  */
-export function plan({ base, changed, spawn, namedBy, importers }) {
+export function plan({ base, changed, spawn, namedBy, namedInSource, importers }) {
     const spawning = new Set(spawn);
     const steps = [];
     const coreChanged = changed.some((file) => file.startsWith('core/src/'));
@@ -101,6 +104,16 @@ export function plan({ base, changed, spawn, namedBy, importers }) {
     // A fixture under test/ that imports a changed source, however deep, may be launched by path
     // (`spawn`, `fork`), which no import graph connects: the suites that name it are reached too.
     const reaching = importers(changed.filter((file) => GRAPH_FILE.test(file)));
+    // A source that loads a changed non-TypeScript file by name (a script body, a template) is as
+    // good as changed: the suites that import it are reached through it.
+    const unread = changed
+        .filter((file) => !GRAPH_FILE.test(file) && !TEST_TREE.test(file))
+        .map(baseName)
+        .filter((name) => !GENERIC_NAME.test(name));
+    const loaders = unread.length > 0 ? namedInSource(unread) : [];
+    const throughLoaders = [...loaders, ...importers(loaders)];
+    for (const file of throughLoaders) if (UNIT_TEST.test(file)) named.add(file);
+    reaching.push(...throughLoaders);
     lookup(reaching.filter((file) => TEST_TREE.test(file) && !UNIT_TEST.test(file)).map(baseName));
     const inCovered = (file) => {
         const pkg = file.split('/')[0];
@@ -164,6 +177,14 @@ function namedBy(names) {
     }
 }
 
+function namedInSource(names) {
+    try {
+        return git('grep', '-l', '-F', ...names.flatMap((name) => ['-e', name]), '--', '*.ts', '*.tsx', ':(exclude)*/test/*');
+    } catch {
+        return [];
+    }
+}
+
 function main(argv) {
     const dash = argv.indexOf('--');
     const passthrough = dash === -1 ? [] : argv.slice(dash + 1);
@@ -194,7 +215,7 @@ function main(argv) {
             }
         })
     );
-    const steps = plan({ base: mergeBase, changed, spawn, namedBy, importers: reverseImports(texts) });
+    const steps = plan({ base: mergeBase, changed, spawn, namedBy, namedInSource, importers: reverseImports(texts) });
     if (show) {
         process.stdout.write(`${JSON.stringify({ changed, steps }, null, 2)}\n`);
         return 0;
