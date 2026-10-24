@@ -26,6 +26,7 @@ import { stagedUnderLease } from './job-store-staged.js';
 import { secondsSince } from '../../prometheus.js';
 import { startAcquire } from './job-store-claim-probe.js';
 import { settleIfMergeClosed } from './job-store-merge.js';
+import { recordExecution } from './job-store-provenance.js';
 import type {
     Claim,
     ClaimHelperPlan,
@@ -458,6 +459,7 @@ async function acquireCandidate(
         }
         probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
+        await recordExecution(tx, orgId, row.id);
         return assembleClaim(ctx, tx, row, { rootJobId, gates });
     });
     // Only a transaction that resolved reports: a throw above rolled back and observed nothing.
