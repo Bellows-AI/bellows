@@ -9,6 +9,7 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Writes and dedupe | `server/src/telemetry/store.ts` | `server/test-db/telemetry.sql.test.ts` |
 | Read client, `ok`/`empty`/`stale`/`disabled` | `server/src/telemetry/{postgres-client,client,errors}.ts` | `server/test/routes.telemetry.test.ts` |
 | Views: `metric_point_used`, `session_source`, `session_branch_slice` | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts` |
+| Transcript discovery, parent quarantine, message dedupe, zero-preserving usage events | `server/src/backfill/transcript-discovery.ts`, `server/src/backfill/transcript-usage.ts` | `server/test/backfill.transcripts.test.ts` |
 | Executor OTEL endpoint rendering | `driver/src/telemetry-config.ts` | `driver/test/telemetry-shipping.test.ts` |
 | Run-activity bucketing and per-type token totals (`GET /api/jobs/:id/activity`); reduced by `reduceTokenObservations` (`core/src/token-contributions.ts`): running maximum per start-time series, pre-window readings are the baseline, unspecified temporality is never added, a series' first reading without a start time is unlocated | `server/src/telemetry/run-activity.ts` | `server/test/run-activity.test.ts`, `server/test-db/telemetry.sql.test.ts` |
 | Executor emission, collector config, branch reporter | `docker/{claude,opencode}-executor/`, `docker/otel-collector.yaml`, `charts/factory/files/collector.yaml` | `docker/claude-executor/test.sh`, `driver/test/branch-reporter.test.ts` |
