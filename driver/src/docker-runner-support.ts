@@ -26,6 +26,7 @@ import {
     serviceRunArgs,
 } from './services.js';
 import { supervisorName } from './docker-mailbox.js';
+import { boardIdentity } from './task-volume.js';
 import type { StepSink } from './step-control.js';
 import { controlTokenOf } from './supervised-steps.js';
 import { abortableSleep, anyOf, type Bound, type Sleep, timeLeft } from './poll.js';
@@ -319,7 +320,7 @@ export async function setupJobServices(
     assertJobNotKilled(deps.ledger, job);
     for (const spec of specs) {
         try {
-            await deps.execDocker(serviceRunArgs(job, spec, supervisorName(job)));
+            await deps.execDocker(serviceRunArgs(job, spec, supervisorName(job), boardIdentity(config)));
         } catch (e) {
             await deps.serviceTeardown(job);
             throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
@@ -611,7 +612,7 @@ export const servicePsArgs = (job: BoardJob): string[] => [
  */
 export async function restartJobServices(
     job: BoardJob,
-    execDocker: ExecDocker,
+    { config, execDocker }: { config: DriverConfig; execDocker: ExecDocker },
     signal: AbortSignal,
     sleep: Sleep = abortableSleep
 ): Promise<void> {
@@ -626,7 +627,7 @@ export async function restartJobServices(
             throwIfStoodDown(signal);
             await remove(bounded, spec.name);
             try {
-                await bounded(serviceRunArgs(job, spec, supervisorName(job)));
+                await bounded(serviceRunArgs(job, spec, supervisorName(job), boardIdentity(config)));
             } catch (e) {
                 throw new Error(`could not start service "${spec.name}": ${(e as Error).message}`);
             }

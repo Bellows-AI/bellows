@@ -57,6 +57,7 @@
         "server/test/lane-slow-jobs.test.ts",
         "server/test/local-origin-plan.test.ts",
         "server/test/test-jobs.changed.test.ts",
+        "server/test/test-jobs.groups.test.ts",
         "server/test/test-jobs.options.test.ts"
     ]
 }
