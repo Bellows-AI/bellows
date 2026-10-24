@@ -126,7 +126,7 @@ describe('ci workflows', () => {
     });
 
     it('runs on the node major the runtime image ships', () => {
-        const imageMajor = /FROM public\.ecr\.aws\/docker\/library\/node:(\d+)-alpine AS runtime/.exec(
+        const imageMajor = /FROM mirror\.gcr\.io\/library\/node:(\d+)-alpine AS runtime/.exec(
             read('docker/Dockerfile')
         )?.[1];
         expect(imageMajor).toBeTruthy();
@@ -142,9 +142,10 @@ describe('ci workflows', () => {
     });
 
     // GitHub-hosted runners share egress IPs, and Docker Hub rate-limits anonymous pulls per IP:
-    // a release whose every build answers 429 cannot be cut. ECR Public mirrors the same official
-    // images with no such limit and no credential.
-    it('pulls every base image from the ECR Public mirror, never Docker Hub', () => {
+    // a release whose every build answers 429 cannot be cut. ECR Public's per-IP data limit refuses
+    // shared runner IPs too. Google's Docker Hub cache serves the same official images with no
+    // credential.
+    it('pulls every base image from mirror.gcr.io, never Docker Hub or ECR Public', () => {
         const dockerfiles = [
             'docker/Dockerfile',
             'docker/driver.Dockerfile',
@@ -158,16 +159,18 @@ describe('ci workflows', () => {
                 .map((match) => match[1] ?? match[2]!)
                 .filter((ref) => /[:/]/.test(ref));
             expect(refs.length, path).toBeGreaterThan(0);
-            for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
+            for (const ref of refs) expect(ref, path).toMatch(/^mirror\.gcr\.io\/library\//);
         }
         // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
-        expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^public\.ecr\.aws\/vend\/moby\/buildkit:/);
+        // ECR Public's per-IP data limit refuses even the one buildkit pull on a shared runner IP
+        // however often it is re-run, so it comes through Google's Docker Hub cache, as postgres does.
+        expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^mirror\.gcr\.io\/moby\/buildkit:/);
     });
 
-    // Eight build cells pulling buildkit anonymously from ECR Public at once trip its per-IP rate
-    // and data limits, and a retry on the same runner reuses the same IP. One job pulls it once
-    // into the release registry; every cell boots its builder from there.
-    it('pulls buildkit from ECR Public once per release, retrying only on toomanyrequests', () => {
+    // Eight build cells pulling buildkit anonymously at once trip a registry's per-IP limits, and a
+    // retry on the same runner reuses the same IP. One job pulls it once into the release registry;
+    // every cell boots its builder from there.
+    it('pulls buildkit once per release, retrying only on toomanyrequests', () => {
         const jobs = workflow(RELEASE).jobs;
         const mirror = runs(jobs.buildkit!).join('\n');
         expect(mirror).toContain('docker buildx imagetools create -t "$REGISTRY/buildkit:');
@@ -192,9 +195,7 @@ describe('ci workflows', () => {
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
         expect(Object.keys(mirror.jobs)).toEqual(['postgres']);
-        expect(job.env!.SOURCE).toBe(
-            composePostgres().replace(/^public\.ecr\.aws\/docker\/library\//, 'mirror.gcr.io/library/')
-        );
+        expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
         expect(commands).toContain('docker login ghcr.io');

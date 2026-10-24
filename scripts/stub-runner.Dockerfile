@@ -4,7 +4,7 @@
 # mailbox mount points, and the tool isolation (issue #814): the driver starts the agent container
 # as root, and factory-launch drops it to node behind the tool broker. Each stub adds its own
 # ENTRYPOINT through factory-launch and scripts/stub-agent.sh (driver/test/lane-stubs.test.ts).
-FROM public.ecr.aws/docker/library/node:24-alpine
+FROM mirror.gcr.io/library/node:24-alpine
 RUN apk add --no-cache git git-daemon bash setpriv && ln -s /bin/setpriv /usr/bin/setpriv
 RUN addgroup -g 1002 factory-agent && addgroup node factory-agent \
     && adduser -D -u 1001 -G node -h /home/factory-tool -s /bin/bash factory-tool \

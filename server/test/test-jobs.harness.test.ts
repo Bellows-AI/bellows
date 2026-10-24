@@ -133,7 +133,7 @@ describe('the test-jobs harness', () => {
     // bare alpine stub cannot sync the checkout every task now has.
     it("the stub runners stand on node and git as the executor images' uid-1000 user", () => {
         const base = readFileSync(join(ROOT, 'scripts/stub-runner.Dockerfile'), 'utf8');
-        expect(base).toContain('FROM public.ecr.aws/docker/library/node:24-alpine\n');
+        expect(base).toContain('FROM mirror.gcr.io/library/node:24-alpine\n');
         expect(base).toMatch(/^RUN apk add --no-cache git /m);
         expect(base.trimEnd().endsWith('USER node')).toBe(true);
         expect(SCRIPT).toContain('docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work"');
