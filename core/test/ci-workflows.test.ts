@@ -161,13 +161,15 @@ describe('ci workflows', () => {
             for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
         }
         // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
-        expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^public\.ecr\.aws\/vend\/moby\/buildkit:/);
+        // ECR Public's per-IP data limit refuses even the one buildkit pull on a shared runner IP
+        // however often it is re-run, so it comes through Google's Docker Hub cache, as postgres does.
+        expect(workflow(RELEASE).jobs.buildkit!.env!.BUILDKIT).toMatch(/^mirror\.gcr\.io\/moby\/buildkit:/);
     });
 
-    // Eight build cells pulling buildkit anonymously from ECR Public at once trip its per-IP rate
-    // and data limits, and a retry on the same runner reuses the same IP. One job pulls it once
-    // into the release registry; every cell boots its builder from there.
-    it('pulls buildkit from ECR Public once per release, retrying only on toomanyrequests', () => {
+    // Eight build cells pulling buildkit anonymously at once trip a registry's per-IP limits, and a
+    // retry on the same runner reuses the same IP. One job pulls it once into the release registry;
+    // every cell boots its builder from there.
+    it('pulls buildkit once per release, retrying only on toomanyrequests', () => {
         const jobs = workflow(RELEASE).jobs;
         const mirror = runs(jobs.buildkit!).join('\n');
         expect(mirror).toContain('docker buildx imagetools create -t "$REGISTRY/buildkit:');

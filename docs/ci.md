@@ -27,8 +27,8 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   `release-image.yml` makes. No release commit carries `[skip ci]`.
 - **Node is `24`, matching `docker/Dockerfile`'s runtime base**; there is no `.nvmrc`, so the test is the only pin.
 - **Every base image pulls from `public.ecr.aws/docker/library/`** (Docker Hub rate-limits shared runner IPs).
-  Buildkit comes from `public.ecr.aws/vend/moby/buildkit`, pulled once per release by the `buildkit` job into
-  `<registry>/buildkit`; every build cell boots from that mirror.
+  Buildkit comes from `mirror.gcr.io/moby/buildkit` (ECR Public's data limit refuses it), pulled once per
+  release by the `buildkit` job into `<registry>/buildkit`; every build cell boots from that mirror.
 - **No job service pulls from ECR Public**: a service is pulled before any step, so it can neither log in nor retry,
   and ECR Public's per-IP data limit fails it on a shared runner IP. Every `postgres` service pulls the GHCR mirror
   with `github.actor`/`github.token` credentials under `packages: read`. Only the two mirror pulls retry, and only

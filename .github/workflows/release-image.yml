@@ -56,17 +56,18 @@ jobs:
                   # mixed-case path is rejected rather than folded.
                   printf 'registry=ghcr.io/%s\n' "$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')" >>"$GITHUB_OUTPUT"
 
-    # The buildkit image every build cell boots its builder from, pulled from ECR Public once and
-    # copied into the release registry. Eight cells pulling it anonymously at once trip ECR
-    # Public's per-IP rate and data limits; a retry inside a cell reuses the same IP, so only the
-    # one pull here retries. imagetools copies the manifest list, so both arches come along. The
-    # cells pull it logged in, so the package's visibility does not matter.
+    # The buildkit image every build cell boots its builder from, pulled once and copied into the
+    # release registry. Eight cells pulling it anonymously at once trip a registry's per-IP limits;
+    # a retry inside a cell reuses the same IP, so only the one pull here retries. ECR Public's
+    # per-IP data limit refuses even this one pull on a shared runner IP, so the source is Google's
+    # Docker Hub cache, as mirror-images.yml's postgres is. imagetools copies the manifest list, so
+    # both arches come along. The cells pull it logged in, so the package's visibility does not matter.
     buildkit:
         needs: [tag]
         runs-on: ubuntu-latest
         timeout-minutes: 10
         env:
-            BUILDKIT: public.ecr.aws/vend/moby/buildkit:buildx-stable-1
+            BUILDKIT: mirror.gcr.io/moby/buildkit:buildx-stable-1
         steps:
             - name: docker login ghcr.io
               env:
