@@ -586,13 +586,16 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     };
 }
 
-/** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
+/**
+ * Tells the board the id of the session this attempt runs under, a resumed one included (the board
+ * upgrades its claim-time inference to a report); a failed report never blocks the run.
+ */
 async function reportNewSession(
     rt: LoopRuntime,
     job: BoardJob,
     session: ReturnType<typeof pickSession>
 ): Promise<void> {
-    if (!session || session.resume) return;
+    if (!session) return;
     try {
         await rt.board.session(job, session.id);
     } catch (e) {

@@ -8,6 +8,7 @@ import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
 import type { EvidencePolicy } from '../evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
+import { recordReportedSession } from './job-store-provenance.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
 import { fingerprintOf, missedSettle, recordReceipt, type SettleKey } from './job-store-receipts.js';
 import { stagedFingerprint } from './job-store-staged.js';
@@ -57,7 +58,7 @@ export interface JobWorkerStore {
      * like every other worker write: a superseded worker must not relabel the run that replaced it.
      * Null clears it — a refused start whose minted session never ran.
      */
-    session(id: string, leaseToken: string, sessionId: string | null): Promise<LeaseResult>;
+    session(id: string, leaseToken: string, sessionId: string | null, agent?: string): Promise<LeaseResult>;
 
     /**
      * Streams a rolling tail of the running attempt's output, so the dashboard can show the work
@@ -210,26 +211,27 @@ export async function sessionReport(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    sessionId: string | null
+    report: { sessionId: string | null; agent: string | null }
 ): ReturnType<JobStore['session']> {
     const { sql, orgId } = ctx;
+    const { sessionId, agent } = report;
     // The opencode reporter re-posts its session every sample (routes/ingest.ts): a session the row
-    // already carries is no write, and the answer is the lease's whether or not anything changed.
-    const rows = await sql<{ id: string }[]>`
-        update job set
-            session_id = ${sessionId}
-        where org_id = ${orgId} and id = ${id}
-          and status = 'running' and lease_token = ${leaseToken}
-          and session_id is distinct from ${sessionId}
-        returning id
-    `;
-    if (rows[0]) return 'ok';
-    const lease = await sql<{ held: boolean | null }[]>`
-        select status = 'running' and lease_token = ${leaseToken} as held
-        from job where org_id = ${orgId} and id = ${id}
-    `;
-    if (!lease[0]) return 'missing';
-    return lease[0].held ? 'ok' : 'lost';
+    // already carries is no pointer write, and the answer is the lease's whether or not anything
+    // changed. The history row (issue #845) rides the same transaction, guarded by the same lease.
+    return sql.begin(async (tx) => {
+        const held = await tx<{ session_id: string | null }[]>`
+            select session_id from job
+            where org_id = ${orgId} and id = ${id}
+              and status = 'running' and lease_token = ${leaseToken}
+            for update
+        `;
+        if (!held[0]) return (await exists(tx, orgId, id)) ? 'lost' : 'missing';
+        if (held[0].session_id !== sessionId) {
+            await tx`update job set session_id = ${sessionId} where org_id = ${orgId} and id = ${id}`;
+        }
+        if (sessionId !== null) await recordReportedSession(tx, orgId, id, { sessionId, agent });
+        return 'ok';
+    });
 }
 
 export async function progressReport(

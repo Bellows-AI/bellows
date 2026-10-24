@@ -107,9 +107,9 @@ function workerMethods(
             return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
         },
 
-        async session(id, leaseToken, sessionId) {
+        async session(id, leaseToken, sessionId, agent) {
             await gate();
-            return sessionReport(ctx, id, leaseToken, sessionId);
+            return sessionReport(ctx, id, leaseToken, { sessionId, agent: agent ?? null });
         },
 
         async progress(id, leaseToken, output, runtime: RuntimeVitals | null = null) {

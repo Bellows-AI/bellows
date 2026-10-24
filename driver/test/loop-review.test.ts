@@ -212,12 +212,12 @@ describe('a review the board leased in-band (issue #774)', () => {
         expect(new Set(beats)).toEqual(new Set([REVIEW.id]));
     });
 
-    it('resumes the session a re-leased review recorded, recording nothing new', async () => {
+    it('resumes the session a re-leased review recorded, reporting it again so the board can upgrade its inference', async () => {
         const t = supervising({ runReview: async () => STEP() });
         t.start({ ...REVIEW, resumeSessionId: 'sess-prev' } as ReviewClaim);
         await t.settled();
         expect(t.runner.reviewed[0]!.session).toEqual({ id: 'sess-prev', resume: true });
-        expect(t.board.sessions).toEqual([]);
+        expect(t.board.sessions).toEqual([{ id: REVIEW.id, sessionId: 'sess-prev' }]);
     });
 
     it('starts one supervision per key: a retried request whose answer was lost gets no second reviewer', async () => {

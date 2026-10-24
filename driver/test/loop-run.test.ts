@@ -210,3 +210,30 @@ describe('how a run ends', () => {
         expect(r.board.completed).toEqual([]);
     });
 });
+
+describe('the session an attempt runs under, reported to the board (issue #845)', () => {
+    it('reports a resumed session as well as a new one', async () => {
+        const resumed = job(1, 'sess-prev');
+        const r = await attempt(resumed);
+
+        expect(r.board.sessions).toEqual([{ id: resumed.id, sessionId: 'sess-prev' }]);
+    });
+
+    it('runs and completes the attempt when the board cannot take the resumed session report', async () => {
+        const resumed = job(1, 'sess-prev');
+        const board = stubBoard([], { failSession: true }).board;
+        const logs: string[] = [];
+        await runJob(
+            stubRuntime(
+                board,
+                stubRunner(async () => ok()),
+                { log: (m) => logs.push(m) }
+            ),
+            resumed
+        );
+
+        expect(logs.some((m) => m.includes('could not report the session, continuing'))).toBe(true);
+        expect(board.completed).toHaveLength(1);
+        expect(board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+});

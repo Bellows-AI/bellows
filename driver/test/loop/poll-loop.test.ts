@@ -2928,7 +2928,7 @@ describe('the poll loop', () => {
     // it. Already on the board from the insert — nothing re-reported at spawn.
     it.each([
         [
-            'resumes the session the board hands back, and does not report it again',
+            'resumes the session the board hands back, and reports it so the board records it as reported',
             job(1, '44444444-4444-4444-8444-444444444444'),
             '44444444-4444-4444-8444-444444444444',
         ],
@@ -2949,7 +2949,7 @@ describe('the poll loop', () => {
 
         expect(given).toEqual({ id: resumed, resume: true });
         expect(board.board.completed).toHaveLength(1);
-        expect(board.board.sessions).toEqual([]);
+        expect(board.board.sessions).toEqual([{ id: claimed.id, sessionId: resumed }]);
     });
 
     it('drains what is already running before it returns', async () => {

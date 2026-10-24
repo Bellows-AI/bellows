@@ -35,3 +35,38 @@ export async function recordExecution(tx: TransactionSql, orgId: string, jobId: 
         where j.session_id is not null
     `;
 }
+
+/**
+ * A driver or reporter named a session of the job's CURRENT claim (the caller has already proven
+ * the lease). The association is kept idempotently: a repeat only advances `last_seen_at`, a
+ * `resumed`-claim inference becomes `reported`, and nothing here ever deletes one — clearing the
+ * job's session pointer leaves history alone. The first report also proves the process launched
+ * (`requested`/`unknown` -> `observed`, never from a later state) and fills the telemetry `agent`
+ * once. A claim with no execution row (claimed before 085) records nothing: no invention.
+ */
+export async function recordReportedSession(
+    tx: TransactionSql,
+    orgId: string,
+    jobId: string,
+    session: { sessionId: string; agent: string | null }
+): Promise<void> {
+    const { sessionId, agent } = session;
+    await tx`
+        with execution as (
+            update job_execution e set
+                launch = case when e.launch in ('requested', 'unknown') then 'observed' else e.launch end,
+                agent = coalesce(e.agent, ${agent}),
+                updated_at = now()
+            from job j
+            where e.org_id = j.org_id and e.job_id = j.id and e.claim_seq = j.claim_seq
+              and j.org_id = ${orgId} and j.id = ${jobId}
+            returning e.org_id, e.job_id, e.claim_seq
+        )
+        insert into job_execution_session (org_id, job_id, claim_seq, session_id, agent, origin)
+        select org_id, job_id, claim_seq, ${sessionId}, ${agent}, 'reported' from execution
+        on conflict (org_id, job_id, claim_seq, session_id) do update set
+            origin = 'reported',
+            agent = coalesce(job_execution_session.agent, excluded.agent),
+            last_seen_at = now()
+    `;
+}

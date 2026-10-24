@@ -104,6 +104,7 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             [second.claimSeq, true],
         ]);
         expect(await sessions(id)).toEqual([
+            { claim_seq: String(first.claimSeq), session_id: session, origin: 'reported' },
             { claim_seq: String(second.claimSeq), session_id: session, origin: 'inferred_at_claim' },
         ]);
     });
@@ -121,7 +122,8 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
         expect(second.resumeSessionId ?? null).toBeNull();
         const rows = await executions(id);
         expect(rows[1]).toMatchObject({ claim_seq: String(second.claimSeq), resumed: false });
-        expect(await sessions(id)).toEqual([]);
+        // Only the first claim's own report is on record; the fresh claim inherits nothing.
+        expect((await sessions(id)).map((r) => r.claim_seq)).toEqual([String(first.claimSeq)]);
 
         // A retry row is a new job: its own execution, no session.
         await store.complete(id, second.leaseToken, { status: 'failed', exitCode: 1, output: 'x' });
@@ -241,7 +243,10 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
         const rows = await executions(review.id);
         expect(rows).toHaveLength(2);
         expect(rows[1]).toMatchObject({ resumed: true, requesting_job_id: callerId });
-        expect(await sessions(review.id)).toMatchObject([{ session_id: session, origin: 'inferred_at_claim' }]);
+        expect(await sessions(review.id)).toMatchObject([
+            { session_id: session, origin: 'reported' },
+            { session_id: session, origin: 'inferred_at_claim' },
+        ]);
     });
 
     it('resolves the requesting root of a review asked by a follow-up caller', async () => {
@@ -269,5 +274,112 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
         await sql`delete from job where org_id = ${ORG} and root_job_id = ${id}`;
 
         expect(await executions(id)).toHaveLength(1);
+    });
+
+    describe('session reports', () => {
+        const lastSeen = (jobId: string) =>
+            sql<{ last_seen_at: Date; first_seen_at: Date; agent: string | null }[]>`
+                select first_seen_at, last_seen_at, agent from job_execution_session
+                where org_id = ${ORG} and job_id = ${jobId}`;
+
+        it('records a reported session once per execution: a repeat only advances last_seen', async () => {
+            const id = await queue();
+            const c = await claim();
+            const session = randomUUID();
+
+            expect(await store.session(id, c.leaseToken, session)).toBe('ok');
+            const [before] = await lastSeen(id);
+            expect(await store.session(id, c.leaseToken, session)).toBe('ok');
+
+            expect(await sessions(id)).toEqual([
+                { claim_seq: String(c.claimSeq), session_id: session, origin: 'reported' },
+            ]);
+            const [after] = await lastSeen(id);
+            expect(after?.first_seen_at).toEqual(before?.first_seen_at);
+            expect(after!.last_seen_at.getTime()).toBeGreaterThan(before!.last_seen_at.getTime());
+        });
+
+        it('records nothing for a null report and keeps history when the pointer is cleared', async () => {
+            const id = await queue();
+            const c = await claim();
+            expect(await store.session(id, c.leaseToken, null)).toBe('ok');
+            expect(await sessions(id)).toEqual([]);
+            expect((await executions(id))[0]?.launch).toBe('requested');
+
+            const session = randomUUID();
+            await store.session(id, c.leaseToken, session);
+            expect(await store.session(id, c.leaseToken, null)).toBe('ok');
+
+            expect(await sessions(id)).toEqual([
+                { claim_seq: String(c.claimSeq), session_id: session, origin: 'reported' },
+            ]);
+            const [job] = await sql<{ session_id: string | null }[]>`select session_id from job where id = ${id}`;
+            expect(job?.session_id).toBeNull();
+        });
+
+        it('keeps a replaced session as history beside the new one', async () => {
+            const id = await queue();
+            const c = await claim();
+            const [a, b] = [randomUUID(), randomUUID()];
+            await store.session(id, c.leaseToken, a);
+            await store.session(id, c.leaseToken, b);
+
+            expect((await sessions(id)).map((r) => r.session_id).sort()).toEqual([a, b].sort());
+        });
+
+        it('lets a stale lease neither mutate the current execution nor its pointer', async () => {
+            const id = await queue();
+            const first = await claim();
+            await expireLease(sql, id);
+            const second = await claim();
+            const stale = randomUUID();
+
+            expect(await store.session(id, first.leaseToken, stale)).toBe('lost');
+
+            expect(await sessions(id)).toEqual([]);
+            expect((await executions(id)).map((r) => r.launch)).toEqual(['requested', 'requested']);
+            const [job] = await sql<{ session_id: string | null }[]>`select session_id from job where id = ${id}`;
+            expect(job?.session_id).toBeNull();
+            expect(second.claimSeq).toBe(first.claimSeq + 1);
+        });
+
+        it('upgrades the inferred association of a resumed claim to reported, without a second row', async () => {
+            const id = await queue();
+            const first = await claim();
+            const session = randomUUID();
+            await store.session(id, first.leaseToken, session);
+            await expireLease(sql, id);
+            const second = await claim();
+
+            await store.session(id, second.leaseToken, session);
+
+            const rows = (await sessions(id)).filter((r) => r.claim_seq === String(second.claimSeq));
+            expect(rows).toEqual([{ claim_seq: String(second.claimSeq), session_id: session, origin: 'reported' }]);
+        });
+
+        it('marks the launch observed on the first report and never downgrades it', async () => {
+            const id = await queue();
+            const c = await claim();
+            await store.session(id, c.leaseToken, randomUUID());
+            expect((await executions(id))[0]?.launch).toBe('observed');
+
+            await sql`update job_execution set launch = 'adopted' where org_id = ${ORG} and job_id = ${id}`;
+            await store.session(id, c.leaseToken, randomUUID());
+            expect((await executions(id))[0]?.launch).toBe('adopted');
+        });
+
+        it('fills the telemetry agent once a report names it and keeps the first name', async () => {
+            const id = await queue();
+            const c = await claim();
+            const session = randomUUID();
+            await store.session(id, c.leaseToken, session);
+            expect((await executions(id))[0]?.agent).toBeNull();
+
+            await store.session(id, c.leaseToken, session, 'opencode');
+            await store.session(id, c.leaseToken, session, 'other');
+
+            expect((await executions(id))[0]?.agent).toBe('opencode');
+            expect((await lastSeen(id))[0]?.agent).toBe('opencode');
+        });
     });
 });
