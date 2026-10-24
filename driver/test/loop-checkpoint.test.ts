@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { attachCheckpoint, createCheckpointRelay } from '../src/loop-export.js';
-import type { LoopRuntime } from '../src/loop-types.js';
+import type { BoardJob } from '../src/board/board.js';
+import { attachCheckpoint, createCheckpointRelay } from '../src/loop/loop-export.js';
+import type { LoopRuntime } from '../src/loop/loop-types.js';
 
 /**
  * The loop's half of the checkpoint (issue #775): the supervisor's chunks and closing record reach

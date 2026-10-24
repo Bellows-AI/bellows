@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import type { CheckpointRead } from '../src/board-checkpoint.js';
+import type { BoardJob } from '../src/board/board.js';
+import type { CheckpointRead } from '../src/board/board-checkpoint.js';
 import { TASK_ROOT_LABEL, taskVolumeName } from '../src/task-volume.js';
 import { k8sSyncRun } from './k8s-sync-step.js';
 

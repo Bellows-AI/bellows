@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { gitProbeScript } from '../src/publish.js';
+import { gitProbeScript } from '../src/publish/publish.js';
 import { git, hasGit, runScript, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**

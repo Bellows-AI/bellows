@@ -13,9 +13,9 @@ import { existsSync, mkdirSync, readFileSync, mkdtempSync, rmSync, writeFileSync
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Board, BoardJob } from '../../src/board.js';
+import type { Board, BoardJob } from '../../src/board/board.js';
 import { createGateServer, createSupervisedGateManager } from '../../src/gates.js';
-import { createLoop, type Loop } from '../../src/loop.js';
+import { createLoop, type Loop } from '../../src/loop/loop.js';
 import { type AdoptedRun, type LiveRun, ownGroup, type Read, type Runner } from '../../src/runner.js';
 import { createStepBroker, StepChannelClosed } from '../../src/step-control.js';
 import { orderFinish, orderGo, stepHostOf, stepRequest, submitStep } from '../../src/supervised-steps.js';
@@ -441,7 +441,7 @@ export class Sim {
                 const group = sim.ensureGroup(job);
                 const token = job.supervisorEnv?.[SUPERVISOR_ENV.controlToken] ?? '';
                 if (created) d.steps.attach(token);
-                // `awaitSupervisor` (driver/src/k8s-group.ts): a new pod is waited on until its supervisor first pulls; a
+                // `awaitSupervisor` (driver/src/k8s/k8s-group.ts): a new pod is waited on until its supervisor first pulls; a
                 // pod gone before that is an infrastructure loss at once, not a wait for the bound (k8s-group.test.ts).
                 if (created) {
                     const gone = group.gone.then(() => true);

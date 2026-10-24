@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createDriverMetrics, dockerCommandOf, endpointOf, k8sCallOf, statusClassOf } from '../src/driver-metrics.js';
-import type { K8sRequest } from '../src/k8s-transport.js';
+import type { K8sRequest } from '../src/k8s/k8s-transport.js';
 
 const UUID = '3f1c2a4e-9b7d-4c1a-8e2f-5a6b7c8d9e0f';
 const LABEL_VALUES = /="([^"]*)"/g;

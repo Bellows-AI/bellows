@@ -1,7 +1,7 @@
-import type { FailureCause } from './board.js';
+import type { FailureCause } from './board/board.js';
 import { CONTAINER_GONE } from './exec-codes.js';
-import { KILLED_EXIT_CODE } from './k8s-kill.js';
-import { TIMEOUT_EXIT_CODE } from './k8s-transport.js';
+import { KILLED_EXIT_CODE } from './k8s/k8s-kill.js';
+import { TIMEOUT_EXIT_CODE } from './k8s/k8s-transport.js';
 
 /**
  * Exits that say the environment ended the gate, not its assertions: the gate's own timeout (124),

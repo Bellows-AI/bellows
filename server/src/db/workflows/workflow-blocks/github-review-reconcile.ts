@@ -7,7 +7,7 @@
  *
  * - `collect` (entry, `session: resume`, `gates: false`) and `wait` (identical shape, plus a
  *   `runtime: pr-delivery-wait` boundary — issue #231) both declare ONE pre-helper,
- *   `review-collect-probe` (driver/src/review-helpers.ts, wrapping issue #201's unmodified
+ *   `review-collect-probe` (driver/src/review/review-helpers.ts, wrapping issue #201's unmodified
  *   `review-collect.cjs`): a deterministic fetch-and-decide step that answers, as a PRE-helper
  *   `conclude` (issue #230, so neither node ever launches an agent turn):
  *     - `REVIEW-CLEAN`      nothing requires attention (approved, or no feedback/no reviewer/no
@@ -25,7 +25,7 @@
  *   automatically once claimed, reusing the thread's existing PR for free, exactly like
  *   `merge-conflict-autofix`'s `verify` node.
  * - `reply` (`session: resume`, `gates: false`) declares one pre-helper, `review-reply-probe`
- *   (also driver/src/review-helpers.ts): re-fetches FRESH state (never trusting the repair agent's
+ *   (also driver/src/review/review-helpers.ts): re-fetches FRESH state (never trusting the repair agent's
  *   own claim that a comment or thread still exists), builds a bounded mutation plan from the
  *   declared intents, executes it through issue #201's unmodified `review-reply.cjs`, and always
  *   concludes `REVIEW-REPLIED` on a clean run — this node never launches an agent turn either.

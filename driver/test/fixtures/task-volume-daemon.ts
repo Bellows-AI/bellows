@@ -1,4 +1,4 @@
-import type { ExecDocker } from '../../src/docker-runner-support.js';
+import type { ExecDocker } from '../../src/docker/docker-runner-support.js';
 import { TASK_MOUNT, TASK_ROOT_LABEL, taskInitScript } from '../../src/task-volume.js';
 
 const TASK_VOLUME = /^factory-task-([0-9a-f-]{36})-\d+$/;

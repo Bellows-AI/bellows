@@ -1,4 +1,4 @@
-import type { ArtifactManifest, Board, BoardJob, ChunkAnswer } from './board.js';
+import type { ArtifactManifest, Board, BoardJob, ChunkAnswer } from './board/board.js';
 import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE, OCTET_STREAM_CONTENT_TYPE } from './http.js';
 
 /**

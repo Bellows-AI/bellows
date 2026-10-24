@@ -6,15 +6,15 @@
  * throws, never on how many polls a read took.
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { jobPath } from '../src/k8s-auxspec.js';
-import { releaseClaimAfterGroupEnd } from '../src/k8s-fence.js';
-import { ensureGroup, finishGroup } from '../src/k8s-group.js';
-import { type CloseReads, adoptFinishedRunner } from '../src/k8s-adopt.js';
-import { pollRunnerJobUntilTerminal } from '../src/k8s-poll.js';
-import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import type { K8sDeps } from '../src/k8s-transport.js';
+import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { releaseClaimAfterGroupEnd } from '../src/k8s/k8s-fence.js';
+import { ensureGroup, finishGroup } from '../src/k8s/k8s-group.js';
+import { type CloseReads, adoptFinishedRunner } from '../src/k8s/k8s-adopt.js';
+import { pollRunnerJobUntilTerminal } from '../src/k8s/k8s-poll.js';
+import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
+import type { K8sDeps } from '../src/k8s/k8s-transport.js';
 import { AdoptionBlocked, commandMark, ownGroup, type AdoptedRun } from '../src/runner.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';

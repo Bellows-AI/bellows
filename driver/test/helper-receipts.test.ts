@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { helperEffectId } from '../src/helper-receipts.js';
 import type { HelperPlan } from '../src/helpers.js';
-import { checkoutDir } from '../src/publish.js';
+import { checkoutDir } from '../src/publish/publish.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
-import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review-helpers.js';
+import { REVIEW_COLLECT_PROBE_ID, REVIEW_REPLY_PROBE_ID } from '../src/review/review-helpers.js';
 import { StepChannelClosed, type StepSink, StepTimedOut } from '../src/step-control.js';
 import { runHelperStep } from '../src/supervised-steps.js';
 import { SUPERVISOR_ENV, type StepRequest, type StepResult } from '../src/supervisor-contract.js';

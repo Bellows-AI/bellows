@@ -1,4 +1,4 @@
-import { startupHaltOf } from '../../src/loop-fence.js';
+import { startupHaltOf } from '../../src/loop/loop-fence.js';
 import { StartupRefused } from '../../src/startup-cause.js';
 
 /**

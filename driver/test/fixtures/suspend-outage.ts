@@ -4,10 +4,10 @@
  * it fails, job 2 runs to its verdict. The process must outlive the loop with no unhandled
  * rejection — Node exits 1 on one — and say what it saw on stdout.
  */
-import type { Board, BoardJob } from '../../src/board.js';
-import { BoardHttpError } from '../../src/board-retry.js';
+import type { Board, BoardJob } from '../../src/board/board.js';
+import { BoardHttpError } from '../../src/board/board-retry.js';
 import { loadDriverConfig } from '../../src/config.js';
-import { createLoop } from '../../src/loop.js';
+import { createLoop } from '../../src/loop/loop.js';
 import type { Runner } from '../../src/runner.js';
 import { boardJob } from './board-job.js';
 

@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SYNC_FAILURE_KINDS } from '../src/publish.js';
+import { SYNC_FAILURE_KINDS } from '../src/publish/publish.js';
 import { git, hasGit, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**

@@ -1,8 +1,8 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import type { BoardJob } from './board.js';
+import type { BoardJob } from './board/board.js';
 import { type HelperPlan, type HelperResult, helperInputValue } from './helpers.js';
 import { type Ledger, type LedgerAt, readLedger, writeLedger } from './operation-ledger.js';
-import type { RunPublishStep } from './publish.js';
+import type { RunPublishStep } from './publish/publish.js';
 import { commandMark } from './runner.js';
 import { stepLost } from './step-control.js';
 

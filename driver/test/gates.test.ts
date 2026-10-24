@@ -7,7 +7,7 @@ import {
     type GateManager,
     type GateRunOptions,
 } from '../src/gates.js';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { TASK_MOUNT } from '../src/task-volume.js';
 import { StepChannelClosed } from '../src/step-control.js';

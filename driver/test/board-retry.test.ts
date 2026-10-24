@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BOARD_CALL_ATTEMPTS, BoardHttpError, withBoardRetry } from '../src/board-retry.js';
+import { BOARD_CALL_ATTEMPTS, BoardHttpError, withBoardRetry } from '../src/board/board-retry.js';
 
 /** A recording io: every log line and every backoff the retry slept. */
 function io() {

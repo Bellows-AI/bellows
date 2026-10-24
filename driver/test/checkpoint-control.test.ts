@@ -1,8 +1,8 @@
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { ChunkAnswer } from '../src/board.js';
-import { CheckpointChunkCorrupt, type TranscriptStream } from '../src/board-checkpoint.js';
+import type { ChunkAnswer } from '../src/board/board.js';
+import { CheckpointChunkCorrupt, type TranscriptStream } from '../src/board/board-checkpoint.js';
 import { createControlChannel, type ControlChannel } from '../src/control-channel.js';
 import type { CheckpointRelay } from '../src/export-control.js';
 

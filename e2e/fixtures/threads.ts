@@ -241,7 +241,7 @@ function thread(runs: ThreadJob[], wait: Wait = NO_WAIT): ThreadJob[] {
     }));
 }
 
-/** The line the driver appends to a run's output when a gate fails it (driver/src/loop-run.ts). */
+/** The line the driver appends to a run's output when a gate fails it (driver/src/loop/loop-run.ts). */
 const gateFailedLine = (gate: ThreadGate) =>
     `[driver] gate "${gate.name}" failed (exit ${gate.exitCode})\n${gate.output}`;
 

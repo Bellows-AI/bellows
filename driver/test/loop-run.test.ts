@@ -5,9 +5,9 @@
  * is `loop.test.ts`; the phase-boundary faults are `loop-phase-faults.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { runJob } from '../src/loop-run.js';
-import type { SyncResult } from '../src/publish.js';
+import type { BoardJob } from '../src/board/board.js';
+import { runJob } from '../src/loop/loop-run.js';
+import type { SyncResult } from '../src/publish/publish.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { gatedJob, job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';

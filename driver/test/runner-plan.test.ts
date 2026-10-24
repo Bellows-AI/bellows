@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import type { RunSession } from '../src/runner.js';
 import { reviewerPlan, runnerPlan } from '../src/runner-plan.js';

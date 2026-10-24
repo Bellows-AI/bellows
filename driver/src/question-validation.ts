@@ -1,4 +1,4 @@
-import type { AskedQuestion } from './board.js';
+import type { AskedQuestion } from './board/board.js';
 
 /**
  * The question report's validation, the driver's copy of the board's

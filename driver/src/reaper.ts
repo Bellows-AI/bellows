@@ -1,4 +1,4 @@
-import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board.js';
+import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board/board.js';
 import { secondsSince } from './prometheus.js';
 
 /** What the reaper reports about each sweep (issue #831). */

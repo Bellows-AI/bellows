@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob, ReviewClaim } from '../src/board.js';
+import type { BoardJob, ReviewClaim } from '../src/board/board.js';
 import { REVIEWER_HOME } from '../src/claim.js';
 import { claudeExportScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { loadDriverConfig } from '../src/config.js';
-import { REVIEW_ROOTS_DIR, reviewWorktreeDir, checkoutDir } from '../src/publish.js';
-import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from '../src/review-step.js';
+import { REVIEW_ROOTS_DIR, reviewWorktreeDir, checkoutDir } from '../src/publish/publish.js';
+import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from '../src/review/review-step.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 

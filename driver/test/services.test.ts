@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
 import { boardIdentity } from '../src/task-volume.js';
 
 import { plannedServices, serviceContainerName, servicePlanRefusal, serviceRunArgs } from '../src/services.js';
-import { supervisorName } from '../src/docker-mailbox.js';
+import { supervisorName } from '../src/docker/docker-mailbox.js';
 import { awaitServicesRunning, ServicesNotRunning } from '../src/service-restart.js';
 import { Inconclusive, SERVICE_READY_POLL_MS } from '../src/runner.js';
 import { StepChannelClosed } from '../src/step-control.js';

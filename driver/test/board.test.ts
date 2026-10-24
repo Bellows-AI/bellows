@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { createBoard, type VerdictEvidence } from '../src/board.js';
-import { BoardHttpError } from '../src/board-retry.js';
+import { createBoard, type VerdictEvidence } from '../src/board/board.js';
+import { BoardHttpError } from '../src/board/board-retry.js';
 import { COMPLETE_BODY_LIMIT_BYTES } from '../src/verdict-budget.js';
 import { boardJob } from './fixtures/board-job.js';
 

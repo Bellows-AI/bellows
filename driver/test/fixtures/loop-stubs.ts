@@ -14,21 +14,21 @@ import type {
     ReclaimRenewal,
     ReviewClaim,
     RuntimeReport,
-} from '../../src/board.js';
-import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board-phase-checkpoints.js';
+} from '../../src/board/board.js';
+import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
 import type { HelperResult } from '../../src/helpers.js';
-import { createLoop, type Loop } from '../../src/loop.js';
-import type { GateStack, LoopRuntime } from '../../src/loop-types.js';
-import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../../src/publish.js';
-import type { PublishRelay } from '../../src/publish-control.js';
+import { createLoop, type Loop } from '../../src/loop/loop.js';
+import type { GateStack, LoopRuntime } from '../../src/loop/loop-types.js';
+import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../../src/publish/publish.js';
+import type { PublishRelay } from '../../src/publish/publish-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../../src/question-control.js';
 import { cancelPendingQuestions, hasPendingQuestion, newControl, resolveQuestion } from '../../src/question-control.js';
-import type { ReviewRelay } from '../../src/review-control.js';
-import type { SnapshotResult } from '../../src/review-snapshot.js';
+import type { ReviewRelay } from '../../src/review/review-control.js';
+import type { SnapshotResult } from '../../src/review/review-snapshot.js';
 import type {
     AdoptedRun,
     LiveRun,

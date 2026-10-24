@@ -5,16 +5,16 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type AdoptPrimitives, adoptEarlierRun } from '../src/adopt-skeleton.js';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { awaitFinalized } from '../src/k8s-adopt.js';
-import { jobPath } from '../src/k8s-auxspec.js';
-import { jobEndsWithin } from '../src/k8s-group.js';
-import { pollRunnerJobUntilTerminal, readJobPodVerdict, readVerdict } from '../src/k8s-poll.js';
-import { ledgerOf } from '../src/k8s-kill.js';
-import { runnerName } from '../src/k8s-podspec.js';
-import { stopAgent } from '../src/k8s-runner.js';
-import { confirmEnded, GROUP_END_WAIT_MS } from '../src/k8s-teardown.js';
+import { awaitFinalized } from '../src/k8s/k8s-adopt.js';
+import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { jobEndsWithin } from '../src/k8s/k8s-group.js';
+import { pollRunnerJobUntilTerminal, readJobPodVerdict, readVerdict } from '../src/k8s/k8s-poll.js';
+import { ledgerOf } from '../src/k8s/k8s-kill.js';
+import { runnerName } from '../src/k8s/k8s-podspec.js';
+import { stopAgent } from '../src/k8s/k8s-runner.js';
+import { confirmEnded, GROUP_END_WAIT_MS } from '../src/k8s/k8s-teardown.js';
 import {
     boundedBy,
     LOG_READ_MS,
@@ -22,7 +22,7 @@ import {
     POLL_MS,
     type K8sDeps,
     type K8sRequestOptions,
-} from '../src/k8s-transport.js';
+} from '../src/k8s/k8s-transport.js';
 import { AdoptionBlocked, Inconclusive } from '../src/runner.js';
 import { KILL_WINDDOWN_MS } from '../src/supervisor-contract.js';
 import { finalizeWaitMs } from '../src/supervisor-plan.js';

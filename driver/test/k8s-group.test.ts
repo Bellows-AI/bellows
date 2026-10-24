@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { BoardJob } from '../src/board.js';
+import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { jobsPath, runnerJobName, secretName } from '../src/k8s-podspec.js';
-import { holderGroupsOf } from '../src/k8s-group.js';
-import { createKubernetesRunner } from '../src/k8s-runner.js';
-import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s-transport.js';
+import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
+import { holderGroupsOf } from '../src/k8s/k8s-group.js';
+import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
+import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { StartupRefused } from '../src/startup-cause.js';
 import { TASK_UNSCHEDULABLE_LABEL } from '../src/task-volume.js';
 import { taskVolumeServer } from './fixtures/k8s-apiserver.js';

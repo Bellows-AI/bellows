@@ -7,8 +7,8 @@ import {
     type StreamSource,
     type UploadTarget,
 } from '../src/artifact-upload.js';
-import { BOARD_CALL_ATTEMPTS } from '../src/board-retry.js';
-import { createBoard, type ArtifactManifest, type Board, type BoardJob, type ChunkAnswer } from '../src/board.js';
+import { BOARD_CALL_ATTEMPTS } from '../src/board/board-retry.js';
+import { createBoard, type ArtifactManifest, type Board, type BoardJob, type ChunkAnswer } from '../src/board/board.js';
 
 const job = { id: '11111111-1111-4111-8111-111111111111', claimSeq: 4, leaseToken: 'lease-secret' } as BoardJob;
 const REF = { executor: 'claude-code', session: 'sess-1', stream: 'log' };

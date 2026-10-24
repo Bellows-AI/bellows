@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { BoardJob } from '../src/board.js';
-import { agentFaults } from '../src/loop-ledger.js';
-import { attachTranscriptExport, createExportRelay, drainTranscriptExport, newExportRun } from '../src/loop-export.js';
-import { newJobState } from '../src/loop-attempt.js';
-import type { AttemptCtx, LoopRuntime } from '../src/loop-types.js';
+import type { BoardJob } from '../src/board/board.js';
+import { agentFaults } from '../src/loop/loop-ledger.js';
+import {
+    attachTranscriptExport,
+    createExportRelay,
+    drainTranscriptExport,
+    newExportRun,
+} from '../src/loop/loop-export.js';
+import { newJobState } from '../src/loop/loop-attempt.js';
+import type { AttemptCtx, LoopRuntime } from '../src/loop/loop-types.js';
 import type { RunOutcome } from '../src/runner.js';
 
 /**
