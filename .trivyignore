@@ -15,20 +15,15 @@
 # Empty is the goal. A growing file means the base image needs bumping, not that the gate is
 # wrong.
 
-# Both of the below are inside npm's OWN vendored tree in the two executor images, which keep npm
-# because Claude Code's plugin path uses it. npm 11.21.0 is the newest release on the 11 line and
-# still carries them; so does npm 12.2.0, which also breaks the build — @anthropic-ai/claude-code's
-# postinstall does not place its native binary under it, and `claude plugin install` then fails
+# The below is inside npm's OWN vendored tree in the two executor images, which keep npm because
+# Claude Code's plugin path uses it. npm 11.21.1 is the newest release on the 11 line and still
+# carries it; so does npm 12.2.1, which also breaks the build — @anthropic-ai/claude-code's
+# postinstall does not place its native binary under npm 12, and `claude plugin install` then fails
 # with "claude native binary not installed". So there is no npm to upgrade to, and the alternative
 # (removing npm from the executors) takes the plugin path with it.
-# Neither is reachable from anything these images run: npm is a build-time tool there, and no
-# runner invokes it. Revisit when @anthropic-ai/claude-code installs cleanly under npm 12.
+# It is not reachable from anything these images run: npm is a build-time tool there, and no
+# runner invokes it.
 
-# brace-expansion denial of service, two of them. npm 11.21.0 vendors 5.0.9; the fixes are 5.0.10
-# and 5.0.11.
-CVE-2026-102276
-CVE-2026-102278
-
-# undici 6.28.0, denial of service via an unrequested WebSocket subprotocol. Fixed in 6.28.1.
-# Nothing in these images opens a WebSocket through npm's copy.
-CVE-2026-19534
+# undici denial of service via an unhandled stream error. npm 11.21.1 vendors 6.29.0; the fix is
+# 6.29.1. Revisit 2026-11-24, or when an npm release vendors undici 6.29.1.
+CVE-2026-109869

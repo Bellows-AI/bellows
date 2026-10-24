@@ -34,7 +34,7 @@ RUN apt-get update \
 # npm stays in this image, so its own bundled dependency tree ships too — and the version node:24
 # pins carries the only fixable findings the release scan still reports here. Same pin and same
 # reasoning as docker/claude-executor/Dockerfile.
-ARG NPM_VERSION=11.21.0
+ARG NPM_VERSION=11.21.1
 RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
 
 # acli and gh sit ABOVE this image's CLI install, and docker/claude-executor/Dockerfile spells
