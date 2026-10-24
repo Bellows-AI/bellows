@@ -186,7 +186,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                                 where ss.org_id = ${orgId} or ss.org_id is null
                             `,
                         // Unfiltered: this view reads metric_point_used, which has no org column by
-                        // design. It is a lookup keyed by session id, and only the ids present in the
+                        // design. It is a lookup keyed by (agent, session), and only the ids present in the
                         // filtered summaries above are ever read out of it.
                         tx<
                             FieldRow[]

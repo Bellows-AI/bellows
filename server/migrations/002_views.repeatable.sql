@@ -111,7 +111,8 @@ from session_branch;
  * digest). A restart begins a new start_time, so series totals are added across series. Two
  * counters that merely share a start_time are two series, both counted.
  *
- * `session.id` and `type` are left out of the series key: the key carries them already.
+ * `session.id` is left out of the series key: the key carries it already. `type` stays in: for a
+ * non-token field (active_seconds user vs cli) it separates counters.
  * Attributes are jsonb, so their order never matters.
  *
  * Rows stored before the ingest digest (legacy) have no `series`. A legacy cumulative row folds
@@ -135,7 +136,7 @@ with deltas as (
 cumulative as (
     select agent, session_id, field, value, attrs ->> 'series' as digest,
            jsonb_build_array(agent, session_id, metric, field, temporality, start_time,
-                             attrs - 'series' - 'session.id' - 'type') as fold
+                             attrs - 'series' - 'session.id') as fold
     from metric_point_used
     where field is not null and temporality = 'cumulative'
 ),

@@ -762,6 +762,29 @@ describe.skipIf(!enabled)('token series reduction', () => {
         expect(set.map((r) => [r.source, Number(r.value)])).toEqual([['transcript', 999]]);
     });
 
+    it('folds legacy rows per counter type for a non-token field', async () => {
+        const session = randomUUID();
+        const active = (value: number, minute: number, type: string, series?: string) =>
+            point({
+                session,
+                field: 'active_seconds',
+                metric: 'claude_code.active_time.total',
+                value,
+                time: `2026-08-01T10:0${minute}:00Z`,
+                temporality: 'cumulative',
+                startTime: '2026-08-01T10:00:00Z',
+                attrs: series === undefined ? { type } : { type, series },
+            });
+        await active(10, 1, 'user', 'digest-user');
+        await active(20, 1, 'cli', 'digest-cli');
+        await active(15, 2, 'user');
+        await active(25, 2, 'cli');
+        const [row] = await sql<{ value: number }[]>`
+            select value from session_field_total where session_id = ${session} and field = 'active_seconds'
+        `;
+        expect(Number(row?.value)).toBe(40);
+    });
+
     it('rolls up two agents that share a session id separately', async () => {
         const session = randomUUID();
         await point({ session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
