@@ -128,9 +128,50 @@ describe('cumulative', () => {
         expect(cs.map((c) => [c.observedAt, c.tokens.output, c.precision])).toEqual([
             [T1, 100, 'estimated'],
             [T2, 60, 'estimated'],
+            [T3, 0, 'estimated'],
         ]);
         expect(cs[0]?.support).toEqual({ from: T0, to: T1 });
         expect(cs[1]?.support).toEqual({ from: T1, to: T2 });
+        expect(cs[2]?.support).toEqual({ from: T2, to: T3 });
+    });
+
+    it('reads a window of only flat re-reads as a measured 0, not as unmeasured', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 100 }),
+            obs({ time: T2, value: 100 }),
+            obs({ time: T3, value: 100 }),
+        ]);
+        const inWindow = partitionByRange(cs, T2, '2026-03-02T11:00:00.000Z').timed;
+        expect(total(inWindow, 'output')).toBe(0);
+        expect(bucketTimedContributions(inWindow, 'day')[0]?.tokens.output).toBe(0);
+        expect(cs[1]?.support).toEqual({ from: T1, to: T2 });
+        expect(cs[2]?.support).toEqual({ from: T1, to: T3 });
+    });
+
+    it('splits a series across a range boundary: baseline preserved, adjacent ranges sum to the total', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 100 }),
+            obs({ time: T2, value: 160 }),
+            obs({ time: T3, value: 200 }),
+        ]);
+        const before = partitionByRange(cs, T0, T2).timed;
+        const inside = partitionByRange(cs, T2, T3).timed;
+        const after = partitionByRange(cs, T3, '2026-03-02T11:00:00.000Z').timed;
+        expect(total(inside, 'output')).toBe(60);
+        expect(total(before, 'output')).toBe(100);
+        expect(total(after, 'output')).toBe(40);
+        expect(total([...before, ...inside, ...after], 'output')).toBe(200);
+    });
+
+    it('writes one instant as one series whatever its offset spelling, and rejects bad starts and values', () => {
+        const cs = reduceTokenObservations([
+            obs({ time: T1, value: 10, startTime: '2026-03-02T10:00:00Z' }),
+            obs({ time: T2, value: 25, startTime: '2026-03-02T10:00:00.000+00:00' }),
+        ]);
+        expect(new Set(cs.map((c) => c.series.startTime))).toEqual(new Set([T0]));
+        expect(total(cs, 'output')).toBe(25);
+        expect(() => reduceTokenObservations([obs({ time: T1, value: 1, startTime: 'nope' })])).toThrow(RangeError);
+        expect(() => reduceTokenObservations([obs({ time: T1, value: -1 })])).toThrow(RangeError);
     });
 
     it('flags a decline as an anomaly and keeps the high-water: 100, 80, 120 totals 120', () => {

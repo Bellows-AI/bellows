@@ -150,13 +150,12 @@ const seriesId = (k: SeriesKey): string =>
 const selectionId = (k: SelectionKey): string => JSON.stringify([k.agent, k.sessionId]);
 
 /** Time, then value, then the whole identity: the same input set sorts the same whatever its arrival order. */
-function compareObservations(a: TokenObservation, b: TokenObservation): number {
-    return (
-        epoch(a.time) - epoch(b.time) ||
-        a.value - b.value ||
-        compareText(seriesId(seriesKeyOf(a)), seriesId(seriesKeyOf(b))) ||
-        compareText(a.source, b.source)
+function sortObservations(observations: readonly TokenObservation[]): TokenObservation[] {
+    const keyed = observations.map((o) => ({ o, at: epoch(o.time), id: seriesId(seriesKeyOf(o)) }));
+    keyed.sort(
+        (a, b) => a.at - b.at || a.o.value - b.o.value || compareText(a.id, b.id) || compareText(a.o.source, b.o.source)
     );
+    return keyed.map((k) => k.o);
 }
 
 function clean(raw: string | undefined): string | null {
@@ -234,9 +233,8 @@ function reduceCumulative(series: readonly TokenObservation[], out: TokenContrib
             );
             continue;
         }
-        if (o.value === highWater) continue;
         const support = { from: highWaterAt, to: o.time };
-        if (o.value < highWater) {
+        if (o.value <= highWater) {
             out.push(
                 build(o, key, {
                     kind: 'timed',
@@ -244,7 +242,7 @@ function reduceCumulative(series: readonly TokenObservation[], out: TokenContrib
                     observedAt: o.time,
                     support,
                     tokens: tokensOf(o.field, 0),
-                    reasons: ['cumulative-anomaly-decrease'],
+                    reasons: o.value < highWater ? ['cumulative-anomaly-decrease'] : [],
                 })
             );
             continue;
@@ -264,11 +262,13 @@ function reduceCumulative(series: readonly TokenObservation[], out: TokenContrib
     }
 }
 
-function validate(observations: readonly TokenObservation[]): void {
-    for (const o of observations) {
+/** Checks every reading and returns copies whose start time is canonical ISO, so one instant is one series. */
+function validate(observations: readonly TokenObservation[]): TokenObservation[] {
+    return observations.map((o) => {
         epoch(o.time);
-        if (!Number.isFinite(o.value)) throw new RangeError(`invalid token value: ${o.value}`);
-    }
+        if (!Number.isFinite(o.value) || o.value < 0) throw new RangeError(`invalid token value: ${o.value}`);
+        return o.startTime === null ? o : { ...o, startTime: new Date(epoch(o.startTime)).toISOString() };
+    });
 }
 
 /** A point that stands alone: a delta lands at its own time, an unspecified one is carried unresolved. */
@@ -304,20 +304,22 @@ const mixKeyOf = (k: SelectionKey & { field: TokenType }): string => JSON.string
  * anomaly of the same start-time series, never a restart, and a distinct start time is a new series.
  */
 export function reduceTokenObservations(observations: readonly TokenObservation[]): TokenContribution[] {
-    validate(observations);
-    const { selected, suppressed } = splitBySource([...observations].sort(compareObservations));
+    const { selected, suppressed } = splitBySource(sortObservations(validate(observations)));
     const out: TokenContribution[] = [];
     const cumulative = new Map<string, TokenObservation[]>();
     const temporalities = new Map<string, Set<TokenTemporality>>();
 
     for (const o of selected) {
-        temporalities.set(mixKeyOf(o), (temporalities.get(mixKeyOf(o)) ?? new Set()).add(o.temporality));
+        const mix = mixKeyOf(o);
+        temporalities.set(mix, (temporalities.get(mix) ?? new Set()).add(o.temporality));
         if (o.temporality !== 'cumulative') {
             out.push(reducePoint(o));
             continue;
         }
         const id = seriesId(seriesKeyOf(o));
-        cumulative.set(id, [...(cumulative.get(id) ?? []), o]);
+        const series = cumulative.get(id);
+        if (series) series.push(o);
+        else cumulative.set(id, [o]);
     }
     for (const series of cumulative.values()) reduceCumulative(series, out);
 

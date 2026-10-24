@@ -11,7 +11,6 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Views: `metric_point_used`, `session_source`, `session_branch_slice` | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts` |
 | Executor OTEL endpoint rendering | `driver/src/telemetry-config.ts` | `driver/test/telemetry-shipping.test.ts` |
 | Run-activity bucketing and per-type token totals (`GET /api/jobs/:id/activity`); cumulative series difference from their pre-window total, so a follow-up on a shared session never double-counts | `server/src/telemetry/run-activity.ts` | `server/test/run-activity.test.ts`, `server/test-db/telemetry.sql.test.ts` |
-| Token observations to contributions (series identity, high-water, unlocated/unresolved/suppressed); pure, no consumer yet | `core/src/token-contributions.ts` | `core/test/token-contributions.test.ts` |
 | Executor emission, collector config, branch reporter | `docker/{claude,opencode}-executor/`, `docker/otel-collector.yaml`, `charts/factory/files/collector.yaml` | `docker/claude-executor/test.sh`, `driver/test/branch-reporter.test.ts` |
 
 Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.md](persistence.md).
