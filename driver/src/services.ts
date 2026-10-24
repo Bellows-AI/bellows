@@ -50,7 +50,7 @@ export const groupServices = (config: Pick<DriverConfig, 'servicesEnabled'>, job
  * The container hardening flags (issue #382), COPIED from docker.ts rather than imported — the
  * same one-direction rule the mount string and the workspace-path regexes already follow (docker
  * imports services, never the reverse). The two spellings are pinned together in
- * driver/test/docker.test.ts, which asserts both modules' argv against one expectation, so a
+ * driver/test/docker/, which asserts both modules' argv against one expectation, so a
  * change to one that is not made to the other fails there rather than in a container.
  */
 const HARDENING_ARGS = ['--cap-drop', 'ALL', '--security-opt', 'no-new-privileges'];

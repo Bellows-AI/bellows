@@ -1,6 +1,6 @@
 /**
  * `adoptFinishedRunner` (`k8s-adopt.ts`) called directly, the contracts the runner-level suites in
- * `k8s.test.ts` cannot state: what the injected `CloseReads` receive, a supervisor log that answers
+ * `k8s/` cannot state: what the injected `CloseReads` receive, a supervisor log that answers
  * 404 or "never started", a pod list that fails only after the Job list admitted the run, and a
  * sweep that fails after the read. Assertions are on requests and on what the adoption answers or
  * throws, never on how many polls a read took.

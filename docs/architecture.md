@@ -49,5 +49,5 @@ Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations
   `pg_notify`, `LISTEN` or Kubernetes watch. The PR follower reads the PRs the webhook alone used to move
   (a parked wait, a merged non-batch thread). `core/test/polling-authority.test.ts`,
   `server/test-db/pr-follow.test.ts`, `server/test/batch-reconciler.test.ts`,
-  `server/test-db/job-store.settle.test.ts`, `driver/test/loop.test.ts`.
+  `server/test-db/job-store.settle.test.ts`, `driver/test/loop/`.
 - Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.

@@ -21,7 +21,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
 | Sessions; stop/done/remove on a thread | `server/src/db/jobs/job-store-actions.ts` | `server/test-db/job-store.workflow.test.ts` |
 | Columns and the frozen snapshot | `server/migrations/027_workflows.sql`, `030_workflow_params.sql`, `033_job_workflow_name.sql` | `server/test-db/job-store.workflow.test.ts` |
 | `review: true` node as review evidence | `server/src/db/evidence-policy.ts` | `server/test/evidence-policy.test.ts` |
-| Agent-less nodes, merge-conflict probe | `driver/src/loop/loop-agentless.ts`, `driver/src/scripts/merge-conflict-probe.cjs` | `driver/test/loop.test.ts`, `merge-conflict-probe-script.test.ts` |
+| Agent-less nodes, merge-conflict probe | `driver/src/loop/loop-agentless.ts`, `driver/src/scripts/merge-conflict-probe.cjs` | `driver/test/loop/`, `merge-conflict-probe-script.test.ts` |
 | Composer and settings UI, hidden and unrouted | `web/src/panels/TaskComposer.tsx`, `web/src/panels/WorkflowsPanel.tsx`, `web/src/api/useWorkflows.ts` | `web/test/task-composer.render.test.tsx`, `workflows-panel.render.test.tsx` |
 | A stub workflow on a real board and driver | `scripts/test-jobs.sh` | — |
 
@@ -39,7 +39,7 @@ one created by hand. Checkout, gates and publish are driver machinery, never nod
   loop bounds count rows for the target node, so every edge into it needs the same `max`.
   `server/test/workflow-engine.next-transition.test.ts`.
 - **The publish decision rides the claim and is enforced only in `driver/src/loop/loop-verdict.ts`** —
-  `driver/test/docker.test.ts`, `k8s.test.ts`.
+  `driver/test/docker/`, `k8s/`.
 - **The follower applies what the webhook would have, idempotently, under its claim**: effects run in the
   follow row's locked transaction, what a wait observed is a per-wait fingerprint of the read (`observed_fingerprint`, surviving re-entry), a merge dedupes on
   `pr_merge`, a PR is followed (slower once closed) while any wait or live thread needs it, and a read

@@ -161,7 +161,7 @@ export interface PublishOptions {
 /**
  * The failure kinds the sync script (scripts/task-checkout.cjs) names for a refusal no retry can
  * fix; the loop reports each as `config` (loop-run.ts, `syncCheckoutStep`). The literals live in
- * the script too, which docker.test.ts pins.
+ * the script too, which driver/test/docker/ pins.
  */
 export const SYNC_FAILURE_KINDS = ['branch_unrestorable', 'missing_base_branch'] as const;
 /** What a refused sync names: a config kind above, or the thread's lost checkpoint (`task-restore.ts`), which is its own failure kind. */

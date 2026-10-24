@@ -56,7 +56,7 @@ describe('test:changed plan', () => {
         expect(vitestArgs(steps)[1]).toEqual([
             'run',
             'core/test/polling-authority.test.ts',
-            'driver/test/k8s.test.ts',
+            'driver/test/k8s/pod-spec.test.ts',
             'driver/test/loop-fence.test.ts',
         ]);
         expect(steps).toHaveLength(2);

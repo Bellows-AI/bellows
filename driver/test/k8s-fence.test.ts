@@ -1,7 +1,7 @@
 /**
  * The re-claim fence (`k8s-fence.ts`) called directly, its own functions rather than through a
  * runner: the claim, its release, the sweep, and the pre/post-create verifies. What
- * a runner-level scenario in `k8s.test.ts` already pins (a stale claim taken over by uid, the Secret
+ * a runner-level scenario in `k8s/` already pins (a stale claim taken over by uid, the Secret
  * before the Job, the uid on every delete, the resume by uid) is not repeated here. Assertions are on
  * requests and on what is thrown or answered, never on how many times a read was retried.
  */

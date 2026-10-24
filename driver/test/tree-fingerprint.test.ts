@@ -40,7 +40,7 @@ describe.skipIf(!hasGit())('the tree fingerprint', () => {
     });
 
     // The gate's own writes are kept out by ordering, not by the fingerprint: the loop probes
-    // before the gates (driver/test/loop.test.ts, 'reads the tree before the gates run').
+    // before the gates (driver/test/loop/, 'reads the tree before the gates run').
 
     // ---- false negative: a submodule that was dirty and is now differently dirty -------------------
     it('moves when a dirty submodule’s content changes again', () => {

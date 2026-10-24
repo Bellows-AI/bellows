@@ -38,16 +38,16 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Claim loop, verdicts, reclaim, staged-then-completed teardown; attempt lifecycle owner (`loop-phase.ts` phase and first-wins ending, `end()` in `loop-conclusion.ts`) | `driver/src/loop/loop.ts`, `board.ts`, `board-verdict.ts`, `loop-conclusion.ts`, `loop-phase.ts`, `reclaim-calls.ts`, `claim.ts`, `board-retry.ts`, `verdict-budget.ts` | `driver/test/loop.test.ts`, `loop-phase.test.ts`, `loop-conclusion.test.ts`, `board.test.ts`, `board-retry.test.ts`, `loop-containment.test.ts`, `loop-run.test.ts` |
+| Claim loop, verdicts, reclaim, staged-then-completed teardown; attempt lifecycle owner (`loop-phase.ts` phase and first-wins ending, `end()` in `loop-conclusion.ts`) | `driver/src/loop/loop.ts`, `board.ts`, `board-verdict.ts`, `loop-conclusion.ts`, `loop-phase.ts`, `reclaim-calls.ts`, `claim.ts`, `board-retry.ts`, `verdict-budget.ts` | `driver/test/loop/`, `loop-phase.test.ts`, `loop-conclusion.test.ts`, `board.test.ts`, `board-retry.test.ts`, `loop-containment.test.ts`, `loop-run.test.ts` |
 | Stand-down fence, interruption vs failure (`settleEnd`), startup cause, drain handover | `driver/src/loop/loop-fence.ts`, `loop-run.ts`, `loop-attempt.ts`, `termination.ts`, `startup-cause.ts` | `driver/test/loop-fence.test.ts`, `loop-run.test.ts`, `loop-heartbeat-handover.test.ts`, `termination.test.ts`, `startup-cause.test.ts`, `loop-phase-faults.test.ts`, `loop-phase.test.ts` (a heartbeat request is bounded by one beat period) |
-| Executor conformance tables | `driver/test/fixtures/termination-table.ts`, `fixtures/startup-table.ts` | `driver/test/docker.test.ts`, `k8s.test.ts` |
+| Executor conformance tables | `driver/test/fixtures/termination-table.ts`, `fixtures/startup-table.ts` | `driver/test/docker/`, `k8s/` |
 | Master prompt; turn-context hook; continuation framing | `driver/src/master-prompt.ts`, `runner-plan.ts`, `continuation.ts`, `docker/claude-executor/turn-context-hook.cjs` | `driver/test/master-prompt.test.ts`, `runner-plan.test.ts`, `continuation.test.ts`, `turn-context-hook.test.ts` |
-| Docker runner | `driver/src/docker/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker.test.ts`, `config.test.ts` |
-| Kubernetes runner | `driver/src/k8s/` | `driver/test/k8s.test.ts`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
+| Docker runner | `driver/src/docker/docker-runner.ts`, `docker.ts`, `runner.ts`, `config.ts` | `driver/test/docker/`, `config.test.ts` |
+| Kubernetes runner | `driver/src/k8s/` | `driver/test/k8s/`, `k8s-admission.test.ts`, `k8s-transport.test.ts` |
 | Executor contract (every `Runner` member, both executors) | `driver/src/runner.ts`, `docker-runner.ts`, `k8s-runner.ts` | `driver/test/runner-contract.test.ts` |
 | Gates and `environment.setup` as supervised steps | `driver/src/gates.ts`, `loop-gates.ts`, `docker-gate.ts`, `k8s-gate.ts`, `scripts/gate-loop.sh` | `driver/test/gates.test.ts`, `gates-limits.test.ts`, `gates-ownership.test.ts`, `scripts-gate-loop.test.ts`, `setup-budget.test.ts` |
-| Task supervisor, its mailboxes and its holder binding (newer claim only) | `driver/src/scripts/supervisor.cjs`, `supervisor-contract.ts`, `supervisor-plan.ts`, `docker-group.ts`, `docker-mailbox.ts`, `k8s-podspec.ts`, `k8s-binding.ts`, `scripts/binding-write.sh` | `driver/test/supervisor.test.ts`, `docker-group.test.ts`, `scripts-binding-write.test.ts`, `k8s.test.ts`, `k8s-admission.test.ts` |
-| An agent container the driver read over with no `agent.exit` is a lost agent in seconds, not the start or heartbeat window: docker's `agentContainerEnded` (the daemon's `exited`/`dead`), kubernetes' terminated `agent` state in the poll; both say `StepSink.agentEnded`, the control poll carries `agentEnded`, and an unreadable state says nothing | `driver/src/docker/docker-runner-support.ts`, `k8s-poll.ts`, `step-control.ts`, `control-channel.ts`, `scripts/supervisor.cjs` (`watchAgent`) | `driver/test/supervisor.test.ts`, `step-control.test.ts`, `docker.test.ts`, `k8s.test.ts` |
+| Task supervisor, its mailboxes and its holder binding (newer claim only) | `driver/src/scripts/supervisor.cjs`, `supervisor-contract.ts`, `supervisor-plan.ts`, `docker-group.ts`, `docker-mailbox.ts`, `k8s-podspec.ts`, `k8s-binding.ts`, `scripts/binding-write.sh` | `driver/test/supervisor.test.ts`, `docker-group.test.ts`, `scripts-binding-write.test.ts`, `k8s/`, `k8s-admission.test.ts` |
+| An agent container the driver read over with no `agent.exit` is a lost agent in seconds, not the start or heartbeat window: docker's `agentContainerEnded` (the daemon's `exited`/`dead`), kubernetes' terminated `agent` state in the poll; both say `StepSink.agentEnded`, the control poll carries `agentEnded`, and an unreadable state says nothing | `driver/src/docker/docker-runner-support.ts`, `k8s-poll.ts`, `step-control.ts`, `control-channel.ts`, `scripts/supervisor.cjs` (`watchAgent`) | `driver/test/supervisor.test.ts`, `step-control.test.ts`, `docker/`, `k8s/` |
 | Supervised steps, group lifecycle (`settle`, `release`, `attach`, first contact) | `driver/src/supervised-steps.ts`, `step-control.ts`, `k8s-group.ts`, `docker-teardown.ts`, `k8s-teardown.ts`, `poll.ts` | `driver/test/supervised-steps.test.ts`, `poll.test.ts`, `step-control.test.ts`, `k8s-group.test.ts` |
 | Run control (`GET /control`, agent mailbox helper, step-boundary hook) | `driver/src/control-channel.ts`, `docker/claude-executor/ctl-agent.cjs`, `stop-hook.cjs`, `docker/opencode-executor/stop-plugin/index.js` | `driver/test/run-control.test.ts`, `driver/test/gates.test.ts` |
 | Failure kind and cause, `FACTORY_BLOCKED:`, timeout note | `driver/src/loop/loop-ledger.ts`, `loop-verdict.ts`, `gate-cause.ts`, `exec-codes.ts`, `timeout-note.ts` | `driver/test/loop-ledger.test.ts`, `gate-cause.test.ts`, `publish-cause.test.ts`, `timeout-note.test.ts` |
@@ -91,15 +91,15 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 - **A run reports agent turns**: the close-time agent-turn read counts the executor's own transcript; a job turn
   is in [docs/metrics.md](metrics.md). Null is the contract for unmeasured. `core/test/docs.terminology.test.ts`.
 - **A `409` from heartbeat means the container must be killed**; `cancelRequested` during the agent's run
-  drains to the next step boundary instead. `driver/test/loop.test.ts`.
+  drains to the next step boundary instead. `driver/test/loop/`.
 - **Every resource an attempt creates is scoped by its lease token**, so no sweep touches a sibling
-  attempt — `driver/src/labels.ts`, `driver/test/docker.test.ts`. On docker each also carries the board's
+  attempt — `driver/src/labels.ts`, `driver/test/docker/`. On docker each also carries the board's
   `factory.board`, the only objects that board's reaper scans — `driver/test/docker-reaper-boards.test.ts`.
-- **A supervisor lost under a publish is an interruption, never `publishFailed`** (`stepLost` is rethrown by `publishCheckout` and `publishBranch`, ended in `loop-post-run.ts`) — `driver/test/publish-reconcile.test.ts`, `loop.test.ts`.
+- **A supervisor lost under a publish is an interruption, never `publishFailed`** (`stepLost` is rethrown by `publishCheckout` and `publishBranch`, ended in `loop-post-run.ts`) — `driver/test/publish-reconcile.test.ts`, `loop/`.
 - **The publish decision is made in `driver/src/loop/loop-verdict.ts` and `loop-publish.ts` only** —
-  `driver/test/docker.test.ts`, `k8s.test.ts`.
+  `driver/test/docker/`, `k8s/`.
 - **A decided verdict is staged, then completed, and only then is the attempt torn down**; it is retried on
-  5xx and never rewritten — `driver/test/loop.test.ts`, `board-retry.test.ts`.
+  5xx and never rewritten — `driver/test/loop/`, `board-retry.test.ts`.
 - **A null `masterPrompt` on the wire is refused before setup**, and the render never reads command,
   output or env values — `driver/test/master-prompt.test.ts`, `server/test/master-prompt.test.ts`.
 - **The executor label resolves at claim in the task's stamped scope**; a missing profile fails the

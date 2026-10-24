@@ -10,7 +10,7 @@ import type { StepSink } from '../src/step-control.js';
 import { SUPERVISOR_ENV, SUPERVISOR_WINDDOWN_MS } from '../src/supervisor-contract.js';
 
 /**
- * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s.test.ts`.
+ * The paused runtime budget while an agent waits for an answer. The kubernetes counterpart is pinned in `k8s/`.
  */
 
 const SECOND = 1_000;

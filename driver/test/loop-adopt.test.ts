@@ -2,7 +2,7 @@
  * `adoptStep` and `recordAdopted` driven directly: what the step answers for each way
  * `Runner.adopt` can come back, which flags it leaves on the attempt, and what it hands back to the
  * fence when the attempt stood down while the adoption was still reading. The adoption through the
- * claim loop is `loop.test.ts`.
+ * claim loop is `loop/`.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';

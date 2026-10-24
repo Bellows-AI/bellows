@@ -9,7 +9,7 @@ Executor profiles, `.bellows.yaml` plans and per-thread task volumes. The board 
 | Restore of a lost task volume: a continuing claim with no volume gets generation n+1, rebuilt from the board's checkpoint by a supervised `restore` step, the older generation deleted only after it reports ok; none, gone, truncated or corrupt (the board answers 422) fails `checkpoint_unrestorable`, except that a kubernetes volume labelled unschedulable is adopted again; the same step rebuilds the thread's Claude session files byte for byte from the raw transcript streams (`/checkpoint/transcripts*` on the control channel, sha256 and length checked) and installs the OpenCode snapshot by temp file and rename | `driver/src/task-restore.ts`, `driver/src/scripts/checkpoint-restore.cjs`, `driver/src/docker/docker-task-volume.ts`, `driver/src/k8s/k8s-task-volume.ts` | `driver/test/task-restore.test.ts`, `driver/test/k8s-task-volume.test.ts`, `driver/test/k8s-restore.test.ts`, `driver/test/scripts-checkpoint-restore.test.ts`, `driver/test/docker-task-volume.test.ts` |
 | Routes and the page's payload | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts` |
 | Executor profiles: user and org scope, suspend and remove, refusal at submission | `server/src/db/user-executor-store.ts`, `server/src/routes/org-executors.ts`, `server/src/routes/jobs/job-handlers-worker.ts`, `server/migrations/047_executor_profile_scope.sql`, `server/migrations/049_executor_profile_suspended.sql` | `server/test-db/user-executor-store.test.ts`, `server/test/routes.org-executors.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
-| Claim-time executor resolution in the stamped scope, shared by both executors | `server/src/db/jobs/job-store-claim-executor.ts`, `driver/src/loop/loop-run.ts` | `server/test-db/job-store.executor-scope.test.ts`, `driver/test/loop.test.ts` |
+| Claim-time executor resolution in the stamped scope, shared by both executors | `server/src/db/jobs/job-store-claim-executor.ts`, `driver/src/loop/loop-run.ts` | `server/test-db/job-store.executor-scope.test.ts`, `driver/test/loop/` |
 | The executor dialog's client-side validation | `web/src/workspace/executors.ts`, `web/src/panels/WorkspaceExecutorsPanel.tsx` | `web/test/executors.test.ts`, `web/test/executor-dialog.dom.test.tsx`, `e2e/org-executors.spec.ts` |
 | The Workspace and Repositories pages in a browser | `e2e/workspace.spec.ts` | the `chromium` Playwright project |
 
@@ -18,7 +18,7 @@ Executor profiles, `.bellows.yaml` plans and per-thread task volumes. The board 
 - **A runner never mounts the member subtree.** Each root thread has its own task volume
   (`factory-task-<root uuid>-<generation>`) at `/task`, so tasks of different threads share nothing and a thread's
   follow-ups share the one checkout. `driver/src/task-volume.ts`,
-  `driver/test/k8s.test.ts`, `driver/test/docker-task-volume.test.ts`.
+  `driver/test/k8s/`, `driver/test/docker-task-volume.test.ts`.
 - **The task tree is built whole or not at all, and the agent cannot fetch history.** `task-checkout.cjs` clones
   partially (`--filter=blob:none`) into a build directory beside the path and renames it in; its checkout and rebase
   run under the credential helper. The tool uid holds no token (#814), so on a private repository a command that needs a
