@@ -26,7 +26,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | `job.status` transition graph, refused in storage with 23514 `job_status_transition` (084) | `server/migrations/084_job_status_transitions.sql` | `server/test-db/job-store.transitions.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
-| db-suite databases: a once-migrated template, one clone per vitest worker keyed on `VITEST_POOL_ID`, and a run lock on the base database | `server/test-db/global-setup.ts`, `server/test-db/setup-worker.ts`, `server/test-db/database-names.ts`, `server/test-db/run-lock.ts`, `vitest.db.config.ts` | `server/test/test-db.per-worker.test.ts`, `server/test-db/run-lock.test.ts` |
+| db-suite databases: a once-migrated template, one clone per vitest worker keyed on `VITEST_POOL_ID`, and a run lock on the base database | `server/test-db/global-setup.ts`, `server/test-db/setup-worker.ts`, `server/test-db/database-names.ts`, `server/test-db/run-databases.ts`, `server/test-db/run-lock.ts`, `vitest.db.config.ts` | `server/test/test-db.per-worker.test.ts`, `server/test-db/run-databases.test.ts`, `server/test-db/run-lock.test.ts` |
 
 ## Invariants
 
@@ -59,9 +59,10 @@ the in-memory stores in `server/test/helpers*.ts`.
 - **`test:db` never touches the `DATABASE_URL` database's rows.** It holds a session advisory lock there (a
   second run on the same name refuses with "test database <name> is in use by another run"), migrates a
   `<stem>_tpl_test` template and runs every worker on a `<stem>_w<N>_test` clone, all recreated by name each
-  run and dropped at the end. `assertTestDatabase` stays the one refusal point and runs before any connection.
+  run and dropped at the end, together with the `<stem>_iso<hex>_test` scratch databases tests create (a test never
+  drops its own: the forced checkpoint outlasts a hook under load). `assertTestDatabase` stays the one refusal point and runs before any connection.
   `TEST_DB_WORKERS` bounds the workers (default min(4, cores); 1 is serial).
-  `server/test/test-db.per-worker.test.ts`, `server/test-db/run-lock.test.ts`.
+  `server/test/test-db.per-worker.test.ts`, `server/test-db/run-databases.test.ts`, `server/test-db/run-lock.test.ts`.
 - **Synthetic data reaches a database only through `npm run seed`, into a disposable one:** the seeding CLI refuses
   any name not ending `_seed`/`_synthetic`/`_demo`/`_e2e`/`_test`, and `loadConfig` refuses a disposable name for a
   fetching (App-mode) process ([configuration.md](configuration.md)). `server/test/config.persistence.test.ts`.

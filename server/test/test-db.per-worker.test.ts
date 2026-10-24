@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     BASE_URL_ENV,
+    isScratchDatabase,
     templateUrl,
     testDatabaseNames,
     workerDatabaseName,
@@ -41,6 +42,26 @@ describe('per-worker test databases', () => {
             expect(() => testDatabaseNames(url)).toThrow(/derived test database/);
             expect(() => workerDatabaseName(url, 1)).toThrow(/derived test database/);
         }
+    });
+
+    it("recognises only this base's scratch databases, so the teardown never drops another run's", () => {
+        expect(isScratchDatabase(BASE, 'factory_iso0a1b2c3d_test')).toBe(true);
+        for (const other of [
+            'factory_test',
+            'factory_tpl_test',
+            'factory_w1_test',
+            'factory_iso0a1b2c3_test',
+            'factory_iso0a1b2c3d4_test',
+            'factory_isoZZZZZZZZ_test',
+            'factory_iso0a1b2c3d',
+            'other_iso0a1b2c3d_test',
+            'factory_x_iso0a1b2c3d_test',
+            'xfactory_iso0a1b2c3d_test',
+        ]) {
+            expect(isScratchDatabase(BASE, other), other).toBe(false);
+        }
+        expect(isScratchDatabase('postgres://u:p@h:5432/factory-a_test', 'factory_a_iso0a1b2c3d_test')).toBe(false);
+        expect(isScratchDatabase('postgres://u:p@h:5432/fa_test', 'fa_iso0a1b2c3d_test')).toBe(true);
     });
 
     it('refuses a base whose derived names would pass the 63-byte identifier limit', () => {

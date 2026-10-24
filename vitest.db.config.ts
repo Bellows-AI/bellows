@@ -21,5 +21,8 @@ export default defineConfig({
         globalSetup: ['server/test-db/global-setup.ts'],
         setupFiles: ['server/test-db/setup-worker.ts'],
         testTimeout: 30_000,
+        // The teardown drops every database the run made (server/test-db/run-databases.ts); each forced drop
+        // checkpoints, and vitest exits the process when its default 10 s runs out, leaving them behind.
+        teardownTimeout: 120_000,
     },
 });

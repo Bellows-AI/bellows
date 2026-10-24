@@ -64,6 +64,16 @@ export function scratchDatabaseName(raw: string, tag: string): string {
     return derived(raw, `_${tag}`);
 }
 
+/**
+ * True for a scratch database of THIS run's base and no other: `<stem>_iso<8 hex>_test`. The stem
+ * is the whole base name, and a base shaped like a derived name is refused, so no other base's
+ * databases can match — which is what lets the teardown drop them by pattern.
+ */
+export function isScratchDatabase(raw: string, name: string): boolean {
+    const stem = baseStem(raw).replace(/[^A-Za-z0-9_]/g, '\\$&');
+    return new RegExp(`^${stem}_iso[0-9a-f]{8}_test$`).test(name);
+}
+
 export function templateUrl(raw: string): string {
     return withDatabase(raw, testDatabaseNames(raw).template);
 }
