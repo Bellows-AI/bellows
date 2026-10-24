@@ -7,6 +7,7 @@ and granularity: [date-range.md](date-range.md).
 | --- | --- | --- |
 | Rollups, scope filter, series, `telemetryStats()` | `core/src/telemetry.ts` | `core/test/telemetry.stats.test.ts`, `core/test/telemetry.independent.test.ts` |
 | `ratio`, `weekStart`, `isoWeekKey`, `dayKey` | `core/src/metrics.ts` | `core/test/metrics.invariants.test.ts` |
+| Token observations reduced to contributions (delta / cumulative high-water, source selection, `[1m]` model normalization, range and UTC day/week partition) | `core/src/token-contributions.ts` | `core/test/token-contributions.test.ts` |
 | Per-task distributions and percentiles | `core/src/task-usage.ts` | `core/test/task-usage.test.ts` |
 | Read cache, cooldown, stale snapshots | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
 | TTL parsing and its floor | `server/src/config.ts` | `server/test/config.persistence.test.ts` |

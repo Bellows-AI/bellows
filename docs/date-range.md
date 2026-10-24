@@ -6,6 +6,7 @@ How a selected range narrows the payload, and who owns each half of it.
 | --- | --- | --- |
 | `resolveRange`, `filterTelemetryInput`, `filterJobRuns` | `core/src/range.ts` | `core/test/range.test.ts` |
 | Query parsing and `400 BAD_RANGE` | `server/src/routes/stats.ts` (`parseRange`) | `server/test/routes.stats.get.test.ts` |
+| Token contributions partition into `[from,to)` and UTC day/week buckets by observation time; unlocated and unresolved stay out | `core/src/token-contributions.ts` (`partitionByRange`, `bucketTimedContributions`) | `core/test/token-contributions.test.ts` |
 | Series granularity and bucketing | `core/src/telemetry.ts` (`seriesGranularity`, `bucketSeries`) | `core/test/telemetry.stats.test.ts` |
 | UTC day/week helpers | `core/src/metrics.ts` (`dayStart`, `dayKey`) | `core/test/metrics.invariants.test.ts` |
 | The selector and its custom-range draft | `web/src/components/RangeSelector.tsx` | `web/test/range-selector.test.tsx` |
