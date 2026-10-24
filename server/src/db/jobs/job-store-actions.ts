@@ -35,6 +35,7 @@ import type {
     StopResult,
     SuspendResult,
 } from './job-store-types.js';
+import { recordLaunchOutcome } from './job-store-provenance.js';
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
 import type { ExecutorScope } from '@factory-ai/core';
@@ -266,13 +267,14 @@ export interface JobActionStore {
      * attempt and appending the reason. `release` hands the claim back claimable at once (a drained
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
-     * the earlier attempt it adopted. `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
+     * claim. `refused` says the runner never started (issue #845). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
         id: string,
         leaseToken: string,
-        interruption: { reason: string; release: boolean; claimSeq?: number | null }
+        interruption: { reason: string; release: boolean; claimSeq?: number | null; refused?: boolean }
     ): Promise<SuspendResult | { result: 'exhausted' }>;
 }
 
@@ -816,7 +818,7 @@ export async function interruptJob(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    { reason, release, claimSeq = null }: Parameters<JobStore['interrupt']>[2]
+    { reason, release, claimSeq = null, refused = false }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
     // One lease-guarded update, an agent ran: the segment banks to the
@@ -841,6 +843,22 @@ export async function interruptJob(
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
+        // The launch outcome this interruption proves (issue #845), decided on the row the update
+        // below changes — locked here. A release is recorded only under the update's own conditions
+        // (a spent budget or a replay records nothing); an adoption link is a fact of the adopting
+        // claim whether or not the expiry already recorded the interruption, and set once.
+        if (refused || !release) {
+            const [held] = await tx<{ claim_seq: string }[]>`
+                select claim_seq from job
+                where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+                  ${release ? tx`and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET} and not ${recorded}` : tx``}
+                for update
+            `;
+            if (held && release) await recordLaunchOutcome(tx, orgId, id, held.claim_seq, { refused: true });
+            if (held && !release && claimSeq !== null) {
+                await recordLaunchOutcome(tx, orgId, id, held.claim_seq, { adopts: claimSeq });
+            }
+        }
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status

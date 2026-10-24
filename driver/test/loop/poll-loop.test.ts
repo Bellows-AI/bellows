@@ -2501,6 +2501,7 @@ describe('the poll loop', () => {
                 id: job(1).id,
                 reason: 'the runner reports the container never started: no such image',
                 release: true,
+                refused: true,
             },
         ]);
     });
@@ -2522,6 +2523,7 @@ describe('the poll loop', () => {
                     id: job(1).id,
                     reason: 'the runner could not start: the registry answered: dial tcp: i/o timeout',
                     release: true,
+                    refused: true,
                 },
             ]);
         });

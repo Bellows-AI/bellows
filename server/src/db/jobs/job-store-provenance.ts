@@ -94,3 +94,32 @@ export async function recordReportedSession(
             last_seen_at = now()
     `;
 }
+
+/**
+ * What an interruption proves about the claim it ends or adopts (issue #845). `refused`: the
+ * runner never started, so the claim's launch is `refused`. `adopts`: this claim adopted the
+ * runner of that earlier claim — it is `adopted`, linked to the original, and creates no
+ * execution of its own. Only a `requested` launch moves (a launched attempt stays `observed`),
+ * and an adoption naming a claim not before its own is recorded as nothing: attribution never
+ * fails the recovery it describes. The caller holds the job row's lock and has proven the lease.
+ */
+export async function recordLaunchOutcome(
+    tx: TransactionSql,
+    orgId: string,
+    jobId: string,
+    claimSeq: string | number,
+    outcome: { refused: true } | { adopts: number }
+): Promise<void> {
+    if ('refused' in outcome) {
+        await tx`
+            update job_execution set launch = 'refused', updated_at = now()
+            where org_id = ${orgId} and job_id = ${jobId} and claim_seq = ${claimSeq} and launch = 'requested'
+        `;
+        return;
+    }
+    await tx`
+        update job_execution set launch = 'adopted', adopts_claim_seq = ${outcome.adopts}, updated_at = now()
+        where org_id = ${orgId} and job_id = ${jobId} and claim_seq = ${claimSeq} and launch = 'requested'
+          and ${outcome.adopts}::bigint < claim_seq
+    `;
+}

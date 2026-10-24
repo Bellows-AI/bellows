@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { migrate } from '../src/db/migrate.js';
@@ -50,6 +51,22 @@ describe.skipIf(!enabled)('085_job_execution', () => {
         await run();
         const [count] = await pool<{ n: number }[]>`select count(*)::int as n from job_execution`;
         expect(count!.n).toBe(1);
+    });
+
+    it('re-applies its own SQL over a live schema, keeping rows and the launch guards', async () => {
+        await run();
+        const file = readFileSync(new URL('../migrations/085_job_execution.sql', import.meta.url), 'utf8');
+        const job = randomUUID();
+        await pool`insert into job_execution (org_id, job_id, claim_seq, root_job_id, launch) values ('o', ${job}, 3, ${randomUUID()}, 'observed')`;
+
+        await pool.unsafe(file);
+        await pool.unsafe(file);
+
+        const [row] = await pool<{ launch: string }[]>`select launch from job_execution where job_id = ${job}`;
+        expect(row?.launch).toBe('observed');
+        await expect(pool`update job_execution set launch = 'requested' where job_id = ${job}`).rejects.toThrow(
+            /not a forward move/
+        );
     });
 
     it('refuses a launch state outside the enum', async () => {

@@ -323,10 +323,19 @@ describe('reporting an interrupted attempt (issue #792)', () => {
 
         expect(await boardOn(fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('held');
         expect(await boardOn(fetch).interrupt(job, { reason: 'adopted', release: false, claimSeq: 2 })).toBe('held');
+        expect(await boardOn(fetch).interrupt(job, { reason: 'never started', release: true, refused: true })).toBe(
+            'held'
+        );
 
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/interrupt');
         expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', reason: 'evicted', release: true });
         expect(calls[1]!.body).toEqual({ leaseToken: 'token-1', reason: 'adopted', release: false, claimSeq: 2 });
+        expect(calls[2]!.body).toEqual({
+            leaseToken: 'token-1',
+            reason: 'never started',
+            release: true,
+            refused: true,
+        });
     });
 
     it('tells a spent budget apart from a lost lease, and reads a removed job as lost', async () => {
