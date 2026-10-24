@@ -23,8 +23,7 @@ jobs:
             contents: read
             packages: write
         env:
-            # docker-compose.yml's pin, read through mirror.gcr.io; core/test/ci-workflows.test.ts
-            # keeps the two on the same image and tag.
+            # docker-compose.yml's pin; core/test/ci-workflows.test.ts keeps the two identical.
             SOURCE: mirror.gcr.io/library/postgres:17
         steps:
             - name: docker login ghcr.io

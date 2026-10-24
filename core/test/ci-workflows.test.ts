@@ -126,7 +126,7 @@ describe('ci workflows', () => {
     });
 
     it('runs on the node major the runtime image ships', () => {
-        const imageMajor = /FROM public\.ecr\.aws\/docker\/library\/node:(\d+)-alpine AS runtime/.exec(
+        const imageMajor = /FROM mirror\.gcr\.io\/library\/node:(\d+)-alpine AS runtime/.exec(
             read('docker/Dockerfile')
         )?.[1];
         expect(imageMajor).toBeTruthy();
@@ -142,9 +142,10 @@ describe('ci workflows', () => {
     });
 
     // GitHub-hosted runners share egress IPs, and Docker Hub rate-limits anonymous pulls per IP:
-    // a release whose every build answers 429 cannot be cut. ECR Public mirrors the same official
-    // images with no such limit and no credential.
-    it('pulls every base image from the ECR Public mirror, never Docker Hub', () => {
+    // a release whose every build answers 429 cannot be cut. ECR Public's per-IP data limit refuses
+    // shared runner IPs too. Google's Docker Hub cache serves the same official images with no
+    // credential.
+    it('pulls every base image from mirror.gcr.io, never Docker Hub or ECR Public', () => {
         const dockerfiles = [
             'docker/Dockerfile',
             'docker/driver.Dockerfile',
@@ -158,7 +159,7 @@ describe('ci workflows', () => {
                 .map((match) => match[1] ?? match[2]!)
                 .filter((ref) => /[:/]/.test(ref));
             expect(refs.length, path).toBeGreaterThan(0);
-            for (const ref of refs) expect(ref, path).toMatch(/^public\.ecr\.aws\/docker\/library\//);
+            for (const ref of refs) expect(ref, path).toMatch(/^mirror\.gcr\.io\/library\//);
         }
         // The docker-container builder runs buildkit as an image of its own, Docker Hub's by default.
         // ECR Public's per-IP data limit refuses even the one buildkit pull on a shared runner IP
@@ -194,9 +195,7 @@ describe('ci workflows', () => {
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
         expect(Object.keys(mirror.jobs)).toEqual(['postgres']);
-        expect(job.env!.SOURCE).toBe(
-            composePostgres().replace(/^public\.ecr\.aws\/docker\/library\//, 'mirror.gcr.io/library/')
-        );
+        expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
         expect(commands).toContain('docker login ghcr.io');

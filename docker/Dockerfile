@@ -1,4 +1,4 @@
-FROM public.ecr.aws/docker/library/node:24-alpine AS deps
+FROM mirror.gcr.io/library/node:24-alpine AS deps
 WORKDIR /app
 # node-owned, because this stage installs as `node` (see USER below): the volume compose mounts over
 # /app/node_modules seeds from whatever the image has here, ownership included, and a root-owned
@@ -59,7 +59,7 @@ COPY web/src web/src
 COPY web/public web/public
 RUN npm run build -w web
 
-FROM public.ecr.aws/docker/library/node:24-alpine AS runtime
+FROM mirror.gcr.io/library/node:24-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./

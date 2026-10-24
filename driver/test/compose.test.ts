@@ -94,7 +94,7 @@ describe('the driver image stages', () => {
         // a version the chart never ships. The major itself moves with the release scan — an old
         // client carries an old Go stdlib, which is 22 of the driver image's findings.
         const clients = [
-            ...driverDockerfile.matchAll(/COPY --from=public\.ecr\.aws\/docker\/library\/docker:(\S+) /g),
+            ...driverDockerfile.matchAll(/COPY --from=mirror\.gcr\.io\/library\/docker:(\S+) /g),
         ].map((m) => m[1]);
         expect(clients).toHaveLength(2);
         expect(new Set(clients).size).toBe(1);
@@ -106,7 +106,7 @@ describe('the driver image stages', () => {
         // runs. `dev` must sit before it, runtime must still bake dist and run it, and nothing
         // may follow runtime — a stage appended after it would silently become what ships.
         const dev = driverDockerfile.indexOf('FROM deps AS dev');
-        const runtime = driverDockerfile.indexOf('FROM public.ecr.aws/docker/library/node:24-alpine AS runtime');
+        const runtime = driverDockerfile.indexOf('FROM mirror.gcr.io/library/node:24-alpine AS runtime');
         expect(dev).toBeGreaterThan(-1);
         expect(runtime).toBeGreaterThan(dev);
         expect(driverDockerfile.slice(runtime).match(/^FROM/gm)).toHaveLength(1);
