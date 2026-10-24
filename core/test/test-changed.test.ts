@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 /** The planner behind `npm run test:changed`; fixtures stand in for git, so nothing here spawns. */
@@ -10,37 +9,41 @@ interface Step {
 interface PlanInput {
     base: string;
     changed: string[];
+    added?: string[];
     spawn: string[];
     namedBy: (names: string[]) => string[];
     namedInSource: (names: string[]) => string[];
     importers: (files: string[]) => string[];
 }
 const SCRIPT = new URL('../../scripts/test-changed.mjs', import.meta.url).href;
-const { plan, reverseImports, DIRECTORY_READERS } = (await import(/* @vite-ignore */ SCRIPT)) as {
+const { plan, reverseImports } = (await import(/* @vite-ignore */ SCRIPT)) as {
     plan: (input: PlanInput) => Step[];
     reverseImports: (texts: Record<string, string>) => (files: string[]) => string[];
-    DIRECTORY_READERS: [RegExp, string[]][];
 };
 
-const SPAWN = ['driver/test/scripts-gate-shell.test.ts', 'core/test/biome.test.ts'];
+const SPAWN = ['driver/test/scripts-gate-shell.test.ts', 'server/test/local-origin-plan.test.ts'];
 const NAMED: Record<string, string[]> = {
     'metrics.md': ['core/test/docs.terminology.test.ts', 'driver/test/k8s-docs.test.ts'],
     'gate-loop.sh': ['driver/test/scripts-gate-shell.test.ts'],
-    'helper-reader.sql': ['server/test/fixtures/reader.ts', 'server/test/job-store.test.ts'],
-    'job-limits.ts': ['driver/test/board.test.ts'],
-    'sessions.json': ['core/test/task-usage.test.ts'],
+    'reader.sql': ['server/test/fixtures/reader.ts', 'server/test/job-store.test.ts'],
+    'suspend-outage.ts': ['driver/test/loop-containment.test.ts'],
 };
-const lookup = (names: string[]) => names.flatMap((name) => NAMED[name] ?? []);
-const run = (
-    changed: string[],
-    namedBy = lookup,
-    importers = (_files: string[]): string[] => [],
-    namedInSource = (_names: string[]): string[] => []
-): Step[] => plan({ base: 'abc123', changed, spawn: SPAWN, namedBy, namedInSource, importers });
+const none = () => [];
+const run = (changed: string[], over: Partial<PlanInput> = {}): Step[] =>
+    plan({
+        base: 'abc123',
+        changed,
+        spawn: SPAWN,
+        namedBy: (names) => names.flatMap((name) => NAMED[name] ?? []),
+        namedInSource: none,
+        importers: none,
+        ...over,
+    });
 const vitestArgs = (steps: Step[]) => steps.flatMap((step) => (step.vitest ? [step.vitest] : []));
+const projects = (args: string[]) => args.flatMap((arg, at) => (args[at - 1] === '--project' ? [arg] : []));
 
 describe('test:changed plan', () => {
-    it('follows the import graph across every project and nothing else for a driver module', () => {
+    it('follows the import graph across every project, and only the source scanners beside it, for a driver module', () => {
         const steps = run(['driver/src/loop.ts']);
         expect(steps.some((step) => step.run)).toBe(false);
         expect(vitestArgs(steps)[0]).toEqual([
@@ -50,7 +53,6 @@ describe('test:changed plan', () => {
             '--passWithNoTests',
             ...['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'].flatMap((name) => ['--project', name]),
         ]);
-        // Beside the graph, only the suites that scan driver/src without importing from it.
         expect(vitestArgs(steps)[1]).toEqual([
             'run',
             'core/test/polling-authority.test.ts',
@@ -70,62 +72,40 @@ describe('test:changed plan', () => {
         expect(steps).toHaveLength(2);
     });
 
-    it('builds core and runs every server and web suite when core/src changed', () => {
+    it('builds core and runs every server and web suite, spawn ones included, when core/src changed', () => {
         const steps = run(['core/src/metrics.ts']);
         expect(steps[0]?.run).toEqual(['npm', 'run', 'build', '-w', 'core']);
-        expect(steps[1]?.vitest).toEqual(['run', '--project', 'server', '--project', 'web', '--project', 'dom']);
-        const graph = steps[2]?.vitest ?? [];
-        expect(graph).toContain('--changed');
-        expect(graph).not.toContain('server');
-        expect(graph).toContain('spawn');
+        expect(projects(steps[1]?.vitest ?? [])).toEqual(['server', 'web', 'dom']);
+        expect(vitestArgs(steps)).toContainEqual(['run', 'server/test/local-origin-plan.test.ts']);
+        const graph = vitestArgs(steps).find((args) => args.includes('--changed')) ?? [];
+        expect(projects(graph)).not.toContain('server');
+        expect(projects(graph)).toContain('spawn');
     });
 
-    it('does not rerun a server suite the core step already runs, but keeps a driver suite', () => {
-        const steps = run(['core/src/metrics.ts', 'gate-loop.sh'], () => [
-            'server/test/job-store.test.ts',
-            'driver/test/scripts-gate-shell.test.ts',
-        ]);
-        expect(vitestArgs(steps).at(-1)).toEqual([
-            'run',
-            'core/test/core-index.test.ts',
-            'core/test/polling-authority.test.ts',
-            'driver/test/scripts-gate-shell.test.ts',
-        ]);
+    it('maps a changed script by the generic path-read rule: tests that name it', () => {
+        const steps = run(['driver/src/scripts/gate-loop.sh']);
+        expect(vitestArgs(steps).at(-1)).toEqual(['run', 'driver/test/scripts-gate-shell.test.ts']);
+        expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
     });
 
     it('routes a test helper that reads a changed file through vitest related', () => {
-        const steps = run(['server/migrations/helper-reader.sql']);
-        // The migration is not a graph file; only the unit test is run directly, the helper via related.
-        expect(vitestArgs(steps).at(-2)).toEqual([
-            'run',
-            'core/test/migrations.sql.test.ts',
-            'server/test/job-store.test.ts',
-        ]);
+        const steps = run(['server/migrations/reader.sql']);
+        expect(vitestArgs(steps).at(-2)).toEqual(['run', 'server/test/job-store.test.ts']);
         expect(vitestArgs(steps).at(-1)).toEqual(['related', '--run', 'server/test/fixtures/reader.ts']);
     });
 
-    it('maps a changed script to the spawn suite that names it', () => {
-        const steps = run(['driver/src/scripts/gate-loop.sh']);
-        expect(vitestArgs(steps).at(-1)).toContain('driver/test/scripts-gate-shell.test.ts');
-        expect(vitestArgs(steps).at(-1)).toContain('driver/test/scripts.test.ts');
-    });
-
-    it('finds a suite that reads a changed TypeScript source or a test fixture by path', () => {
-        const steps = run(['server/src/routes/jobs/job-limits.ts', 'core/test/fixtures/sessions.json']);
-        expect(vitestArgs(steps).at(-1)).toEqual([
-            'run',
-            'core/test/polling-authority.test.ts',
-            'core/test/task-usage.test.ts',
-            'driver/test/board.test.ts',
-            'server/test/import-boundaries.test.ts',
-        ]);
-    });
-
-    it('finds the suite that launches a changed test fixture by path', () => {
-        const steps = run(['driver/test/fixtures/suspend-outage.ts'], (names) =>
-            names.includes('suspend-outage.ts') ? ['driver/test/loop-containment.test.ts'] : []
-        );
-        expect(vitestArgs(steps).at(-1)).toContain('driver/test/loop-containment.test.ts');
+    it('reaches the suites that import the loader of a changed script body', () => {
+        const importers = reverseImports({
+            'driver/src/container-scripts.ts': '',
+            'driver/src/gate.ts': "import { gateShellScript } from './container-scripts.js';",
+            'driver/test/scripts-gate-shell.test.ts': "import { gateShellScript } from '../src/container-scripts.js';",
+        });
+        const steps = run(['driver/src/scripts/gate-shell.sh'], {
+            importers,
+            namedInSource: (names) => (names.includes('gate-shell.sh') ? ['driver/src/container-scripts.ts'] : []),
+        });
+        expect(vitestArgs(steps).flat()).toContain('driver/test/scripts-gate-shell.test.ts');
+        expect(steps.some((step) => step.label.startsWith('widened'))).toBe(false);
     });
 
     it('follows a changed source, through any depth of imports, into a fixture the suites launch by path', () => {
@@ -140,76 +120,48 @@ describe('test:changed plan', () => {
             'driver/test/fixtures/suspend-outage.ts',
             'driver/test/loop.test.ts',
         ]);
-        const byName: Record<string, string[]> = { 'suspend-outage.ts': ['driver/test/loop-containment.test.ts'] };
-        const steps = run(
-            ['driver/src/loop-run.ts'],
-            (names) => names.flatMap((name) => byName[name] ?? []),
-            importers
-        );
+        const steps = run(['driver/src/loop-run.ts'], { importers });
         expect(vitestArgs(steps).at(-1)).toContain('driver/test/loop-containment.test.ts');
     });
 
-    it('reaches the suites that import the loader of a changed script body', () => {
-        const importers = reverseImports({
-            'driver/src/container-scripts.ts': '',
-            'driver/src/gate.ts': "import { gateShellScript } from './container-scripts.js';",
-            'driver/test/scripts-gate-shell.test.ts': "import { gateShellScript } from '../src/container-scripts.js';",
+    it('finds the suite that launches a changed test fixture by path, and rescans the test projects', () => {
+        const steps = run(['driver/test/fixtures/suspend-outage.ts']);
+        expect(vitestArgs(steps).at(-1)).toEqual([
+            'run',
+            'core/test/vitest-projects.test.ts',
+            'driver/test/loop-containment.test.ts',
+        ]);
+    });
+
+    describe('fails open', () => {
+        it('runs everything, and says why, for a path nothing maps', () => {
+            const steps = run(['charts/factory/templates/unknown-thing.yaml']);
+            expect(vitestArgs(steps)).toEqual([
+                [
+                    'run',
+                    ...['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'].flatMap((name) => [
+                        '--project',
+                        name,
+                    ]),
+                ],
+            ]);
+            expect(steps.at(-1)?.label).toContain('widened to everything');
+            expect(steps.at(-1)?.label).toContain('charts/factory/templates/unknown-thing.yaml');
         });
-        const steps = run(
-            ['driver/src/scripts/gate-shell.sh'],
-            () => [],
-            importers,
-            (names) => (names.includes('gate-shell.sh') ? ['driver/src/container-scripts.ts'] : [])
-        );
-        expect(vitestArgs(steps).flat()).toContain('driver/test/scripts-gate-shell.test.ts');
-    });
 
-    it('runs a suite that enumerates the changed directory though it never names the file', () => {
-        const steps = run(['server/migrations/999_new.sql']);
-        expect(vitestArgs(steps).at(-1)).toEqual(['run', 'core/test/migrations.sql.test.ts']);
-    });
-
-    it('runs the server and web spawn suites too when core changed', () => {
-        const steps = plan({
-            base: 'abc123',
-            changed: ['core/src/metrics.ts'],
-            spawn: [...SPAWN, 'server/test/local-origin-plan.test.ts'],
-            namedBy: lookup,
-            namedInSource: () => [],
-            importers: () => [],
+        it('runs everything for a file every package builds from, though a test names it', () => {
+            const steps = run(['Makefile'], { namedBy: () => ['driver/test/executor-images.test.ts'] });
+            expect(steps.at(-1)?.label).toContain('shared by every package');
+            expect(vitestArgs(steps)).toHaveLength(1);
         });
-        expect(vitestArgs(steps)).toContainEqual(['run', 'server/test/local-origin-plan.test.ts']);
-    });
 
-    it('keeps every directory reader on disk', () => {
-        for (const [, tests] of DIRECTORY_READERS) {
-            for (const test of tests) expect(existsSync(new URL(`../../${test}`, import.meta.url)), test).toBe(true);
-        }
-    });
-
-    it('routes the paths whose scanners import nothing from them', () => {
-        const scanners = (path: string) => {
-            const steps = plan({
-                base: 'abc123',
-                changed: [path],
-                spawn: SPAWN,
-                namedBy: () => [],
-                namedInSource: () => [],
-                importers: () => [],
-            });
-            return vitestArgs(steps).at(-1)?.slice(1) ?? [];
-        };
-        expect(scanners('docs/design-system/composer.md')).toContain('web/test/styles.test.ts');
-        expect(scanners('charts/factory-local-state/templates/postgres.yaml')).toContain(
-            'core/test/docs.eks-storage.test.ts'
-        );
-        expect(scanners('server/src/routes/jobs/job-limits.ts')).toContain('core/test/polling-authority.test.ts');
-        expect(scanners('server/test-db/job-store.fairness.test.ts')).toContain('server/test/test-db.harness.test.ts');
-        expect(scanners('server/src/routes/jobs/job-limits.ts')).toContain('server/test/import-boundaries.test.ts');
-        expect(scanners('scripts/stub-agent.sh')).toContain('server/test/test-jobs.harness.test.ts');
-        expect(scanners('web/test/panels.render.test.tsx')).toContain('web/test/no-shared-module-spies.test.ts');
-        expect(scanners('driver/test/fixtures/new-helper.ts')).toContain('core/test/vitest-projects.test.ts');
-        expect(scanners('driver/test/brand-new.test.ts')).toContain('core/test/vitest-projects.test.ts');
+        it('widens a package whose source file was added or removed, for the scans that list it', () => {
+            const steps = run(['driver/src/unmapped-worker.ts'], { added: ['driver/src/unmapped-worker.ts'] });
+            const widened = steps.find((step) => step.label.startsWith('widened'));
+            expect(widened?.label).toContain('added or removed');
+            expect(projects(widened?.vitest ?? [])).toEqual(['driver']);
+            expect(vitestArgs(steps)).toContainEqual(['run', 'driver/test/scripts-gate-shell.test.ts']);
+        });
     });
 
     it('plans only the graph step for an empty change', () => {

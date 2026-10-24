@@ -15,110 +15,121 @@ const PROJECTS = ['core', 'server', 'web', 'driver', 'cli', 'dom', 'spawn'];
 const CORE_CONSUMERS = ['server', 'web', 'dom'];
 const UNIT_TEST = /^(core|server|web|driver|cli)\/test\/.*\.test\.tsx?$/;
 const TEST_TREE = /^(core|server|web|driver|cli)\/test\//;
-// Names too common for a source to be said to load them: they would pull in every suite.
-const GENERIC_NAME = /^(package(-lock)?\.json|tsconfig[\w.]*\.json|[A-Z]+\.md|SKILL\.md|Makefile|VERSION|index\.[a-z]+)$/;
+// Names too common for a source to be said to load them, and files every package builds from or
+// runs under: a change to one is not narrowed, it runs everything.
+const SHARED_NAME = /^(package(-lock)?\.json|tsconfig[\w.]*\.json|Makefile|VERSION|README\.md|Dockerfile[\w.]*|index\.[a-z]+)$/;
 const GRAPH_FILE = /\.(ts|tsx|mts|cts)$/;
-// Suites that scan a directory (`readdirSync`, a recursive read) and never name its files, so no grep
-// finds them. `core/test/test-changed.test.ts` pins that each one exists. A
-// suite missing here is the gap `npm test`, the gate, still closes.
-const SOURCE_SCANNERS = ['core/test/polling-authority.test.ts'];
-const SERVER_SCANNERS = [...SOURCE_SCANNERS, 'server/test/import-boundaries.test.ts'];
-export const DIRECTORY_READERS = [
-    [/^server\/migrations\//, ['core/test/migrations.sql.test.ts']],
-    [/^lint\//, ['core/test/biome.test.ts']],
-    [/^docker\/skills\//, ['core/test/skills.test.ts', 'driver/test/executor-images.test.ts']],
-    [/^\.claude\/skills\//, ['driver/test/executor-images.test.ts']],
-    [/^core\/src\//, ['core/test/core-index.test.ts', ...SOURCE_SCANNERS]],
-    [/^server\/src\//, SERVER_SCANNERS],
-    [/^scripts\//, ['server/test/test-jobs.harness.test.ts']],
-    [/^driver\/src\//, [...SOURCE_SCANNERS, 'driver/test/loop-fence.test.ts', 'driver/test/k8s.test.ts']],
-    [/^driver\/src\/scripts\//, ['driver/test/scripts.test.ts']],
-    [/^(web\/src|docs\/design-system)\//, ['web/test/styles.test.ts']],
-    [/^web\/test\//, ['web/test/no-shared-module-spies.test.ts']],
-    [/^server\/test-db\//, ['server/test/test-db.harness.test.ts']],
-    [/^charts\//, ['core/test/docs.eks-storage.test.ts']],
-    // A test file added, moved or removed moves the project lists.
-    [/^((core|server|web|driver|cli)\/test\/.*\.tsx?|vitest\.spawn-tests\.json)$/, ['core/test/vitest-projects.test.ts']],
-];
+const SRC_MODULE = /^(core|server|web|driver|cli)\/src\/.*\.tsx?$/;
+// Suites that read a whole source tree (`readdirSync`, a recursive read) and import nothing from it,
+// so neither the import graph nor a grep reaches them when a module there changes.
+const POLLING = 'core/test/polling-authority.test.ts';
+const SOURCE_SCANNERS = {
+    core: ['core/test/core-index.test.ts', POLLING],
+    server: [POLLING, 'server/test/import-boundaries.test.ts'],
+    driver: [POLLING, 'driver/test/loop-fence.test.ts', 'driver/test/k8s.test.ts'],
+    web: ['web/test/styles.test.ts'],
+};
 
 const projectArgs = (projects) => projects.flatMap((name) => ['--project', name]);
+const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
 
 /**
- * The ordered steps for a set of changed files.
+ * The ordered steps for a set of changed files. Fail open: a changed path the selector cannot
+ * positively map widens the run (its package, or everything) and says why. Unknown means run more.
  *
- * - `changed`: repo-relative paths changed since the base.
+ * - `changed`: repo-relative paths changed since the base; `added`: those added or removed.
  * - `spawn`: the spawn-tier test files (`vitest.spawn-tests.json`).
  * - `importers(files)`: every file that imports one of `files`, directly or through others.
  * - `namedInSource(names)`: source files (outside every `test/` directory) that mention any of `names`.
  * - `namedBy(names)`: files under a `test/` directory that mention any of `names`.
  */
-export function plan({ base, changed, spawn, namedBy, namedInSource, importers }) {
+export function plan({ base, changed, added = [], spawn, namedBy, namedInSource, importers }) {
     const spawning = new Set(spawn);
-    const steps = [];
-    const coreChanged = changed.some((file) => file.startsWith('core/src/'));
-    const covered = coreChanged ? CORE_CONSUMERS : [];
+    const addedSet = new Set(added);
+    const named = new Set();
+    const helpers = new Set();
+    const wide = new Map(); // scope ('all' or a package) -> why
+    const widen = (scope, why) => wide.set(scope, [...(wide.get(scope) ?? []), why]);
+    const classify = (hits) => {
+        for (const hit of hits) {
+            if (UNIT_TEST.test(hit)) named.add(hit);
+            else if (TEST_TREE.test(hit)) helpers.add(hit);
+        }
+        return hits.length;
+    };
+    const loaded = [];
 
-    if (coreChanged) {
-        steps.push({ label: 'build core (server and web import core/dist)', run: ['npm', 'run', 'build', '-w', 'core'] });
-        steps.push({
-            label: 'core changed: every server and web suite',
-            vitest: ['run', ...projectArgs(covered)],
-        });
-        // The spawn tier is in no package project, and its server and web suites import core/dist too.
-        const spawnConsumers = spawn.filter((file) => /^(server|web)\//.test(file)).sort();
-        if (spawnConsumers.length > 0) {
-            steps.push({ label: 'core changed: the server and web spawn suites', vitest: ['run', ...spawnConsumers] });
+    for (const file of changed) {
+        const pkg = file.split('/')[0];
+        if (TEST_TREE.test(file)) {
+            // A test file or helper added, moved or changed moves the project lists and the test scans.
+            named.add('core/test/vitest-projects.test.ts');
+            if (pkg === 'web') named.add('web/test/no-shared-module-spies.test.ts');
+            if (GRAPH_FILE.test(file)) classify(namedBy([baseName(file)])); // launched by path
+        } else if (SRC_MODULE.test(file)) {
+            if (addedSet.has(file)) widen(pkg, `${file} was added or removed: directory scans see it`);
+            else for (const scanner of SOURCE_SCANNERS[pkg] ?? []) named.add(scanner);
+        } else if (/\.md$/.test(file) && !SHARED_NAME.test(baseName(file))) {
+            classify(namedBy([baseName(file)]));
+            if (file.startsWith('docs/design-system/')) named.add('web/test/styles.test.ts');
+        } else if (SHARED_NAME.test(baseName(file))) {
+            widen('all', `${file}: shared by every package`);
+        } else {
+            // Read by path, not imported: a test names it, or a source loads it and tests import that.
+            const readers = namedBy([baseName(file)]);
+            const loaders = namedInSource([baseName(file)]);
+            loaded.push(...loaders);
+            if (classify(readers) + loaders.length === 0) widen('all', `${file}: nothing in the tests or sources names it`);
         }
     }
+    // A source that loads a changed file by name is as good as changed: its importers' suites run.
+    const throughLoaders = [...loaded, ...importers(loaded)];
+    for (const file of throughLoaders) if (UNIT_TEST.test(file)) named.add(file);
+    // A fixture under test/ that imports a changed source, however deep, may be launched by path
+    // (`spawn`, `fork`), which no import graph connects: the suites that name it are reached too.
+    const reaching = [
+        ...importers(changed.filter((file) => GRAPH_FILE.test(file))),
+        ...throughLoaders,
+    ].filter((file) => TEST_TREE.test(file) && !UNIT_TEST.test(file));
+    if (reaching.length > 0) classify(namedBy([...new Set(reaching.map(baseName))]));
 
+    const coreChanged = changed.some((file) => file.startsWith('core/src/'));
+    const steps = [];
+    const build = { label: 'build core (server and web import core/dist)', run: ['npm', 'run', 'build', '-w', 'core'] };
+    if (wide.has('all')) {
+        steps.push(build, {
+            label: `widened to everything: ${wide.get('all').join('; ')}`,
+            vitest: ['run', ...projectArgs(PROJECTS)],
+        });
+        return steps;
+    }
+    const covered = new Set(coreChanged ? CORE_CONSUMERS : []);
+    for (const pkg of wide.keys()) {
+        covered.add(pkg);
+        if (pkg === 'web') covered.add('dom');
+    }
+    if (coreChanged) steps.push(build);
+    if (covered.size > 0) {
+        const why = [...wide.values()].flat();
+        steps.push({
+            label: `${coreChanged ? 'core changed (server and web import core/dist)' : 'widened'}${why.length > 0 ? `: ${why.join('; ')}` : ''}`,
+            vitest: ['run', ...projectArgs([...covered])],
+        });
+        // The spawn tier is in no package project: its suites of a covered package run too.
+        const spawned = spawn
+            .filter((file) => [...covered].some((pkg) => file.startsWith(`${pkg === 'dom' ? 'web' : pkg}/`)))
+            .sort();
+        if (spawned.length > 0) {
+            steps.push({ label: 'spawn suites of the widened packages', vitest: ['run', ...spawned] });
+        }
+    }
     // Spawn-tier suites join the import-graph step: they run when a file they import changed, or
     // when they changed themselves, and in no other case.
     steps.push({
         label: `import graph since ${base}`,
-        vitest: [
-            'run',
-            '--changed',
-            base,
-            '--passWithNoTests',
-            ...projectArgs(PROJECTS.filter((name) => !covered.includes(name))),
-        ],
+        vitest: ['run', '--changed', base, '--passWithNoTests', ...projectArgs(PROJECTS.filter((name) => !covered.has(name)))],
     });
-
-    // Everything vitest's graph cannot see: a file a test reads by path, whatever its language, a
-    // fixture under test/, and a directory a test enumerates.
-    const named = new Set(
-        changed.flatMap((file) => DIRECTORY_READERS.filter(([pattern]) => pattern.test(file)).flatMap(([, tests]) => tests))
-    );
-    const helpers = new Set();
-    const looked = new Set();
-    const lookup = (names) => {
-        const fresh = [...new Set(names)].filter((name) => !looked.has(name));
-        for (const name of fresh) looked.add(name);
-        for (const hit of fresh.length > 0 ? namedBy(fresh) : []) {
-            if (UNIT_TEST.test(hit)) named.add(hit);
-            else if (TEST_TREE.test(hit)) helpers.add(hit);
-        }
-    };
-    const baseName = (file) => file.slice(file.lastIndexOf('/') + 1);
-    lookup(changed.map(baseName));
-    // A fixture under test/ that imports a changed source, however deep, may be launched by path
-    // (`spawn`, `fork`), which no import graph connects: the suites that name it are reached too.
-    const reaching = importers(changed.filter((file) => GRAPH_FILE.test(file)));
-    // A source that loads a changed non-TypeScript file by name (a script body, a template) is as
-    // good as changed: the suites that import it are reached through it.
-    const unread = changed
-        .filter((file) => !GRAPH_FILE.test(file) && !TEST_TREE.test(file))
-        .map(baseName)
-        .filter((name) => !GENERIC_NAME.test(name));
-    const loaders = unread.length > 0 ? namedInSource(unread) : [];
-    const throughLoaders = [...loaders, ...importers(loaders)];
-    for (const file of throughLoaders) if (UNIT_TEST.test(file)) named.add(file);
-    reaching.push(...throughLoaders);
-    lookup(reaching.filter((file) => TEST_TREE.test(file) && !UNIT_TEST.test(file)).map(baseName));
-    const inCovered = (file) => {
-        const pkg = file.split('/')[0];
-        return coreChanged && (pkg === 'server' || pkg === 'web') && !spawning.has(file);
-    };
+    const inCovered = (file) => covered.has(file.split('/')[0]) && !spawning.has(file);
     const byPath = [...named].filter((file) => !inCovered(file)).sort();
     if (byPath.length > 0) steps.push({ label: 'tests that read a changed file by path', vitest: ['run', ...byPath] });
     if (helpers.size > 0) {
@@ -160,13 +171,14 @@ export function reverseImports(texts) {
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).split('\n').filter(Boolean);
 
+/** Changed paths since `mergeBase`, and those of them added or removed (directory scans see those). */
 function changedFiles(mergeBase) {
-    return [
-        ...new Set([
-            ...git('diff', '--no-renames', '--name-only', mergeBase),
-            ...git('ls-files', '--others', '--exclude-standard'),
-        ]),
-    ];
+    const untracked = git('ls-files', '--others', '--exclude-standard');
+    const status = git('diff', '--no-renames', '--name-status', mergeBase).map((line) => line.split('\t'));
+    return {
+        changed: [...new Set([...status.map(([, file]) => file), ...untracked])],
+        added: [...status.filter(([code]) => code !== 'M').map(([, file]) => file), ...untracked],
+    };
 }
 
 function namedBy(names) {
@@ -198,12 +210,13 @@ function main(argv) {
     }
     const base = positional[0] ?? process.env.TEST_CHANGED_BASE ?? DEFAULT_BASE;
     let changed;
+    let added = [];
     let mergeBase = base;
     if (fromStdin) changed = readFileSync(0, 'utf8').split('\n').filter(Boolean);
     else {
         // From the merge base, so a branch behind <base> is not charged with <base>'s newer commits.
         [mergeBase] = git('merge-base', base, 'HEAD');
-        changed = changedFiles(mergeBase);
+        ({ changed, added } = changedFiles(mergeBase));
     }
     const spawn = JSON.parse(readFileSync(new URL('../vitest.spawn-tests.json', import.meta.url), 'utf8')).tests;
     const texts = Object.fromEntries(
@@ -215,7 +228,7 @@ function main(argv) {
             }
         })
     );
-    const steps = plan({ base: mergeBase, changed, spawn, namedBy, namedInSource, importers: reverseImports(texts) });
+    const steps = plan({ base: mergeBase, changed, added, spawn, namedBy, namedInSource, importers: reverseImports(texts) });
     if (show) {
         process.stdout.write(`${JSON.stringify({ changed, steps }, null, 2)}\n`);
         return 0;
