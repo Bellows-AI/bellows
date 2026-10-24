@@ -6,7 +6,7 @@ Product-led, public marketing page for **Bellows Cloud** at https://bellows.clou
 
 - Run coding agents like infrastructure: orchestration, repeatable workflows, remote Docker/Kubernetes execution, observability, quality gates and human reviews.
 - Primary CTA: **Request a Cloud demo / early access**.
-- Community is free/open source; Cloud is the **managed offering in early-access discussions**, not announced as generally available. Pricing is deliberately not invented.
+- Community is free/open source, including the planned MCP chat connector when released. Cloud is the **paid managed infrastructure, maintenance, monitoring, onboarding and support** option in early-access discussions; MCP is **not** Cloud-exclusive. Enterprise SSO, advanced auditing, granular permissions and policies are roadmap items, not generally available. Pricing is deliberately not invented.
 - No fake performance metrics, customer logos, testimonials, SLAs, production dashboard screenshots, or unsupported enterprise features.
 
 ## Local build/deploy
@@ -40,3 +40,11 @@ Run `schema.sql` once on new D1 instances. It has already been applied to the pr
 Bellows Cloud's product-led use case targets Product Managers who want to request changes to existing systems from their AI chat and follow a closed development loop: product intent → repository context → remote agent execution → team-defined quality gates → reviewable PR and status back in chat. This **MCP integration is planned for Bellows Cloud early access**, not generally available today. This is stated on the landing page; the underlying open-source agent execution and workflows are the current foundation. Human review remains explicit.
 
 The lead form includes `interest=product-chat` on the frontend and in Worker validation; PM-focused CTAs preselect it. Do not remove planned/early access language until working chat/MCP integration is shipped.
+
+## Commercial packaging
+
+- **Community:** free self-hosted Bellows, including MCP when shipped. Users maintain their stack themselves.
+- **Cloud:** paid hosting, managed executors, upgrades, observability, troubleshooting, onboarding and support. No MCP feature paywall. Early access only.
+- **Enterprise:** planned SSO/SAML/OIDC, advanced auditing, policy and role controls, private environments, contractual support; features are not claimed live. Self-hosted support arrangements can be discussed.
+
+See [GTM.md](GTM.md) for positioning, funnel and validation plan.
