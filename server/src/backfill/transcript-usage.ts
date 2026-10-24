@@ -12,10 +12,10 @@ import { type DiscoveredFile, type Skip, discoverTranscripts } from './transcrip
  * it is quarantined, never guessed. Nothing here reads an organization, task or repository from
  * a path.
  *
- * Unverified against a live CLI (assumed from `driver/src/scripts/claude-export.cjs` and the
- * existing importer): assistant records carry `sessionId`, `timestamp`, `requestId`,
- * `message.id`, `message.model` and `message.usage`; a query source, when present, is an
- * explicit string at `message.usage.query_source`, `record.query_source` or `record.querySource`.
+ * Fields verified against real local transcripts: assistant records carry `sessionId`,
+ * `timestamp`, `requestId`, `message.id`, `message.model` and `message.usage`; a subagent record
+ * carries its PARENT's `sessionId`. Real transcripts carry no query source; one is read only when
+ * explicit at `message.usage.query_source`, `record.query_source` or `record.querySource`.
  */
 
 export interface EventTokens {
@@ -76,6 +76,9 @@ export interface TranscriptScan {
 
 interface Observation {
     key: string | null;
+    requestId: string | null;
+    /** A nested file's record named a session other than its resolved parent's. */
+    sessionConflict: boolean;
     sessionId: string;
     conversation: string;
     rel: string;
@@ -155,7 +158,9 @@ function observe(
     const messageId = str(message.id);
     const requestId = str(record.requestId);
     return {
-        key: messageId === null ? null : sha('message', messageId, requestId ?? ''),
+        key: messageId === null ? null : sha('message', messageId),
+        requestId,
+        sessionConflict: false,
         sessionId,
         conversation,
         rel,
@@ -206,6 +211,8 @@ function merge(group: Observation[]): UsageEvent {
         differs((o) => o.model) && 'model',
         differs((o) => o.querySource) && 'query_source',
         differs((o) => o.timestamp) && 'timestamp',
+        differs((o) => o.requestId) && 'request_id',
+        group.some((o) => o.sessionConflict) && 'session_id',
         ...group.flatMap((o) => o.invalid),
     ].filter((c): c is string => typeof c === 'string');
     return {
@@ -303,7 +310,7 @@ function attachNested(parsed: Parsed[]): { accepted: Observation[]; quarantined:
         const parent = mains.get(`${file.project}/${layoutParent}`);
         if (typeof parent === 'string') {
             // Joined to the parent's session so an OTEL-covered parent is never supplemented.
-            accepted.push(...list.map((o) => ({ ...o, sessionId: parent })));
+            accepted.push(...list.map((o) => ({ ...o, sessionConflict: o.sessionId !== parent, sessionId: parent })));
             continue;
         }
         const reason = parent === undefined ? 'parent-not-in-scan' : 'parent-session-unresolved';

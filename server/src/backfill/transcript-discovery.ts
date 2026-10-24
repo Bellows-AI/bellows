@@ -47,14 +47,29 @@ interface Scan {
     seen: Set<string>;
 }
 
-const statKind = (abs: string): 'file' | 'dir' | 'other' => {
+type Kind = 'file' | 'dir' | 'other' | 'absent' | 'error';
+
+/** 'absent' is only ENOENT/ENOTDIR; any other failure is 'error' (unconfirmed, never a negative verdict). */
+const statKind = (abs: string): Kind => {
     try {
         const s = statSync(abs);
         return s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other';
-    } catch {
-        return 'other';
+    } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        return code === 'ENOENT' || code === 'ENOTDIR' ? 'absent' : 'error';
     }
 };
+
+/**
+ * The kind of an entry readdir listed. It exists, so a stat that cannot confirm it (an unenterable
+ * directory, a dangling symlink) is recorded and makes the scan incomplete, never a silent skip.
+ */
+function listedKind(scan: Scan, abs: string, rel: string): Kind {
+    const kind = statKind(abs);
+    if (kind !== 'absent' && kind !== 'error') return kind;
+    scan.skipped.push({ rel, reason: 'unreadable-entry' });
+    return 'error';
+}
 
 /** The resolved path of an entry when it is inside the root, else null (the skip is recorded). */
 function resolveInside(scan: Scan, abs: string, rel: string): string | null {
@@ -91,7 +106,7 @@ function addFiles(scan: Scan, names: string[], where: Where): void {
     for (const name of names.filter((n) => n.endsWith('.jsonl'))) {
         const abs = join(where.dir, name);
         const rel = `${where.rel}/${name}`;
-        if (statKind(abs) !== 'file') continue;
+        if (listedKind(scan, abs, rel) !== 'file') continue;
         const real = resolveInside(scan, abs, rel);
         // Two names for one file (an in-root symlink) are one physical file.
         if (real === null || scan.seen.has(real)) continue;
@@ -110,8 +125,11 @@ function addFiles(scan: Scan, names: string[], where: Where): void {
 
 function scanSubagents(scan: Scan, projectAbs: string, project: string, session: string): void {
     const subAbs = join(projectAbs, session, 'subagents');
-    if (statKind(subAbs) !== 'dir') return;
     const rel = `${project}/${session}/subagents`;
+    // Probe on every project entry: a plain file name (ENOTDIR) or no subagents dir (ENOENT) is silent.
+    const kind = statKind(subAbs);
+    if (kind === 'error') scan.skipped.push({ rel, reason: 'unreadable-entry' });
+    if (kind !== 'dir') return;
     if (resolveInside(scan, subAbs, rel) === null) return;
     const names = listDir(scan, subAbs, rel) ?? [];
     addFiles(scan, names, { dir: subAbs, rel, project, layout: 'subagent', layoutParent: session });
@@ -119,7 +137,7 @@ function scanSubagents(scan: Scan, projectAbs: string, project: string, session:
 
 function scanProject(scan: Scan, project: string): void {
     const abs = join(scan.realRoot, project);
-    if (statKind(abs) !== 'dir' || resolveInside(scan, abs, project) === null) return;
+    if (listedKind(scan, abs, project) !== 'dir' || resolveInside(scan, abs, project) === null) return;
     const names = listDir(scan, abs, project);
     if (names === null) return;
     addFiles(scan, names, { dir: abs, rel: project, project, layout: 'project', layoutParent: null });

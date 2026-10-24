@@ -64,6 +64,27 @@ describe('discovery', () => {
         expect(d.complete).toBe(true);
     });
 
+    it('reports an unenterable project dir and a dangling .jsonl symlink as incomplete, not absent', () => {
+        put('p1/s1.jsonl', [rec({ session: 's1' })]);
+        put('p2/s2.jsonl', [rec({ session: 's2' })]);
+        symlinkSync(join(root, 'p2', 'gone.jsonl'), join(root, 'p2', 'dangling.jsonl'));
+        chmodSync(join(root, 'p1'), 0o600);
+        try {
+            const d = discoverTranscripts(root);
+            expect(d.complete).toBe(false);
+            expect(d.skipped.map((s) => s.reason)).toContain('unreadable-entry');
+            expect(d.skipped.map((s) => s.rel)).toEqual(expect.arrayContaining(['p1/s1.jsonl', 'p2/dangling.jsonl']));
+        } finally {
+            chmodSync(join(root, 'p1'), 0o755);
+        }
+    });
+
+    it('stays complete when a session-named plain file has no subagents dir to probe', () => {
+        put('p1/s1.jsonl', [rec({ session: 's1' })]);
+        put('p1/s2/x.txt', 'x');
+        expect(discoverTranscripts(root).complete).toBe(true);
+    });
+
     it('refuses a symlink that resolves outside the root and reports it', () => {
         const outside = join(tmp, 'outside');
         mkdirSync(outside);
@@ -274,6 +295,37 @@ describe('scanTranscripts', () => {
             'p1/s1.jsonl',
             'p1/s1/subagents/agent-a.jsonl',
         ]);
+    });
+
+    it('handles the real subagent shape: parent sessionId, sidechain flag, meta sibling ignored', () => {
+        put('p1/s1.jsonl', [rec({ session: 's1', id: 'm1', req: 'r1' })]);
+        put('p1/s1/subagents/agent-a1.jsonl', [
+            rec({ session: 's1', id: 'm2', req: 'r2', extra: { isSidechain: true, agentId: 'a1' } }),
+        ]);
+        put('p1/s1/subagents/agent-a1.meta.json', '{"agentType":"x","spawnDepth":1}');
+        const scan = scanTranscripts(root);
+        expect(scan.complete).toBe(true);
+        expect(scan.quarantined).toEqual([]);
+        expect(scan.files.map((f) => f.rel)).toEqual(['p1/s1.jsonl', 'p1/s1/subagents/agent-a1.jsonl']);
+        expect(scan.events.map((e) => [e.sessionId, e.conversation, e.conflicts])).toEqual([
+            ['s1', 's1', []],
+            ['s1', 'agent-a1', []],
+        ]);
+    });
+
+    it('reports a nested record naming a different session than its parent as a conflict', () => {
+        put('p1/s1.jsonl', [rec({ session: 's1', id: 'm1' })]);
+        put('p1/s1/subagents/agent-a.jsonl', [rec({ session: 'other', id: 'm9' })]);
+        const e = scanTranscripts(root).events.find((x) => x.conversation === 'agent-a');
+        expect(e?.sessionId).toBe('s1');
+        expect(e?.conflicts).toEqual(['session_id']);
+    });
+
+    it('counts one message.id once whether or not a copy carries a requestId', () => {
+        put('p1/s1.jsonl', [rec({ session: 's1', id: 'm1', req: 'r1' }), rec({ session: 's1', id: 'm1' })]);
+        const scan = scanTranscripts(root);
+        expect(scan.events).toHaveLength(1);
+        expect(scan.events[0]).toMatchObject({ occurrences: 2, conflicts: ['request_id'] });
     });
 
     it('quarantines a nested file whose parent main transcript is not in the scan', () => {
