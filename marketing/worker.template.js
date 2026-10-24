@@ -10,7 +10,7 @@ const JSON_HEADERS={'Content-Type':'application/json; charset=utf-8','Cache-Cont
 function json(payload,status=200){return new Response(JSON.stringify(payload),{status,headers:JSON_HEADERS});}
 function content(body,type='text/html; charset=utf-8',status=200){return new Response(body,{status,headers:{...SECURITY_HEADERS,'Content-Type':type,'Cache-Control':'public, max-age=120'}});}
 const SIZES=['','1-10','11-20','21-50','51-200','200+'];
-const INTERESTS=['demo','pilot','design-partner','other'];
+const INTERESTS=['demo','pilot','design-partner','product-chat','other'];
 function clean(v,max){return typeof v==='string'?v.trim().slice(0,max+1):'';}
 async function handleContact(request,env){
  const origin=request.headers.get('Origin'), currentOrigin=new URL(request.url).origin;

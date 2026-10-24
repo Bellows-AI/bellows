@@ -35,3 +35,8 @@ Run `schema.sql` once on new D1 instances. It has already been applied to the pr
 2. Choose a notification/CRM destination and set up lead alerts. **Currently submissions are saved but not emailed.**
 3. Remove `noindex` in `index.html` and robots.txt when legal and launch readiness are checked.
 4. Verify Cloud packaging and pricing with design partners.
+## Brownfield product work via AI chat (planned MCP integration)
+
+Bellows Cloud's product-led use case targets Product Managers who want to request changes to existing systems from their AI chat and follow a closed development loop: product intent → repository context → remote agent execution → team-defined quality gates → reviewable PR and status back in chat. This **MCP integration is planned for Bellows Cloud early access**, not generally available today. This is stated on the landing page; the underlying open-source agent execution and workflows are the current foundation. Human review remains explicit.
+
+The lead form includes `interest=product-chat` on the frontend and in Worker validation; PM-focused CTAs preselect it. Do not remove planned/early access language until working chat/MCP integration is shipped.
