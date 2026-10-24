@@ -538,9 +538,10 @@ export function createKubernetesRunner(
         checkpoints?: Pick<Board, 'checkpoint'>;
         steps?: StepSink;
         endpoint?: SupervisorEndpoint;
+        groupWatchMs?: number;
     } = {}
 ): Runner {
-    const { leases, checkpoints, steps, endpoint } = wiring;
+    const { leases, checkpoints, steps, endpoint, groupWatchMs } = wiring;
     const deps: K8sDeps = {
         config,
         request,
@@ -549,6 +550,7 @@ export function createKubernetesRunner(
         ...(checkpoints ? { checkpoints } : {}),
         ...(steps ? { steps } : {}),
         ...(endpoint ? { endpoint } : {}),
+        ...(groupWatchMs ? { groupWatchMs } : {}),
     };
     return onOwnGroup({
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
