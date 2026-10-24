@@ -24,7 +24,7 @@ import type { AddressInfo } from 'node:net';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { readRepoFile as read } from './fixtures/repo-files.js';
 import { liveSupervisors, stopSupervisors, superviseTracked } from './fixtures/supervisor-tracker.js';
 import { bindingBody } from '../src/supervisor-plan.js';
@@ -2541,11 +2541,16 @@ describe('a stop while the driver endpoint holds a request open', () => {
         servers.push(server);
         await new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(null)));
         const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-        const { done } = run({ url } as Driver);
-        await requested;
-        const started = Date.now();
-        await stopSupervisors();
-        await done;
-        expect(Date.now() - started).toBeLessThan(2_000);
+        // The request's own timeout is held open, so only the stop can end the request: a stop that
+        // did not reach it leaves `done` unsettled and the teardown throws.
+        const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => new AbortController().signal);
+        try {
+            const { done } = run({ url } as Driver);
+            await requested;
+            await stopSupervisors();
+            expect(typeof (await done)).toBe('number');
+        } finally {
+            timeout.mockRestore();
+        }
     });
 });

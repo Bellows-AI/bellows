@@ -298,11 +298,6 @@ describe('the supervisor’s finalize stage: the checkpoint', () => {
         vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) =>
             ms === deadlineMs ? deadline.signal : realTimeout(ms)
         );
-        // The checkpoint child's own budget is the same bound as a real timer: park it, so load cannot
-        // kill the child before the driver's refusals. (Timers of other lengths are untouched.)
-        const realSetTimeout = globalThis.setTimeout;
-        vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) =>
-            realSetTimeout(fn, ms === deadlineMs ? 600_000 : ms)) as typeof setTimeout);
         driver.answer = (n) => {
             if (n >= 2) {
                 expired = true;
