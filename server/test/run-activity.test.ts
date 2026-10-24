@@ -167,6 +167,22 @@ describe('bucketizeActivity', () => {
             delta({ temporality: 'cumulative', startTime: FROM, field: 'tokens_input', ...over });
         const total = (points: ActivityPoint[]): number => totalTokens(bucketizeActivity(points, window)).input;
 
+        it('skips a negative or non-finite value instead of failing the whole reduction', () => {
+            const points = [
+                cum({ value: -5, time: '2026-09-22T10:05:00.000Z' }),
+                cum({ value: Number.NaN, time: '2026-09-22T10:10:00.000Z' }),
+                cum({ value: 30, time: '2026-09-22T10:20:00.000Z' }),
+            ];
+            expect(total(points)).toBe(30);
+        });
+
+        it('leaves a first cumulative reading without a start time unlocated, but counts a later rise', () => {
+            const unlocated = [cum({ value: 100, startTime: null, time: '2026-09-22T10:05:00.000Z' })];
+            expect(total(unlocated)).toBe(0);
+            const rising = [...unlocated, cum({ value: 130, startTime: null, time: '2026-09-22T10:20:00.000Z' })];
+            expect(total(rising)).toBe(30);
+        });
+
         it('counts a rebound from the running maximum: 100, 80, 120 is 120, not 140', () => {
             const points = [
                 cum({ value: 100, time: '2026-09-22T10:05:00.000Z' }),

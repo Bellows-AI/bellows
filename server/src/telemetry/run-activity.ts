@@ -67,10 +67,10 @@ const TOKEN_OF_FIELD: Readonly<Record<string, TokenType>> = {
 };
 
 /**
- * Edit decisions ride the same reducer on two spare type slots (accept and reject are separate
- * series, so they never merge); the slot is read back as an edit count, never as tokens.
+ * Edit decisions ride the same reducer; the `decision` attribute already keeps accept and reject
+ * apart, so the reducer's type slot only carries the count, never tokens.
  */
-const EDIT_SLOT_OF_FIELD: Readonly<Record<string, TokenType>> = { edits_accept: 'input', edits_reject: 'output' };
+const EDIT_SLOT_OF_FIELD: Readonly<Record<string, TokenType>> = { edits_accept: 'input', edits_reject: 'input' };
 
 const emptyTokens = (): TokenTypes => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
 
@@ -80,6 +80,7 @@ function toObservations(points: readonly ActivityPoint[], slots: Readonly<Record
     for (const point of points) {
         const field = slots[point.field];
         if (field === undefined || !Number.isFinite(Date.parse(point.time))) continue;
+        if (!Number.isFinite(point.value) || point.value < 0) continue;
         const startTime =
             point.startTime !== null && Number.isFinite(Date.parse(point.startTime)) ? point.startTime : null;
         observations.push({
@@ -136,7 +137,7 @@ export function bucketizeActivity(
         for (const type of Object.keys(bucket.tokens) as TokenType[]) bucket.tokens[type] += c.tokens[type] ?? 0;
     });
     place(toObservations(points, EDIT_SLOT_OF_FIELD), (bucket, c) => {
-        bucket.edits += (c.tokens.input ?? 0) + (c.tokens.output ?? 0);
+        bucket.edits += c.tokens.input ?? 0;
     });
     return buckets;
 }
