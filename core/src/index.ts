@@ -257,4 +257,28 @@ export {
 export type { DateRange, RangePreset } from './range.js';
 export { inputTokens, telemetryStats } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
+export {
+    UNKNOWN_BUCKET,
+    bucketTimedContributions,
+    normalizeModel,
+    normalizeQuerySource,
+    partitionByRange,
+    reduceTokenObservations,
+} from './token-contributions.js';
+export type {
+    ContributionKind,
+    ContributionReason,
+    Precision,
+    RangePartition,
+    SelectionKey,
+    SeriesKey,
+    TokenBucket,
+    TokenBucketGranularity,
+    TokenContribution,
+    TokenFields,
+    TokenObservation,
+    TokenSource,
+    TokenTemporality,
+    TokenType,
+} from './token-contributions.js';
 export type * from './types.js';
