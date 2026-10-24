@@ -8,7 +8,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 | Validation, the db suite (`test-db`) and the browser lane | `.github/workflows/ci.yml`, `vitest.db.config.ts` | `core/test/ci-workflows.test.ts` |
 | Tag fold, buildkit mirror, image matrix, scan gate, manifest, chart publish | `.github/workflows/release-image.yml`, `.trivyignore` | `core/test/ci-workflows.test.ts` |
 | CLI publish: `@bellows-ai/bellows-cli` on npmjs.org, trusted publishing, `VERSION` stamped over `0.0.0` | `.github/workflows/release-image.yml` (`npm`), `cli/package.json`, `cli/src/version.ts` | `core/test/ci-workflows.test.ts`, `cli/test/diagnostics.test.ts` |
-| Release command: patch bump, version-only commit, tag, atomic push | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
+| Release command: patch bump, version-only commit, tag, atomic push; `--rc` tags HEAD `vX.Y.Z-rc`, `-rc-2`, … and pushes only the tag | `scripts/release.sh`, `VERSION` | `core/test/release-script.test.ts` |
 | Release images; separate core/server/web compilation stages and source-only build inputs | `docker/Dockerfile`, `docker/driver.Dockerfile`, `docker/{claude,opencode}-executor/` | `driver/test/executor-images.test.ts`, `driver/test/compose.test.ts` |
 | Browser-lane databases and ports | `e2e/reset-db.mjs`, `playwright.config.ts` | `core/test/e2e-config.test.ts` |
 | Postgres mirror: the compose pin copied from `mirror.gcr.io` to `ghcr.io/bellows-ai/postgres:17`, weekly and on demand | `.github/workflows/mirror-images.yml` | `core/test/ci-workflows.test.ts` |
@@ -46,7 +46,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   ([eks-runbook.md](eks-runbook.md), step 3).
 - **`npm` is the only job holding `id-token: write`**, and needs only `validate`. npmjs.com's trusted publisher for
   `@bellows-ai/bellows-cli` must name `Bellows-AI/factory` and `release-image.yml`, or the publish is refused; a tag that
-  disagrees with `VERSION` publishes nothing.
+  disagrees with `VERSION` publishes nothing. A `-rc` tag skips the job: candidates ship images and the chart only.
 
 ## Stated limits
 

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * SemVer core with an optional pre-release (`0.0.9-rc`), no `v`, no leading zeros. No `+build`:
+ * SemVer core with an optional pre-release (`0.0.9-rc-2`), no `v`, no leading zeros. No `+build`:
  * the version is also an image tag, and a tag cannot hold `+`. `scripts/release.sh` cuts only the core.
  */
 const IDENT = String.raw`(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)`;
