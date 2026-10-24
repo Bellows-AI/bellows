@@ -37,10 +37,10 @@ export function superviseTracked(
     supervisor: Supervisable,
     env: Record<string, string>,
     log: (line: string) => void,
-    scope?: object
+    { scope, now }: { scope?: object; now?: () => number } = {}
 ): Promise<number> {
     const controller = new AbortController();
-    return trackSupervisor(supervisor.supervise(env, log, undefined, controller.signal), controller, scope);
+    return trackSupervisor(supervisor.supervise(env, log, now, controller.signal), controller, scope);
 }
 
 /** How many tracked supervisors have not been stopped yet. */

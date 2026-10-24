@@ -381,7 +381,7 @@ export class Sim {
         group.start = () => {
             if (started || this.groups.get(job.leaseToken) !== group) return;
             started = true;
-            group.done = superviseTracked(supervisor, env, (line) => logs.push(line), this).then(
+            group.done = superviseTracked(supervisor, env, (line) => logs.push(line), { scope: this }).then(
                 (code) => (group.exit = code)
             );
         };
