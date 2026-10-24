@@ -75,7 +75,7 @@ function setup(version: string | null = '0.0.2\n'): Fixture {
     return fixture;
 }
 
-const release = (fixture: Fixture) => run(fixture.work, fixture.env, 'sh', [SCRIPT]);
+const release = (fixture: Fixture, ...args: string[]) => run(fixture.work, fixture.env, 'sh', [SCRIPT, ...args]);
 
 function snapshot(fixture: Fixture) {
     const read = (cwd: string, ...args: string[]) => git(fixture, cwd, ...args);
@@ -95,9 +95,9 @@ function snapshot(fixture: Fixture) {
     };
 }
 
-function expectRefusal(fixture: Fixture, reason: RegExp): void {
+function expectRefusal(fixture: Fixture, reason: RegExp, ...args: string[]): void {
     const before = snapshot(fixture);
-    const result = release(fixture);
+    const result = release(fixture, ...args);
     expect(result.status, result.stdout).not.toBe(0);
     expect(result.stderr).toMatch(reason);
     expect(snapshot(fixture)).toEqual(before);
@@ -197,5 +197,99 @@ describe('npm run release', () => {
         writeFileSync(hook, '#!/bin/sh\ncase "$1" in refs/tags/*) exit 1 ;; esac\nexit 0\n');
         chmodSync(hook, 0o755);
         expectRefusal(fixture, /push/);
+    });
+
+    it('refuses an unknown argument', () => {
+        expectRefusal(setup(), /usage/, '--beta');
+    });
+
+    it('cuts the final release over a HEAD that carries only a release candidate', () => {
+        const fixture = setup();
+        expect(release(fixture, '--rc').status).toBe(0);
+        const result = release(fixture);
+        expect(result.status, result.stderr).toBe(0);
+        expect(git(fixture, fixture.remote, 'tag', '--list').split('\n')).toEqual(['v0.0.3', 'v0.0.3-rc']);
+    });
+});
+
+describe('npm run release -- --rc', () => {
+    it('tags HEAD vX.Y.(Z+1)-rc and pushes only the tag: no commit, VERSION untouched', () => {
+        const fixture = setup();
+        const orig = git(fixture, fixture.work, 'rev-parse', 'HEAD');
+        const result = release(fixture, '--rc');
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain('released v0.0.3-rc');
+        expect(git(fixture, fixture.work, 'rev-parse', 'HEAD')).toBe(orig);
+        expect(readFileSync(join(fixture.work, 'VERSION'), 'utf8')).toBe('0.0.2\n');
+        expect(git(fixture, fixture.remote, 'rev-parse', 'main')).toBe(orig);
+        expect(git(fixture, fixture.remote, 'rev-parse', 'v0.0.3-rc^{commit}')).toBe(orig);
+        expect(git(fixture, fixture.remote, 'cat-file', '-t', 'v0.0.3-rc')).toBe('tag');
+        expect(git(fixture, fixture.work, 'status', '--porcelain')).toBe('');
+    });
+
+    it('numbers each later candidate -rc-2, -rc-3, after the highest one on either side', () => {
+        const fixture = setup();
+        expect(release(fixture, '--rc').status).toBe(0);
+        publish(fixture, { 'README.md': 'second\n' });
+        git(fixture, fixture.work, 'pull', '-q', 'origin', 'main');
+        expect(release(fixture, '--rc').status).toBe(0);
+        // A candidate cut elsewhere and present only on the remote still counts.
+        git(fixture, fixture.seed, 'pull', '-q', 'origin', 'main');
+        git(fixture, fixture.seed, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
+        git(fixture, fixture.seed, 'tag', 'v0.0.3-rc-9');
+        git(fixture, fixture.seed, 'push', '-q', 'origin', 'v0.0.3-rc-9');
+        publish(fixture, { 'README.md': 'third\n' });
+        git(fixture, fixture.work, 'pull', '-q', 'origin', 'main');
+        const result = release(fixture, '--rc');
+        expect(result.status, result.stderr).toBe(0);
+        expect(git(fixture, fixture.remote, 'tag', '--list').split('\n').sort()).toEqual(
+            ['v0.0.3-rc', 'v0.0.3-rc-10', 'v0.0.3-rc-2', 'v0.0.3-rc-9'].sort()
+        );
+    });
+
+    it('ignores candidates of another version and tags that only share the prefix', () => {
+        const fixture = setup();
+        git(fixture, fixture.seed, 'commit', '-q', '--allow-empty', '-m', 'elsewhere');
+        git(fixture, fixture.seed, 'tag', 'v0.0.2-rc-5');
+        git(fixture, fixture.seed, 'tag', 'v0.0.3-rcx');
+        git(fixture, fixture.seed, 'push', '-q', 'origin', '--tags');
+        expect(release(fixture, '--rc').status).toBe(0);
+        expect(git(fixture, fixture.remote, 'tag', '--list', 'v0.0.3-rc*').split('\n').sort()).toEqual(
+            ['v0.0.3-rc', 'v0.0.3-rcx'].sort()
+        );
+    });
+
+    it.each(['[skip ci]', '[ci skip]', '[no ci]', '[skip actions]', '[actions skip]'])(
+        'refuses a HEAD whose message carries %s, which would make GitHub skip the release workflow',
+        (marker) => {
+            const fixture = setup();
+            publish(fixture, { 'README.md': 'docs only\n' }, `Fix typo ${marker}`);
+            git(fixture, fixture.work, 'pull', '-q');
+            expectRefusal(fixture, /skip/, '--rc');
+        }
+    );
+
+    it('refuses a HEAD that already carries a candidate', () => {
+        const fixture = setup();
+        expect(release(fixture, '--rc').status).toBe(0);
+        expectRefusal(fixture, /already released/, '--rc');
+    });
+
+    it.each<[string, (fixture: Fixture) => void, RegExp]>([
+        ['a modified tracked file', (f) => writeFileSync(join(f.work, 'README.md'), 'edited\n'), /not clean/],
+        ['a checkout behind origin', (f) => publish(f, { 'README.md': 'moved on\n' }), /origin\/main/],
+        ['a branch other than main', (f) => git(f, f.work, 'switch', '-q', '-c', 'feature'), /not on main/],
+    ])('refuses %s', (_label, arrange, reason) => {
+        const fixture = setup();
+        arrange(fixture);
+        expectRefusal(fixture, reason, '--rc');
+    });
+
+    it('lands nothing when the remote rejects the tag, and deletes its local tag', () => {
+        const fixture = setup();
+        const hook = join(fixture.remote, 'hooks/update');
+        writeFileSync(hook, '#!/bin/sh\ncase "$1" in refs/tags/*) exit 1 ;; esac\nexit 0\n');
+        chmodSync(hook, 0o755);
+        expectRefusal(fixture, /push/, '--rc');
     });
 });
