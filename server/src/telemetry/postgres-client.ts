@@ -29,6 +29,7 @@ interface RunRow {
 }
 
 interface FieldRow {
+    agent: string;
     session_id: string;
     field: CanonicalField;
     value: number;
@@ -53,15 +54,19 @@ function pick(values: Map<CanonicalField, number>) {
     };
 }
 
-function group<T extends { session_id: string }>(rows: T[]): Map<string, T[]> {
+/** Two agents may share a session id, so a session is (agent, session id), never the id alone. */
+function group<T extends { agent: string; session_id: string }>(rows: T[]): Map<string, T[]> {
     const out = new Map<string, T[]>();
     for (const row of rows) {
-        const list = out.get(row.session_id) ?? [];
+        const key = sessionKey(row);
+        const list = out.get(key) ?? [];
         list.push(row);
-        out.set(row.session_id, list);
+        out.set(key, list);
     }
     return out;
 }
+
+const sessionKey = (row: { agent: string; session_id: string }): string => JSON.stringify([row.agent, row.session_id]);
 
 export interface PostgresTelemetryDeps {
     sql: Sql;
@@ -183,7 +188,9 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
                         // Unfiltered: this view reads metric_point_used, which has no org column by
                         // design. It is a lookup keyed by session id, and only the ids present in the
                         // filtered summaries above are ever read out of it.
-                        tx<FieldRow[]>`select session_id, field, value from session_field_total`,
+                        tx<
+                            FieldRow[]
+                        >`select agent, session_id, field, value from session_field_total where session_id is not null`,
                         // The org's own run rows, cached beside the rollups for the per-task
                         // statistics: one round-trip against the table the join above already
                         // touches, at a volume where that read is single-digit-ms. They ride the
@@ -200,7 +207,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready }: PostgresTel
 
                     const sessions: SessionRollup[] = summaries.map((s) => {
                         const values = new Map<CanonicalField, number>(
-                            (byField.get(s.session_id) ?? []).map((r) => [r.field, Number(r.value)])
+                            (byField.get(sessionKey(s)) ?? []).map((r) => [r.field, Number(r.value)])
                         );
                         const user: UserRef | null =
                             s.user_id === null || s.user_login === null

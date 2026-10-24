@@ -31,10 +31,13 @@ async function point(row: {
     temporality?: string;
     startTime?: string;
     metric?: string;
+    agent?: string;
+    source?: string;
     attrs?: Record<string, string>;
 }) {
     await sql`insert into metric_point ${sql({
-        agent: 'claude-code',
+        agent: row.agent ?? 'claude-code',
+        source: row.source ?? 'otel',
         metric: row.metric ?? 'claude_code.token.usage',
         field: row.field,
         session_id: row.session,
@@ -658,5 +661,113 @@ describe.skipIf(!enabled)('runActivity — the per-run telemetry read (issue #33
             bucketMs: FIFTEEN_MIN,
         });
         expect(buckets).toEqual([]);
+    });
+});
+
+describe.skipIf(!enabled)('token series reduction', () => {
+    const cumulative = (session: string, value: number, minute: number, attrs: Record<string, string>) =>
+        point({
+            session,
+            field: 'tokens_input',
+            value,
+            time: `2026-08-01T10:0${minute}:00Z`,
+            temporality: 'cumulative',
+            startTime: '2026-08-01T10:00:00Z',
+            attrs,
+        });
+    const inputTotal = async (session: string) => {
+        const [row] = await sql<{ value: number }[]>`
+            select value from session_field_total where session_id = ${session} and field = 'tokens_input'
+        `;
+        return row === undefined ? null : Number(row.value);
+    };
+
+    it('keeps counters of different models apart even when they share a start time', async () => {
+        const session = randomUUID();
+        await cumulative(session, 100, 1, { model: 'model-a' });
+        await cumulative(session, 80, 1, { model: 'model-b' });
+        expect(await inputTotal(session)).toBe(180);
+    });
+
+    it('keeps counters of different query sources apart', async () => {
+        const session = randomUUID();
+        await cumulative(session, 100, 1, { query_source: 'main' });
+        await cumulative(session, 30, 1, { query_source: 'subagent' });
+        expect(await inputTotal(session)).toBe(130);
+    });
+
+    it('counts a cumulative series at its high-water mark when a reading falls back', async () => {
+        const session = randomUUID();
+        for (const [i, v] of [10, 40, 25].entries()) await cumulative(session, v, i, { model: 'model-a' });
+        expect(await inputTotal(session)).toBe(40);
+    });
+
+    it('does not add an unspecified reading as a delta', async () => {
+        const session = randomUUID();
+        await point({ session, field: 'tokens_input', value: 4, time: '2026-08-01T10:00:00Z' });
+        await point({
+            session,
+            field: 'tokens_input',
+            value: 100,
+            time: '2026-08-01T10:01:00Z',
+            temporality: 'unspecified',
+        });
+        await point({
+            session,
+            field: 'tokens_output',
+            value: 60,
+            time: '2026-08-01T10:02:00Z',
+            temporality: 'unspecified',
+        });
+        await branch({ session, branch: 'feat/a', from: '2026-08-01T09:00:00Z', to: '2026-08-01T11:00:00Z' });
+        expect(await inputTotal(session)).toBe(4);
+        const outputs =
+            await sql`select 1 from session_field_total where session_id = ${session} and field = 'tokens_output'`;
+        expect(outputs).toHaveLength(0);
+        const [slice] = await sql<{ value: number }[]>`
+            select value from branch_field_total where session_id = ${session} and field = 'tokens_input'
+        `;
+        expect(Number(slice?.value)).toBe(4);
+    });
+
+    it('totals a null-session group per agent and keeps it out of the session summaries', async () => {
+        await point({
+            session: null as unknown as string,
+            field: 'tokens_input',
+            value: 3,
+            time: '2026-08-01T10:00:00Z',
+        });
+        await point({
+            session: null as unknown as string,
+            field: 'tokens_input',
+            value: 4,
+            time: '2026-08-01T10:01:00Z',
+        });
+        const rows = await sql<{ agent: string; value: number }[]>`
+            select agent, value from session_field_total where session_id is null and field = 'tokens_input'
+        `;
+        expect(rows.map((r) => [r.agent, Number(r.value)])).toEqual([['claude-code', 7]]);
+        const summaries = await sql`select 1 from session_summary where session_id is null`;
+        expect(summaries).toHaveLength(0);
+    });
+
+    it('sets a transcript copy aside as a diagnostic when OTEL owns the session', async () => {
+        const session = randomUUID();
+        await point({ session, field: 'tokens_input', value: 50, time: '2026-08-01T10:00:00Z' });
+        await point({ session, field: 'tokens_input', value: 999, time: '2026-08-01T10:00:00Z', source: 'transcript' });
+        expect(await inputTotal(session)).toBe(50);
+        const set = await sql<{ source: string; value: number }[]>`
+            select source, value from metric_point_suppressed where session_id = ${session}
+        `;
+        expect(set.map((r) => [r.source, Number(r.value)])).toEqual([['transcript', 999]]);
+    });
+
+    it('rolls up two agents that share a session id separately', async () => {
+        const session = randomUUID();
+        await point({ session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        await point({ session, field: 'tokens_input', value: 9, time: '2026-08-01T10:00:00Z', agent: 'opencode' });
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const byAgent = new Map(input.sessions.map((s) => [s.agent, s.tokens.input]));
+        expect(Object.fromEntries(byAgent)).toEqual({ 'claude-code': 7, opencode: 9 });
     });
 });
