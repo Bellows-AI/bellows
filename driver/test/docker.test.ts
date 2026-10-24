@@ -165,14 +165,20 @@ const hangsUntilTimeout = (options?: { timeout?: number }): Promise<never> =>
         if (options?.timeout !== undefined) setTimeout(() => reject(new Error('timed out')), options.timeout);
     });
 
-/** Whether `pending` ended within a moment: a wait that ignores the kill signal stays pending. */
+/** The runner's env-file verbs held in memory: a run that touches them waits on no real disk (#905). */
+const memoryFiles = (): RunnerFiles => ({ writeFile: async () => undefined, rm: async () => undefined });
+
+/**
+ * Whether `pending` ended within one macrotask turn: a wait that ignores the kill signal stays
+ * pending. Sound only for a run with no real I/O on its path (give it `memoryFiles()`).
+ */
 const endsSoon = (pending: Promise<unknown>): Promise<boolean> =>
     Promise.race([
         pending.then(
             () => true,
             () => true
         ),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100)),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
     ]);
 const FINALIZED: SupervisorReport = {
     id: 'report-1',
@@ -2710,6 +2716,7 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
         dockerRunner(readyWhileStarting(exec), {
             env: { RUNNER_SERVICES: '1' },
             spawn: fn,
+            files: memoryFiles(),
         });
     const servicesRunner = (exec: ReturnType<typeof daemon>, fn: typeof spawn) => asLoop(bareServicesRunner(exec, fn));
 
@@ -3929,13 +3936,11 @@ describe('auxiliary services (RUNNER_SERVICES)', () => {
                 () => (ended = true),
                 () => (ended = true)
             );
-            // The calls before the stalled one touch the disk: let the run reach it.
-            while (!stalled) await new Promise((resolve) => setImmediate(resolve));
+            // No call on this path touches the disk (memoryFiles): the run reaches the stalled one in microtasks.
+            await vitest.advanceTimersByTimeAsync(0);
+            expect(stalled).toBe(true);
 
             await vitest.advanceTimersByTimeAsync(ATTEMPT_COMMAND_TIMEOUT_MS + 1_000);
-            // What follows the refusal touches the disk.
-            for (let polls = 0; polls < 200 && !ended; polls += 1)
-                await new Promise((resolve) => setImmediate(resolve));
 
             expect(ended).toBe(true);
         } finally {
@@ -5611,7 +5616,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         };
         const stop = new AbortController();
 
-        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        const adopting = dockerRunner(exec, { spawn: logs, files: memoryFiles() }).adopt(adopter, stop.signal);
         await vitest.waitFor(() => expect(hung).toBe(true));
         stop.abort();
         expect(await endsSoon(adopting)).toBe(true);
@@ -5683,7 +5688,7 @@ describe('adopting a finished runner container of an earlier claim (#792)', () =
         }) as unknown as typeof spawn;
         const stop = new AbortController();
 
-        const adopting = dockerRunner(exec, { spawn: logs }).adopt(adopter, stop.signal);
+        const adopting = dockerRunner(exec, { spawn: logs, files: memoryFiles() }).adopt(adopter, stop.signal);
         await vitest.waitFor(() => expect(streamed).toBeDefined());
         stop.abort();
         expect(await endsSoon(adopting)).toBe(true);
