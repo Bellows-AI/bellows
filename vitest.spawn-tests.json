@@ -2,6 +2,7 @@
     "tests": [
         "cli/test/package.test.ts",
         "core/test/biome.test.ts",
+        "core/test/ci-workflows.test.ts",
         "core/test/release-script.test.ts",
         "core/test/skills.fix-scripts.test.ts",
         "core/test/vitest-projects.test.ts",
