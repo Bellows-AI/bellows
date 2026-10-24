@@ -648,6 +648,7 @@ function spawnStep(run, step) {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            run.stop.signal.removeEventListener('abort', interrupt);
             run.inflight = null;
             resolve({ result, interrupted });
         };
@@ -662,12 +663,15 @@ function spawnStep(run, step) {
             timedOut = true;
             killGroup();
         }, step.timeoutMs);
-        run.inflight = {
-            interrupt: () => {
-                interrupted = true;
-                killGroup();
-            },
+        const interrupt = () => {
+            interrupted = true;
+            killGroup();
         };
+        run.inflight = { interrupt };
+        // The external stop (tests; production passes none) reaches a child spawned after the one-shot
+        // `run.inflight?.interrupt()` of the teardown, such as the checkpoint's.
+        if (run.stop.signal.aborted) interrupt();
+        else run.stop.signal.addEventListener('abort', interrupt, { once: true });
         child.stdout.on('data', (chunk) => {
             stdout = keepTail(stdout + chunk);
         });

@@ -298,6 +298,11 @@ describe('the supervisor’s finalize stage: the checkpoint', () => {
         vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms) =>
             ms === deadlineMs ? deadline.signal : realTimeout(ms)
         );
+        // The checkpoint child's own budget is the same bound as a real timer: park it, so load cannot
+        // kill the child before the driver's refusals. (Timers of other lengths are untouched.)
+        const realSetTimeout = globalThis.setTimeout;
+        vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) =>
+            realSetTimeout(fn, ms === deadlineMs ? 600_000 : ms)) as typeof setTimeout);
         driver.answer = (n) => {
             if (n >= 2) {
                 expired = true;
@@ -315,10 +320,28 @@ describe('the supervisor’s finalize stage: the checkpoint', () => {
         );
 
         expect(await supervised.done).toBe(SUPERVISOR_EXIT.finalized);
-        expect(Date.now() - startedAt).toBeLessThan(3_000);
-        expect(driver.calls.length).toBeGreaterThan(1);
+        // Event-based: the deadline fired only after the driver refused twice, and finalize followed.
+        expect(expired).toBe(true);
+        expect(driver.calls.length).toBeGreaterThanOrEqual(2);
         expect(driver.calls.every((c) => c.kind === 'chunk' || c.kind === 'manifest')).toBe(true);
         expect(existsSync(supervised.outDir)).toBe(false);
+    });
+
+    it('a stop during the checkpoint script kills its child, so the supervisor settles promptly', async () => {
+        const driver = await startDriver();
+        const sleeping = `fs.writeFileSync(dir + '/sleeping', '1'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60000);`;
+        const supervised = run(driver, fakeScript({ bundle: 'b' }, completeVerdict(['bundle']), sleeping), {
+            [SUPERVISOR_ENV.checkpointMs]: '120000',
+        });
+        for (let i = 0; i < 600 && !existsSync(join(supervised.outDir, 'sleeping')); i++) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+        expect(existsSync(join(supervised.outDir, 'sleeping'))).toBe(true);
+
+        // Rejects if the supervisor has not settled within the tracker's bound of the stop.
+        await stopSupervisors();
+        await supervised.done;
+        expect(supervised.logs.some((line) => line.includes('checkpoint: not taken'))).toBe(true);
     });
 
     it('uploads nothing where the script failed or found no tree, and nothing where none is configured', async () => {
