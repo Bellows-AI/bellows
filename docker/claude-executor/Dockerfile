@@ -40,7 +40,7 @@ RUN apt-get update \
 # still reports here (tar, brace-expansion, ip-address, undici). Upgrading npm is what moves
 # them; removing npm would take the plugin path with it. Pinned, like everything else in this
 # file, so the image does not change under a rebuild of the same commit.
-ARG NPM_VERSION=11.21.0
+ARG NPM_VERSION=11.21.1
 RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
 
 # acli and gh sit ABOVE each image's CLI install, and the two files spell this whole block — ARG
