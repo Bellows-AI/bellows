@@ -68,7 +68,8 @@ TDD order is non-negotiable: the failing test exists before the fix.
   interaction, a screenshot per state. Get the baseline green, then add the failing assertion on
   top. A red baseline means the spec is wrong, not the app.
 
-Run it and confirm it FAILS for the predicted reason. A setup error, a timeout or zero tests
+Iterate with `npx vitest run --project web --project dom` or `npm run test:changed`, never the full
+`npm test`. Run it and confirm it FAILS for the predicted reason. A setup error, a timeout or zero tests
 collected is not a red. Commit the repro alone.
 
 ## Phase 4 — Fix

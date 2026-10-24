@@ -129,6 +129,7 @@ npm run driver                  # claims jobs; needs a docker daemon and JOB_BOA
 npm run dev -w cli -- job list --limit 5
 
 npm test                        # offline: no token, no quota, no database, no docker
+npm run test:changed            # iterate: suites the diff vs origin/main reaches (arg: other base); npm test stays the gate
 npm run test:executors          # focused board/driver/runner/telemetry suites
 npx vitest run --project driver   # one package's in-process suites; --project spawn: the spawning files
 npm run typecheck               # tsc -b: src, every <pkg>/tsconfig.test.json and e2e/tsconfig.json
