@@ -1,15 +1,17 @@
-# Bellows — Go-to-Market 2.1
+# Bellows — Go-to-Market 3.0
 
 **Стратегічний документ • Жовтень 2026 • Робоча версія для ухвалення рішень**  
-**Тема:** Bellows як open-source міст від AI-чату до змін у наявному продукті; Bellows Cloud та Enterprise — платні інфраструктура, експлуатація й підтримка.
+**Тема:** Спільна operating model: Product формулює зміни, Engineers визначають правила, Bellows виконує роботу у реальній кодовій базі. Cloud продає операції й підтримку, а не доступ до MCP.
 
 > **Product teams drive change. Engineers define the guardrails. Bellows does the work.**  
 > Your AI chat. Your real codebase. From product idea to reviewed PR — without leaving the conversation.
 
-**Теза.** Продаємо результат: product manager може ініціювати зміну в наявній системі зі свого AI-чату, а Bellows запускає інженерний цикл у реальному репозиторії — від задачі та середовища до перевірок і PR для людського review. **MCP-інтеграція має бути частиною open-source можливостей Bellows (планується, ще не доступна як готовий chat-to-PR сценарій).** Cloud не продає доступ до MCP: Cloud продає інфраструктуру, надійну експлуатацію, оновлення та підтримку. Хто хоче самостійно хостити й підтримувати Bellows — може робити це без підписки.
+**Теза.** Bellows не просто дає PM право запускати coding agents. Ми змінюємо розподіл роботи: **Product визначає, що потрібно змінити; Engineering визначає, як система має залишатися правильною; Bellows виконує повторювану реалізацію та перевірки у реальному репозиторії.** **MCP-інтеграція має бути частиною open-source можливостей Bellows (планується, ще не доступна як готовий chat-to-PR сценарій).** Cloud не продає доступ до MCP: Cloud продає інфраструктуру, надійну експлуатацію, оновлення та підтримку. Хто хоче самостійно хостити й підтримувати Bellows — може робити це без підписки.
 
 **Головний бренд-слоган:** *Product teams drive change. Engineers define the guardrails. Bellows does the work.*  
-**Use-case повідомлення:** *Your AI chat. Your real codebase.*  
+**Use-case повідомлення для Product:** *Your AI chat. Your real codebase.*  
+**Engineering повідомлення:** *Own the architecture. Not every implementation detail.*  
+**CTO повідомлення:** *Product autonomy without losing engineering control.*  
 **Технічний підмеседж зберігаємо:** *Run coding agents like infrastructure.*  
 **Комерційна логіка незмінна:** Community / Open Source — self-hosted без paywall; Cloud — керована інфраструктура та підтримка; Enterprise — додаткові корпоративні вимоги.
 
@@ -26,16 +28,16 @@
 
 ## 1. Кому продаємо
 
-**Первинний ICP (гіпотеза):** B2B SaaS / продуктова компанія з **20–50 інженерами**, щонайменше одним PM, живим GitHub-репозиторієм, CI/тестами та реальним потоком змін у наявному продукті. Команда вже експериментує з Claude Code, OpenCode чи AI-чатами, але не має безпечного стандартизованого шляху від продуктового запиту до готового для перегляду коду.
+**Первинний ICP (гіпотеза):** B2B SaaS / продуктова компанія з **20–50 інженерами**, PM та tech lead/staff engineer, живим GitHub-репозиторієм, CI/тестами та реальним потоком змін у наявному продукті. Команда вже експериментує з Claude Code, OpenCode чи AI-чатами, але не має безпечного стандартизованого шляху від продуктового запиту до готового для перегляду коду.
 
 | Роль | Біль / робота, яку треба зробити | Роль у продажі | Меседж |
 | --- | --- | --- | --- |
 | **Product Manager / Head of Product** | Хоче реалізовувати невеликі зміни в існуючому продукті, а не лише створювати прототипи. Залежить від ручного handoff до інженерів. | Перший користувач, champion, джерело попиту | «Опиши зміну в AI-чаті. Отримай перевірений PR у справжньому продукті». |
 | **CTO / VP Engineering / EM** | Потребує контролю якості, навантаження, доступів і відповідальності за AI-зміни. | Economic buyer, спонсор пілота | «Дайте продукту швидкість, не втрачаючи engineering governance». |
 | **Platform / Security Engineering** | Не хоче підтримувати десятки самописних bridge/middleware інтеграцій. | Технічний gatekeeper | «Одна контрольована execution-платформа, repo-defined workflows, ізоляція та видимість». |
-| **Developers / AI power users** | Керують агентами вручну; результат залежить від локального оточення та людини. | Adopter, reviewer, внутрішній адвокат | «Автономна робота агентів із тестами, review та зрозумілим handoff». |
+| **Staff / Principal Engineer / Tech Lead** | Не хоче бути ручним виконавцем кожної зміни, прагне визначати архітектуру, дозволені межі, checks і review; зараз забагато babysitting агентів. | Технічний champion, owner архітектури й approvals | «Own the architecture. Not every implementation detail». |
 
-**Кваліфікація ліда:** є наявний продукт і репозиторій; зрозумілий scope змін; CI/test або готовність їх визначити; технічний власник review; PM, готовий пройти пілот. **Не пріоритет зараз:** чистий greenfield-прототип, команда без owner'а коду, бажання деплоїти без review або регульовані сценарії, де ми ще не можемо довести потрібний compliance.
+**Кваліфікація ліда:** є наявний продукт і репозиторій; зрозумілий scope змін; CI/test або готовність їх визначити; **інженерний власник архітектурних правил і review**; PM, готовий пройти пілот. Мінімальна одиниця adoption — **пара PM + Engineering**. **Не пріоритет зараз:** чистий greenfield-прототип, команда без owner'а коду, бажання деплоїти без review або регульовані сценарії, де ми ще не можемо довести потрібний compliance.
 
 ## 2. Що продаємо
 
@@ -50,6 +52,23 @@
 5. **Return (планується).** PM бачить у чаті статус, висновки, лінк на PR і питання, які потребують людини. **Жодного auto-merge чи auto-deploy за замовчуванням.**
 
 **Конкурентна рамка.** Greenfield AI app builders корисні для створення нових застосунків і прототипів. Bellows фокусується на іншій задачі: керовані зміни в уже існуючій кодовій базі та інженерному процесі. Це позиціонування/гіпотеза, **не** категорична заява, що конкретні інструменти ніколи не працюють із brownfield.
+
+### Головна історія: Product → Engineering → Bellows
+
+1. **Product teams drive change.** Продакт формулює продуктову проблему, scoped зміни й acceptance criteria. Мета — не прототип, а покращення наявної системи.
+2. **Engineers define the guardrails.** Інженери описують repo workflow, тести, review gates та architectural boundaries. Вони фокусуються на архітектурі, складних змінах та рішеннях про реліз — не на кожному UI tweak.
+3. **Bellows does the work.** Агенти працюють у контрольованому середовищі, відтворюють стандартизовані перевірки та повертають рев'юваний результат. **Ніхто не обіцяє auto-merge чи заміну людського review.**
+
+**Друга центральна persona — інженер.** Це не просто gatekeeper, а співвласник продуктового досвіду. Його вигода — не більше агентів, а можливість *один раз визначити правила і багато разів безпечно делегувати рутину*.
+
+| Engineering value | Суть | Статус |
+| --- | --- | --- |
+| **Guardrails as code** | Repo-defined workflows, tests, review stages у `.bellows.yaml` | Існуюча база; автоматичні architecture policy checks — roadmap |
+| **Engineering control tower** | Перегляд runs, telemetry, costs, failures, checks | Існуюча база telemetry/dashboard; поглиблення — roadmap |
+| **Risk-aware review** | UI copy та зміни billing/permissions потребують різних approval rules | Roadmap / гіпотеза |
+| **Golden paths** | Командні API/UI/database patterns, що агенти мають повторно використовувати | Roadmap / гіпотеза |
+
+**Рекомендований демо-сценарій:** PM просить змінити Orders UI; engineer задає дозволені файли, тести, ownership та review; агент проходить workflow, отримує failure за порушення gate, виправляє його й готує PR. **MCP task/status у чаті — планується, open source.** Сьогодні у live demo потрібно демонструвати лише робочі частини. Інженер не просто дивиться фінальний diff: його правила впливають на весь процес.
 
 ### Упаковка й монетизація: open core, paid operations
 
@@ -69,11 +88,15 @@
 
 ## 3. Як маркетуємо
 
-**Два маршрути в одну екосистему (Community → опціонально Cloud / Enterprise); на перші 90 днів пріоритет — product-led wedge.**
+**Три взаємопов'язані маршрути в одну екосистему. У кожному маркетинговому матеріалі показуємо Product intent → Engineering guardrails → Bellows execution; вибір Community/Cloud/Enterprise не змінює core product value.**
 
 **A. PM-led demand generation — головний експеримент.** Контент і founder-led outreach для Head of Product, PM, product-minded founders у brownfield SaaS. Теза «AI prototypes are easy; changing your real product is hard». Демонстрація: одна PM-вимога → реальний repo/workflow → тести → reviewable PR. CTA: **“Explore the AI chat → PR pilot”**. На технічній розмові підключаємо EM/CTO й перевіряємо межі approval. **Варіант впровадження обирає клієнт:** self-hosted або managed Cloud — use case однаковий.
 
+**B. Engineering-led adoption — рівноправний маршрут.** Емоційний меседж: *Own the architecture. Not every implementation detail.* Show real repo gates, review stages and controlled execution, and frame engineers as the designers of automation rather than reviewers of random AI output.
+
 **B. Developer/platform-led trust — другий маршрут.** GitHub, open-source README, quickstart, docs, сценарії `.bellows.yaml`, Claude Code/OpenCode, Docker/Kubernetes, observability, quality gates і в майбутньому відкритий MCP bridge. Дистрибуція через технічні пости, LinkedIn, Show HN та релевантні developer communities. CTA: **“Self-host Bellows for free”** або **“Let us run it for you”**. Без штучного обмеження open-source можливостей для конверсії.
+
+**C. CTO/platform-led monetization.** Продаємо **не MCP** і не право делегувати задачі: продаємо managed infrastructure, upgrades, operations, incident support і, за підтвердженим попитом, enterprise governance. CTA: **Let us run Bellows**. Інженери можуть назавжди залишитися в Community.
 
 **Контентні теми:** «From prompt to PR in an existing SaaS»; «Why AI prototypes ≠ brownfield changes»; «A PM's request, an engineer's quality gates»; «Build on open source, let Cloud run the infrastructure»; «What it costs to operate your own agent stack»; «SSO, audits and governance for AI workflows» (як roadmap-повідомлення).
 
@@ -91,11 +114,13 @@
 | **Вибір:** залишитись self-hosted **або** перейти на платний Cloud | **Вибір:** self-maintained **або** paid managed infrastructure/support |
 | Якщо потрібні SSO/advanced audit — Enterprise discovery | Якщо потрібні governance/SSO — Enterprise discovery |
 
-**Момент цінності / activation:** PM отримує корисну зміну в існуючому repo, інженер підтверджує gates і PR доходить до людського review — **незалежно від Community/Cloud**. **Момент монетизації:** команда свідомо обирає «не займатися інфраструктурою й підтримкою» або потребує Enterprise controls; ми не змушуємо платити за базову MCP-можливість.
+**Момент цінності / activation:** PM отримує корисну зміну в існуючому repo, інженер підтверджує **не лише PR, а й дотримання заздалегідь визначених gates**, і зміна доходить до людського review — **незалежно від Community/Cloud**. **Момент монетизації:** команда свідомо обирає «не займатися інфраструктурою й підтримкою» або потребує Enterprise controls; ми не змушуємо платити за базову MCP-можливість.
 
-**Мінімальний пілот:** один repo, один PM, один Eng owner, одна зміна з обмеженим scope, тести та межі безпеки. Міряємо окремо product value і managed-service value (економія операційних зусиль, бажаний рівень підтримки).
+**Мінімальний пілот:** один repo, один PM, один Eng owner, **дві зміни різної ризиковості**, визначені gates й approvals, вимір ручного handoff та часу reviewer. Міряємо окремо product value і managed-service value (економія операційних зусиль, бажаний рівень підтримки).
 
 ## 5. Перевірка гіпотез і метрики
+
+**North Star (гіпотеза):** частка корисних product changes, які доходять до human review **всередині визначених engineering guardrails** із прийнятною ціною ручної участі. Більше PR без якості — не успіх.
 
 **Що має бути правдою для цього GTM:** (H1) PM хоче керувати реальними змінами з AI-чату; (H2) Eng owner дозволяє це з gates і review; (H3) open-source MCP зменшує потребу в самописному bridge; (H4) компанії готові платити за операційну простоту Cloud та підтримку, а не за доступ до MCP; (H5) SSO/audit/governance створюють окремий Enterprise попит.
 
@@ -105,6 +130,8 @@
 | Demand | Частка якісних PM-лідів і зустрічей з Eng sponsor після демо; не лише кліки CTA. |
 | Activation | Час від product brief до першого PR для review; частка задач, що проходять gates. |
 | Якість | Reviewer acceptance, rework, failures, ролі/permission regressions; порівняння з ручним baseline. |
+| **Engineering leverage** | Час інженера на handoff, babysitting, rework та review проти ручного baseline; повторне використання repo rules; violations. |
+| **Quality and safety** | Gate pass rate, reviewer acceptance, architectural regressions; throughput без зростання дефектів. |
 | **Self-hosted adoption** | Запуски й повторне використання Community; жодного штрафу за відсутність Cloud-конверсії. |
 | **Managed conversion** | Частка команд, які просять Cloud через інфраструктуру, підтримку, оновлення й операційні ризики. |
 | **Enterprise pull** | Реальні запити на SSO/SAML, advanced audit, support commitments, private environments. |
@@ -120,6 +147,8 @@
 | **Дні 31–60** | Опублікувати MCP-адаптер у open-source Bellows для **одного** сумісного чат-клієнта; статус і PR link назад у чат. Окремо налагодити кероване середовище Cloud, оновлення, моніторинг, support loop. | 2–3 пілоти на реальному repo; порівняти self-hosted vs managed friction; перевірити willingness-to-pay саме за Cloud/support. |
 | **Дні 61–90** | Посилити надійність executorів, onboarding, cost controls та документацію self-hosted; пріоритизувати Enterprise backlog (SSO, advanced audit, policy controls) за інтерв'ю. | 3 design-partner pilots; ≥1 paid managed/support signal; 1 публічний кейс за згодою клієнта. Go/no-go на підставі попиту й operational economics. |
 
+**Engineering-specific roadmap:** спершу довести існуючі repo workflows/quality gates, далі перевірити попит на architecture policy checks, risk-aware reviewer routing і golden paths. Це не готові Enterprise-only capabilities; майбутні basic guardrails можна розвивати в open source.
+
 **Guardrails пілотів:** дозволені репозиторії й ролі, секрети не йдуть у чат, контрольований executor, budget limits, audit trail, тести з repo, PR замість прямого push у main, merge/deploy тільки після людського рішення. Безпеки не можна «дофейкати» маркетингом.
 
 ## 7. Питання для стратегічного рішення
@@ -130,8 +159,8 @@
 4. **Buyer:** хто платить за зняття operational burden — CTO, VP Engineering, Platform чи спільний product/engineering budget?
 5. **Commercial packaging:** platform subscription + execution usage, окремий self-hosted support contract чи enterprise agreement? Який trigger робить це виправданим?
 
-**Рекомендоване рішення:** PM-led brownfield — головний спосіб показати цінність **усього Bellows**. Community, включно із майбутнім MCP, залишається відкритим і самостійним. **Cloud монетизує надійні операції, інфраструктуру та підтримку; Enterprise — governance та compliance вимоги.** Хочуть підтримувати самі — чудово: open source не має штучних бар'єрів. Це важливий фактор довіри й дистрибуції.
+**Рекомендоване рішення:** **Product → Engineering → Bellows** — головна історія. PM запускає попит, engineering створює безпечний «paved road» та повторне використання, Bellows автоматизує реалізацію. Community, включно із майбутнім MCP, залишається відкритим і самостійним. **Cloud монетизує надійні операції, інфраструктуру та підтримку; Enterprise — governance та compliance вимоги.** Хочуть підтримувати самі — чудово: open source не має штучних бар'єрів. Це важливий фактор довіри й дистрибуції.
 
 ---
 
-*Оновлено після уточнення моделі монетизації: MCP планується також у Community; Cloud продає операції, інфраструктуру й підтримку; Enterprise — розширені організаційні функції. Збережено вихідну структуру GTM, PM-first brownfield use case, human review та 90-денний план. Усі числові цілі, ціни й roadmap — внутрішні гіпотези, не підтверджені ринкові дані.*
+*Оновлено до GTM 3.0 із трирольовим operating model.  MCP планується також у Community; Cloud продає операції, інфраструктуру й підтримку; Enterprise — розширені організаційні функції. Збережено вихідну структуру GTM, PM-first brownfield use case, human review та 90-денний план. Усі числові цілі, ціни й roadmap — внутрішні гіпотези, не підтверджені ринкові дані.*
