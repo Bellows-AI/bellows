@@ -41,7 +41,7 @@ describe('TaskStatsDialog', () => {
         expect(within(dialog).getByText('No usage was measured for this selection.')).toBeTruthy();
     });
 
-    it('marks a finished task provisional while a run is still going', () => {
+    it('marks the task provisional while a run is still going, though its block is not', () => {
         const task = taskUsage(A, [runUsage(A, 'run', tokens, { live: true })]);
         const dialog = open([job({ id: A, status: 'running', finishedAt: null })], {
             [A]: activityAnswer(A, tokens, task),

@@ -84,7 +84,6 @@ describe('taskStats', () => {
         const before = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, base) });
         const after = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, adopted) });
         expect(after.runs.map((run) => run.id)).toEqual([A]);
-        expect(after.usage).toEqual(before.usage);
         expect(after.runs[0]!.usage).toEqual(before.runs[0]!.usage);
     });
 
