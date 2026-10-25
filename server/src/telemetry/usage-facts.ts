@@ -190,9 +190,20 @@ export async function readUsageFacts(
     // Load only the keys this organization owns: evidence with a null agent owns every agent of its session id,
     // one naming an agent owns that key alone, so another agent's points on a tenant session id never leave the database.
     const anyAgent = [...new Set(board.filter((e) => e.agent === null).map((e) => e.sessionId))];
-    const pairs = [...board, ...branch].filter((e) => e.agent !== null);
-    const ownedKeys = tx`(session_id = any(${tx.array(anyAgent)}::text[])
-        or (agent, session_id) in (select * from unnest(${tx.array(pairs.map((e) => e.agent as string))}::text[], ${tx.array(pairs.map((e) => e.sessionId))}::text[])))`;
+    const pairs = [
+        ...new Map(
+            [...board, ...branch]
+                .filter((e) => e.agent !== null)
+                .map((e) => [
+                    JSON.stringify([e.agent, e.sessionId]),
+                    { agent: e.agent as string, sessionId: e.sessionId },
+                ])
+        ).values(),
+    ];
+    const ownedSessions = [...new Set([...anyAgent, ...pairs.map((p) => p.sessionId)])];
+    // The leading session filter is index-friendly; the OR below then narrows those rows to owned keys.
+    const ownedKeys = tx`(session_id = any(${tx.array(ownedSessions)}::text[]) and (session_id = any(${tx.array(anyAgent)}::text[])
+        or (agent, session_id) in (select * from unnest(${tx.array(pairs.map((p) => p.agent))}::text[], ${tx.array(pairs.map((p) => p.sessionId))}::text[]))))`;
     const [allObservationRows, allSpanRows, allFieldRows] = await Promise.all([
         tx<ObservationRow[]>`
             select agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
