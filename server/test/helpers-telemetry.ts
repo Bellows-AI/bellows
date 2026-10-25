@@ -1,6 +1,7 @@
 import type { JobRun, TelemetryInput } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryHealth } from '../src/telemetry/client.js';
 import type { ActivityBucket } from '../src/telemetry/run-activity.js';
+import { emptyUsageFacts } from '../src/telemetry/usage-facts.js';
 import { sampleTelemetry } from './helpers-config.js';
 
 export interface TelemetryStubOptions {
@@ -31,6 +32,7 @@ export function stubTelemetryClient(options: TelemetryStubOptions = {}): Telemet
             return {
                 input: options.rollups ? await options.rollups() : structuredClone(sampleTelemetry()),
                 runs: options.runs ? options.runs() : [],
+                facts: emptyUsageFacts('stub'),
             };
         },
         async runActivity(input) {

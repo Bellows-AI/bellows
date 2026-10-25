@@ -1,5 +1,6 @@
 import type { JobRun, TelemetryInput } from '@factory-ai/core';
 import type { ActivityBucket } from './run-activity.js';
+import type { UsageFacts } from './usage-facts.js';
 
 export type TelemetrySource = 'postgres' | 'fixture' | 'off';
 
@@ -21,6 +22,8 @@ export interface TelemetryHealth {
 export interface TelemetryFetch {
     input: TelemetryInput;
     runs: JobRun[];
+    /** The ownership and contribution facts the token figures reduce from; same snapshot as `input`. */
+    facts: UsageFacts;
 }
 
 /**

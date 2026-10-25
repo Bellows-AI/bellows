@@ -80,6 +80,8 @@ export interface SessionRollup {
     agent: string;
     /** Resolved from the hook, not from telemetry. null means the hook never reported. */
     repo: string | null;
+    /** The hook (session_branch) reported this session. A board-owned session without one is still attributable. */
+    hook: boolean;
     /**
      * Who queued the board task this session belongs to, resolved by joining the telemetry
      * rows to the job audit rows on session id. null means no matching task exists — a local

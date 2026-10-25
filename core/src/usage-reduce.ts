@@ -311,7 +311,10 @@ function runUsage(
     endsAfterNow: boolean
 ): RunUsage {
     const first = rows[0] as ExecutionEvidence;
-    const starts = rows.map((r) => r.startedAt).sort(compareText);
+    const starts = rows
+        .map((r) => r.startedAt)
+        .filter((t): t is string => t !== null)
+        .sort(compareText);
     const open = rows.some((r) => r.endedAt === null);
     const ends = rows.map((r) => r.endedAt).filter((e): e is string => e !== null);
     const review = rows.find((r) => r.requestingJobId !== null);

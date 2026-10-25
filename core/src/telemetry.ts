@@ -177,14 +177,18 @@ function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', no
  */
 function scopeByRepo(
     sessions: readonly SessionRollup[],
-    inRepoScope: (name: string) => boolean
+    repos: readonly string[] | undefined
 ): { repoScoped: SessionRollup[]; otherRepoSessions: number; sessionsWithoutHook: number } {
     const repoScoped: SessionRollup[] = [];
     let otherRepoSessions = 0;
     let sessionsWithoutHook = 0;
     for (const session of sessions) {
-        if (session.repo === null) sessionsWithoutHook += 1;
-        else if (!inRepoScope(session.repo)) otherRepoSessions += 1;
+        if (!session.hook) sessionsWithoutHook += 1;
+        // A board-owned session whose repo is unknown has no repo to match a filter against: it
+        // counts when nothing filters, and is out of a filtered view without being "another repo".
+        if (session.repo === null) {
+            if (repos === undefined) repoScoped.push(session);
+        } else if (repos !== undefined && !repos.includes(session.repo)) otherRepoSessions += 1;
         else repoScoped.push(session);
     }
     return { repoScoped, otherRepoSessions, sessionsWithoutHook };
@@ -224,9 +228,7 @@ function groupByUser(
  */
 export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOptions = {}): TelemetryStats {
     const { repos, now = new Date(), user } = options;
-    const inRepoScope = (name: string) => repos === undefined || repos.includes(name);
-
-    const { repoScoped, otherRepoSessions, sessionsWithoutHook } = scopeByRepo(input.sessions, inRepoScope);
+    const { repoScoped, otherRepoSessions, sessionsWithoutHook } = scopeByRepo(input.sessions, repos);
 
     // Caller scope is a filter, applied after the repo filter and before every figure below:
     // a session the join attributed to someone else is out of "mine" entirely. Unattributed

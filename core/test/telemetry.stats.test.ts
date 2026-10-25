@@ -14,6 +14,7 @@ const session = (over: Partial<SessionRollup>): SessionRollup => ({
     sessionId: 's',
     agent: 'claude-code',
     repo: FIXTURE_REPO,
+    hook: true,
     firstSeen: '2026-08-01T00:00:00.000Z',
     lastSeen: '2026-08-01T01:00:00.000Z',
     tokens: { input: 10, output: 5, cacheRead: null, cacheCreation: null },
@@ -219,7 +220,32 @@ describe('coverage and scope edges', () => {
         const all = telemetryStats(input, { now: FIXTURE_NOW });
         expect(all.otherRepoSessions).toBe(0);
         expect(all.sessionsWithoutHook).toBe(1);
-        expect(all.totals.sessions).toBe(input.sessions.length - 1);
+        // The hook-less session is board-owned, so it stays in the totals while still being counted.
+        expect(all.totals.sessions).toBe(input.sessions.length);
+    });
+});
+
+describe('sessions without a hook', () => {
+    const session = (over: Partial<SessionRollup>): SessionRollup => ({
+        ...(input.sessions[0] as SessionRollup),
+        ...over,
+    });
+
+    it('stays attributable: counted as hook-less and still in the repo-scoped totals', () => {
+        const hookless = session({ sessionId: 'h', hook: false, repo: FIXTURE_REPO });
+        const stats = telemetryStats({ ...input, sessions: [hookless] }, { repos: [FIXTURE_REPO], now: FIXTURE_NOW });
+        expect(stats.sessionsWithoutHook).toBe(1);
+        expect(stats.totals.sessions).toBe(1);
+        expect(stats.otherRepoSessions).toBe(0);
+    });
+
+    it('with an unknown repo is out of a filtered view without being another repo, and in an unfiltered one', () => {
+        const unknown = session({ sessionId: 'u', hook: false, repo: null });
+        const filtered = telemetryStats({ ...input, sessions: [unknown] }, { repos: [FIXTURE_REPO], now: FIXTURE_NOW });
+        expect(filtered.totals.sessions).toBe(0);
+        expect(filtered.otherRepoSessions).toBe(0);
+        expect(filtered.sessionsWithoutHook).toBe(1);
+        expect(telemetryStats({ ...input, sessions: [unknown] }, { now: FIXTURE_NOW }).totals.sessions).toBe(1);
     });
 });
 

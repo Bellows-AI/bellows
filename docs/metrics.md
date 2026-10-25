@@ -38,7 +38,8 @@ null — never zero. Pinned by `core/test/docs.terminology.test.ts`.
 - **Scope (`org` / `mine`) is a read-time filter over the cached input, exactly like the range**,
   so a scope switch never re-fetches — `server/test/routes.stats.scope.test.ts`.
 - **Repo scoping buckets, it never drops.** `otherRepoSessions`, `sessionsWithoutHook` and
-  `unattributedSessions` keep four states distinguishable, and none of them feeds `totals`.
+  `unattributedSessions` keep four states distinguishable. `sessionsWithoutHook` counts board-owned
+  sessions the hook never reported; they stay in `totals`, the other two do not.
 - **Per token type, eligible timed usage equals run-assigned plus the reasoned unassigned parts in every view**
   (model, org, user, task, run, series bucket); unlocated, unresolved and conflicting-owner usage stay beside
   it, never inside — `core/test/usage-reduce.test.ts`.

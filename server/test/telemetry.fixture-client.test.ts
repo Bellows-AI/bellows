@@ -13,6 +13,8 @@ describe('the fixture telemetry client', () => {
         expect(sessionCount).toBeGreaterThan(0);
         expect(second.input.sessions).toHaveLength(sessionCount);
         expect(second.runs).toEqual([]);
+        // The fetch carries the usage facts beside the rollups; the fixture's are empty until D3 replaces it.
+        expect(second.facts).toMatchObject({ board: [], branch: [], contributions: [], spans: [] });
         await expect(client.health()).resolves.toEqual({ status: 'ok', reason: null });
     });
 });

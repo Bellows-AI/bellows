@@ -8,6 +8,7 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Ingest routes and the branch report | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
 | Writes and dedupe | `server/src/telemetry/store.ts`, `server/migrations/086_metric_point_identity.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.ingest-identity.test.ts`, `server/test-db/migration.086-metric-point-identity.test.ts` |
 | Read client, `ok`/`empty`/`stale`/`disabled` | `server/src/telemetry/{postgres-client,client,errors}.ts` | `server/test/routes.telemetry.test.ts` |
+| Usage reader: one repeatable-read snapshot of board evidence (`job_execution` x `job_execution_session`), branch evidence, points, spans, field totals and users, bound to the tenant before they reach memory; rollups rebuilt from it; the test-only global reconciliation | `server/src/telemetry/usage-facts.ts`, `server/src/telemetry/usage-rollups.ts`, `server/src/telemetry/usage-reconciliation.ts` | `server/test-db/token-reconciliation.test.ts`, `server/test-db/telemetry.sql.test.ts` |
 | Views: `metric_point_used`, `metric_point_suppressed`, `session_source`, `session_branch_slice`, `session_field_total` (series reduction, the SQL twin of `reduceTokenObservations`) | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
 | Transcript discovery, parent quarantine, message dedupe, zero-preserving usage events | `server/src/backfill/transcript-discovery.ts`, `server/src/backfill/transcript-usage.ts` | `server/test/backfill.transcripts.test.ts` |
 | Executor OTEL endpoint rendering | `driver/src/telemetry-config.ts` | `driver/test/telemetry-shipping.test.ts` |
@@ -29,8 +30,10 @@ Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.
 - **Attribute keys are allowlisted; metric names are denylisted.** A new identity attribute is
   dropped by default; an unknown metric still lands in `metric_point` unmapped. `attrs.series` is the
   one-way sha256 digest of the full pre-allowlist attributes; the dropped values are never stored.
-- **Per-user attribution is a read-side join** of `session_branch` to `job` on
-  `(org_id, session_id)`; no user column exists on `metric_point` or `session_branch`.
+- **A session key is `(agent, session id)` and has one owner, resolved before any join** (`core/src/usage-ownership.ts`):
+  the tenant's board evidence (an execution's author, repo and canonical task) or its branch reports. No
+  evidence, or evidence from a second organization, keeps the key out of every tenant read; two tasks or two
+  repos make it unresolved, never a `min()`. `server/test-db/token-reconciliation.test.ts`.
 - **No monetary field exists** — `claude_code.cost.usage` and `opencode.cost.usage` are refused at
   the collector and again at the ingest route.
 - **`on conflict do nothing` on `metric_point`, never `do update`** — an update would move

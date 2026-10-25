@@ -37,7 +37,8 @@ export interface ExecutionEvidence {
     launch: Launch;
     adoptsClaimSeq: number | null;
     origin: 'claim' | 'backfill';
-    startedAt: string;
+    /** Null for a backfilled claim: the board never knew when it started. Such a row is task-owned, never a run segment. */
+    startedAt: string | null;
     /** Null while the claim is live or its end was lost: open to +infinity. */
     endedAt: string | null;
     live: boolean;

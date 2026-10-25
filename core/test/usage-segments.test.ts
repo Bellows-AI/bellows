@@ -47,6 +47,14 @@ describe('delta assignment (half-open segments)', () => {
         expect(assignDeltas(mixed, [7])).toEqual([no('overlap')]);
     });
 
+    it('keeps a backfilled row with no start out of every segment: its amount is task-owned, boundary unknown', () => {
+        const noStart = ev({ jobId: 'b', rootJobId: 'b', origin: 'backfill', launch: 'unknown', startedAt: null });
+        expect(assignDeltas([noStart], [5])).toEqual([no('unknown-boundary')]);
+        // ...and it never claims a run another row proves: a confirmed segment still wins its own span.
+        const real = ev({ jobId: 'j', rootJobId: 'b', startedAt: at(0), endedAt: at(10) });
+        expect(assignDeltas([noStart, real], [5, 15])).toEqual([run('j'), no('unknown-boundary')]);
+    });
+
     it('explains launch states: refused cover, unconfirmed, backfill', () => {
         const refused = [ev({ launch: 'refused' })];
         expect(assignDeltas(refused, [5])).toEqual([no('refused-launch')]);

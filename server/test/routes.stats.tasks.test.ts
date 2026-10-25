@@ -15,6 +15,7 @@ const taskSession = (options: {
     sessionId: options.sessionId,
     agent: 'claude-code',
     repo: options.repo ?? TEST_REPO,
+    hook: true,
     user: null,
     taskKey: options.taskKey,
     firstSeen: options.seen,

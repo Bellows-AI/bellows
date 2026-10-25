@@ -308,7 +308,7 @@ export function createOrgRegistry({
                 ? createNullTelemetryClient()
                 : config.telemetrySource === 'fixture'
                   ? createFixtureTelemetryClient()
-                  : createPostgresTelemetryClient({ sql, orgId, ready });
+                  : createPostgresTelemetryClient({ sql, orgId, ready, log: (m) => console.log(`[telemetry] ${m}`) });
 
         const runtime: OrgRuntime = {
             orgId,

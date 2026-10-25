@@ -33,9 +33,11 @@ export interface Timeline {
     refused: { start: number; end: number }[];
     /** Any non-refused segment is live: its points may still move. */
     live: boolean;
+    /** A row with no start (backfill): it owns usage it cannot place, so a gap reads `unknown-boundary`, not `no-segment`. */
+    unbounded: boolean;
 }
 
-function toSegment(e: ExecutionEvidence): Segment {
+function toSegment(e: ExecutionEvidence & { startedAt: string }): Segment {
     const backfill = e.origin === 'backfill';
     return {
         jobId: e.jobId,
@@ -92,11 +94,16 @@ export function buildTimeline(rows: readonly ExecutionEvidence[]): Timeline {
     const seen = new Set<string>();
     const live: Segment[] = [];
     const refused: Timeline['refused'] = [];
+    let unbounded = false;
     for (const row of rows) {
         const id = `${row.jobId}\u0000${row.claimSeq}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        const seg = toSegment(row);
+        if (row.startedAt === null) {
+            unbounded = true;
+            continue;
+        }
+        const seg = toSegment({ ...row, startedAt: row.startedAt });
         if (row.launch === 'refused') refused.push({ start: seg.start, end: seg.end });
         else live.push(seg);
     }
@@ -106,6 +113,7 @@ export function buildTimeline(rows: readonly ExecutionEvidence[]): Timeline {
         intervals: [...byJob.values()].flatMap(mergeJob),
         refused,
         live: live.some((s) => s.live),
+        unbounded,
     };
 }
 
@@ -125,7 +133,8 @@ function judge(members: readonly Segment[], jobId: string): Destination {
 }
 
 function none(tl: Timeline, t: number): Destination {
-    return { kind: 'unassigned', reason: refusedAt(tl, t) ? 'refused-launch' : 'no-segment' };
+    if (refusedAt(tl, t)) return { kind: 'unassigned', reason: 'refused-launch' };
+    return { kind: 'unassigned', reason: tl.unbounded ? 'unknown-boundary' : 'no-segment' };
 }
 
 function assignDelta(tl: Timeline, t: number): Destination {
