@@ -160,17 +160,19 @@ export interface TelemetryConfigVolume {
 
 /**
  * The kubernetes delivery: the per-attempt Secret (which k8s-fence.ts puts the rendered file in,
- * keyed by its file name) mounted read-only and 0444 over the config's directory — root-owned in
+ * keyed by its file name) mounted read-only and 0444 over the config's file — root-owned in
  * the pod.
  */
 export function telemetryConfigK8s(
     { dir, file }: TelemetryConfig,
     secretName: string
-): { mount: { name: string; mountPath: string; readOnly: true }; volume: TelemetryConfigVolume } {
+): { mount: { name: string; mountPath: string; subPath: string; readOnly: true }; volume: TelemetryConfigVolume } {
     const name = 'telemetry-config';
     const items = [{ key: file, path: file }];
     return {
-        mount: { name, mountPath: dir, readOnly: true },
+        // The one file, not the directory: a mount over /etc/claude-code would hide the image's managed
+        // skills beside it (issue #1024), which docker keeps because its copy lands the file alone.
+        mount: { name, mountPath: `${dir}/${file}`, subPath: file, readOnly: true },
         volume: { name, secret: { secretName, items, defaultMode: READ_ONLY } },
     };
 }

@@ -97,6 +97,7 @@ export const RULES = [
 
     // --- scripts --------------------------------------------------------------------------------
     [/^scripts\/fake-model-endpoint\.mjs$/, REAL, 'scripted model endpoint'],
+    [/^scripts\/tool-seam-lane\.mjs$/, ['tool-isolation'], 'tool isolation seam verdicts'],
     [/^scripts\/lane-capacity-samples\.mjs$/, ['capacity'], 'capacity verdict'],
     [/^scripts\/acceptance-[a-z-]+\.(mjs|sh)$/, ['acceptance'], 'failure-matrix acceptance helpers'],
     [/^scripts\/k8s-stub\.sh$/, ['acceptance'], 'the stub agent the docker acceptance phase builds and runs'],

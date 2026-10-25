@@ -3525,6 +3525,89 @@ claude_skill_lanes() { skill_helper_lane claude; }
 opencode_skill_lanes() { skill_helper_lane opencode; }
 lane_pair claude_skill_lanes opencode_skill_lanes
 
+# --- The seam between the CLI's uid and the tool uid (epic #1025: #1016, #1021, #1023, #1024) ----------
+#
+# The endpoint's `--steps` mode drives the real CLI through one scripted run: its own Read and Write
+# tools and its Bash tool, which runs as the tool uid. What each step does and how the results are
+# judged is scripts/tool-seam-lane.mjs, whose driver/test/tool-seam-lane.test.ts pins that every
+# control can fail:
+#   #1016  the CLI reads a 0600 mktemp file and a file in a 0700 directory the tool made in its TMPDIR;
+#          control: private files in the tool's HOME and outside its TMPDIR stay closed to the CLI
+#   #1021  the tool's node processes fill a compile cache of their own; control: the CLI's own cache
+#          directory, which the tool cannot write, gives the same process none
+#   #1023  the tool uses repositories the CLI's uid made, anywhere, and clones one; the stated
+#          limit: the CLI's uid refuses every repository the tool wrote (core.fsmonitor would run as it)
+#   #1024  a skill is loaded from one path with the runner's private config dir and without it, and
+#          the tool reads it there; control: the CLI's private directory is closed to the tool
+# The volume is a docker volume mounted twice, as the task volume is: a macOS bind mount maps every
+# uid to the host user and would never refuse anything.
+
+seam_run() { # seam_run <cli> <runner|plain> <steps json> <out json>: one scripted run on $seam_ws; its /steps answer to <out>
+    local cli="$1" shape="$2" steps="$3" out="$4" image="$1-executor" name="seam-$1-$2" fake_pid port status
+    node scripts/fake-model-endpoint.mjs --steps "$steps" >"$work/fake-$name.port" &
+    fake_pid=$!
+    lane_endpoint_started "$fake_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-$name.port" ] && break
+        sleep 0.25
+    done
+    port="$(cat "$work/fake-$name.port")"
+    local host="http://host.docker.internal:$port" run=(docker run --rm --name "lane-agent-$RUN_ID-$name" --add-host host.docker.internal:host-gateway)
+    run+=("${AGENT_FLAGS[@]}")
+    lane_timed "$name" setup lane_group_up "$name" "$image" "$host"
+    run+=(-v "$seam_ws:/workspace" -v "$seam_ws:/elsewhere" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
+    while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "$name")
+    if [ "$cli" = claude ]; then
+        if [ "$shape" = runner ]; then run+=(-e FACTORY_TRANSCRIPT_DIR=/workspace/.factory/t); fi
+        run+=(-e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions --model fake-model -p 'cross the seam')
+    else
+        if [ "$shape" = runner ]; then run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe); fi
+        run+=(-e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            "$image" --print-logs --log-level DEBUG run 'cross the seam')
+    fi
+    lane_timed "$name" agent timeout 240 "${run[@]}" >"$work/$name.log" 2>&1
+    status=$?
+    lane_group_down "$name"
+    node -e 'fetch(process.argv[1] + "/steps").then((r) => r.json()).then((j) => console.log(JSON.stringify(j)))' "http://127.0.0.1:$port" >"$out"
+    lane_endpoint_stop "$fake_pid"
+    return $status
+}
+
+seam_lane() { # seam_lane <claude|opencode>
+    local cli="$1" image="$1-executor" name="seam-$1" status
+    local full="$work/$name.full.json" plain="$work/$name.plain.json" git_out="$work/$name.git.txt" evidence="$work/$name.evidence.json"
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli crosses the CLI/tool uid seam" "the $image image is missing — run make runners"
+        return
+    fi
+    seam_ws="lane-$RUN_ID-$name-ws"
+    docker volume create "$seam_ws" >/dev/null
+    local mounts=(-v "$seam_ws:/workspace" -v "$seam_ws:/elsewhere")
+    # The volume as the runner leaves it: the CLI's uid owns it, group-writable and setgid; the CLI's uid
+    # makes a repository inside the trusted tree and one outside it.
+    docker run --rm --user 0:0 "${mounts[@]}" -e SEAM_REPOS="$(node scripts/tool-seam-lane.mjs node-repos "$cli")" --entrypoint sh "$image" -c \
+        'chown 1000:1000 /workspace && chmod 2775 /workspace && setpriv --reuid=1000 --regid=1000 --clear-groups sh -c "$SEAM_REPOS"' \
+        >"$work/$name.prep.log" 2>&1 || { bad "$cli crosses the CLI/tool uid seam" "preparing the volume failed: $(tail -3 "$work/$name.prep.log")"; docker volume rm "$seam_ws" >/dev/null; return; }
+    seam_run "$cli" runner "$(node scripts/tool-seam-lane.mjs steps "$cli")" "$full"
+    status=$?
+    docker run --rm --user 1000:1000 "${mounts[@]}" --entrypoint sh "$image" -c "$(node scripts/tool-seam-lane.mjs node-git "$cli")" >"$git_out" 2>&1
+    seam_run "$cli" plain "$(node scripts/tool-seam-lane.mjs skill-steps "$cli")" "$plain"
+    docker volume rm "$seam_ws" >/dev/null
+    node -e 'const fs = require("node:fs"); const [full, plain, git] = process.argv.slice(1).map((f) => fs.readFileSync(f, "utf8"));
+        const a = JSON.parse(full), b = JSON.parse(plain);
+        console.log(JSON.stringify({ results: a.results, skillBases: a.skillBases, plainSkillBases: b.skillBases, nodeGit: git }))' \
+        "$full" "$plain" "$git_out" >"$evidence"
+    if [ "$status" != 0 ]; then bad "$cli runs its scripted tools to the end" "exit $status: $(tail -5 "$work/seam-$cli-runner.log")"; fi
+    local verdict_name detail mark
+    while IFS=$'\t' read -r mark verdict_name detail; do
+        if [ "$mark" = ok ]; then ok "$verdict_name"; else bad "$verdict_name" "$detail"; fi
+    done < <(node scripts/tool-seam-lane.mjs verdict "$cli" "$evidence")
+}
+
+claude_seam_lanes() { seam_lane claude; }
+opencode_seam_lanes() { seam_lane opencode; }
+lane_pair claude_seam_lanes opencode_seam_lanes
+
 fi
 
 if selected_phase ask-user-question; then

@@ -1194,12 +1194,13 @@ describe('the opencode-executor managed config', () => {
  */
 describe('the shared executor skills', () => {
     const SKILLS = 'docker/skills';
-    // claude's config home is node-owned (the CLI writes into it); opencode's is root-owned (#452).
+    // claude's skills are root-owned and managed (#1024): one tree, found by the CLI beside its managed
+    // settings; opencode's global skills directory is root-owned too (#452).
     const IMAGES = [
         {
             dockerfile: 'docker/claude-executor/Dockerfile',
-            target: '/home/node/.claude/skills/',
-            chown: '--chown=node:node ',
+            target: '/usr/local/share/factory-skills/',
+            chown: '--chown=root:root ',
         },
         { dockerfile: 'docker/opencode-executor/Dockerfile', target: '/home/node/.config/opencode/skills/', chown: '' },
     ];
@@ -1210,7 +1211,23 @@ describe('the shared executor skills', () => {
         }
     });
 
-    it('reaches a seeded config dir, because /opt/claude-home IS the baked home', () => {
+    // Issue #1024: the path a SKILL.md is loaded from is the base directory the CLI prints, and a copy in
+    // the config home is a path in the private per-thread dir on a runner and in the baked home on a
+    // plain run. The managed tree is the only place the CLI finds them, so the path is one.
+    it('gives claude its skills as managed skills at one path, with no copy in the config home', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toContain('ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills');
+        expect(dockerfile).not.toMatch(/^COPY[^\n]*\/home\/node\/\.claude\/skills/m);
+    });
+
+    it('removes the baked skills an older seed left in a thread’s config dir, and only those', () => {
+        const entrypoint = read('docker/claude-executor/entrypoint.sh');
+        expect(entrypoint).toContain('for skill in /usr/local/share/factory-skills/*/; do');
+        expect(entrypoint).toContain(`rm -rf "\${CLAUDE_CONFIG_DIR:?}/skills/\${skill##*/}"`);
+        expect(entrypoint).not.toMatch(/rm -rf[^\n]*\/skills"?\s*$/m);
+    });
+
+    it('seeds a fresh config dir from the baked home itself, because /opt/claude-home IS it', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
         expect(dockerfile.indexOf('COPY --from=skills')).toBeGreaterThan(-1);
         // The seed source is a symlink to /home/node/.claude, not a snapshot of it. That is what
