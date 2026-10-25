@@ -47,13 +47,9 @@ null — never zero. Pinned by `core/test/docs.terminology.test.ts`.
 - **Per token type, eligible timed usage equals run-assigned plus the reasoned unassigned parts in every view**
   (model, org, user, task, run, series bucket); unlocated, unresolved and conflicting-owner usage stay beside
   it, never inside — `core/test/usage-reduce.test.ts`.
-- **Per-task distributions exclude, they never zero**, and percentiles are nearest-rank so the
-  independent suites can recompute them by hand; a measured zero participates, an unmeasured task is
-  absent, the four types are never added (the one sanctioned sum is the labelled Total input) —
-  `core/src/task-usage.ts`.
-- **Runs and tokens filter on different owners.** Run-based distributions filter `job.repo` and the
-  creator, token distributions the task owner's repo and author; the two sets can differ — stated limit,
-  `core/test/task-usage.test.ts`.
+- **Per-task distributions exclude, they never zero**: nearest-rank, a measured zero participates, the
+  four types are never added; runs filter `job.repo`/creator, tokens the task owner, so the task sets
+  can differ (stated limit) — `core/src/task-usage.ts`, `core/test/task-usage.test.ts`.
 - **`telemetryStats()` takes an injectable `now`** — tests pin a frozen date; keep the injection point.
 - **No field named `cost`/`usd`/`price` exists in `TelemetryStats` or the task statistics**, and
   `core/test/telemetry.stats.test.ts` and `core/test/task-usage.test.ts` assert their absence.
