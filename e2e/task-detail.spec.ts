@@ -9,6 +9,7 @@ import {
     failedGateThread,
     followUpThread,
     interruptedThread,
+    measuredActivityOf,
     publishedThread,
     routeThread,
     runningThread,
@@ -293,8 +294,74 @@ test.describe('the task detail page', () => {
         await expect(dialog.getByText('9,000').first()).toBeVisible();
         // Cache creation was never measured: a dash, not a zero.
         await expect(dialog.getByText('—').first()).toBeVisible();
-        await expect(dialog).toContainText('Token totals include 1 review run');
+        await expect(dialog).toContainText('Includes 1 review run.');
         await page.screenshot({ path: `${SHOTS}/task-detail-statistics.png`, fullPage: true });
+    });
+
+    test('the statistics modal shows the canonical task: review row, task-owned row, estimates, models', async ({
+        page,
+    }) => {
+        await routeThread(page, followUpThread);
+        await page.unroute('**/api/jobs/*/activity');
+        await page.route('**/api/jobs/*/activity', (route) =>
+            route.fulfill({ json: measuredActivityOf(followUpThread) })
+        );
+        const problems = watchConsole(page);
+        await page.goto(`/tasks/${followUpThread[1]!.id}`);
+        // The sidebar line is the newest run's own figures (2,000 uncached input), not the task's.
+        await expect(page.locator('.task-stats-line')).toContainText('Uncached input 2,000');
+        await page.getByRole('button', { name: /Open task statistics/ }).click();
+        const dialog = page.getByRole('dialog');
+
+        // Task usage reads task.usage (5,640), not the newest run (2,000).
+        const usage = dialog.getByRole('region', { name: 'Task usage' });
+        await expect(usage.locator('[data-type="input"]')).toContainText('5,640');
+        await expect(usage.locator('[data-type="cacheRead"]')).toContainText('~');
+        await expect(usage.locator('[data-type="cacheCreation"]')).toContainText('1 of 2 sessions measured');
+        // One row per run of the task, the review labelled by the run it reviews.
+        await expect(dialog.locator('.task-stats-runs tbody > tr[data-kind]')).toHaveCount(3);
+        await expect(dialog.getByRole('rowheader', { name: /Review of run 2/ })).toContainText(
+            'run no longer on the board'
+        );
+        const owned = dialog.getByRole('region', { name: 'Task-owned, not assigned to a run' });
+        await expect(owned).toContainText('usage between runs of this task');
+        await expect(dialog.getByRole('region', { name: 'Not in the figures above' })).toContainText('1,234');
+        // Models: the [1m] raw variant and the children behind a row open on demand.
+        const models = dialog.getByRole('region', { name: 'Models' });
+        await expect(models).toContainText('model-a');
+        await dialog.getByRole('button', { name: 'Show usage details for Run 2' }).click();
+        await expect(dialog.locator('.task-stats-detail')).toBeVisible();
+        const text = await dialog.innerText();
+        expect(text).not.toMatch(/NaN|undefined/);
+        await page.screenshot({ path: `${SHOTS}/task-stats-dialog.png`, fullPage: true });
+
+        await page.setViewportSize({ width: 390, height: 900 });
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+        expect(overflow, 'the statistics modal overflows the page at 390px').toBeLessThanOrEqual(0);
+        await page.screenshot({ path: `${SHOTS}/task-stats-dialog_390.png`, fullPage: true });
+        expect(problems).toEqual([]);
+    });
+
+    test('a run still going marks the task figures provisional', async ({ page }) => {
+        await routeThread(page, runningThread);
+        await page.unroute('**/api/jobs/*/activity');
+        await page.route('**/api/jobs/*/activity', (route) =>
+            route.fulfill({ json: measuredActivityOf(runningThread, { live: true }) })
+        );
+        await page.goto(`/tasks/${runningThread[runningThread.length - 1]!.id}`);
+        await page.getByRole('button', { name: /Open task statistics/ }).click();
+        await expect(page.getByRole('dialog')).toContainText('provisional');
+    });
+
+    test('a refused activity read says the usage is unavailable, not zero', async ({ page }) => {
+        await routeThread(page, followUpThread);
+        await page.unroute('**/api/jobs/*/activity');
+        await page.route('**/api/jobs/*/activity', (route) =>
+            route.fulfill({ status: 503, json: { error: 'telemetry unavailable', code: 'UNAVAILABLE' } })
+        );
+        await page.goto(`/tasks/${followUpThread[1]!.id}`);
+        await page.getByRole('button', { name: /Open task statistics/ }).click();
+        await expect(page.getByRole('dialog')).toContainText('Usage is unavailable');
     });
 
     // Issue #796: an attempt the infrastructure took reads apart from a failed retry.

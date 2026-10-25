@@ -101,6 +101,35 @@ describe('TaskActivity', () => {
         }
     });
 
+    it("breaks a type's line at a null bucket instead of dropping it to zero", () => {
+        const at = (minute: number, input: number | null) => ({
+            start: `2026-09-22T20:${String(minute).padStart(2, '0')}:00.000Z`,
+            tokens: { input, output: null, cacheRead: null, cacheCreation: null },
+            edits: null,
+        });
+        const html = render({
+            [RUN_ID]: payload({ buckets: [at(0, 5), at(15, 7), at(30, null), at(45, 9)] }),
+        });
+        // Two readings join in a line; the one after the gap stands alone as a dot.
+        expect(html.match(/<polyline/g)).toHaveLength(1);
+        expect(html.match(/<circle/g)).toHaveLength(1);
+    });
+
+    it("says the latest run's four figures with their precision, a dash for an unmeasured type", () => {
+        const usage = usageBlock(
+            { input: 3_200_000, output: 500_000, cacheRead: 9_000_000 },
+            {
+                precision: { input: 'exact', output: 'exact', cacheRead: 'estimated', cacheCreation: null },
+            }
+        );
+        const html = render({ [RUN_ID]: payload({ usage }) });
+        expect(html).toMatch(/Uncached input 3,200,000/);
+        expect(html).toMatch(/Output 500,000/);
+        expect(html).toMatch(/Cache read 9,000,000~/);
+        expect(html).toMatch(/Cache write —/);
+        expectNoPlaceholder(html);
+    });
+
     it('says the telemetry is loading until the run is answered, and shows unmeasured turns as a dash', () => {
         const html = render({}, [job({ id: RUN_ID, agentTurns: null })]);
         expect(html).toContain('Loading telemetry…');

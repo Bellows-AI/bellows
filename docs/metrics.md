@@ -13,6 +13,7 @@ and granularity: [date-range.md](date-range.md).
 | Token observations reduced to contributions (delta / cumulative high-water, source selection, `[1m]` model normalization, range and UTC day/week partition) | `core/src/token-contributions.ts`, SQL twin `server/migrations/002_views.repeatable.sql` | `core/test/token-contributions.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
 | Usage reducer: session ownership, segment/run assignment, scope and range filters, `UsageBlock` (eligible = assigned + unassigned) | `core/src/usage-reduce.ts`, `core/src/usage-ownership.ts`, `core/src/usage-segments.ts`, types `core/src/usage.ts` | `core/test/usage-reduce.test.ts`, `core/test/usage-ownership.test.ts`, `core/test/usage-segments.test.ts` |
 | Per-task distributions and percentiles (tokens per task = input + output of the report's canonical tasks, a stopgap) | `core/src/task-usage.ts` | `core/test/task-usage.test.ts` |
+| Task view: figures are the activity answer's `task.usage` and `task.runs[]` (reviews, task-owned included), never re-summed | `web/src/task-stats.ts`, `web/src/components/TaskStatsDialog.tsx` | `web/test/task-stats.test.ts`, `e2e/task-detail.spec.ts` |
 | Read cache, cooldown, stale snapshots | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
 | TTL parsing and its floor | `server/src/config.ts` | `server/test/config.persistence.test.ts` |
 
