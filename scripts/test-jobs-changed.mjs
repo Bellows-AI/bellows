@@ -49,7 +49,7 @@ export const RULES = [
     // --- the shared fixture: every board phase builds on it -------------------------------------
     [/^scripts\/(test-jobs\.sh|test-jobs-changed\.mjs|stub-agent\.sh|stub-runner\.Dockerfile|lane-gh\.sh|lane-slow-jobs\.mjs)$/, FULL, 'lane harness and stub image'],
     [/^scripts\/test-jobs-groups\.mjs$/, NONE, '--parallel scheduling only; pinned by server/test/test-jobs.groups.test.ts'],
-    [/^driver\/src\/scripts\/(supervisor\.cjs|task-init\.sh|task-checkout\.cjs|git-probe\.cjs)$/, FULL, 'runs inside every task'],
+    [/^driver\/src\/scripts\/(supervisor\.cjs|task-init\.sh|task-checkout\.cjs|git-probe\.cjs|git-harden\.cjs)$/, FULL, 'runs inside every task'],
     [/^docker\/claude-executor\/(ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|tool-bash\.sh)$/, FULL, 'copied into the stub runner image'],
     [/^docker\/init-databases\.sh$/, FULL, 'postgres bootstrap'],
     [/^driver\/src\/(claim|config|index|runner|runner-plan|executors|docker\/docker|docker\/docker-runner|docker\/docker-runner-support|docker\/docker-create-runner|loop\/loop|loop\/loop-run|loop\/loop-types|loop\/loop-helpers|helpers|http|container-scripts|exec-codes|labels|json-parse|timestamps)\.ts$/, FULL, 'driver core every phase runs through'],

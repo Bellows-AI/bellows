@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import {
-    PUBLISH_MOVED_REASON,
     type PublishResult,
     type PublishStep,
     probeTreeFingerprint,
@@ -14,11 +15,22 @@ import {
 import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
 
 /**
- * The publish over a real repository whose hooks rewrite content (issue #825): a publish bound to
- * evidence ships exactly the content the evidence assessed — a repository hook that moves it is
- * refused stale, nothing pushed — while hooks that move nothing still run, and an unbound publish
- * binds nothing. Real git throughout, offline: the remote is the fixture's `file://` bare repo.
+ * The publish over a real repository whose hooks would rewrite content (issue #825): a publish
+ * bound to evidence ships exactly the content the evidence assessed. The checkout is written by the
+ * agent's tool uid, so its hooks are not the driver's to run: the driver's git (`git-harden.cjs`,
+ * the `git` of every supervised step, which the runner below goes through) runs none of them, so no
+ * hook moves the content, bound or not. Real git throughout, offline: the remote is the fixture's
+ * `file://` bare repo.
  */
+/**
+ * The directory the supervisor puts first on every step's PATH: the hardened `git`, written the way
+ * `gitShimOf` writes it. Every step goes through it, the probe's own git calls included.
+ */
+const HARDENED_GIT = join(dirname(fileURLToPath(import.meta.url)), '../src/scripts/git-harden.cjs');
+const shimDir = mkdtempSync(join(tmpdir(), 'publish-hooks-shim-'));
+writeFileSync(join(shimDir, 'git'), `#!${process.execPath}\n${readFileSync(HARDENED_GIT, 'utf8')}`, { mode: 0o755 });
+afterAll(() => rmSync(shimDir, { recursive: true, force: true }));
+
 describe.skipIf(!hasGit())('a publish over repository hooks', () => {
     const fx = setupWorktreeFixture();
     const PR_URL = 'https://example.test/pull/1';
@@ -52,6 +64,8 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
                 ...SCRIPT_IDENTITY,
                 GIT_CONFIG_GLOBAL: '/dev/null',
                 GIT_CONFIG_NOSYSTEM: '1',
+                PATH: `${shimDir}${delimiter}${process.env.PATH ?? ''}`,
+                GIT_HARDEN_REAL: execFileSync('which', ['git'], { encoding: 'utf8' }).trim(),
                 ...onHost(step.envLiterals),
             },
             encoding: 'utf8',
@@ -94,52 +108,44 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
         expect(shipped('WORK.md')).toBe('verified');
     });
 
-    it('refuses as stale a bound publish whose pre-commit hook rewrote a staged file, pushing nothing', async () => {
-        const revision = await work();
-        hook('pre-commit', `${REWRITE}\ngit add WORK.md`);
+    const ran = (name: string): string => join(fx.dir(), `${name}-ran`);
+    /** A hook that writes the content a rewrite would and notes that it ran. */
+    const rewriting = (name: string): void => hook(name, `: > '${ran(name)}'\n${REWRITE}\ngit add WORK.md`);
 
-        expect(await publish(revision)).toMatchObject({ ok: false, stale: true, reason: PUBLISH_MOVED_REASON });
-        expect(pushed()).toEqual([]);
-    });
+    it.each(['pre-commit', 'post-index-change', 'prepare-commit-msg', 'commit-msg', 'post-commit', 'pre-push'])(
+        'never runs a %s hook of the checkout, bound or not: the verified content ships',
+        async (name) => {
+            const revision = await work();
+            rewriting(name);
 
-    it('refuses as stale a bound publish whose post-checkout hook rewrote the tree on the branch switch', async () => {
+            expect(await publish(revision)).toMatchObject({ ok: true, published: true });
+
+            expect(existsSync(ran(name))).toBe(false);
+            expect(shipped('WORK.md')).toBe('verified');
+        }
+    );
+
+    it('never runs the post-checkout hook of the branch switch', async () => {
         expect(fx.sync().ok).toBe(true);
         git(fx.checkout(), 'switch', '--detach');
         writeFileSync(join(fx.checkout(), 'WORK.md'), 'verified\n');
         const revision = (await probeTreeFingerprint(job, runStep))!;
-        hook('post-checkout', REWRITE);
-
-        expect(await publish(revision)).toMatchObject({ ok: false, stale: true, reason: PUBLISH_MOVED_REASON });
-        expect(pushed()).toEqual([]);
-    });
-
-    it('never ships content a post-index-change hook staged: it is refused, or the verified content ships', async () => {
-        const revision = await work();
-        const guard = '"$(git rev-parse --git-common-dir)/index-hooked"';
-        hook('post-index-change', `[ -e ${guard} ] && exit 0\n: > ${guard}\n${REWRITE}\ngit add WORK.md`);
-
-        const result = await publish(revision);
-
-        if (result.ok) expect(shipped('WORK.md')).toBe('verified');
-        else expect([result.stale, pushed()]).toEqual([true, []]);
-    });
-
-    it('publishes a bound revision whose pre-commit hook runs and changes nothing', async () => {
-        const revision = await work();
-        const marker = join(fx.dir(), 'pre-commit-ran');
-        hook('pre-commit', `: > '${marker}'`);
+        rewriting('post-checkout');
 
         expect(await publish(revision)).toMatchObject({ ok: true, published: true });
-        expect(existsSync(marker)).toBe(true);
+
+        expect(existsSync(ran('post-checkout'))).toBe(false);
         expect(shipped('WORK.md')).toBe('verified');
     });
 
-    it('binds nothing when unbound: the hook’s rewrite ships', async () => {
+    it('never runs a hook of an unbound publish either', async () => {
         await work();
-        hook('pre-commit', `${REWRITE}\ngit add WORK.md`);
+        rewriting('pre-commit');
 
         expect(await publish()).toMatchObject({ ok: true, published: true });
-        expect(shipped('WORK.md')).toBe('verified\nhooked');
+
+        expect(existsSync(ran('pre-commit'))).toBe(false);
+        expect(shipped('WORK.md')).toBe('verified');
     });
 
     it('publishes over an ignored artifact written after the revision, and never ships it', async () => {
