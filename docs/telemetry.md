@@ -10,7 +10,6 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Read client, `ok`/`empty`/`stale`/`disabled` | `server/src/telemetry/{postgres-client,client,errors}.ts` | `server/test/routes.telemetry.test.ts` |
 | Usage reader: one repeatable-read snapshot of board evidence (`job_execution` x `job_execution_session`), branch evidence, points, spans, field totals and users, bound to the tenant before they reach memory; rollups rebuilt from it; the test-only global reconciliation | `server/src/telemetry/usage-facts.ts`, `core/src/usage-rollups.ts`, `server/src/telemetry/usage-reconciliation.ts` | `server/test-db/token-reconciliation.test.ts`, `server/test-db/telemetry.sql.test.ts` |
 | Views: `metric_point_used`, `metric_point_suppressed`, `session_source`, `session_branch_slice`, `session_field_total` (series reduction, the SQL twin of `reduceTokenObservations`) | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
-| Transcript discovery, parent quarantine, message dedupe, zero-preserving usage events | `server/src/backfill/transcript-discovery.ts`, `server/src/backfill/transcript-usage.ts` | `server/test/backfill.transcripts.test.ts` |
 | Executor OTEL endpoint rendering | `driver/src/telemetry-config.ts` | `driver/test/telemetry-shipping.test.ts` |
 | Run activity (`GET /api/jobs/:id/activity`): one repeatable-read `readUsageFacts(tx, org, {taskIds, edits})` per request (`fetchTaskFacts`), the run's amounts from core `runContributionsOf` placed in buckets over its segment span so buckets sum to `usage`; edit decisions are read only here; the batch report reads the member roots in its own snapshot | `server/src/telemetry/run-activity.ts`, `server/src/telemetry/client.ts`, `server/src/telemetry/usage-facts.ts`, `core/src/usage-reduce.ts` | `server/test/run-activity.test.ts`, `server/test-db/token-reconciliation.test.ts` |
 | Executor emission, collector config, branch reporter | `docker/{claude,opencode}-executor/`, `docker/otel-collector.yaml`, `charts/factory/files/collector.yaml` | `docker/claude-executor/test.sh`, `driver/test/branch-reporter.test.ts` |
@@ -48,8 +47,6 @@ Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.
   `OPENCODE_OTEL_CONFIG_PATH`.
 - **The collector exporter sets `compression: none`** — Fastify's JSON parser does not decompress,
   so gzip means a 400 on every export.
-- **Transcripts carry only token usage** — no edit decisions, no active time, and `input_tokens`
-  excludes cache reads (`server/src/backfill/transcripts.ts`).
 - **No org, repo, job, lease, pod or user id in any metric label value**: labels come from closed vocabularies
   (route pattern, status class, verb, resource kind, docker command, outcome). A failed scrape-time read omits
   its samples, never reports zero (`server/test/routes.prometheus.test.ts`).
