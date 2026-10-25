@@ -66,7 +66,8 @@ export async function trackRepos(page: Page, repos: { owner: string; name: strin
  * A task cannot start without one (docs/workspace.md), and the open board deliberately has no
  * executor profile, so its `/api/workspace` always answers `executors: []` and Start stays dark
  * behind "Configure an executor". Only the lists are replaced: the rest of the answer is the real
- * server's. The board validates a task's executor label by shape alone, so the queued task is real.
+ * server's. The board refuses a task whose executor its scope does not hold (#1019), so a spec
+ * whose launch reaches the real `POST /api/jobs` also saves the executor with `saveExecutor`.
  * The tracked list carries `E2E_REPO`.
  */
 export async function withExecutor(page: Page): Promise<void> {
@@ -84,6 +85,24 @@ export async function withExecutor(page: Page): Promise<void> {
         });
     });
     await trackRepos(page, [E2E_REPO]);
+}
+
+/**
+ * Save `E2E_EXECUTOR` as the member's real executor profile, so the board's own create accepts a
+ * task naming it. The open board starts with none, and the other specs rely on that: pair it with
+ * `clearExecutors` once the spec is done.
+ */
+export async function saveExecutor(page: Page): Promise<void> {
+    const response = await page.request.put('/api/workspace/executors', {
+        data: { executors: [{ name: E2E_EXECUTOR.name, type: E2E_EXECUTOR.type, config: {} }] },
+    });
+    expect(response.status(), 'the open board saves the member’s executor').toBe(200);
+}
+
+/** Put the open board back to no executor profile, the state every other spec starts from. */
+export async function clearExecutors(page: Page): Promise<void> {
+    const response = await page.request.put('/api/workspace/executors', { data: { executors: [] } });
+    expect(response.status(), 'the open board clears the member’s executors').toBe(200);
 }
 
 /** One executor profile as the mocked workspace holds it — the config-bearing list row. */
