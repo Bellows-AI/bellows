@@ -294,7 +294,7 @@ export function usageBatch(id: string, variant: UsageVariant): { record: BatchRe
         ['task-1', 'succeeded'],
         ['task-2', 'pending'],
         ['task-3', done ? 'succeeded' : 'running'],
-        ['task-4', 'pending'],
+        ['task-4', variant === 'unavailable' ? 'failed' : 'pending'],
     ];
     const record: BatchRecord = {
         ...base,

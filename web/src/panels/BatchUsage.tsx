@@ -16,14 +16,14 @@ const REMOVED_TEXT = 'Usage is unavailable: the task was removed after the batch
 
 const plural = (count: number) => (count === 1 ? '1 task was' : `${count} tasks were`);
 
-function Figures({ block }: { block: UsageBlock }) {
+function Figures({ block, label }: { block: UsageBlock; label: string }) {
     return (
         <>
-            <TokenFigures tokens={block.tokens} precision={block.precision} coverage={block.coverage} />
+            <TokenFigures tokens={block.tokens} precision={block.precision} />
             <CoverageNote coverage={block.coverage} />
             {block.rows.length === 0 ? null : (
                 <details className="batch-usage-more">
-                    <summary>Usage by model</summary>
+                    <summary aria-label={label}>Usage by model</summary>
                     <UsageBreakdown usage={block} />
                 </details>
             )}
@@ -50,7 +50,7 @@ export function BatchUsage({ report, reportFailed }: { report: BatchReportView |
                             Live: provisional as of {timestamp(report.usageSnapshotAt)} UTC.
                         </p>
                     ) : null}
-                    <Figures block={block} />
+                    <Figures block={block} label="Usage by model" />
                     <ObservedUsageNote />
                 </>
             ) : null}
@@ -66,8 +66,10 @@ export function BatchUsage({ report, reportFailed }: { report: BatchReportView |
 
 /** A task card's usage: four figures in one compact block, the model rows behind a disclosure. */
 export function TaskUsage({
+    taskKey,
     usage,
 }: {
+    taskKey: string;
     usage: { tokenUsage: UsageBlock; tokenUsageUnavailable: BatchUsageUnavailable | null };
 }) {
     const { tokenUsage: block, tokenUsageUnavailable } = usage;
@@ -83,7 +85,7 @@ export function TaskUsage({
     }
     return (
         <div className="batch-task-usage" data-usage-state="measured">
-            <Figures block={block} />
+            <Figures block={block} label={`Usage by model for ${taskKey}`} />
         </div>
     );
 }

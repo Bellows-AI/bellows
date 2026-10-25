@@ -91,7 +91,7 @@ function TaskCard({
                     )
                 ) : null}
             </p>
-            {taskUsage === undefined ? null : <TaskUsage usage={taskUsage} />}
+            {taskUsage === undefined ? null : <TaskUsage taskKey={state.key} usage={taskUsage} />}
             {state.waitReason !== null ? <p className="batch-wait">Waiting: {state.waitReason}</p> : null}
             {instruction ? <p className="batch-gate">{instruction}</p> : null}
             <div className="batch-actions">

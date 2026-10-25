@@ -177,7 +177,7 @@ test.describe('batch token usage', () => {
         // The expansion shows the model row and the unknown row; the card shows its own figures.
         await section.getByText('Usage by model').click();
         await expect(section.locator('tr[data-model="model-a"]')).toBeVisible();
-        await expect(section.locator('tr[data-model="unknown"], tr[data-model="(unknown)"]').first()).toBeVisible();
+        await expect(section.locator('tr[data-model="unknown"]')).toBeVisible();
 
         const measured = page.locator('[data-task="task-1"]');
         expect(await figuresOf(measured)).toMatchObject({ input: expect.stringContaining('8,500') });

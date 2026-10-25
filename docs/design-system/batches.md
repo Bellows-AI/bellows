@@ -34,4 +34,5 @@ the batch contract: [../batches.md](../batches.md).
 Classes defined here: `batch-new`, `batch-editor`, `batch-form`, `batch-field-row`, `batch-field`,
 `batch-problem`, `batch-check`, `batch-task-edit`, `batch-actions`, `batch-stage`,
 `batch-stage-head`, `batch-tasks`, `batch-task`, `batch-task-head`, `batch-objective`,
-`batch-links`, `batch-wait`, `batch-usage`, `batch-task-usage`, `batch-usage-more`, `batch-gate`, `batch-origin`, `batch-review-stages`, `batch-backlink`.
+`batch-links`, `batch-wait`, `batch-usage`, `batch-task-usage`, `batch-usage-more`, `batch-gate`,
+`batch-origin`, `batch-review-stages`, `batch-backlink`.

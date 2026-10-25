@@ -2,10 +2,17 @@ import { validateBatchPlan, type BatchPlan } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { blankPlan, GATE_RESUMES_AUTOMATICALLY, updateTask, type BatchRecord } from '../src/batch-model.js';
+import {
+    blankPlan,
+    GATE_RESUMES_AUTOMATICALLY,
+    updateTask,
+    type BatchRecord,
+    type BatchReportView,
+} from '../src/batch-model.js';
 import { BatchEditor } from '../src/panels/BatchEditor.js';
 import { BatchMonitor } from '../src/panels/BatchMonitor.js';
 import { BatchPlanReview } from '../src/panels/BatchPlanReview.js';
+import { usageBlock } from './tasks-fixtures.js';
 
 /**
  * Render smoke for the batch panels: the markup carries the human gate sentence, the PR to
@@ -125,6 +132,28 @@ describe('the batch monitor', () => {
                 />
             )
         ).not.toContain('Accept task-1');
+    });
+
+    it('renders measured usage as figures, and a failed report read as unavailable beside Retry', () => {
+        const measuredReport: BatchReportView = {
+            state: 'running',
+            tasks: [],
+            usageSnapshotAt: '2026-09-01T00:10:00.000Z',
+            totals: {
+                tokenUsage: usageBlock({ input: 1200, output: 340, cacheRead: 0, cacheCreation: 5 }),
+                usageUnavailableTasks: 0,
+            },
+        };
+        const props = { onRetry: noop, onAccept: noop, pending: null };
+        const html = render(<BatchMonitor batch={started()} report={measuredReport} reportFailed={false} {...props} />);
+        expect(html).toContain('Token usage');
+        expect(html).toContain('1,200');
+        const failed = started({
+            tasks: [{ ...started().tasks[0]!, execution: 'failed', pr: 'none', waitReason: null }],
+        });
+        const down = render(<BatchMonitor batch={failed} report={null} reportFailed={true} {...props} />);
+        expect(down).toContain('Usage is unavailable');
+        expect(down).toContain('Retry task-1');
     });
 
     it('reports partial progress with the merged pull requests', () => {

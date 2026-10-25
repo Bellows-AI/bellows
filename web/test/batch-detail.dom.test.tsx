@@ -1,4 +1,4 @@
-import { BATCH_COMPLETION_ACCEPTED, emptyBlock, type BatchPlan, type UsageBlock } from '@factory-ai/core';
+import { BATCH_COMPLETION_ACCEPTED, emptyBlock, type BatchPlan, type Tokens, type UsageBlock } from '@factory-ai/core';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import {
     updateTask,
 } from '../src/batch-model.js';
 import { renderApp, stubFetch } from './dom.js';
+import { usageBlock } from './tasks-fixtures.js';
 
 /**
  * The started batch page, mounted on its route over a stubbed board: parallel progress, the human
@@ -43,23 +44,11 @@ function twoStagePlan(): BatchPlan {
 
 const SNAPSHOT = '2026-09-01T00:10:00.000Z';
 
-/** A measured block of exactly these tokens; a type left out was never measured. */
-function measured(tokens: Partial<UsageBlock['tokens']>, over: Partial<UsageBlock> = {}): UsageBlock {
-    const base = emptyBlock('measured');
-    const all = { ...base.tokens, ...tokens };
-    return {
-        ...base,
-        tokens: all,
-        assigned: all,
-        precision: {
-            input: all.input === null ? null : 'exact',
-            output: all.output === null ? null : 'exact',
-            cacheRead: all.cacheRead === null ? null : 'exact',
-            cacheCreation: all.cacheCreation === null ? null : 'exact',
-        },
-        ...over,
-    };
-}
+/** A measured block of exactly these tokens, `over` replacing what the case is about. */
+const measured = (tokens: Partial<Tokens>, over: Partial<UsageBlock> = {}): UsageBlock => ({
+    ...usageBlock(tokens),
+    ...over,
+});
 
 /** A report with no usage measured anywhere; `over` replaces what the case is about. */
 const reportWith = (over: Partial<BatchReportView> = {}): BatchReportView => ({
@@ -512,6 +501,32 @@ describe('a started batch', () => {
             await userEvent.click(screen.getByText('Usage by model'));
             expect(more.open).toBe(true);
             expect(within(more).getByText('model-a')).toBeTruthy();
+        });
+
+        it('names each card disclosure by its task so a screen reader can tell them apart', async () => {
+            const row = {
+                model: 'model-a',
+                querySource: null,
+                rawModels: ['model-a'],
+                tokens: measured({ input: 9 }).tokens,
+            };
+            const one = measured({ input: 9 }, { rows: [row] });
+            board(
+                started(plan, tasks),
+                withUsage(one, {
+                    'task-1': { tokenUsage: one, tokenUsageUnavailable: null },
+                    'task-2': { tokenUsage: one, tokenUsageUnavailable: null },
+                })
+            );
+            renderApp(`/batches/${ID}`);
+            await screen.findAllByText('Usage by model');
+            const names = Array.from(document.querySelectorAll('.batch-usage-more > summary')).map((el) =>
+                el.getAttribute('aria-label')
+            );
+            expect(names).toEqual(
+                expect.arrayContaining(['Usage by model', 'Usage by model for task-1', 'Usage by model for task-2'])
+            );
+            expect(new Set(names).size).toBe(names.length);
         });
     });
 });
