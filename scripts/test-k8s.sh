@@ -1934,6 +1934,17 @@ done
 expect_contains 'the job ran to completion' "$result" 'succeeded'
 expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
 
+# A normal run's claim ends `observed` (the runner proved the agent started) with its end stamped:
+# only observed|adopted claims count as run segments, so `unknown` here is a launch-proof bug.
+exec_rows="$(bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$id" \
+    postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
+select launch || '|' || (ended_at is not null) || '|' || (created_at <= ended_at) from job_execution where job_id = :'job';
+SQL
+)"
+if [ "$exec_rows" = 'observed|true|true' ]; then ok 'the finished claim ends observed'
+else bad 'the finished claim ends observed' "job_execution rows (launch|ended|ordered): $exec_rows"; fi
+
 # The organization-scope run (issue 391), the kubernetes counterpart of test-jobs.sh's leg: the
 # task stamps `executorScope: 'org'`, the claim resolves the ORG row seeded above, and the stub's
 # config echo carries the org model marker no personal row on this board could produce.

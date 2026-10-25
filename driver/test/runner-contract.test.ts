@@ -19,6 +19,7 @@ type OptionalKeys<T> = { [K in keyof T]-?: object extends Pick<T, K> ? K : never
 const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     run: 'both',
     sampleRuntime: 'both',
+    agentStarted: 'both',
     deadServices: 'both',
     startServices: 'both',
     restartServices: 'both',

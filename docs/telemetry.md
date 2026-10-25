@@ -8,7 +8,7 @@ OTLP ingest from the two executors, the SQL views over it, and the states the re
 | Ingest routes and the branch report | `server/src/routes/ingest.ts` | `server/test/routes.ingest.test.ts` |
 | Writes and dedupe | `server/src/telemetry/store.ts`, `server/migrations/086_metric_point_identity.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.ingest-identity.test.ts`, `server/test-db/migration.086-metric-point-identity.test.ts` |
 | Read client, `ok`/`empty`/`stale`/`disabled` | `server/src/telemetry/{postgres-client,client,errors}.ts` | `server/test/routes.telemetry.test.ts` |
-| Views: `metric_point_used`, `session_source`, `session_branch_slice` | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts` |
+| Views: `metric_point_used`, `metric_point_suppressed`, `session_source`, `session_branch_slice`, `session_field_total` (series reduction, the SQL twin of `reduceTokenObservations`) | `server/migrations/002_views.repeatable.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
 | Transcript discovery, parent quarantine, message dedupe, zero-preserving usage events | `server/src/backfill/transcript-discovery.ts`, `server/src/backfill/transcript-usage.ts` | `server/test/backfill.transcripts.test.ts` |
 | Executor OTEL endpoint rendering | `driver/src/telemetry-config.ts` | `driver/test/telemetry-shipping.test.ts` |
 | Run-activity bucketing and per-type token totals (`GET /api/jobs/:id/activity`); reduced by `reduceTokenObservations` (`core/src/token-contributions.ts`): running maximum per start-time series, pre-window readings are the baseline, unspecified temporality is never added, a series' first reading without a start time is unlocated | `server/src/telemetry/run-activity.ts` | `server/test/run-activity.test.ts`, `server/test-db/telemetry.sql.test.ts` |
@@ -19,9 +19,10 @@ Aggregation: [metrics.md](metrics.md). Schema and migration rules: [persistence.
 
 ## Invariants
 
-- **A cumulative counter is reduced with `max(value)` per `start_time`, never `sum(value)`** — in
-  `002_views.repeatable.sql` and again in `server/src/telemetry/run-activity.ts`. Guarded by
-  `server/test-db/telemetry.sql.test.ts`, whose fixture sums to 2.5× its real total.
+- **A cumulative counter is reduced to its high-water mark per raw series, never `sum(value)`** — in
+  `002_views.repeatable.sql` and again in `core/src/token-contributions.ts`; series are summed, and
+  unspecified temporality is never added. Guarded by `server/test-db/telemetry.sql.test.ts` and
+  `server/test-db/telemetry.token-reduction.test.ts`, which holds both to the same totals.
 - **Every view reads `metric_point_used`, never `metric_point`** — `session_source` picks one source
   per session, OTEL over transcript; reading the table reintroduces the double count.
 - **Nanosecond timestamps divide by `1e6`, not `1e9`** (`server/src/telemetry/otlp.ts`).

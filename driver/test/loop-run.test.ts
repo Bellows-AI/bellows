@@ -339,22 +339,57 @@ describe('a normal run reaches observed before its verdict (issue #845, plan F6)
         expect(t.board.sessionEvidence[0]).toBe(false);
     });
 
-    it('a runtime sample alone proves the launch of a silent, long run', async () => {
+    it('the runner proof alone observes the launch of a silent, long run', async () => {
         const board = stubBoard([]).board;
-        const runner = stubRunner(
-            async () => {
-                await new Promise((resolve) => setTimeout(resolve, 2_600));
-                return ok();
-            },
-            { sample: { cpuPercent: 1, memUsedMb: 1, memPercent: 1 } }
-        );
         let during: boolean[] = [];
-        const finished = runJob(stubRuntime(board, runner), job(1));
-        await new Promise((resolve) => setTimeout(resolve, 2_400));
-        during = [...board.sessionEvidence];
-        await finished;
+        const runner = stubRunner(async () => {
+            // The pump's period is compressed to nothing by the stub runtime: wait for its report.
+            for (let i = 0; i < 200 && !board.sessionEvidence.includes(true); i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            during = [...board.sessionEvidence];
+            return ok();
+        });
+        await runJob(stubRuntime(board, runner), job(1));
 
         expect(during).toContain(true);
+    });
+
+    it('a runtime sample without agent-container proof (sidecars up, agent not started) is no launch', async () => {
+        const board = stubBoard([]).board;
+        const runner = stubRunner(
+            async (_job, _session, onOutput) => {
+                onOutput?.('daemon says: exec not found');
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                return ok({ started: false, refused: true });
+            },
+            { sample: { cpuPercent: 1, memUsedMb: 1, memPercent: 1 }, agentStarted: false }
+        );
+        await runJob(stubRuntime(board, runner), job(1));
+
+        expect(board.sessionEvidence).not.toContain(true);
+    });
+
+    it('a launch report that failed is retried by the tail, so the claim is not left unknown', async () => {
+        const board = stubBoard([]).board;
+        const session = board.session.bind(board);
+        let observedAttempts = 0;
+        board.session = async (...args: Parameters<typeof session>) => {
+            if (args[2] === true) observedAttempts += 1;
+            if (args[2] === true && observedAttempts === 1) throw new Error('board blip');
+            return session(...args);
+        };
+        // The mid-run report fails; the run ends only after it was tried, so the tail is the retry.
+        const runner = stubRunner(async () => {
+            for (let i = 0; i < 200 && observedAttempts === 0; i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            return ok();
+        });
+        await runJob(stubRuntime(board, runner), job(1));
+
+        expect(observedAttempts).toBeGreaterThanOrEqual(2);
+        expect(board.sessionEvidence).toContain(true);
     });
 
     it('never reports observed for a start the platform refused', async () => {

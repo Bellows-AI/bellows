@@ -65,6 +65,9 @@ const runner = {
     async sampleRuntime() {
         return null;
     },
+    async agentStarted() {
+        return false;
+    },
     async deadServices() {
         return [];
     },
