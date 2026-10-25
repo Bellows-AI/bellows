@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
-import { job, usageBlock } from './tasks-fixtures.js';
+import { activityAnswer, job, runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
 import { TaskActivity } from '../src/panels/TaskActivity.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
@@ -145,5 +145,15 @@ describe('TaskActivity', () => {
         ]);
         expect(html).toContain('Latest run (Run 2)');
         expect(html).toContain('2 runs · 13 agent turns');
+    });
+
+    it('counts runs as the dialog does, the task usage count with its review runs', () => {
+        const review = '33333333-3333-4333-8333-333333333333';
+        const task = taskUsage(RUN_ID, [
+            runUsage(RUN_ID, 'run', { input: 1 }),
+            runUsage(review, 'review', { output: 1 }, { reviewOf: RUN_ID }),
+        ]);
+        const html = render({ [RUN_ID]: activityAnswer(RUN_ID, { input: 1 }, task) });
+        expect(html).toContain('2 runs · 12 agent turns');
     });
 });

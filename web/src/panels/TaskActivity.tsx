@@ -8,19 +8,21 @@ import { taskStats } from '../task-stats.js';
 
 /**
  * The task activity summary (issue 530, from 339's run-activity panel): a compact pulse of the
- * latest run's recorded tokens, by type (a gap where a bucket measured none), and the thread's run and agent-turn counts — all one
- * button that opens the Task statistics modal, so the sidebar stays small and the detail is a
- * click, Enter or Space away. Props in, markup out: the fetch is the page's (`useThreadActivity`)
- * and a run the pipeline holds nothing about renders one quiet sentence, never a zero line.
+ * latest run's recorded tokens, by type (a gap where a bucket measured none), and the thread's run
+ * and agent-turn counts — all one button that opens the Task statistics modal, so the sidebar stays
+ * small and the detail is a click, Enter or Space away. Props in, markup out: the fetch is the
+ * page's (`useThreadActivity`) and a run the pipeline holds nothing about renders one quiet
+ * sentence, never a zero line.
  */
 export function TaskActivity({ jobs, activity }: { jobs: readonly Job[]; activity: ThreadActivity }) {
     const [open, setOpen] = useState(false);
     const stats = taskStats(jobs, activity);
-    const latest = stats.runs[jobs.length - 1]!;
+    const latest = stats.latest!;
     const buckets = latest.activity?.buckets ?? [];
     const scope = `Latest run (Run ${latest.number})`;
     const turns = figure(stats.agentTurns.value);
-    const runs = `${jobs.length} ${jobs.length === 1 ? 'run' : 'runs'}`;
+    const runCount = stats.usage?.counts.runs ?? jobs.length;
+    const runs = `${runCount} ${runCount === 1 ? 'run' : 'runs'}`;
     let pulse = <span className="muted">No telemetry for this run.</span>;
     if (latest.telemetry === 'loading') pulse = <span className="muted">Loading telemetry…</span>;
     else if (buckets.length > 0) {

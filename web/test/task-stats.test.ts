@@ -67,18 +67,35 @@ describe('taskStats', () => {
         expect(stats.usage?.tokens.input).toBe(15);
     });
 
-    it('marks a run whose job row is gone, and adding adoption-shaped input changes no totals or run counts', () => {
+    it('marks a run whose job row is gone', () => {
         const gone = runUsage(REVIEW, 'run', { input: 1 }, { operational: false });
         const task = taskUsage(A, [runUsage(A, 'run', { input: 10 }), gone]);
-        const base = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, task) });
-        expect(base.runs.map((run) => [run.label, run.operational])).toEqual([
+        const stats = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, task) });
+        expect(stats.runs.map((run) => [run.label, run.operational])).toEqual([
             ['Run 1', true],
             ['Earlier run', false],
         ]);
-        // An adoption is the same job under a new claim: the thread (job rows) and task.usage are unchanged.
-        const again = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, task) });
-        expect(again.usage).toEqual(base.usage);
-        expect(again.runs).toHaveLength(base.runs.length);
+    });
+
+    it('counts an adopted run once: the same job under a second claim adds no run and no usage', () => {
+        const first = runUsage(A, 'run', { input: 10 });
+        const base = taskUsage(A, [first]);
+        const adopted = { ...base, runs: [first, { ...first, endedAt: '2026-09-01T12:09:00.000Z' }] };
+        const before = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, base) });
+        const after = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 10 }, adopted) });
+        expect(after.runs.map((run) => run.id)).toEqual([A]);
+        expect(after.usage).toEqual(before.usage);
+        expect(after.runs[0]!.usage).toEqual(before.runs[0]!.usage);
+    });
+
+    it('names the newest thread run as the latest, however many earlier runs were answered', () => {
+        const task = taskUsage(A, [runUsage(A, 'run', { input: 1 }), runUsage(B, 'follow-up', { input: 2 })]);
+        const stats = taskStats([job({ id: A }), job({ id: B })], {
+            [A]: activityAnswer(A, { input: 1 }, task),
+            [B]: activityAnswer(B, { input: 2 }, task),
+        });
+        expect(stats.latest?.id).toBe(B);
+        expect(taskStats([], {}).latest).toBeNull();
     });
 
     it('tells a measured zero from an unmeasured figure, per run and per type', () => {
@@ -101,13 +118,11 @@ describe('taskStats', () => {
     it('keeps the task unreadable, not zero, when nothing was answered, and separates loading from unavailable', () => {
         const loading = taskStats([job({ id: A }), job({ id: B })], {});
         expect(loading.telemetry).toBe('loading');
-        expect(loading.loading).toBe(true);
         const refused = taskStats([job({ id: A }), job({ id: B })], { [B]: 'unavailable', [A]: 'unavailable' });
         expect(refused.usage).toBeNull();
         expect(refused.agentTurns.value).toBeNull();
         expect(refused.telemetry).toBe('unavailable');
         expect(refused.runs.map((run) => run.telemetry)).toEqual(['unavailable', 'unavailable']);
-        expect(refused.loading).toBe(false);
     });
 
     it('reads every run of the thread from the task carried by the newest run answer alone', () => {
@@ -116,7 +131,6 @@ describe('taskStats', () => {
         expect(stats.runs.map((run) => run.telemetry)).toEqual(['measured', 'none']);
         expect(stats.runs[0]!.usage?.tokens).toEqual({ ...NO_TOKENS, input: 100 });
         expect(stats.runs[1]!.usage?.state).toBe('unmeasured');
-        expect(stats.loading).toBe(false);
     });
 
     it('marks a run still going, or a provisional task block, as provisional', () => {

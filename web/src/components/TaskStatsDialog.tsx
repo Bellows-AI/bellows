@@ -19,6 +19,7 @@ const LOADING = 'Loading…';
 const LEADING_COLUMNS = 4;
 
 const UNAVAILABLE_BLOCK = { state: 'unavailable', provisional: false } as const;
+const UNMEASURED_BLOCK = { state: 'unmeasured', provisional: false } as const;
 
 /** One run's token cell: the measured figure with its precision mark, "Loading…" while asked for, "—" when never measured. */
 function TokenCell({ run, type }: { run: RunStat; type: (typeof USAGE_TOKEN_TYPES)[number] }) {
@@ -92,6 +93,7 @@ function TaskOwned({ block }: { block: UsageBlock }) {
                 {block.unassigned.map((entry) => (
                     <li key={entry.reason} data-reason={entry.reason}>
                         {UNASSIGNED_SENTENCES[entry.reason]}
+                        <TokenFigures tokens={entry.tokens} />
                     </li>
                 ))}
             </ul>
@@ -99,10 +101,17 @@ function TaskOwned({ block }: { block: UsageBlock }) {
     );
 }
 
+/** The block whose state the note words: the task's with the thread's provisional mark, else why there is none. */
+function stateBlockOf(stats: TaskStats): Pick<UsageBlock, 'state' | 'provisional'> | null {
+    if (stats.telemetry === 'unavailable') return UNAVAILABLE_BLOCK;
+    if (stats.usage !== null) return { state: stats.usage.state, provisional: stats.provisional };
+    return stats.telemetry === 'none' ? UNMEASURED_BLOCK : null;
+}
+
 /** Task usage: the canonical `task.usage` figures, their state and the standing notes. */
 function UsageSection({ stats }: { stats: TaskStats }) {
     const usage = stats.usage;
-    const stateBlock = stats.telemetry === 'unavailable' ? UNAVAILABLE_BLOCK : (usage ?? undefined);
+    const stateBlock = stateBlockOf(stats);
     const turnsNote = coverageNote('Agent turns', stats.agentTurns);
     return (
         <section className="task-stats-usage" aria-label="Task usage">
@@ -122,7 +131,7 @@ function UsageSection({ stats }: { stats: TaskStats }) {
             )}
             {stats.telemetry === 'loading' ? (
                 <UsageStateNote loading />
-            ) : stateBlock === undefined ? null : (
+            ) : stateBlock === null ? null : (
                 <UsageStateNote block={stateBlock} />
             )}
             {turnsNote === null ? null : <p className="task-stats-note">{turnsNote}</p>}
@@ -143,10 +152,10 @@ function UsageSection({ stats }: { stats: TaskStats }) {
  * summed here, and the four token types are never combined.
  *
  * Headless UI owns the focus trap, Escape and the return of focus to the trigger that opened
- * it; the close button is the visible way out. Props in, markup out - the page owns the data.
+ * it; the close button is the visible way out. Props in, markup out — the page owns the data.
  */
 export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats: TaskStats; onClose: () => void }) {
-    const latest = stats.runs.find((run) => run.activity !== null);
+    const latest = stats.latest;
     const buckets = latest?.activity?.buckets ?? [];
     const usage = stats.usage;
     return (
@@ -161,7 +170,7 @@ export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats
                         </button>
                     </div>
                     <UsageSection stats={stats} />
-                    {latest !== undefined && buckets.length > 0 ? (
+                    {latest !== null && buckets.length > 0 ? (
                         <section className="task-stats-pulse">
                             <h3>Latest run ({latest.label}): tokens over time</h3>
                             <PulseChart

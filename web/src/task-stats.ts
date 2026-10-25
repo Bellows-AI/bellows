@@ -7,7 +7,7 @@ import { TOKEN_TYPE_LABELS } from './components/usage/usage-format.js';
  * The task statistics read model (issues 530, 848): a pure view over the activity answer. The task's
  * figures are the canonical `task.usage` (reviews and run-unassigned amounts included) and every run
  * row is a `task.runs[]` entry - nothing is re-summed from runs or buckets. A figure the board never
- * measured stays null and renders "-", a run still going is provisional.
+ * measured stays null and renders "—", a run still going is provisional.
  */
 
 /** One token type: its field, the label the reader sees, and the line class that draws it. */
@@ -46,7 +46,7 @@ export interface RunStat {
     finishedAt: string | null;
     /** The run is still going: its figures are provisional. */
     live: boolean;
-    /** Null is unmeasured - never zero. */
+    /** Null is unmeasured — never zero. */
     agentTurns: number | null;
     telemetry: TelemetryState;
     /** This run's usage block; null while loading or when the board refused it. */
@@ -65,6 +65,8 @@ export interface Coverage<T> {
 
 export interface TaskStats {
     runs: RunStat[];
+    /** The newest run of the thread (the one the sidebar charts); null for an empty thread. */
+    latest: RunStat | null;
     agentTurns: Coverage<number>;
     telemetry: TelemetryState;
     /** The canonical `task.usage`: review runs and run-unassigned amounts included. Null until answered. */
@@ -75,8 +77,6 @@ export interface TaskStats {
     reviews: number;
     /** Some run is still going, so the figures will move. */
     provisional: boolean;
-    /** Some run's telemetry is still being fetched. */
-    loading: boolean;
 }
 
 const labelOf = (run: RunUsage, number: number | null, numberOf: ReadonlyMap<string, number>): string => {
@@ -156,6 +156,7 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
     else telemetry = answers.some((answer) => typeof answer === 'object') ? 'none' : 'unavailable';
     return {
         runs,
+        latest: threadRuns.at(-1) ?? null,
         agentTurns: {
             value: turns.length === 0 ? null : turns.reduce((sum, run) => sum + run.agentTurns!, 0),
             measured: turns.length,
@@ -166,7 +167,6 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
         taskOwned: task?.taskOwned ?? null,
         reviews: taskRuns.filter((run) => run.kind === 'review').length,
         provisional: (task?.usage.provisional ?? false) || runs.some((run) => run.live),
-        loading,
     };
 }
 

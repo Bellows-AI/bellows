@@ -5,10 +5,10 @@ import { formatTick, niceMax } from './scale.js';
 
 /**
  * The pulse (issue 530): a static line chart of one run's recorded activity — one line per token
- * type (a null bucket is a gap in it, not a zero) over the run's wall-clock buckets, all on one scale so the lines compare honestly. The
- * compact form is the sidebar's picture, without axes; the detailed form adds the scale and the
- * run's span for the modal. Pure SVG, no animation: it shows what was recorded, not that the run
- * is alive.
+ * type (a null bucket is a gap in it, not a zero) over the run's wall-clock buckets, all on one
+ * scale so the lines compare honestly. The compact form is the sidebar's picture, without axes; the
+ * detailed form adds the scale and the run's span for the modal. Pure SVG, no animation: it shows
+ * what was recorded, not that the run is alive.
  */
 
 const COMPACT = { width: 120, height: 32, padX: 2, padY: 3 };

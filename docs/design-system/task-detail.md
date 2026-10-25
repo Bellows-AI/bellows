@@ -5,7 +5,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Page frame, grid, panel order, remove dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskRemoveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
+| Page frame, grid, panel order, remove dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskRemoveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `web/test/task-stats-dialog.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | Head: state pill, metadata, action row | `web/src/panels/TaskHeader.tsx` | `web/test/task-header.render.test.tsx` |
 | Outcome rail (interruptions included), and one run's exchange, output, gates, published work | `web/src/panels/TaskOutcome.tsx`, `web/src/panels/TaskRun.tsx` | `web/test/task-outcome.render.test.tsx`, `web/test/task-run.render.test.tsx`, `e2e/task-detail.spec.ts` |
 | An agent question in its run's exchange: states, answer value, submit | `web/src/panels/TaskQuestion.tsx`, `web/src/task-question.ts`, `web/src/api/answer-question.ts` | `web/test/task-question.render.test.tsx`, `e2e/task-question.spec.ts` |
@@ -32,5 +32,6 @@ Classes defined here: `task-layout`, `task-main`, `task-support`, `task-summary`
 `question-status`, `question-answers`, `task-stats`, `task-stats-trigger`, `task-stats-scope`,
 `task-stats-summary`, `task-stats-note`, `task-stats-head`, `task-stats-totals`, `task-stats-runs`,
 `task-stats-pulse`, `task-stats-line`, `task-stats-usage`, `task-stats-owned`, `task-stats-models`,
-`task-stats-run-note`, `task-stats-toggle`, `task-stats-detail`, `pulse`, `pulse-detailed`, `pulse-axis`, `pulse-line`, `pulse-dot`, `pulse-input`,
-`pulse-output`, `pulse-cache-read`, `pulse-cache-creation`, `pulse-scale`, `pulse-legend`, `pulse-swatch`.
+`task-stats-run-note`, `task-stats-toggle`, `task-stats-detail`, `pulse`, `pulse-detailed`, `pulse-axis`,
+`pulse-line`, `pulse-dot`, `pulse-input`, `pulse-output`, `pulse-cache-read`,
+`pulse-cache-creation`, `pulse-scale`, `pulse-legend`, `pulse-swatch`.

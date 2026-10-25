@@ -282,7 +282,10 @@ export function taskUsage(
     return {
         taskId,
         removed: false,
-        usage: usageBlock(measured ? sum : null, over.block),
+        usage: usageBlock(measured ? sum : null, {
+            counts: { sessions: 0, runs: runs.length, tasks: 1 },
+            ...over.block,
+        }),
         runs,
         taskOwned: over.taskOwned ?? null,
     };
@@ -304,4 +307,33 @@ export function activityAnswer(
         usage: usageBlock(tokens),
         task,
     };
+}
+
+/**
+ * A measured task with everything the modal can show: an estimated figure, unlocated and unresolved
+ * usage, a review run, a run whose job row is gone, a model row and a task-owned amount with a reason.
+ */
+export function fullTask(jobId: string, reviewId: string, goneId: string): TaskUsage {
+    const owned = usageBlock(
+        { input: 5 },
+        { unassigned: [{ reason: 'no-segment', tokens: { ...NO_TOKENS, input: 5 } }] }
+    );
+    const rows = [{ model: 'model-a', rawModels: ['model-a'], querySource: null, tokens: { ...NO_TOKENS, input: 10 } }];
+    const task = taskUsage(
+        jobId,
+        [
+            runUsage(jobId, 'run', { input: 10, output: 2 }, { block: { rows } }),
+            runUsage(reviewId, 'review', { output: 3 }, { reviewOf: jobId }),
+            runUsage(goneId, 'run', { input: 1 }, { operational: false }),
+        ],
+        { taskOwned: owned }
+    );
+    task.usage = {
+        ...task.usage,
+        precision: { ...task.usage.precision, input: 'estimated' },
+        unlocated: { ...NO_TOKENS, input: 7 },
+        unresolvedTemporality: { observations: 2 },
+        rows,
+    };
+    return task;
 }
