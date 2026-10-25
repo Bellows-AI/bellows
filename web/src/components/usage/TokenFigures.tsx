@@ -20,11 +20,20 @@ interface Props {
     inputSide?: boolean;
 }
 
+/** A sum of parts: estimated only when every measured part is, mixed when any part is not exact. */
+function sumPrecision(parts: (UsagePrecision | null)[]): UsagePrecision | null {
+    const measured = parts.filter((part) => part !== null);
+    if (measured.every((part) => part === 'estimated') && measured.length > 0) return 'estimated';
+    return measured.some((part) => part !== 'exact') ? 'mixed' : null;
+}
+
 /** Four labelled figures for one `Tokens`. There is no four-type total, by construction. */
 export function TokenFigures({ tokens, precision, coverage, selected, inputSide }: Props) {
     const side = inputSide === true ? inputTokens(tokens) : null;
     const sideParts = [tokens.input, tokens.cacheRead, tokens.cacheCreation];
-    const sidePartial = side?.total !== null && sideParts.some((part) => part === null);
+    const sidePartial = side !== null && side.total !== null && sideParts.some((part) => part === null);
+    const sidePrecision =
+        precision === undefined ? null : sumPrecision([precision.input, precision.cacheRead, precision.cacheCreation]);
     return (
         <dl className="usage-figures">
             {USAGE_TOKEN_TYPES.map((type) => {
@@ -55,6 +64,7 @@ export function TokenFigures({ tokens, precision, coverage, selected, inputSide 
                     <dt className="usage-figure-label">{TOTAL_INPUT_LABEL}</dt>
                     <dd>
                         {figure(side.total)}
+                        <PrecisionBadge precision={sidePrecision} />
                         <small className="usage-coverage"> {TOTAL_INPUT_CAPTION}</small>
                         {sidePartial ? (
                             <small className="usage-coverage"> (partial: a part is unmeasured)</small>

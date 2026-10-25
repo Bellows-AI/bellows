@@ -91,8 +91,8 @@ Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-us
 `table-cards`, `updated-at`, `icon`.
 
 Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-precision`,
-`usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`, `usage-variants`, `usage-child-row`,
-`usage-diagnostics`, `usage-state-note`.
+`usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`,
+`usage-variants`, `usage-child-row`, `usage-diagnostics`, `usage-state-note`.
 
 ## Shared UI units
 

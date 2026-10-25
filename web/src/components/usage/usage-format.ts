@@ -29,7 +29,8 @@ export const UNASSIGNED_SENTENCES: Record<UnassignedReason, string> = {
 };
 
 export const UNLOCATED_SENTENCE = 'usage whose time is unknown';
-export const UNRESOLVED_TEMPORALITY_SENTENCE = 'observations whose counting mode is unresolved';
+export const unresolvedTemporalitySentence = (count: number): string =>
+    `${count === 1 ? 'observation' : 'observations'} whose counting mode is unresolved`;
 
 /** Null is "not measured" and renders a dash; a measured zero renders 0. */
 export function figure(value: number | null): string {

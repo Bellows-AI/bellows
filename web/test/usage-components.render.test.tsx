@@ -44,6 +44,45 @@ describe('TokenFigures', () => {
         expect(partial).toContain('partial');
     });
 
+    it('marks the input-side sum with the precision derived from its measured parts', () => {
+        const sum = (
+            precision: Record<
+                'input' | 'cacheRead' | 'cacheCreation' | 'output',
+                'exact' | 'estimated' | 'mixed' | null
+            >
+        ) =>
+            renderToStaticMarkup(
+                <TokenFigures
+                    tokens={{ input: 10, output: 1, cacheRead: 20, cacheCreation: 30 }}
+                    precision={precision}
+                    inputSide
+                />
+            ).split('data-type="inputSide"')[1]!;
+        const exact = { input: 'exact', output: 'exact', cacheRead: 'exact', cacheCreation: 'exact' } as const;
+        expect(sum(exact)).not.toContain('usage-precision');
+        expect(sum({ ...exact, cacheRead: 'estimated' })).toContain('mixed estimated and exact');
+        expect(sum({ ...exact, cacheRead: 'mixed' })).toContain('mixed estimated and exact');
+        expect(
+            sum({ input: 'estimated', output: 'exact', cacheRead: 'estimated', cacheCreation: 'estimated' })
+        ).toMatch(/usage-precision-words">estimated</);
+        const partial = renderToStaticMarkup(
+            <TokenFigures
+                tokens={{ ...none, input: 3, cacheRead: 4 }}
+                precision={{ input: 'estimated', output: null, cacheRead: 'estimated', cacheCreation: null }}
+                inputSide
+            />
+        );
+        expect(partial.split('data-type="inputSide"')[1]).toMatch(/usage-precision-words">estimated</);
+    });
+
+    it('does not flag a fully measured sum or an unmeasured one as partial', () => {
+        const full = renderToStaticMarkup(
+            <TokenFigures tokens={{ input: 1, output: 2, cacheRead: 3, cacheCreation: 4 }} inputSide />
+        );
+        expect(full).not.toContain('partial');
+        expect(renderToStaticMarkup(<TokenFigures tokens={none} inputSide />)).not.toContain('partial');
+    });
+
     it('marks estimates, coverage and the selected type', () => {
         const html = renderToStaticMarkup(
             <TokenFigures
@@ -110,6 +149,27 @@ describe('UsageDiagnostics', () => {
                 <UsageDiagnostics usage={block({ unassigned: [{ reason: 'overlap', tokens: zero }] })} />
             )
         ).toBe('');
+    });
+
+    it('treats null, false and empty children as absent and renders real children', () => {
+        for (const empty of [null, false, undefined, [null, false]]) {
+            expect(renderToStaticMarkup(<UsageDiagnostics usage={block({})}>{empty}</UsageDiagnostics>)).toBe('');
+        }
+        const onlyChildren = renderToStaticMarkup(
+            <UsageDiagnostics usage={block({})}>
+                <p>tenant note</p>
+            </UsageDiagnostics>
+        );
+        expect(onlyChildren).toContain('tenant note');
+        expect(onlyChildren).not.toContain('<ul');
+    });
+
+    it('words a single unresolved observation in the singular', () => {
+        const one = text(
+            renderToStaticMarkup(<UsageDiagnostics usage={block({ unresolvedTemporality: { observations: 1 } })} />)
+        );
+        expect(one).toContain('1 observation whose counting mode is unresolved');
+        expect(one).not.toContain('observations');
     });
 
     it('lists unlocated, unresolved and unassigned amounts apart from totals', () => {

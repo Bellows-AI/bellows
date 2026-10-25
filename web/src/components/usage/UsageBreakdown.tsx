@@ -12,15 +12,73 @@ const cells = (tokens: UsageRow['tokens']) =>
 
 const variantsOf = (row: UsageRow): string[] => row.rawModels.filter((raw) => raw !== row.model);
 
+function ChildRow({ child, id, label }: { child: UsageRow; id: string | undefined; label: string }) {
+    const unknown = child.querySource === null || isUnknownBucket(child.querySource);
+    return (
+        <tr
+            id={id}
+            className="usage-child-row"
+            data-source={child.querySource ?? 'unknown'}
+            aria-label={`Part of ${label}`}
+        >
+            <td data-label="Query source">{unknown ? 'Unknown source' : child.querySource}</td>
+            {cells(child.tokens)}
+        </tr>
+    );
+}
+
+interface ModelRowsProps {
+    row: UsageRow;
+    idPrefix: string;
+    expanded: boolean;
+    onToggle: () => void;
+}
+
+/** One model row and, when expanded, its query-source rows. */
+function ModelRows({ row, idPrefix, expanded, onToggle }: ModelRowsProps) {
+    const children = row.children ?? [];
+    const variants = variantsOf(row);
+    const label = isUnknownBucket(row.model) ? 'Unknown model' : row.model;
+    const ids = children.map((_, childIndex) => `${idPrefix}-${childIndex}`);
+    return (
+        <>
+            <tr data-model={row.model}>
+                <td data-label="Model">
+                    {label}
+                    {variants.length === 0 ? null : (
+                        <span className="usage-variants">Variants: {variants.join(', ')}</span>
+                    )}
+                    {children.length === 0 ? null : (
+                        <button
+                            type="button"
+                            className="usage-breakdown-toggle"
+                            aria-expanded={expanded}
+                            aria-controls={expanded ? ids.join(' ') : undefined}
+                            aria-label={`${expanded ? 'Hide' : 'Show'} query sources for ${label}`}
+                            onClick={onToggle}
+                        >
+                            {expanded ? 'Hide query sources' : 'Show query sources'}
+                        </button>
+                    )}
+                </td>
+                {cells(row.tokens)}
+            </tr>
+            {expanded
+                ? children.map((child, childIndex) => (
+                      <ChildRow key={rowKey(child)} child={child} id={ids[childIndex]} label={label} />
+                  ))
+                : null}
+        </>
+    );
+}
+
 /**
  * Model rows, each expandable to its query-source rows (collapsed by default). The footer reads
  * `usage.tokens` only: a child row is a part of its parent, never added to it, so expanding
  * cannot change any figure.
  */
-export function UsageBreakdown({ usage, defaultExpanded }: { usage: UsageBlock; defaultExpanded?: boolean }) {
-    const [open, setOpen] = useState<ReadonlySet<string>>(
-        () => new Set(defaultExpanded === true ? usage.rows.map(rowKey) : [])
-    );
+export function UsageBreakdown({ usage }: { usage: UsageBlock }) {
+    const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
     const prefix = useId();
     if (usage.rows.length === 0) return null;
     const toggle = (key: string) =>
@@ -43,57 +101,15 @@ export function UsageBreakdown({ usage, defaultExpanded }: { usage: UsageBlock; 
                     </tr>
                 </thead>
                 <tbody>
-                    {usage.rows.flatMap((row, index) => {
-                        const key = rowKey(row);
-                        const children = row.children ?? [];
-                        const expanded = open.has(key);
-                        const variants = variantsOf(row);
-                        const label = isUnknownBucket(row.model) ? 'Unknown model' : row.model;
-                        const ids = children.map((_, childIndex) => `${prefix}-${index}-${childIndex}`);
-                        const parent = (
-                            <tr key={key} data-model={row.model}>
-                                <td data-label="Model">
-                                    {label}
-                                    {variants.length === 0 ? null : (
-                                        <span className="usage-variants">Variants: {variants.join(', ')}</span>
-                                    )}
-                                    {children.length === 0 ? null : (
-                                        <button
-                                            type="button"
-                                            className="usage-breakdown-toggle"
-                                            aria-expanded={expanded}
-                                            aria-controls={ids.join(' ')}
-                                            aria-label={`${expanded ? 'Hide' : 'Show'} query sources for ${label}`}
-                                            onClick={() => toggle(key)}
-                                        >
-                                            {expanded ? 'Hide query sources' : 'Show query sources'}
-                                        </button>
-                                    )}
-                                </td>
-                                {cells(row.tokens)}
-                            </tr>
-                        );
-                        if (!expanded) return [parent];
-                        return [
-                            parent,
-                            ...children.map((child, childIndex) => (
-                                <tr
-                                    key={rowKey(child)}
-                                    id={ids[childIndex]}
-                                    className="usage-child-row"
-                                    data-source={child.querySource ?? 'unknown'}
-                                    aria-label={`Part of ${label}`}
-                                >
-                                    <td data-label="Query source">
-                                        {isUnknownBucket(child.querySource) || child.querySource === null
-                                            ? 'Unknown source'
-                                            : child.querySource}
-                                    </td>
-                                    {cells(child.tokens)}
-                                </tr>
-                            )),
-                        ];
-                    })}
+                    {usage.rows.map((row, index) => (
+                        <ModelRows
+                            key={rowKey(row)}
+                            row={row}
+                            idPrefix={`${prefix}-${index}`}
+                            expanded={open.has(rowKey(row))}
+                            onToggle={() => toggle(rowKey(row))}
+                        />
+                    ))}
                 </tbody>
                 <tfoot>
                     <tr>

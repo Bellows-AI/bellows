@@ -48,7 +48,7 @@ const withRows = block({
 });
 
 const CELLS: Record<UsageState, ReactNode> = {
-    Measured: <TokenFigures tokens={withRows.tokens} inputSide selected="inputSide" />,
+    Measured: <TokenFigures tokens={withRows.tokens} precision={withRows.precision} inputSide selected="inputSide" />,
     Unmeasured: (
         <>
             <TokenFigures tokens={emptyBlock('unmeasured').tokens} inputSide />
@@ -92,7 +92,7 @@ const CELLS: Record<UsageState, ReactNode> = {
     ),
     Unavailable: <UsageStateNote block={emptyBlock('unavailable')} />,
     'Breakdown collapsed': <UsageBreakdown usage={withRows} />,
-    'Breakdown expanded': <UsageBreakdown usage={withRows} defaultExpanded />,
+    'Breakdown expanded': <UsageBreakdown usage={withRows} />,
     Diagnostics: (
         <UsageDiagnostics
             usage={block({

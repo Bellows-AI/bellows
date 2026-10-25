@@ -96,7 +96,15 @@ test.describe('component-state specimen', () => {
                 for (const state of USAGE_STATES) {
                     await expect(page.locator(`[data-cell="${usageCellId(state)}"]`)).toBeVisible();
                 }
+                await expect(page.locator('[data-cell="Usage/Breakdown expanded"] .usage-child-row')).toHaveCount(0);
+                await page
+                    .locator('[data-cell="Usage/Breakdown expanded"]')
+                    .getByRole('button', { name: 'Show query sources for model-a' })
+                    .click();
                 await expect(page.locator('[data-cell="Usage/Breakdown expanded"] .usage-child-row')).toHaveCount(2);
+                await expect(
+                    page.locator('[data-cell="Usage/Measured"] [data-type="inputSide"] .usage-precision')
+                ).toBeVisible();
                 await expect(page.locator('[data-cell="Usage/Breakdown collapsed"] .usage-child-row')).toHaveCount(0);
                 await noHorizontalOverflow(page);
 

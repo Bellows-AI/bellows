@@ -77,6 +77,32 @@ describe('UsageBreakdown (dom)', () => {
         expect(within(source).getAllByText('—')).toHaveLength(1);
     });
 
+    it('points aria-controls only at rows that exist', () => {
+        const { container } = render(<UsageBreakdown usage={usage} />);
+        const toggle = screen.getByRole('button', { name: 'Show query sources for model-a' });
+        expect(toggle.hasAttribute('aria-controls')).toBe(false);
+        fireEvent.click(toggle);
+        const ids = toggle.getAttribute('aria-controls')!.split(' ');
+        expect(ids).toHaveLength(2);
+        for (const id of ids) expect(container.querySelector(`[id="${id}"]`)).not.toBeNull();
+    });
+
+    it('labels a child row with a null query source as unknown', () => {
+        const withNull: UsageBlock = {
+            ...usage,
+            rows: [
+                {
+                    ...usage.rows[0]!,
+                    children: [{ ...usage.rows[0]!.children![0]!, querySource: null }],
+                },
+            ],
+        };
+        const { container } = render(<UsageBreakdown usage={withNull} />);
+        fireEvent.click(screen.getByRole('button', { name: /Show query sources for model-a/ }));
+        const source = container.querySelector('.usage-child-row') as HTMLElement;
+        expect(within(source).getByText('Unknown source')).toBeTruthy();
+    });
+
     it('expands each model on its own', () => {
         const two: UsageBlock = {
             ...usage,
