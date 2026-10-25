@@ -452,6 +452,11 @@ export interface TokenBucket {
 
 const TOKEN_TYPES: readonly TokenType[] = ['input', 'output', 'cacheRead', 'cacheCreation'];
 
+/** The bucket an instant falls in: its UTC day, or the Monday its UTC ISO week starts on. */
+export function bucketStartOf(iso: string, granularity: TokenBucketGranularity): string {
+    return granularity === 'day' ? dayKey(iso) : weekStart(iso).toISOString().slice(0, 10);
+}
+
 /** Sums timed contributions into UTC day or week buckets by observation time; only non-empty buckets, in order. */
 export function bucketTimedContributions(
     timed: readonly TokenContribution[],
@@ -460,7 +465,7 @@ export function bucketTimedContributions(
     const buckets = new Map<string, TokenFields>();
     for (const c of timed) {
         if (c.kind !== 'timed' || c.observedAt === null) continue;
-        const start = granularity === 'day' ? dayKey(c.observedAt) : weekStart(c.observedAt).toISOString().slice(0, 10);
+        const start = bucketStartOf(c.observedAt, granularity);
         const tokens = buckets.get(start) ?? emptyTokens();
         for (const type of TOKEN_TYPES) {
             const amount = c.tokens[type];
