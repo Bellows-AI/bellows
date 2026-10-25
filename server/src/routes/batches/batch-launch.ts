@@ -1,8 +1,6 @@
 import {
     batchExecutionCapability,
     ERROR_CODES,
-    executorMissingMessage,
-    executorSuspendedMessage,
     resolveBatchPlan,
     type BatchPlan,
     type DefaultBranches,
@@ -14,8 +12,9 @@ import type { Repo } from '../../config.js';
 import type { BatchRecord } from '../../db/batches/batch-store-types.js';
 import { type Context, planOf } from './batch-http.js';
 import { bad, checkReposVisible, guard } from '../helpers.js';
+import { HTTP_CONFLICT } from '../jobs/job-limits.js';
+import { refusedAsUnusable } from '../jobs/executor-usable.js';
 import { validateExecutorField } from '../jobs/job-field-validation.js';
-import { HTTP_CONFLICT, HTTP_NOT_FOUND } from '../jobs/job-limits.js';
 
 /**
  * The launch checks, in the order the issue fixes, shared by validate and start: structural
@@ -130,19 +129,7 @@ async function executorsUsable(ctx: Context, request: FastifyRequest, reply: Fas
             bad(reply, ERROR_CODES.BAD_EXECUTOR, shape.message);
             return false;
         }
-        if (!executors || !ctx.createdBy) continue;
-        const row = await guard(
-            reply,
-            (e) => request.log.error({ err: e }, 'executor row read failed'),
-            () => executors.configFor(ctx.createdBy!, name, scope)
-        );
-        if (!row.ok) return false;
-        if (row.value === null) {
-            bad(reply, ERROR_CODES.UNKNOWN_EXECUTOR, executorMissingMessage(scope, name), HTTP_NOT_FOUND);
-            return false;
-        }
-        if (row.value.suspended) {
-            bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(scope, name), HTTP_CONFLICT);
+        if (await refusedAsUnusable(request, reply, { executors, createdBy: ctx.createdBy, executor: name, scope })) {
             return false;
         }
     }

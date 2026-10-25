@@ -1,3 +1,4 @@
+import { executorMissingMessage } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -344,6 +345,41 @@ describe('POST /api/jobs against a suspended profile', () => {
         await suspend(b, url, b.memberCookie, false);
 
         expect((await queue(b, b.memberCookie, 'mine', 'user')).statusCode).toBe(HTTP_CREATED);
+    });
+});
+
+describe('POST /api/jobs against an executor the scope does not hold', () => {
+    it('refuses a missing personal executor with 404 UNKNOWN_EXECUTOR and queues nothing', async () => {
+        const b = await boot();
+        const response = await queue(b, b.memberCookie, 'ghost', 'user');
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('UNKNOWN_EXECUTOR');
+        expect(response.json().error).toBe(executorMissingMessage('user', 'ghost'));
+        expect(b.queued).toEqual([]);
+    });
+
+    it('does not resolve a personal name under the org scope, nor the reverse', async () => {
+        const b = await boot();
+        await putPersonal(b, b.memberCookie, [entry('mine')]);
+        await createOrg(b, 'shared');
+
+        expect((await queue(b, b.memberCookie, 'mine', 'org')).statusCode).toBe(HTTP_NOT_FOUND);
+        expect((await queue(b, b.memberCookie, 'shared', 'user')).statusCode).toBe(HTTP_NOT_FOUND);
+        expect(b.queued).toEqual([]);
+        expect((await queue(b, b.memberCookie, 'shared', 'org')).statusCode).toBe(HTTP_CREATED);
+    });
+
+    it('refuses before it checks the repository', async () => {
+        const b = await boot();
+        const response = await b.instance.inject({
+            method: 'POST',
+            url: '/api/jobs',
+            headers: { cookie: b.memberCookie },
+            payload: { command: 'echo hi', executor: 'ghost', executorScope: 'user', repo: 'acme/other' },
+        });
+        expect(response.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(response.json().code).toBe('UNKNOWN_EXECUTOR');
+        expect(b.queued).toEqual([]);
     });
 });
 
