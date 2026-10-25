@@ -13,7 +13,7 @@ import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
 import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
-import type { LoopRuntime } from './loop-types.js';
+import type { GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
@@ -58,6 +58,41 @@ export type GateReport = {
     output: string | null;
 };
 
+/** Whether the job declares gates or setup, so that a gate environment is started for it at all. */
+const declaresGateEnvironment = (job: BoardJob): boolean =>
+    Boolean(job.gates && (job.gates.gates.length || job.gates.setup));
+
+/**
+ * Puts the pair the agent reaches the ad-hoc gate endpoint with onto `job.gateEnv`, once. The token
+ * is registered only by `beginGates`; until then the endpoint answers it nothing.
+ */
+async function ensureGatePair(gates: GateStack, job: BoardJob): Promise<string> {
+    const port = await gates.server.listen();
+    job.gateEnv = {
+        ...job.gateEnv,
+        BELLOWS_GATE_URL: job.gateEnv?.BELLOWS_GATE_URL ?? gates.advertiseUrl(port),
+        BELLOWS_GATE_TOKEN: job.gateEnv?.BELLOWS_GATE_TOKEN ?? randomUUID(),
+    };
+    return job.gateEnv.BELLOWS_GATE_TOKEN as string;
+}
+
+/**
+ * Mints the agent's gate pair for a job that declares gates or setup, before the first runner step.
+ * A kubernetes group is one pod whose env Secret is written when that step (the checkout sync)
+ * makes it, long before `beginGates` runs, and a pod's env cannot change afterwards. Best-effort
+ * like `openRunControl`: `beginGates` mints the pair itself when this could not, which is all a
+ * docker agent container, created later, needs.
+ */
+export async function mintGateCredentials(rt: LoopRuntime, job: BoardJob): Promise<void> {
+    const { gates } = rt;
+    if (!gates || !declaresGateEnvironment(job) || !checkoutKey(job)) return;
+    try {
+        await ensureGatePair(gates, job);
+    } catch (e) {
+        rt.log(`job ${job.id}: could not mint the gate credentials early: ${(e as Error).message}`);
+    }
+}
+
 /**
  * Ensures the job's gate environment, registers its ad-hoc token and runs `environment.setup` in
  * it (issue #733), or answers null for a job that declares neither gates nor setup. The token and
@@ -97,8 +132,7 @@ export async function beginGates(
         return null;
     }
     try {
-        const port = await gates.server.listen();
-        const token = randomUUID();
+        const token = await ensureGatePair(gates, job);
         gates.server.register(token, {
             key,
             image: job.gates.image,
@@ -111,14 +145,8 @@ export async function beginGates(
                 state.gateLoss ??= reason;
             },
         });
-        // Beside `env`, not inside it: the reserved-name filter keeps a member-configured
-        // BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
-        // The run-control pair, minted earlier (`openRunControl`, before the sync), stays beside it.
-        job.gateEnv = {
-            ...job.gateEnv,
-            BELLOWS_GATE_URL: gates.advertiseUrl(port),
-            BELLOWS_GATE_TOKEN: token,
-        };
+        // The pair is on `job.gateEnv`, beside `env` and not inside it: the reserved-name filter keeps a
+        // member-configured BELLOWS_GATE_* out of the claim lines, and these are the driver's own minted values.
         // A taken-over run's environment setup ran before the agent did (#829).
         if (!opts.takeover) await runEnvironmentSetup(rt, job, key, state);
         // The same check at the far edge — listen can take its time, and nothing registered

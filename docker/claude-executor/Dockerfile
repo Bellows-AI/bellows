@@ -186,6 +186,10 @@ RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
     && chown factory-tool:node /home/factory-tool/.gitconfig \
     && install -d -o root -g factory-agent -m 2750 /run/factory-tool \
     && install -d -o node -g node -m 0750 /run/factory-control
+# The agent's commit identity (issue #1017), the one the publisher and the checkout sync fall back to
+# (driver/src/publish/publish.ts): /etc/gitconfig is system scope, so both uids read it whatever HOME
+# a run mounts, and a repository's own, a member's global or a GIT_AUTHOR_* env identity still wins.
+RUN printf '[user]\n\tname = factory-ai\n\temail = factory-ai@users.noreply.github.com\n' > /etc/gitconfig
 COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash

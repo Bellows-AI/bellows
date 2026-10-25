@@ -57,6 +57,18 @@ const CACHE = [
     `if [ -w ${CLI_CACHE} ]; then echo CLI_CACHE=writable; else echo CLI_CACHE=readonly; fi`,
 ].join('\n');
 
+/** The commit identity (#1017): a bare commit as the tool uid, then who it was authored by. */
+export const COMMIT_IDENTITY = 'factory-ai factory-ai@users.noreply.github.com';
+const IDENTITY = [
+    `git init -q ${TRUSTED}/id-repo`,
+    `git -C ${TRUSTED}/id-repo commit -q --allow-empty -m seam >/dev/null 2>&1; echo COMMIT=$?`,
+    `echo AUTHOR=$(git -C ${TRUSTED}/id-repo log -1 --format='%an %ae' 2>/dev/null)`,
+].join('\n');
+
+/** The gate pair the lane gives the runner (#1018) as the tool uid sees it; the token's value is never printed. */
+export const GATE_URL = 'http://gate.invalid:9';
+const GATE_ENV = ['echo GATE_URL=${BELLOWS_GATE_URL:-unset}', 'echo GATE_TOKEN=${BELLOWS_GATE_TOKEN:+set}'].join('\n');
+
 const GIT = [
     `git -C ${TRUSTED}/cli-repo log --oneline >/dev/null 2>&1 && echo TOOL_ON_CLI_REPO=ok || echo TOOL_ON_CLI_REPO=refused`,
     `git clone -q ${TRUSTED}/cli-repo ${TRUSTED}/clone >/dev/null 2>&1; echo CLONE=$?`,
@@ -109,6 +121,8 @@ function plan(cli) {
         ['git', bash(GIT)],
         ['skill', { tool: t.skill, input: cli === 'claude' ? { skill: SKILL } : { name: SKILL } }],
         ['skill-read', bash(skillRead)],
+        ['identity', bash(IDENTITY)],
+        ['gate-env', bash(GATE_ENV)],
     ];
 }
 
@@ -190,6 +204,18 @@ export function verdict(cli, { results, skillBases = [], plainSkillBases = [], n
         skill.SKILL_READ === 'ok' && skill.PRIVATE === 'denied',
         by['skill-read'].text
     );
+    const identity = values(by.identity.text);
+    check(
+        'the tool commits with the runner’s identity (#1017), no config of its own needed',
+        identity.COMMIT === '0' && identity.AUTHOR === COMMIT_IDENTITY,
+        by.identity.text
+    );
+    const gate = values(by['gate-env'].text);
+    check(
+        'the tool sees the gate pair the runner was given (#1018)',
+        gate.GATE_URL === GATE_URL && gate.GATE_TOKEN === 'set',
+        by['gate-env'].text
+    );
     return out;
 }
 
@@ -199,6 +225,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (mode === 'steps') process.stdout.write(`${JSON.stringify(seamSteps(cli))}\n`);
     else if (mode === 'skill-steps') process.stdout.write(`${JSON.stringify(skillOnlySteps(cli))}\n`);
     else if (mode === 'node-repos') process.stdout.write(`${NODE_REPOS}\n`);
+    else if (mode === 'gate-url') process.stdout.write(`${GATE_URL}\n`);
     else if (mode === 'node-git') process.stdout.write(`${NODE_GIT}\n`);
     else if (mode === 'verdict') {
         for (const { name, pass, detail } of verdict(cli, JSON.parse(readFileSync(file, 'utf8')))) {

@@ -591,6 +591,8 @@ export function stubGateStack(
         envBodies: [] as string[],
         released: [] as string[],
         registered: 0,
+        /** Each token the gate server registered, in order. */
+        registeredTokens: [] as string[],
         unregistered: 0,
         cancelled: [] as string[],
         advertised: '',
@@ -617,8 +619,9 @@ export function stubGateStack(
             stop: async () => {},
         } as GateManager,
         server: {
-            register: () => {
+            register: (token: string) => {
                 stack.registered += 1;
+                stack.registeredTokens.push(token);
             },
             unregister: () => {
                 stack.unregistered += 1;

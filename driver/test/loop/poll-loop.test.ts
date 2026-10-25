@@ -1342,7 +1342,7 @@ describe('the poll loop', () => {
         const runner = stubRunner(async () => {
             throw new Error('the runner must not spawn');
         });
-        // The first beat parks inside the board stub; advertiseUrl resolves it from inside
+        // The first beat parks inside the board stub; registering the token resolves it from inside
         // beginGates' final stretch — queuing the verdict's flag-set between beginGates' own
         // clean check and the caller's check, the exact window the leak lives in.
         let landBeat = () => {};
@@ -1359,9 +1359,10 @@ describe('the poll loop', () => {
             }
             return rawHeartbeat(claimed);
         };
-        gates.advertiseUrl = (port) => {
+        const register = gates.server.register.bind(gates.server);
+        gates.server.register = (token, entry) => {
             landBeat();
-            return `http://host.docker.internal:${port}`;
+            return register(token, entry);
         };
 
         await drive({ ...board, runner, gates });

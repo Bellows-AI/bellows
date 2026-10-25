@@ -154,6 +154,8 @@ describe('the seam lane’s verdicts', () => {
                 ok('TOOL_ON_CLI_REPO=ok\nCLONE=0\nINIT=0\nTOOL_ON_CTL=ok\nINIT_CTL=0'),
                 ok('Launching skill: jira'),
                 ok('SKILL_READ=ok\nPRIVATE=denied'),
+                ok('COMMIT=0\nAUTHOR=factory-ai factory-ai@users.noreply.github.com'),
+                ok('GATE_URL=http://gate.invalid:9\nGATE_TOKEN=set'),
             ],
             skillBases: [base(cli)],
             plainSkillBases: [base(cli)],
@@ -166,10 +168,10 @@ describe('the seam lane’s verdicts', () => {
             .filter((entry) => !entry.pass)
             .map((entry) => entry.name.replace(`${cli}: `, ''));
 
-    it.each(CLIS)('passes every case of a healthy %s run, ten of them', (cli) => {
+    it.each(CLIS)('passes every case of a healthy %s run, twelve of them', (cli) => {
         const verdicts = lane.verdict(cli, healthy(cli));
         expect(verdicts.filter((entry) => !entry.pass)).toEqual([]);
-        expect(verdicts).toHaveLength(10);
+        expect(verdicts).toHaveLength(12);
     });
 
     it('has one scripted step per result the verdicts read, and a skill-only run of the skill step', () => {
@@ -257,9 +259,27 @@ describe('the seam lane’s verdicts', () => {
         expect(failing('claude', open)).toEqual([expect.stringContaining('the tool reads the skill')]);
     });
 
+    it('fails #1017 when the tool cannot commit, or commits as someone else', () => {
+        const refused = healthy('claude');
+        refused.results[13] = { isError: false, text: 'COMMIT=128\nAUTHOR=' };
+        expect(failing('claude', refused)).toEqual([expect.stringContaining('commits with the runner')]);
+        const invented = healthy('opencode');
+        invented.results[13] = { isError: false, text: 'COMMIT=0\nAUTHOR=agent noreply@example.com' };
+        expect(failing('opencode', invented)).toEqual([expect.stringContaining('commits with the runner')]);
+    });
+
+    it('fails #1018 when the tool sees no gate URL or no token', () => {
+        const noUrl = healthy('claude');
+        noUrl.results[14] = { isError: false, text: 'GATE_URL=unset\nGATE_TOKEN=set' };
+        expect(failing('claude', noUrl)).toEqual([expect.stringContaining('gate pair')]);
+        const noToken = healthy('opencode');
+        noToken.results[14] = { isError: false, text: 'GATE_URL=http://gate.invalid:9\nGATE_TOKEN=' };
+        expect(failing('opencode', noToken)).toEqual([expect.stringContaining('gate pair')]);
+    });
+
     it('fails every case of a run that produced no results', () => {
         const nothing = { ...healthy('claude'), results: [], skillBases: [], plainSkillBases: [], nodeGit: '' };
-        expect(failing('claude', nothing)).toHaveLength(10);
+        expect(failing('claude', nothing)).toHaveLength(12);
     });
 });
 
