@@ -103,3 +103,29 @@
         margin-bottom: 8px;
     }
 }
+
+/* The usage section: one card per state, wrapping with the viewport. Tokens only. */
+.specimen-usage {
+    margin-top: 32px;
+}
+
+.specimen-usage-grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+}
+
+.specimen-usage-cell {
+    background: var(--surface-raised);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    min-width: 0;
+    padding: 12px;
+}
+
+.specimen-usage-cell h3 {
+    color: var(--ink-muted);
+    font-size: 13px;
+    font-weight: 500;
+    margin: 0 0 8px;
+}

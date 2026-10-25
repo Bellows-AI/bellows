@@ -1298,4 +1298,113 @@
         display: flex;
         gap: 8px;
     }
+
+    /* Token usage (web/src/components/usage). Four figures side by side, never one combined
+       number; a dash is plain text, and `~` plus its words mark an estimate, so no state rides on
+       color. The partial and unavailable states are sentences, not tints. */
+    .usage-figures {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        margin: 0;
+    }
+
+    .usage-figure {
+        font-variant-numeric: tabular-nums;
+        min-width: 0;
+    }
+
+    .usage-figure[aria-current='true'] {
+        border-left: 3px solid var(--accent);
+        padding-left: 8px;
+    }
+
+    .usage-figure dd {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .usage-figure-label {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .usage-precision {
+        color: var(--ink-muted);
+        margin-left: 4px;
+    }
+
+    /* The words behind the `~` glyph: out of sight, still read, never `display: none`. */
+    .usage-precision-words {
+        clip-path: inset(50%);
+        height: 1px;
+        overflow: hidden;
+        position: absolute;
+        white-space: nowrap;
+        width: 1px;
+    }
+
+    .usage-coverage,
+    .usage-state-note {
+        color: var(--ink-muted);
+        font-size: 12px;
+        font-weight: 400;
+        margin: 4px 0;
+    }
+
+    ul.usage-coverage {
+        list-style: none;
+        padding: 0;
+    }
+
+    .usage-breakdown tfoot th,
+    .usage-breakdown tfoot td {
+        border-top: 1px solid var(--line-strong);
+        font-weight: 600;
+    }
+
+    .usage-breakdown-toggle {
+        display: block;
+        font-size: 12px;
+        margin-top: 4px;
+    }
+
+    .usage-variants {
+        color: var(--ink-muted);
+        display: block;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+        white-space: normal;
+    }
+
+    .usage-child-row {
+        background: var(--surface-sunken);
+    }
+
+    .usage-child-row td:first-child {
+        padding-left: 24px;
+    }
+
+    .usage-diagnostics {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        margin-top: 12px;
+        padding: 12px;
+    }
+
+    .usage-diagnostics > p {
+        color: var(--ink-muted);
+        font-size: 12px;
+        margin: 0 0 8px;
+    }
+
+    .usage-diagnostics ul {
+        display: grid;
+        gap: 8px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
 }
