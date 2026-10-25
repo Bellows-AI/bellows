@@ -41,7 +41,8 @@ export interface OrganizationMeta {
 
 /**
  * The four types are never summed into one figure: a long cached conversation would
- * count the same context repeatedly. Where one number is needed it is input + output.
+ * count the same context repeatedly. The one sanctioned sum is the labelled "Total input"
+ * (uncached input + cache read + cache write, `inputTokens()` in `telemetry.ts`).
  */
 export interface TokenTotals {
     input: number | null;
