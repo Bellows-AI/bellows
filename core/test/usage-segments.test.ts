@@ -6,15 +6,10 @@ import { at, cumulative, delta, ev } from './usage-fixtures.js';
 
 const run = (jobId: string): Destination => ({ kind: 'run', jobId });
 const no = (reason: string): Destination => ({ kind: 'unassigned', reason }) as Destination;
-const assignDeltas = (
-    rows: ExecutionEvidence[],
-    minutes: number[],
-    policy?: Parameters<typeof accountContributions>[2]
-) =>
+const assignDeltas = (rows: ExecutionEvidence[], minutes: number[]) =>
     accountContributions(
         rows,
-        minutes.map((m) => delta(m, 1)),
-        policy
+        minutes.map((m) => delta(m, 1))
     );
 
 describe('delta assignment (half-open segments)', () => {
@@ -72,13 +67,6 @@ describe('delta assignment (half-open segments)', () => {
             ev({ jobId: 'j2', startedAt: at(20), endedAt: at(30) }),
         ];
         expect(assignDeltas(open, [5, 25, 500])).toEqual([run('j1'), no('overlap'), run('j1')]);
-    });
-
-    it('policy: a lenient confirmation list accepts a requested launch', () => {
-        const rowsRequested = [ev({ launch: 'requested' })];
-        expect(assignDeltas(rowsRequested, [5], { confirmedLaunches: ['observed', 'adopted', 'requested'] })).toEqual([
-            run('j1'),
-        ]);
     });
 });
 

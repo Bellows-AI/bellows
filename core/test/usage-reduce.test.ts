@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { reduceTokenObservations } from '../src/token-contributions.js';
 import type { TokenContribution, TokenType } from '../src/token-contributions.js';
+import { resolveOwnership, sessionKeyId } from '../src/usage-ownership.js';
 import { reduceUsage, taskUsageOf } from '../src/usage-reduce.js';
 import type { ExecutionEvidence, Tokens, UsageBlock, UsageInput } from '../src/usage.js';
 import { TOKEN_TYPE_LIST, addTokens, emptyBlock } from '../src/usage.js';
@@ -19,6 +20,12 @@ import {
     world,
 } from './usage-fixtures.js';
 
+const EMPTY_DIAGNOSTIC = {
+    sessions: 0,
+    tokens: none(),
+    unlocated: none(),
+    unresolvedTemporality: { observations: 0 },
+};
 const sumTypes = (parts: Tokens[]): Tokens => parts.reduce((a, b) => addTokens(a, b), none());
 const unassignedSum = (b: UsageBlock): Tokens => sumTypes(b.unassigned.map((u) => u.tokens));
 
@@ -122,6 +129,29 @@ describe('shared-session follow-ups, reviews and the task view', () => {
         expect(b.eligible.counts).toEqual({ sessions: 1, runs: 1, tasks: 1 });
     });
 
+    it('a point in the gap between two claims is assigned only when the later claim adopts the earlier', () => {
+        const first = ev({ claimSeq: 1, startedAt: at(0), endedAt: at(10) });
+        const at12 = [delta(12, 7)];
+        const recovered = reduceUsage(
+            world({ board: [first, ev({ claimSeq: 2, startedAt: at(15), endedAt: at(25) })], contributions: at12 }),
+            ALL
+        );
+        expect(recovered.eligible.assigned).toEqual(none());
+        expect(recovered.eligible.unassigned).toEqual([{ reason: 'no-segment', tokens: out(7) }]);
+        const adopted = reduceUsage(
+            world({
+                board: [
+                    first,
+                    ev({ claimSeq: 2, launch: 'adopted', adoptsClaimSeq: 1, startedAt: at(15), endedAt: at(25) }),
+                ],
+                contributions: at12,
+            }),
+            ALL
+        );
+        expect(adopted.eligible.assigned).toEqual(out(7));
+        expect(adopted.eligible.unassigned).toEqual([]);
+    });
+
     it('keeps one run for same-row recovery (two claims, one job) and counts it once', () => {
         const input = world({
             board: [
@@ -168,7 +198,7 @@ describe('ownership in the report', () => {
             ALL
         );
         expect(forward.eligible.tokens).toEqual(none());
-        expect(forward.diagnostics.unresolvedOwnership).toEqual({ sessions: 1, tokens: out(9) });
+        expect(forward.diagnostics.unresolvedOwnership).toEqual({ ...EMPTY_DIAGNOSTIC, sessions: 1, tokens: out(9) });
         expect(reversed).toEqual(forward);
     });
 
@@ -184,17 +214,15 @@ describe('ownership in the report', () => {
         expect(JSON.stringify(r)).not.toContain('1234');
         expect(r.diagnostics).toEqual({
             sessionsWithoutHook: 0,
-            unresolvedOwnership: { sessions: 0, tokens: none() },
-            excludedRepo: { sessions: 0, tokens: none() },
+            unresolvedOwnership: EMPTY_DIAGNOSTIC,
+            excludedRepo: EMPTY_DIAGNOSTIC,
         });
     });
 
-    it('hides an unowned session from the tenant, or shows it unassigned under the unattributed policy', () => {
-        const input = world({ contributions: [delta(5, 8)] });
-        expect(reduceUsage(input, ALL).eligible.state).toBe('unmeasured');
-        const shown = reduceUsage(input, { ...ALL, policy: { unowned: 'unattributed' } });
-        expect(shown.eligible.unassigned).toEqual([{ reason: 'no-task', tokens: out(8) }]);
-        expect(shown.byUser.map((u) => u.userId)).toEqual([null]);
+    it('hides an unowned session from every tenant, single-org installs included', () => {
+        const r = reduceUsage(world({ contributions: [delta(5, 8)] }), ALL);
+        expect(r.eligible.state).toBe('unmeasured');
+        expect(r.byUser).toEqual([]);
     });
 
     it('a branch-only session is resolved, no-task, in the unknown-user bucket and outside scope=mine', () => {
@@ -270,7 +298,7 @@ describe('ownership in the report', () => {
         });
         const filtered = reduceUsage(input, { ...ALL, repos: ['repo-1'] });
         expect(filtered.eligible.tokens).toEqual(out(1));
-        expect(filtered.diagnostics.excludedRepo).toEqual({ sessions: 2, tokens: out(110) });
+        expect(filtered.diagnostics.excludedRepo).toEqual({ ...EMPTY_DIAGNOSTIC, sessions: 2, tokens: out(110) });
         expect(reduceUsage(input, ALL).eligible.tokens).toEqual(out(111));
         expectConserved(filtered.eligible);
     });
@@ -453,6 +481,58 @@ describe('range, series, unlocated and unresolved', () => {
     });
 });
 
+describe('amounts without timed usage are never dropped', () => {
+    it('lists a task and an author that only have unlocated or unresolved-temporality usage', () => {
+        const input = world({
+            board: [ev({ jobId: 'tA', rootJobId: 'tA', sessionId: 'sA', authorId: 'uA' })],
+            contributions: [unlocated(4, { session: 'sA' }), unresolvedPoint(5, 6, { session: 'sA' })],
+        });
+        const r = reduceUsage(input, ALL);
+        expect(r.tasks.map((t) => t.taskId)).toEqual(['tA']);
+        expect(r.tasks[0]!.usage.unlocated).toEqual(out(4));
+        expect(r.tasks[0]!.usage.unresolvedTemporality).toEqual({ observations: 1 });
+        expect(r.byUser.map((u) => u.userId)).toEqual(['uA']);
+        expect(r.byUser[0]!.usage.unlocated).toEqual(out(4));
+    });
+
+    it('keeps unlocated and unresolved amounts of unresolved-owner and excluded-repo sessions in the diagnostics', () => {
+        const input = world({
+            board: [
+                ev({ jobId: 'tA', rootJobId: 'tA', sessionId: 'sA', repo: 'repo-1' }),
+                ev({ jobId: 'tB', rootJobId: 'tB', sessionId: 'sC', repo: 'repo-2' }),
+                ev({ jobId: 'tC', rootJobId: 'tC', sessionId: 'sC', repo: 'repo-2' }),
+            ],
+            contributions: [
+                unlocated(3, { session: 'sC' }),
+                unresolvedPoint(5, 1, { session: 'sC' }),
+                unlocated(8, { session: 'sA' }),
+                unresolvedPoint(6, 1, { session: 'sA' }),
+            ],
+        });
+        const d = reduceUsage(input, { ...ALL, repos: ['repo-1'] }).diagnostics;
+        expect(d.unresolvedOwnership).toEqual({
+            sessions: 1,
+            tokens: none(),
+            unlocated: out(3),
+            unresolvedTemporality: { observations: 1 },
+        });
+        const e = reduceUsage(
+            world({
+                ...input,
+                board: [input.board[0]!, ev({ jobId: 'tB', rootJobId: 'tB', sessionId: 'sB', repo: 'repo-2' })],
+                contributions: [unlocated(9, { session: 'sB' }), unresolvedPoint(5, 1, { session: 'sB' })],
+            }),
+            { ...ALL, repos: ['repo-1'] }
+        ).diagnostics.excludedRepo;
+        expect(e).toEqual({
+            sessions: 1,
+            tokens: none(),
+            unlocated: out(9),
+            unresolvedTemporality: { observations: 1 },
+        });
+    });
+});
+
 describe('conservation over seeded random worlds', () => {
     function rng(seed: number): () => number {
         let s = seed;
@@ -504,6 +584,21 @@ describe('conservation over seeded random worlds', () => {
                           model: pick(['m-1', 'm-1[1m]', null, 'm-2']),
                           querySource: pick(['main', null, 'sub']),
                       })
+            );
+        }
+        for (let i = 0; i < 20; i++) {
+            const session = pick([...sessions, null]);
+            const type = pick(TYPES);
+            const value = Math.floor(r() * 50);
+            contributions.push(
+                r() < 0.5
+                    ? unlocated(value, { session, type })
+                    : unresolvedPoint(Math.floor(r() * 300), value, { session, type })
+            );
+        }
+        for (let i = 0; i < 6; i++) {
+            contributions.push(
+                delta(Math.floor(r() * 300), Math.floor(r() * 50), { session: null, type: pick(TYPES) })
             );
         }
         return world({
@@ -564,12 +659,55 @@ describe('conservation over seeded random worlds', () => {
             );
         });
 
-        it(`accounts every owned amount exactly once across eligible, unresolved and excluded (seed ${seed})`, () => {
+        it(`gives every contribution exactly one destination, summed independently of the reducer (seed ${seed})`, () => {
+            const input = randomWorld(seed);
+            const keys = input.contributions
+                .filter((c) => c.selection.sessionId !== null)
+                .map((c) => ({ agent: c.selection.agent, sessionId: c.selection.sessionId as string }));
+            const owners = resolveOwnership(input, keys);
+            const hidden = { timed: none(), unlocated: none(), observations: 0 };
+            const unresolved = { timed: none(), unlocated: none(), observations: 0 };
+            const total = { timed: none(), unlocated: none(), observations: 0 };
+            for (const c of input.contributions) {
+                const owner =
+                    c.selection.sessionId === null
+                        ? null
+                        : owners.get(sessionKeyId(c.selection.agent, c.selection.sessionId));
+                const into = (b: typeof total): void => {
+                    if (c.kind === 'timed') b.timed = addTokens(b.timed, c.tokens);
+                    else if (c.kind === 'unlocated') b.unlocated = addTokens(b.unlocated, c.tokens);
+                    else b.observations += 1;
+                };
+                into(total);
+                if (!owner || owner.status === 'excluded') into(hidden);
+                else if (owner.status === 'unresolved') into(unresolved);
+            }
+            const r = reduceUsage(input, ALL);
+            const d = r.diagnostics.unresolvedOwnership;
+            expect(unresolved).toEqual({
+                timed: d.tokens,
+                unlocated: d.unlocated,
+                observations: d.unresolvedTemporality.observations,
+            });
+            expect({
+                timed: addTokens(addTokens(r.eligible.tokens, d.tokens), hidden.timed),
+                unlocated: addTokens(addTokens(r.eligible.unlocated, d.unlocated), hidden.unlocated),
+                observations:
+                    r.eligible.unresolvedTemporality.observations +
+                    d.unresolvedTemporality.observations +
+                    hidden.observations,
+            }).toEqual(total);
+        });
+
+        it(`splits an excluded repo from eligible without losing an amount (seed ${seed})`, () => {
             const input = randomWorld(seed);
             const withRepo = reduceUsage(input, { ...ALL, repos: ['repo-1'] });
             const without = reduceUsage(input, ALL);
-            expect(addTokens(withRepo.eligible.tokens, withRepo.diagnostics.excludedRepo.tokens)).toEqual(
-                without.eligible.tokens
+            const x = withRepo.diagnostics.excludedRepo;
+            expect(addTokens(withRepo.eligible.tokens, x.tokens)).toEqual(without.eligible.tokens);
+            expect(addTokens(withRepo.eligible.unlocated, x.unlocated)).toEqual(without.eligible.unlocated);
+            expect(withRepo.eligible.unresolvedTemporality.observations + x.unresolvedTemporality.observations).toBe(
+                without.eligible.unresolvedTemporality.observations
             );
             expect(withRepo.diagnostics.unresolvedOwnership).toEqual(without.diagnostics.unresolvedOwnership);
         });

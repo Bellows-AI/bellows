@@ -3,10 +3,10 @@
  * view and per token type, eligible timed = assigned + sum(unassigned). Unlocated, unresolved and
  * tenant-bound conflicts live beside the eligible set, never inside it.
  */
-import { dayKey, weekStart } from './metrics.js';
 import {
     type TokenContribution,
     type TokenType,
+    bucketStartOf,
     normalizeModel,
     normalizeQuerySource,
     partitionByRange,
@@ -14,17 +14,16 @@ import {
 import { type Destination, type Timeline, assignContribution, buildTimeline } from './usage-segments.js';
 import { canonicalTask, resolveOwnership, sessionKeyId } from './usage-ownership.js';
 import {
+    type DiagnosticBucket,
     type ExecutionEvidence,
     type Owner,
     type RunUsage,
-    type SessionSpan,
     type TaskUsage,
     type Tokens,
     type UnassignedReason,
     type UsageBlock,
     type UsageInput,
     type UsageOptions,
-    type UsagePolicy,
     type UsagePrecision,
     type UsageReport,
     type UsageRow,
@@ -36,7 +35,6 @@ import {
     emptyBlock,
     epochMs,
     perType,
-    resolvePolicy,
     unmeasuredTokens,
 } from './usage.js';
 import { UNKNOWN_BUCKET } from './token-contributions.js';
@@ -152,12 +150,33 @@ function buildBlock(items: readonly Item[], extras: readonly Extra[], endsAfterN
     };
 }
 
+interface Bucket {
+    keys: Set<string>;
+    tokens: Tokens;
+    unlocated: Tokens;
+    observations: number;
+}
+
+const newBucket = (): Bucket => ({
+    keys: new Set(),
+    tokens: unmeasuredTokens(),
+    unlocated: unmeasuredTokens(),
+    observations: 0,
+});
+
+const diagnosticOf = (b: Bucket): DiagnosticBucket => ({
+    sessions: b.keys.size,
+    tokens: b.tokens,
+    unlocated: b.unlocated,
+    unresolvedTemporality: { observations: b.observations },
+});
+
 interface Account {
     items: Item[];
     extras: Extra[];
     owners: Map<string, Owner>;
-    unresolvedOwnership: { keys: Set<string>; tokens: Tokens };
-    excludedRepo: { keys: Set<string>; tokens: Tokens };
+    unresolvedOwnership: Bucket;
+    excludedRepo: Bucket;
     board: ExecutionEvidence[];
 }
 
@@ -185,26 +204,7 @@ function scopeOf(owner: Owner, scope: Scope): 'in' | 'excluded-repo' | 'out' {
     return 'in';
 }
 
-interface ExtraContext {
-    owners: ReadonlyMap<string, Owner>;
-    spans: ReadonlyMap<string, SessionSpan>;
-    scope: Scope;
-    range: UsageOptions['range'];
-}
-
-function collectExtras(contribs: readonly TokenContribution[], ctx: ExtraContext): Extra[] {
-    const { owners, spans, scope, range } = ctx;
-    const extras: Extra[] = [];
-    for (const c of contribs) {
-        const keyId = sessionKeyId(c.selection.agent, c.selection.sessionId as string);
-        const owner = owners.get(keyId) as Owner;
-        if (scopeOf(owner, scope) !== 'in' || !spanOverlaps(spans.get(keyId), range)) continue;
-        extras.push({ c, keyId, taskId: (owner as ResolvedOwner).taskId });
-    }
-    return extras;
-}
-
-function timelineCache(board: readonly ExecutionEvidence[], policy: UsagePolicy) {
+function timelineCache(board: readonly ExecutionEvidence[]) {
     const timelines = new Map<string, Timeline>();
     return (keyId: string, agent: string, sessionId: string, taskId: string): Timeline => {
         const cached = timelines.get(keyId);
@@ -212,18 +212,17 @@ function timelineCache(board: readonly ExecutionEvidence[], policy: UsagePolicy)
         const rows = board.filter(
             (e) => e.sessionId === sessionId && (e.agent === null || e.agent === agent) && canonicalTask(e) === taskId
         );
-        const built = buildTimeline(rows, policy);
+        const built = buildTimeline(rows);
         timelines.set(keyId, built);
         return built;
     };
 }
 
 function account(input: UsageInput, opts: UsageOptions): Account {
-    const policy = resolvePolicy(opts.policy);
     const { range } = opts;
     const owned = input.contributions.filter((c) => c.selection.sessionId !== null);
     const keys = owned.map((c) => ({ agent: c.selection.agent, sessionId: c.selection.sessionId as string }));
-    const owners = resolveOwnership(input, keys, policy);
+    const owners = resolveOwnership(input, keys);
     const board = input.board.filter((e) => e.orgId === input.orgId);
     const spans = new Map(input.spans.map((s) => [sessionKeyId(s.agent, s.sessionId), s]));
     const scope: Scope = { userId: opts.userId, repos: opts.repos ?? [] };
@@ -236,33 +235,40 @@ function account(input: UsageInput, opts: UsageOptions): Account {
               unresolved: owned.filter((c) => c.kind === 'unresolved'),
           };
 
-    const timelineOf = timelineCache(board, policy);
+    const timelineOf = timelineCache(board);
 
     const out: Account = {
         items: [],
         extras: [],
         owners,
-        unresolvedOwnership: { keys: new Set(), tokens: unmeasuredTokens() },
-        excludedRepo: { keys: new Set(), tokens: unmeasuredTokens() },
+        unresolvedOwnership: newBucket(),
+        excludedRepo: newBucket(),
         board,
     };
-    const tally = (bucket: Account['excludedRepo'], keyId: string, c: TokenContribution): void => {
+    const tally = (bucket: Bucket, keyId: string, c: TokenContribution): void => {
         bucket.keys.add(keyId);
-        bucket.tokens = addTokens(bucket.tokens, c.tokens);
+        if (c.kind === 'timed') bucket.tokens = addTokens(bucket.tokens, c.tokens);
+        else if (c.kind === 'unlocated') bucket.unlocated = addTokens(bucket.unlocated, c.tokens);
+        else bucket.observations += 1;
+    };
+
+    /** Tallies what a failed owner or repo filter keeps out; returns the owner only when the amount stays in scope. */
+    const route = (c: TokenContribution, keyId: string): ResolvedOwner | null => {
+        const owner = owners.get(keyId) as Owner;
+        if (owner.status === 'unresolved') {
+            tally(out.unresolvedOwnership, keyId, c);
+            return null;
+        }
+        const where = scopeOf(owner, scope);
+        if (where === 'excluded-repo') tally(out.excludedRepo, keyId, c);
+        return where === 'in' ? (owner as ResolvedOwner) : null;
     };
 
     for (const c of part.timed) {
         const { agent, sessionId } = c.selection;
         const keyId = sessionKeyId(agent, sessionId as string);
-        const owner = owners.get(keyId) as Owner;
-        if (owner.status === 'unresolved') {
-            tally(out.unresolvedOwnership, keyId, c);
-            continue;
-        }
-        const where = scopeOf(owner, scope);
-        if (where === 'excluded-repo') tally(out.excludedRepo, keyId, c);
-        if (where !== 'in') continue;
-        const resolved = owner as ResolvedOwner;
+        const resolved = route(c, keyId);
+        if (!resolved) continue;
         const timeline =
             resolved.taskId === null ? null : timelineOf(keyId, agent, sessionId as string, resolved.taskId);
         out.items.push({
@@ -275,7 +281,12 @@ function account(input: UsageInput, opts: UsageOptions): Account {
         });
     }
 
-    out.extras = collectExtras([...part.unlocated, ...part.unresolved], { owners, spans, scope, range });
+    for (const c of [...part.unlocated, ...part.unresolved]) {
+        const keyId = sessionKeyId(c.selection.agent, c.selection.sessionId as string);
+        if (!spanOverlaps(spans.get(keyId), range)) continue;
+        const resolved = route(c, keyId);
+        if (resolved) out.extras.push({ c, keyId, taskId: resolved.taskId });
+    }
     return out;
 }
 
@@ -330,20 +341,16 @@ function taskView(acc: Account, taskId: string, includeIdleRuns: boolean): TaskU
     };
 }
 
-function bucketStart(iso: string, granularity: 'day' | 'week'): string {
-    return granularity === 'day' ? dayKey(iso) : weekStart(iso).toISOString().slice(0, 10);
-}
-
 function series(items: readonly Item[], granularity: 'day' | 'week', now: Date): UsageReport['series'] {
     if (items.length === 0) return [];
     const buckets = new Map<string, Item[]>();
     for (const item of items) {
-        const start = bucketStart(item.c.observedAt as string, granularity);
+        const start = bucketStartOf(item.c.observedAt as string, granularity);
         buckets.set(start, [...(buckets.get(start) ?? []), item]);
     }
     const starts = [...buckets.keys()].sort(compareText);
     const stepDays = granularity === 'day' ? 1 : WEEK_DAYS;
-    const current = bucketStart(now.toISOString(), granularity);
+    const current = bucketStartOf(now.toISOString(), granularity);
     const out: UsageReport['series'] = [];
     const cursor = new Date(`${starts[0]}T00:00:00.000Z`);
     const last = new Date(`${starts.at(-1)}T00:00:00.000Z`);
@@ -366,19 +373,19 @@ function series(items: readonly Item[], granularity: 'day' | 'week', now: Date):
 export function reduceUsage(input: UsageInput, opts: UsageOptions): UsageReport {
     const acc = account(input, opts);
     const rangeEndsAfterNow = opts.range !== null && epochMs(opts.range.to) > opts.now.getTime();
-    const taskIds = [...new Set(acc.items.map((i) => i.taskId).filter((t): t is string => t !== null))].sort(
-        compareText
-    );
-    const authors = [...new Set(acc.items.map((i) => i.authorId))].sort((a, b) =>
-        a === null ? 1 : b === null ? -1 : compareText(a, b)
-    );
+    const taskIds = [
+        ...new Set([...acc.items, ...acc.extras].map((i) => i.taskId).filter((t): t is string => t !== null)),
+    ].sort(compareText);
+    const authorOf = (keyId: string): string | null =>
+        (acc.owners.get(keyId) as Extract<Owner, { status: 'resolved' }>).authorId;
+    const authors = [
+        ...new Set([...acc.items.map((i) => i.authorId), ...acc.extras.map((e) => authorOf(e.keyId))]),
+    ].sort((a, b) => (a === null ? 1 : b === null ? -1 : compareText(a, b)));
     const byUser: UserUsage[] = authors.map((userId) => ({
         userId,
         usage: buildBlock(
             acc.items.filter((i) => i.authorId === userId),
-            acc.extras.filter(
-                (e) => (acc.owners.get(e.keyId) as Extract<Owner, { status: 'resolved' }>).authorId === userId
-            ),
+            acc.extras.filter((e) => authorOf(e.keyId) === userId),
             rangeEndsAfterNow
         ),
     }));
@@ -397,23 +404,15 @@ export function reduceUsage(input: UsageInput, opts: UsageOptions): UsageReport 
         series: series(acc.items, opts.granularity ?? 'day', opts.now),
         diagnostics: {
             sessionsWithoutHook: withoutHook.size,
-            unresolvedOwnership: {
-                sessions: acc.unresolvedOwnership.keys.size,
-                tokens: acc.unresolvedOwnership.tokens,
-            },
-            excludedRepo: { sessions: acc.excludedRepo.keys.size, tokens: acc.excludedRepo.tokens },
+            unresolvedOwnership: diagnosticOf(acc.unresolvedOwnership),
+            excludedRepo: diagnosticOf(acc.excludedRepo),
         },
     };
 }
 
 /** All-time usage of one canonical task, reviews folded in, every known run listed. Null when no evidence names it. */
-export function taskUsageOf(
-    input: UsageInput,
-    taskId: string,
-    now: Date,
-    policy?: UsageOptions['policy']
-): TaskUsage | null {
-    const acc = account(input, { range: null, now, ...(policy ? { policy } : {}) });
+export function taskUsageOf(input: UsageInput, taskId: string, now: Date): TaskUsage | null {
+    const acc = account(input, { range: null, now });
     const known = acc.board.some((e) => canonicalTask(e) === taskId);
     if (!known && !acc.items.some((i) => i.taskId === taskId)) return null;
     return taskView(acc, taskId, true);

@@ -41,27 +41,6 @@ describe('resolveOwnership', () => {
         });
     });
 
-    it('policy unowned=unattributed turns an unowned key into a task-less resolved owner', () => {
-        const owners = resolveOwnership(world(), [KEY], { unowned: 'unattributed' });
-        expect(owners.get(sessionKeyId(KEY.agent, KEY.sessionId))).toMatchObject({
-            status: 'resolved',
-            taskId: null,
-            authorId: null,
-            repo: null,
-            hook: false,
-        });
-    });
-
-    it('policy unattributed never overrides a foreign session', () => {
-        const owners = resolveOwnership(world({ foreignSessionIds: new Set(['s1']) }), [KEY], {
-            unowned: 'unattributed',
-        });
-        expect(owners.get(sessionKeyId(KEY.agent, KEY.sessionId))).toEqual({
-            status: 'excluded',
-            reason: 'foreign-org',
-        });
-    });
-
     it('resolves branch-only evidence with no task and no author', () => {
         expect(ownerOf(world({ branch: [branch()] }))).toEqual({
             status: 'resolved',

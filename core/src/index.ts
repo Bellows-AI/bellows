@@ -282,7 +282,6 @@ export type {
     TokenType,
 } from './token-contributions.js';
 export {
-    DEFAULT_USAGE_POLICY,
     UNASSIGNED_REASONS,
     addTokens,
     emptyBlock,
@@ -291,6 +290,7 @@ export {
 export type {
     BranchEvidence,
     ExecutionEvidence,
+    DiagnosticBucket,
     Launch,
     Owner,
     PerType,
@@ -302,7 +302,6 @@ export type {
     UsageBlock,
     UsageInput,
     UsageOptions,
-    UsagePolicy,
     UsagePrecision,
     UsageReport,
     UsageRow,

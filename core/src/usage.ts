@@ -72,19 +72,6 @@ export type Owner =
     | { status: 'unresolved'; reason: 'task-conflict' | 'repo-conflict' }
     | { status: 'excluded'; reason: 'foreign-org' | 'unowned' };
 
-/** Decisions that are parameters of the reducer, not constants of it. */
-export interface UsagePolicy {
-    /** Usage with no board and no branch evidence anywhere: hidden from every tenant, or shown unattributed. */
-    unowned: 'exclude' | 'unattributed';
-    /** Launch states that confirm a segment ran (always together with origin `claim`). */
-    confirmedLaunches: readonly Launch[];
-}
-export const DEFAULT_USAGE_POLICY: UsagePolicy = { unowned: 'exclude', confirmedLaunches: ['observed', 'adopted'] };
-
-export function resolvePolicy(policy?: Partial<UsagePolicy>): UsagePolicy {
-    return { ...DEFAULT_USAGE_POLICY, ...policy };
-}
-
 export interface UsageRow {
     model: string;
     rawModels: string[];
@@ -146,7 +133,13 @@ export interface UsageOptions {
     userId?: string;
     now: Date;
     granularity?: 'day' | 'week';
-    policy?: Partial<UsagePolicy>;
+}
+/** Usage kept out of `eligible`: timed `tokens`, `unlocated` amounts and unresolved-temporality observations stay apart. */
+export interface DiagnosticBucket {
+    sessions: number;
+    tokens: Tokens;
+    unlocated: Tokens;
+    unresolvedTemporality: { observations: number };
 }
 export interface UsageReport {
     eligible: UsageBlock;
@@ -155,8 +148,8 @@ export interface UsageReport {
     series: { start: string; partial: boolean; usage: UsageBlock }[];
     diagnostics: {
         sessionsWithoutHook: number;
-        unresolvedOwnership: { sessions: number; tokens: Tokens };
-        excludedRepo: { sessions: number; tokens: Tokens };
+        unresolvedOwnership: DiagnosticBucket;
+        excludedRepo: DiagnosticBucket;
     };
 }
 

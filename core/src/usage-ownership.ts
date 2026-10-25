@@ -2,14 +2,7 @@
  * Who owns a session key, resolved before any join. A key is `(agent, sessionId)`; at most one owner
  * per key, never a `min()` of competing claims, and nothing about another tenant crosses.
  */
-import {
-    type BranchEvidence,
-    type ExecutionEvidence,
-    type Owner,
-    type UsageInput,
-    type UsagePolicy,
-    resolvePolicy,
-} from './usage.js';
+import type { BranchEvidence, ExecutionEvidence, Owner, UsageInput } from './usage.js';
 
 export interface SessionKey {
     agent: string;
@@ -45,25 +38,14 @@ interface Evidence {
     boardByTask: Map<string, ExecutionEvidence[]>;
     branchBySession: Map<string, BranchEvidence[]>;
     foreign: ReadonlySet<string>;
-    unowned: UsagePolicy['unowned'];
 }
-
-const UNATTRIBUTED: Owner = {
-    status: 'resolved',
-    taskId: null,
-    removed: false,
-    authorId: null,
-    authorConflict: false,
-    repo: null,
-    hook: false,
-};
 
 function resolveKey(ctx: Evidence, { agent, sessionId }: SessionKey): Owner {
     if (ctx.foreign.has(sessionId)) return { status: 'excluded', reason: 'foreign-org' };
     const rows = (ctx.boardBySession.get(sessionId) ?? []).filter((e) => matchesAgent(e.agent, agent));
     const branches = (ctx.branchBySession.get(sessionId) ?? []).filter((b) => b.agent === agent);
     if (rows.length === 0 && branches.length === 0) {
-        return ctx.unowned === 'exclude' ? { status: 'excluded', reason: 'unowned' } : UNATTRIBUTED;
+        return { status: 'excluded', reason: 'unowned' };
     }
     const tasks = distinct(rows.map(canonicalTask));
     if (tasks.length > 1) return { status: 'unresolved', reason: 'task-conflict' };
@@ -84,8 +66,7 @@ function resolveKey(ctx: Evidence, { agent, sessionId }: SessionKey): Owner {
 
 export function resolveOwnership(
     input: Pick<UsageInput, 'orgId' | 'board' | 'branch' | 'foreignSessionIds'>,
-    keys: readonly SessionKey[],
-    policy?: Partial<UsagePolicy>
+    keys: readonly SessionKey[]
 ): Map<string, Owner> {
     const board = input.board.filter((e) => e.orgId === input.orgId);
     const ctx: Evidence = {
@@ -97,7 +78,6 @@ export function resolveOwnership(
             (b) => b.sessionId
         ),
         foreign: input.foreignSessionIds,
-        unowned: resolvePolicy(policy).unowned,
     };
     const owners = new Map<string, Owner>();
     for (const key of keys) {

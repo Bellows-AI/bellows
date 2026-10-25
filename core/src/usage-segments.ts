@@ -5,7 +5,7 @@
  * wholly inside one run leaves the amount task-owned and run-unassigned, with a reason.
  */
 import type { TokenContribution } from './token-contributions.js';
-import { type ExecutionEvidence, type UnassignedReason, type UsagePolicy, epochMs, resolvePolicy } from './usage.js';
+import { type ExecutionEvidence, type UnassignedReason, epochMs } from './usage.js';
 
 export type Destination = { kind: 'run'; jobId: string } | { kind: 'unassigned'; reason: UnassignedReason };
 
@@ -35,7 +35,7 @@ export interface Timeline {
     live: boolean;
 }
 
-function toSegment(e: ExecutionEvidence, policy: UsagePolicy): Segment {
+function toSegment(e: ExecutionEvidence): Segment {
     const backfill = e.origin === 'backfill';
     return {
         jobId: e.jobId,
@@ -43,7 +43,7 @@ function toSegment(e: ExecutionEvidence, policy: UsagePolicy): Segment {
         adoptsClaimSeq: e.adoptsClaimSeq,
         start: epochMs(e.startedAt),
         end: e.endedAt === null ? Number.POSITIVE_INFINITY : epochMs(e.endedAt),
-        confirmed: !backfill && policy.confirmedLaunches.includes(e.launch),
+        confirmed: !backfill && (e.launch === 'observed' || e.launch === 'adopted'),
         backfill,
         live: e.live,
     };
@@ -88,8 +88,7 @@ function mergeJob(segments: Segment[]): Interval[] {
 }
 
 /** `rows` are the board evidence of one session key within one canonical task. */
-export function buildTimeline(rows: readonly ExecutionEvidence[], policy?: Partial<UsagePolicy>): Timeline {
-    const p = resolvePolicy(policy);
+export function buildTimeline(rows: readonly ExecutionEvidence[]): Timeline {
     const seen = new Set<string>();
     const live: Segment[] = [];
     const refused: Timeline['refused'] = [];
@@ -97,7 +96,7 @@ export function buildTimeline(rows: readonly ExecutionEvidence[], policy?: Parti
         const id = `${row.jobId}\u0000${row.claimSeq}`;
         if (seen.has(id)) continue;
         seen.add(id);
-        const seg = toSegment(row, p);
+        const seg = toSegment(row);
         if (row.launch === 'refused') refused.push({ start: seg.start, end: seg.end });
         else live.push(seg);
     }
@@ -162,9 +161,8 @@ export function assignContribution(tl: Timeline, c: TokenContribution): Destinat
 /** One session key's contributions against its task's evidence rows. */
 export function accountContributions(
     rows: readonly ExecutionEvidence[],
-    contributions: readonly TokenContribution[],
-    policy?: Partial<UsagePolicy>
+    contributions: readonly TokenContribution[]
 ): Destination[] {
-    const timeline = buildTimeline(rows, policy);
+    const timeline = buildTimeline(rows);
     return contributions.map((c) => assignContribution(timeline, c));
 }
