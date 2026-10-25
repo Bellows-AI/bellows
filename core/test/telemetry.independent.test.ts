@@ -130,7 +130,7 @@ describe('per-type token distributions, recomputed by hand', () => {
     /** One value per canonical task: the sum of its sessions' points, null when no point measured the type. */
     function perTask(type: (typeof TYPES)[number]): number[] {
         const rowsOf = (sessionId: string) => facts.board.filter((row) => row.sessionId === sessionId);
-        const sums = new Map<string, number | null>();
+        const sums = new Map<string, number>();
         for (const sessionId of new Set(facts.board.map((row) => row.sessionId))) {
             const rows = rowsOf(sessionId);
             // A session two tasks claim is an unresolved conflict: it belongs to neither.
@@ -141,13 +141,14 @@ describe('per-type token distributions, recomputed by hand', () => {
                 if (value !== null) sums.set(task, (sums.get(task) ?? 0) + value);
             }
         }
-        return [...sums.values()].filter((v): v is number => v !== null).sort((a, b) => a - b);
+        return [...sums.values()].sort((a, b) => a - b);
     }
 
     const dist = taskUsageStats(fixtureReport({ repos: [FIXTURE_REPO] }).tasks, []).tokens.all;
 
     it.each(TYPES)('matches on %s: average and nearest-rank p50/p95 over per-task sums', (type) => {
         const values = perTask(type);
+        expect(values.length, 'p50 and p95 need more than one task to differ').toBeGreaterThan(1);
         const rank = (p: number) => values[Math.ceil(p * values.length) - 1];
         expect(dist[type].tasks).toBe(values.length);
         expect(dist[type].avg).toBeCloseTo(values.reduce((a, b) => a + b, 0) / values.length, 6);

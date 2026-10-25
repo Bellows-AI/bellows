@@ -242,6 +242,7 @@ test.describe('token accounting (the usage specimen)', () => {
     });
 
     test('a bucket that measured no tokens draws no bar and reads as dashes, not zeros', async ({ page }) => {
+        const problems = watchConsole(page);
         await open(page);
         const chart = page.locator('section.panel', { hasText: 'AI token usage' });
         const bars = await chart.locator('.bucket-hit').evaluateAll((hits) =>
@@ -259,6 +260,7 @@ test.describe('token accounting (the usage specimen)', () => {
         );
         expect(bars.length, 'the seeded window holds a bucket nothing measured').toBeGreaterThan(0);
         expect(bars.every((count) => count === 0)).toBe(true);
+        expect(problems.join('\n')).toBe('');
     });
 
     test('the summary breakdown expands to query sources without moving a figure', async ({ page }) => {

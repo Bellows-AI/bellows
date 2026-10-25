@@ -661,6 +661,28 @@ describe('token usage series granularity', () => {
         ]);
     });
 
+    it('leaves a gap for a type the bucket never measured, beside a bar for the type it did', () => {
+        const block = {
+            ...emptyBlock('measured'),
+            tokens: { input: 1000, output: null, cacheRead: null, cacheCreation: null },
+        };
+        const stats: TelemetryStats = {
+            ...empty,
+            series: {
+                granularity: 'day',
+                points: [{ start: '2026-08-20', sessions: 1, linesAdded: 0, linesRemoved: 0, partial: false }],
+            },
+            usage: {
+                ...empty.usage,
+                series: { granularity: 'day', points: [{ start: '2026-08-20', partial: false, usage: block }] },
+            },
+        };
+        const html = renderToStaticMarkup(<TokenUsagePanel telemetry={stats} meta={telemetryMeta()} />);
+        expect(html.match(/<rect\b[^>]*data-series="input"/g)).toHaveLength(1);
+        expect(html).not.toMatch(/<rect\b[^>]*data-series="output"/);
+        expect(html).toMatch(/aria-label="[^"]*Output —/);
+    });
+
     it('toggles series from accessible legend buttons', () => {
         const html = renderToStaticMarkup(<TokenUsagePanel telemetry={telemetry} meta={telemetryMeta()} />);
         const PRESSED_LEGEND_COUNT = 3;
