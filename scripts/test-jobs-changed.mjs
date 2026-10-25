@@ -88,6 +88,7 @@ export const RULES = [
     [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|branch-reporter\.cjs|git-guard\.cjs|control-proxy\.cjs|gh-wrapper\.sh|managed-settings\.json|claude-home\/.*)$/, REAL, 'claude-executor image'],
     [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|branch-reporter\.cjs|control-proxy\.cjs|ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|gh-wrapper\.sh|github-credential\.cjs|rate-limit-watch\.cjs|tool-bash\.sh|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation'], 'opencode-executor image'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
+    [/^docker\/skills\//, ['tool-isolation'], 'skill helper scripts'],
     [/^docker\/(Dockerfile|driver\.Dockerfile)$/, ['compose-driver'], 'the deployed and compose images'],
     [/^docker\/skills\/review\//, ['review'], 'reviewer prompt'],
     [/^docker\/skills\//, NONE, 'agent prompt text, pinned by unit tests; no lane runs it'],

@@ -1,6 +1,6 @@
 // A scripted, Anthropic-compatible model endpoint for the real agent CLIs (issue #442).
 //
-//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools]
+//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…]
 //
 // Offline and deterministic, no credential: `claude` and `opencode` point their Anthropic base URL
 // at it and run a real agent loop against canned answers. The first `--tool-steps` model requests
@@ -28,6 +28,12 @@
 // everything its uid may, then reports — and `GET /control` never raises a Stop, so the run must end
 // on its own. `GET /tool-results` counts the tool calls whose result came back carrying
 // FACTORY_TOOL_OK: a tool killed with the CLI, or a CLI killed by its tool, never reports one.
+//
+// `--probe-files a,b,…` is the skill-helper mode (issue #1006): the one scripted Bash call opens each path
+// in turn as the tool uid and prints one `PROBE <n> <outcome>` line each (1-based, in the order given;
+// outcome `open`, `denied` for "Permission denied", or `other: <error>`), then FACTORY_TOOL_OK; like --kill-tools it never raises a Stop. The
+// tool's cwd is not writable by the tool uid, so the outcome travels in the result: `GET /tool-results`
+// returns it as `text`.
 //
 // In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
 // lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
@@ -112,10 +118,21 @@ function streamOf(reply) {
     return out + sse('message_stop', { type: 'message_stop' });
 }
 
-export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false } = {}) {
+/** One shell line that probes each path with `cat` and prints its outcome. */
+export function probeCommand(paths) {
+    const quoted = paths.map((path) => `'${path.replaceAll("'", "'\\''")}'`).join(' ');
+    return (
+        `n=0; for f in ${quoted}; do n=$((n+1)); if err=$(cat "$f" 2>&1 >/dev/null); then echo "PROBE $n open"; ` +
+        `else case "$err" in *"Permission denied"*) echo "PROBE $n denied";; *) echo "PROBE $n other: $err";; esac; fi; done; echo ${TOOL_OK}`
+    );
+}
+
+export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [] } = {}) {
     let agentRequests = 0;
     /** The tool calls whose result carried TOOL_OK, by id: a resent history counts each once. */
     const reportedOk = new Set();
+    /** The text of every tool result that carried TOOL_OK, by id. */
+    const reportedText = new Map();
     let hookRequests = 0;
     let questionPosts = 0;
     let questionPolls = 0;
@@ -180,11 +197,16 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         const step = ++agentRequests;
         if (ask || askProse) return askReply(step, tools, messages);
         for (const block of messages.flatMap((entry) => (Array.isArray(entry?.content) ? entry.content : []))) {
-            if (block?.type === 'tool_result' && JSON.stringify(block.content ?? '').includes(TOOL_OK)) reportedOk.add(block.tool_use_id);
+            if (block?.type === 'tool_result' && JSON.stringify(block.content ?? '').includes(TOOL_OK)) {
+                reportedOk.add(block.tool_use_id);
+                reportedText.set(block.tool_use_id, typeof block.content === 'string' ? block.content : JSON.stringify(block.content));
+            }
         }
         const bash = tools.find((tool) => BASH_TOOL.test(tool.name));
         if (step <= toolSteps && bash) {
-            const command = killTools
+            const command = probeFiles.length > 0
+                ? probeCommand(probeFiles)
+                : killTools
                 ? `kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo ${TOOL_OK}; touch step-${step}`
                 : `touch step-${step}`;
             return message(
@@ -224,12 +246,12 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 // question modes: the entrypoint's stop poller reads this too, and a Stop would make
                 // the bridge deny the question as stopped.
                 reply.setHeader('content-type', 'application/json');
-                const stop = !ask && !askProse && !killTools && (agentRequests > 0 || firstInFlight);
+                const stop = !ask && !askProse && !killTools && probeFiles.length === 0 && (agentRequests > 0 || firstInFlight);
                 return reply.end(JSON.stringify({ stop }));
             }
             if (url === TOOL_RESULTS_PATH) {
                 reply.setHeader('content-type', 'application/json');
-                return reply.end(JSON.stringify({ toolResults: reportedOk.size }));
+                return reply.end(JSON.stringify({ toolResults: reportedOk.size, text: [...reportedText.values()].join('\n') }));
             }
             if (url === HOOKS_PATH) {
                 reply.setHeader('content-type', 'application/json');
@@ -310,12 +332,17 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         const at = process.argv.indexOf(name);
         return at === -1 ? fallback : Number(process.argv[at + 1]);
     };
+    const flagList = (name) => {
+        const at = process.argv.indexOf(name);
+        return at === -1 ? [] : process.argv[at + 1].split(',').filter(Boolean);
+    };
     const endpoint = createFakeModelEndpoint({
         firstDelayMs: flag('--first-delay-ms', 0),
         toolSteps: flag('--tool-steps', 3),
         ask: process.argv.includes('--ask'),
         askProse: process.argv.includes('--ask-prose'),
         killTools: process.argv.includes('--kill-tools'),
+        probeFiles: flagList('--probe-files'),
     });
     const port = await endpoint.listen(flag('--port', 0));
     process.stdout.write(`${port}\n`);
