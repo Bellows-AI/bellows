@@ -187,7 +187,7 @@ const unmergedPaths = () =>
  * conflict — the rebase itself failing to apply a commit, or its autostash reapply conflicting
  * with the freshly rebased tree (git exits 0 for that one, the exact quirk
  * scripts/git-worktree.cjs's own sync guards against — the rebase "succeeding" while leaving
- * conflict markers behind). Any OTHER rebase failure (a hook rejection, a gpg-sign failure, disk
+ * conflict markers behind). Any OTHER rebase failure (a lock it cannot take, disk
  * pressure) is never disguised as a conflict for the repair agent to "resolve": whatever state
  * remains is aborted and `{ conflicted: false, error }` is returned, so the caller can fail the
  * helper outright and let the block's own `repair -> repair` retry edge do its job.

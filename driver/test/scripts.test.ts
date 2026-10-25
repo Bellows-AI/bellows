@@ -23,6 +23,7 @@ import {
     bindingWriteScript,
     checkpointRestoreScript,
     checkpointScript,
+    gitHardenScript,
     claudeTurnsScript,
     gateLoopScript,
     reviewLoopScript,
@@ -62,6 +63,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['claude-turns.cjs', 'node'],
     ['claude-export.cjs', 'node'],
     ['supervisor.cjs', 'node'],
+    ['git-harden.cjs', 'node'],
     ['checkpoint.cjs', 'node'],
     ['checkpoint-restore.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
@@ -128,6 +130,7 @@ describe('the container scripts', () => {
         expect(opencodeReadoutScript).toBe(readFileSync(pathOf('opencode-readout.cjs'), 'utf8'));
         expect(claudeTurnsScript).toBe(readFileSync(pathOf('claude-turns.cjs'), 'utf8'));
         expect(checkpointScript).toBe(readFileSync(pathOf('checkpoint.cjs'), 'utf8'));
+        expect(gitHardenScript).toBe(readFileSync(pathOf('git-harden.cjs'), 'utf8'));
         expect(checkpointRestoreScript).toBe(readFileSync(pathOf('checkpoint-restore.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SCRIPT_IDENTITY, git, hasGit, setupWorktreeFixture } from './fixtures/git-worktree-support.js';
@@ -260,15 +260,14 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
     });
 
     it('fails, never disguising it as a conflict, when the rebase itself refuses for a non-conflict reason', () => {
-        // A pre-rebase hook failure: the rebase never even starts, so no file is ever conflicted
+        // A lock the rebase cannot take: it never even starts, so no file is ever conflicted
         // — this must surface as a genuine helper failure (bounding the block's `repair -> repair`
-        // retry edge), not route a fabricated "conflicted" state to the agent.
+        // retry edge), not route a fabricated "conflicted" state to the agent. (A hook is not the
+        // trigger: the driver's git runs none of the checkout's, `git-harden.cjs`.)
         expect(fx.sync()).toMatchObject({ ok: true, reason: null });
-        const hooksDir = join(git(fx.checkout(), 'rev-parse', '--path-format=absolute', '--git-common-dir'), 'hooks');
-        mkdirSync(hooksDir, { recursive: true });
-        const hookPath = join(hooksDir, 'pre-rebase');
-        writeFileSync(hookPath, '#!/bin/sh\nexit 1\n');
-        chmodSync(hookPath, 0o755);
+        const gitDir = git(fx.checkout(), 'rev-parse', '--absolute-git-dir');
+        const lock = join(gitDir, 'index.lock');
+        writeFileSync(lock, '');
         try {
             fx.pushToOrigin('NEWS.md', 'upstream news\n', 'upstream moves on');
 
@@ -277,11 +276,10 @@ describe.skipIf(!hasGit())('the merge-conflict-autofix probe script', () => {
             expect(result).toMatchObject({ ok: false, reason: 'runner_error' });
             expect(result.error).toContain('did not complete');
             expect(result.error).not.toContain('conflict');
-            const gitDir = git(fx.checkout(), 'rev-parse', '--absolute-git-dir');
             expect(existsSync(join(gitDir, 'rebase-merge'))).toBe(false);
             expect(existsSync(join(gitDir, 'rebase-apply'))).toBe(false);
         } finally {
-            writeFileSync(hookPath, '');
+            rmSync(lock, { force: true });
         }
     });
 
