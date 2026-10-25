@@ -21,6 +21,7 @@
         "driver/test/entrypoint-helper-race.test.ts",
         "driver/test/executor-images.test.ts",
         "driver/test/fake-model-endpoint.test.ts",
+        "driver/test/git-harden.test.ts",
         "driver/test/github-credential.test.ts",
         "driver/test/helper-receipts.test.ts",
         "driver/test/k8s-lane.test.ts",

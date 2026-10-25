@@ -417,6 +417,8 @@ export const SUPERVISOR_ENV = {
     claimSeq: 'SUPERVISOR_CLAIM_SEQ',
     bindingFile: 'SUPERVISOR_BINDING_FILE',
     /** The attempt's checkpoint at finalize (issue #775): the script by content, and the tree it works on. */
+    /** The hardened `git` every step runs (scripts/git-harden.cjs), by content. */
+    gitHardenScript: 'SUPERVISOR_GIT_HARDEN_SCRIPT',
     checkpointScript: 'SUPERVISOR_CHECKPOINT_SCRIPT',
     checkpointCheckout: 'SUPERVISOR_CHECKPOINT_CHECKOUT',
     checkpointBranch: 'SUPERVISOR_CHECKPOINT_BRANCH',

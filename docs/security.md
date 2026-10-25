@@ -8,6 +8,7 @@ What each credential grants, what each boundary actually holds, and where the co
 | Bind address, secret floors, App key resolution (`GITHUB_APP_PRIVATE_KEY_FILE`) | `server/src/config.ts`, `server/src/app.ts` | `server/test/config.github.test.ts`, `server/test/config.auth.test.ts` |
 | Installation token minted per attempt, narrowed to the task's repo ([connections.md](connections.md)) | `server/src/github/app-token.ts`, `server/src/routes/github-credential.ts` | `server/test/github.app-token.test.ts`, `server/test/routes.github-credential.test.ts` |
 | Runner `git`/`gh` helper: no token in the runner env, a Secret or the git config; same on both executors | `docker/claude-executor/github-credential.cjs`, `entrypoint.sh`, `driver/src/docker/docker.ts`, `driver/src/k8s/k8s-podspec.ts` | `driver/test/github-credential.test.ts`, `driver/test/executor-images.test.ts` |
+| Driver-side `git` over the tool-writable checkout runs none of its execution-capable config (hooks, fsmonitor, filter/diff/merge drivers, ssh/askpass/gpg/credential helpers, editors, pagers, remote commands): every supervised step resolves `git` to a hardened wrapper, same supervisor on both executors | `driver/src/scripts/git-harden.cjs`, `driver/src/scripts/supervisor.cjs` (`gitShimOf`), `driver/src/supervisor-plan.ts` | `driver/test/git-harden.test.ts`, `driver/test/supervisor-plan-hardening.test.ts`, `driver/test/publish-hooks.test.ts` |
 | Runner secrets: write-only at the API, 0600 env file at the spawn; per-member mount (`subPath` / `volume-subpath`) | `server/src/routes/env.ts`, `driver/src/docker/docker.ts`, `driver/src/k8s/k8s-podspec.ts` | `server/test/routes.env.test.ts`, `driver/test/docker/`, `driver/test/k8s/`, `scripts/test-k8s.sh --cluster` |
 | A rebound holder's token reaches the supervisor alone: a Secret volume item on kubernetes, a supervisor-only volume written over `docker exec` stdin on docker; never argv, a log or the board | `driver/src/k8s/k8s-binding.ts`, `driver/src/docker/docker-group.ts`, `driver/src/scripts/binding-write.sh` | `driver/test/k8s/`, `driver/test/docker-group.test.ts`, `driver/test/scripts-binding-write.test.ts` |
 | A supervised step's GitHub token is that step's own `env`, delivered over the authenticated control channel only; the agent container holds no token and no route to `/step`, `/report` | `driver/src/supervised-steps.ts`, `step-control.ts`, `control-channel.ts`, `k8s-podspec.ts`, `charts/factory/templates/driver-admission.yaml` | `driver/test/supervised-steps.test.ts`, `driver/test/step-control.test.ts`, `driver/test/k8s-admission.test.ts` |
@@ -57,7 +58,8 @@ There is **no opt-out for a declared service or a GATE image**: one needing root
   NetworkPolicy cannot restrict HTTP routes.
 - **The tool uid guards the CLI against accidents, not a hostile tool**: it still writes config the CLI later
   executes (`.git/config`, `.claude`, `.mcp.json`) and can exhaust memory, CPU or pids. Hooks and MCP servers
-  run as the CLI's uid; context-mode cannot run as the tool uid and is not baked.
+  run as the CLI's uid (the driver's own `git` runs no checkout config, above; a driver the TRUSTED config defines,
+  git-lfs, still runs, and a config write landing inside one call is unseen); context-mode cannot run as the tool uid and is not baked.
 - **Pod Security `restricted` cannot admit the agent container** (the broker holds `CAP_SETUID`/`CAP_SETGID`);
   `baseline` can. There is no `readOnlyRootFilesystem`.
 - **A task volume is a thread boundary** ([workspace.md](workspace.md));

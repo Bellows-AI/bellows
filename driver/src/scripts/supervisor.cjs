@@ -62,6 +62,8 @@
 //   SUPERVISOR_TAKEOVER_MS    — the same once the agent was released and a binding file can name a newer holder (default: the orphan bound).
 //   SUPERVISOR_STEP_WAIT_MS   — one `GET /step` long poll (default 15000).
 //   SUPERVISOR_REPORT_MS      — how long a departure's report is redelivered before finalizing (default 60000).
+//   SUPERVISOR_GIT_HARDEN_SCRIPT — scripts/git-harden.cjs by content: the `git` first on every step's PATH, so a step never
+//                               runs what the agent-writable checkout's config names (a tree without it uses the file beside this one).
 //   SUPERVISOR_CHECKPOINT_SCRIPT / _CHECKOUT / _BRANCH / _BASE / _DIR / _OPENCODE_DB — the checkpoint the finalize stage
 //                               takes (issue #775): scripts/checkpoint.cjs by content, the task tree and branch it
 //                               works on, the directory it writes in, the OpenCode database to snapshot. Absent
@@ -79,6 +81,7 @@
 const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
@@ -352,6 +355,8 @@ function settingsOf(env) {
         reportMs: positive(env, 'SUPERVISOR_REPORT_MS', DEFAULT_REPORT_MS),
         checkpointMs: positive(env, 'SUPERVISOR_CHECKPOINT_MS', DEFAULT_CHECKPOINT_MS),
         checkpoint: checkpointOf(env),
+        // The hardened git every step's `git` resolves to (scripts/git-harden.cjs), by content.
+        gitHarden: env.SUPERVISOR_GIT_HARDEN_SCRIPT || null,
         gate: env.SUPERVISOR_GATE === '1',
         review: env.SUPERVISOR_REVIEWER === '1',
         gateLostMs: positive(env, 'SUPERVISOR_GATE_LOST_MS', DEFAULT_GATE_LOST_MS),
@@ -619,17 +624,70 @@ function restoreFeed(run, step) {
     return { RESTORE_URL: run.settings.url || '', RESTORE_TOKEN: run.settings.token || '' };
 }
 
+/** The first `git` executable on `pathList`, or null. */
+function findGit(pathList) {
+    for (const dir of (pathList || '').split(path.delimiter)) {
+        if (!dir) continue;
+        const candidate = path.join(dir, 'git');
+        try {
+            fs.accessSync(candidate, fs.constants.X_OK);
+            if (fs.statSync(candidate).isFile()) return candidate;
+        } catch {
+            // Not here.
+        }
+    }
+    return null;
+}
+
+/**
+ * The hardened `git` for this supervisor's steps: `scripts/git-harden.cjs` written as an executable
+ * `git` into a private directory that goes first on every step's PATH. The checkout is written by the
+ * agent's tool uid, so a step's git must not run what the checkout's config names (docs/security.md).
+ * Null when there is no `git` to front (nothing to harden); throws when there is one and no script.
+ */
+function gitShimOf(settings) {
+    if (settings.gitShim !== undefined) return settings.gitShim;
+    const real = findGit(settings.childEnv.PATH);
+    if (!real) {
+        settings.gitShim = null;
+        return null;
+    }
+    // The script rides the env; a dev tree or a test has the file beside this one.
+    const source = settings.gitHarden ?? fs.readFileSync(path.join(__dirname, 'git-harden.cjs'), 'utf8');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'factory-git-'));
+    fs.writeFileSync(path.join(dir, 'git'), `#!${process.execPath}\n${source}`, { mode: 0o755 });
+    process.once('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+    settings.gitShim = { dir, real };
+    return settings.gitShim;
+}
+
+/** A step's environment: the image's, the step's own, and the hardened git first on PATH. */
+function stepEnv(run, step) {
+    const env = { ...run.settings.childEnv, ...step.env, ...restoreFeed(run, step) };
+    const shim = gitShimOf(run.settings);
+    if (!shim) return env;
+    return { ...env, PATH: `${shim.dir}${path.delimiter}${env.PATH ?? ''}`, GIT_HARDEN_REAL: shim.real };
+}
+
 function spawnStep(run, step) {
     return new Promise((resolve) => {
         const [exe, ...args] = step.argv;
         let child;
+        let env;
+        try {
+            env = stepEnv(run, step);
+        } catch (error) {
+            const why = `no hardened git: ${error?.message ?? error}`;
+            resolve({ result: stepResult(STEP_REFUSED_EXIT, '', why), interrupted: false });
+            return;
+        }
         // The agent's tools run as their own uid in group 1000 (issue #814), so a step writes the
         // tree group-writable. The child takes the umask at its fork; this process keeps its own.
         const umask = process.umask(STEP_UMASK);
         try {
             child = spawn(exe, args, {
                 cwd: step.cwd || undefined,
-                env: { ...run.settings.childEnv, ...step.env, ...restoreFeed(run, step) },
+                env,
                 stdio: ['ignore', 'pipe', 'pipe'],
                 detached: true,
             });
@@ -1893,6 +1951,8 @@ module.exports = {
     GATE_LOST_MS: DEFAULT_GATE_LOST_MS,
     GATE_CANCEL_MS: DEFAULT_GATE_CANCEL_MS,
     createMachine,
+    settingsOf,
+    spawnStep,
     supervise,
 };
 

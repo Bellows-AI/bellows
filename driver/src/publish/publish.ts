@@ -528,10 +528,10 @@ const gitRead = async (step: RunPublishStep, label: string, args: string[]): Pro
 /**
  * Stages and commits the checkout's dirty tree. The checkout usually has no committer identity
  * (the agent does not need one to edit); a fallback is applied only when the probe found none,
- * so a member-configured identity is never overridden. A `bound` publish (issue #825) stages
- * hook-free — `post-index-change` is the one hook an index write fires — so the staged tree is the
- * verified content, and answers whether the commit, its own hooks run, still holds exactly that
- * tree; an unbound one answers true.
+ * so a member-configured identity is never overridden. The supervisor's git runs no hook of the
+ * checkout (`scripts/git-harden.cjs`: the tool uid writes them), so nothing rewrites the staged
+ * tree. A `bound` publish (issue #825) still stages hook-free by argument and answers whether the
+ * commit still holds exactly the staged tree; an unbound one answers true.
  */
 async function commitDirtyTree(step: RunPublishStep, state: GitState, title: string, bound: boolean): Promise<boolean> {
     const hookless = bound ? ['-c', 'core.hooksPath=/dev/null'] : [];
@@ -561,8 +561,8 @@ async function commitDirtyTree(step: RunPublishStep, state: GitState, title: str
 
 /**
  * Puts the work on its task branch and commits it. A bound publish (`revision`) ships only the
- * content its evidence assessed (issue #825): the switch's and the commit's hooks run, and one that
- * moved the content answers null — refused like any other move — never a branch to push.
+ * content its evidence assessed (issue #825): a switch or a commit that moved the content answers
+ * null — refused like any other move — never a branch to push.
  */
 async function branchAndCommit(
     runStep: RunPublishStep,
