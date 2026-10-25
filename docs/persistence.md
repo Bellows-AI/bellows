@@ -48,7 +48,8 @@ the in-memory stores in `server/test/helpers*.ts`.
 - **The schema names no extension** — `metric_point` is `partition by range (time)` with a single
   DEFAULT partition, which is what lets `database.url` point at RDS or Aurora.
 - **Removing that DEFAULT partition breaks every write.** A range-partitioned table rejects any row
-  no partition covers, and no writer can promise a range: an OTLP client's clock can run ahead or lag arbitrarily. Every unique index on the
+  no partition covers, and no writer can promise a range: an OTLP client's clock can run ahead
+  or lag arbitrarily. Every unique index on the
   table must keep `time` among its columns.
 - **Migrations run under one database-wide advisory xact lock** (`MIGRATION_LOCK_KEY`): a second
   process reads `schema_migrations` only after the first commits, and a wait past `lockWaitMs` fails

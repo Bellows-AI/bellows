@@ -475,7 +475,7 @@ describe.skipIf(!enabled)('session attribution', () => {
     // WHO queued the board task a session belongs to, resolved by joining the telemetry rows to
     // the job audit rows on session id at read time. The telemetry tables stay identity-free —
     // the collector strips identity on purpose — so a session with no matching job row (a local
-    // dev run, a backfilled transcript) reads user null, never a guess.
+    // dev run) reads user null, never a guess.
 
     it('resolves the user of the board task a session belongs to', async () => {
         const userId = await member('attributor');
