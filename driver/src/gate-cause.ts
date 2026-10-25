@@ -17,6 +17,9 @@ const PASSED = /\b\d+ passed\b/;
 const FAILED = /\b\d+ failed\b/;
 const ERRORS = /^\s*Errors\s+(\d+) errors?\b/;
 const WORKER_TIMEOUT = /\[vitest-worker\]: Timeout calling/g;
+const JEST_FAILED_TESTS = /^\s*Tests:\s+(\d+) failed\b/;
+const JEST_FAILURE_HEADING = /^\s*● (.+)$/;
+const JEST_TEST_TIMEOUT = /Exceeded timeout of \d+ ?m?s for a test\b/;
 /**
  * A stale NFS file handle (ESTALE, issue #789): npm's `errno -116`, or the strerror the kernel and
  * node print after a colon (`cp: x: Stale file handle`, `ESTALE: stale file handle`). Neither a
@@ -46,6 +49,30 @@ function onlyWorkerTimeouts(output: string): boolean {
 }
 
 /**
+ * The jest twin of `onlyWorkerTimeouts`: jest's `Tests:` line counts failed tests, and every failure
+ * block it printed (`● suite › test`, repeated once more in its summary) is a per-test timeout
+ * (`Exceeded timeout of 5000 ms for a test`) — a slow cluster, not the change. One assertion, a
+ * suite that failed to run, a hook timeout or any other failure block keeps it `verification`.
+ */
+function onlyJestTestTimeouts(output: string): boolean {
+    const lines = output.replace(ANSI, '').split('\n');
+    const failed = lines.map((line) => JEST_FAILED_TESTS.exec(line)).find((match) => match !== null);
+    if (!failed) return false;
+    const failures: string[][] = [];
+    let open: string[] | null = null;
+    for (const line of lines) {
+        const heading = JEST_FAILURE_HEADING.exec(line);
+        if (heading === null) open?.push(line);
+        else if (heading[1] === 'Console') open = null;
+        else {
+            open = [line];
+            failures.push(open);
+        }
+    }
+    return failures.length >= Number(failed[1]) && failures.every((block) => JEST_TEST_TIMEOUT.test(block.join('\n')));
+}
+
+/**
  * The `failure_cause` of a failed declared gate (issue #653). `environment` when the exit or the
  * output shows the environment, not the diff, failed the gate — a stale file handle wins over any
  * exit, since a broken filesystem fails assertions too; `verification` otherwise, so a
@@ -54,5 +81,5 @@ function onlyWorkerTimeouts(output: string): boolean {
  */
 export function gateCauseOf(failure: { exitCode: number; output: string }): FailureCause {
     if (ENVIRONMENT_EXITS.includes(failure.exitCode) || staleFileHandle(failure.output)) return 'environment';
-    return onlyWorkerTimeouts(failure.output) ? 'environment' : 'verification';
+    return onlyWorkerTimeouts(failure.output) || onlyJestTestTimeouts(failure.output) ? 'environment' : 'verification';
 }
