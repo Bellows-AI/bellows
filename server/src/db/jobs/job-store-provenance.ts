@@ -122,3 +122,26 @@ export async function recordLaunchOutcome(
           and ${outcome.adopts}::bigint < claim_seq
     `;
 }
+
+/**
+ * Marks every execution of the jobs a removal is about to delete, in the removal's own
+ * transaction. Task rows, follow-ups, workflow nodes and the thread's named reviews are all
+ * listed by the caller, so the executions of a review whose requester leaves go with it. Nothing
+ * else changes: the rows keep their ids and attribution, and a second removal stamps nothing.
+ *
+ * Provenance never blocks a removal: the statement runs under a savepoint, and a failure is
+ * logged and swallowed (readers treat a missing job row as removed too).
+ */
+export async function markExecutionsRemoved(tx: TransactionSql, orgId: string, jobIds: string[]): Promise<void> {
+    if (jobIds.length === 0) return;
+    try {
+        await tx.savepoint(async (sp) => {
+            await sp`
+                update job_execution set removed_at = now(), updated_at = now()
+                where org_id = ${orgId} and job_id = any(${jobIds}::uuid[]) and removed_at is null
+            `;
+        });
+    } catch (error) {
+        console.error(`[jobs] executions could not be marked removed: ${(error as Error).message}`);
+    }
+}
