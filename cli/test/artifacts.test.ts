@@ -66,6 +66,14 @@ describe('bellows job activity', () => {
         };
     };
 
+    it('fails the command, with the board message, when the board answers 503 UNAVAILABLE', async () => {
+        const down = () => json({ error: 'Telemetry is disabled (TELEMETRY_SOURCE=off)', code: 'UNAVAILABLE' }, 503);
+        const { code, err, out } = await runCli(['job', 'activity', 'job-1'], down);
+        expect(code).not.toBe(0);
+        expect(out).toBe('');
+        expect(err).toContain('Telemetry is disabled');
+    });
+
     it('keeps the whole payload under --json, nulls and review runs included', async () => {
         const machine = await cli(['job', 'activity', 'job-1', '--json'], () => json(body()));
         expect(JSON.parse(machine.out).data).toEqual(body());

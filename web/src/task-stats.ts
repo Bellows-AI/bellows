@@ -1,4 +1,5 @@
 import type { JobActivity, ThreadActivity, TokenTypes } from './api/useJobActivity.js';
+import type { TaskUsage } from '@factory-ai/core';
 import { isTerminal, type Job } from './api/useJobs.js';
 
 /**
@@ -68,19 +69,43 @@ export interface TaskStats {
     loading: boolean;
 }
 
-function telemetryOf(answer: ThreadActivity[string] | undefined): {
-    state: TelemetryState;
-    payload: JobActivity | null;
-} {
-    if (answer === undefined) return { state: 'loading', payload: null };
-    if (answer === 'unavailable') return { state: 'unavailable', payload: null };
-    return { state: answer.usage.state === 'measured' ? 'measured' : 'none', payload: answer };
+/**
+ * A run's telemetry. Only the newest run is asked for (its payload also carries the chart); every
+ * other run reads its tokens from the task usage that answer carries, once there is one.
+ */
+function telemetryOf(
+    job: Job,
+    answer: ThreadActivity[string] | undefined,
+    task: TaskUsage | null
+): { state: TelemetryState; payload: JobActivity | null; tokens: TokenTypes | null } {
+    if (answer === 'unavailable') return { state: 'unavailable', payload: null, tokens: null };
+    if (answer !== undefined) {
+        const measured = answer.usage.state === 'measured';
+        return {
+            state: measured ? 'measured' : 'none',
+            payload: answer,
+            tokens: measured ? answer.usage.tokens : null,
+        };
+    }
+    if (task === null) return { state: 'loading', payload: null, tokens: null };
+    const usage = task.runs.find((run) => run.jobId === job.id)?.usage;
+    return usage?.state === 'measured'
+        ? { state: 'measured', payload: null, tokens: usage.tokens }
+        : { state: 'none', payload: null, tokens: null };
 }
 
 /** The thread's statistics: the runs, oldest first, and the totals over what was measured. */
 export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskStats {
+    // The canonical task comes from the newest answer that carries one, not from re-summing the
+    // thread's runs: that is what makes a review's usage appear.
+    const task =
+        jobs
+            .map((job) => activity[job.id])
+            .reverse()
+            .map((answer) => (typeof answer === 'object' ? answer.task : null))
+            .find((candidate) => candidate != null) ?? null;
     const runs: RunStat[] = jobs.map((job, index) => {
-        const { state, payload } = telemetryOf(activity[job.id]);
+        const { state, payload, tokens } = telemetryOf(job, activity[job.id], task);
         return {
             id: job.id,
             number: index + 1,
@@ -90,14 +115,11 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
             live: !isTerminal(job.status),
             agentTurns: job.agentTurns,
             telemetry: state,
-            tokens: payload?.usage.state === 'measured' ? payload.usage.tokens : null,
+            tokens,
             activity: payload,
         };
     });
     const turns = runs.filter((run) => run.agentTurns !== null);
-    // The task's totals come from the canonical task of the newest answer that carries one, not from
-    // re-summing the thread's runs: that is what makes a review's usage appear.
-    const task = [...runs].reverse().find((run) => run.activity?.task != null)?.activity?.task ?? null;
     const taskRuns = task?.runs ?? [];
     return {
         runs,

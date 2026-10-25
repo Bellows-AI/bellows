@@ -281,6 +281,22 @@ test.describe('the task detail page', () => {
         await page.screenshot({ path: `${SHOTS}/task-detail-thread.png`, fullPage: true });
     });
 
+    test('the statistics modal reads the task tokens by type, "—" for unmeasured, and the review note', async ({
+        page,
+    }) => {
+        await routeThread(page, followUpThread);
+        await page.goto(`/tasks/${followUpThread[1]!.id}`);
+
+        await page.getByRole('button', { name: /Open task statistics/ }).click();
+        const dialog = page.getByRole('dialog');
+        await expect(dialog.getByText('1,240', { exact: true }).first()).toBeVisible();
+        await expect(dialog.getByText('9,000').first()).toBeVisible();
+        // Cache creation was never measured: a dash, not a zero.
+        await expect(dialog.getByText('—').first()).toBeVisible();
+        await expect(dialog).toContainText('Token totals include 1 review run');
+        await page.screenshot({ path: `${SHOTS}/task-detail-statistics.png`, fullPage: true });
+    });
+
     // Issue #796: an attempt the infrastructure took reads apart from a failed retry.
     test('an interrupted run lists each interruption apart from its attempts', async ({ page }) => {
         await routeThread(page, interruptedThread);

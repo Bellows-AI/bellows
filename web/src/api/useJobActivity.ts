@@ -47,13 +47,13 @@ const hasTelemetryKey = (job: Job): boolean => job.sessionId !== null && job.sta
 const refetchKeyOf = (job: Job): string => [job.id, job.sessionId, job.startedAt, job.finishedAt].join('|');
 
 /**
- * The thread's per-run activity answers (issue 339, 530), fetched for EVERY run by its own id —
- * the pulse reads the newest run, the statistics modal reads them all, and any member's id
- * resolves to the same conversation so each run is asked for itself, never the URL-named one.
- * A run with no session reads `unavailable` without a request. An HTTP refusal answers
- * `unavailable` — an unreadable answer is not "keep a stale chart"; a network failure keeps the
- * run's last answer. Answers are keyed by job id, so one run's chart can never render as
- * another's, and a changed run keeps its previous answer on screen until the new one lands.
+ * The thread's activity answer (issue 339, 530, 847). ONE request, for the newest run with a
+ * session: its answer carries the run's chart buckets and the canonical task, whose `runs[].usage`
+ * is every other run's tokens (`taskStats` reads them there), so the board reads the task's usage
+ * once per refetch instead of once per run. A thread with no such run reads `unavailable` without a
+ * request. An HTTP refusal answers `unavailable` for every run - an unreadable answer is not "keep a
+ * stale chart"; a network failure keeps the last answer. Answers are keyed by job id, and a changed
+ * thread keeps its previous answer on screen until the new one lands.
  */
 export function useThreadActivity(jobs: readonly Job[] | null): ThreadActivity {
     const [answers, setAnswers] = useState<ThreadActivity>({});
@@ -61,24 +61,26 @@ export function useThreadActivity(jobs: readonly Job[] | null): ThreadActivity {
     const key = runs.map(refetchKeyOf).join(',');
 
     useEffect(() => {
+        if (key === '') return;
         const controller = new AbortController();
-        const ids = key === '' ? [] : key.split(',').map((entry) => entry.split('|')[0]!);
-        for (const id of ids) {
-            void (async () => {
-                try {
-                    const response = await fetch(`/api/jobs/${id}/activity`, { signal: controller.signal });
-                    const answer: RunActivity = response.ok ? ((await response.json()) as JobActivity) : 'unavailable';
-                    setAnswers((previous) => ({ ...previous, [id]: answer }));
-                } catch {
-                    // Aborted mid-flight (the thread changed): the new fetch owns the state.
-                    // A network failure that is not an abort keeps the run's last answer.
-                }
-            })();
-        }
+        const newest = key.split(',').pop()!.split('|')[0]!;
+        void (async () => {
+            try {
+                const response = await fetch(`/api/jobs/${newest}/activity`, { signal: controller.signal });
+                const answer: RunActivity = response.ok ? ((await response.json()) as JobActivity) : 'unavailable';
+                setAnswers((previous) => ({ ...previous, [newest]: answer }));
+            } catch {
+                // Aborted mid-flight (the thread changed): the new fetch owns the state.
+                // A network failure that is not an abort keeps the last answer.
+            }
+        })();
         return () => controller.abort();
     }, [key]);
 
+    // A refusal for the newest run is the refusal for the thread: no run reads "still loading" for ever.
+    const newest = runs[runs.length - 1];
+    const refused = newest !== undefined && answers[newest.id] === 'unavailable';
     // A run without telemetry is answered here, so the modal never reads it as "still loading".
-    const unmeasured = (jobs ?? []).filter((job) => !hasTelemetryKey(job));
-    return { ...answers, ...Object.fromEntries(unmeasured.map((job) => [job.id, 'unavailable' as const])) };
+    const unavailable = (jobs ?? []).filter((job) => refused || !hasTelemetryKey(job));
+    return { ...answers, ...Object.fromEntries(unavailable.map((job) => [job.id, 'unavailable' as const])) };
 }

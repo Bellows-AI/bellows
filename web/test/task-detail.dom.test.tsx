@@ -117,6 +117,18 @@ describe('the task detail page', () => {
         expect(scrolledTo).toBe(4000);
     });
 
+    it('reads the thread activity once, from the newest run, however many runs the thread has', async () => {
+        const jobs = authoredBy(followUpThread, LOCAL_AUTHOR);
+        expect(jobs.length).toBeGreaterThan(1);
+        const calls = board(jobs);
+        renderApp(`/tasks/${jobs[0]!.id}`);
+
+        await screen.findByRole('button', { name: /Open task statistics/ });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const reads = calls.filter((call) => /\/api\/jobs\/[^/]+\/activity/.test(call.url));
+        expect(reads.map((call) => call.url)).toEqual([`/api/jobs/${jobs[jobs.length - 1]!.id}/activity`]);
+    });
+
     it('the activity pulse opens the Task statistics modal and gives focus back', async () => {
         // Partial data: only the root run reported agent turns, and only the latest run — the one
         // the sidebar pulse draws — reported tokens.

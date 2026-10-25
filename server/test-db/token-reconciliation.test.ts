@@ -329,6 +329,17 @@ describe.skipIf(!enabled)('token reconciliation', () => {
         expect(reads[2]!.task!.runs.map((r) => r.kind)).toContain('review');
     });
 
+    it("resolves no task for another organization's job, and none of its sessions", async () => {
+        const foreign = built.ids.taskB!;
+        const { taskId, facts: taskFacts } = await createPostgresTelemetryClient({
+            sql,
+            orgId: built.A,
+        }).fetchTaskFacts({ jobId: foreign, rootJobId: foreign, edits: true });
+        expect(taskId).toBe(foreign);
+        expect(buildRunActivity(taskFacts, taskId, foreign, NOW)).toEqual({ task: null, run: null });
+        expect(text(taskFacts)).not.toContain(built.ids.otherOrg!);
+    });
+
     it('reads edit decisions only when asked, and keeps them out of the token figures', async () => {
         await w.point({ session: built.ids.shared!, field: 'edits_accept', value: 3, time: at('10:30') });
         const client = createPostgresTelemetryClient({ sql, orgId: built.A });

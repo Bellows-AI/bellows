@@ -499,7 +499,8 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
 
 // The run-activity read (issue #339): the run's own progress-over-time chart, bucketed from the
 // session telemetry the executor already reported. A person route, like the job read it extends —
-// the session arrived through this org's own job row, which is the whole org boundary.
+// the org boundary is twice: `store.get` reads the job in the caller's org, and `fetchTaskFacts`
+// resolves the task only through `job_execution.org_id` rows of that org. TELEMETRY_SOURCE=off is a 503.
 export async function handleJobActivity(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return reply;

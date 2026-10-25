@@ -17,6 +17,7 @@ import type {
     SettleOutcome,
     SettleResult,
 } from '../src/db/jobs/job-store-types.js';
+import { TelemetryError } from '../src/telemetry/errors.js';
 import { activityWorld, minute } from './helpers-activity.js';
 import { trackApps } from './helpers-http.js';
 import type {
@@ -3367,6 +3368,17 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         const body = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids.task}/activity` })).json();
         expect(body.sessionId).toBeNull();
         expect(body.usage.tokens.output).toBe(100);
+    });
+
+    it('answers 503 UNAVAILABLE, not an empty 200, when telemetry is off (TELEMETRY_SOURCE=off)', async () => {
+        const off = Object.assign(stubTelemetryClient(), {
+            fetchTaskFacts: async () => {
+                throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
+            },
+        });
+        const response = await activityOf(ID, ID, off);
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toMatchObject({ code: 'UNAVAILABLE' });
     });
 
     it('answers unmeasured usage and no task, never a zero, when nothing names the job', async () => {

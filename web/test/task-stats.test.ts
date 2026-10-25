@@ -61,6 +61,15 @@ describe('taskStats', () => {
         expect(stats.loading).toBe(true);
     });
 
+    it('reads every run of the thread from the task usage carried by the newest run answer alone', () => {
+        const task = taskUsage(A, [runUsage(A, 'run', { input: 100 }), runUsage(B, 'follow-up', null)]);
+        const stats = taskStats([job({ id: A }), job({ id: B })], { [B]: activityAnswer(B, null, task) });
+        expect(stats.runs.map((run) => run.telemetry)).toEqual(['measured', 'none']);
+        expect(stats.runs[0]!.tokens).toEqual({ ...NO_TOKENS, input: 100 });
+        expect(stats.runs[1]!.tokens).toBeNull();
+        expect(stats.loading).toBe(false);
+    });
+
     it('marks a run still going as provisional', () => {
         const stats = taskStats([job({ id: A, status: 'running', finishedAt: null })], {});
         expect(stats.provisional).toBe(true);
