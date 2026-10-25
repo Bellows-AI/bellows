@@ -315,6 +315,7 @@ function usageOfTask(
     if (usage.tasks === null) return { tokenUsage: emptyBlock('unavailable'), tokenUsageUnavailable: 'telemetry' };
     if (task.root_job_id === null) {
         // `on delete set null`: a started task whose root is gone cannot be addressed, so it is never guessed.
+        // removeThread refuses batch-backed roots, so only a delete outside the app reaches this.
         return task.attempts > 0
             ? { tokenUsage: emptyBlock('unavailable'), tokenUsageUnavailable: 'task-removed' }
             : { tokenUsage: provisional(emptyBlock('unmeasured')), tokenUsageUnavailable: null };

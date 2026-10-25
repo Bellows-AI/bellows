@@ -1824,8 +1824,9 @@ describe.skipIf(!enabled)('batch report usage', () => {
                 throw new Error('telemetry down');
             },
         });
-        expect(logged).toHaveBeenCalledWith(expect.stringContaining('telemetry down'));
+        const calls = logged.mock.calls.map((call) => String(call[0]));
         logged.mockRestore();
+        expect(calls.some((line) => line.includes('telemetry down'))).toBe(true);
         expect(failing.totals.tokenUsage.state).toBe('unavailable');
         expect(failing.tasks.every((t) => t.usage.tokenUsageUnavailable === 'telemetry')).toBe(true);
         expect(failing.tasks.map((t) => [t.key, t.execution, t.next])).toEqual(
