@@ -1,8 +1,11 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { resolveBatchPlan, type BatchPlan } from '@factory-ai/core';
+import { resolveBatchPlan, taskUsageOf, type BatchPlan, type TokenType } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
+import { readReport } from '../src/db/batches/batch-store-report.js';
+import { readUsageFacts } from '../src/telemetry/usage-facts.js';
+import { createWorld } from './usage-world.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { claimDue, commitObservation } from '../src/db/batches/batch-store-observation.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -18,6 +21,7 @@ import {
     jobCount as sharedJobCount,
     BATCH_REPO,
     recordPr,
+    rootOf,
     startBatch,
 } from './batch-fixtures.js';
 
@@ -1469,7 +1473,7 @@ describe.skipIf(!enabled)('the morning report', () => {
         expect(await store.report(ABSENT)).toBeNull();
     });
 
-    it('states remaining budgets, manual retries apart from automatic ones, observation freshness and unavailable usage', async () => {
+    it('states remaining budgets, manual retries apart from automatic ones, observation freshness and unmeasured usage', async () => {
         const { clock, store: timed } = clockedStore();
         const id = await frozen(planWith([{ key: 'one', tasks: [task('a'), prTask('b')] }]), timed);
         await timed.reconcile(id);
@@ -1512,14 +1516,15 @@ describe.skipIf(!enabled)('the morning report', () => {
 
         const report = (await timed.report(id))!;
         const observedAt = new Date(clock.ms).toISOString();
-        expect(report).toMatchObject({ latestObservationAt: observedAt, unavailable: ['tokens', 'cost'] });
+        expect(report).toMatchObject({ latestObservationAt: observedAt });
+        expect(report).not.toHaveProperty('unavailable');
         const byKey = Object.fromEntries(report.tasks.map((t) => [t.key, t]));
         expect(byKey.a).toMatchObject({
             infraRetries: 1,
             repairs: 0,
             manualRetries: 1,
             remaining: { infraRetries: 1, repairs: 2 },
-            usage: { tokens: null },
+            usage: { tokenUsage: { state: 'unmeasured' }, tokenUsageUnavailable: null },
             observation: null,
         });
         expect(byKey.b).toMatchObject({
@@ -1536,7 +1541,12 @@ describe.skipIf(!enabled)('the morning report', () => {
                 error: null,
             },
         });
-        expect(Object.keys(byKey.a!.usage).sort()).toEqual(['agentTurns', 'tokens', 'wallClockMs']);
+        expect(Object.keys(byKey.a!.usage).sort()).toEqual([
+            'agentTurns',
+            'tokenUsage',
+            'tokenUsageUnavailable',
+            'wallClockMs',
+        ]);
     });
 
     it('is not available for a draft', async () => {
@@ -1628,5 +1638,171 @@ describe.skipIf(!enabled)('the claim carries the batch target branch', () => {
         const looseClaim = await claimJobs.claim('w1', 300);
         expect(looseClaim).toMatchObject({ id: loose.id });
         expect(looseClaim).not.toHaveProperty('baseBranch');
+    });
+});
+
+describe.skipIf(!enabled)('batch report usage', () => {
+    const TYPES = ['input', 'output', 'cacheRead', 'cacheCreation'] as const satisfies readonly TokenType[];
+    const at = (hhmm: string): string => `2026-09-10T${hhmm}:00Z`;
+
+    /** One batch of three tasks: a (follow-up, retry, recovery, review), b (partial), c (no evidence). */
+    async function build() {
+        const w = createWorld(sql);
+        const id = await frozen(plan([{ key: 'build', tasks: [task('a'), task('b'), task('c')] }], 3));
+        await store.reconcile(id);
+        const root = {
+            a: await rootOf(store, id, 'a'),
+            b: await rootOf(store, id, 'b'),
+            c: await rootOf(store, id, 'c'),
+        };
+        const sessions = { a: w.marker('sa'), retry: w.marker('sr'), review: w.marker('sv'), b: w.marker('sb') };
+        const point = (session: string, type: TokenType) => (value: number, time: string) =>
+            w.point({ session, field: `tokens_${type}`, value, time, attrs: { model: 'm1' } });
+        const run = (
+            job: string,
+            o: { root: string; session: string; start: string; end: string } & Record<string, unknown>
+        ) => {
+            const { root: rootId, session, start, end, ...extra } = o;
+            return w.execution({
+                org: ORG,
+                job,
+                root: rootId,
+                start: at(start),
+                end: at(end),
+                sessions: [{ id: session }],
+                ...extra,
+            });
+        };
+
+        // a: the first run, a shared-session follow-up, a fresh retry, a same-row recovery claim, a named review.
+        await run(root.a, { root: root.a, session: sessions.a, start: '10:00', end: '10:30' });
+        await point(sessions.a, 'input')(100, at('10:10'));
+        await point(sessions.a, 'output')(10, at('10:10'));
+        await point(sessions.a, 'cacheRead')(1000, at('10:10'));
+        await point(sessions.a, 'cacheCreation')(5, at('10:10'));
+        const followUp = await w.job({ org: ORG, root: root.a, parent: root.a, author: ALICE });
+        await run(followUp, { root: root.a, session: sessions.a, start: '11:00', end: '11:30' });
+        await point(sessions.a, 'input')(40, at('11:10'));
+        const retry = await w.job({ org: ORG, root: root.a, parent: root.a, author: ALICE });
+        await run(retry, { root: root.a, session: sessions.retry, start: '12:00', end: '12:30' });
+        await point(sessions.retry, 'input')(7, at('12:10'));
+        await run(root.a, {
+            root: root.a,
+            session: sessions.a,
+            start: '10:30',
+            end: '10:50',
+            claim: 2,
+            launch: 'adopted',
+            adopts: 1,
+        });
+        await point(sessions.a, 'input')(3, at('10:40'));
+        const review = await w.job({ org: ORG, reviewOf: followUp, author: ALICE });
+        await run(review, {
+            root: review,
+            session: sessions.review,
+            start: '13:00',
+            end: '13:20',
+            requestingJob: root.a,
+            requestingRoot: root.a,
+        });
+        await point(sessions.review, 'output')(9, at('13:10'));
+        // b: partially measured: input and output only.
+        await run(root.b, { root: root.b, session: sessions.b, start: '10:00', end: '10:30' });
+        await point(sessions.b, 'input')(8, at('10:10'));
+        await point(sessions.b, 'output')(20, at('10:10'));
+        return { w, id, root, sessions, run, point };
+    }
+
+    const report = async (id: string, deps = {}) => (await readReport(sql, { orgId: ORG, id }, deps))!;
+
+    it('equals the canonical task contributions per type; an unstarted-evidence task is unmeasured, not zero', async () => {
+        const { id, root } = await build();
+        const r = await report(id);
+        const byKey = Object.fromEntries(r.tasks.map((t) => [t.key, t.usage.tokenUsage]));
+        expect(r.tasks.find((t) => t.key === 'a')!.usage.tokenUsageUnavailable).toBeNull();
+        // The independent sum of the points inserted for a: run + follow-up + retry + recovery + review.
+        expect(byKey.a!.tokens).toEqual({ input: 150, output: 19, cacheRead: 1000, cacheCreation: 5 });
+        expect(byKey.b!.tokens).toEqual({ input: 8, output: 20, cacheRead: null, cacheCreation: null });
+        expect(byKey.c).toMatchObject({ state: 'unmeasured', tokens: { input: null, output: null } });
+        expect(r.totals.tokenUsage.tokens).toEqual({ input: 158, output: 39, cacheRead: 1000, cacheCreation: 5 });
+        expect(r.totals.tokenUsage.coverage.cacheRead).toEqual({ measured: 1, contributors: 4 });
+        expect(r.totals.tokenUsage.coverage.input.measured).toBe(3);
+        expect(r.totals.tokenUsage.rows.length).toBeGreaterThan(0);
+        expect(r.totals.usageUnavailableTasks).toBe(0);
+        // The same reducer, the same snapshot: each task block is the task's own usage.
+        const facts = await sql.begin('isolation level repeatable read, read only', (tx) =>
+            readUsageFacts(tx, ORG, { taskIds: [root.a, root.b] })
+        );
+        for (const key of ['a', 'b'] as const) {
+            const own = taskUsageOf(facts, root[key], new Date(r.usageSnapshotAt))!.usage;
+            expect({ ...byKey[key], provisional: false }).toEqual({ ...own, provisional: false });
+        }
+        // The batch is still moving, so the figures are provisional.
+        expect(r.totals.tokenUsage.provisional).toBe(true);
+        expect(byKey.a!.provisional).toBe(true);
+        for (const type of TYPES) expect(r.totals.tokenUsage.tokens[type]).not.toBe(0);
+    });
+
+    it('is unchanged by an adoption row or a dimension row', async () => {
+        const { id, root, sessions, run, point } = await build();
+        const before = await report(id);
+        await run(root.a, {
+            root: root.a,
+            session: sessions.a,
+            start: '10:50',
+            end: '10:55',
+            claim: 3,
+            launch: 'adopted',
+            adopts: 2,
+        });
+        await point(sessions.a, 'input')(0, at('10:52'));
+        const after = await report(id);
+        expect(after.totals.tokenUsage.tokens).toEqual(before.totals.tokenUsage.tokens);
+        expect(after.totals.tokenUsage.counts).toEqual(before.totals.tokenUsage.counts);
+        expect(after.tasks.map((t) => t.attempts)).toEqual(before.tasks.map((t) => t.attempts));
+    });
+
+    it('reads membership and usage in one snapshot: a change committed between them is not mixed in', async () => {
+        const { id, root, w, sessions, run, point } = await build();
+        const before = await report(id);
+        const during = await report(id, {
+            beforeUsage: async () => {
+                // Another connection commits a new execution of a, and removes b's task root.
+                const extra = await w.job({ org: ORG, root: root.a, parent: root.a, author: ALICE });
+                await run(extra, { root: root.a, session: sessions.a, start: '14:00', end: '14:30' });
+                await point(sessions.a, 'input')(1000, at('14:10'));
+                await sql`delete from job where org_id = ${ORG} and id = ${root.b}`;
+            },
+        });
+        expect(during.totals.tokenUsage.tokens).toEqual(before.totals.tokenUsage.tokens);
+        expect(during.tasks.map((t) => t.usage.tokenUsageUnavailable)).toEqual([null, null, null]);
+        // The next snapshot sees both: a gained the amount, and b is a removed member, never guessed.
+        const next = await report(id);
+        const b = next.tasks.find((t) => t.key === 'b')!;
+        expect(b.usage).toMatchObject({ tokenUsageUnavailable: 'task-removed', tokenUsage: { state: 'unavailable' } });
+        expect(next.totals.usageUnavailableTasks).toBe(1);
+        expect(next.tasks.find((t) => t.key === 'a')!.usage.tokenUsage.tokens.input).toBe(1150);
+        expect(next.totals.tokenUsage.tokens.input).toBe(1150);
+        expect(next.tasks.map((t) => t.key)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('reports usage unavailable, not zero, and still explains scheduling, when telemetry cannot be read', async () => {
+        const { id } = await build();
+        const healthy = await report(id);
+        const failing = await report(id, {
+            readFacts: async () => {
+                throw new Error('telemetry down');
+            },
+        });
+        expect(failing.totals.tokenUsage.state).toBe('unavailable');
+        expect(failing.tasks.every((t) => t.usage.tokenUsageUnavailable === 'telemetry')).toBe(true);
+        expect(failing.tasks.map((t) => [t.key, t.execution, t.next])).toEqual(
+            healthy.tasks.map((t) => [t.key, t.execution, t.next])
+        );
+        for (const source of ['fixture', 'off'] as const) {
+            const off = await report(id, { telemetrySource: source });
+            expect(off.totals.tokenUsage.state).toBe('unavailable');
+            expect(off.tasks[0]!.usage.wallClockMs).toBe(healthy.tasks[0]!.usage.wallClockMs);
+        }
     });
 });

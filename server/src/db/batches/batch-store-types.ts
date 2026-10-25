@@ -1,4 +1,4 @@
-import type { BatchNextAction, BatchPlan, ResolvedBatchPlan } from '@factory-ai/core';
+import type { BatchNextAction, BatchPlan, ResolvedBatchPlan, UsageBlock } from '@factory-ai/core';
 
 export const BATCH_DRAFT = 'draft';
 /** The stored freeze flag (`batch_status_ck`, 059): a row is `draft` or `started`, never an end state. */
@@ -170,8 +170,8 @@ export interface BatchReportObservation {
     error: { code: string; detail: string | null } | null;
 }
 
-/** Usage the board does not measure: reported as unavailable, never estimated. */
-export const REPORT_UNAVAILABLE = ['tokens', 'cost'] as const;
+/** Why a task's token usage could not be read: its root was removed after the start, or telemetry is not readable. */
+export type BatchUsageUnavailable = 'task-removed' | 'telemetry';
 
 /** One task of the morning report: its outcome, what recovery spent, its links and the next supported step. */
 export interface BatchReportTask {
@@ -195,8 +195,16 @@ export interface BatchReportTask {
     pr: string | null;
     /** The task's thread, as the board's job path. */
     job: string | null;
-    /** Measured only; token counts are not recorded per run, so `tokens` is always null. */
-    usage: { wallClockMs: number; agentTurns: number; tokens: null };
+    /**
+     * Wall clock and turns are measured from the job rows. `tokenUsage` is the task's all-time canonical
+     * usage at `usageSnapshotAt` (core `taskUsageOf`); `tokenUsageUnavailable` says why it is `unavailable`.
+     */
+    usage: {
+        wallClockMs: number;
+        agentTurns: number;
+        tokenUsage: UsageBlock;
+        tokenUsageUnavailable: BatchUsageUnavailable | null;
+    };
     observation: BatchReportObservation | null;
     next: BatchNextAction;
 }
@@ -219,7 +227,8 @@ export interface BatchReport {
     tasks: BatchReportTask[];
     /** The newest PR observation of any task; null when none was read yet. */
     latestObservationAt: string | null;
-    unavailable: readonly (typeof REPORT_UNAVAILABLE)[number][];
+    /** The one repeatable-read snapshot the membership and the usage were read in. */
+    usageSnapshotAt: string;
     totals: {
         accepted: number;
         failed: number;
@@ -228,6 +237,10 @@ export interface BatchReport {
         repairs: number;
         wallClockMs: number;
         agentTurns: number;
+        /** All-time usage of the member tasks, one reducer block over their union; never a sum of the task blocks. */
+        tokenUsage: UsageBlock;
+        /** Members whose usage could not be read (removed after the start): above 0 the total is partial. */
+        usageUnavailableTasks: number;
     };
 }
 

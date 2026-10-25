@@ -437,6 +437,34 @@ export function taskUsageOf(input: UsageInput, taskId: string, now: Date): TaskU
     return taskView(acc, taskId, true, false);
 }
 
+/**
+ * All-time usage of a set of canonical tasks at one snapshot: each task is exactly its `taskUsageOf` view
+ * (null when no evidence names it), and `total` is ONE block over the union of their items, so
+ * precision, coverage, rows and counts are computed, never hand-merged.
+ */
+export function batchUsageOf(
+    input: UsageInput,
+    taskIds: readonly string[],
+    now: Date
+): { tasks: Map<string, TaskUsage | null>; total: UsageBlock } {
+    const acc = account(input, { range: null, now });
+    const wanted = new Set(taskIds);
+    const tasks = new Map<string, TaskUsage | null>();
+    for (const id of wanted) {
+        const known = acc.board.some((e) => canonicalTask(e) === id) || acc.items.some((i) => i.taskId === id);
+        tasks.set(id, known ? taskView(acc, id, true, false) : null);
+    }
+    const inBatch = (taskId: string | null): boolean => taskId !== null && wanted.has(taskId);
+    return {
+        tasks,
+        total: buildBlock(
+            acc.items.filter((i) => inBatch(i.taskId)),
+            acc.extras.filter((e) => inBatch(e.taskId)),
+            false
+        ),
+    };
+}
+
 /** The timed amounts assigned to one run of a task, all-time: what a run's activity buckets are drawn from. */
 export function runContributionsOf(input: UsageInput, taskId: string, jobId: string, now: Date): TokenContribution[] {
     const acc = account(input, { range: null, now });

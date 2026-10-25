@@ -1,13 +1,17 @@
 import {
     batchNextAction,
+    batchUsageOf,
+    emptyBlock,
     GATE_PASSED,
     holdsSlot,
     TASK_NO_PR,
     TASK_RETRY,
     TASK_RUNNING,
     VERIFY_FAILED,
+    type UsageBlock,
 } from '@factory-ai/core';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
+import { readUsageFacts } from '../../telemetry/usage-facts.js';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
 import { type BoardMergeRow, boardMergeColumns, boardMerging, readVerification } from './batch-store-rows.js';
 import {
@@ -17,7 +21,7 @@ import {
     type BatchReportObservation,
     type BatchReportState,
     type BatchReportTask,
-    REPORT_UNAVAILABLE,
+    type BatchUsageUnavailable,
 } from './batch-store-types.js';
 
 /**
@@ -90,7 +94,31 @@ function stateOf(batch: ReportBatch, tasks: readonly ReportTaskRow[]): BatchRepo
     return moving ? 'running' : 'parked';
 }
 
-export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: string }): Promise<BatchReport | null> {
+/** Where the report's usage comes from: only a postgres telemetry source describes the board's own tasks. */
+export type ReportTelemetrySource = 'postgres' | 'fixture' | 'off';
+
+export interface ReportDeps {
+    telemetrySource?: ReportTelemetrySource;
+    /** Test hook: runs between the membership reads and the usage read, inside the snapshot. */
+    beforeUsage?: () => Promise<void>;
+    /** Test seam: the usage reader, so a failing telemetry read can be injected. */
+    readFacts?: typeof readUsageFacts;
+}
+
+/** Membership, scheduling and usage are read in ONE repeatable-read snapshot, so they describe the same batch. */
+export function readReport(
+    sql: Sql,
+    { orgId, id }: { orgId: string; id: string },
+    deps: ReportDeps = {}
+): Promise<BatchReport | null> {
+    return sql.begin('isolation level repeatable read, read only', (tx) => assembleReport(tx, { orgId, id }, deps));
+}
+
+async function assembleReport(
+    sql: TransactionSql,
+    { orgId, id }: { orgId: string; id: string },
+    deps: ReportDeps
+): Promise<BatchReport | null> {
     const [batch] = await sql<ReportBatch[]>`
         select id, title, status, infra_retries, repairs, time_limit_minutes, started_at, deadline_at, expired_at,
                cancelled_at, completed_at
@@ -140,10 +168,15 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             order by a.recorded_at, a.task_key
         `,
         readVerification(sql, { orgId, id }),
-        readObservations({ sql, orgId }, id),
+        readObservations({ sql: sql as unknown as Sql, orgId }, id),
     ]);
     const observed = new Map(observations.map((row) => [row.taskKey, row]));
     const state = stateOf(batch, tasks);
+    await deps.beforeUsage?.();
+    const usage = await readBatchUsage(sql, orgId, tasks, deps);
+    // A report still moving can gain usage: provisional whatever the reducer saw.
+    const live = state === 'running' || state === 'parked';
+    const provisional = (block: UsageBlock): UsageBlock => (live ? { ...block, provisional: true } : block);
     const rows: BatchReportTask[] = tasks.map((task) => {
         const prUrl = task.pr === TASK_NO_PR ? null : task.pr;
         return {
@@ -166,7 +199,11 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             closedBy: task.closed_by,
             pr: prUrl,
             job: task.root_job_id ? `/api/jobs/${task.root_job_id}` : null,
-            usage: { wallClockMs: Number(task.wall_clock_ms), agentTurns: Number(task.agent_turns), tokens: null },
+            usage: {
+                wallClockMs: Number(task.wall_clock_ms),
+                agentTurns: Number(task.agent_turns),
+                ...usageOfTask(usage, task, provisional),
+            },
             observation: observationOf(observed.get(task.key)),
             next: batchNextAction({
                 batchId: id,
@@ -219,7 +256,7 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
                 .filter((at): at is string => at !== null)
                 .sort()
                 .at(-1) ?? null,
-        unavailable: REPORT_UNAVAILABLE,
+        usageSnapshotAt: iso(usage.snapshotAt),
         totals: {
             accepted: rows.filter((task) => task.gate === GATE_PASSED).length,
             failed: rows.filter((task) => task.execution === 'failed').length,
@@ -230,6 +267,59 @@ export async function readReport(sql: Sql, { orgId, id }: { orgId: string; id: s
             repairs: rows.reduce((sum, task) => sum + task.repairs, 0),
             wallClockMs: rows.reduce((sum, task) => sum + task.usage.wallClockMs, 0),
             agentTurns: rows.reduce((sum, task) => sum + task.usage.agentTurns, 0),
+            tokenUsage: provisional(usage.total),
+            usageUnavailableTasks: rows.filter((task) => task.usage.tokenUsageUnavailable === 'task-removed').length,
         },
+    };
+}
+
+interface BatchUsage {
+    snapshotAt: Date;
+    /** Null when telemetry could not be read: every block is then `unavailable`. */
+    tasks: ReturnType<typeof batchUsageOf>['tasks'] | null;
+    total: UsageBlock;
+}
+
+/**
+ * The members' usage from the shared reader and reducer, in the report's own snapshot. The read runs in
+ * a savepoint: a failure rolls back to it, the scheduling rows already read stay valid, and the usage is
+ * `unavailable` instead of failing the report. Only the trusted roots are asked for; `batch_attempt` rows
+ * are counted as attempts and never read for tokens.
+ */
+async function readBatchUsage(
+    tx: TransactionSql,
+    orgId: string,
+    tasks: readonly ReportTaskRow[],
+    { telemetrySource = 'postgres', readFacts = readUsageFacts }: ReportDeps
+): Promise<BatchUsage> {
+    const [{ at }] = (await tx<{ at: Date }[]>`select now() as at`) as unknown as [{ at: Date }];
+    const unavailable: BatchUsage = { snapshotAt: at, tasks: null, total: emptyBlock('unavailable') };
+    if (telemetrySource !== 'postgres') return unavailable;
+    const roots = tasks.flatMap((task) => (task.root_job_id ? [task.root_job_id] : []));
+    try {
+        const facts = await tx.savepoint((sp) => readFacts(sp, orgId, { taskIds: roots }));
+        const { tasks: byRoot, total } = batchUsageOf(facts, roots, at);
+        return { snapshotAt: at, tasks: byRoot, total };
+    } catch {
+        return unavailable;
+    }
+}
+
+function usageOfTask(
+    usage: BatchUsage,
+    task: ReportTaskRow,
+    provisional: (block: UsageBlock) => UsageBlock
+): { tokenUsage: UsageBlock; tokenUsageUnavailable: BatchUsageUnavailable | null } {
+    if (usage.tasks === null) return { tokenUsage: emptyBlock('unavailable'), tokenUsageUnavailable: 'telemetry' };
+    if (task.root_job_id === null) {
+        // `on delete set null`: a started task whose root is gone cannot be addressed, so it is never guessed.
+        return task.attempts > 0
+            ? { tokenUsage: emptyBlock('unavailable'), tokenUsageUnavailable: 'task-removed' }
+            : { tokenUsage: provisional(emptyBlock('unmeasured')), tokenUsageUnavailable: null };
+    }
+    const found = usage.tasks.get(task.root_job_id);
+    return {
+        tokenUsage: provisional(found ? found.usage : emptyBlock('unmeasured')),
+        tokenUsageUnavailable: null,
     };
 }

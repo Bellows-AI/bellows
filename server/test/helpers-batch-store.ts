@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
     BATCH_COMPLETION_ACCEPTED,
+    emptyBlock,
     GATE_PASSED,
     holdsSlot,
     isRetryable,
@@ -226,7 +227,7 @@ export function memoryBatchStore(): MemoryBatchStore {
                 verification: [],
                 tasks: [],
                 latestObservationAt: null,
-                unavailable: ['tokens', 'cost'],
+                usageSnapshotAt: new Date().toISOString(),
                 totals: {
                     accepted: 0,
                     failed: 0,
@@ -235,6 +236,8 @@ export function memoryBatchStore(): MemoryBatchStore {
                     repairs: 0,
                     wallClockMs: 0,
                     agentTurns: 0,
+                    tokenUsage: emptyBlock('unmeasured'),
+                    usageUnavailableTasks: 0,
                 },
             };
         },

@@ -9,7 +9,7 @@ import {
     writeResolved,
 } from './batch-store-rows.js';
 import { closeBatchTask } from './batch-store-close.js';
-import { readReport } from './batch-store-report.js';
+import { readReport, type ReportTelemetrySource } from './batch-store-report.js';
 import {
     acceptBatchTask,
     cancelBatch,
@@ -37,6 +37,7 @@ export function createBatchStore({
     close,
     revisionOf,
     now,
+    telemetrySource,
 }: {
     sql: Sql;
     orgId: string;
@@ -49,6 +50,8 @@ export function createBatchStore({
     revisionOf?: RevisionOf;
     /** The clock the time limit and the retry backoff are read against; production leaves it unset. */
     now?: () => Date;
+    /** Where usage is read from; absent is the org's own database. Fixture and off report it `unavailable`. */
+    telemetrySource?: ReportTelemetrySource;
 }): BatchStore {
     const gate = async () => {
         if (ready) await ready;
@@ -166,7 +169,7 @@ export function createBatchStore({
 
         async report(id) {
             await gate();
-            return readReport(sql, { orgId, id });
+            return readReport(sql, { orgId, id }, { ...(telemetrySource ? { telemetrySource } : {}) });
         },
 
         async accept(id, taskKey, acceptedBy) {

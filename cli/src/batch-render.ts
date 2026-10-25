@@ -1,3 +1,4 @@
+import { renderUsageBlock } from './render.js';
 import { BATCH_DRAFT, batchVerdict, needsPerson, TASK_CANCELLED, VERIFY_FAILED } from './batch.js';
 import type {
     BatchNextAction,
@@ -140,6 +141,15 @@ function ageOf(at: string, now: number): string {
 const nextOf = (next: BatchNextAction): string =>
     [next.action, next.method, next.path ?? next.url].filter((part) => part !== undefined).join(' ');
 
+function observationLines(task: BatchReportTask, now: number): string[] {
+    const seen = task.observation;
+    if (seen === null) return task.pr !== null ? ['    observed: none yet'] : [];
+    const when = seen.observedAt === null ? 'never read' : `${ageOf(seen.observedAt, now)} ago`;
+    const stale = seen.stale ? ' (stale, re-reading)' : '';
+    const error = seen.error === null ? '' : ` · read error ${seen.error.code}`;
+    return [`    observed ${seen.outcome ?? 'nothing'} ${when}${stale}${error}`];
+}
+
 function renderReportTask(task: BatchReportTask, now: number): string[] {
     // Cancelled while the batch is live means a person force-closed the task's thread (#676).
     const execution =
@@ -150,17 +160,20 @@ function renderReportTask(task: BatchReportTask, now: number): string[] {
             `remaining infra ${task.remaining.infraRetries}, repairs ${task.remaining.repairs}`,
     ];
     if (task.pr !== null) lines.push(`    pr ${task.pr}`);
-    const seen = task.observation;
-    if (seen === null) {
-        if (task.pr !== null) lines.push('    observed: none yet');
-    } else {
-        const when = seen.observedAt === null ? 'never read' : `${ageOf(seen.observedAt, now)} ago`;
-        const stale = seen.stale ? ' (stale, re-reading)' : '';
-        const error = seen.error === null ? '' : ` · read error ${seen.error.code}`;
-        lines.push(`    observed ${seen.outcome ?? 'nothing'} ${when}${stale}${error}`);
-    }
+    lines.push(...observationLines(task, now));
     if (task.waitReason !== null) lines.push(`    waiting: ${task.waitReason}`);
+    const reason = task.usage.tokenUsageUnavailable;
+    const label = reason === 'task-removed' ? 'tokens (task removed)' : 'tokens';
+    lines.push(...renderUsageBlock(label, task.usage.tokenUsage, '    '));
     lines.push(`    next: ${nextOf(task.next)}`);
+    return lines;
+}
+
+/** The batch's usage as of its snapshot; a removed member makes it partial, said out loud. */
+function totalUsageLines(report: BatchReport): string[] {
+    const { tokenUsage, usageUnavailableTasks } = report.totals;
+    const lines = renderUsageBlock(`tokens as of ${report.usageSnapshotAt}`, tokenUsage, '');
+    if (usageUnavailableTasks > 0) lines.push(`  partial: ${usageUnavailableTasks} removed task(s) not counted`);
     return lines;
 }
 
@@ -176,7 +189,7 @@ export function renderReport(report: BatchReport, now: number): string {
         report.latestObservationAt === null
             ? 'latest observation: none yet'
             : `latest observation ${ageOf(report.latestObservationAt, now)} ago`,
-        report.unavailable.map((what) => `${what}: unavailable`).join(' · '),
+        ...totalUsageLines(report),
         ...report.verification.map((row) => `stage ${row.stage} ${verificationOf(row)}`),
     ];
     for (const task of report.tasks) lines.push(...renderReportTask(task, now));

@@ -714,8 +714,11 @@ describe('dispatch, wait, retry and cancel', () => {
             id,
             budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 },
             latestObservationAt: null,
-            unavailable: ['tokens', 'cost'],
+            totals: { tokenUsage: { state: 'unmeasured' }, usageUnavailableTasks: 0 },
         });
+        // The placeholder list is gone: usage travels as blocks with a snapshot instant, never as a name.
+        expect(report.json()).not.toHaveProperty('unavailable');
+        expect(Date.parse(report.json().usageSnapshotAt)).not.toBeNaN();
 
         const { id: draft } = await s.create();
         const notStarted = await s.call('GET', `/api/batches/${draft}/report`);

@@ -205,6 +205,14 @@ function usageCells(usage: UsageBlock): string {
 const unassignedLines = (usage: UsageBlock, indent: string): string[] =>
     usage.unassigned.map((u) => `${indent}unassigned (${u.reason}): ${tokenCells(u.tokens)}`);
 
+/** One block as a line (state first when there is nothing to show) plus its unassigned amounts; provisional is named. */
+export function renderUsageBlock(label: string, usage: UsageBlock, indent: string): string[] {
+    const provisional = usage.provisional ? ' (provisional)' : '';
+    if (usage.state === 'unavailable') return [`${indent}${label}: unavailable`];
+    if (usage.state === 'unmeasured') return [`${indent}${label}: not measured${provisional}`];
+    return [`${indent}${label}: ${usageCells(usage)}${provisional}`, ...unassignedLines(usage, `${indent}  `)];
+}
+
 function renderTaskUsage(task: TaskUsage): string[] {
     const lines = [`task ${task.taskId}${task.removed ? ' (removed)' : ''}: ${usageCells(task.usage)}`];
     for (const run of task.runs) {
