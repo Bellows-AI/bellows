@@ -24,7 +24,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Task read model (`/api/tasks`) | `server/src/routes/tasks.ts` | `server/test/routes.tasks.test.ts` |
 | Managed connections and the runner's Jira proxy ([connections.md](connections.md)) | `server/src/routes/connections.ts`, `connector-jira.ts` | `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts` |
 | The runner's GitHub token: `POST /api/jobs/:id/credentials/github` ([connections.md](connections.md)) | `server/src/routes/github-credential.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
-| Batches: `/api/batches` ([batches.md](batches.md)) | `server/src/routes/batches/batches.ts`, `batch-handlers.ts` | `server/test/routes.batches.test.ts`, `server/test/auth.enforcement.test.ts` |
+| Batches: `/api/batches` ([batches.md](batches.md)); the report's `usage.tokenUsage`, `totals.tokenUsage` and `usageSnapshotAt` are core `UsageBlock`s | `server/src/routes/batches/batches.ts`, `batch-handlers.ts`, `server/src/db/batches/batch-store-types.ts` | `server/test/routes.batches.test.ts`, `server/test/auth.enforcement.test.ts` |
 | Repo picker (`/api/repos`) | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Runner env in three scopes | `server/src/routes/env.ts` | `server/test/routes.env.test.ts` |
 | Workspace payload, personal executors (incl. `DELETE /executors/:id`, `POST /executors/:id/suspension`) | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |

@@ -486,6 +486,8 @@
     .task-stats-scope,
     .task-stats-summary,
     .task-stats-note,
+    .task-stats-run-note,
+    .task-stats-line,
     .pulse-scale {
         color: var(--ink-muted);
         font-size: 12px;
@@ -618,6 +620,40 @@
 
     .task-stats-note {
         margin: 0;
+    }
+
+    .task-stats-line {
+        display: flex;
+        flex-wrap: wrap;
+        font-family: var(--font-mono);
+        gap: 4px 12px;
+    }
+
+    .task-stats-usage,
+    .task-stats-owned,
+    .task-stats-models {
+        display: grid;
+        gap: 8px;
+    }
+
+    .task-stats-owned ul {
+        margin: 0;
+        padding-left: 20px;
+    }
+
+    .task-stats-toggle {
+        background: transparent;
+        border: 0;
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 12px;
+        margin-left: 8px;
+        padding: 0;
+        text-decoration: underline;
+    }
+
+    .task-stats-detail > td {
+        white-space: normal;
     }
 
     .task-stats-runs {
