@@ -18,6 +18,12 @@
 --                          instant the board stopped treating it as the live claim, written once with the
 --                          operation that ends it (job_execution_give_up). Null is open or unknown, never
 --                          inferred from wall-clock totals.
+--   origin                 `claim` is written by the claim itself. `backfill` is written once, below, from
+--                          what the pre-epic job row still holds (its current claim, the claims its
+--                          `interruptions` name): the task's attribution, never a run segment. Backfill rows
+--                          carry launch `unknown` and no created_at, ended_at or `resumed` — the board did
+--                          not observe those claims and invents no boundary for them. Their session rows'
+--                          first_seen_at/last_seen_at are the migration time, not observations.
 --   resumed                the claim handed the runner a retained session (recovery or follow-up).
 --   job_execution_session  the sessions an execution is associated with. `inferred_at_claim` is the
 --                          board's inference from the retained pointer, not a driver report.
@@ -45,10 +51,11 @@ create table if not exists job_execution (
     resumed              boolean     not null default false,
     origin               text        not null default 'claim' check (origin in ('claim', 'backfill')),
     removed_at           timestamptz,
-    created_at           timestamptz not null default now(),
+    created_at           timestamptz default now(),
     ended_at             timestamptz,
     updated_at           timestamptz not null default now(),
     primary key (org_id, job_id, claim_seq),
+    constraint job_execution_start_known check (created_at is not null or origin = 'backfill'),
     constraint job_execution_ended_after_start check (ended_at is null or ended_at >= created_at),
     constraint job_execution_adopts_earlier check (adopts_claim_seq is null or adopts_claim_seq < claim_seq),
     constraint job_execution_adopted_link check ((launch = 'adopted') = (adopts_claim_seq is not null))
@@ -109,6 +116,7 @@ begin
     set launch = case when launch = 'requested' then 'unknown' else launch end,
         ended_at = greatest(now(), created_at), updated_at = now()
     where org_id = new.org_id and job_id = new.id and ended_at is null
+      and origin = 'claim'
       and (claim_seq < new.claim_seq
            or (claim_seq = old.claim_seq and old.status = 'running' and new.status <> 'running'));
     return null;
@@ -118,3 +126,31 @@ drop trigger if exists job_execution_give_up on job;
 create trigger job_execution_give_up after update of status, claim_seq on job
     for each row when (old.status is distinct from new.status or old.claim_seq is distinct from new.claim_seq)
     execute function job_execution_give_up();
+
+-- Backfill (issue #845): a job that predates this table gets an execution row only for a claim its
+-- retained row proves happened — its current `claim_seq` and every `claimSeq` its `interruptions`
+-- name — and the session pointer it still holds, filed against the current claim. Never a boundary,
+-- a launch outcome, a resumed flag or an overwritten session. Idempotent: a row that exists stays.
+insert into job_execution (
+    org_id, job_id, claim_seq, root_job_id, requesting_job_id, requesting_root_job_id,
+    author_id, repo, executor, executor_scope, launch, origin, created_at
+)
+select j.org_id, j.id, c.claim_seq, j.root_job_id, j.review_of, r.root_job_id,
+       j.created_by, j.repo, j.executor, j.executor_scope, 'unknown', 'backfill', null
+from job j
+left join job r on r.org_id = j.org_id and r.id = j.review_of
+cross join lateral (
+    select j.claim_seq as claim_seq
+    union
+    select case when e ->> 'claimSeq' ~ '^[0-9]{1,18}$' then (e ->> 'claimSeq')::bigint end
+    from jsonb_array_elements(j.interruptions) e
+) c
+where c.claim_seq between 1 and j.claim_seq
+on conflict (org_id, job_id, claim_seq) do nothing;
+
+insert into job_execution_session (org_id, job_id, claim_seq, session_id, origin)
+select j.org_id, j.id, j.claim_seq, j.session_id, 'backfill'
+from job j
+join job_execution x on x.org_id = j.org_id and x.job_id = j.id and x.claim_seq = j.claim_seq
+where j.session_id is not null and x.origin = 'backfill'
+on conflict (org_id, job_id, claim_seq, session_id) do nothing;

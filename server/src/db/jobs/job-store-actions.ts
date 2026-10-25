@@ -35,7 +35,7 @@ import type {
     StopResult,
     SuspendResult,
 } from './job-store-types.js';
-import { recordLaunchOutcome } from './job-store-provenance.js';
+import { markExecutionsRemoved, recordLaunchOutcome } from './job-store-provenance.js';
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
 import type { ExecutorScope } from '@factory-ai/core';
@@ -980,9 +980,11 @@ export async function removeJobThread(
         // The rows are gone for good — nothing joins through job.id at claim time (the
         // claim copies its session labels onto its own row), so deleting the audit trail is
         // the removal, not a cleanup that orphans something.
+        const removedIds = [...members, ...reviews].map((m) => m.id);
+        await markExecutionsRemoved(tx, orgId, removedIds);
         await tx`
             delete from job
-            where org_id = ${orgId} and id = any(${[...members, ...reviews].map((m) => m.id)})
+            where org_id = ${orgId} and id = any(${removedIds})
         `;
 
         // The thread is gone, and with it every PR wait folded for it — the webhook's

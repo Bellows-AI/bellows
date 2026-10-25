@@ -280,6 +280,97 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
         expect(await executions(id)).toHaveLength(1);
     });
 
+    describe('task removal', () => {
+        const removedAt = (jobId: string) =>
+            sql<{ removed_at: Date | null }[]>`
+                select removed_at from job_execution where org_id = ${ORG} and job_id = ${jobId} order by claim_seq`;
+
+        const settledThreadWithReview = async () => {
+            const reviewStore = reviewingStore();
+            const rootId = (await mustCreate(reviewStore.create('ship it', null, { repo: 'acme/web', executor: null })))
+                .id;
+            const caller = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
+            const request = { key: 'sec-1', profile: 'security', revision: 'abc', ref: reviewRefOf(rootId, 'sec-1') };
+            const asked = await reviewStore.requestReview(rootId, caller.leaseToken, request);
+            if (!('claim' in asked) || !asked.claim) throw new Error(`no review claim: ${asked.result}`);
+            await reviewStore.complete(asked.claim.id, asked.claim.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'ok',
+            });
+            await reviewStore.complete(rootId, caller.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+            const followUp = await reviewStore.createFollowUp(rootId, 'and one more', null);
+            if (typeof followUp === 'string') throw new Error(followUp);
+            const second = (await reviewStore.claim(WORKER, LEASE_SECONDS))!;
+            await reviewStore.complete(followUp.id, second.leaseToken, {
+                status: 'succeeded',
+                exitCode: 0,
+                output: 'ok',
+            });
+            return { reviewStore, rootId, followUpId: followUp.id, reviewId: asked.claim.id, session: randomUUID() };
+        };
+
+        it('marks every execution of the thread, its follow-ups and its named reviews, keeping the attribution', async () => {
+            const { reviewStore, rootId, followUpId, reviewId } = await settledThreadWithReview();
+            const other = await queue();
+            await claim();
+            const before = await executions(reviewId);
+
+            expect(await reviewStore.removeThread(rootId, null)).toMatchObject({ result: 'ok' });
+
+            for (const id of [rootId, followUpId, reviewId]) {
+                const rows = await executions(id);
+                expect(rows.length).toBeGreaterThan(0);
+                expect(rows.every((r) => r.removed_at !== null)).toBe(true);
+            }
+            expect(await executions(reviewId)).toMatchObject([
+                {
+                    requesting_job_id: rootId,
+                    requesting_root_job_id: rootId,
+                    root_job_id: reviewId,
+                    repo: before[0]!.repo,
+                    launch: before[0]!.launch,
+                },
+            ]);
+            // Another task's executions are untouched.
+            expect(await removedAt(other)).toEqual([{ removed_at: null }]);
+            // Nothing operational is retained in the provenance rows.
+            const cols = await sql<{ column_name: string }[]>`
+                select column_name from information_schema.columns
+                where table_schema = current_schema() and table_name = 'job_execution'`;
+            expect(cols.map((c) => c.column_name)).not.toEqual(
+                expect.arrayContaining(['command', 'output', 'lease_token'])
+            );
+        });
+
+        it('stamps once: removing again is a no-op and keeps the first instant', async () => {
+            const { reviewStore, rootId } = await settledThreadWithReview();
+            await reviewStore.removeThread(rootId, null);
+            const [first] = await removedAt(rootId);
+
+            expect(await reviewStore.removeThread(rootId, null)).toBe('missing');
+            expect((await removedAt(rootId))[0]).toEqual(first);
+        });
+
+        it('refuses the removal and keeps the task when marking its executions fails', async () => {
+            const id = await queue();
+            const c = await claim();
+            await store.complete(id, c.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
+            await sql.unsafe(`
+                create or replace function provenance_removal_fault() returns trigger language plpgsql as
+                $$ begin raise exception 'injected'; end $$;
+                create trigger provenance_removal_fault before update of removed_at on job_execution
+                    for each row execute function provenance_removal_fault();`);
+            try {
+                await expect(store.removeThread(id, null)).rejects.toThrow('injected');
+            } finally {
+                await sql.unsafe('drop trigger provenance_removal_fault on job_execution');
+            }
+            expect(await store.get(id)).not.toBeNull();
+            expect(await removedAt(id)).toEqual([{ removed_at: null }]);
+        });
+    });
+
     describe('session reports', () => {
         const lastSeen = (jobId: string) =>
             sql<{ last_seen_at: Date; first_seen_at: Date; agent: string | null }[]>`
