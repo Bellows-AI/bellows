@@ -388,6 +388,45 @@ describe('environment.setup before the agent starts', () => {
         expect(seenSetupMs).toBeUndefined();
         expect(board.board.completed[0]).not.toHaveProperty('setupMs');
     });
+    // The kubernetes group is one pod whose env is frozen when the first step (the checkout sync) makes
+    // it, long before the agent starts. The gate pair must already be on the job then.
+    it('mints the agent gate pair before the first runner step makes the group, and registers that token', async () => {
+        const board = stubBoard([setupJob(1)]);
+        const { stack, gates } = stubGateStack();
+        let atSync: BoardJob['gateEnv'];
+        let atRun: BoardJob['gateEnv'];
+        const runner = stubRunner(async (j) => {
+            atRun = { ...j.gateEnv };
+            return ok();
+        });
+        const sync = runner.syncCheckout.bind(runner);
+        runner.syncCheckout = async (j, ...rest) => {
+            atSync = { ...j.gateEnv };
+            return sync(j, ...rest);
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(Object.keys(atSync ?? {}).sort()).toEqual(['BELLOWS_GATE_TOKEN', 'BELLOWS_GATE_URL']);
+        expect(atRun).toEqual(atSync);
+        expect(stack.registeredTokens).toEqual([atSync?.BELLOWS_GATE_TOKEN]);
+    });
+    it('mints no gate pair for a job that declares neither gates nor setup', async () => {
+        const board = stubBoard([job(1)]);
+        const { stack, gates } = stubGateStack();
+        let atSync: BoardJob['gateEnv'] = { unset: 'x' };
+        const runner = stubRunner(async () => ok());
+        const sync = runner.syncCheckout.bind(runner);
+        runner.syncCheckout = async (j, ...rest) => {
+            atSync = j.gateEnv;
+            return sync(j, ...rest);
+        };
+
+        await drive({ ...board, runner, gates });
+
+        expect(atSync).toBeUndefined();
+        expect(stack.registeredTokens).toEqual([]);
+    });
 });
 
 describe('verification gates', () => {

@@ -3555,7 +3555,7 @@ seam_run() { # seam_run <cli> <runner|plain> <steps json> <out json>: one script
     local host="http://host.docker.internal:$port" run=(docker run --rm --name "lane-agent-$RUN_ID-$name" --add-host host.docker.internal:host-gateway)
     run+=("${AGENT_FLAGS[@]}")
     lane_timed "$name" setup lane_group_up "$name" "$image" "$host"
-    run+=(-v "$seam_ws:/workspace" -v "$seam_ws:/elsewhere" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
+    run+=(-v "$seam_ws:/workspace" -v "$seam_ws:/elsewhere" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key -e "BELLOWS_GATE_URL=$(node scripts/tool-seam-lane.mjs gate-url "$cli")" -e BELLOWS_GATE_TOKEN=lane-gate-token)
     while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "$name")
     if [ "$cli" = claude ]; then
         if [ "$shape" = runner ]; then run+=(-e FACTORY_TRANSCRIPT_DIR=/workspace/.factory/t); fi

@@ -1839,3 +1839,56 @@ describe('the entrypoints under the tool uid (issue #814)', () => {
         CASE_TIMEOUT_MS
     );
 });
+
+// Issue #1017: the agent's Bash runs as the tool uid, whose git config includes node's and holds no
+// identity, so a bare `git commit` failed. The identity is baked into /etc/gitconfig, which both uids
+// read on either backend (the same image), at the lowest scope so any identity a run configures wins.
+describe('the executor images commit identity', () => {
+    const DOCKERFILES = ['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'];
+    const gitconfigRun = (dockerfile: string): string => {
+        const line = read(dockerfile)
+            .split('\n')
+            .find((l) => l.startsWith('RUN printf') && l.includes('> /etc/gitconfig'));
+        if (!line) throw new Error(`${dockerfile} bakes no /etc/gitconfig`);
+        return line;
+    };
+
+    it('is the same line in both images and names the identity the publisher falls back to', () => {
+        const [claude, opencode] = DOCKERFILES.map(gitconfigRun);
+        expect(opencode).toBe(claude);
+        const publish = read('driver/src/publish/publish.ts');
+        expect(publish).toContain("'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'");
+        expect(claude).toContain('name = factory-ai');
+        expect(claude).toContain('email = factory-ai@users.noreply.github.com');
+    });
+
+    it.each(DOCKERFILES)('%s: git forms that author, and a configured identity still wins', (dockerfile) => {
+        const dir = mkdtempSync(join(tmpdir(), 'identity-'));
+        try {
+            const system = join(dir, 'gitconfig');
+            execFileSync('sh', ['-c', gitconfigRun(dockerfile).replace('RUN ', '').replace('/etc/gitconfig', system)]);
+            const ident = (env: Record<string, string> = {}, cwd = dir): string =>
+                execFileSync('git', ['var', 'GIT_AUTHOR_IDENT'], {
+                    cwd,
+                    encoding: 'utf8',
+                    env: {
+                        PATH: process.env.PATH ?? '',
+                        HOME: dir,
+                        GIT_CONFIG_SYSTEM: system,
+                        GIT_CONFIG_GLOBAL: '/dev/null',
+                        ...env,
+                    },
+                });
+            expect(ident()).toMatch(/^factory-ai <factory-ai@users\.noreply\.github\.com> /);
+            expect(ident({ GIT_AUTHOR_NAME: 'Member', GIT_AUTHOR_EMAIL: 'member@example.com' })).toMatch(
+                /^Member <member@example\.com> /
+            );
+            const repo = join(dir, 'repo');
+            execFileSync('git', ['init', '-q', repo]);
+            execFileSync('git', ['-C', repo, 'config', 'user.email', 'repo@example.com']);
+            expect(ident({}, repo)).toMatch(/<repo@example\.com> /);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
