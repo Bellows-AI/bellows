@@ -1,64 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { TEST_REPO, harness, stubTelemetryClient } from './helpers.js';
+import { TEST_REPO, harness, stubTelemetryClient, usageFactsOf } from './helpers.js';
 import { trackApps } from './helpers-http.js';
 
 const track = trackApps();
 
-const taskSession = (options: {
-    sessionId: string;
-    taskKey: string | null;
-    input: number | null;
-    output: number | null;
-    seen: string;
-    repo?: string;
-}) => ({
-    sessionId: options.sessionId,
-    agent: 'claude-code',
-    repo: options.repo ?? TEST_REPO,
-    hook: true,
-    user: null,
-    taskKey: options.taskKey,
-    firstSeen: options.seen,
-    lastSeen: options.seen,
-    tokens: { input: options.input, output: options.output, cacheRead: null, cacheCreation: null },
-    linesAdded: 1,
-    linesRemoved: 0,
-    editsAccepted: 1,
-    editsRejected: 0,
-    activeSeconds: 60,
-    commits: 0,
-});
-
 const taskHarness = async () => {
     const OTHER_REPO_TOKENS = 90_000;
     const telemetry = stubTelemetryClient({
-        rollups: async () => ({
-            sessions: [
+        facts: () =>
+            usageFactsOf([
                 // t1: two measured sessions, 1k and 3k billable tokens.
-                taskSession({ sessionId: 'a', taskKey: 't1', input: 600, output: 400, seen: '2026-08-20T01:00:00Z' }),
-                taskSession({
-                    sessionId: 'b',
-                    taskKey: 't1',
-                    input: 2400,
-                    output: 600,
-                    seen: '2026-08-20T02:00:00Z',
-                }),
+                { sessionId: 'a', taskId: 't1', input: 600, output: 400, at: '2026-08-20T01:00:00Z' },
+                { sessionId: 'b', taskId: 't1', input: 2400, output: 600, at: '2026-08-20T02:00:00Z' },
                 // t2: one measured session and one null — the null contributor is skipped,
                 // and the task still enters the token distribution on what it measured.
-                taskSession({ sessionId: 'c', taskKey: 't2', input: 500, output: 500, seen: '2026-08-20T03:00:00Z' }),
-                taskSession({ sessionId: 'd', taskKey: 't2', input: null, output: null, seen: '2026-08-20T04:00:00Z' }),
+                { sessionId: 'c', taskId: 't2', input: 500, output: 500, at: '2026-08-20T03:00:00Z' },
+                { sessionId: 'd', taskId: 't2', input: null, output: null, at: '2026-08-20T04:00:00Z' },
                 // An other-repo session: excluded from the totals above, excluded here too.
-                taskSession({
+                {
                     sessionId: 'e',
-                    taskKey: 't5',
+                    taskId: 't5',
                     input: OTHER_REPO_TOKENS,
                     output: OTHER_REPO_TOKENS,
-                    seen: '2026-08-20T05:00:00Z',
+                    at: '2026-08-20T05:00:00Z',
                     repo: 'Other/repo',
-                }),
-            ],
-            coverage: { from: '2026-08-20T01:00:00Z', to: '2026-08-20T03:00:00Z' },
-        }),
+                },
+            ]),
         runs: () => [
             {
                 rootJobId: 't1',

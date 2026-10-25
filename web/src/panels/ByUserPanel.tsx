@@ -7,7 +7,7 @@ import { TelemetryFrame } from './TelemetryFrame.js';
 
 /**
  * One user's rollup as the table renders it — the view model in front of `TelemetryStats.byUser`
- * (which is unchanged). `newTokens` applies core's null-aware sum to input + output only: cache
+ * (session counts), joined by user id to `TelemetryStats.usage.byUser` (token figures). `newTokens` applies core's null-aware sum to input + output only: cache
  * is the same context counted again, never new tokens, and a partially measured group keeps its
  * measured side rather than reading as unmeasured or as zero.
  */
@@ -27,18 +27,23 @@ export interface ByUserRow {
 
 const BAR_PCT_MULTIPLIER = 100;
 
-export function byUserRows(byUser: TelemetryStats['byUser']): ByUserRow[] {
-    const rows = byUser.map(({ user, sessions, tokens: t }) => ({
-        id: user.id,
-        name: user.name ?? user.login,
-        avatarUrl: user.avatarUrl,
-        sessions,
-        newTokens: t.input === null && t.output === null ? null : (t.input ?? 0) + (t.output ?? 0),
-        input: t.input,
-        output: t.output,
-        cacheRead: t.cacheRead,
-        cacheWrite: t.cacheCreation,
-    }));
+export function byUserRows({ byUser, usage }: Pick<TelemetryStats, 'byUser' | 'usage'>): ByUserRow[] {
+    const tokensOf = new Map(usage.byUser.map((u) => [u.userId, u.usage.tokens]));
+    const unmeasured = { input: null, output: null, cacheRead: null, cacheCreation: null };
+    const rows = byUser.map(({ user, sessions }) => {
+        const t = tokensOf.get(user.id) ?? unmeasured;
+        return {
+            id: user.id,
+            name: user.name ?? user.login,
+            avatarUrl: user.avatarUrl,
+            sessions,
+            newTokens: t.input === null && t.output === null ? null : (t.input ?? 0) + (t.output ?? 0),
+            input: t.input,
+            output: t.output,
+            cacheRead: t.cacheRead,
+            cacheWrite: t.cacheCreation,
+        };
+    });
     let max = 0;
     for (const row of rows) max = Math.max(max, row.newTokens ?? 0);
     return rows.map((row) => ({
@@ -115,7 +120,7 @@ export function ByUserPanel({ telemetry, meta }: { telemetry: TelemetryStats; me
             <DataTable
                 labelledBy="usage-by-user-heading"
                 columns={columns}
-                rows={byUserRows(telemetry.byUser)}
+                rows={byUserRows(telemetry)}
                 rowKey={(row) => row.id}
                 initialSort={{ key: 'newTokens', direction: 'descending' }}
                 empty={<p className="muted">No attributed sessions in the coverage window yet.</p>}

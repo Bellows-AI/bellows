@@ -255,7 +255,7 @@ export {
     resolveRange,
 } from './range.js';
 export type { DateRange, RangePreset } from './range.js';
-export { inputTokens, telemetryStats } from './telemetry.js';
+export { inputTokens, seriesGranularity, telemetryStats, usageRangeOf } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
 export {
     UNKNOWN_BUCKET,
@@ -312,4 +312,6 @@ export type { SessionKey } from './usage-ownership.js';
 export { accountContributions, assignContribution, buildTimeline } from './usage-segments.js';
 export type { Destination, Timeline } from './usage-segments.js';
 export { reduceUsage, taskUsageOf } from './usage-reduce.js';
+export { rollupsFromFacts } from './usage-rollups.js';
+export type { RollupFacts, SessionFieldTotal } from './usage-rollups.js';
 export type * from './types.js';

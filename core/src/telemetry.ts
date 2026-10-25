@@ -4,12 +4,14 @@ import type { DateRange } from './range.js';
 import type {
     EditAcceptance,
     SessionRollup,
+    StatsUsage,
     TelemetryInput,
     TelemetryPoint,
     TelemetryStats,
     TokenTotals,
     UserRef,
 } from './types.js';
+import type { UsageOptions, UsageReport } from './usage.js';
 
 /**
  * Sums the measured values and returns null only when nothing was measured at all.
@@ -25,15 +27,6 @@ function sum(values: (number | null | undefined)[]): number | null {
         seen = true;
     }
     return seen ? total : null;
-}
-
-function sumTokens(items: { tokens: TokenTotals }[]): TokenTotals {
-    return {
-        input: sum(items.map((i) => i.tokens.input)),
-        output: sum(items.map((i) => i.tokens.output)),
-        cacheRead: sum(items.map((i) => i.tokens.cacheRead)),
-        cacheCreation: sum(items.map((i) => i.tokens.cacheCreation)),
-    };
 }
 
 /**
@@ -67,6 +60,11 @@ function editAcceptance(accepted: number | null, rejected: number | null): EditA
 }
 
 export interface TelemetryStatsOptions {
+    /**
+     * The token figures: `reduceUsage` over the cached facts with the same range, repos and user
+     * as this call. The session rollups carry no tokens, so this is the only token source.
+     */
+    usage: UsageReport;
     /** Only sessions the hook tagged with one of these repos are counted. */
     repos?: readonly string[];
     /** Injected so the `partial` bucket flag is testable against a frozen fixture. */
@@ -91,7 +89,6 @@ interface Bucket {
     key: string;
     start: string;
     sessions: number;
-    tokens: { tokens: TokenTotals }[];
     linesAdded: number;
     linesRemoved: number;
 }
@@ -130,7 +127,6 @@ function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', no
         key: keyOf(iso),
         start: startOf(iso).toISOString().slice(0, 10),
         sessions: 0,
-        tokens: [],
         linesAdded: 0,
         linesRemoved: 0,
     });
@@ -153,7 +149,6 @@ function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', no
         if (!buckets.has(key)) buckets.set(key, emptyBucket(session.firstSeen));
         const bucket = buckets.get(key) as Bucket;
         bucket.sessions += 1;
-        bucket.tokens.push(session);
         bucket.linesAdded += session.linesAdded ?? 0;
         bucket.linesRemoved += session.linesRemoved ?? 0;
     }
@@ -161,10 +156,9 @@ function bucketSeries(sessions: SessionRollup[], granularity: 'day' | 'week', no
     const current = keyOf(now.toISOString());
     return [...buckets.values()]
         .sort((a, b) => a.start.localeCompare(b.start))
-        .map(({ tokens, ...rest }) => ({
+        .map((rest) => ({
             start: rest.start,
             sessions: rest.sessions,
-            tokens: sumTokens(tokens),
             linesAdded: rest.linesAdded,
             linesRemoved: rest.linesRemoved,
             partial: rest.key === current,
@@ -219,6 +213,42 @@ function groupByUser(
 }
 
 /**
+ * Re-shapes the report for the payload. A person is named from the session rollups (the report
+ * only knows ids); an author with usage but no rollup in scope stays `user: null`, never invented.
+ */
+function statsUsage(report: UsageReport, granularity: 'day' | 'week', sessions: readonly SessionRollup[]): StatsUsage {
+    const people = new Map<string, UserRef>();
+    for (const session of sessions) if (session.user) people.set(session.user.id, session.user);
+    const { unresolvedOwnership, excludedRepo } = report.diagnostics;
+    return {
+        totals: report.eligible,
+        series: { granularity, points: report.series },
+        byUser: report.byUser.map(({ userId, usage }) => ({
+            user: userId === null ? null : (people.get(userId) ?? null),
+            userId,
+            usage,
+        })),
+        diagnostics: {
+            unresolvedOwnership: { sessions: unresolvedOwnership.sessions, tokens: unresolvedOwnership.tokens },
+            excludedRepo: { sessions: excludedRepo.sessions, tokens: excludedRepo.tokens },
+        },
+    };
+}
+
+const EPOCH = '1970-01-01T00:00:00.000Z';
+const FAR_FUTURE = '9999-12-31T00:00:00.000Z';
+
+/**
+ * The reducer's half-open window for a selected range. An open edge stretches to the epoch or to
+ * the far future, so a one-sided custom range still partitions points by instant; all-time is
+ * `null`, which the reducer reads as no window at all.
+ */
+export function usageRangeOf(range: DateRange): UsageOptions['range'] {
+    if (range.from === null && range.to === null) return null;
+    return { from: range.from ?? EPOCH, to: range.to ?? FAR_FUTURE };
+}
+
+/**
  * Aggregates agent telemetry into the figures the dashboard renders.
  *
  * Pure, like every aggregation in core. The fetch lives in the server; only the arithmetic
@@ -226,8 +256,8 @@ function groupByUser(
  * `otherRepoSessions` rather than the totals, and sessions with no hook report at all are
  * counted in `sessionsWithoutHook` — three different setup failures must stay distinguishable.
  */
-export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOptions = {}): TelemetryStats {
-    const { repos, now = new Date(), user } = options;
+export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOptions): TelemetryStats {
+    const { repos, now = new Date(), user, usage } = options;
     const { repoScoped, otherRepoSessions, sessionsWithoutHook } = scopeByRepo(input.sessions, repos);
 
     // Caller scope is a filter, applied after the repo filter and before every figure below:
@@ -235,7 +265,6 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
     // sessions are out too — but they keep their own figure, so "mine" narrows honestly.
     const inScope = user ? repoScoped.filter((s) => s.user !== null && s.user.id === user.id) : repoScoped;
 
-    const totalsTokens = sumTokens(inScope);
     const totalAccepted = sum(inScope.map((s) => s.editsAccepted));
     const totalRejected = sum(inScope.map((s) => s.editsRejected));
     const totalActive = sum(inScope.map((s) => s.activeSeconds));
@@ -249,7 +278,6 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
     return {
         totals: {
             sessions: inScope.length,
-            tokens: totalsTokens,
             activeHours: totalActive === null ? null : (totalActive * MS_PER_SECOND) / HOUR,
             linesAdded: sum(inScope.map((s) => s.linesAdded)),
             linesRemoved: sum(inScope.map((s) => s.linesRemoved)),
@@ -258,10 +286,11 @@ export function telemetryStats(input: TelemetryInput, options: TelemetryStatsOpt
         otherRepoSessions,
         sessionsWithoutHook,
         byUser: [...byUser.values()]
-            .map(({ user, sessions }) => ({ user, sessions: sessions.length, tokens: sumTokens(sessions) }))
+            .map(({ user, sessions }) => ({ user, sessions: sessions.length }))
             .sort((a, b) => a.user.login.localeCompare(b.user.login)),
         unattributedSessions,
         series: { granularity, points: bucketSeries(inScope, granularity, now) },
         coverage: input.coverage,
+        usage: statsUsage(usage, granularity, repoScoped),
     };
 }

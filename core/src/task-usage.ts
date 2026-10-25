@@ -1,27 +1,23 @@
-import type { JobRun, SessionRollup, TaskUsageDistribution, TaskUsageStats } from './types.js';
+import type { JobRun, TaskUsageDistribution, TaskUsageStats } from './types.js';
+import type { TaskUsage } from './usage.js';
 
 export interface TaskUsageOptions {
     /**
-     * Only sessions the hook tagged with one of these repos, and only runs queued against
-     * them, are counted — the same repo scope every other figure on the page applies, so the
-     * task panel cannot include a task the totals above it exclude.
+     * Only runs queued against these repos are counted — the same repo scope every other figure
+     * on the page applies. The usage report the tasks come from was already scoped by the caller.
      */
     repos?: readonly string[];
-    /**
-     * Scopes the distributions to the caller: only sessions whose landed user matches and
-     * only runs the caller queued are counted, so the task set narrows to the caller's tasks.
-     * Sessions without attribution contribute to no task in any scope.
-     */
+    /** Only runs the caller queued are counted, so the task set narrows to the caller's tasks. */
     user?: { id: string };
 }
 
 /**
- * A task's billable tokens: input + output, the only pair the dashboard ever sums (the four
- * token types are never collapsed, and cache reads do not count toward a task total). Null
- * when the session measured neither — a contributor absent, not a zero.
+ * A task's input + output, the stopgap figure of the task panel until the four-type
+ * distributions replace it (the four token types are never collapsed elsewhere). Null when the
+ * task measured neither — a contributor absent, not a zero.
  */
-function billableTokens(session: SessionRollup): number | null {
-    const { input, output } = session.tokens;
+function billableTokens(task: TaskUsage): number | null {
+    const { input, output } = task.usage.tokens;
     if (input === null && output === null) return null;
     return (input ?? 0) + (output ?? 0);
 }
@@ -47,27 +43,17 @@ function distribution(values: number[]): TaskUsageDistribution {
 }
 
 /**
- * Tokens: summed over each task's sessions, null contributors skipped — but a task whose
- * sessions measured nothing at all is EXCLUDED from the distribution, never counted as a
- * zero-total task.
+ * Tokens per canonical task, from the usage report: a task whose sessions measured neither
+ * input nor output is EXCLUDED from the distribution, never counted as a zero-total task.
  */
-function computeTokenValues(sessions: readonly SessionRollup[], tasks: ReadonlySet<string>): number[] {
-    const tokenLists = new Map<string, (number | null)[]>();
-    for (const session of sessions) {
-        if (session.taskKey === null) continue;
-        const list = tokenLists.get(session.taskKey);
-        if (list) list.push(billableTokens(session));
-        else tokenLists.set(session.taskKey, [billableTokens(session)]);
+function computeTokenValues(usageTasks: readonly TaskUsage[], tasks: ReadonlySet<string>): number[] {
+    const values: number[] = [];
+    for (const task of usageTasks) {
+        if (!tasks.has(task.taskId)) continue;
+        const total = billableTokens(task);
+        if (total !== null) values.push(total);
     }
-    const tokenValues: number[] = [];
-    for (const task of tasks) {
-        const total = (tokenLists.get(task) ?? []).reduce<number | null>(
-            (acc, v) => (v === null ? acc : (acc ?? 0) + v),
-            null
-        );
-        if (total !== null) tokenValues.push(total);
-    }
-    return tokenValues;
+    return values;
 }
 
 /**
@@ -113,45 +99,35 @@ function sumMeasuredPerTask(
 
 /**
  * What a task costs, as four distributions over the job threads in scope: tokens per task
- * (input + output over the attributed sessions), job turns per task (run rows — the board's
- * own count), agent turns per task (the runs' close-time counts, summed), and wall clock per
- * task (the execution time the board banked for those runs).
+ * (input + output of the canonical task, reviews and removed tasks included), job turns per
+ * task (run rows — the board's own count), agent turns per task (the runs' close-time counts,
+ * summed), and wall clock per task (the execution time the board banked for those runs).
  *
- * The caller range-filters BOTH inputs first — sessions through the overlap rule, runs
- * through `filterJobRuns` — so this function sees only what the selected range keeps. A task
+ * The caller range-filters the runs (`filterJobRuns`) and reduces the usage report over the same
+ * range, repos and user first, so this function sees only what the selected range keeps. A task
  * enters the statistics when either input still carries it.
  *
  * Pure, like every aggregation in core. The fetch lives in the server; only the arithmetic
  * lives here.
  */
 export function taskUsageStats(
-    sessions: readonly SessionRollup[],
+    usageTasks: readonly TaskUsage[],
     runs: readonly JobRun[],
     options: TaskUsageOptions = {}
 ): TaskUsageStats {
     const { repos, user } = options;
     const inRepoScope = (name: string | null) => name !== null && (repos === undefined || repos.includes(name));
 
-    // The repo filter mirrors telemetryStats' bucket-don't-drop rule — here there is nothing to
-    // bucket (the panels above carry the exclusion counts), so out-of-repo inputs simply fall
-    // out of every distribution.
-    const visibleSessions = sessions.filter(
-        (s) => inRepoScope(s.repo) && (user === undefined || (s.user !== null && s.user.id === user.id))
-    );
     const visibleRuns = runs.filter(
         (r) => inRepoScope(r.repo) && (user === undefined || (r.createdBy !== null && r.createdBy === user.id))
     );
 
-    // The task set: a session attributed to the thread, or a run in it — either one puts the
-    // task in scope. Sessions with no task (null taskKey) belong to no thread and no figure.
-    const tasks = new Set<string>();
-    for (const session of visibleSessions) {
-        if (session.taskKey !== null) tasks.add(session.taskKey);
-    }
+    // The task set: a canonical task with usage in the report, or a run in its thread.
+    const tasks = new Set<string>(usageTasks.map((t) => t.taskId));
     for (const run of visibleRuns) tasks.add(run.rootJobId);
 
     return {
-        tokensPerTask: distribution(computeTokenValues(visibleSessions, tasks)),
+        tokensPerTask: distribution(computeTokenValues(usageTasks, tasks)),
         jobTurnsPerTask: distribution(computeJobTurnValues(visibleRuns, tasks)),
         agentTurnsPerTask: distribution(sumMeasuredPerTask(visibleRuns, tasks, (r) => r.agentTurns)),
         wallClockPerTask: distribution(sumMeasuredPerTask(visibleRuns, tasks, (r) => r.wallClockMs)),

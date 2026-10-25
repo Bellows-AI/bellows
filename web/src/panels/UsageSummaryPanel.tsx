@@ -51,7 +51,8 @@ function MetricCard({
 export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetryStats; meta: StatsPayload['meta'] }) {
     const t = telemetry.totals;
     const ea = t.editAcceptance;
-    const input = inputTokens(t.tokens);
+    const tk = telemetry.usage.totals.tokens;
+    const input = inputTokens(tk);
     // The acceptance copy keeps the measured denominator visible and never invents one:
     // ratio present → "A of D measured..."; acceptances unmeasured with decisions measured →
     // name the decisions without a fabricated count; nothing measured → Not measured.
@@ -75,22 +76,20 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                 </MetricCard>
                 <MetricCard icon="layers" value={tokens(input.total)} label="Total input tokens">
                     <span className="usage-caption">
-                        {t.tokens.output === null ? 'Output not measured' : `${tokens(t.tokens.output)} output`}
+                        {tk.output === null ? 'Output not measured' : `${tokens(tk.output)} output`}
                         {' · '}
                         {input.cacheHitRatio === null
                             ? 'Cache hit rate not measured'
                             : `${pct(input.cacheHitRatio)} cache hit rate`}
                     </span>
                     <span className="usage-caption">
-                        {t.tokens.input === null ? 'Uncached not measured' : `${tokens(t.tokens.input)} uncached`}
+                        {tk.input === null ? 'Uncached not measured' : `${tokens(tk.input)} uncached`}
                         {' · '}
-                        {t.tokens.cacheRead === null
-                            ? 'Cache read not measured'
-                            : `${tokens(t.tokens.cacheRead)} read from cache`}
+                        {tk.cacheRead === null ? 'Cache read not measured' : `${tokens(tk.cacheRead)} read from cache`}
                         {' · '}
-                        {t.tokens.cacheCreation === null
+                        {tk.cacheCreation === null
                             ? 'Cache write not measured'
-                            : `${tokens(t.tokens.cacheCreation)} written to cache`}
+                            : `${tokens(tk.cacheCreation)} written to cache`}
                     </span>
                 </MetricCard>
                 <MetricCard icon="clock" value={duration(t.activeHours)} label="Active time">
