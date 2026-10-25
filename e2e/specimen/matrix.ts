@@ -40,3 +40,21 @@ export const LONG_LABEL = 'W'.repeat(60);
 
 /** The organization the open-selector row's trigger names; the spec clicks it by this name. */
 export const OPEN_SELECTOR_ORG = 'Acme Robotics';
+
+/** The usage-component states, spelled once like the grid's axes: the page renders each, the spec asserts each. */
+export const USAGE_STATES = [
+    'Measured',
+    'Unmeasured',
+    'Measured zero',
+    'Estimated',
+    'Partial coverage',
+    'Provisional',
+    'Unavailable',
+    'Breakdown collapsed',
+    'Breakdown expanded',
+    'Diagnostics',
+] as const;
+
+export type UsageState = (typeof USAGE_STATES)[number];
+
+export const usageCellId = (state: UsageState) => `Usage/${state}`;

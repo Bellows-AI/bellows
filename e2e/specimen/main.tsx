@@ -6,6 +6,7 @@ import { Icon } from '../../web/src/components/Icon.js';
 import { OrgSelector } from '../../web/src/components/OrgSelector.js';
 import { PageHeader } from '../../web/src/components/PageHeader.js';
 import { RowActions } from '../../web/src/components/RowActions.js';
+import { UsageSpecimen } from './usage.js';
 import { COLUMNS, cellId, LONG_LABEL, OPEN_SELECTOR_ORG, ROWS } from './matrix.js';
 import type { Column, Row } from './matrix.js';
 import '../../web/src/styles.css';
@@ -416,6 +417,7 @@ function Specimen() {
                     ))}
                 </tbody>
             </table>
+            <UsageSpecimen />
         </main>
     );
 }
