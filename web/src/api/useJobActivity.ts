@@ -1,26 +1,22 @@
 import { useEffect, useState } from 'react';
+import type { TaskUsage, Tokens, UsageBlock } from '@factory-ai/core';
 import type { Job } from './useJobs.js';
 
-/** The four token types the board reports apart, as the activity route answers them. */
-export interface TokenTypes {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheCreation: number;
-}
+/** The four token types the board reports apart; `null` is a type never measured, never zero. */
+export type TokenTypes = Tokens;
 
 /**
- * One bucket of a run's wall clock, as `GET /api/jobs/:id/activity` answers it: the tokens the
- * run processed, by type, and the edit decisions it made inside the bucket. Copied from the
- * route's payload, the same rule every client-side row shape follows.
+ * One bucket of a run's span, as `GET /api/jobs/:id/activity` answers it: the tokens the run
+ * processed, by type, and the edit decisions it made inside the bucket (null: none measured).
+ * Copied from the route's payload, the same rule every client-side row shape follows.
  */
 export interface JobActivityBucket {
     start: string;
     tokens: TokenTypes;
-    edits: number;
+    edits: number | null;
 }
 
-/** The activity route's whole answer, for one run. */
+/** The activity route's whole answer, for one run and the canonical task (reviews included) it belongs to. */
 export interface JobActivity {
     jobId: string;
     sessionId: string | null;
@@ -28,8 +24,10 @@ export interface JobActivity {
     to: string | null;
     bucketMs: number | null;
     buckets: JobActivityBucket[];
-    /** The run's token totals by type; null when the run reported nothing — never a zero total. */
-    totals: TokenTypes | null;
+    /** This run; `state` is `unmeasured` when it reported nothing - never a zero total. */
+    usage: UsageBlock;
+    /** The same payload from any run id of the task; null when no evidence names it. */
+    task: TaskUsage | null;
 }
 
 /** A run's activity answer, or the board's refusal to give one. An absent run is still loading. */

@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
 import { reduceUsage, type TokenType, type Tokens, type UsageReport } from '@factory-ai/core';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
+import { buildRunActivity } from '../src/telemetry/run-activity.js';
 import { readGlobalReconciliation, readUsageFacts, type UsageFacts } from '../src/telemetry/usage-facts.js';
 import { useTestDb } from './harness.js';
 import { createWorld, type World } from './usage-world.js';
@@ -301,6 +303,52 @@ describe.skipIf(!enabled)('token reconciliation', () => {
         expect(JSON.stringify(reportOf(a))).not.toContain(built.ids.cross!);
         expect(sumTypes(reportOf(a).eligible.tokens).input & AMOUNT.cross).toBe(0);
         expect(sumTypes(reportOf(a).diagnostics.unresolvedOwnership.tokens).input & AMOUNT.cross).toBe(0);
+    });
+
+    it('answers the same canonical task from any job of it, equal to the stats task, review included', async () => {
+        const client = createPostgresTelemetryClient({ sql, orgId: built.A });
+        const reads = await Promise.all(
+            [built.ids.root!, built.ids.followUp!, built.ids.reviewJob!].map(async (jobId) => {
+                const { taskId, facts: taskFacts } = await client.fetchTaskFacts({
+                    jobId,
+                    rootJobId: jobId,
+                    edits: true,
+                });
+                return { taskId, ...buildRunActivity(taskFacts, taskId, jobId, NOW) };
+            })
+        );
+        const statsTask = reportOf(await facts(built.A)).tasks.find((t) => t.taskId === built.ids.root);
+
+        for (const read of reads) {
+            expect(read.taskId).toBe(built.ids.root);
+            expect(read.task).toEqual(reads[0]!.task);
+            expect(read.task!.usage.tokens).toEqual(statsTask!.usage.tokens);
+        }
+        const review = reads[2]!.run!.usage.tokens;
+        expect(review.input).toBe(AMOUNT.review);
+        expect(reads[2]!.task!.runs.map((r) => r.kind)).toContain('review');
+    });
+
+    it('reads edit decisions only when asked, and keeps them out of the token figures', async () => {
+        await w.point({ session: built.ids.shared!, field: 'edits_accept', value: 3, time: at('10:30') });
+        const client = createPostgresTelemetryClient({ sql, orgId: built.A });
+        const jobId = built.ids.root!;
+
+        const withEdits = await client.fetchTaskFacts({ jobId, rootJobId: jobId, edits: true });
+        const without = await client.fetchTaskFacts({ jobId, rootJobId: jobId });
+        const run = buildRunActivity(withEdits.facts, withEdits.taskId, jobId, NOW).run!;
+
+        expect(run.buckets.reduce((n, b) => n + (b.edits ?? 0), 0)).toBe(3);
+        expect(without.facts.edits).toEqual([]);
+        expect(withEdits.facts.contributions).toEqual(without.facts.contributions);
+    });
+
+    it('reads a job with no execution rows as its own thread root, unmeasured', async () => {
+        const client = createPostgresTelemetryClient({ sql, orgId: built.A });
+        const lonely = randomUUID();
+        const { taskId, facts: taskFacts } = await client.fetchTaskFacts({ jobId: lonely, rootJobId: lonely });
+        expect(taskId).toBe(lonely);
+        expect(buildRunActivity(taskFacts, taskId, lonely, NOW)).toEqual({ task: null, run: null });
     });
 
     it('returns an org-less, hook-less session to no organization', async () => {

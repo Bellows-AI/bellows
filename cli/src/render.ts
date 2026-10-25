@@ -14,6 +14,7 @@ import type {
     QuestionRecord,
     SkillView,
 } from './board.js';
+import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
 import type { ConfigSummary, Preflight } from './diagnostics.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
 
@@ -180,17 +181,58 @@ export function renderThread(jobs: readonly BoardJobRecord[]): string {
     return lines.join('\n');
 }
 
-/** The activity read: one row per bucket, or the plain reason there is nothing to chart. */
-export function renderActivity(activity: JobActivity): string {
-    if (activity.sessionId === null || activity.buckets.length === 0) {
-        return 'no activity: the run never started or reported no session';
+const TOKEN_LABELS = [
+    ['input', 'input'],
+    ['output', 'output'],
+    ['cacheRead', 'cache-read'],
+    ['cacheCreation', 'cache-creation'],
+] as const;
+
+/** The four types side by side, `-` for one that was never measured; there is no cross-type total. */
+const tokenCells = (t: Tokens): string => TOKEN_LABELS.map(([type, label]) => `${label} ${t[type] ?? DASH}`).join('  ');
+
+/** A block's types with a `~` before an estimated or mixed figure and `measured/contributors` after it. */
+function usageCells(usage: UsageBlock): string {
+    return TOKEN_LABELS.map(([type, label]) => {
+        const value = usage.tokens[type];
+        if (value === null) return `${label} ${DASH}`;
+        const marker = usage.precision[type] === 'exact' ? '' : '~';
+        const { measured, contributors } = usage.coverage[type];
+        return `${label} ${marker}${value} (${measured}/${contributors})`;
+    }).join('  ');
+}
+
+const unassignedLines = (usage: UsageBlock, indent: string): string[] =>
+    usage.unassigned.map((u) => `${indent}unassigned (${u.reason}): ${tokenCells(u.tokens)}`);
+
+function renderTaskUsage(task: TaskUsage): string[] {
+    const lines = [`task ${task.taskId}${task.removed ? ' (removed)' : ''}: ${usageCells(task.usage)}`];
+    for (const run of task.runs) {
+        const of = run.reviewOf === null ? '' : ` of ${run.reviewOf}`;
+        lines.push(`  ${run.kind}${of} ${run.jobId}: ${usageCells(run.usage)}`, ...unassignedLines(run.usage, '    '));
     }
-    const header = `activity ${activity.from ?? DASH} → ${activity.to ?? DASH} (${(activity.bucketMs ?? 0) / MS_PER_MINUTE} min buckets)`;
-    const rows = activity.buckets.map((b) => {
-        const { input, output, cacheRead, cacheCreation } = b.tokens;
-        return `${b.start}  input ${input}  output ${output}  cache-read ${cacheRead}  cache-creation ${cacheCreation}  edits ${b.edits}`;
-    });
-    return [header, ...rows].join('\n');
+    if (task.taskOwned) {
+        lines.push(`  task-owned: ${usageCells(task.taskOwned)}`, ...unassignedLines(task.taskOwned, '    '));
+    }
+    return lines;
+}
+
+/** The activity read: the run's buckets and usage, then its task with every run, review runs included. */
+export function renderActivity(activity: JobActivity): string {
+    const lines: string[] = [];
+    if (activity.buckets.length === 0) {
+        lines.push('no activity: the run measured no usage');
+    } else {
+        lines.push(
+            `activity ${activity.from ?? DASH} → ${activity.to ?? DASH} (${(activity.bucketMs ?? 0) / MS_PER_MINUTE} min buckets)`,
+            ...activity.buckets.map((b) => `${b.start}  ${tokenCells(b.tokens)}  edits ${b.edits ?? DASH}`)
+        );
+    }
+    if (activity.usage.state === 'measured') {
+        lines.push(`run usage: ${usageCells(activity.usage)}`, ...unassignedLines(activity.usage, '  '));
+    }
+    if (activity.task) lines.push(...renderTaskUsage(activity.task));
+    return lines.join('\n');
 }
 
 const streamLabel = (s: Pick<ArtifactStream, 'attempt' | 'executor' | 'session' | 'stream'>) =>

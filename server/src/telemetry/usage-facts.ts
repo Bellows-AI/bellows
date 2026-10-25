@@ -3,10 +3,12 @@ import {
     reduceTokenObservations,
     resolveOwnership,
     sessionKeyId,
+    canonicalTask,
     type BranchEvidence,
     type ExecutionEvidence,
     type Launch,
     type SessionSpan,
+    type TokenContribution,
     type TokenObservation,
     type TokenSource,
     type TokenTemporality,
@@ -41,6 +43,11 @@ export interface FactsStats {
 }
 
 export interface UsageFacts extends UsageInput {
+    /**
+     * Edit decisions (accepted and rejected series kept apart by the reducer), only read with the
+     * `edits` option. The count rides the `input` slot of each contribution; they are not tokens.
+     */
+    edits: TokenContribution[];
     users: UserRef[];
     fields: SessionFieldRow[];
     stats: FactsStats;
@@ -49,12 +56,15 @@ export interface UsageFacts extends UsageInput {
 export interface UsageFactsOptions {
     /** Canonical task ids; omitted means the whole organization. */
     taskIds?: readonly string[];
+    /** Also read the edit-decision points (run activity); off by default, the stats read never needs them. */
+    edits?: boolean;
 }
 
 /** The placeholder org of a session_branch row no organization claimed (005_organizations.sql): evidence for nobody. */
 export const UNCLAIMED_ORG = '__unclaimed__';
 
 const TOKEN_FIELDS = ['tokens_input', 'tokens_output', 'tokens_cacheRead', 'tokens_cacheCreation'] as const;
+const EDIT_FIELDS = ['edits_accept', 'edits_reject'] as const;
 const TOKEN_FIELD_PREFIX = 'tokens_';
 
 interface EvidenceRow {
@@ -120,7 +130,8 @@ const observationOf = (r: ObservationRow): TokenObservation => ({
     sessionId: r.session_id,
     source: r.source,
     metric: r.metric,
-    field: r.field.slice(TOKEN_FIELD_PREFIX.length) as TokenType,
+    // An edit decision rides the reducer in the `input` slot: the `decision` attribute keeps accept and reject apart.
+    field: (r.field.startsWith(TOKEN_FIELD_PREFIX) ? r.field.slice(TOKEN_FIELD_PREFIX.length) : 'input') as TokenType,
     temporality: r.temporality,
     startTime: r.start_time === null ? null : iso(r.start_time),
     time: iso(r.time),
@@ -144,7 +155,7 @@ export async function readUsageFacts(
     options: UsageFactsOptions = {}
 ): Promise<UsageFacts> {
     const started = Date.now();
-    const { taskIds } = options;
+    const { taskIds, edits = false } = options;
     const sessionIds = taskIds
         ? tx`select distinct s.session_id
              from job_execution_session s
@@ -209,7 +220,7 @@ export async function readUsageFacts(
             select agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
             from metric_point
             where ${ownedKeys}
-                and field in ${tx(TOKEN_FIELDS)}
+                and field in ${tx(edits ? [...TOKEN_FIELDS, ...EDIT_FIELDS] : [...TOKEN_FIELDS])}
         `,
         tx<{ agent: string; session_id: string; first_seen: Date; last_seen: Date }[]>`
             select agent, session_id, min(time) as first_seen, max(time) as last_seen
@@ -233,6 +244,7 @@ export async function readUsageFacts(
     const owned = (r: { agent: string; session_id: string }): boolean =>
         owners.get(sessionKeyId(r.agent, r.session_id))?.status !== 'excluded';
     const observationRows = allObservationRows.filter(owned);
+    const isEdit = (r: ObservationRow): boolean => !r.field.startsWith(TOKEN_FIELD_PREFIX);
     const spanRows = allSpanRows.filter(owned);
     const fieldRows = allFieldRows.filter(owned);
     const authorIds = [...new Set(board.map((e) => e.authorId).filter((a): a is string => a !== null))];
@@ -242,7 +254,8 @@ export async function readUsageFacts(
           `
         : [];
 
-    const contributions = reduceTokenObservations(observationRows.map(observationOf));
+    const contributions = reduceTokenObservations(observationRows.filter((r) => !isEdit(r)).map(observationOf));
+    const editContributions = reduceTokenObservations(observationRows.filter(isEdit).map(observationOf));
     const spans: SessionSpan[] = spanRows.map((r) => ({
         agent: r.agent,
         sessionId: r.session_id,
@@ -257,6 +270,7 @@ export async function readUsageFacts(
         // Dropped above, not carried: a foreign id never reaches the reducer or any payload.
         foreignSessionIds: new Set<string>(),
         contributions,
+        edits: editContributions,
         spans,
         users: userRows.map((u) => ({
             id: u.id,
@@ -298,6 +312,7 @@ export function emptyUsageFacts(orgId: string): UsageFacts {
         branch: [],
         foreignSessionIds: new Set<string>(),
         contributions: [],
+        edits: [],
         spans: [],
         users: [],
         fields: [],
@@ -306,5 +321,27 @@ export function emptyUsageFacts(orgId: string): UsageFacts {
             contributions: { timed: 0, unlocated: 0, unresolved: 0, suppressed: 0 },
             ms: 0,
         },
+    };
+}
+
+/** The canonical task a job's executions belong to; null when the job has no execution evidence. */
+export function taskOfJob(board: readonly ExecutionEvidence[], jobId: string): string | null {
+    const row = board.find((e) => e.jobId === jobId);
+    return row ? canonicalTask(row) : null;
+}
+
+/** `facts` narrowed to one task's sessions: what a task-scoped read returns, for clients that hold the whole org. */
+export function factsForTask(facts: UsageFacts, taskId: string): UsageFacts {
+    const board = facts.board.filter((e) => canonicalTask(e) === taskId);
+    const sessions = new Set(board.map((e) => e.sessionId));
+    const owns = (r: { sessionId: string }): boolean => sessions.has(r.sessionId);
+    return {
+        ...facts,
+        board,
+        branch: facts.branch.filter(owns),
+        contributions: facts.contributions.filter((c) => sessions.has(c.selection.sessionId as string)),
+        edits: facts.edits.filter((c) => sessions.has(c.selection.sessionId as string)),
+        spans: facts.spans.filter(owns),
+        fields: facts.fields.filter(owns),
     };
 }

@@ -28,6 +28,24 @@ describe('the fixture telemetry client', () => {
     });
 });
 
+describe('the fixture task read', () => {
+    it("narrows the committed facts to the job's canonical task, and to its thread root when nothing names the job", async () => {
+        const client = createFixtureTelemetryClient();
+        const { facts } = await client.fetchRollups();
+        const job = facts.board[0]!;
+
+        const { taskId, facts: task } = await client.fetchTaskFacts({ jobId: job.jobId, rootJobId: job.rootJobId });
+
+        expect(taskId).toBe(job.requestingRootJobId ?? job.rootJobId);
+        expect(task.board.length).toBeGreaterThan(0);
+        expect(task.board.every((e) => (e.requestingRootJobId ?? e.rootJobId) === taskId)).toBe(true);
+        expect(task.board.length).toBeLessThanOrEqual(facts.board.length);
+        const unknown = await client.fetchTaskFacts({ jobId: 'nobody', rootJobId: 'its-root' });
+        expect(unknown.taskId).toBe('its-root');
+        expect(unknown.facts.board).toEqual([]);
+    });
+});
+
 describe('the disabled telemetry client', () => {
     it('reports an explicit unreachable state instead of manufacturing empty analytics', async () => {
         const client = createNullTelemetryClient();

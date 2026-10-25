@@ -42,6 +42,7 @@ export interface RunStat {
     /** Null is unmeasured — never zero. */
     agentTurns: number | null;
     telemetry: TelemetryState;
+    /** This run's own tokens; a type it never measured is null. Null as a whole when the run measured nothing. */
     tokens: TokenTypes | null;
     activity: JobActivity | null;
 }
@@ -57,7 +58,10 @@ export interface Coverage<T> {
 export interface TaskStats {
     runs: RunStat[];
     agentTurns: Coverage<number>;
+    /** The canonical task's usage from the latest answer: review runs and run-unassigned amounts included. */
     tokens: Coverage<TokenTypes>;
+    /** Review runs the task usage includes; they are not rows of the operational thread. */
+    reviews: number;
     /** Some run is still going, so the totals will move. */
     provisional: boolean;
     /** Some run's telemetry is still being fetched. */
@@ -70,15 +74,8 @@ function telemetryOf(answer: ThreadActivity[string] | undefined): {
 } {
     if (answer === undefined) return { state: 'loading', payload: null };
     if (answer === 'unavailable') return { state: 'unavailable', payload: null };
-    return { state: answer.totals === null ? 'none' : 'measured', payload: answer };
+    return { state: answer.usage.state === 'measured' ? 'measured' : 'none', payload: answer };
 }
-
-const addTokens = (a: TokenTypes, b: TokenTypes): TokenTypes => ({
-    input: a.input + b.input,
-    output: a.output + b.output,
-    cacheRead: a.cacheRead + b.cacheRead,
-    cacheCreation: a.cacheCreation + b.cacheCreation,
-});
 
 /** The thread's statistics: the runs, oldest first, and the totals over what was measured. */
 export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskStats {
@@ -93,12 +90,15 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
             live: !isTerminal(job.status),
             agentTurns: job.agentTurns,
             telemetry: state,
-            tokens: payload?.totals ?? null,
+            tokens: payload?.usage.state === 'measured' ? payload.usage.tokens : null,
             activity: payload,
         };
     });
     const turns = runs.filter((run) => run.agentTurns !== null);
-    const measured = runs.filter((run) => run.tokens !== null);
+    // The task's totals come from the canonical task of the newest answer that carries one, not from
+    // re-summing the thread's runs: that is what makes a review's usage appear.
+    const task = [...runs].reverse().find((run) => run.activity?.task != null)?.activity?.task ?? null;
+    const taskRuns = task?.runs ?? [];
     return {
         runs,
         agentTurns: {
@@ -106,11 +106,15 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
             measured: turns.length,
             runs: runs.length,
         },
-        tokens: {
-            value: measured.length === 0 ? null : measured.map((run) => run.tokens!).reduce(addTokens),
-            measured: measured.length,
-            runs: runs.length,
-        },
+        tokens:
+            task === null
+                ? { value: null, measured: 0, runs: runs.length }
+                : {
+                      value: task.usage.state === 'measured' ? task.usage.tokens : null,
+                      measured: taskRuns.filter((run) => run.usage.state === 'measured').length,
+                      runs: taskRuns.length,
+                  },
+        reviews: taskRuns.filter((run) => run.kind === 'review').length,
         provisional: runs.some((run) => run.live),
         loading: runs.some((run) => run.telemetry === 'loading'),
     };

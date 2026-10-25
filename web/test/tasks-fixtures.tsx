@@ -1,8 +1,15 @@
-import { OBJECTIVE_MODE } from '@factory-ai/core';
+import {
+    OBJECTIVE_MODE,
+    emptyBlock,
+    type RunUsage,
+    type TaskUsage,
+    type Tokens,
+    type UsageBlock,
+} from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { Job, JobQuestion } from '../src/api/useJobs.js';
-import type { ThreadActivity } from '../src/api/useJobActivity.js';
+import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
 import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
@@ -214,3 +221,68 @@ export const renderHeader = ({
             onRemoveRequest={() => {}}
         />
     );
+
+export const NO_TOKENS: Tokens = { input: null, output: null, cacheRead: null, cacheCreation: null };
+
+/** A measured block of exactly these tokens (a type left out was never measured), or an unmeasured one for null. */
+export function usageBlock(tokens: Partial<Tokens> | null): UsageBlock {
+    if (tokens === null) return emptyBlock('unmeasured');
+    const t = { ...NO_TOKENS, ...tokens };
+    const base = emptyBlock('measured');
+    const kinds = (v: number | null) => (v === null ? null : ('exact' as const));
+    return {
+        ...base,
+        tokens: t,
+        assigned: t,
+        precision: {
+            input: kinds(t.input),
+            output: kinds(t.output),
+            cacheRead: kinds(t.cacheRead),
+            cacheCreation: kinds(t.cacheCreation),
+        },
+    };
+}
+
+export function runUsage(jobId: string, kind: RunUsage['kind'], tokens: Partial<Tokens> | null): RunUsage {
+    return {
+        jobId,
+        kind,
+        reviewOf: null,
+        live: false,
+        operational: kind !== 'review',
+        startedAt: '2026-09-01T12:00:01.000Z',
+        endedAt: '2026-09-01T12:04:00.000Z',
+        usage: usageBlock(tokens),
+    };
+}
+
+/** The canonical task: its usage is the type-wise sum of the runs given (null-aware). */
+export function taskUsage(taskId: string, runs: RunUsage[]): TaskUsage {
+    const sum: Tokens = { ...NO_TOKENS };
+    for (const run of runs) {
+        for (const key of Object.keys(sum) as (keyof Tokens)[]) {
+            const v = run.usage.tokens[key];
+            if (v !== null) sum[key] = (sum[key] ?? 0) + v;
+        }
+    }
+    const measured = runs.some((r) => r.usage.state === 'measured');
+    return { taskId, removed: false, usage: usageBlock(measured ? sum : null), runs, taskOwned: null };
+}
+
+/** One run's activity answer: its own tokens (null: nothing measured) and, optionally, its task. */
+export function activityAnswer(
+    jobId: string,
+    tokens: Partial<Tokens> | null,
+    task: TaskUsage | null = null
+): JobActivity {
+    return {
+        jobId,
+        sessionId: 'session',
+        from: null,
+        to: null,
+        bucketMs: null,
+        buckets: [],
+        usage: usageBlock(tokens),
+        task,
+    };
+}

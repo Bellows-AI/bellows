@@ -13,7 +13,7 @@
  *
  * Append-only after #278: lanes add fixtures, they never change an existing one.
  */
-import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
+import { OBJECTIVE_MODE, WORKFLOW_MODE, emptyBlock, type JobMode } from '@factory-ai/core';
 import type { Page } from '@playwright/test';
 
 export type ThreadStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -584,8 +584,8 @@ export const interruptedThread = thread([
 ]);
 
 /**
- * The activity payload a mocked thread answers with (issues #339, #530): empty buckets and null
- * totals, so the page's activity summary renders its "no telemetry" state. The page fetches
+ * The activity payload a mocked thread answers with (issues #339, #530): empty buckets and an
+ * unmeasured usage block, no task, so the page's activity summary renders its "no telemetry" state. The page fetches
  * `GET /api/jobs/:id/activity` for every run beside its thread poll — a mocked thread must answer
  * that too, or the real board 404s a task id the fixture only names, and the console watcher
  * fails the spec.
@@ -599,7 +599,8 @@ export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
         to: head?.finishedAt ?? head?.startedAt ?? null,
         bucketMs: null,
         buckets: [],
-        totals: null,
+        usage: emptyBlock('unmeasured'),
+        task: null,
     };
 }
 
