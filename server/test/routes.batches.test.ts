@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { emptyBlock } from '@factory-ai/core';
 import { buildApp } from '../src/app.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
 import type { UserExecutorStore } from '../src/db/user-executor-store.js';
@@ -714,8 +715,19 @@ describe('dispatch, wait, retry and cancel', () => {
             id,
             budgets: { infraRetries: 2, repairs: 2, timeLimitMinutes: 720 },
             latestObservationAt: null,
-            unavailable: ['tokens', 'cost'],
+            totals: { tokenUsage: { state: 'unmeasured' }, usageUnavailableTasks: 0 },
         });
+        // A member with measured zeros keeps them (0 is not null); an unstarted member stays unmeasured.
+        const measured = emptyBlock('measured');
+        measured.tokens = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+        s.batches.plantUsage(id, 'a', measured);
+        const withUsage = (await s.call('GET', `/api/batches/${id}/report`)).json();
+        const usageOf = (key: string) => withUsage.tasks.find((t: { key: string }) => t.key === key).usage.tokenUsage;
+        expect(usageOf('a')).toMatchObject({ state: 'measured', tokens: { input: 0, cacheCreation: 0 } });
+        expect(usageOf('b')).toMatchObject({ state: 'unmeasured', tokens: { input: null, output: null } });
+        // The placeholder list is gone: usage travels as blocks with a snapshot instant, never as a name.
+        expect(report.json()).not.toHaveProperty('unavailable');
+        expect(Date.parse(report.json().usageSnapshotAt)).not.toBeNaN();
 
         const { id: draft } = await s.create();
         const notStarted = await s.call('GET', `/api/batches/${draft}/report`);

@@ -312,7 +312,7 @@ export { canonicalTask, resolveOwnership, sessionKeyId } from './usage-ownership
 export type { SessionKey } from './usage-ownership.js';
 export { accountContributions, assignContribution, buildTimeline } from './usage-segments.js';
 export type { Destination, Timeline } from './usage-segments.js';
-export { reduceUsage, runContributionsOf, taskUsageOf } from './usage-reduce.js';
+export { batchUsageOf, reduceUsage, runContributionsOf, taskUsageOf } from './usage-reduce.js';
 export { rollupsFromFacts } from './usage-rollups.js';
 export type { RollupFacts, SessionFieldTotal } from './usage-rollups.js';
 export type * from './types.js';

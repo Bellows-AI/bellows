@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { reduceTokenObservations } from '../src/token-contributions.js';
 import type { TokenContribution, TokenType } from '../src/token-contributions.js';
-import { reduceUsage, runContributionsOf, taskUsageOf } from '../src/usage-reduce.js';
+import { batchUsageOf, reduceUsage, runContributionsOf, taskUsageOf } from '../src/usage-reduce.js';
 import type { ExecutionEvidence, Tokens, UsageBlock, UsageInput } from '../src/usage.js';
 import { TOKEN_TYPE_LIST, addTokens, emptyBlock } from '../src/usage.js';
 import {
@@ -102,6 +102,19 @@ describe('shared-session follow-ups, reviews and the task view', () => {
         expect(task.runs.map((r) => r.jobId)).toEqual(['root1', 'fu1', 'rev1', 'idle']);
         expect(task.runs[3]!.usage.state).toBe('unmeasured');
         expect(taskUsageOf(withIdle, 'missing', NOW)).toBeNull();
+    });
+
+    it('batchUsageOf: each task is its taskUsageOf, the total one block over the union, an unknown task null', () => {
+        const input = sharedWorld();
+        const batch = batchUsageOf(input, ['root1', 'missing'], NOW);
+        expect(batch.tasks.get('root1')).toEqual(taskUsageOf(input, 'root1', NOW));
+        expect(batch.tasks.get('missing')).toBeNull();
+        // The review is folded once: the total is the task's own block, counts included.
+        expect(batch.total).toEqual(taskUsageOf(input, 'root1', NOW)!.usage);
+        expect(batch.total.counts).toEqual({ sessions: 2, runs: 3, tasks: 1 });
+        expectConserved(batch.total);
+        // No named task has evidence: unmeasured, never zero.
+        expect(batchUsageOf(input, ['missing'], NOW).total).toEqual(emptyBlock('unmeasured'));
     });
 
     it('runContributionsOf returns exactly the timed amounts assigned to one run, review included', () => {

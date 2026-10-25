@@ -1,3 +1,4 @@
+import type { UsageBlock } from './usage-types.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 
 /**
@@ -120,7 +121,13 @@ export interface BatchReportTask {
     closedBy: string | null;
     pr: string | null;
     job: string | null;
-    usage: { wallClockMs: number; agentTurns: number; tokens: number | null };
+    usage: {
+        wallClockMs: number;
+        agentTurns: number;
+        /** All-time canonical usage of the task at the report's snapshot; four types, never summed. */
+        tokenUsage: UsageBlock;
+        tokenUsageUnavailable: 'task-removed' | 'telemetry' | null;
+    };
     observation: BatchReportObservation | null;
     next: BatchNextAction;
 }
@@ -141,8 +148,16 @@ export interface BatchReport {
     verification: BatchStageVerification[];
     tasks: BatchReportTask[];
     latestObservationAt: string | null;
-    /** What the board does not measure, named rather than estimated. */
-    unavailable: string[];
+    /** The one snapshot the membership and the usage were read in. */
+    usageSnapshotAt: string;
+    totals: {
+        wallClockMs: number;
+        agentTurns: number;
+        /** One reducer block over the members' union, not a sum of the task blocks. */
+        tokenUsage: UsageBlock;
+        /** Members whose usage could not be read: above 0 the total is partial. */
+        usageUnavailableTasks: number;
+    };
 }
 
 export interface BatchSummary {
