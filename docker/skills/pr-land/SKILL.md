@@ -11,8 +11,8 @@ metadata:
 One loop takes the pull request on the task branch from "just pushed" to "nothing blocks the
 merge". Merging stays a person's call.
 
-The helper `pr-status.sh` sits next to this file. Run it as `sh <this skill directory>/pr-status.sh`
-— the directory this SKILL.md was loaded from. It waits for the checks, then prints `key=value`
+The helper `pr-status.sh` is installed at a fixed path outside the skills directory, where your shell
+can read it. Run it as `sh /usr/local/share/factory-skills/pr-land/pr-status.sh`. It waits for the checks, then prints `key=value`
 lines: `pr`, `state`, `head`, `review_decision`, `ci` (`green`, `red`, `pending` or `none`), one
 `failing=<check> <link>` per failed or cancelled check, and `unanswered_threads` — unresolved
 review threads whose last comment is not yours. Exit 2 means it could not read the pull request;
@@ -35,9 +35,9 @@ the reason is on stderr.
 
 ## The loop
 
-1. **Find the pull request.** `sh <this skill directory>/pr-status.sh --no-wait` resolves the
+1. **Find the pull request.** `sh /usr/local/share/factory-skills/pr-land/pr-status.sh --no-wait` resolves the
    current branch's pull request and samples it once. Pass a number or URL to name another.
-2. **Wait for CI.** `sh <this skill directory>/pr-status.sh <N>`. If `head` is not your
+2. **Wait for CI.** `sh /usr/local/share/factory-skills/pr-land/pr-status.sh <N>`. If `head` is not your
    `git rev-parse HEAD`: your push has not landed, so push again — or, when the remote is ahead
    because someone else pushed, report it and stop. Then act on `ci`:
    - `pending` — run it again while the waiting budget lasts.

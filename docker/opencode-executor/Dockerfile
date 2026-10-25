@@ -145,6 +145,11 @@ COPY opencode-home/opencode.json /etc/opencode/opencode.json
 # The skills, from docker/skills/ — the same SKILL.md files claude-executor bakes, in the global
 # skills directory opencode discovers (`opencode debug skill` lists them).
 COPY --from=skills . /home/node/.config/opencode/skills/
+# A second copy, root-owned and world-readable, where the agent's shell can run a skill's helper
+# scripts: the config directory is private to node (claude: 0700), so a SKILL.md names its helpers
+# by this fixed path, never by its own directory (issue #1006).
+COPY --from=skills --chown=root:root . /usr/local/share/factory-skills/
+RUN chmod -R u=rwX,go=rX /usr/local/share/factory-skills
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 RUN mkdir -p /workspace /task && chown node:node /workspace /task

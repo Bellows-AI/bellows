@@ -1329,7 +1329,7 @@ describe('the executor PR boundary', () => {
 
     it('the pr-land skill waits and fixes but never merges, closes or bypasses (issue #729)', () => {
         const text = read('docker/skills/pr-land/SKILL.md');
-        expect(text).toContain('sh <this skill directory>/pr-status.sh');
+        expect(text).toContain('sh /usr/local/share/factory-skills/pr-land/pr-status.sh');
         expect(text).toContain('At most 5 fix-and-push iterations.');
         expect(text).toContain('At most 45 minutes of waiting in total');
         expect(text).toContain('Never merge, close or reopen the pull request, and never enable auto-merge.');
