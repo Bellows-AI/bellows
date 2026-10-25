@@ -34,15 +34,20 @@ interface Status {
 interface BrokerDeps {
     fs: unknown;
     spawn: typeof spawn;
+    /** The broker's own short scripts as the tool uid (the shared TMPDIR), apart from the commands it starts. */
+    helper: typeof spawn;
     socket: string;
     mailbox: string;
+    sharedTmp: string;
     identity: { uid: number; gid: number } | null;
 }
 const broker = createRequire(import.meta.url)(BROKER) as {
     serve: (deps: BrokerDeps) => Promise<Server>;
-    toolEnv: (env: Record<string, string>) => Record<string, string>;
+    toolEnv: (env: Record<string, string>, sharedTmp?: string) => Record<string, string>;
     TOOL: { uid: number; gid: number };
     TOOL_HOME: string;
+    SHARED_TMP: string;
+    TOOL_COMPILE_CACHE: string;
     REFUSED_EXIT: number;
     run: (
         argv: string[],
@@ -86,19 +91,21 @@ async function startBroker(options: Partial<BrokerDeps> = {}) {
     const server = await broker.serve({
         fs,
         spawn: recording,
+        helper: spawn,
         socket,
         mailbox: join(dir, 'out'),
+        sharedTmp: join(dir, 'factory-tmp'),
         identity: null,
         ...options,
     });
     servers.push(server);
-    return { socket, spawned, dir };
+    return { socket, spawned, dir, sharedTmp: options.sharedTmp ?? join(dir, 'factory-tmp') };
 }
 
 /** The real client, as a process of its own, against `socket`. */
 function client(socket: string, argv: string[], cwd = process.cwd()): ChildProcess {
     const script = `require(${JSON.stringify(BROKER)}).run(${JSON.stringify(argv)}, {
-        socket: ${JSON.stringify(socket)}, cwd: ${JSON.stringify(cwd)}, env: process.env,
+        socket: ${JSON.stringify(socket)}, cwd: ${JSON.stringify(cwd)}, env: (({ TMPDIR, ...rest }) => rest)(process.env),
         stdin: process.stdin, stdout: process.stdout, stderr: process.stderr,
     }).then((status) => {
         process.stdout.write('', () => status.signal ? process.kill(process.pid, status.signal) : process.exit(status.code));
@@ -154,7 +161,20 @@ describe('the tool broker', () => {
         expect(broker.TOOL.uid).toBe(TOOL_UID);
     });
 
-    it('gives the tool its own HOME and shell, and never the CLI’s shell override', () => {
+    it('keeps the compile cache out of every place the CLI loads from, and a TMPDIR the run named', () => {
+        // The tool's cache is under the tool's own HOME: not the image's /tmp/node-compile-cache, and
+        // not the shared TMPDIR, where a cache entry the tool wrote would be one the CLI could load.
+        expect(broker.TOOL_COMPILE_CACHE.startsWith(`${broker.TOOL_HOME}/`)).toBe(true);
+        expect(broker.TOOL_COMPILE_CACHE.startsWith(`${broker.SHARED_TMP}/`)).toBe(false);
+        // A cache the run named is the CLI's choice, never one the tool writes.
+        expect(broker.toolEnv({ NODE_COMPILE_CACHE: '/tmp/node-compile-cache' }).NODE_COMPILE_CACHE).toBe(
+            broker.TOOL_COMPILE_CACHE
+        );
+        expect(broker.toolEnv({ TMPDIR: '/tmp' }).TMPDIR).toBe(broker.SHARED_TMP);
+        expect(broker.toolEnv({ TMPDIR: '/scratch/run' }).TMPDIR).toBe('/scratch/run');
+    });
+
+    it('gives the tool its own HOME, shell, compile cache and TMPDIR, and never the CLI’s shell override', () => {
         const env = broker.toolEnv({
             PATH: '/usr/bin',
             HOME: '/home/node',
@@ -167,6 +187,8 @@ describe('the tool broker', () => {
             HOME: broker.TOOL_HOME,
             SHELL: '/bin/bash',
             RUNNER_LEASE_TOKEN: 'lease',
+            NODE_COMPILE_CACHE: broker.TOOL_COMPILE_CACHE,
+            TMPDIR: broker.SHARED_TMP,
         });
     });
 
@@ -317,6 +339,80 @@ describe('the tool broker', () => {
             `factory-tool: the tool uid cannot enter ${join(dir, 'gone')}; the command did not run.\n`
         );
         expect(existsSync(join(dir, 'ran'))).toBe(false);
+    });
+
+    // Issue #1016: the tool's private files are the CLI's to read. The uid switch is the images' to
+    // prove (docker/tool-isolation-checks.sh, the tool-isolation lane); here one uid plays both, and
+    // the modes the sweep leaves are what the group needs.
+    describe('the shared TMPDIR', () => {
+        const modeOf = (path: string): number => fs.statSync(path).mode & 0o7777;
+        // The contract is the access bits: a directory made inside the setgid shared TMPDIR inherits
+        // setgid on Linux and not on macOS, which the sweep neither sets nor promises.
+        const accessOf = (path: string): number => fs.statSync(path).mode & 0o777;
+
+        it('exists, group-shared and setgid, before the broker listens', async () => {
+            const { sharedTmp } = await startBroker();
+            expect(modeOf(sharedTmp)).toBe(0o2770);
+        });
+
+        it('opens a private file and a private directory the tool made to the group, before the exit status', async () => {
+            const { socket, sharedTmp, dir } = await startBroker();
+            const outside = join(dir, 'outside');
+            const ran = await settled(
+                client(socket, [
+                    '-c',
+                    `umask 077; f=$(mktemp "$TMPDIR/log.XXXXXX"); echo log > "$f"; d=$(mktemp -d "$TMPDIR/dir.XXXXXX"); ` +
+                        `mkdir "$d/sub"; echo inner > "$d/sub/file"; echo "$f $d"; echo secret > ${outside}`,
+                ])
+            );
+            expect(ran.status.code).toBe(0);
+            const [file, directory] = ran.stdout.toString().trim().split(' ') as [string, string];
+            expect(file.startsWith(`${sharedTmp}/`)).toBe(true);
+            expect(modeOf(file)).toBe(0o660);
+            expect(accessOf(directory)).toBe(0o770);
+            expect(accessOf(join(directory, 'sub'))).toBe(0o770);
+            expect(modeOf(join(directory, 'sub', 'file'))).toBe(0o660);
+            // The control: the same umask outside the shared TMPDIR leaves its file private.
+            expect(modeOf(outside)).toBe(0o600);
+        });
+
+        it('leaves executables executable and never follows a symlink out of the directory', async () => {
+            const { socket, sharedTmp, dir } = await startBroker();
+            const target = join(dir, 'target');
+            fs.writeFileSync(target, 'x', { mode: 0o600 });
+            const ran = await settled(
+                client(socket, [
+                    '-c',
+                    `umask 077; printf '#!/bin/sh\\n' > "$TMPDIR/tool.sh"; chmod 700 "$TMPDIR/tool.sh"; ln -s ${target} "$TMPDIR/link"`,
+                ])
+            );
+            expect(ran.status.code).toBe(0);
+            expect(modeOf(join(sharedTmp, 'tool.sh'))).toBe(0o770);
+            expect(modeOf(target)).toBe(0o600);
+        });
+
+        it('recreates the directory a command removed', async () => {
+            const { socket, sharedTmp } = await startBroker();
+            expect((await settled(client(socket, ['-c', 'rm -rf "$TMPDIR"']))).status.code).toBe(0);
+            expect(modeOf(sharedTmp)).toBe(0o2770);
+        });
+
+        it('leaves the tool its own TMPDIR when the shared one cannot be made', async () => {
+            const blocker = join(scratch(), 'a-file');
+            fs.writeFileSync(blocker, 'x');
+            const { socket } = await startBroker({ sharedTmp: join(blocker, 'factory-tmp') });
+            const ran = await settled(client(socket, ['-c', 'printf "[%s]" "$TMPDIR"']));
+            expect(ran.stdout.toString()).toBe('[]');
+        });
+
+        it('opens nothing when the broker refuses the request outright', async () => {
+            const { socket, sharedTmp } = await startBroker();
+            fs.writeFileSync(join(sharedTmp, 'private'), 'x', { mode: 0o600 });
+            const conn = connect(socket);
+            conn.write(broker.frame('q', 'not json'));
+            await new Promise((resolve) => conn.on('close', resolve).resume());
+            expect(modeOf(join(sharedTmp, 'private'))).toBe(0o600);
+        });
     });
 
     it('makes a root-owned shared `out` mailbox sticky before it listens, and leaves the agent’s own alone', async () => {

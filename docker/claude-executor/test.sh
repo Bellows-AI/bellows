@@ -39,7 +39,7 @@ check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" -
 # No plugin (issue #841): context-mode's executions cannot run as the tool uid yet.
 check 'no plugin installed'    'No plugins installed' run --entrypoint claude "$IMAGE" plugin list
 check 'CLAUDE.md present'      'Agent guide'      run --entrypoint head "$IMAGE" -1 /home/node/.claude/CLAUDE.md
-check 'skills present'         'backend-fix'      run --entrypoint ls "$IMAGE" /home/node/.claude/skills
+check 'skills present'         'backend-fix'      run --entrypoint ls "$IMAGE" /etc/claude-code/.claude/skills
 
 # The entrypoint's own contract: land in $WORKDIR, refuse a missing one.
 check 'defaults to /workspace' '/workspace'       run --entrypoint sh "$IMAGE" -c 'pwd'

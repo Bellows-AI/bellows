@@ -116,9 +116,18 @@ COPY --chown=node:node claude-home/ /home/node/.claude/
 COPY managed-settings.json /etc/claude-code/managed-settings.json
 
 # The skills, from docker/skills/ — one source for both executor images, so a task sees the same
-# skills whichever executor runs it. Before the /opt/claude-home snapshot below, so a seeded config
-# dir (the transcript store's) carries them too.
-COPY --from=skills --chown=node:node . /home/node/.claude/skills/
+# skills whichever executor runs it — root-owned and world-readable, where the agent's shell can run
+# a skill's helper scripts: the config directory is private to node (claude: 0700), so a SKILL.md
+# names its helpers by this fixed path, never by its own directory (issue #1006).
+COPY --from=skills --chown=root:root . /usr/local/share/factory-skills/
+# The CLI finds them as MANAGED skills, beside the managed settings above, and as nothing else
+# (issue #1024). They used to be copied into the config home too, so the path a SKILL.md was loaded
+# from — the base directory the CLI prints — was the baked home on a plain run and the 0700
+# per-thread config dir on a runner's: a path the tool uid could not read, on some runs only.
+# One tree, one path, and the agent cannot edit it.
+RUN chmod -R u=rwX,go=rX /usr/local/share/factory-skills
+RUN mkdir -p /etc/claude-code/.claude \
+    && ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills
 
 # Bind-mounted at runtime. Owned by node so the CLI can write into the checkout.
 #
@@ -165,14 +174,22 @@ RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in
 # factory-agent, the one group that reaches the broker's socket; the run-control proxy's socket is
 # node's and its group's. factory-tool's HOME is its own, and its git config includes node's, so the
-# credential helper and safe.directory carry over. Byte-identical in both executor Dockerfiles.
+# credential helper and node's safe.directory carry over. Its own `safe.directory = *` is the tool
+# uid trusting what node made (issue #1023), and nothing else: the tool is the lesser uid, so a
+# repository config it runs gives it nothing. The other direction stays closed — node's git never
+# trusts a repository the tool wrote beyond $WORKDIR, because git would run the tool's
+# core.fsmonitor or filter driver as node. Byte-identical in both executor Dockerfiles.
 RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
     && useradd -u 1001 -g node -M -d /home/factory-tool -s /bin/bash factory-tool \
     && install -d -o factory-tool -g node -m 0700 /home/factory-tool \
-    && printf '[include]\n\tpath = /home/node/.gitconfig\n' > /home/factory-tool/.gitconfig \
+    && printf '[include]\n\tpath = /home/node/.gitconfig\n[safe]\n\tdirectory = *\n' > /home/factory-tool/.gitconfig \
     && chown factory-tool:node /home/factory-tool/.gitconfig \
     && install -d -o root -g factory-agent -m 2750 /run/factory-tool \
     && install -d -o node -g node -m 0750 /run/factory-control
+# The agent's commit identity (issue #1017), the one the publisher and the checkout sync fall back to
+# (driver/src/publish/publish.ts): /etc/gitconfig is system scope, so both uids read it whatever HOME
+# a run mounts, and a repository's own, a member's global or a GIT_AUTHOR_* env identity still wins.
+RUN printf '[user]\n\tname = factory-ai\n\temail = factory-ai@users.noreply.github.com\n' > /etc/gitconfig
 COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash

@@ -1194,12 +1194,13 @@ describe('the opencode-executor managed config', () => {
  */
 describe('the shared executor skills', () => {
     const SKILLS = 'docker/skills';
-    // claude's config home is node-owned (the CLI writes into it); opencode's is root-owned (#452).
+    // claude's skills are root-owned and managed (#1024): one tree, found by the CLI beside its managed
+    // settings; opencode's global skills directory is root-owned too (#452).
     const IMAGES = [
         {
             dockerfile: 'docker/claude-executor/Dockerfile',
-            target: '/home/node/.claude/skills/',
-            chown: '--chown=node:node ',
+            target: '/usr/local/share/factory-skills/',
+            chown: '--chown=root:root ',
         },
         { dockerfile: 'docker/opencode-executor/Dockerfile', target: '/home/node/.config/opencode/skills/', chown: '' },
     ];
@@ -1210,7 +1211,23 @@ describe('the shared executor skills', () => {
         }
     });
 
-    it('reaches a seeded config dir, because /opt/claude-home IS the baked home', () => {
+    // Issue #1024: the path a SKILL.md is loaded from is the base directory the CLI prints, and a copy in
+    // the config home is a path in the private per-thread dir on a runner and in the baked home on a
+    // plain run. The managed tree is the only place the CLI finds them, so the path is one.
+    it('gives claude its skills as managed skills at one path, with no copy in the config home', () => {
+        const dockerfile = read('docker/claude-executor/Dockerfile');
+        expect(dockerfile).toContain('ln -s /usr/local/share/factory-skills /etc/claude-code/.claude/skills');
+        expect(dockerfile).not.toMatch(/^COPY[^\n]*\/home\/node\/\.claude\/skills/m);
+    });
+
+    it('removes the baked skills an older seed left in a thread’s config dir, and only those', () => {
+        const entrypoint = read('docker/claude-executor/entrypoint.sh');
+        expect(entrypoint).toContain('for skill in /usr/local/share/factory-skills/*/; do');
+        expect(entrypoint).toContain(`rm -rf "\${CLAUDE_CONFIG_DIR:?}/skills/\${skill##*/}"`);
+        expect(entrypoint).not.toMatch(/rm -rf[^\n]*\/skills"?\s*$/m);
+    });
+
+    it('seeds a fresh config dir from the baked home itself, because /opt/claude-home IS it', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
         expect(dockerfile.indexOf('COPY --from=skills')).toBeGreaterThan(-1);
         // The seed source is a symlink to /home/node/.claude, not a snapshot of it. That is what
@@ -1329,7 +1346,7 @@ describe('the executor PR boundary', () => {
 
     it('the pr-land skill waits and fixes but never merges, closes or bypasses (issue #729)', () => {
         const text = read('docker/skills/pr-land/SKILL.md');
-        expect(text).toContain('sh <this skill directory>/pr-status.sh');
+        expect(text).toContain('sh /usr/local/share/factory-skills/pr-land/pr-status.sh');
         expect(text).toContain('At most 5 fix-and-push iterations.');
         expect(text).toContain('At most 45 minutes of waiting in total');
         expect(text).toContain('Never merge, close or reopen the pull request, and never enable auto-merge.');
@@ -1821,4 +1838,57 @@ describe('the entrypoints under the tool uid (issue #814)', () => {
         },
         CASE_TIMEOUT_MS
     );
+});
+
+// Issue #1017: the agent's Bash runs as the tool uid, whose git config includes node's and holds no
+// identity, so a bare `git commit` failed. The identity is baked into /etc/gitconfig, which both uids
+// read on either backend (the same image), at the lowest scope so any identity a run configures wins.
+describe('the executor images commit identity', () => {
+    const DOCKERFILES = ['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'];
+    const gitconfigRun = (dockerfile: string): string => {
+        const line = read(dockerfile)
+            .split('\n')
+            .find((l) => l.startsWith('RUN printf') && l.includes('> /etc/gitconfig'));
+        if (!line) throw new Error(`${dockerfile} bakes no /etc/gitconfig`);
+        return line;
+    };
+
+    it('is the same line in both images and names the identity the publisher falls back to', () => {
+        const [claude, opencode] = DOCKERFILES.map(gitconfigRun);
+        expect(opencode).toBe(claude);
+        const publish = read('driver/src/publish/publish.ts');
+        expect(publish).toContain("'user.name=factory-ai', '-c', 'user.email=factory-ai@users.noreply.github.com'");
+        expect(claude).toContain('name = factory-ai');
+        expect(claude).toContain('email = factory-ai@users.noreply.github.com');
+    });
+
+    it.each(DOCKERFILES)('%s: git forms that author, and a configured identity still wins', (dockerfile) => {
+        const dir = mkdtempSync(join(tmpdir(), 'identity-'));
+        try {
+            const system = join(dir, 'gitconfig');
+            execFileSync('sh', ['-c', gitconfigRun(dockerfile).replace('RUN ', '').replace('/etc/gitconfig', system)]);
+            const ident = (env: Record<string, string> = {}, cwd = dir): string =>
+                execFileSync('git', ['var', 'GIT_AUTHOR_IDENT'], {
+                    cwd,
+                    encoding: 'utf8',
+                    env: {
+                        PATH: process.env.PATH ?? '',
+                        HOME: dir,
+                        GIT_CONFIG_SYSTEM: system,
+                        GIT_CONFIG_GLOBAL: '/dev/null',
+                        ...env,
+                    },
+                });
+            expect(ident()).toMatch(/^factory-ai <factory-ai@users\.noreply\.github\.com> /);
+            expect(ident({ GIT_AUTHOR_NAME: 'Member', GIT_AUTHOR_EMAIL: 'member@example.com' })).toMatch(
+                /^Member <member@example\.com> /
+            );
+            const repo = join(dir, 'repo');
+            execFileSync('git', ['init', '-q', repo]);
+            execFileSync('git', ['-C', repo, 'config', 'user.email', 'repo@example.com']);
+            expect(ident({}, repo)).toMatch(/<repo@example\.com> /);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
 });

@@ -17,6 +17,13 @@
  * the group with it. The broker holds its two capabilities for the run and no credential: it starts
  * under an empty environment, and a tool's environment never carries the run-control token.
  *
+ * The two uids share files through the group, and the broker keeps three places that sharing works
+ * (issues #1016, #1021): the tool's TMPDIR, a directory it makes for both uids, whose contents it
+ * opens to the group when each command ends — a 0600 `mktemp` file or a 0700 `mktemp -d` the CLI's
+ * Read and Glob would be refused; the tool's own compile cache, because code the tool can write is
+ * code the CLI must never load; and nothing of the CLI's: its config dir, credentials and mailboxes
+ * stay closed.
+ *
  * Kept byte-identical in both executor images (driver/test/tool-broker.test.ts).
  */
 const fs = require('node:fs');
@@ -30,6 +37,13 @@ const SOCKET_MODE = 0o660;
 const TOOL = { uid: 1001, gid: 1000 };
 const TOOL_SHELL = '/bin/bash';
 const TOOL_HOME = '/home/factory-tool';
+/** The tool's TMPDIR: made for both uids by the broker (tool-owned, group node, setgid), and swept to group access after every command. */
+const SHARED_TMP = '/tmp/factory-tmp';
+const SHARED_TMP_MODE = '2770';
+/** The tool's node compile cache. The CLI's is the image's /tmp/node-compile-cache, which the tool uid cannot write. */
+const TOOL_COMPILE_CACHE = `${TOOL_HOME}/.cache/node-compile-cache`;
+/** A sweep that outlasts this is cut off: the next command's sweep finishes it. */
+const SWEEP_TIMEOUT_MS = 5000;
 /** The kubernetes `out` mailbox is a root-owned 0777 emptyDir; sticky, a tool cannot rename the agent's own. */
 const AGENT_OUT_MAILBOX = '/factory/out';
 const STICKY_SHARED_MODE = 0o1777;
@@ -93,12 +107,48 @@ function parseRequest(payload) {
     return request;
 }
 
-/** The tool's environment: the CLI's, its own HOME and shell, and nothing withheld. */
-function toolEnv(env) {
-    const out = { ...env, HOME: TOOL_HOME, SHELL: TOOL_SHELL };
+/**
+ * The tool's environment: the CLI's, its own HOME, shell and compile cache, a TMPDIR both uids share
+ * unless the run named its own, and nothing withheld.
+ */
+function toolEnv(env, sharedTmp = SHARED_TMP) {
+    const out = { ...env, HOME: TOOL_HOME, SHELL: TOOL_SHELL, NODE_COMPILE_CACHE: TOOL_COMPILE_CACHE };
+    // A null shared TMPDIR is one the broker could not make: the tool keeps the TMPDIR it had.
+    if (sharedTmp && (!env.TMPDIR || env.TMPDIR === '/tmp')) out.TMPDIR = sharedTmp;
     for (const name of WITHHELD) delete out[name];
     return out;
 }
+
+/** Runs a short sh script as the tool uid, through `deps.helper` (spawn); resolves with its exit code when it ends, however it ends. */
+function asTool(deps, script, args, timeout) {
+    return new Promise((resolve) => {
+        try {
+            const child = deps.helper('/bin/sh', ['-c', script, 'factory-tool', ...args], {
+                ...(deps.identity ?? {}),
+                cwd: '/',
+                env: { PATH: '/usr/bin:/bin' },
+                stdio: 'ignore',
+                timeout,
+            });
+            child.on('error', () => resolve(1));
+            child.on('close', (code) => resolve(code ?? 1));
+        } catch {
+            resolve(1);
+        }
+    });
+}
+
+/** The shared TMPDIR exists, tool-owned and open to the group: the CLI enters it, the tool fills it. Exits 0 only when the tool can write it. */
+const MAKE_SHARED_TMP = '[ -d "$1" ] || mkdir -p -m "$2" -- "$1" 2>/dev/null; chmod "$2" -- "$1" 2>/dev/null; [ -d "$1" ] && [ -w "$1" ]';
+
+/**
+ * Opens what the tool left in the shared TMPDIR to the group. The tool's own files only — find's -user
+ * — and no symlink followed: a 0600 file becomes 0660, a 0700 directory 0770, nothing is widened to
+ * anyone outside node's group, and nothing outside this directory is touched.
+ */
+const SWEEP_SHARED_TMP =
+    '[ -d "$1" ] || mkdir -p -m "$3" -- "$1"; ' +
+    'find "$1" -xdev -user "$2" -gid "$4" \\( -type d ! -perm -070 -o -type f ! -perm -060 \\) -exec chmod g+rwX {} + 2>/dev/null; exit 0';
 
 /**
  * Signals the tool's process group. Root without CAP_KILL cannot signal another uid, so the signal is
@@ -131,7 +181,16 @@ function serveConnection(deps, conn) {
     const finish = (status) => {
         if (ended) return;
         ended = true;
-        if (!conn.destroyed) conn.end(frame(FRAME.exit, JSON.stringify(status)));
+        const done = () => {
+            if (!conn.destroyed) conn.end(frame(FRAME.exit, JSON.stringify(status)));
+        };
+        // A command that ran has its private files opened before its exit status is reported, so the
+        // CLI's next tool call finds them readable.
+        if (child?.pid) {
+            asTool(deps, SWEEP_SHARED_TMP, [deps.sharedTmp, `${(deps.identity ?? { uid: process.getuid() }).uid}`, SHARED_TMP_MODE, `${(deps.identity ?? { gid: process.getgid() }).gid}`], SWEEP_TIMEOUT_MS).then(done);
+        } else {
+            done();
+        }
     };
     const refuse = (reason) => {
         send(FRAME.stderr, `factory-tool: ${reason}; the command did not run.\n`);
@@ -143,7 +202,7 @@ function serveConnection(deps, conn) {
         try {
             child = deps.spawn(TOOL_SHELL, ['-c', ENTER_CWD, TOOL_SHELL, request.cwd, ...request.argv], {
                 cwd: '/',
-                env: toolEnv(request.env),
+                env: toolEnv(request.env, deps.sharedTmpReady ? deps.sharedTmp : null),
                 ...(deps.identity ?? {}),
                 detached: true,
                 stdio: ['pipe', 'pipe', 'pipe'],
@@ -229,8 +288,9 @@ function protectMailbox(deps) {
 }
 
 /** The broker. Resolves once listening; a failure throws, and factory-launch never starts the CLI. */
-function serve(deps) {
+async function serve(deps) {
     protectMailbox(deps);
+    deps.sharedTmpReady = (await asTool(deps, MAKE_SHARED_TMP, [deps.sharedTmp, SHARED_TMP_MODE], SWEEP_TIMEOUT_MS)) === 0;
     deps.fs.rmSync(deps.socket, { force: true });
     const server = net.createServer((conn) => serveConnection(deps, conn));
     return new Promise((resolve, reject) => {
@@ -310,7 +370,7 @@ function exitAs(status) {
 if (require.main === module) {
     const [mode, ...argv] = process.argv.slice(2);
     if (mode === 'serve') {
-        serve({ fs, spawn, socket: SOCKET, mailbox: AGENT_OUT_MAILBOX, identity: TOOL }).catch((error) => {
+        serve({ fs, spawn, helper: spawn, socket: SOCKET, mailbox: AGENT_OUT_MAILBOX, sharedTmp: SHARED_TMP, identity: TOOL }).catch((error) => {
             process.stderr.write(`factory-tool: the broker could not start: ${error.message}\n`);
             process.exit(1);
         });
@@ -329,4 +389,17 @@ if (require.main === module) {
     }
 }
 
-module.exports = { serve, run, toolEnv, frame, frames, SOCKET, TOOL, TOOL_HOME, WITHHELD, REFUSED_EXIT };
+module.exports = {
+    serve,
+    run,
+    toolEnv,
+    frame,
+    frames,
+    SOCKET,
+    TOOL,
+    TOOL_HOME,
+    SHARED_TMP,
+    TOOL_COMPILE_CACHE,
+    WITHHELD,
+    REFUSED_EXIT,
+};

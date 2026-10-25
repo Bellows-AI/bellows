@@ -93,13 +93,15 @@ export class GitHubAppError extends Error {}
 
 /** How much of a remote error body is worth quoting — enough for GitHub's reason, not a dump. */
 const ERROR_DETAIL_LIMIT = 200;
+const HTTP_UNPROCESSABLE = 422;
 
-async function json(response: Response, what: string): Promise<unknown> {
+async function json(response: Response, what: string, unprocessableHint?: string): Promise<unknown> {
     if (!response.ok) {
         // The body carries GitHub's own reason ("integration not found", "expired") and is the
         // difference between a fixable error and a mystery. Bounded, because it is a remote body.
         const detail = (await response.text().catch(() => '')).slice(0, ERROR_DETAIL_LIMIT);
-        throw new GitHubAppError(`${what} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
+        const hint = response.status === HTTP_UNPROCESSABLE && unprocessableHint ? ` (${unprocessableHint})` : '';
+        throw new GitHubAppError(`${what} failed with ${response.status}${detail ? `: ${detail}` : ''}${hint}`);
     }
     return response.json();
 }
@@ -130,8 +132,9 @@ export interface InstallationTokenProvider extends TokenProvider {
 /**
  * The installation permissions a runner's token carries, pinned to what the driver's helpers call:
  * git push (`contents`), opening and viewing PRs and review replies (`pull_requests`), PR-level
- * comments (`issues`) and the review collector's check reads (`checks`). A permission the
- * installation lacks makes GitHub refuse the mint with a 422, so this is a subset of what
+ * comments (`issues`), the review collector's check reads (`checks`) and `gh pr checks`, which
+ * GitHub gates on `actions` to read a check suite's workflow run. A permission the installation
+ * lacks makes GitHub refuse the mint with a 422 (`mint` names it), so this is a subset of what
  * docs/security.md asks the App to hold.
  */
 export const RUNNER_TOKEN_PERMISSIONS = {
@@ -139,7 +142,25 @@ export const RUNNER_TOKEN_PERMISSIONS = {
     pull_requests: 'write',
     issues: 'write',
     checks: 'read',
+    actions: 'read',
 } as const;
+
+const PERMISSION_LABELS = {
+    contents: 'Contents',
+    pull_requests: 'Pull requests',
+    issues: 'Issues',
+    checks: 'Checks',
+    actions: 'Actions',
+} as const satisfies Record<keyof typeof RUNNER_TOKEN_PERMISSIONS, string>;
+
+/** What an operator needs to read off a refused narrowed mint: which permissions, and where to grant them. */
+const GRANT_HINT = `if the cause is permissions, the GitHub App must hold ${(
+    Object.entries(RUNNER_TOKEN_PERMISSIONS) as [keyof typeof PERMISSION_LABELS, string][]
+)
+    .map(([name, access]) => `${PERMISSION_LABELS[name]}: ${access}`)
+    .join(
+        ', '
+    )} on this installation; grant any missing one in the App's permissions settings and accept the update on the installation (docs/security.md)`;
 
 export function installationTokenProvider(options: AppTokenOptions): InstallationTokenProvider {
     const { github, fetchFn = fetch, now = Date.now, mintTimeoutMs = MINT_TIMEOUT_MS } = options;
@@ -183,7 +204,8 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
             // caller's transaction open.
             signal: AbortSignal.timeout(mintTimeoutMs),
         });
-        const body = (await json(response, 'installation token request')) as {
+        // A narrowed mint asks for RUNNER_TOKEN_PERMISSIONS; a 422 means the installation holds less.
+        const body = (await json(response, 'installation token request', scope ? GRANT_HINT : undefined)) as {
             token?: string;
             expires_at?: string;
         };

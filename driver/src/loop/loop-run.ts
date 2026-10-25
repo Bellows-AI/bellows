@@ -11,6 +11,7 @@ import type { GateFailure, GateSession } from './loop-gates.js';
 import {
     type GateReport,
     beginGates,
+    mintGateCredentials,
     openRunControl,
     probeDeadServices,
     runDeclaredGates,
@@ -258,6 +259,7 @@ async function runPhases(ctx: AttemptCtx): Promise<GateSession | null | typeof S
     // env the task group is specced with already names it — and so the supervisor has its channel
     // for the sync, the first step it serves (issue #771): agent-less and adopted attempts included.
     await openRunControl(ctx.rt, ctx.job, ctx.state);
+    await mintGateCredentials(ctx.rt, ctx.job);
     for (const step of setupSteps) {
         const answer = await step(ctx);
         // A record is performed, not an ending: the stand-down read still follows it.

@@ -1,7 +1,8 @@
-import { ERROR_CODES, EXECUTOR_TYPES, executorSuspendedMessage, type ExecutorScope } from '@factory-ai/core';
+import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
+import { refusedAsUnusable } from './executor-usable.js';
 import { type FairBoardScanner, boardsFor, executorsFor, reposFor, storeFor, workflowsFor } from './job-context.js';
 import { resolveJiraConnection } from '../connections.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
@@ -44,34 +45,6 @@ import type { JobClaimStore } from '../../db/jobs/job-store-claim.js';
 import type { JobConclusionStore } from '../../db/jobs/job-store-conclusions.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
-
-/**
- * A suspended profile launches nothing (issue 440): refused with its own code, so a client is told
- * why instead of queueing a task the claim would fail. True when a refusal (or a failed read) has
- * already landed on `reply`.
- */
-async function refusedAsSuspended(
-    request: FastifyRequest,
-    reply: FastifyReply,
-    opts: {
-        executorsStore: Awaited<ReturnType<typeof executorsFor>>;
-        executor: string | null;
-        executorScope: ExecutorScope;
-        createdBy: string | null;
-    }
-): Promise<boolean> {
-    const { executorsStore, executor, executorScope, createdBy } = opts;
-    if (!executorsStore || !createdBy || !executor) return false;
-    const target = await guard(
-        reply,
-        (e) => request.log.error({ err: e }, 'executor row read failed'),
-        () => executorsStore.configFor(createdBy, executor, executorScope)
-    );
-    if (!target.ok) return true;
-    if (!target.value?.suspended) return false;
-    bad(reply, ERROR_CODES.EXECUTOR_SUSPENDED, executorSuspendedMessage(executorScope, executor), HTTP_CONFLICT);
-    return true;
-}
 
 /**
  * A task runs against a repository: it must be one this board tracks (the org's repo list).
@@ -177,7 +150,14 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
      */
     const workflowsStore = await workflowsFor(orgs, request);
     const executorsStore = await executorsFor(orgs, request);
-    if (await refusedAsSuspended(request, reply, { executorsStore, executor, executorScope, createdBy })) {
+    if (
+        await refusedAsUnusable(request, reply, {
+            executors: executorsStore,
+            createdBy,
+            executor,
+            scope: executorScope,
+        })
+    ) {
         return reply;
     }
     if (await refusedAsUntracked(request, reply, { repos: await reposFor(orgs, request), repo })) return reply;

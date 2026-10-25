@@ -1,6 +1,6 @@
 // A scripted, Anthropic-compatible model endpoint for the real agent CLIs (issue #442).
 //
-//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools]
+//   node scripts/fake-model-endpoint.mjs [--port N] [--first-delay-ms N] [--tool-steps N] [--ask] [--ask-prose] [--kill-tools] [--probe-files a,b,…] [--steps '<json>']
 //
 // Offline and deterministic, no credential: `claude` and `opencode` point their Anthropic base URL
 // at it and run a real agent loop against canned answers. The first `--tool-steps` model requests
@@ -29,6 +29,20 @@
 // on its own. `GET /tool-results` counts the tool calls whose result came back carrying
 // FACTORY_TOOL_OK: a tool killed with the CLI, or a CLI killed by its tool, never reports one.
 //
+// `--probe-files a,b,…` is the skill-helper mode (issue #1006): the one scripted Bash call opens each path
+// in turn as the tool uid and prints one `PROBE <n> <outcome>` line each (1-based, in the order given;
+// outcome `open`, `denied` for "Permission denied", or `other: <error>`), then FACTORY_TOOL_OK; like --kill-tools it never raises a Stop. The
+// tool's cwd is not writable by the tool uid, so the outcome travels in the result: `GET /tool-results`
+// returns it as `text`.
+//
+// `--steps '[{"tool":"Bash","input":{"command":"…"}},…]'` is the scripted-tools mode (issue #1025): model request N
+// calls the N-th step's tool (matched by name, case-insensitively, among the tools the CLI offers) with that input,
+// and the request after the last step answers `done`. Unlike the modes above it can call any tool — the CLI's own
+// Read, Write, Skill — so a lane can drive the seam between the CLI's file tools and its Bash tool. `GET /steps`
+// returns every result that came back, `{results: [{id, isError, text}], skillBases: [dir, …]}` in step order, the second the
+// "Base directory for this skill" line of each skill the Skill tool loaded; like --kill-tools it
+// never raises a Stop.
+//
 // In every mode it plays the driver's step channel too (driver/src/step-control.ts), as much as a
 // lane group needs: `GET /step` hands out `go` on the first poll and `finish` once `POST /report`
 // arrives, and holds any other poll up to its `wait`; `POST /step/<id>` is acknowledged.
@@ -43,6 +57,7 @@ const QUESTION_PATH = '/question';
 const QUESTIONS_PATH = '/questions';
 const HOOKS_PATH = '/hooks';
 const TOOL_RESULTS_PATH = '/tool-results';
+const STEPS_PATH = '/steps';
 const TOOL_OK = 'FACTORY_TOOL_OK';
 const STEP_PATH = '/step';
 const REPORT_PATH = '/report';
@@ -112,10 +127,25 @@ function streamOf(reply) {
     return out + sse('message_stop', { type: 'message_stop' });
 }
 
-export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false } = {}) {
+/** One shell line that probes each path with `cat` and prints its outcome. */
+export function probeCommand(paths) {
+    const quoted = paths.map((path) => `'${path.replaceAll("'", "'\\''")}'`).join(' ');
+    return (
+        `n=0; for f in ${quoted}; do n=$((n+1)); if err=$(cat "$f" 2>&1 >/dev/null); then echo "PROBE $n open"; ` +
+        `else case "$err" in *"Permission denied"*) echo "PROBE $n denied";; *) echo "PROBE $n other: $err";; esac; fi; done; echo ${TOOL_OK}`
+    );
+}
+
+export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask = false, askProse = false, killTools = false, probeFiles = [], steps = [] } = {}) {
     let agentRequests = 0;
     /** The tool calls whose result carried TOOL_OK, by id: a resent history counts each once. */
     const reportedOk = new Set();
+    /** The text of every tool result that carried TOOL_OK, by id. */
+    const reportedText = new Map();
+    /** Every tool result of the scripted steps, by tool call id: a resent history counts each once. */
+    const stepResults = new Map();
+    /** The base directory every loaded skill named, as the CLI printed it. */
+    const skillBases = new Set();
     let hookRequests = 0;
     let questionPosts = 0;
     let questionPolls = 0;
@@ -180,11 +210,35 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         const step = ++agentRequests;
         if (ask || askProse) return askReply(step, tools, messages);
         for (const block of messages.flatMap((entry) => (Array.isArray(entry?.content) ? entry.content : []))) {
-            if (block?.type === 'tool_result' && JSON.stringify(block.content ?? '').includes(TOOL_OK)) reportedOk.add(block.tool_use_id);
+            if (block?.type === 'tool_result' && JSON.stringify(block.content ?? '').includes(TOOL_OK)) {
+                reportedOk.add(block.tool_use_id);
+                reportedText.set(block.tool_use_id, typeof block.content === 'string' ? block.content : JSON.stringify(block.content));
+            }
+        }
+        if (steps.length > 0) {
+            for (const block of messages.flatMap((entry) => (Array.isArray(entry?.content) ? entry.content : []))) {
+                if (block?.type !== 'tool_result') continue;
+                const parts = Array.isArray(block.content) ? block.content : [{ type: 'text', text: block.content ?? '' }];
+                const text = parts.map((part) => (typeof part === 'string' ? part : (part?.text ?? ''))).join('');
+                stepResults.set(block.tool_use_id, { id: block.tool_use_id, isError: block.is_error === true, text });
+            }
+            // A loaded skill's text arrives as a user message of its own, opening with where the CLI found it.
+            for (const match of JSON.stringify(messages).matchAll(/Base directory for this skill: ([^\\"]+)/g)) {
+                skillBases.add(match[1]);
+            }
+            const wanted = steps[step - 1];
+            const tool = wanted && tools.find((entry) => entry.name.toLowerCase() === wanted.tool.toLowerCase());
+            if (!wanted) return message(`msg_${step}`, [{ type: 'text', text: 'done' }], 'end_turn');
+            if (!tool) {
+                return message(`msg_${step}`, [{ type: 'text', text: `missing tool ${wanted.tool}` }], 'end_turn');
+            }
+            return message(`msg_${step}`, [{ type: 'tool_use', id: `toolu_${step}`, name: tool.name, input: wanted.input }], 'tool_use');
         }
         const bash = tools.find((tool) => BASH_TOOL.test(tool.name));
         if (step <= toolSteps && bash) {
-            const command = killTools
+            const command = probeFiles.length > 0
+                ? probeCommand(probeFiles)
+                : killTools
                 ? `kill -TERM 1 2>/dev/null; kill -KILL -1 2>/dev/null; echo ${TOOL_OK}; touch step-${step}`
                 : `touch step-${step}`;
             return message(
@@ -224,12 +278,17 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 // question modes: the entrypoint's stop poller reads this too, and a Stop would make
                 // the bridge deny the question as stopped.
                 reply.setHeader('content-type', 'application/json');
-                const stop = !ask && !askProse && !killTools && (agentRequests > 0 || firstInFlight);
+                const stop = !ask && !askProse && !killTools && probeFiles.length === 0 && steps.length === 0 && (agentRequests > 0 || firstInFlight);
                 return reply.end(JSON.stringify({ stop }));
             }
             if (url === TOOL_RESULTS_PATH) {
                 reply.setHeader('content-type', 'application/json');
-                return reply.end(JSON.stringify({ toolResults: reportedOk.size }));
+                return reply.end(JSON.stringify({ toolResults: reportedOk.size, text: [...reportedText.values()].join('\n') }));
+            }
+            if (url === STEPS_PATH) {
+                reply.setHeader('content-type', 'application/json');
+                const results = [...stepResults.values()].sort((a, b) => Number(a.id.split('_')[1]) - Number(b.id.split('_')[1]));
+                return reply.end(JSON.stringify({ results, agentRequests, skillBases: [...skillBases] }));
             }
             if (url === HOOKS_PATH) {
                 reply.setHeader('content-type', 'application/json');
@@ -310,12 +369,18 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         const at = process.argv.indexOf(name);
         return at === -1 ? fallback : Number(process.argv[at + 1]);
     };
+    const flagList = (name) => {
+        const at = process.argv.indexOf(name);
+        return at === -1 ? [] : process.argv[at + 1].split(',').filter(Boolean);
+    };
     const endpoint = createFakeModelEndpoint({
         firstDelayMs: flag('--first-delay-ms', 0),
         toolSteps: flag('--tool-steps', 3),
         ask: process.argv.includes('--ask'),
         askProse: process.argv.includes('--ask-prose'),
         killTools: process.argv.includes('--kill-tools'),
+        probeFiles: flagList('--probe-files'),
+        steps: process.argv.includes('--steps') ? JSON.parse(process.argv[process.argv.indexOf('--steps') + 1]) : [],
     });
     const port = await endpoint.listen(flag('--port', 0));
     process.stdout.write(`${port}\n`);

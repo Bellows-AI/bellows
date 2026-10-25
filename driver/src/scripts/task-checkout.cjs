@@ -176,8 +176,8 @@ const rebasedBranch = () => {
     return '';
 };
 // A conflicted rebase is finished by the agent's bare `git rebase --continue`, which commits and so
-// needs a committer identity the runner image does not carry: the publisher's fallback, written
-// into the tree's own config only when git can form none.
+// needs a committer identity: the images bake the publisher's fallback (/etc/gitconfig); it is written
+// into the tree's own config only when git can form none, as in a sync run under another image.
 const ensureIdentity = () => {
     try {
         execFileSync('git', ['var', 'GIT_COMMITTER_IDENT'], { cwd: wt, stdio: 'ignore' });

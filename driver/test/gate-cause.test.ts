@@ -37,6 +37,52 @@ const FAILING_ASSERTION = [
     ' Test Files  1 failed | 411 passed (412)',
     '      Tests  1 failed | 5602 passed (5603)',
 ].join('\n');
+const JEST_TIMEOUT_BLOCK = [
+    '  ● checkout › totals the cart',
+    '',
+    '    thrown: "Exceeded timeout of 5000 ms for a test.',
+    '    Add a timeout value to this test to increase the timeout, if this is a long-running test."',
+    '',
+].join('\n');
+const JEST_ASSERTION_BLOCK = [
+    '  ● checkout › sums',
+    '',
+    '    expect(received).toBe(expected)',
+    '    Expected: 4',
+    '    Received: 3',
+    '',
+].join('\n');
+const jestSummary = (failed: number) =>
+    [`Tests:       ${failed} failed, 41 passed, 42 total`, 'Test Suites: 1 failed, 5 passed, 6 total'].join('\n');
+/** jest after one per-test timeout on a slow cluster: the block prints twice, in the run and its summary. */
+const JEST_TIMEOUT = [
+    'FAIL src/checkout.test.js (306 s)',
+    JEST_TIMEOUT_BLOCK,
+    'Summary of all failing tests',
+    JEST_TIMEOUT_BLOCK,
+    jestSummary(1),
+].join('\n');
+const JEST_TIMEOUT_AND_ASSERTION = [JEST_TIMEOUT_BLOCK, JEST_ASSERTION_BLOCK, jestSummary(2)].join('\n');
+const JEST_SUITE_FAILED_TO_RUN = [
+    JEST_TIMEOUT_BLOCK,
+    '  ● Test suite failed to run',
+    '',
+    "    Cannot find module './x' from 'src/a.test.js'",
+    '',
+    jestSummary(1),
+].join('\n');
+const JEST_HOOK_TIMEOUT = [
+    '  ● checkout › beforeAll',
+    '    Exceeded timeout of 5000 ms for a hook.',
+    jestSummary(1),
+].join('\n');
+const JEST_CONSOLE_NOISE = [
+    '  ● Console',
+    '    console.log',
+    '      a line printed by a test',
+    JEST_TIMEOUT_BLOCK,
+    jestSummary(1),
+].join('\n');
 const FILE_FAILED_TO_LOAD = [' Test Files  1 failed | 411 passed (412)', '      Tests  5603 passed (5603)'].join('\n');
 /** npm writing a package cache on an NFS volume another client changed under it (issue #789). */
 const NPM_STALE_HANDLE = [
@@ -60,6 +106,9 @@ describe('gateCauseOf (issue #653)', () => {
         ['worker timeouts with every test passed', 1, WORKER_TIMEOUTS],
         ['the same, coloured by a TTY', 1, WORKER_TIMEOUTS.replaceAll('passed', '\u001b[32mpassed\u001b[39m')],
         ['the gate timing out', GATE_TIMEOUT_EXIT, '[driver] gate killed after 1800000ms'],
+        ['a jest per-test timeout (the jest twin of the worker timeout)', 1, JEST_TIMEOUT],
+        ['the same, coloured by a TTY', 1, JEST_TIMEOUT.replaceAll('Exceeded', '\u001b[31mExceeded\u001b[39m')],
+        ['a jest per-test timeout after console output', 1, JEST_CONSOLE_NOISE],
         ['an OOM or throttle kill', GATE_KILLED_EXIT, FAILING_ASSERTION],
         ['an environment that could not run the gate', GATE_CONTAINER_GONE_EXIT, 'no such container'],
         ['npm hitting a stale NFS file handle', 140, NPM_STALE_HANDLE],
@@ -76,6 +125,10 @@ describe('gateCauseOf (issue #653)', () => {
 
     it.each([
         ['a failing assertion', 1, FAILING_ASSERTION],
+        ['a jest timeout beside a failing assertion', 1, JEST_TIMEOUT_AND_ASSERTION],
+        ['a jest timeout beside a suite that failed to run', 1, JEST_SUITE_FAILED_TO_RUN],
+        ['a jest hook timeout', 1, JEST_HOOK_TIMEOUT],
+        ['a jest summary with no failure blocks', 1, jestSummary(1)],
         ['a test file that failed to load', 1, FILE_FAILED_TO_LOAD],
         ['output with no test summary', 1, 'error TS2322: Type string is not assignable to type number'],
         ['a lint failure', 2, 'src/a.ts:1:1 lint/style/useConst'],
@@ -103,5 +156,7 @@ describe('gateCauseOf (issue #653)', () => {
             );
         expect(gate(1, WORKER_TIMEOUTS)).toBe('environment');
         expect(gate(1, FAILING_ASSERTION)).toBe('verification');
+        expect(gate(1, JEST_TIMEOUT)).toBe('environment');
+        expect(gate(1, JEST_TIMEOUT_AND_ASSERTION)).toBe('verification');
     });
 });
