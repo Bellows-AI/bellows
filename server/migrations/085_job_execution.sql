@@ -22,7 +22,8 @@
 --                          what the pre-epic job row still holds (its current claim, the claims its
 --                          `interruptions` name): the task's attribution, never a run segment. Backfill rows
 --                          carry launch `unknown` and no created_at, ended_at or `resumed` — the board did
---                          not observe those claims and invents no boundary for them.
+--                          not observe those claims and invents no boundary for them. Their session rows'
+--                          first_seen_at/last_seen_at are the migration time, not observations.
 --   resumed                the claim handed the runner a retained session (recovery or follow-up).
 --   job_execution_session  the sessions an execution is associated with. `inferred_at_claim` is the
 --                          board's inference from the retained pointer, not a driver report.
@@ -141,9 +142,8 @@ left join job r on r.org_id = j.org_id and r.id = j.review_of
 cross join lateral (
     select j.claim_seq as claim_seq
     union
-    select (e ->> 'claimSeq')::bigint
+    select case when e ->> 'claimSeq' ~ '^[0-9]{1,18}$' then (e ->> 'claimSeq')::bigint end
     from jsonb_array_elements(j.interruptions) e
-    where jsonb_typeof(e -> 'claimSeq') = 'number'
 ) c
 where c.claim_seq between 1 and j.claim_seq
 on conflict (org_id, job_id, claim_seq) do nothing;

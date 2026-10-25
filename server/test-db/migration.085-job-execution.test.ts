@@ -130,6 +130,9 @@ describe.skipIf(!enabled)('085_job_execution', () => {
                     { at: 'z', reason: 'lease-expired', claimSeq: 3 },
                     { reason: 'malformed' },
                     { reason: 'out of range', claimSeq: 9 },
+                    { reason: 'fraction', claimSeq: 3.5 },
+                    { reason: 'huge', claimSeq: 1e20 },
+                    { reason: 'negative', claimSeq: -2 },
                 ],
             });
             const unclaimed = await seed({ claimSeq: 0 });

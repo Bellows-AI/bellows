@@ -129,19 +129,13 @@ export async function recordLaunchOutcome(
  * listed by the caller, so the executions of a review whose requester leaves go with it. Nothing
  * else changes: the rows keep their ids and attribution, and a second removal stamps nothing.
  *
- * Provenance never blocks a removal: the statement runs under a savepoint, and a failure is
- * logged and swallowed (readers treat a missing job row as removed too).
+ * The statement runs plainly in the removal's transaction: a failure rolls the removal back and
+ * the task stays, never a removal that silently loses its provenance mark.
  */
 export async function markExecutionsRemoved(tx: TransactionSql, orgId: string, jobIds: string[]): Promise<void> {
     if (jobIds.length === 0) return;
-    try {
-        await tx.savepoint(async (sp) => {
-            await sp`
-                update job_execution set removed_at = now(), updated_at = now()
-                where org_id = ${orgId} and job_id = any(${jobIds}::uuid[]) and removed_at is null
-            `;
-        });
-    } catch (error) {
-        console.error(`[jobs] executions could not be marked removed: ${(error as Error).message}`);
-    }
+    await tx`
+        update job_execution set removed_at = now(), updated_at = now()
+        where org_id = ${orgId} and job_id = any(${jobIds}::uuid[]) and removed_at is null
+    `;
 }

@@ -352,7 +352,7 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             expect((await removedAt(rootId))[0]).toEqual(first);
         });
 
-        it('removes the task even when marking its executions fails', async () => {
+        it('refuses the removal and keeps the task when marking its executions fails', async () => {
             const id = await queue();
             const c = await claim();
             await store.complete(id, c.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
@@ -362,11 +362,11 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
                 create trigger provenance_removal_fault before update of removed_at on job_execution
                     for each row execute function provenance_removal_fault();`);
             try {
-                expect(await store.removeThread(id, null)).toMatchObject({ result: 'ok' });
+                await expect(store.removeThread(id, null)).rejects.toThrow('injected');
             } finally {
                 await sql.unsafe('drop trigger provenance_removal_fault on job_execution');
             }
-            expect(await store.get(id)).toBeNull();
+            expect(await store.get(id)).not.toBeNull();
             expect(await removedAt(id)).toEqual([{ removed_at: null }]);
         });
     });
