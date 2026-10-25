@@ -33,6 +33,11 @@ export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats
         stats.provisional ? 'A run is still going: its figures are provisional and will change.' : null,
         coverageNote('Agent turns', stats.agentTurns),
         coverageNote('Tokens', stats.tokens),
+        stats.reviews > 0
+            ? `Token totals include ${stats.reviews} review ${stats.reviews === 1 ? 'run' : 'runs'}, which ${
+                  stats.reviews === 1 ? 'is' : 'are'
+              } not listed below.`
+            : null,
     ].filter((note): note is string => note !== null);
     return (
         <Dialog open={open} onClose={onClose} className="dialog-layer">

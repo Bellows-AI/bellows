@@ -13,6 +13,7 @@ import {
 } from '../../e2e/fixtures/threads.js';
 import { type FetchCall, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 import { expectNoPlaceholder } from './fixtures.js';
+import { runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
 
 /** The board as the page reads it: the session, and every thread and activity read answered by `jobs`. */
 function board(jobs: readonly ThreadJob[], extra: (call: FetchCall) => unknown = () => undefined) {
@@ -116,6 +117,18 @@ describe('the task detail page', () => {
         expect(scrolledTo).toBe(4000);
     });
 
+    it('reads the thread activity once, from the newest run, however many runs the thread has', async () => {
+        const jobs = authoredBy(followUpThread, LOCAL_AUTHOR);
+        expect(jobs.length).toBeGreaterThan(1);
+        const calls = board(jobs);
+        renderApp(`/tasks/${jobs[0]!.id}`);
+
+        await screen.findByRole('button', { name: /Open task statistics/ });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const reads = calls.filter((call) => /\/api\/jobs\/[^/]+\/activity/.test(call.url));
+        expect(reads.map((call) => call.url)).toEqual([`/api/jobs/${jobs[jobs.length - 1]!.id}/activity`]);
+    });
+
     it('the activity pulse opens the Task statistics modal and gives focus back', async () => {
         // Partial data: only the root run reported agent turns, and only the latest run — the one
         // the sidebar pulse draws — reported tokens.
@@ -142,7 +155,11 @@ describe('the task detail page', () => {
                           { start: '2026-09-01T12:10:00.000Z', tokens, edits: 2 },
                       ]
                     : [],
-                totals: measured ? tokens : null,
+                usage: usageBlock(measured ? tokens : null),
+                task: taskUsage(jobs[0]!.id, [
+                    runUsage(latest.id, 'follow-up', tokens),
+                    runUsage('99999999-9999-4999-8999-999999999999', 'review', { output: 40 }),
+                ]),
             };
         });
         const { container } = renderApp(`/tasks/${jobs[0]!.id}`);
@@ -164,6 +181,10 @@ describe('the task detail page', () => {
         });
         expect(within(open.querySelector<HTMLElement>('.task-stats-totals')!).getByText('Agent turns')).toBeTruthy();
         expect(within(open).getByText('Agent turns measured for 1 of 2 runs.')).toBeTruthy();
+        // The task total comes from the canonical task: the review is counted though it is no row of the thread.
+        expect(within(open).getByText('Token totals include 1 review run, which is not listed below.')).toBeTruthy();
+        expect(within(open.querySelector<HTMLElement>('.task-stats-totals')!).getByText('1,200')).toBeTruthy();
+        expect(within(open.querySelector<HTMLElement>('.task-stats-totals')!).getByText('340')).toBeTruthy();
         expect(within(open).getAllByRole('row')).toHaveLength(jobs.length + 1);
         // Each legend swatch wears its own line's color class, four apart.
         const swatches = [...open.querySelectorAll('.pulse-legend .pulse-swatch')].map((swatch) =>

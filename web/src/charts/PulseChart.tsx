@@ -28,7 +28,9 @@ export function PulseChart({
     detailed?: boolean;
 }) {
     const { width, height, padX, padY } = detailed ? DETAILED : COMPACT;
-    const peak = niceMax(Math.max(0, ...buckets.flatMap((bucket) => TOKEN_TYPES.map((t) => bucket.tokens[t.key]))));
+    // A type the run never measured has no line: null is not a zero reading.
+    const measured = TOKEN_TYPES.filter((t) => buckets.some((bucket) => bucket.tokens[t.key] !== null));
+    const peak = niceMax(Math.max(0, ...buckets.flatMap((bucket) => measured.map((t) => bucket.tokens[t.key] ?? 0))));
     const x = (i: number) =>
         buckets.length === 1 ? width / 2 : padX + (i / (buckets.length - 1)) * (width - 2 * padX);
     const y = (value: number) => height - padY - (value / peak) * (height - 2 * padY);
@@ -36,14 +38,19 @@ export function PulseChart({
         <figure className={detailed ? 'pulse pulse-detailed' : 'pulse'}>
             <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
                 <line className="pulse-axis" x1={padX} x2={width - padX} y1={height - padY} y2={height - padY} />
-                {TOKEN_TYPES.map((type) => {
-                    const points = buckets.map((bucket, i) => `${x(i)},${y(bucket.tokens[type.key])}`);
+                {measured.map((type) => {
+                    const points = buckets.map((bucket, i) => `${x(i)},${y(bucket.tokens[type.key] ?? 0)}`);
                     return (
                         <g key={type.key} data-series={type.key} className={type.line}>
                             <polyline className="pulse-line" points={points.join(' ')} />
                             {/* One bucket has no line to draw: the dot is the recorded reading. */}
                             {buckets.length === 1 ? (
-                                <circle className="pulse-dot" cx={x(0)} cy={y(buckets[0]!.tokens[type.key])} r={2} />
+                                <circle
+                                    className="pulse-dot"
+                                    cx={x(0)}
+                                    cy={y(buckets[0]!.tokens[type.key] ?? 0)}
+                                    r={2}
+                                />
                             ) : null}
                         </g>
                     );

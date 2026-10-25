@@ -1,8 +1,7 @@
 import type { Sql } from 'postgres';
 import { rollupsFromFacts, type JobRun } from '@factory-ai/core';
-import type { TelemetryClient, TelemetryFetch, TelemetryHealth } from './client.js';
+import type { TaskFacts, TelemetryClient, TelemetryFetch, TelemetryHealth } from './client.js';
 import { TelemetryError } from './errors.js';
-import { bucketizeActivity, type ActivityBucket } from './run-activity.js';
 import { readUsageFacts } from './usage-facts.js';
 
 interface RunRow {
@@ -29,56 +28,29 @@ export interface PostgresTelemetryDeps {
     log?: (message: string) => void;
 }
 
-interface ActivityRow {
-    agent: string;
-    metric: string;
-    field: string;
-    temporality: string;
-    start_time: Date | null;
-    attrs: unknown;
-    value: number;
-    time: Date;
-}
-
 export function createPostgresTelemetryClient({ sql, orgId, ready, log }: PostgresTelemetryDeps): TelemetryClient {
     return {
-        async runActivity({ sessionId, from, to, bucketMs }): Promise<ActivityBucket[]> {
-            if (ready) await ready;
-            // Keyed by session id alone — metric_point has no org column by design, and the
-            // session arrived here through the caller's own org's job row, the same trust path
-            // every other metric_point read leans on. `metric_point_used`, never `metric_point`:
-            // the double-count rule (002_views.repeatable.sql). The window and the field filter
-            // bound the scan; the session index serves the rest. Cumulative points from before
-            // the window ride along: a follow-up run shares its session's counters, and the
-            // total reached before `from` is the baseline its own increments difference from.
-            const rows = await sql<ActivityRow[]>`
-                select agent, metric, field, temporality, start_time, attrs, value, time
-                from metric_point_used
-                where session_id = ${sessionId}
-                  and field in ('tokens_input', 'tokens_output', 'tokens_cacheRead', 'tokens_cacheCreation',
-                                'edits_accept', 'edits_reject')
-                  and time <= ${to}
-                  and (time >= ${from} or temporality = 'cumulative')
-            `;
-            // Nothing measured is not a quiet run: [] is what the UI renders its muted
-            // "no telemetry for this run" state from, never a fabricated zero line.
-            // Pre-window cumulative points only set a baseline: with none of the run's own, the
-            // run measured nothing, and its zero buckets would read as a measured zero.
-            const fromMs = Date.parse(from);
-            if (!rows.some((row) => new Date(row.time).getTime() >= fromMs)) return [];
-            return bucketizeActivity(
-                rows.map((row) => ({
-                    field: row.field,
-                    temporality: row.temporality,
-                    startTime: row.start_time === null ? null : new Date(row.start_time).toISOString(),
-                    attrs: (row.attrs ?? {}) as Record<string, string>,
-                    metric: row.metric,
-                    agent: row.agent,
-                    value: Number(row.value),
-                    time: new Date(row.time).toISOString(),
-                })),
-                { from, to, bucketMs }
-            );
+        async fetchTaskFacts({ jobId, rootJobId, edits }): Promise<TaskFacts> {
+            try {
+                if (ready) await ready;
+                // One snapshot for the task lookup and the facts: a claim committing between the two
+                // reads would otherwise name a task whose runs the facts no longer hold.
+                return await sql.begin('isolation level repeatable read, read only', async (tx) => {
+                    const [row] = await tx<{ task_id: string }[]>`
+                        select coalesce(requesting_root_job_id, root_job_id)::text as task_id
+                        from job_execution where org_id = ${orgId} and job_id = ${jobId}
+                        order by claim_seq desc limit 1
+                    `;
+                    const taskId = row?.task_id ?? rootJobId;
+                    return {
+                        taskId,
+                        facts: await readUsageFacts(tx, orgId, { taskIds: [taskId], edits: edits === true }),
+                    };
+                });
+            } catch (e) {
+                if (e instanceof TelemetryError) throw e;
+                throw new TelemetryError((e as Error).message, 'QUERY');
+            }
         },
 
         async fetchRollups(): Promise<TelemetryFetch> {

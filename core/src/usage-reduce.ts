@@ -436,3 +436,11 @@ export function taskUsageOf(input: UsageInput, taskId: string, now: Date): TaskU
     if (!known && !acc.items.some((i) => i.taskId === taskId)) return null;
     return taskView(acc, taskId, true, false);
 }
+
+/** The timed amounts assigned to one run of a task, all-time: what a run's activity buckets are drawn from. */
+export function runContributionsOf(input: UsageInput, taskId: string, jobId: string, now: Date): TokenContribution[] {
+    const acc = account(input, { range: null, now });
+    return acc.items
+        .filter((i) => i.taskId === taskId && i.dest.kind === 'run' && i.dest.jobId === jobId)
+        .map((i) => i.c);
+}

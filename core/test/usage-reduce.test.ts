@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { reduceTokenObservations } from '../src/token-contributions.js';
 import type { TokenContribution, TokenType } from '../src/token-contributions.js';
-import { reduceUsage, taskUsageOf } from '../src/usage-reduce.js';
+import { reduceUsage, runContributionsOf, taskUsageOf } from '../src/usage-reduce.js';
 import type { ExecutionEvidence, Tokens, UsageBlock, UsageInput } from '../src/usage.js';
 import { TOKEN_TYPE_LIST, addTokens, emptyBlock } from '../src/usage.js';
 import {
@@ -102,6 +102,15 @@ describe('shared-session follow-ups, reviews and the task view', () => {
         expect(task.runs.map((r) => r.jobId)).toEqual(['root1', 'fu1', 'rev1', 'idle']);
         expect(task.runs[3]!.usage.state).toBe('unmeasured');
         expect(taskUsageOf(withIdle, 'missing', NOW)).toBeNull();
+    });
+
+    it('runContributionsOf returns exactly the timed amounts assigned to one run, review included', () => {
+        const input = sharedWorld();
+        const sums = (jobId: string) => sumTypes(runContributionsOf(input, 'root1', jobId, NOW).map((c) => c.tokens));
+        const task = taskUsageOf(input, 'root1', NOW)!;
+        for (const run of task.runs) expect(sums(run.jobId)).toEqual(run.usage.tokens);
+        expect(sums('rev1')).toEqual(out(25));
+        expect(runContributionsOf(input, 'root1', 'missing', NOW)).toEqual([]);
     });
 
     it('adds no entry for a task that is absent from the evidence', () => {
