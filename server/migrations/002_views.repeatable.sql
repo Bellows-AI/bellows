@@ -9,6 +9,7 @@
 -- Dropped before being recreated, not just `create or replace`d: replacing a view cannot
 -- change a column's type, so a fix that widens or narrows one would fail on every existing
 -- database while passing on a fresh one. Dropped in reverse dependency order.
+drop view if exists metric_point_suppressed;
 drop view if exists session_summary;
 drop view if exists branch_field_total;
 drop view if exists session_field_total;
@@ -38,13 +39,36 @@ group by agent, session_id;
 --
 -- Carries no org_id either, for the same reason as session_source above. The views that need one
 -- pick it up from session_branch when they join.
+--
+-- A null session is its own selection group per agent (session_source groups the nulls together),
+-- so those rows are kept, not lost to `null = null`. Two branches rather than one
+-- `is not distinct from` join, which Postgres cannot hash. session_summary and the branch views
+-- leave them out: they have no session to attach to.
 create or replace view metric_point_used as
 select mp.*
 from metric_point mp
 join session_source ss
     on ss.agent = mp.agent
    and ss.session_id = mp.session_id
-   and ss.source = mp.source;
+   and ss.source = mp.source
+union all
+select mp.*
+from metric_point mp
+join session_source ss
+    on ss.agent = mp.agent
+   and ss.session_id is null
+   and ss.source = mp.source
+where mp.session_id is null;
+
+-- The rows source selection set aside (a transcript copy of a session OTEL owns). Diagnostics
+-- only, never added to anything: the same usage is already in metric_point_used.
+create or replace view metric_point_suppressed as
+select mp.*
+from metric_point mp
+join session_source ss
+    on ss.agent = mp.agent
+   and ss.session_id is not distinct from mp.session_id
+where ss.source <> mp.source;
 
 -- A session's non-overlapping branch slices.
 --
@@ -76,40 +100,70 @@ select
 from session_branch;
 
 /*
- * THE correctness hazard in this whole feature.
+ * THE correctness hazard in this whole feature; core/src/token-contributions.ts is the reference
+ * this must equal (server/test-db/telemetry.token-reduction.test.ts compares them).
  *
- * A delta counter reports an increment, so the session total is the sum. A cumulative counter
- * reports the running total since start_time, so the session total is the LAST value, not the
- * sum — and `sum(value)` over a cumulative series produces a plausible, wildly wrong number
- * with no error anywhere. A process restart begins a new start_time, so the totals are summed
- * per start_time group and then added.
+ * A delta counter reports an increment, so a series' total is the sum. A cumulative counter
+ * reports the running total since start_time, so a series' total is its high-water mark, not the
+ * sum: `sum(value)` over a cumulative series is a plausible, wildly wrong number with no error
+ * anywhere. A series is one raw counter: agent, session, metric, field, temporality, start_time
+ * and every retained attribute (model and query_source among them, plus the ingest `series`
+ * digest). A restart begins a new start_time, so series totals are added across series. Two
+ * counters that merely share a start_time are two series, both counted.
  *
- * Do not "simplify" this to a plain SUM. server/test-db covers both shapes.
+ * `session.id` is left out of the series key: the key carries it already. `type` stays in: for a
+ * non-token field (active_seconds user vs cli) it separates counters.
+ * Attributes are jsonb, so their order never matters.
+ *
+ * Rows stored before the ingest digest (legacy) have no `series`. A legacy cumulative row folds
+ * into the one digest series equal in every other key component (one counter, never counted
+ * twice); with no digest sibling it stands alone; with several it is ambiguous and not added.
+ * Deltas need no fold: each point is its own contribution.
+ *
+ * Unspecified temporality (a gauge, or an exporter that said nothing) is neither a delta nor a
+ * running total, so it is not added: a field with only such readings has no row, i.e. unmeasured.
+ * A null session is its own group per agent (session_id null in the result).
+ *
+ * Do not "simplify" this to a plain SUM.
  */
 create or replace view session_field_total as
-with per_series as (
-    select
-        agent,
-        session_id,
-        field,
-        temporality,
-        start_time,
-        sum(value) as delta_sum,
-        max(value) as cumulative_total
+with deltas as (
+    select agent, session_id, field, sum(value) as value
     from metric_point_used
-    where field is not null
-    group by agent, session_id, field, temporality, start_time
+    where field is not null and temporality = 'delta'
+    group by agent, session_id, field
+),
+cumulative as (
+    select agent, session_id, field, value, attrs ->> 'series' as digest,
+           jsonb_build_array(agent, session_id, metric, field, temporality, start_time,
+                             attrs - 'series' - 'session.id') as fold
+    from metric_point_used
+    where field is not null and temporality = 'cumulative'
+),
+siblings as (
+    select fold, count(distinct digest) as digests, min(digest) as digest
+    from cumulative
+    where digest is not null
+    group by fold
+),
+high_water as (
+    select c.agent, c.session_id, c.field, max(c.value) as value
+    from cumulative c
+    left join siblings s on s.fold = c.fold
+    where c.digest is not null or coalesce(s.digests, 0) <= 1
+    group by c.agent, c.session_id, c.field, c.fold, coalesce(c.digest, s.digest)
 )
-select
-    agent,
-    session_id,
-    field,
-    sum(case when temporality = 'cumulative' then cumulative_total else delta_sum end) as value
-from per_series
+select agent, session_id, field, sum(value) as value
+from (
+    select agent, session_id, field, value from deltas
+    union all
+    select agent, session_id, field, value from high_water
+) series
 group by agent, session_id, field;
 
--- Per (session, branch, field), by time containment. Restricted to non-cumulative points:
--- a cumulative total has no position in time, so it cannot be divided across branches.
+-- Per (session, branch, field), by time containment. Restricted to delta points: a cumulative
+-- total has no position in time, so it cannot be divided across branches, and an unspecified
+-- reading is not an amount.
 --
 -- The org comes from the slice, which is the only side of this join that knows one.
 create or replace view branch_field_total as
@@ -127,7 +181,7 @@ join session_branch_slice slice
    and mp.time >= slice.first_seen
    and mp.time <= slice.last_seen
 where mp.field is not null
-  and mp.temporality <> 'cumulative'
+  and mp.temporality = 'delta'
 group by slice.org_id, mp.agent, mp.session_id, slice.branch, mp.field;
 
 -- One row per session: its window, its repo, and whether it can be divided at all.
@@ -137,6 +191,7 @@ with observed as (
            bool_or(temporality = 'cumulative') as any_cumulative,
            bool_and(temporality = 'cumulative') as all_cumulative
     from metric_point_used
+    where session_id is not null
     group by agent, session_id
 ),
 branches as (

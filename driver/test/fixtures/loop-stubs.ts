@@ -320,6 +320,8 @@ export function stubRunner(
     outcome: (job: BoardJob, session: RunSession | null, onOutput?: (tail: string) => void) => Promise<RunOutcome>,
     options: {
         sample?: Omit<RuntimeSample, 'sampledAt'> | null;
+        /** What the runner proves of the agent container's start; a normal run's default is proven. */
+        agentStarted?: boolean;
         publish?: PublishResult | null;
         sync?: SyncResult | null;
         syncError?: Error;
@@ -411,6 +413,9 @@ export function stubRunner(
         async sampleRuntime() {
             runner.samples += 1;
             return sample;
+        },
+        async agentStarted() {
+            return options.agentStarted ?? true;
         },
         async kill(killedJob: BoardJob) {
             runner.killed.push(killedJob.id);

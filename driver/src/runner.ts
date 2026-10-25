@@ -298,6 +298,14 @@ export interface Runner {
      */
     sampleRuntime(job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null>;
     /**
+     * Whether the platform proves the AGENT container itself started (docker: the container's
+     * `State.StartedAt` is set; kubernetes: its status is running or terminated with a start time).
+     * Output and vitals prove nothing of the kind: a refused start prints the daemon's error, and a
+     * pod's sidecars run while the agent waits on its image. This is the only evidence that moves a
+     * claim's launch to observed. False for anything unread or unproven; never throws.
+     */
+    agentStarted(job: BoardJob): Promise<boolean>;
+    /**
      * The attempt's declared services that are no longer running — exited, whatever the code —
      * each with its exit, the platform's reason and its last log lines. The loop asks right
      * before the declared gates: a gate against a dead service fails on an environment the
@@ -516,6 +524,7 @@ export interface Runner {
 const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     run: 'group',
     sampleRuntime: 'group',
+    agentStarted: 'group',
     deadServices: 'group',
     startServices: 'group',
     restartServices: 'group',

@@ -8,7 +8,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | --- | --- | --- |
 | `metric_point_dedup` identity: agent, metric, session (null-safe), time, source, temporality, start time, `md5(attrs)` | `server/migrations/086_metric_point_identity.sql` | `server/test-db/migration.086-metric-point-identity.test.ts` |
 | Migration runner (advisory-locked, one transaction), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
-| Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
+| Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
 | Agent questions, stamped with the asking claim's `claim_seq` (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/jobs/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |

@@ -20,7 +20,16 @@ import { drainTranscriptExport } from './loop-export.js';
 import { openChain, replayGates } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
-import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
+import {
+    confirmOnProof,
+    heartbeat,
+    newJobState,
+    raceStep,
+    launchConfirmer,
+    registerLive,
+    stopIfDraining,
+    watchOutput,
+} from './loop-attempt.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from '../timeout-note.js';
 import {
@@ -315,7 +324,8 @@ async function reportRunTail(
     const launchedHere = !ctx.adopted && !ctx.takeover;
     // A run that finished without ever streaming or being sampled still ran: the fallback for the
     // evidence the runner's own scrape does not carry (claude-code names its session up front).
-    if (launchedHere && outcome.started && !outcome.refused && !outcome.sessionId) await ctx.state.confirmLaunch?.();
+    if (launchedHere && outcome.started && !outcome.refused && !outcome.sessionId)
+        await confirmOnProof(rt, job, ctx.state);
     await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
@@ -593,20 +603,6 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         recoveredServices,
         reports: gateSession.lastReports ?? [],
     };
-}
-
-/**
- * The report that this claim's launch is observed, made the first time something proves the runner
- * ran (its output, a runtime sample) so a runner lost mid-run still has its claim counted. Once;
- * a failed report only logs.
- */
-function launchConfirmer(rt: LoopRuntime, job: BoardJob, sessionId: string): () => Promise<void> {
-    let sent: Promise<void> | null = null;
-    return () =>
-        (sent ??= rt.board
-            .session(job, sessionId, true)
-            .then(() => {})
-            .catch((e: Error) => rt.log(`job ${job.id}: could not report the launch, continuing: ${e.message}`)));
 }
 
 /**
