@@ -591,7 +591,7 @@ export const interruptedThread = thread([
 ]);
 
 /** A measured block of exactly these tokens; a type left out was never measured (null, never zero). */
-function measuredBlock(tokens: Partial<Tokens>): UsageBlock {
+export function measuredBlock(tokens: Partial<Tokens>): UsageBlock {
     const t: Tokens = { input: null, output: null, cacheRead: null, cacheCreation: null, ...tokens };
     const precision = (v: number | null) => (v === null ? null : ('exact' as const));
     return {

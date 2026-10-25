@@ -9,6 +9,7 @@ import {
     blankPlan,
     updateTask,
 } from '../../web/src/batch-model.js';
+import { measuredBlock } from './threads.js';
 
 /**
  * A stand-in for the board's scheduler on the open e2e board, where no driver runs a task: it
@@ -204,23 +205,10 @@ export const BATCH_DETAIL_STATES: Record<string, { record: BatchRecord; report?:
     },
 };
 
-const measured = (tokens: Partial<Tokens>, over: Partial<UsageBlock> = {}): UsageBlock => {
-    const base = emptyBlock('measured');
-    const all = { ...base.tokens, ...tokens };
-    const exact = (value: number | null) => (value === null ? null : ('exact' as const));
-    return {
-        ...base,
-        tokens: all,
-        assigned: all,
-        precision: {
-            input: exact(all.input),
-            output: exact(all.output),
-            cacheRead: exact(all.cacheRead),
-            cacheCreation: exact(all.cacheCreation),
-        },
-        ...over,
-    };
-};
+const measured = (tokens: Partial<Tokens>, over: Partial<UsageBlock> = {}): UsageBlock => ({
+    ...measuredBlock(tokens),
+    ...over,
+});
 
 const MODEL_ROWS: UsageRow[] = [
     {
