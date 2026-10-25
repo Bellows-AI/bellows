@@ -346,6 +346,9 @@ describe('the tool broker', () => {
     // the modes the sweep leaves are what the group needs.
     describe('the shared TMPDIR', () => {
         const modeOf = (path: string): number => fs.statSync(path).mode & 0o7777;
+        // The contract is the access bits: a directory made inside the setgid shared TMPDIR inherits
+        // setgid on Linux and not on macOS, which the sweep neither sets nor promises.
+        const accessOf = (path: string): number => fs.statSync(path).mode & 0o777;
 
         it('exists, group-shared and setgid, before the broker listens', async () => {
             const { sharedTmp } = await startBroker();
@@ -366,8 +369,8 @@ describe('the tool broker', () => {
             const [file, directory] = ran.stdout.toString().trim().split(' ') as [string, string];
             expect(file.startsWith(`${sharedTmp}/`)).toBe(true);
             expect(modeOf(file)).toBe(0o660);
-            expect(modeOf(directory)).toBe(0o770);
-            expect(modeOf(join(directory, 'sub'))).toBe(0o770);
+            expect(accessOf(directory)).toBe(0o770);
+            expect(accessOf(join(directory, 'sub'))).toBe(0o770);
             expect(modeOf(join(directory, 'sub', 'file'))).toBe(0o660);
             // The control: the same umask outside the shared TMPDIR leaves its file private.
             expect(modeOf(outside)).toBe(0o600);
