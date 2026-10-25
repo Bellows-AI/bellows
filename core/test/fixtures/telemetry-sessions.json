@@ -4,6 +4,7 @@
             "sessionId": "s01-token-heavy",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-08-21T06:20:00Z",
             "lastSeen": "2026-08-21T06:45:00Z",
             "tokens": {
@@ -30,6 +31,7 @@
             "sessionId": "s02-mid-a",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-08-17T08:20:00Z",
             "lastSeen": "2026-08-17T08:45:00Z",
             "tokens": {
@@ -56,6 +58,7 @@
             "sessionId": "s03-mid-b",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-08-17T08:46:00Z",
             "lastSeen": "2026-08-17T09:02:00Z",
             "tokens": {
@@ -82,6 +85,7 @@
             "sessionId": "s04-april",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-04-20T14:30:00Z",
             "lastSeen": "2026-04-20T16:00:00Z",
             "tokens": {
@@ -108,6 +112,7 @@
             "sessionId": "s05-april-earliest",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-04-15T12:00:00Z",
             "lastSeen": "2026-04-15T14:00:00Z",
             "tokens": {
@@ -134,6 +139,7 @@
             "sessionId": "s06-may",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-05-12T09:50:00Z",
             "lastSeen": "2026-05-12T11:00:00Z",
             "tokens": {
@@ -160,6 +166,7 @@
             "sessionId": "s07-july-a",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-07-10T09:00:00Z",
             "lastSeen": "2026-07-10T09:30:00Z",
             "tokens": {
@@ -181,6 +188,7 @@
             "sessionId": "s08-july-b",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-07-11T09:00:00Z",
             "lastSeen": "2026-07-11T09:20:00Z",
             "tokens": {
@@ -202,6 +210,7 @@
             "sessionId": "s09-other-repo",
             "agent": "claude-code",
             "repo": "Bellows-AI/other-service",
+            "hook": true,
             "firstSeen": "2026-07-12T09:00:00Z",
             "lastSeen": "2026-07-12T10:00:00Z",
             "tokens": {
@@ -228,6 +237,7 @@
             "sessionId": "s10-no-hook",
             "agent": "claude-code",
             "repo": null,
+            "hook": false,
             "firstSeen": "2026-07-13T09:00:00Z",
             "lastSeen": "2026-07-13T09:40:00Z",
             "tokens": {
@@ -249,6 +259,7 @@
             "sessionId": "s11-july-c",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-07-21T06:00:00Z",
             "lastSeen": "2026-07-21T06:30:00Z",
             "tokens": {
@@ -270,6 +281,7 @@
             "sessionId": "s12-june",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-06-01T09:00:00Z",
             "lastSeen": "2026-06-01T09:25:00Z",
             "tokens": {
@@ -296,6 +308,7 @@
             "sessionId": "s13-august",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-08-20T10:00:00Z",
             "lastSeen": "2026-08-20T10:50:00Z",
             "tokens": {
@@ -322,6 +335,7 @@
             "sessionId": "s14-july-d",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-07-02T21:05:00Z",
             "lastSeen": "2026-07-02T21:20:00Z",
             "tokens": {
@@ -343,6 +357,7 @@
             "sessionId": "s15-june-b",
             "agent": "claude-code",
             "repo": "Bellows-AI/bellows.ai",
+            "hook": true,
             "firstSeen": "2026-06-29T20:58:00Z",
             "lastSeen": "2026-06-29T21:06:00Z",
             "tokens": {

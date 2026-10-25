@@ -3,6 +3,7 @@ import type { TelemetryInput } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryFetch } from './client.js';
 import type { ActivityBucket } from './run-activity.js';
 import { TelemetryError } from './errors.js';
+import { emptyUsageFacts } from './usage-facts.js';
 
 const FIXTURE = new URL('../../../core/test/fixtures/telemetry-sessions.json', import.meta.url);
 
@@ -24,7 +25,7 @@ export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClie
             // them would silently poison every later request. The fixture carries no run rows:
             // it replays telemetry, and the task panel renders its empty state off the same
             // payload shape a real deployment answers with.
-            return { input: structuredClone(load()), runs: [] };
+            return { input: structuredClone(load()), runs: [], facts: emptyUsageFacts('fixture') };
         },
         // The fixture replays session rollups, not raw points — there is nothing to bucket.
         async runActivity(): Promise<ActivityBucket[]> {

@@ -73,20 +73,57 @@ async function branch(row: {
 /** An account with a generated github id, for the attribution joins to resolve. */
 const member = (login: string): Promise<string> => account(sql, randomGithubId(), login);
 
-/** A finished board job carrying a session id: the row the attribution joins resolve through. */
+/** The execution row a claim leaves: provenance for a session, the board's own evidence of who owns it. */
+const claim = async (row: {
+    org?: string;
+    job: string;
+    root: string;
+    session: string;
+    author?: string | null;
+    repo?: string | null;
+    agent?: string | null;
+    requesting?: { job: string; root: string };
+}): Promise<void> => {
+    const org = row.org ?? ORG;
+    await sql`
+        insert into job_execution (org_id, job_id, claim_seq, root_job_id, requesting_job_id, requesting_root_job_id,
+                                   author_id, repo, launch, origin, created_at, ended_at)
+        values (${org}, ${row.job}, 1, ${row.root}, ${row.requesting?.job ?? null}, ${row.requesting?.root ?? null},
+                ${row.author ?? null}, ${row.repo ?? null}, 'observed', 'claim', ${T('2026-08-01T00:00:00Z')},
+                ${T('2026-08-02T00:00:00Z')})
+    `;
+    await sql`
+        insert into job_execution_session (org_id, job_id, claim_seq, session_id, agent, origin)
+        values (${org}, ${row.job}, 1, ${row.session}, ${row.agent ?? null}, 'reported')
+    `;
+};
+
+/** A finished board job; with a session id it also files the claim that owns that session. */
 const job = async (row: {
     session?: string | null;
     createdBy?: string | null;
     root?: string;
     parent?: string;
     org?: string;
+    repo?: string | null;
 }): Promise<string> => {
     const id = randomUUID();
+    const root = row.root ?? id;
     await sql`
         insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
-        values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${row.root ?? id}, ${row.parent ?? null},
+        values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${root}, ${row.parent ?? null},
                 ${row.createdBy ?? null}, ${row.session ?? null}, now())
     `;
+    if (row.session) {
+        await claim({
+            org: row.org ?? ORG,
+            job: id,
+            root,
+            session: row.session,
+            author: row.createdBy ?? null,
+            repo: row.repo ?? null,
+        });
+    }
     return id;
 };
 
@@ -294,21 +331,65 @@ describe.skipIf(!enabled)('the postgres client', () => {
         expect(input.coverage).toEqual({ from: null, to: null });
     });
 
-    it('reports a session with no hook data as repo null', async () => {
-        await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+    it('attributes a board-owned session without a hook to its task and author, repo from the execution', async () => {
+        const session = randomUUID();
+        const userId = await member('hookless-author');
+        const root = await job({ session: session, createdBy: userId, repo: 'acme/app' });
+        await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(input.sessions[0]?.repo).toBeNull();
+        expect(input.sessions).toHaveLength(1);
+        expect(input.sessions[0]).toMatchObject({ repo: 'acme/app', hook: false, taskKey: root });
+        expect(input.sessions[0]?.user?.login).toBe('hookless-author');
+        const stats = telemetryStats(input);
+        expect(stats.sessionsWithoutHook).toBe(1);
+        expect(stats.totals.sessions).toBe(1);
     });
 
-    it('still reports a hook-less session, which belongs to no organization', async () => {
-        // session_summary reads its org from session_branch, so a session the hook never covered
-        // has none. Those rows feed sessionsWithoutHook — the number that says the plugin is
-        // missing or broken — so filtering them by org would make a broken hook look like an idle
-        // week.
-        await point({ session: 'orphan', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+    it('returns a session with neither a board owner nor a hook to no organization', async () => {
+        const session = randomUUID();
+        // It used to be returned to EVERY organization (`session_summary.org_id is null`): usage of
+        // a stranger's local run in each tenant's totals. Nobody's evidence names it, so it is
+        // nobody's; only the global reconciliation sees it.
+        await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+        for (const org of [ORG, OTHER_ORG]) {
+            const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: org }).fetchRollups();
+            expect(input.sessions).toEqual([]);
+            expect(JSON.stringify(facts)).not.toContain(session);
+        }
+    });
+
+    it('keys a rollup by agent and session: a session shared by two agents does not collide', async () => {
+        const session = randomUUID();
+        const root = await job({ session: session, createdBy: null });
+        await point({ session: session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        await point({
+            session: session,
+            field: 'tokens_input',
+            value: 9,
+            time: '2026-08-01T10:00:00Z',
+            agent: 'opencode',
+        });
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(input.sessions.map((s) => s.sessionId)).toEqual(['orphan']);
-        expect(input.sessions[0]?.repo).toBeNull();
+        expect(Object.fromEntries(input.sessions.map((s) => [s.agent, [s.tokens.input, s.taskKey]]))).toEqual({
+            'claude-code': [7, root],
+            opencode: [9, root],
+        });
+    });
+
+    it('does not let evidence naming one agent own the other agent’s session', async () => {
+        const session = randomUUID();
+        const root = await job({ session: null });
+        await claim({ job: root, root, session: session, agent: 'opencode' });
+        await point({ session: session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        await point({
+            session: session,
+            field: 'tokens_input',
+            value: 9,
+            time: '2026-08-01T10:00:00Z',
+            agent: 'opencode',
+        });
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions.map((s) => [s.agent, s.tokens.input])).toEqual([['opencode', 9]]);
     });
 
     it('leaves unmeasured fields null rather than zero', async () => {
@@ -434,41 +515,56 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it('resolves a follow-up chain to its one shared author', async () => {
+        const session = randomUUID();
         // Every member of a thread shares the parent's session AND, by the follow-up author
         // guard, the parent's author — so the join is deterministic no matter which member's row
         // the minimum happens to pick.
         const userId = await member('thread-author');
-        const rootId = await job({ session: 'attr-4', createdBy: userId });
-        await sql`
-            insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
-            values (${ORG}, ${randomUUID()}, 'attributed', 'succeeded', ${rootId}, ${rootId}, ${userId}, 'attr-4', now())
-        `;
+        const rootId = await job({ session: session, createdBy: userId });
+        await job({ session: session, createdBy: userId, root: rootId, parent: rootId });
         await branch({
-            session: 'attr-4',
+            session: session,
             branch: 'feat/a',
             from: '2026-08-01T10:00:00Z',
             to: '2026-08-01T11:00:00Z',
         });
-        await point({ session: 'attr-4', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await point({ session: session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]?.user?.login).toBe('thread-author');
     });
 
-    it("does not attribute one organization's session through another organization's job", async () => {
+    it('does not pick an author when the trusted evidence names two: the task stays, the user is unknown', async () => {
+        const session = randomUUID();
+        const first = await member('author-one');
+        const second = await member('author-two');
+        const rootId = await job({ session: session, createdBy: first });
+        await job({ session: session, createdBy: second, root: rootId, parent: rootId });
+        await point({ session: session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions).toHaveLength(1);
+        expect(input.sessions[0]).toMatchObject({ taskKey: rootId, user: null });
+    });
+
+    it('keeps a session two organizations both have evidence for out of both reads', async () => {
+        const session = randomUUID();
         const userId = await member('other-org-author');
-        await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
+        await job({ session, createdBy: userId, org: OTHER_ORG });
         await branch({
-            session: 'attr-5',
+            session,
             branch: 'feat/a',
             from: '2026-08-01T10:00:00Z',
             to: '2026-08-01T11:00:00Z',
         });
-        await point({ session: 'attr-5', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await point({ session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
+        // The session id is also evidence of another organization: it belongs to neither tenant's read.
         const mine = (await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups()).input;
-        expect(mine.sessions[0]?.user).toBeNull();
+        expect(mine.sessions).toEqual([]);
+        const theirs = (await createPostgresTelemetryClient({ sql, orgId: OTHER_ORG }).fetchRollups()).input;
+        expect(theirs.sessions).toEqual([]);
     });
 });
 
@@ -517,17 +613,26 @@ describe.skipIf(!enabled)('task attribution', () => {
     // thread (task) both belong to.
     it('keeps a reviewer’s tokens on its review row’s session, apart from the caller’s', async () => {
         const userId = await member('review-author');
-        const rootId = await job({ session: 'caller-s', createdBy: userId });
+        const callerSession = randomUUID();
+        const reviewerSession = randomUUID();
+        const rootId = await job({ session: callerSession, createdBy: userId });
         const reviewId = randomUUID();
         await sql`
             insert into job (org_id, id, command, status, root_job_id, created_by, session_id, created_at,
                              review_of, review_key, review_profile, review_spec, review_revision, review_ref)
-            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, 'reviewer-s', now(),
+            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, ${reviewerSession}, now(),
                     ${rootId}, 'sec-1', 'security', '{}'::jsonb, 'head:abc', 'refs/factory/review/x/sec-1')
         `;
+        await claim({
+            job: reviewId,
+            root: rootId,
+            session: reviewerSession,
+            author: userId,
+            requesting: { job: rootId, root: rootId },
+        });
         for (const [session, tokens] of [
-            ['caller-s', 10],
-            ['reviewer-s', 7],
+            [callerSession, 10],
+            [reviewerSession, 7],
         ] as const) {
             await branch({ session, branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
             await point({ session, field: 'tokens_input', value: tokens, time: '2026-08-01T10:30:00Z' });
@@ -535,8 +640,8 @@ describe.skipIf(!enabled)('task attribution', () => {
 
         const { input } = await fetchOrg();
         const tokensOf = (session: string) => input.sessions.find((s) => s.sessionId === session)?.tokens.input;
-        expect(tokensOf('caller-s')).toBe(10);
-        expect(tokensOf('reviewer-s')).toBe(7);
+        expect(tokensOf(callerSession)).toBe(10);
+        expect(tokensOf(reviewerSession)).toBe(7);
         expect(input.sessions.map((s) => s.taskKey)).toEqual([rootId, rootId]);
     });
 
@@ -783,14 +888,5 @@ describe.skipIf(!enabled)('token series reduction', () => {
             select value from session_field_total where session_id = ${session} and field = 'active_seconds'
         `;
         expect(Number(row?.value)).toBe(40);
-    });
-
-    it('rolls up two agents that share a session id separately', async () => {
-        const session = randomUUID();
-        await point({ session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
-        await point({ session, field: 'tokens_input', value: 9, time: '2026-08-01T10:00:00Z', agent: 'opencode' });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        const byAgent = new Map(input.sessions.map((s) => [s.agent, s.tokens.input]));
-        expect(Object.fromEntries(byAgent)).toEqual({ 'claude-code': 7, opencode: 9 });
     });
 });

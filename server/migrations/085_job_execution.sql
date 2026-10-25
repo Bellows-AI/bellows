@@ -77,6 +77,8 @@ create table if not exists job_execution_session (
 );
 
 create index if not exists job_execution_session_by_session on job_execution_session (org_id, session_id);
+-- The cross-tenant check of the usage reader asks `session_id in (...)` without an org.
+create index if not exists job_execution_session_by_session_id on job_execution_session (session_id);
 
 create or replace function job_execution_launch_forward() returns trigger
 language plpgsql as $$

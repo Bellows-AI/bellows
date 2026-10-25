@@ -21,6 +21,7 @@ function session(over: Partial<SessionRollup>): SessionRollup {
         sessionId: 's',
         agent: 'claude-code',
         repo: 'o/r',
+        hook: true,
         user: null,
         taskKey: null,
         firstSeen: '2026-08-20T00:00:00.000Z',

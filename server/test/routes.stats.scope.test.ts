@@ -69,6 +69,7 @@ describe('GET /api/stats scope: computed figures', () => {
             sessionId,
             agent: 'claude-code',
             repo: TEST_REPO,
+            hook: true,
             user,
             taskKey,
             firstSeen: '2026-08-20T00:00:00.000Z',

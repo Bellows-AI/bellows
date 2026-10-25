@@ -10,6 +10,7 @@ function session(over: Partial<SessionRollup>): SessionRollup {
         sessionId: 's',
         agent: 'claude-code',
         repo: 'o/r',
+        hook: true,
         firstSeen: '2026-08-11T00:00:00.000Z',
         lastSeen: '2026-08-11T01:00:00.000Z',
         tokens: { input: 10, output: 5, cacheRead: null, cacheCreation: null },

@@ -26,7 +26,7 @@ Which repositories an organization sees, where that list comes from, and what it
   `session_branch`. Every stored read is scoped by the repo list, so without the fallback a seeded
   database renders empty, which is exactly `npm run seed` followed by `npm run verify:ui`.
 - **Scoping is three buckets and only one is "in".** A session on a repo outside the tracked list
-  lands in `otherRepoSessions`, one with telemetry but no hook report in `sessionsWithoutHook`.
+  lands in `otherRepoSessions`, one with telemetry but no hook report in `sessionsWithoutHook` (a board-owned one also stays in the totals).
   Silent drops would make a repo leaving the installation read as an idle week.
   `core/test/telemetry.stats.test.ts`.
 - **`owner/name` is the one spelling**, shared by the plugin, the branch reporter and the
