@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
-import { E2E_REPO, withExecutor } from './executor.js';
+import { clearExecutors, E2E_REPO, saveExecutor, withExecutor } from './executor.js';
 import {
     authoredBy,
     failedGateFollowUpThread,
@@ -68,8 +68,13 @@ async function threadLength(page: Page, taskId: string): Promise<number> {
 const header = (page: Page) => page.locator('.page-header-actions');
 
 test.describe('the task detail actions', () => {
-    // queueTask starts through the real composer, which needs an executor to offer Start.
-    test.beforeEach(({ page }) => withExecutor(page));
+    // queueTask starts through the real composer, which needs an executor to offer Start, and
+    // the real board's create, which refuses an executor the member does not hold (#1019).
+    test.beforeEach(async ({ page }) => {
+        await saveExecutor(page);
+        await withExecutor(page);
+    });
+    test.afterEach(({ page }) => clearExecutors(page));
 
     /**
      * The state matrix, driven through the board's own routes: every not-terminal state offers
