@@ -178,6 +178,36 @@
         margin: 0 0 12px;
     }
 
+    /* Token usage: a section above the stages and a compact block per task card. The model rows sit
+       behind a disclosure and scroll inside their own wrap, so no width reaches the page. */
+    .batch-usage .usage-figures {
+        margin-bottom: 8px;
+    }
+
+    .batch-task-usage {
+        margin: 8px 0;
+        min-width: 0;
+    }
+
+    .batch-task-usage .usage-figures {
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .batch-task-usage .usage-figure dd {
+        font-size: 14px;
+    }
+
+    .batch-usage-more {
+        margin-top: 8px;
+        min-width: 0;
+    }
+
+    .batch-usage-more summary {
+        cursor: pointer;
+        font-size: 13px;
+    }
+
     /* ── batches touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .batch-new,
