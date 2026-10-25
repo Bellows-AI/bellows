@@ -2,7 +2,7 @@
 # Creates the test database alongside the development one.
 #
 # Two databases because `npm run test:db` truncates its tables. A single shared database means
-# one test run silently destroys whatever `npm run backfill` imported, and the tests still pass
+# one test run silently destroys whatever the development database holds, and the tests still pass
 # — so the split is a safety boundary, not tidiness. The suite additionally refuses any
 # database whose name does not end in `_test`.
 #

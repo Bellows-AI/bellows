@@ -140,7 +140,6 @@ npm run verify:ui:nightly       # @nightly-tagged specs + the specimen; same nee
 
 DATABASE_URL=…/factory_seed npm run seed        # synthetic sessions, disposable names only
 DATABASE_URL=…/factory_test  npm run test:db    # resets every table
-DATABASE_URL=…/factory_dev   npm run backfill   # import ~/.claude/projects/*/*.jsonl, idempotent
 npm run test:jobs               # all phases; real containers + scripted model, no quota
 npm run test:jobs -- --phase workflows # focused rerun with its own fixtures; --help lists phases
 npm run test:jobs -- --changed origin/main # only the phases the diff maps to (also --phase a,b)
