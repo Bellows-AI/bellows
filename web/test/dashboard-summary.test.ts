@@ -142,11 +142,19 @@ describe('analyticsState', () => {
     const telemetry = (sessions: number) => ({ totals: { sessions } }) as TelemetryStats;
     const tasks = (measured: number): TaskUsageStats =>
         ({
-            tokensPerTask: { avg: null, p50: null, p95: null, tasks: measured },
+            tokens: {
+                all: Object.fromEntries(
+                    ['input', 'cacheRead', 'cacheCreation', 'output'].map((type) => [
+                        type,
+                        { avg: null, p50: null, p95: null, tasks: measured, partial: 0, tasksInScope: measured },
+                    ])
+                ),
+                byModel: [],
+            },
             jobTurnsPerTask: { avg: null, p50: null, p95: null, tasks: measured },
             agentTurnsPerTask: { avg: null, p50: null, p95: null, tasks: measured },
             wallClockPerTask: { avg: null, p50: null, p95: null, tasks: measured },
-        }) as TaskUsageStats;
+        }) as unknown as TaskUsageStats;
 
     it('is ready when sessions exist', () => {
         expect(analyticsState(telemetry(2), tasks(0))).toBe('ready');

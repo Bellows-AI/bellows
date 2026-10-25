@@ -1,5 +1,6 @@
-import type { JobRun, TaskUsageDistribution, TaskUsageStats } from './types.js';
-import type { TaskUsage } from './usage.js';
+import type { TokenType } from './token-contributions.js';
+import type { JobRun, TaskUsageDistribution, TaskUsageStats, TokenDistribution } from './types.js';
+import { type PerType, perType, type TaskUsage } from './usage.js';
 
 export interface TaskUsageOptions {
     /**
@@ -9,17 +10,6 @@ export interface TaskUsageOptions {
     repos?: readonly string[];
     /** Only runs the caller queued are counted, so the task set narrows to the caller's tasks. */
     user?: { id: string };
-}
-
-/**
- * A task's input + output, the stopgap figure of the task panel until the four-type
- * distributions replace it (the four token types are never collapsed elsewhere). Null when the
- * task measured neither — a contributor absent, not a zero.
- */
-function billableTokens(task: TaskUsage): number | null {
-    const { input, output } = task.usage.tokens;
-    if (input === null && output === null) return null;
-    return (input ?? 0) + (output ?? 0);
 }
 
 const P50 = 0.5;
@@ -43,17 +33,70 @@ function distribution(values: number[]): TaskUsageDistribution {
 }
 
 /**
- * Tokens per canonical task, from the usage report: a task whose sessions measured neither
- * input nor output is EXCLUDED from the distribution, never counted as a zero-total task.
+ * One token type per canonical task. `model` null is the task's whole-block figure; a model is
+ * the sum of the task's PARENT rows of that normalized model (children are the same tokens split
+ * by query source and never added again). A task with no row for the model, or whose rows left
+ * the type unmeasured, is absent — a contributor missing, not a zero; a measured zero stays.
  */
-function computeTokenValues(usageTasks: readonly TaskUsage[], tasks: ReadonlySet<string>): number[] {
+function typeValues(usageTasks: readonly TaskUsage[], type: TokenType, model: string | null): number[] {
     const values: number[] = [];
     for (const task of usageTasks) {
-        if (!tasks.has(task.taskId)) continue;
-        const total = billableTokens(task);
-        if (total !== null) values.push(total);
+        if (model === null) {
+            const v = task.usage.tokens[type];
+            if (v !== null) values.push(v);
+            continue;
+        }
+        let sum: number | null = null;
+        for (const row of task.usage.rows) {
+            const v = row.tokens[type];
+            if (row.model === model && v !== null) sum = (sum ?? 0) + v;
+        }
+        if (sum !== null) values.push(sum);
     }
     return values;
+}
+
+/** Tasks that count toward `values` whose coverage for the type measured only part of its contributors. */
+function partialTasks(usageTasks: readonly TaskUsage[], type: TokenType, model: string | null): number {
+    let partial = 0;
+    for (const task of usageTasks) {
+        const { measured, contributors } = task.usage.coverage[type];
+        if (measured >= contributors) continue;
+        if (typeValues([task], type, model).length > 0) partial++;
+    }
+    return partial;
+}
+
+function tokenDistribution(usageTasks: readonly TaskUsage[], type: TokenType, model: string | null): TokenDistribution {
+    return {
+        ...distribution(typeValues(usageTasks, type, model)),
+        partial: partialTasks(usageTasks, type, model),
+        tasksInScope: usageTasks.length,
+    };
+}
+
+function tokenDistributions(usageTasks: readonly TaskUsage[], model: string | null): PerType<TokenDistribution> {
+    return perType((type) => tokenDistribution(usageTasks, type, model));
+}
+
+/** Every normalized model in scope, most contributing tasks first, then by name. */
+function modelGroups(usageTasks: readonly TaskUsage[]): TaskUsageStats['tokens']['byModel'] {
+    const groups = new Map<string, { rawModels: Set<string>; tasks: Set<string> }>();
+    for (const task of usageTasks) {
+        for (const row of task.usage.rows) {
+            const group = groups.get(row.model) ?? { rawModels: new Set<string>(), tasks: new Set<string>() };
+            for (const raw of row.rawModels) group.rawModels.add(raw);
+            group.tasks.add(task.taskId);
+            groups.set(row.model, group);
+        }
+    }
+    return [...groups]
+        .sort(([an, a], [bn, b]) => b.tasks.size - a.tasks.size || (an < bn ? -1 : an > bn ? 1 : 0))
+        .map(([model, g]) => ({
+            model,
+            rawModels: [...g.rawModels].sort(),
+            dist: tokenDistributions(usageTasks, model),
+        }));
 }
 
 /**
@@ -99,7 +142,7 @@ function sumMeasuredPerTask(
 
 /**
  * What a task costs, as four distributions over the job threads in scope: tokens per task
- * (input + output of the canonical task, reviews and removed tasks included), job turns per
+ * (four separate types per canonical task, overall and per model, reviews and removed tasks included), job turns per
  * task (run rows — the board's own count), agent turns per task (the runs' close-time counts,
  * summed), and wall clock per task (the execution time the board banked for those runs).
  *
@@ -127,7 +170,7 @@ export function taskUsageStats(
     for (const run of visibleRuns) tasks.add(run.rootJobId);
 
     return {
-        tokensPerTask: distribution(computeTokenValues(usageTasks, tasks)),
+        tokens: { all: tokenDistributions(usageTasks, null), byModel: modelGroups(usageTasks) },
         jobTurnsPerTask: distribution(computeJobTurnValues(visibleRuns, tasks)),
         agentTurnsPerTask: distribution(sumMeasuredPerTask(visibleRuns, tasks, (r) => r.agentTurns)),
         wallClockPerTask: distribution(sumMeasuredPerTask(visibleRuns, tasks, (r) => r.wallClockMs)),

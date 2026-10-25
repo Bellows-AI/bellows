@@ -3,6 +3,7 @@ import { inputTokens, type TelemetryStats, type Tokens } from '@factory-ai/core'
 import type { TelemetryMeta } from '../api/useStats.js';
 import { BarChart } from '../charts/BarChart.js';
 import { PAD } from '../charts/scale.js';
+import { TOKEN_TYPE_LABELS, USAGE_TOKEN_TYPES, figure } from '../components/usage/usage-format.js';
 import { TelemetryFrame } from './TelemetryFrame.js';
 
 /** One bucket: the compact treatment keeps a real bar — never one bar stretched across the full plot. */
@@ -46,6 +47,10 @@ export function chartPoints({ series, usage }: Pick<TelemetryStats, 'series' | '
     }
     return [...byStart.values()].sort((a, b) => a.start.localeCompare(b.start));
 }
+
+/** The four types of a bucket for its tooltip; an unmeasured type reads as a dash, never zero. */
+const readoutOf = (t: Tokens | null): string[] =>
+    USAGE_TOKEN_TYPES.map((type) => `${TOKEN_TYPE_LABELS[type]} ${figure(t?.[type] ?? null)}`);
 
 /**
  * The usage chart. The bucket size is the server's decision — daily up to 92 days of window,
@@ -134,6 +139,7 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                                     className: 'bar-ok',
                                 },
                             ]}
+                            readoutExtra={points.map((p) => readoutOf(p.tokens))}
                             line={{ id: 'sessions', label: 'Sessions', values: points.map((p) => p.sessions) }}
                             hiddenSeries={hidden}
                             leftAxisLabel="Tokens"

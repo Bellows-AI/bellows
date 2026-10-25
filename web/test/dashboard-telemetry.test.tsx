@@ -101,15 +101,19 @@ const NO_TELEMETRY = {
 } as unknown as TelemetryStats;
 
 const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });
+const tokenDists = (d: ReturnType<typeof dist>) => {
+    const t = { ...d, partial: 0, tasksInScope: d.tasks };
+    return { all: { input: t, cacheRead: t, cacheCreation: t, output: t }, byModel: [] };
+};
 const MEASURED_TASK_COUNT = 7;
 const MEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(MEASURED_TASK_COUNT),
+    tokens: tokenDists(dist(MEASURED_TASK_COUNT)),
     jobTurnsPerTask: dist(MEASURED_TASK_COUNT),
     agentTurnsPerTask: dist(MEASURED_TASK_COUNT),
     wallClockPerTask: dist(MEASURED_TASK_COUNT),
 } as unknown as TaskUsageStats;
 const UNMEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(0),
+    tokens: tokenDists(dist(0)),
     jobTurnsPerTask: dist(0),
     agentTurnsPerTask: dist(0),
     wallClockPerTask: dist(0),
@@ -358,19 +362,17 @@ describe('the shared state model', () => {
         expect(render(EMPTY)).toContain('Task board');
     });
 
-    it('pairs Usage by user and Recent tasks in the two-up grid when ready', () => {
+    it('stacks Usage by user above Recent tasks, each on its own row, when ready', () => {
         const html = render(READY);
-        const pair = html.slice(html.indexOf('class="two-up"'));
-        expect(pair).toContain('Usage by user');
-        expect(pair.indexOf('Usage by user')).toBeLessThan(pair.indexOf('Recent tasks'));
+        expect(html).not.toContain('two-up');
+        expect(html.indexOf('Usage by user')).toBeLessThan(html.indexOf('Recent tasks'));
     });
 
-    it('keeps Recent tasks in the two-up grid, alone, whenever Usage by user is absent', () => {
+    it('keeps Recent tasks whenever Usage by user is absent', () => {
         for (const data of [null, EMPTY, DISABLED]) {
             const html = render(data);
-            const pair = html.slice(html.indexOf('class="two-up"'));
-            expect(pair).toContain('Recent tasks');
-            expect(pair).not.toContain('Usage by user');
+            expect(html).toContain('Recent tasks');
+            expect(html).not.toContain('Usage by user');
         }
     });
 
