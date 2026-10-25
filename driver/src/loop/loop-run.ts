@@ -313,6 +313,9 @@ async function reportRunTail(
     // A run an earlier claim launched (adopted or taken over) is no launch by this claim: the board
     // would otherwise count the adopting claim as a new token-producing execution.
     const launchedHere = !ctx.adopted && !ctx.takeover;
+    // A run that finished without ever streaming or being sampled still ran: the fallback for the
+    // evidence the runner's own scrape does not carry (claude-code names its session up front).
+    if (launchedHere && outcome.started && !outcome.refused && !outcome.sessionId) await ctx.state.confirmLaunch?.();
     await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
@@ -351,6 +354,8 @@ async function launchRun(
     // session id reported for one would name a conversation that never existed. A taken-over run's
     // session was reported by the claim that started it.
     if (!ctx.takeover) await reportNewSession(rt, job, session);
+    // A taken-over run was launched by an earlier claim: this one proves nothing about a launch.
+    if (!ctx.takeover && session) state.confirmLaunch = launchConfirmer(rt, job, session.id);
     state.launched = true;
     transition(state, 'launched');
     // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.
@@ -588,6 +593,20 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         recoveredServices,
         reports: gateSession.lastReports ?? [],
     };
+}
+
+/**
+ * The report that this claim's launch is observed, made the first time something proves the runner
+ * ran (its output, a runtime sample) so a runner lost mid-run still has its claim counted. Once;
+ * a failed report only logs.
+ */
+function launchConfirmer(rt: LoopRuntime, job: BoardJob, sessionId: string): () => Promise<void> {
+    let sent: Promise<void> | null = null;
+    return () =>
+        (sent ??= rt.board
+            .session(job, sessionId, true)
+            .then(() => {})
+            .catch((e: Error) => rt.log(`job ${job.id}: could not report the launch, continuing: ${e.message}`)));
 }
 
 /**

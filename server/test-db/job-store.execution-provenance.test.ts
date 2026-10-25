@@ -416,7 +416,9 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
                 r.adopts_claim_seq === null ? null : Number(r.adopts_claim_seq),
             ]);
         const forceLaunch = (jobId: string, seq: number, to: string) =>
-            sql`update job_execution set launch = ${to} where org_id = ${ORG} and job_id = ${jobId} and claim_seq = ${seq}`;
+            sql`update job_execution set launch = ${to},
+                    adopts_claim_seq = case when ${to}::text = 'adopted' then claim_seq - 1 else adopts_claim_seq end
+                where org_id = ${ORG} and job_id = ${jobId} and claim_seq = ${seq}`;
         const adopt = (jobId: string, lease: string, claimSeq: number) =>
             store.interrupt(jobId, lease, {
                 reason: `adopted the runner of claim ${claimSeq}`,
@@ -429,6 +431,7 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
                 ['requested', 'observed'],
                 ['requested', 'refused'],
                 ['requested', 'unknown'],
+                ['requested', 'adopted'],
                 ['unknown', 'observed'],
             ];
             const illegal: [string, string][] = [
@@ -727,6 +730,16 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
                 await store.complete(id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: '' });
                 expect(await ends(id)).toEqual(before);
                 expect(before[1]?.ended).toBeNull();
+            });
+
+            it('never stamps an end before the claim started, whatever the clock of the ending transaction', async () => {
+                const id = await queue();
+                const c = await claim();
+                await sql`update job_execution set created_at = now() + interval '1 hour' where job_id = ${id}`;
+                await store.interrupt(id, c.leaseToken, { reason: 'evicted', release: true });
+                const [row] = await sql<{ ok: boolean }[]>`
+                    select ended_at >= created_at as ok from job_execution where job_id = ${id}`;
+                expect(row?.ok).toBe(true);
             });
 
             it('refuses in storage to move or precede an end', async () => {

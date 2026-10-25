@@ -89,6 +89,13 @@ export interface JobState {
      * beat period — and at the lease's third afterwards (issue #126).
      */
     launched: boolean;
+    /**
+     * Reports this claim's launch as observed (issue #845) once something proves the runner ran:
+     * its first output, its first runtime sample, or a finished outcome. Null where this claim
+     * launched nothing (adopted, taken over, agent-less) or has no session to name; the report is
+     * made once, and a failed one is logged, never a failed run.
+     */
+    confirmLaunch: (() => Promise<void>) | null;
     /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
     gateToken: string | null;
     /**
@@ -187,6 +194,7 @@ export function newJobState(): JobState {
         trace: () => {},
         keepGroup: false,
         launched: false,
+        confirmLaunch: null,
         gateToken: null,
         gateLoss: null,
         control: null,
@@ -632,6 +640,7 @@ function kickSample(rt: LoopRuntime, job: BoardJob, state: JobState, pump: Outpu
             const exporting = state.transcriptExport?.vitals;
             const read: Omit<RuntimeSample, 'sampledAt'> | null =
                 sampled ?? (exporting ? { cpuPercent: null, memUsedMb: null, memPercent: null } : null);
+            if (sampled) void state.confirmLaunch?.();
             if (!read) return;
             const services = read.services ? await withDeadDetail({ rt, job, state, pump }, read.services) : undefined;
             pump.sample = {
@@ -725,6 +734,7 @@ export function watchOutput(
     })();
     return {
         push: (tail) => {
+            if (tail !== '') void state.confirmLaunch?.();
             if (tail !== pump.latest) pump.lastOutputAt = Date.now();
             pump.latest = tail;
         },

@@ -107,7 +107,7 @@ language plpgsql as $$
 begin
     update job_execution
     set launch = case when launch = 'requested' then 'unknown' else launch end,
-        ended_at = now(), updated_at = now()
+        ended_at = greatest(now(), created_at), updated_at = now()
     where org_id = new.org_id and job_id = new.id and ended_at is null
       and (claim_seq < new.claim_seq
            or (claim_seq = old.claim_seq and old.status = 'running' and new.status <> 'running'));
