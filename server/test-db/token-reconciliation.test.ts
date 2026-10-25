@@ -437,7 +437,15 @@ describe.skipIf(!enabled)('token reconciliation', () => {
 
     it('measures the facts: rows per query and contributions per kind', async () => {
         const f = await facts(built.A);
-        expect(f.stats.rows.evidence).toBeGreaterThan(f.board.length); // the shared session's rows were read, then dropped
+        // Counted after the foreign drop: a row count must not reveal that another organization shares a session id.
+        expect(f.stats.rows.evidence).toBe(f.board.length);
+        expect(f.stats.rows.branch).toBe(f.branch.length);
+        const cross = built.ids.cross!;
+        expect(f.board.some((e) => e.sessionId === cross)).toBe(false);
+        expect(f.branch.some((b) => b.sessionId === cross)).toBe(false);
+        expect(
+            [...f.contributions.map((c) => c.selection), ...f.spans, ...f.fields].some((k) => k.sessionId === cross)
+        ).toBe(false);
         expect(f.stats.contributions.timed).toBeGreaterThan(0);
         const lines: string[] = [];
         await createPostgresTelemetryClient({ sql, orgId: built.A, log: (m) => lines.push(m) }).fetchRollups();

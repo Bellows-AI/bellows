@@ -183,30 +183,35 @@ export async function readUsageFacts(
     ]);
 
     const foreign = new Set(foreignRows.map((r) => r.session_id));
-    const foreignList = tx.array([...foreign]);
-    const [allObservationRows, allSpanRows, allFieldRows] = await Promise.all([
-        tx<ObservationRow[]>`
-            select agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
-            from metric_point
-            where session_id in (${sessionIds}) and session_id <> all(${foreignList}::text[])
-              and field in ${tx(TOKEN_FIELDS)}
-        `,
-        tx<{ agent: string; session_id: string; first_seen: Date; last_seen: Date }[]>`
-            select agent, session_id, min(time) as first_seen, max(time) as last_seen
-            from metric_point_used
-            where session_id in (${sessionIds}) and session_id <> all(${foreignList}::text[])
-            group by agent, session_id
-        `,
-        tx<{ agent: string; session_id: string; field: CanonicalField; value: number }[]>`
-            select agent, session_id, field, value from session_field_total
-            where session_id in (${sessionIds}) and session_id <> all(${foreignList}::text[])
-        `,
-    ]);
-
     const board = evidenceRows.filter((r) => !foreign.has(r.session_id)).map((r) => evidenceOf(orgId, r));
     const branch: BranchEvidence[] = branchRows
         .filter((r) => !foreign.has(r.session_id))
         .map((r) => ({ orgId, agent: r.agent, sessionId: r.session_id, repo: r.repo }));
+    // Load only the keys this organization owns: evidence with a null agent owns every agent of its session id,
+    // one naming an agent owns that key alone, so another agent's points on a tenant session id never leave the database.
+    const anyAgent = [...new Set(board.filter((e) => e.agent === null).map((e) => e.sessionId))];
+    const pairs = [...board, ...branch].filter((e) => e.agent !== null);
+    const ownedKeys = tx`(session_id = any(${tx.array(anyAgent)}::text[])
+        or (agent, session_id) in (select * from unnest(${tx.array(pairs.map((e) => e.agent as string))}::text[], ${tx.array(pairs.map((e) => e.sessionId))}::text[])))`;
+    const [allObservationRows, allSpanRows, allFieldRows] = await Promise.all([
+        tx<ObservationRow[]>`
+            select agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
+            from metric_point
+            where ${ownedKeys}
+                and field in ${tx(TOKEN_FIELDS)}
+        `,
+        tx<{ agent: string; session_id: string; first_seen: Date; last_seen: Date }[]>`
+            select agent, session_id, min(time) as first_seen, max(time) as last_seen
+            from metric_point_used
+            where ${ownedKeys}
+            group by agent, session_id
+        `,
+        tx<{ agent: string; session_id: string; field: CanonicalField; value: number }[]>`
+            select agent, session_id, field, value from session_field_total
+            where ${ownedKeys}
+        `,
+    ]);
+
     // Points are read by session id, so another agent's key on a tenant session id arrives too: keep only the
     // keys this organization owns (board or branch evidence naming that agent).
     const keys = [...allObservationRows, ...allSpanRows, ...allFieldRows].map((r) => ({
@@ -256,8 +261,8 @@ export async function readUsageFacts(
         })),
         stats: {
             rows: {
-                evidence: evidenceRows.length,
-                branch: branchRows.length,
+                evidence: board.length,
+                branch: branch.length,
                 observations: observationRows.length,
                 spans: spanRows.length,
                 fields: fieldRows.length,

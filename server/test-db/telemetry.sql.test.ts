@@ -549,19 +549,22 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it('keeps a session two organizations both have evidence for out of both reads', async () => {
+        const session = randomUUID();
         const userId = await member('other-org-author');
-        await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
+        await job({ session, createdBy: userId, org: OTHER_ORG });
         await branch({
-            session: 'attr-5',
+            session,
             branch: 'feat/a',
             from: '2026-08-01T10:00:00Z',
             to: '2026-08-01T11:00:00Z',
         });
-        await point({ session: 'attr-5', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await point({ session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
         // The session id is also evidence of another organization: it belongs to neither tenant's read.
         const mine = (await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups()).input;
         expect(mine.sessions).toEqual([]);
+        const theirs = (await createPostgresTelemetryClient({ sql, orgId: OTHER_ORG }).fetchRollups()).input;
+        expect(theirs.sessions).toEqual([]);
     });
 });
 
