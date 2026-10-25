@@ -447,4 +447,23 @@ describe('bellows job preflight', () => {
         const again = harness(routes);
         expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'mine'], again.io)).toBe(1);
     });
+
+    it('surfaces the board refusal of an executor preflight reports as missing, in the same words', async () => {
+        const missing = 'There is no personal executor "ghost". Choose one that exists, or name its scope.';
+        const routes = board({
+            '/api/jobs': () => json({ error: missing, code: 'UNKNOWN_EXECUTOR' }, 404),
+        });
+        const checked = harness(routes);
+        expect(await run(['job', 'preflight', '--repo', 'acme/api', '--executor', 'ghost'], checked.io)).toBe(1);
+        expect(checked.out.join('')).toContain('no user executor ghost');
+
+        const launch = harness(routes);
+        expect(
+            await run(
+                ['job', 'create', '--repo', 'acme/api', '--executor', 'ghost', '--json', '--', 'npm test'],
+                launch.io
+            )
+        ).toBe(1);
+        expect(envelope(launch.out).error).toMatchObject({ code: 'UNKNOWN_EXECUTOR', status: 404, message: missing });
+    });
 });
