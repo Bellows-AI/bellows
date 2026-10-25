@@ -37,8 +37,12 @@ export interface ByUserRow {
     tokens: Tokens;
     inputSide: number | null;
     selected: number | null;
-    /** The selected value as a share of the largest one IN THE RENDERED ROWS, 0–100. */
-    barPct: number;
+    /**
+     * The selected value as a share of the largest one IN THE RENDERED ROWS, 0–100. A measured value
+     * gets at least 1 unless it is 0; null when there is nothing to compare (unmeasured, or every
+     * value 0), where no track renders.
+     */
+    barPct: number | null;
     usage: UsageBlock | null;
 }
 
@@ -49,7 +53,10 @@ const UNMEASURED: Tokens = { input: null, output: null, cacheRead: null, cacheCr
 
 type Person = Pick<ByUserRow, 'id' | 'name' | 'title' | 'avatarUrl' | 'sessions'>;
 
-function people({ byUser, usage, unattributedSessions }: TelemetryStats, scope: 'org' | 'mine'): Person[] {
+function people(
+    { byUser, usage, unattributedSessions }: Pick<TelemetryStats, 'byUser' | 'usage' | 'unattributedSessions'>,
+    scope: 'org' | 'mine'
+): Person[] {
     const out: Person[] = byUser.map(({ user, sessions }) => ({
         id: user.id,
         name: user.name ?? user.login,
@@ -91,16 +98,28 @@ export function byUserRows(
     scope: 'org' | 'mine' = 'org'
 ): ByUserRow[] {
     const usageOf = new Map(telemetry.usage.byUser.map((u) => [u.userId ?? NO_USER_ID, u.usage]));
-    const rows = people(telemetry as TelemetryStats, scope).map((person) => {
+    const rows = people(telemetry, scope).map((person) => {
         const usage = usageOf.get(person.id) ?? null;
         const tokens = usage?.tokens ?? UNMEASURED;
         const inputSide = inputTokens(tokens).total;
-        return { ...person, tokens, inputSide, selected: selectedValue(tokens, inputSide, metric), barPct: 0, usage };
+        return {
+            ...person,
+            tokens,
+            inputSide,
+            selected: selectedValue(tokens, inputSide, metric),
+            barPct: null,
+            usage,
+        };
     });
     const max = Math.max(0, ...rows.map((row) => row.selected ?? 0));
     return rows.map((row) => ({
         ...row,
-        barPct: row.selected === null || max === 0 ? 0 : Math.round((row.selected / max) * BAR_PCT_MULTIPLIER),
+        barPct:
+            row.selected === null || max === 0
+                ? null
+                : row.selected === 0
+                  ? 0
+                  : Math.max(1, Math.round((row.selected / max) * BAR_PCT_MULTIPLIER)),
     }));
 }
 
@@ -158,7 +177,7 @@ function columnsFor(
                     {tokens(row.selected)}
                     {/* Width is decoration; the exact figure is the cell's accessible name. An
                         unmeasured user gets the dash alone — no bar for a figure that does not exist. */}
-                    {row.selected !== null && row.barPct > 0 ? (
+                    {row.barPct !== null ? (
                         <span className="usage-track" aria-hidden="true">
                             <span className="usage-bar" style={{ width: `${row.barPct}%` }} />
                         </span>

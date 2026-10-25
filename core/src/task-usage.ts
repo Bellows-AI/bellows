@@ -91,7 +91,7 @@ function modelGroups(usageTasks: readonly TaskUsage[]): TaskUsageStats['tokens']
         }
     }
     return [...groups]
-        .sort(([an, a], [bn, b]) => b.tasks.size - a.tasks.size || an.localeCompare(bn))
+        .sort(([an, a], [bn, b]) => b.tasks.size - a.tasks.size || (an < bn ? -1 : an > bn ? 1 : 0))
         .map(([model, g]) => ({
             model,
             rawModels: [...g.rawModels].sort(),

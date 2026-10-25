@@ -221,6 +221,7 @@ export interface TaskUsageDistribution {
 /**
  * A token-type distribution. `tasks` is the contributors; `partial` is how many of them measured
  * only part of their sessions for the type; `tasksInScope` is every canonical task considered.
+ * Per model, `partial` still judges coverage over the whole task, not the model's own sessions.
  */
 export type TokenDistribution = TaskUsageDistribution & { partial: number; tasksInScope: number };
 

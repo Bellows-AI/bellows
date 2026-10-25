@@ -369,16 +369,6 @@ describe('the stylesheet', () => {
         // The six-measure grid is gone with its rules.
         expect(rules(css).some(([prelude]) => /\.usage-(measure|tokens)\b/.test(prelude))).toBe(false);
     });
-
-    it('sets Usage by user and Recent tasks side by side only from 1200px (issue 283)', () => {
-        const css = stripComments(shippedCss());
-        const wide = css.slice(css.indexOf('@media (min-width: 1200px)'));
-        expect(wide).toMatch(/^@media \(min-width: 1200px\)\s*\{\s*\.two-up\s*\{[^}]*grid-auto-flow:\s*column/);
-        // Stacked, the one track is capped at the container: a bare implicit track sizes to the
-        // widest table and overflows a phone.
-        const stacked = rules(css).find(([prelude]) => prelude.trim() === '.two-up')?.[1] ?? '';
-        expect(stacked).toMatch(/grid-template-columns:\s*minmax\(0, 1fr\)/);
-    });
 });
 
 describe('the stylesheet — sizing and motion (#189)', () => {

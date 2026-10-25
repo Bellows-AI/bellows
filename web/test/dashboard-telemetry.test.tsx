@@ -362,19 +362,17 @@ describe('the shared state model', () => {
         expect(render(EMPTY)).toContain('Task board');
     });
 
-    it('pairs Usage by user and Recent tasks in the two-up grid when ready', () => {
+    it('stacks Usage by user above Recent tasks, each on its own row, when ready', () => {
         const html = render(READY);
-        const pair = html.slice(html.indexOf('class="two-up"'));
-        expect(pair).toContain('Usage by user');
-        expect(pair.indexOf('Usage by user')).toBeLessThan(pair.indexOf('Recent tasks'));
+        expect(html).not.toContain('two-up');
+        expect(html.indexOf('Usage by user')).toBeLessThan(html.indexOf('Recent tasks'));
     });
 
-    it('keeps Recent tasks in the two-up grid, alone, whenever Usage by user is absent', () => {
+    it('keeps Recent tasks whenever Usage by user is absent', () => {
         for (const data of [null, EMPTY, DISABLED]) {
             const html = render(data);
-            const pair = html.slice(html.indexOf('class="two-up"'));
-            expect(pair).toContain('Recent tasks');
-            expect(pair).not.toContain('Usage by user');
+            expect(html).toContain('Recent tasks');
+            expect(html).not.toContain('Usage by user');
         }
     });
 

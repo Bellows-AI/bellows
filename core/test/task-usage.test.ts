@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { filterJobRuns } from '../src/range.js';
 import type { DateRange } from '../src/range.js';
 import { taskUsageStats } from '../src/task-usage.js';
+import { UNKNOWN_BUCKET } from '../src/token-contributions.js';
 import type { JobRun, TokenTotals } from '../src/types.js';
 import { emptyBlock, type TaskUsage } from '../src/usage.js';
 import { fixtureReport } from './fixtures/load.js';
@@ -150,14 +151,14 @@ describe('token distributions per type', () => {
             ]),
             modelTask('T2', [{ model: 'm1', raw: ['m1[1m]'], tokens: cell(null, 300) }]),
             modelTask('T3', [{ model: 'm2', tokens: cell(null, null) }]),
-            modelTask('T4', [{ model: 'Unknown model', tokens: cell(null, 0) }]),
+            modelTask('T4', [{ model: UNKNOWN_BUCKET, tokens: cell(null, 0) }]),
         ];
         const byModel = taskUsageStats(tasks, []).tokens.byModel;
         const group = (m: string) => byModel.find((g) => g.model === m);
 
         it('lists models by contributing tasks desc then name, with their raw variants', () => {
-            // m1: T1,T2 (2 tasks); m2: T1,T3 (2 tasks); Unknown model: T4 (1).
-            expect(byModel.map((g) => g.model)).toEqual(['m1', 'm2', 'Unknown model']);
+            // m1: T1,T2 (2 tasks); m2: T1,T3 (2 tasks); the unknown bucket: T4 (1).
+            expect(byModel.map((g) => g.model)).toEqual(['m1', 'm2', UNKNOWN_BUCKET]);
             expect(group('m1')?.rawModels).toEqual(['m1', 'm1[1m]']);
         });
 
@@ -167,7 +168,7 @@ describe('token distributions per type', () => {
             // m2: T1 50; T3 unmeasured -> excluded.
             expect(group('m2')?.dist.output).toMatchObject({ avg: 50, tasks: 1 });
             // measured zero participates.
-            expect(group('Unknown model')?.dist.output).toMatchObject({ avg: 0, p50: 0, tasks: 1 });
+            expect(group(UNKNOWN_BUCKET)?.dist.output).toMatchObject({ avg: 0, p50: 0, tasks: 1 });
         });
     });
 });
@@ -313,6 +314,18 @@ describe('repo scope', () => {
         expect(
             taskUsageStats([], [run({ rootJobId: 't3', repo: null })], { repos: ['o/r'] }).jobTurnsPerTask.tasks
         ).toBe(0);
+    });
+});
+
+describe('runs and tokens filter on different owners', () => {
+    it('lets the run-based and token distributions cover different task sets', () => {
+        // The usage report names t1 (its owner is in scope); the run rows name t2 (queued in scope,
+        // no attributed session). Tokens: t1 only -> 1 task. Job turns: t1 banks 0 runs, t2 has 1
+        // run -> 2 tasks, values 0 and 1.
+        const stats = taskUsageStats([task('t1', T(10, 5))], [run({ rootJobId: 't2' })]);
+        expect(stats.tokens.all.input.tasks).toBe(1);
+        expect(stats.jobTurnsPerTask.tasks).toBe(2);
+        expect(stats.jobTurnsPerTask).toMatchObject({ avg: 0.5, p50: 0, p95: 1 });
     });
 });
 

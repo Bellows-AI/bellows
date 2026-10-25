@@ -132,16 +132,14 @@ export function DashboardPage() {
                 now={now}
             />
             {data && state !== null ? <AnalyticsPanels data={data} state={state} /> : null}
-            {/* Side by side at ≥1200px, stacked below. Recent tasks sits outside the stats branch
-                on purpose: completed jobs poll their own endpoint, so it is exactly the
-                degraded-mode surface when the statistics read is cold or failing — hiding it
-                behind `data` would hide it in the one state it exists for. */}
-            <div className="two-up">
-                {data?.telemetry && state === 'ready' ? (
-                    <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} scope={data.meta.scope} />
-                ) : null}
-                <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
-            </div>
+            {/* The by-user table spans the row: its type columns scroll off in half a row. */}
+            {data?.telemetry && state === 'ready' ? (
+                <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} scope={data.meta.scope} />
+            ) : null}
+            {/* Recent tasks sits outside the stats branch on purpose: completed jobs poll their own
+                endpoint, so it is exactly the degraded-mode surface when the statistics read is cold
+                or failing — hiding it behind `data` would hide it in the one state it exists for. */}
+            <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
         </>
     );
 }

@@ -249,14 +249,15 @@ describe('telemetry panels render', () => {
             Object.fromEntries(byUserRows(stats, metric).map((r) => [r.name, r]));
         // Total input (default): 900, 100, 50, 70 -> bar is share of 900.
         expect(byId('inputSide')['in-heavy']?.barPct).toBe(100);
-        // Output: 10, 500, 0, null -> out-heavy leads; measured 0 is 0 with no bar; null has no bar.
+        // Output: 10, 500, 0, null -> out-heavy leads; a measured 0 is an empty bar (0, its track
+        // renders); null has no bar at all.
         const out = byId('output');
         expect(out['out-heavy']?.barPct).toBe(100);
         expect(out['in-heavy']?.barPct).toBe(2);
         expect(out['zero-out']?.selected).toBe(0);
         expect(out['zero-out']?.barPct).toBe(0);
         expect(out['no-output']?.selected).toBeNull();
-        expect(out['no-output']?.barPct).toBe(0);
+        expect(out['no-output']?.barPct).toBeNull();
     });
 
     it('counts cache reads and writes in Total input but never output', () => {

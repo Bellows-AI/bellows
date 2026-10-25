@@ -278,23 +278,6 @@
         max-width: 52ch;
     }
 
-    /* Usage by user and Recent tasks: side by side from 1200px, stacked below. With one child
-       (no telemetry to attribute), Recent tasks takes the full width. */
-    .two-up {
-        display: grid;
-        gap: 24px;
-        /* A bare implicit track sizes to the widest table's content and overflows a phone; the
-           tables scroll inside their own wraps instead. */
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    @media (min-width: 1200px) {
-        .two-up {
-            grid-auto-columns: minmax(0, 1fr);
-            grid-auto-flow: column;
-        }
-    }
-
     /* Recent tasks' heading row: the title and its Task board source pill. */
     .recent-tasks-head {
         align-items: center;

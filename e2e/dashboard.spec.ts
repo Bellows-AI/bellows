@@ -177,12 +177,12 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         };
         await stampInside(1440);
 
-        // Usage by user and Recent tasks sit side by side from 1200px and stack below.
+        // Usage by user takes the whole row and Recent tasks stacks below it, at every width.
         const byUser = page.locator('section.panel', { hasText: 'Usage by user' });
         const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
         const [a, b] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
-        expect(Math.abs(a.y - b.y), 'same row at 1440').toBeLessThan(2);
-        expect(b.x).toBeGreaterThan(a.x + a.width);
+        expect(b.y, 'stacked at 1440').toBeGreaterThanOrEqual(a.y + a.height);
+        expect(Math.abs(a.width - b.width), 'same width at 1440').toBeLessThan(2);
         await page.setViewportSize({ width: 1024, height: 900 });
         const [c, d] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
         expect(d.y, 'stacked at 1024').toBeGreaterThanOrEqual(c.y + c.height);
@@ -231,14 +231,34 @@ test.describe('token accounting (the usage specimen)', () => {
         const header = panel.locator('th[aria-sort="descending"]');
         await expect(header).toContainText('Output');
         // The input-only specimen author measured no output: its Output is a dash with no bar.
-        const noUser = panel.locator('tbody tr', { hasText: 'Specimen Input Only' });
-        await expect(noUser).toHaveCount(1);
-        await expect(noUser.locator('.usage-bar')).toHaveCount(0);
-        await expect(noUser.locator('td').nth(2)).toHaveText('—');
+        const inputOnly = panel.locator('tbody tr', { hasText: 'Specimen Input Only' });
+        await expect(inputOnly).toHaveCount(1);
+        await expect(inputOnly.locator('.usage-bar')).toHaveCount(0);
+        await expect(inputOnly.locator('td').nth(2)).toHaveText('—');
         // A ranked user does carry a bar, and the ranking column is named after the selection.
         await expect(panel.locator('tbody tr .usage-bar').first()).toBeVisible();
         await page.screenshot({ path: `${SHOTS}/by-user-output.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
+    });
+
+    test('a bucket that measured no tokens draws no bar and reads as dashes, not zeros', async ({ page }) => {
+        await open(page);
+        const chart = page.locator('section.panel', { hasText: 'AI token usage' });
+        const bars = await chart.locator('.bucket-hit').evaluateAll((hits) =>
+            hits.flatMap((hit) => {
+                // The exact readout: a dash is an unmeasured figure, never a zero.
+                if (!/Total input —, Output —/.test(hit.getAttribute('aria-label') ?? '')) return [];
+                const centre = Number(hit.getAttribute('x')) + Number(hit.getAttribute('width')) / 2;
+                const all = [...(hit as SVGElement).ownerSVGElement!.querySelectorAll('rect.bar')];
+                return [
+                    all.filter(
+                        (b) => Math.abs(Number(b.getAttribute('x')) + Number(b.getAttribute('width')) / 2 - centre) < 1
+                    ).length,
+                ];
+            })
+        );
+        expect(bars.length, 'the seeded window holds a bucket nothing measured').toBeGreaterThan(0);
+        expect(bars.every((count) => count === 0)).toBe(true);
     });
 
     test('the summary breakdown expands to query sources without moving a figure', async ({ page }) => {
