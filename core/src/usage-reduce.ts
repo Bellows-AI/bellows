@@ -198,15 +198,19 @@ type ResolvedOwner = Extract<Owner, { status: 'resolved' }>;
 
 interface Scope {
     userId: string | undefined;
-    repos: readonly string[];
+    /** Undefined: no filter. A supplied list, empty included, is the whole scope. */
+    repos: readonly string[] | undefined;
 }
 
 /** 'in' passes the user scope and repo filter; 'excluded-repo' failed the repo filter; 'out' is shown nowhere. */
 function scopeOf(owner: Owner, scope: Scope): 'in' | 'excluded-repo' | 'out' {
     if (owner.status !== 'resolved') return 'out';
     if (scope.userId !== undefined && owner.authorId !== scope.userId) return 'out';
-    if (scope.repos.length > 0 && (owner.repo === null || !scope.repos.includes(owner.repo))) return 'excluded-repo';
-    return 'in';
+    if (scope.repos === undefined) return 'in';
+    // The session side's rule (telemetry.ts scopeByRepo): a repo-less session cannot match a filter,
+    // and is out of a filtered view without being "another repo".
+    if (owner.repo === null) return 'out';
+    return scope.repos.includes(owner.repo) ? 'in' : 'excluded-repo';
 }
 
 function timelineCache(board: readonly ExecutionEvidence[]) {
@@ -230,7 +234,7 @@ function account(input: UsageInput, opts: UsageOptions): Account {
     const owners = resolveOwnership(input, keys);
     const board = input.board.filter((e) => e.orgId === input.orgId);
     const spans = new Map(input.spans.map((s) => [sessionKeyId(s.agent, s.sessionId), s]));
-    const scope: Scope = { userId: opts.userId, repos: opts.repos ?? [] };
+    const scope: Scope = { userId: opts.userId, repos: opts.repos };
 
     const part = range
         ? partitionByRange(owned, range.from, range.to)
@@ -261,7 +265,8 @@ function account(input: UsageInput, opts: UsageOptions): Account {
     const route = (c: TokenContribution, keyId: string): ResolvedOwner | null => {
         const owner = owners.get(keyId) as Owner;
         if (owner.status === 'unresolved') {
-            tally(out.unresolvedOwnership, keyId, c);
+            // No author to bind to the trusted user: under scope=mine the figure would be org-wide.
+            if (scope.userId === undefined) tally(out.unresolvedOwnership, keyId, c);
             return null;
         }
         const where = scopeOf(owner, scope);

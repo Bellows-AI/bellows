@@ -289,3 +289,25 @@ describe('GET /api/stats: failure handling', () => {
         expect(telemetry.rollupCalls).toBe(1);
     });
 });
+
+describe('GET /api/stats: an empty repo source is one scope on every side', () => {
+    it('agrees on sessions, tokens and task counts: nothing is in scope', async () => {
+        const h = await harness({ repos: [] });
+        const app = track(h.app);
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
+        const { telemetry, tasks } = body;
+        expect(telemetry.totals.sessions).toBe(0);
+        expect(telemetry.usage.totals.counts.sessions).toBe(0);
+        expect(telemetry.usage.totals.tokens).toEqual({
+            input: null,
+            output: null,
+            cacheRead: null,
+            cacheCreation: null,
+        });
+        expect(tasks.tokensPerTask.tasks).toBe(0);
+        expect(tasks.jobTurnsPerTask.tasks).toBe(0);
+    });
+});

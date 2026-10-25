@@ -39,7 +39,10 @@ export interface OrganizationMeta {
     readonly available: readonly Organization[];
 }
 
-/** The four types are never summed into one figure: a long cached conversation would count the same context repeatedly. */
+/**
+ * The four types are never summed into one figure: a long cached conversation would
+ * count the same context repeatedly. Where one number is needed it is input + output.
+ */
 export interface TokenTotals {
     input: number | null;
     output: number | null;

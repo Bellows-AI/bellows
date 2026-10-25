@@ -7,7 +7,9 @@ import { TelemetryFrame } from './TelemetryFrame.js';
 
 /**
  * One user's rollup as the table renders it — the view model in front of `TelemetryStats.byUser`
- * (session counts), joined by user id to `TelemetryStats.usage.byUser` (token figures). `newTokens` applies core's null-aware sum to input + output only: cache
+ * (session counts), joined by user id to `TelemetryStats.usage.byUser` (token figures). Token
+ * authors with no session row (and the unknown author, `userId` null) still get a row, with
+ * `sessions` null. `newTokens` applies core's null-aware sum to input + output only: cache
  * is the same context counted again, never new tokens, and a partially measured group keeps its
  * measured side rather than reading as unmeasured or as zero.
  */
@@ -15,7 +17,7 @@ export interface ByUserRow {
     id: string;
     name: string;
     avatarUrl: string | null;
-    sessions: number;
+    sessions: number | null;
     newTokens: number | null;
     input: number | null;
     output: number | null;
@@ -26,17 +28,37 @@ export interface ByUserRow {
 }
 
 const BAR_PCT_MULTIPLIER = 100;
+/** Row key of the unknown author; a real user id is never this. */
+const NO_USER_ID = '\u0000no-user';
 
 export function byUserRows({ byUser, usage }: Pick<TelemetryStats, 'byUser' | 'usage'>): ByUserRow[] {
-    const tokensOf = new Map(usage.byUser.map((u) => [u.userId, u.usage.tokens]));
     const unmeasured = { input: null, output: null, cacheRead: null, cacheCreation: null };
-    const rows = byUser.map(({ user, sessions }) => {
-        const t = tokensOf.get(user.id) ?? unmeasured;
+    const people = byUser.map(({ user, sessions }) => ({
+        id: user.id,
+        name: user.name ?? user.login,
+        avatarUrl: user.avatarUrl,
+        sessions: sessions as number | null,
+    }));
+    const known = new Set(people.map((p) => p.id));
+    for (const { userId, user } of usage.byUser) {
+        if (userId !== null && !known.has(userId)) {
+            people.push({
+                id: userId,
+                name: user ? (user.name ?? user.login) : userId,
+                avatarUrl: user?.avatarUrl ?? null,
+                sessions: null,
+            });
+            known.add(userId);
+        }
+    }
+    if (usage.byUser.some((u) => u.userId === null)) {
+        people.push({ id: NO_USER_ID, name: 'No user', avatarUrl: null, sessions: null });
+    }
+    const tokensOf = new Map(usage.byUser.map((u) => [u.userId ?? NO_USER_ID, u.usage.tokens]));
+    const rows = people.map((person) => {
+        const t = tokensOf.get(person.id) ?? unmeasured;
         return {
-            id: user.id,
-            name: user.name ?? user.login,
-            avatarUrl: user.avatarUrl,
-            sessions,
+            ...person,
             newTokens: t.input === null && t.output === null ? null : (t.input ?? 0) + (t.output ?? 0),
             input: t.input,
             output: t.output,
@@ -64,7 +86,13 @@ const columns: DataTableColumn<ByUserRow>[] = [
         ),
         sortValue: (row) => row.name,
     },
-    { key: 'sessions', label: 'Sessions', cell: (row) => row.sessions, sortValue: (row) => row.sessions, align: 'end' },
+    {
+        key: 'sessions',
+        label: 'Sessions',
+        cell: (row) => row.sessions ?? '—',
+        sortValue: (row) => row.sessions,
+        align: 'end',
+    },
     {
         key: 'newTokens',
         label: 'New tokens',

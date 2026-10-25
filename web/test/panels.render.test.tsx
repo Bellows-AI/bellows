@@ -5,7 +5,7 @@ import type { TelemetryStats, TokenTotals, UserRef } from '@factory-ai/core';
 import type { TelemetryMeta } from '../src/api/useStats.js';
 import type { StatsPayload } from '../src/api/useStats.js';
 import { UsageSummaryPanel } from '../src/panels/UsageSummaryPanel.js';
-import { ByUserPanel } from '../src/panels/ByUserPanel.js';
+import { ByUserPanel, byUserRows } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel, chartPoints } from '../src/panels/TokenUsagePanel.js';
 import { emptyUsage, fixtureRollups, fixtureStats } from './telemetry-fixture.js';
 import { TaskUsagePanel } from '../src/panels/TaskUsagePanel.js';
@@ -108,6 +108,39 @@ describe('telemetry panels render', () => {
         // does not speak it.
         expect(html).not.toContain('no matching board task');
         expect(html).not.toContain('NaN');
+    });
+
+    it('renders token usage that has no session row: an unknown author and an author without sessions', () => {
+        const measured = { input: 700, output: 300, cacheRead: null, cacheCreation: null };
+        const base = withByUser([
+            {
+                user: { id: 'u1', login: 'carol', name: 'Carol', avatarUrl: null },
+                sessions: 2,
+                tokens: { input: 1_000, output: 1_000, cacheRead: null, cacheCreation: null },
+            },
+        ]);
+        const stats: TelemetryStats = {
+            ...base,
+            usage: {
+                ...base.usage,
+                byUser: [
+                    ...base.usage.byUser,
+                    { user: null, userId: null, usage: { ...emptyBlock('measured'), tokens: measured } },
+                    {
+                        user: { id: 'u-nosession', login: 'erin', name: null, avatarUrl: null },
+                        userId: 'u-nosession',
+                        usage: { ...emptyBlock('measured'), tokens: measured },
+                    },
+                ],
+            },
+        };
+        const rows = byUserRows(stats);
+        expect(rows.map((r) => r.name)).toEqual(['Carol', 'erin', 'No user']);
+        expect(rows.map((r) => r.sessions)).toEqual([2, null, null]);
+        const html = renderToStaticMarkup(<ByUserPanel telemetry={stats} meta={telemetryMeta()} />);
+        expect(html).toContain('No user');
+        expect(html).toContain('erin');
+        expect(html).toContain('aria-label="1,000 new tokens"');
     });
 
     it('shows a proportional New tokens bar whose accessible name is the exact total', () => {
