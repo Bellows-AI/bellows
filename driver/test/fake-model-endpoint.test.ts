@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,7 +36,14 @@ afterEach(stopSupervisors);
 afterAll(() => expect(liveSupervisors()).toBe(0));
 
 async function start(
-    options: { firstDelayMs?: number; toolSteps?: number; ask?: boolean; askProse?: boolean; killTools?: boolean } = {}
+    options: {
+        firstDelayMs?: number;
+        toolSteps?: number;
+        ask?: boolean;
+        askProse?: boolean;
+        killTools?: boolean;
+        probeFiles?: string[];
+    } = {}
 ) {
     const { createFakeModelEndpoint } = (await import(pathToFileURL(ENDPOINT).href)) as {
         createFakeModelEndpoint: (options: object) => Endpoint;
@@ -142,6 +149,38 @@ describe('the scripted model endpoint in kill-tools mode (issue #814)', () => {
         const { url } = await start({ killTools: true });
         await killRequest(url, []);
         expect(((await (await fetch(`${url}/control`)).json()) as { stop: boolean }).stop).toBe(false);
+    });
+});
+
+describe('the scripted model endpoint in probe-files mode (issue #1006)', () => {
+    it('scripts one Bash call whose command prints each path open, denied or other', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'probe-'));
+        const sealed = join(root, 'sealed');
+        mkdirSync(sealed);
+        writeFileSync(join(sealed, 'f'), 'x');
+        writeFileSync(join(root, 'readable'), 'x');
+        chmodSync(sealed, 0);
+        try {
+            const { url } = await start({
+                probeFiles: [join(root, 'readable'), join(sealed, 'f'), join(root, 'nope')],
+            });
+            const reply = (await (
+                await fetch(`${url}/v1/messages`, {
+                    method: 'POST',
+                    body: JSON.stringify({ stream: false, tools: [{ name: 'Bash' }], messages: [] }),
+                })
+            ).json()) as { content: { input?: { command: string } }[] };
+            const out = execFileSync('sh', ['-c', reply.content[0]!.input!.command], { cwd: root, encoding: 'utf8' });
+            const marks = [1, 2, 3].map((n) => new RegExp(`^PROBE ${n} (.*)$`, 'm').exec(out)![1]!);
+            expect(out).toContain('FACTORY_TOOL_OK');
+            // root bypasses the mode bits, so the sealed directory only denies an unprivileged run.
+            expect(marks[0]).toBe('open');
+            if (process.getuid?.() !== 0) expect(marks[1]).toBe('denied');
+            expect(marks[2]).toMatch(/^other: /);
+        } finally {
+            chmodSync(sealed, 0o700);
+            rmSync(root, { recursive: true, force: true });
+        }
     });
 });
 
@@ -384,6 +423,13 @@ describe('the tool-isolation lanes (issue #814)', () => {
             expect(script).toContain(`kill_lane ${run}`);
         }
         expect(script).toContain('fake-model-endpoint.mjs --kill-tools --tool-steps 2');
+    });
+
+    it('probes every docker/skills helper as the tool uid, against a private-directory control', () => {
+        expect(script).toContain('lane_pair claude_skill_lanes opencode_skill_lanes');
+        expect(script).toContain('fake-model-endpoint.mjs --probe-files');
+        expect(script).toContain('FACTORY_TRANSCRIPT_DIR=/workspace/.factory/t');
+        expect(script).toContain('XDG_DATA_HOME=/workspace/.factory/opencode/probe');
     });
 
     it('starts the agent with exactly the driver’s own agent flags, in the lane and in the image checks', () => {

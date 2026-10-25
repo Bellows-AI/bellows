@@ -3445,6 +3445,86 @@ claude_isolation_lanes() { kill_lane claude control; kill_lane claude isolated; 
 opencode_isolation_lanes() { kill_lane opencode control; kill_lane opencode isolated; }
 lane_pair claude_isolation_lanes opencode_isolation_lanes
 
+# --- Skill helper scripts under the tool uid (issue #1006) -----------------------------------------
+#
+# The endpoint's `--probe-files` mode: its one tool call opens every file given, as the tool uid, and
+# marks `probe-<n>` open, denied or other. The files are every non-SKILL.md file under docker/skills/
+# at /usr/local/share/factory-skills/ — they must open — and, last, the control: a file inside the
+# CLI's private config directory (claude: the skill copy in CLAUDE_CONFIG_DIR; opencode: its data
+# directory), which must be denied, so a probe that never sees a denial cannot pass. The directory is
+# in its runner shape: FACTORY_TRANSCRIPT_DIR / XDG_DATA_HOME on the workspace volume, and the
+# entrypoint's chmod 0700 applies.
+
+skill_helper_lane() { # skill_helper_lane <claude|opencode>
+    local cli="$1" image="$1-executor" name="skillhelper-$1" fake_pid port status counts n=0 rel
+    local ws="lane-$RUN_ID-$name-ws" helpers=() probes=() control
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad "$cli runs skill helpers as the tool uid" "the $image image is missing — run make runners"
+        return
+    fi
+    while IFS= read -r rel; do helpers+=("${rel#./}"); done < <(cd docker/skills && find . -type f ! -name SKILL.md | LC_ALL=C sort)
+    [ "${#helpers[@]}" -gt 0 ] || { bad "$cli runs skill helpers as the tool uid" "no helper file under docker/skills"; return; }
+    for rel in "${helpers[@]}"; do probes+=("/usr/local/share/factory-skills/$rel"); done
+    if [ "$cli" = claude ]; then control="/workspace/.factory/t/skills/${helpers[0]}"; else control=/workspace/.factory/opencode/probe/opencode/opencode.db; fi
+    probes+=("$control")
+    # A docker volume, as the task volume is: a macOS bind mount maps every uid to the host user and
+    # would never deny the control.
+    docker volume create "$ws" >/dev/null
+    node scripts/fake-model-endpoint.mjs --probe-files "$(IFS=,; echo "${probes[*]}")" --tool-steps 1 >"$work/fake-$name.port" &
+    fake_pid=$!
+    lane_endpoint_started "$fake_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-$name.port" ] && break
+        sleep 0.25
+    done
+    port="$(cat "$work/fake-$name.port")"
+    local host="http://host.docker.internal:$port" run=(docker run --rm --name "lane-agent-$RUN_ID-$name" --add-host host.docker.internal:host-gateway)
+    run+=("${AGENT_FLAGS[@]}")
+    lane_timed "$name" setup lane_group_up "$name" "$image" "$host"
+    run+=(-v "$ws:/workspace" -e WORKDIR=/workspace -e ANTHROPIC_API_KEY=fake-key)
+    while IFS= read -r word; do run+=("$word"); done < <(lane_group_agent_args "$name")
+    if [ "$cli" = claude ]; then
+        run+=(-e FACTORY_TRANSCRIPT_DIR=/workspace/.factory/t -e "ANTHROPIC_BASE_URL=$host" "$image" --dangerously-skip-permissions
+            --model fake-model -p 'probe the skill helpers')
+    else
+        run+=(-e XDG_DATA_HOME=/workspace/.factory/opencode/probe
+            -e "OPENCODE_CONFIG_CONTENT={\"model\":\"anthropic/claude-sonnet-4-5\",\"provider\":{\"anthropic\":{\"options\":{\"baseURL\":\"$host/v1\",\"apiKey\":\"fake-key\"}}}}"
+            "$image" --print-logs --log-level DEBUG run 'probe the skill helpers')
+    fi
+    lane_timed "$name" agent timeout 180 "${run[@]}" >"$work/$name.log" 2>&1
+    status=$?
+    lane_group_down "$name"
+    local result
+    result="$(node -e 'Promise.all(["/tool-results", "/requests"].map((p) => fetch(process.argv[1] + p).then((r) => r.json())))
+        .then(([a, b]) => console.log(JSON.stringify({ ...a, agentRequests: b.agentRequests })))' "http://127.0.0.1:$port")"
+    counts="$(node -e 'console.log(JSON.parse(process.argv[1]).toolResults)' "$result")"
+    lane_endpoint_stop "$fake_pid"
+    docker volume rm "$ws" >/dev/null
+    local seen not_open=''
+    probe_outcome() { node -e 'const m = new RegExp("^PROBE " + process.argv[2] + " (.*)$", "m").exec(JSON.parse(process.argv[1]).text); console.log(m ? m[1] : "missing")' "$result" "$1"; }
+    for n in $(seq 1 "${#helpers[@]}"); do
+        seen="$(probe_outcome "$n")"
+        [ "$seen" = open ] || not_open="$not_open ${helpers[$((n - 1))]}=$seen"
+    done
+    seen="$(probe_outcome "$((${#helpers[@]} + 1))")"
+    if [ "$status" = 0 ] && [ "$counts" = 1 ] && [ -z "$not_open" ]; then
+        ok "$cli: every skill helper under docker/skills opens for the tool uid at its fixed path"
+    else
+        bad "$cli: every skill helper under docker/skills opens for the tool uid at its fixed path" \
+            "exit $status, tool results $counts, not open:${not_open:- none}, result $result: $(tail -5 "$work/$name.log")"
+    fi
+    if [ "$seen" = denied ]; then
+        ok "the control: $cli's private config directory is denied to the tool uid"
+    else
+        bad "the control: $cli's private config directory is denied to the tool uid" \
+            "$control opened as '$seen' — a probe that never sees a denial proves nothing"
+    fi
+}
+
+claude_skill_lanes() { skill_helper_lane claude; }
+opencode_skill_lanes() { skill_helper_lane opencode; }
+lane_pair claude_skill_lanes opencode_skill_lanes
+
 fi
 
 if selected_phase ask-user-question; then
