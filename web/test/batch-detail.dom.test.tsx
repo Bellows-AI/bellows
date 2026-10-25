@@ -1,4 +1,4 @@
-import { BATCH_COMPLETION_ACCEPTED, type BatchPlan } from '@factory-ai/core';
+import { BATCH_COMPLETION_ACCEPTED, emptyBlock, type BatchPlan, type UsageBlock } from '@factory-ai/core';
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,37 @@ function twoStagePlan(): BatchPlan {
     return ['task-1', 'task-2', 'task-3'].reduce(filled, plan);
 }
 
+const SNAPSHOT = '2026-09-01T00:10:00.000Z';
+
+/** A measured block of exactly these tokens; a type left out was never measured. */
+function measured(tokens: Partial<UsageBlock['tokens']>, over: Partial<UsageBlock> = {}): UsageBlock {
+    const base = emptyBlock('measured');
+    const all = { ...base.tokens, ...tokens };
+    return {
+        ...base,
+        tokens: all,
+        assigned: all,
+        precision: {
+            input: all.input === null ? null : 'exact',
+            output: all.output === null ? null : 'exact',
+            cacheRead: all.cacheRead === null ? null : 'exact',
+            cacheCreation: all.cacheCreation === null ? null : 'exact',
+        },
+        ...over,
+    };
+}
+
+/** A report with no usage measured anywhere; `over` replaces what the case is about. */
+const reportWith = (over: Partial<BatchReportView> = {}): BatchReportView => ({
+    state: 'running',
+    tasks: [],
+    usageSnapshotAt: SNAPSHOT,
+    totals: { tokenUsage: emptyBlock('unmeasured'), usageUnavailableTasks: 0 },
+    ...over,
+});
+
+const unmeasuredUsage = { tokenUsage: emptyBlock('unmeasured'), tokenUsageUnavailable: null };
+
 const state = (key: string, stage: string, over: Partial<BatchTaskState> = {}): BatchTaskState => ({
     key,
     stage,
@@ -74,7 +105,7 @@ function started(plan: BatchPlan, tasks: BatchTaskState[], activeStage: string |
 }
 
 /** The board's batch routes over one held record and its report; writes mutate the record the way the store does. */
-function board(initial: BatchRecord, initialReport: BatchReportView | null = { state: 'running', tasks: [] }) {
+function board(initial: BatchRecord, initialReport: BatchReportView | null = reportWith()) {
     let record = initial;
     /** Null answers the report read with a 404, the way a failed read lands. */
     let report = initialReport;
@@ -215,14 +246,20 @@ describe('a started batch', () => {
             waitReason: `waiting for the board to merge ${PR}`,
         });
         const rest = [state('task-2', 'stage-1', { execution: 'running' }), state('task-3', 'stage-2')];
-        const entry = (task: BatchTaskState) => ({ key: task.key, execution: task.execution, attempts: task.attempt });
-        const reportOf = (reportState: string, first: BatchReportView['tasks'][number]['next']): BatchReportView => ({
-            state: reportState,
-            tasks: [
-                { ...entry(merging), next: first },
-                ...rest.map((task) => ({ ...entry(task), next: { action: 'wait' as const } })),
-            ],
+        const entry = (task: BatchTaskState) => ({
+            key: task.key,
+            execution: task.execution,
+            attempts: task.attempt,
+            usage: unmeasuredUsage,
         });
+        const reportOf = (reportState: string, first: BatchReportView['tasks'][number]['next']): BatchReportView =>
+            reportWith({
+                state: reportState,
+                tasks: [
+                    { ...entry(merging), next: first },
+                    ...rest.map((task) => ({ ...entry(task), next: { action: 'wait' as const } })),
+                ],
+            });
         const boardOn = reportOf('running', { action: 'wait' });
         const fake = board(started(plan, [merging, ...rest]), boardOn);
         const label = (text: string) =>
@@ -258,13 +295,15 @@ describe('a started batch', () => {
             method: 'POST' as const,
             path: `/api/batches/${ID}/tasks/task-1/retry`,
         };
-        fake.setReport({
-            state: 'parked',
-            tasks: [
-                { ...entry(failed), next: retry },
-                ...rest.map((task) => ({ ...entry(task), next: { action: 'wait' as const } })),
-            ],
-        });
+        fake.setReport(
+            reportWith({
+                state: 'parked',
+                tasks: [
+                    { ...entry(failed), next: retry },
+                    ...rest.map((task) => ({ ...entry(task), next: { action: 'wait' as const } })),
+                ],
+            })
+        );
         await label('Failed');
         await headerPill('Needs attention');
         expect(screen.getByRole('button', { name: 'Retry task-1' })).toBeTruthy();
@@ -366,5 +405,113 @@ describe('a started batch', () => {
         await waitFor(() => expect(card('task-1').querySelector('.pill-done')?.textContent).toBe('Accepted'));
         expect(card('task-1').textContent).not.toContain('Waiting:');
         expect(fake.writes()).toEqual([`POST /api/batches/${ID}/tasks/task-1/accept`]);
+    });
+
+    describe('token usage', () => {
+        const plan = twoStagePlan();
+        const tasks = [state('task-1', 'stage-1', { execution: 'running' }), state('task-2', 'stage-1')];
+        const withUsage = (
+            total: UsageBlock,
+            perTask: Record<string, BatchReportView['tasks'][number]['usage']>,
+            over: Partial<BatchReportView> = {}
+        ) =>
+            reportWith({
+                tasks: tasks.map((task) => ({
+                    key: task.key,
+                    execution: task.execution,
+                    attempts: task.attempt,
+                    next: { action: 'wait' as const },
+                    usage: perTask[task.key] ?? unmeasuredUsage,
+                })),
+                totals: { tokenUsage: total, usageUnavailableTasks: 0 },
+                ...over,
+            });
+        const figures = (root: HTMLElement) =>
+            Object.fromEntries(
+                [...root.querySelectorAll('.usage-figure')].map((node) => [
+                    node.getAttribute('data-type'),
+                    node.querySelector('dd')?.textContent?.trim(),
+                ])
+            );
+        const section = () => document.querySelector('.batch-usage') as HTMLElement;
+        const settled = (usageState: string) =>
+            waitFor(() => expect(section()?.getAttribute('data-usage-state')).toBe(usageState), { timeout: 8000 });
+
+        it('renders the four measured types apart, a null as a dash and a measured zero as 0', async () => {
+            const one = measured({ input: 1200, output: 340, cacheRead: 0, cacheCreation: null });
+            board(started(plan, tasks), withUsage(one, { 'task-1': { tokenUsage: one, tokenUsageUnavailable: null } }));
+            renderApp(`/batches/${ID}`);
+            await settled('measured');
+            expect(figures(section())).toEqual({ input: '1,200', output: '340', cacheRead: '0', cacheCreation: '—' });
+            expect(figures(card('task-1'))).toEqual({
+                input: '1,200',
+                output: '340',
+                cacheRead: '0',
+                cacheCreation: '—',
+            });
+            // The unstarted task has nothing measured: a sentence, not four zeros.
+            expect(within(card('task-2')).getByText('No usage was measured for this selection.')).toBeTruthy();
+            expect(card('task-2').querySelector('.usage-figure')).toBeNull();
+            expect(section().textContent).not.toContain('Live: provisional');
+        });
+
+        it('says a live batch is provisional as of the snapshot', async () => {
+            const live = measured({ input: 5, output: 6, cacheRead: 7, cacheCreation: 8 }, { provisional: true });
+            board(started(plan, tasks), withUsage(live, {}));
+            renderApp(`/batches/${ID}`);
+            expect(
+                (await screen.findByText(/Live: provisional as of 2026-09-01 00:10:00 UTC/)).textContent
+            ).toBeTruthy();
+        });
+
+        it('keeps the scheduling UI when usage is unavailable, and names a removed member', async () => {
+            const down = emptyBlock('unavailable');
+            const fake = board(
+                started(plan, [state('task-1', 'stage-1', { execution: 'failed' }), state('task-2', 'stage-1')]),
+                withUsage(
+                    down,
+                    {
+                        'task-1': { tokenUsage: down, tokenUsageUnavailable: 'task-removed' },
+                        'task-2': { tokenUsage: down, tokenUsageUnavailable: 'telemetry' },
+                    },
+                    {
+                        totals: { tokenUsage: down, usageUnavailableTasks: 1 },
+                    }
+                )
+            );
+            renderApp(`/batches/${ID}`);
+            await settled('unavailable');
+            expect(section().textContent).toContain('Usage is unavailable: the telemetry could not be read.');
+            expect(section().textContent).toContain('Partial: usage of 1 task was removed');
+            expect(within(card('task-1')).getByText(/the task was removed after the batch started/)).toBeTruthy();
+            expect(
+                within(card('task-2')).getByText('Usage is unavailable: the telemetry could not be read.')
+            ).toBeTruthy();
+            expect(screen.getByRole('button', { name: 'Retry task-1' })).toBeTruthy();
+
+            // A report that cannot be read at all reads as unavailable too, never as zero.
+            fake.setReport(null);
+            await waitFor(() => expect(section().getAttribute('data-usage-state')).toBe('unavailable'), {
+                timeout: 8000,
+            });
+            expect(screen.getByRole('button', { name: 'Retry task-1' })).toBeTruthy();
+        }, 20_000);
+
+        it('expands the model rows behind a disclosure', async () => {
+            const row = {
+                model: 'model-a',
+                querySource: null,
+                rawModels: ['model-a'],
+                tokens: measured({ input: 9 }).tokens,
+            };
+            const one = measured({ input: 9 }, { rows: [row] });
+            board(started(plan, tasks), withUsage(one, {}));
+            renderApp(`/batches/${ID}`);
+            const more = (await screen.findByText('Usage by model')).closest('details') as HTMLDetailsElement;
+            expect(more.open).toBe(false);
+            await userEvent.click(screen.getByText('Usage by model'));
+            expect(more.open).toBe(true);
+            expect(within(more).getByText('model-a')).toBeTruthy();
+        });
     });
 });

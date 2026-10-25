@@ -27,6 +27,7 @@ import {
     type BatchStage,
     type BatchTarget,
     type BatchTask,
+    type UsageBlock,
 } from '@factory-ai/core';
 
 /**
@@ -91,11 +92,42 @@ export interface BatchRecord extends Omit<BatchSummary, 'title' | 'taskCount'> {
 export interface BatchReportView {
     state: string;
     /** `execution` and `attempts` name the run each `next` was judged on (server `BatchReportTask`). */
-    tasks: { key: string; execution: string; attempts: number; next: BatchNextAction }[];
+    tasks: {
+        key: string;
+        execution: string;
+        attempts: number;
+        next: BatchNextAction;
+        usage: { tokenUsage: UsageBlock; tokenUsageUnavailable: BatchUsageUnavailable | null };
+    }[];
+    /** The one snapshot the membership and every usage block were read in. */
+    usageSnapshotAt: string;
+    totals: { tokenUsage: UsageBlock; usageUnavailableTasks: number };
+}
+
+/** Why a task's usage block is `unavailable`: telemetry could not be read, or the member task was removed. */
+export type BatchUsageUnavailable = 'task-removed' | 'telemetry';
+
+export type BatchUsageState = 'loading' | 'unavailable' | 'unmeasured' | 'measured';
+
+/**
+ * How the batch's usage reads, from the report the board assembled. A report that failed to read is
+ * `unavailable`, one still in flight `loading`; the state, the provisional flag and the partial count
+ * are the board's own words, never recomputed here.
+ */
+export function batchUsageState(
+    report: Pick<BatchReportView, 'totals'> | null,
+    reportFailed: boolean
+): { state: BatchUsageState; provisional: boolean; unavailableTasks: number } {
+    if (report === null)
+        return { state: reportFailed ? 'unavailable' : 'loading', provisional: false, unavailableTasks: 0 };
+    const { tokenUsage, usageUnavailableTasks } = report.totals;
+    return { state: tokenUsage.state, provisional: tokenUsage.provisional, unavailableTasks: usageUnavailableTasks };
 }
 
 /** The report as the model reads it; null until the first one lands. */
-export type BatchNextOf = Pick<BatchReportView, 'tasks'> | null;
+export type BatchNextOf = {
+    tasks: Pick<BatchReportView['tasks'][number], 'key' | 'execution' | 'attempts' | 'next'>[];
+} | null;
 
 export type BatchVerdict = 'draft' | 'running' | 'needs_attention' | 'completed' | 'cancelled' | 'expired';
 

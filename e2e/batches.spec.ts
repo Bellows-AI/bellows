@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { BatchRecord } from '../web/src/batch-model.js';
-import { BatchBoard } from './fixtures/batch-board.js';
+import { BatchBoard, usageBatch, type UsageVariant } from './fixtures/batch-board.js';
 import { seededTaskId } from './routes.js';
 import { type Theme, VIEWPORTS } from './screenshot-matrix.js';
 import { noHorizontalOverflow } from './viewport.js';
@@ -133,4 +133,83 @@ test('a refused plan shows each problem at its field and writes nothing', async 
     await expect(page.locator('p.status.error')).toContainText('The plan has problems');
     await expect(page.getByLabel('Title')).toHaveAttribute('aria-invalid', 'true');
     await expect(page).toHaveURL(/\/batches\/new$/);
+});
+
+const USAGE_IDS: Record<UsageVariant, string> = {
+    live: '0f53d75f-0000-4000-8000-000000000842',
+    completed: '0f53d75f-0000-4000-8000-000000000843',
+    unavailable: '0f53d75f-0000-4000-8000-000000000844',
+};
+
+const figuresOf = (scope: Locator) =>
+    scope
+        .locator('.usage-figure')
+        .evaluateAll((nodes) =>
+            Object.fromEntries(
+                nodes.map((node) => [node.getAttribute('data-type'), node.querySelector('dd')?.textContent])
+            )
+        );
+
+test.describe('batch token usage', () => {
+    const theme: Theme = 'light';
+
+    async function open(page: Page, variant: UsageVariant): Promise<void> {
+        await useTheme(page, theme);
+        const board = new BatchBoard(page);
+        await board.install();
+        const { record, report } = usageBatch(USAGE_IDS[variant], variant);
+        board.adopt(record, report);
+        await page.goto(`/batches/${record.id}`);
+        await expect(page.getByRole('heading', { name: 'Token usage' })).toBeVisible();
+    }
+
+    test('a live batch reads provisional; measured, unmeasured and zero read apart', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page, 'live');
+        const section = page.locator('.batch-usage');
+        await expect(section).toContainText('Live: provisional as of 2026-09-01 00:10:00 UTC.');
+        expect(await figuresOf(section)).toMatchObject({
+            input: expect.stringContaining('8,620'),
+            cacheCreation: expect.stringContaining('900'),
+        });
+        await expect(section).toContainText('1 of 2 sessions measured');
+
+        // The expansion shows the model row and the unknown row; the card shows its own figures.
+        await section.getByText('Usage by model').click();
+        await expect(section.locator('tr[data-model="model-a"]')).toBeVisible();
+        await expect(section.locator('tr[data-model="unknown"], tr[data-model="(unknown)"]').first()).toBeVisible();
+
+        const measured = page.locator('[data-task="task-1"]');
+        expect(await figuresOf(measured)).toMatchObject({ input: expect.stringContaining('8,500') });
+        await expect(page.locator('[data-task="task-2"]')).toContainText('No usage was measured for this selection.');
+        await expect(page.locator('[data-task="task-2"] .usage-figure')).toHaveCount(0);
+        const zero = await figuresOf(page.locator('[data-task="task-3"]'));
+        expect(zero.cacheCreation).toBe('0');
+        expect(zero.cacheRead).toBe('0');
+
+        // The scheduling UI is untouched.
+        await expect(page.getByRole('heading', { name: 'Report' })).toBeVisible();
+        await expect(page.getByRole('region', { name: 'Stage 1' })).toBeVisible();
+        await shoot(page, 'usage-live', theme);
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('a completed batch carries no provisional note', async ({ page }) => {
+        await open(page, 'completed');
+        await expect(page.locator('.batch-usage')).not.toContainText('Live: provisional');
+        await expect(page.locator('.batch-usage')).toHaveAttribute('data-usage-state', 'measured');
+        await shoot(page, 'usage-completed', theme);
+    });
+
+    test('a telemetry outage says so and leaves the scheduling UI', async ({ page }) => {
+        await open(page, 'unavailable');
+        const section = page.locator('.batch-usage');
+        await expect(section).toHaveAttribute('data-usage-state', 'unavailable');
+        await expect(section).toContainText('the telemetry could not be read');
+        await expect(section).toContainText('Partial: usage of 1 task was removed');
+        await expect(page.locator('[data-task="task-4"]')).toContainText('the task was removed');
+        await expect(page.locator('[data-task="task-1"] .usage-figure')).toHaveCount(0);
+        await expect(page.getByRole('region', { name: 'Stage 1' })).toBeVisible();
+        await shoot(page, 'usage-unavailable', theme);
+    });
 });

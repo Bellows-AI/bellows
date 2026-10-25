@@ -15,14 +15,15 @@ import {
     taskExecutorOf,
     taskStateLabel,
     taskTargetOf,
-    type BatchNextOf,
     type BatchRecord,
+    type BatchReportView,
     type BatchTaskState,
     type StageView,
     verificationFailed,
     verificationPending,
 } from '../batch-model.js';
 import { Origin } from './BatchPlanReview.js';
+import { BatchUsage, TaskUsage } from './BatchUsage.js';
 
 /**
  * A started batch, as the board's read model says it stands: the stages in order, each one's
@@ -46,7 +47,7 @@ function TaskCard({
     pending,
 }: {
     batch: BatchRecord;
-    report: BatchNextOf;
+    report: BatchReportView | null;
     view: StageView['tasks'][number];
     onRetry: TaskAction;
     onAccept: TaskAction;
@@ -64,6 +65,7 @@ function TaskCard({
         !isAccepted(state) &&
         batch.status !== BATCH_CANCELLED;
     const busy = pending === state.key;
+    const taskUsage = report?.tasks.find((entry) => entry.key === state.key)?.usage;
     return (
         <li className="batch-task" data-task={state.key}>
             <div className="batch-task-head">
@@ -89,6 +91,7 @@ function TaskCard({
                     )
                 ) : null}
             </p>
+            {taskUsage === undefined ? null : <TaskUsage usage={taskUsage} />}
             {state.waitReason !== null ? <p className="batch-wait">Waiting: {state.waitReason}</p> : null}
             {instruction ? <p className="batch-gate">{instruction}</p> : null}
             <div className="batch-actions">
@@ -115,7 +118,7 @@ function StageRow({
     ...actions
 }: {
     batch: BatchRecord;
-    report: BatchNextOf;
+    report: BatchReportView | null;
     view: StageView;
     index: number;
     onRetry: TaskAction;
@@ -176,7 +179,7 @@ function StageRow({
 }
 
 /** What landed, what waits on you, what has not begun, and the pull requests merged so far. */
-export function BatchReport({ batch, report }: { batch: BatchRecord; report: BatchNextOf }) {
+export function BatchReport({ batch, report }: { batch: BatchRecord; report: BatchReportView | null }) {
     const counts = morningReport(batch, report);
     const merged = batch.tasks.filter(
         (task): task is BatchTaskState => isAccepted(task) && task.pr !== TASK_NO_PR && PR_URL.test(task.pr)
@@ -230,13 +233,16 @@ export function BatchReport({ batch, report }: { batch: BatchRecord; report: Bat
 export function BatchMonitor({
     batch,
     report,
+    reportFailed,
     onRetry,
     onAccept,
     pending,
 }: {
     batch: BatchRecord;
-    /** The board's report, for each task's `next`; null until the first one lands. */
-    report: BatchNextOf;
+    /** The board's report, for each task's `next` and usage; null until the first one lands. */
+    report: BatchReportView | null;
+    /** The report read failed: usage reads unavailable while the scheduling UI stays. */
+    reportFailed: boolean;
     onRetry: TaskAction;
     onAccept: TaskAction;
     pending: string | null;
@@ -244,6 +250,7 @@ export function BatchMonitor({
     return (
         <>
             <BatchReport batch={batch} report={report} />
+            <BatchUsage report={report} reportFailed={reportFailed} />
             {stageViews(batch).map((view, index) => (
                 <StageRow
                     key={view.stage.key}

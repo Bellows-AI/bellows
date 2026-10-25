@@ -1,9 +1,11 @@
 import type { Page, Route } from '@playwright/test';
+import { UNKNOWN_BUCKET, emptyBlock, type Tokens, type UsageBlock, type UsageRow } from '@factory-ai/core';
 import {
     type BatchRecord,
     type BatchReportView,
     type BatchSummary,
     type BatchTaskState,
+    addTask,
     blankPlan,
     updateTask,
 } from '../../web/src/batch-model.js';
@@ -34,6 +36,14 @@ const summaryOf = (record: BatchRecord): BatchSummary => ({
     cancelledAt: record.cancelledAt,
     completedAt: record.completedAt,
     expiredAt: record.expiredAt,
+});
+
+/** A report that names no task and measured no usage. */
+const bareReport = (state: string): BatchReportView => ({
+    state,
+    tasks: [],
+    usageSnapshotAt: new Date().toISOString(),
+    totals: { tokenUsage: emptyBlock('unmeasured'), usageUnavailableTasks: 0 },
 });
 
 export class BatchBoard {
@@ -89,7 +99,7 @@ export class BatchBoard {
         const now = new Date().toISOString();
         const [action] = rest;
         if (method === 'GET' && action === 'report') {
-            return this.reports.get(id) ?? { state: this.held(id).status, tasks: [] };
+            return this.reports.get(id) ?? bareReport(this.held(id).status);
         }
         if (method === 'GET') return this.held(id);
         if (method === 'PUT') {
@@ -179,7 +189,166 @@ export const BATCH_DETAIL_STATES: Record<string, { record: BatchRecord; report?:
         }),
         report: {
             state: 'running',
-            tasks: [{ key: 'task-1', execution: 'succeeded', attempts: 1, next: { action: 'wait' } }],
+            tasks: [
+                {
+                    key: 'task-1',
+                    execution: 'succeeded',
+                    attempts: 1,
+                    next: { action: 'wait' },
+                    usage: { tokenUsage: emptyBlock('unmeasured'), tokenUsageUnavailable: null },
+                },
+            ],
+            usageSnapshotAt: '2026-09-01T00:10:00.000Z',
+            totals: { tokenUsage: emptyBlock('unmeasured'), usageUnavailableTasks: 0 },
         },
     },
 };
+
+const measured = (tokens: Partial<Tokens>, over: Partial<UsageBlock> = {}): UsageBlock => {
+    const base = emptyBlock('measured');
+    const all = { ...base.tokens, ...tokens };
+    const exact = (value: number | null) => (value === null ? null : ('exact' as const));
+    return {
+        ...base,
+        tokens: all,
+        assigned: all,
+        precision: {
+            input: exact(all.input),
+            output: exact(all.output),
+            cacheRead: exact(all.cacheRead),
+            cacheCreation: exact(all.cacheCreation),
+        },
+        ...over,
+    };
+};
+
+const MODEL_ROWS: UsageRow[] = [
+    {
+        model: 'model-a',
+        rawModels: ['model-a'],
+        querySource: null,
+        tokens: { input: 8000, output: 2100, cacheRead: 40000, cacheCreation: 900 },
+        children: [
+            {
+                model: 'model-a',
+                rawModels: ['model-a'],
+                querySource: 'main',
+                tokens: { input: 7000, output: 2000, cacheRead: 40000, cacheCreation: 900 },
+            },
+            {
+                model: 'model-a',
+                rawModels: ['model-a'],
+                querySource: UNKNOWN_BUCKET,
+                tokens: { input: 1000, output: 100, cacheRead: 0, cacheCreation: 0 },
+            },
+        ],
+    },
+    {
+        model: UNKNOWN_BUCKET,
+        rawModels: [UNKNOWN_BUCKET],
+        querySource: null,
+        tokens: { input: 500, output: 50, cacheRead: null, cacheCreation: null },
+    },
+];
+
+/** One task with a model row and an unknown row, partial coverage on cache read. */
+const TASK_ONE = measured(
+    { input: 8500, output: 2150, cacheRead: 40000, cacheCreation: 900 },
+    {
+        rows: MODEL_ROWS,
+        coverage: {
+            input: { measured: 2, contributors: 2 },
+            output: { measured: 2, contributors: 2 },
+            cacheRead: { measured: 1, contributors: 2 },
+            cacheCreation: { measured: 2, contributors: 2 },
+        },
+        counts: { sessions: 2, runs: 2, tasks: 1 },
+    }
+);
+
+/** Measured, with a cache write that is a real zero. */
+const TASK_THREE = measured({ input: 120, output: 30, cacheRead: 0, cacheCreation: 0 });
+
+export type UsageVariant = 'live' | 'completed' | 'unavailable';
+
+/**
+ * A four-task batch and the report the board would assemble: `task-1` measured (a model row, an
+ * unknown row, partial coverage), `task-2` not started (unmeasured), `task-3` a measured-zero cache
+ * write, `task-4` not started. `live` is provisional; `unavailable` is a telemetry outage with `task-4`
+ * removed after the start, so the total is partial.
+ */
+export function usageBatch(id: string, variant: UsageVariant): { record: BatchRecord; report: BatchReportView } {
+    const base = runningBatch(id, { plan: { title: `Usage ${variant}` } });
+    const plan = ['task-2', 'task-3', 'task-4'].reduce(
+        (acc, key) =>
+            updateTask(addTask(acc, 'stage-1'), key, (task) => ({
+                ...task,
+                objective: `${key}: do it`,
+                acceptance: `${key}: it works`,
+                verification: 'npm test',
+            })),
+        base.plan
+    );
+    const done = variant === 'completed';
+    const states: [string, BatchTaskState['execution']][] = [
+        ['task-1', 'succeeded'],
+        ['task-2', 'pending'],
+        ['task-3', done ? 'succeeded' : 'running'],
+        ['task-4', 'pending'],
+    ];
+    const record: BatchRecord = {
+        ...base,
+        status: done ? 'completed' : 'running',
+        completedAt: done ? base.startedAt : null,
+        plan,
+        tasks: states.map(([key, execution]) => ({
+            ...base.tasks[0]!,
+            key,
+            execution,
+            pr: key === 'task-1' ? base.tasks[0]!.pr : 'none',
+            gate: key === 'task-1' ? 'passed' : 'open',
+            waitReason: null,
+        })),
+    };
+    const down = variant === 'unavailable';
+    const provisional = variant === 'live';
+    const perTask: Record<
+        string,
+        { tokenUsage: UsageBlock; tokenUsageUnavailable: 'telemetry' | 'task-removed' | null }
+    > = {
+        'task-1': { tokenUsage: TASK_ONE, tokenUsageUnavailable: null },
+        'task-2': { tokenUsage: emptyBlock('unmeasured'), tokenUsageUnavailable: null },
+        'task-3': { tokenUsage: TASK_THREE, tokenUsageUnavailable: null },
+        'task-4': { tokenUsage: emptyBlock('unmeasured'), tokenUsageUnavailable: null },
+    };
+    if (down) {
+        for (const key of ['task-1', 'task-2', 'task-3']) {
+            perTask[key] = { tokenUsage: emptyBlock('unavailable'), tokenUsageUnavailable: 'telemetry' };
+        }
+        perTask['task-4'] = { tokenUsage: emptyBlock('unavailable'), tokenUsageUnavailable: 'task-removed' };
+    }
+    const total = down
+        ? emptyBlock('unavailable')
+        : measured(
+              { input: 8620, output: 2180, cacheRead: 40000, cacheCreation: 900 },
+              { rows: MODEL_ROWS, coverage: TASK_ONE.coverage, provisional }
+          );
+    return {
+        record,
+        report: {
+            state: done ? 'completed' : 'running',
+            tasks: states.map(([key, execution]) => ({
+                key,
+                execution,
+                attempts: 1,
+                next: { action: 'wait' },
+                usage: {
+                    ...perTask[key]!,
+                    tokenUsage: { ...perTask[key]!.tokenUsage, provisional: provisional && !down },
+                },
+            })),
+            usageSnapshotAt: '2026-09-01T00:10:00.000Z',
+            totals: { tokenUsage: total, usageUnavailableTasks: down ? 1 : 0 },
+        },
+    };
+}

@@ -11,6 +11,7 @@ the batch contract: [../batches.md](../batches.md).
 | Draft form: stages, parallel tasks, policies, per-field issues | `web/src/panels/BatchEditor.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Inherited versus overridden, shown before launch | `web/src/panels/BatchPlanReview.tsx`, `web/src/batch-model.ts` | `web/test/batch-model.test.ts`, `e2e/batches.spec.ts` |
 | Monitor: stage rows, task cards, human gate, retry, accept, report | `web/src/panels/BatchMonitor.tsx` | `web/test/batch-pages.render.test.tsx`, `web/test/batch-detail.dom.test.tsx` |
+| Token usage: batch section, task-card figures, provisional and partial notes | `web/src/panels/BatchUsage.tsx`, `web/src/batch-model.ts` (`batchUsageState`), `web/src/components/usage/` | `web/test/batch-model.test.ts`, `web/test/batch-detail.dom.test.tsx`, `e2e/batches.spec.ts` |
 | Verdict, task state labels, retry eligibility, morning report | `web/src/batch-model.ts` | `web/test/batch-model.test.ts` |
 | Task page backlink | `web/src/components/BatchBacklink.tsx`, `server/src/routes/batches/batch-handlers.ts` (`?task=`) | `server/test/routes.batches.test.ts`, `e2e/batches.spec.ts` |
 | Sidenav item | `web/src/nav-model.ts` | `web/test/nav-model.test.ts` |
@@ -33,4 +34,4 @@ the batch contract: [../batches.md](../batches.md).
 Classes defined here: `batch-new`, `batch-editor`, `batch-form`, `batch-field-row`, `batch-field`,
 `batch-problem`, `batch-check`, `batch-task-edit`, `batch-actions`, `batch-stage`,
 `batch-stage-head`, `batch-tasks`, `batch-task`, `batch-task-head`, `batch-objective`,
-`batch-links`, `batch-wait`, `batch-gate`, `batch-origin`, `batch-review-stages`, `batch-backlink`.
+`batch-links`, `batch-wait`, `batch-usage`, `batch-task-usage`, `batch-usage-more`, `batch-gate`, `batch-origin`, `batch-review-stages`, `batch-backlink`.
