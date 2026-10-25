@@ -40,6 +40,7 @@ import {
     MS_PER_SECOND,
     parsePodMetrics,
     boundedBy,
+    containerStatusOf,
     POLL_MS,
     waitOf,
     withSignal,
@@ -64,7 +65,7 @@ import {
     supervisedStepMembers,
 } from '../supervised-steps.js';
 import { CLAUDE_CODE, OPENCODE } from '../executors.js';
-import { KILL_WINDDOWN_MS, type SupervisorReport } from '../supervisor-contract.js';
+import { AGENT_CONTAINER, KILL_WINDDOWN_MS, type SupervisorReport } from '../supervisor-contract.js';
 import { readViaReaderJob, type ReaderResult } from './k8s-reader.js';
 
 /**
@@ -220,6 +221,23 @@ async function sampleRuntime(deps: K8sDeps, job: BoardJob) {
     }
     if (metrics.status >= HTTP_ERROR_STATUS) return composeRuntimeSample(null, services);
     return composeRuntimeSample(parsePodMetrics(metrics.body), services);
+}
+
+// The agent container's own start: running, or terminated with a start time. Sidecars running while the
+// agent waits (ImagePullBackOff) prove nothing, and neither does a pod or status that cannot be read.
+async function agentStarted(deps: K8sDeps, job: BoardJob): Promise<boolean> {
+    try {
+        const pods = await deps.request('GET', jobPodsPath(deps.config.k8sNamespace, runnerName(job)));
+        const read = podsOf(pods, 'listing the runner pods');
+        const state =
+            read.kind === 'value' ? containerStatusOf(livePodOfItems(read.value), AGENT_CONTAINER)?.state : undefined;
+        if (state?.running) return true;
+        // A refused start (StartError) can carry the epoch as its start time: only a real instant proves it ran.
+        const startedAt = Date.parse(state?.terminated?.startedAt ?? '');
+        return Number.isFinite(startedAt) && startedAt > 0;
+    } catch {
+        return false;
+    }
 }
 
 // The same contract as `docker kill ... .catch(() => undefined)`: a kill that finds nothing is the
@@ -554,6 +572,7 @@ export function createKubernetesRunner(
     };
     return onOwnGroup({
         sampleRuntime: (job: BoardJob) => sampleRuntime(deps, job),
+        agentStarted: (job: BoardJob) => agentStarted(deps, job),
         kill: (job: BoardJob) => killRunner(deps, job),
         stopAgent: (job: BoardJob) => stopAgent(deps, job),
         recordKill: (job: BoardJob, kill: KillRecord) => ledgerOf(deps).record(job, kill),

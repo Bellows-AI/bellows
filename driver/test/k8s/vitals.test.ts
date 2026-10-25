@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { AGENT_CONTAINER } from '../../src/supervisor-contract.js';
 import type { BoardJob } from '../../src/board/board.js';
 import { loadDriverConfig } from '../../src/config.js';
 import { Inconclusive } from '../../src/runner.js';
@@ -26,6 +27,50 @@ import {
  * runner's own pod — and null, never an error, whenever there is nothing to read (no pod yet,
  * no metrics-server in the cluster, a body that is not metrics).
  */
+describe('the agent container start proof (issue #845)', () => {
+    const base = fakeRequest();
+    /** A runner whose pod listing answers `statuses`: the only thing the proof may read. */
+    const withStatuses = (containerStatuses: unknown[]) =>
+        runner((method, path, body) =>
+            method === 'GET' && /\/pods\?/.test(path)
+                ? Promise.resolve({
+                      status: 200,
+                      body: JSON.stringify({
+                          items: [{ metadata: { name: podName }, status: { phase: 'Running', containerStatuses } }],
+                      }),
+                  })
+                : base.request(method, path, body)
+        );
+    const sidecarsUp = { name: 'svc-db', state: { running: { startedAt: '2026-10-25T07:00:00Z' } } };
+
+    it('is no proof while the agent waits on its image, however healthy the sidecars are', async () => {
+        const waiting = { name: AGENT_CONTAINER, state: { waiting: { reason: 'ImagePullBackOff' } } };
+        expect(await withStatuses([sidecarsUp, waiting]).agentStarted(job)).toBe(false);
+    });
+
+    it('is proof once the agent container runs, or ended having started', async () => {
+        const running = { name: AGENT_CONTAINER, state: { running: { startedAt: '2026-10-25T07:00:00Z' } } };
+        const ended = {
+            name: AGENT_CONTAINER,
+            state: { terminated: { exitCode: 0, startedAt: '2026-10-25T07:00:00Z' } },
+        };
+        const neverStarted = { name: AGENT_CONTAINER, state: { terminated: { exitCode: 128, reason: 'StartError' } } };
+        expect(await withStatuses([sidecarsUp, running]).agentStarted(job)).toBe(true);
+        expect(await withStatuses([ended]).agentStarted(job)).toBe(true);
+        expect(await withStatuses([neverStarted]).agentStarted(job)).toBe(false);
+        const epochStart = {
+            name: AGENT_CONTAINER,
+            state: { terminated: { exitCode: 128, reason: 'StartError', startedAt: '1970-01-01T00:00:00Z' } },
+        };
+        expect(await withStatuses([epochStart]).agentStarted(job)).toBe(false);
+    });
+
+    it('answers false, never an error, when the pod cannot be read', async () => {
+        const broken = runner(() => Promise.reject(new Error('apiserver down')));
+        expect(await broken.agentStarted(job)).toBe(false);
+    });
+});
+
 describe('the runner vitals', () => {
     it('parses the PodMetrics object the metrics API answers', () => {
         expect(parsePodMetrics(JSON.stringify({ containers: [{ usage: { cpu: '250m', memory: '150Mi' } }] }))).toEqual({

@@ -20,7 +20,16 @@ import { drainTranscriptExport } from './loop-export.js';
 import { openChain, replayGates } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
-import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
+import {
+    confirmOnProof,
+    heartbeat,
+    newJobState,
+    raceStep,
+    launchConfirmer,
+    registerLive,
+    stopIfDraining,
+    watchOutput,
+} from './loop-attempt.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from '../timeout-note.js';
 import {
@@ -313,6 +322,10 @@ async function reportRunTail(
     // A run an earlier claim launched (adopted or taken over) is no launch by this claim: the board
     // would otherwise count the adopting claim as a new token-producing execution.
     const launchedHere = !ctx.adopted && !ctx.takeover;
+    // A run that finished without ever streaming or being sampled still ran: the fallback for the
+    // evidence the runner's own scrape does not carry (claude-code names its session up front).
+    if (launchedHere && outcome.started && !outcome.refused && !outcome.sessionId)
+        await confirmOnProof(rt, job, ctx.state);
     await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
@@ -351,6 +364,8 @@ async function launchRun(
     // session id reported for one would name a conversation that never existed. A taken-over run's
     // session was reported by the claim that started it.
     if (!ctx.takeover) await reportNewSession(rt, job, session);
+    // A taken-over run was launched by an earlier claim: this one proves nothing about a launch.
+    if (!ctx.takeover && session) state.confirmLaunch = launchConfirmer(rt, job, session.id);
     state.launched = true;
     transition(state, 'launched');
     // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.

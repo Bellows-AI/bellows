@@ -131,6 +131,44 @@ describe.skipIf(!enabled)('interrupting an attempt the infrastructure took away 
         });
     });
 
+    const launches = (id: string) =>
+        sql<{ claim_seq: string; launch: string; adopts_claim_seq: string | null }[]>`
+            select claim_seq, launch, adopts_claim_seq from job_execution where job_id = ${id} order by claim_seq`;
+
+    // Issue #845: the interruption is the write point of a refused launch and of an adoption link.
+    it('records a refused start on the claim it releases, and a replayed release changes nothing', async () => {
+        const id = await queue();
+        const c = await claim();
+        const body = { reason: 'the runner reports the container never started', release: true, refused: true };
+        expect(await store.interrupt(id, c.leaseToken, body)).toEqual({ result: 'ok', status: 'queued' });
+        expect(await store.interrupt(id, c.leaseToken, body)).toEqual({ result: 'ok', status: 'queued' });
+
+        expect(await launches(id)).toEqual([
+            { claim_seq: String(c.claimSeq), launch: 'refused', adopts_claim_seq: null },
+        ]);
+        expect((await store.get(id))?.interruptions).toHaveLength(1);
+    });
+
+    it('links the adopter to the original claim through the adoption the expiry already recorded', async () => {
+        const id = await queue();
+        const original = await claim();
+        await age(id);
+        const adopter = await claim();
+        await store.interrupt(id, adopter.leaseToken, {
+            reason: 'adopted',
+            release: false,
+            claimSeq: original.claimSeq,
+        });
+
+        expect(await launches(id)).toEqual([
+            { claim_seq: String(original.claimSeq), launch: 'unknown', adopts_claim_seq: null },
+            { claim_seq: String(adopter.claimSeq), launch: 'adopted', adopts_claim_seq: String(original.claimSeq) },
+        ]);
+        // The adopter creates no execution beyond its own claim, and the budget is spent once.
+        expect(await launches(id)).toHaveLength(2);
+        expect((await store.get(id))?.interruptions).toHaveLength(1);
+    });
+
     it('lets a Stop requested before the interruption win: the row settles stopped', async () => {
         const id = await queue();
         const c = await claim();

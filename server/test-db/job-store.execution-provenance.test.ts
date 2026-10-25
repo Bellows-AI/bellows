@@ -45,7 +45,10 @@ interface ExecutionRow {
     executor: string | null;
     agent: string | null;
     launch: string;
+    adopts_claim_seq: string | null;
     resumed: boolean;
+    created_at: Date;
+    ended_at: Date | null;
     origin: string;
     removed_at: Date | null;
     updated_at: Date;
@@ -338,7 +341,7 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             expect(await store.session(id, first.leaseToken, stale)).toBe('lost');
 
             expect(await sessions(id)).toEqual([]);
-            expect((await executions(id)).map((r) => r.launch)).toEqual(['requested', 'requested']);
+            expect((await executions(id)).map((r) => r.launch)).toEqual(['unknown', 'requested']);
             const [job] = await sql<{ session_id: string | null }[]>`select session_id from job where id = ${id}`;
             expect(job?.session_id).toBeNull();
             expect(second.claimSeq).toBe(first.claimSeq + 1);
@@ -374,9 +377,8 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             await store.session(id, c.leaseToken, randomUUID(), { observed: true });
             expect((await executions(id))[0]?.launch).toBe('observed');
 
-            await sql`update job_execution set launch = 'adopted' where org_id = ${ORG} and job_id = ${id}`;
             await store.session(id, c.leaseToken, randomUUID(), { observed: true });
-            expect((await executions(id))[0]?.launch).toBe('adopted');
+            expect((await executions(id))[0]?.launch).toBe('observed');
         });
 
         it('fills the telemetry agent once a report names it and keeps the first name', async () => {
@@ -404,6 +406,393 @@ describe.skipIf(!enabled)('execution provenance — database', () => {
             await store.session(id, c.leaseToken, session, evidence);
 
             expect((await executions(id))[0]?.updated_at).toEqual(before?.updated_at);
+        });
+    });
+    describe('launch transitions', () => {
+        const launches = async (jobId: string) =>
+            (await executions(jobId)).map((r) => [
+                Number(r.claim_seq),
+                r.launch,
+                r.adopts_claim_seq === null ? null : Number(r.adopts_claim_seq),
+            ]);
+        const forceLaunch = (jobId: string, seq: number, to: string) =>
+            sql`update job_execution set launch = ${to},
+                    adopts_claim_seq = case when ${to}::text = 'adopted' then claim_seq - 1 else adopts_claim_seq end
+                where org_id = ${ORG} and job_id = ${jobId} and claim_seq = ${seq}`;
+        const adopt = (jobId: string, lease: string, claimSeq: number) =>
+            store.interrupt(jobId, lease, {
+                reason: `adopted the runner of claim ${claimSeq}`,
+                release: false,
+                claimSeq,
+            });
+
+        it('refuses in storage every move that is not forward', async () => {
+            const legal: [string, string][] = [
+                ['requested', 'observed'],
+                ['requested', 'refused'],
+                ['requested', 'unknown'],
+                ['requested', 'adopted'],
+                ['unknown', 'observed'],
+            ];
+            const illegal: [string, string][] = [
+                ['observed', 'requested'],
+                ['observed', 'unknown'],
+                ['observed', 'refused'],
+                ['refused', 'requested'],
+                ['refused', 'observed'],
+                ['refused', 'unknown'],
+                ['unknown', 'requested'],
+                ['unknown', 'refused'],
+            ];
+            const reach = async (from: string, jobId: string, seq: number) => {
+                // Walk the legal graph to `from`, so each case starts from a state storage allows.
+                const path: Record<string, string[]> = {
+                    requested: [],
+                    observed: ['observed'],
+                    refused: ['refused'],
+                    unknown: ['unknown'],
+                };
+                for (const step of path[from] ?? []) await forceLaunch(jobId, seq, step);
+            };
+            for (const [from, to] of legal) {
+                const id = await queue();
+                const c = await claim();
+                await reach(from, id, c.claimSeq);
+                await forceLaunch(id, c.claimSeq, to);
+                expect((await executions(id))[0]?.launch).toBe(to);
+            }
+            for (const [from, to] of illegal) {
+                const id = await queue();
+                const c = await claim();
+                await reach(from, id, c.claimSeq);
+                await expect(forceLaunch(id, c.claimSeq, to), `${from} -> ${to}`).rejects.toMatchObject({
+                    constraint_name: 'job_execution_launch_transition',
+                });
+                expect((await executions(id))[0]?.launch).toBe(from);
+            }
+        });
+
+        it('enforces adopts_claim_seq below the claim, set once, on adopted rows only', async () => {
+            const id = await queue();
+            const c = await claim();
+            const adoptsAt = (seq: number | null, launch: string) =>
+                sql`update job_execution set launch = ${launch}, adopts_claim_seq = ${seq}
+                    where org_id = ${ORG} and job_id = ${id} and claim_seq = ${c.claimSeq}`;
+
+            await expect(adoptsAt(c.claimSeq, 'adopted')).rejects.toMatchObject({
+                constraint_name: 'job_execution_adopts_earlier',
+            });
+            await expect(adoptsAt(null, 'adopted')).rejects.toMatchObject({
+                constraint_name: 'job_execution_adopted_link',
+            });
+            await expect(adoptsAt(c.claimSeq - 1, 'observed')).rejects.toMatchObject({
+                constraint_name: 'job_execution_adopted_link',
+            });
+            await sql`update job_execution set launch = 'adopted', adopts_claim_seq = 0
+                      where org_id = ${ORG} and job_id = ${id}`;
+            await expect(adoptsAt(0, 'observed')).rejects.toBeTruthy();
+            await expect(
+                sql`update job_execution set adopts_claim_seq = null where job_id = ${id}`
+            ).rejects.toBeTruthy();
+        });
+
+        it('turns a claim whose lease expired without evidence into unknown, and keeps observed', async () => {
+            const lost = await queue();
+            const first = await claim();
+            await store.session(lost, first.leaseToken, randomUUID());
+            await expireLease(sql, lost);
+            const second = await claim();
+            expect(await launches(lost)).toEqual([
+                [first.claimSeq, 'unknown', null],
+                [second.claimSeq, 'requested', null],
+            ]);
+
+            const seen = await queue();
+            const a = await claim();
+            await store.session(seen, a.leaseToken, randomUUID(), { observed: true });
+            await expireLease(sql, seen);
+            const b = await claim();
+            expect(await launches(seen)).toEqual([
+                [a.claimSeq, 'observed', null],
+                [b.claimSeq, 'requested', null],
+            ]);
+        });
+
+        it('fences a superseded claim out: its late evidence moves nothing', async () => {
+            const id = await queue();
+            const first = await claim();
+            await expireLease(sql, id);
+            await claim();
+            expect((await executions(id))[0]?.launch).toBe('unknown');
+
+            // The stale claim's own report is fenced out: nothing about it moves.
+            expect(await store.session(id, first.leaseToken, randomUUID(), { observed: true })).toBe('lost');
+            expect((await executions(id))[0]?.launch).toBe('unknown');
+        });
+
+        it('records a released attempt as unknown', async () => {
+            const drained = await queue();
+            const a = await claim();
+            await store.interrupt(drained, a.leaseToken, { reason: 'the driver was drained', release: true });
+            expect(await launches(drained)).toEqual([[a.claimSeq, 'unknown', null]]);
+        });
+
+        it('records a refused start as refused, and a later claim does not rewrite it', async () => {
+            const refused = await queue();
+            const b = await claim();
+            expect(
+                await store.interrupt(refused, b.leaseToken, {
+                    reason: 'the runner reports the container never started',
+                    release: true,
+                    refused: true,
+                })
+            ).toEqual({ result: 'ok', status: 'queued' });
+            expect(await launches(refused)).toEqual([[b.claimSeq, 'refused', null]]);
+
+            // The next claim of a refused start does not rewrite it.
+            const again = await claim();
+            expect(await launches(refused)).toEqual([
+                [b.claimSeq, 'refused', null],
+                [again.claimSeq, 'requested', null],
+            ]);
+        });
+
+        it('keeps observed when a launched attempt is released, even flagged refused', async () => {
+            const id = await queue();
+            const c = await claim();
+            await store.session(id, c.leaseToken, randomUUID(), { observed: true });
+            await store.interrupt(id, c.leaseToken, { reason: 'evicted', release: true, refused: true });
+            expect(await launches(id)).toEqual([[c.claimSeq, 'observed', null]]);
+        });
+
+        it('leaves launch alone when the interruption budget refuses the release', async () => {
+            const id = await queue();
+            const c = await claim();
+            await spendInterruptionBudget(sql, id);
+            expect(
+                await store.interrupt(id, c.leaseToken, { reason: 'evicted', release: true, refused: true })
+            ).toEqual({ result: 'exhausted' });
+            expect(await launches(id)).toEqual([[c.claimSeq, 'requested', null]]);
+        });
+
+        it('settles a verdict with no launch evidence as unknown, which a report after the settle cannot move', async () => {
+            const id = await queue();
+            const c = await claim();
+            await store.complete(id, c.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+            expect(await launches(id)).toEqual([[c.claimSeq, 'unknown', null]]);
+
+            // Reports are fenced to a running lease: a sample after the verdict proves nothing here.
+            await store.session(id, c.leaseToken, randomUUID(), { observed: true });
+            expect(await launches(id)).toEqual([[c.claimSeq, 'unknown', null]]);
+        });
+
+        it('settles a stopped attempt as unknown', async () => {
+            const stopped = await queue();
+            const a = await claim();
+            await store.stop(stopped, null);
+            await store.suspend(stopped, a.leaseToken);
+            expect(await launches(stopped)).toEqual([[a.claimSeq, 'unknown', null]]);
+        });
+
+        it('links an adopting claim to the original and creates no execution', async () => {
+            const id = await queue();
+            const original = await claim();
+            await expireLease(sql, id);
+            const adopter = await claim();
+
+            expect(await adopt(id, adopter.leaseToken, original.claimSeq)).toEqual({ result: 'ok', status: 'running' });
+
+            expect(await launches(id)).toEqual([
+                [original.claimSeq, 'unknown', null],
+                [adopter.claimSeq, 'adopted', original.claimSeq],
+            ]);
+            // Adoption writes no session association and no further execution row.
+            expect(await sessions(id)).toEqual([]);
+        });
+
+        it('adopts idempotently: a repeated adoption changes nothing and refunds once', async () => {
+            const id = await queue();
+            const original = await claim();
+            await expireLease(sql, id);
+            const adopter = await claim();
+            await adopt(id, adopter.leaseToken, original.claimSeq);
+            const [before] =
+                await sql`select * from job_execution where job_id = ${id} and claim_seq = ${adopter.claimSeq}`;
+
+            expect(await adopt(id, adopter.leaseToken, original.claimSeq)).toEqual({ result: 'ok', status: 'running' });
+
+            const [after] =
+                await sql`select * from job_execution where job_id = ${id} and claim_seq = ${adopter.claimSeq}`;
+            expect(after).toEqual(before);
+            expect(await executions(id)).toHaveLength(2);
+        });
+
+        it('never marks an adopting claim observed, whichever report follows', async () => {
+            const id = await queue();
+            const original = await claim();
+            await expireLease(sql, id);
+            const adopter = await claim();
+            await adopt(id, adopter.leaseToken, original.claimSeq);
+
+            await store.session(id, adopter.leaseToken, randomUUID(), { observed: true });
+
+            expect((await launches(id))[1]).toEqual([adopter.claimSeq, 'adopted', original.claimSeq]);
+        });
+
+        it('keeps an observed original observed when its adopter links to it', async () => {
+            const id = await queue();
+            const original = await claim();
+            await store.session(id, original.leaseToken, randomUUID(), { observed: true });
+            await expireLease(sql, id);
+            const adopter = await claim();
+            await adopt(id, adopter.leaseToken, original.claimSeq);
+            expect(await launches(id)).toEqual([
+                [original.claimSeq, 'observed', null],
+                [adopter.claimSeq, 'adopted', original.claimSeq],
+            ]);
+        });
+
+        it('records an adoption naming a claim not before its own, without failing the recovery', async () => {
+            const id = await queue();
+            const c = await claim();
+
+            expect(await adopt(id, c.leaseToken, c.claimSeq)).toEqual({ result: 'ok', status: 'running' });
+
+            expect(await launches(id)).toEqual([[c.claimSeq, 'requested', null]]);
+            expect((await store.get(id))?.interruptions).toHaveLength(1);
+        });
+
+        describe('claim end', () => {
+            const ends = async (jobId: string) =>
+                (await executions(jobId)).map((r) => ({
+                    seq: Number(r.claim_seq),
+                    ended: r.ended_at,
+                    start: r.created_at,
+                }));
+
+            it('stays open while the claim is live', async () => {
+                const id = await queue();
+                await claim();
+                expect((await ends(id))[0]?.ended).toBeNull();
+            });
+
+            it.each([
+                [
+                    'a verdict',
+                    async (id: string, lease: string) =>
+                        store.complete(id, lease, { status: 'succeeded', exitCode: 0, output: '' }),
+                ],
+                [
+                    'a release',
+                    async (id: string, lease: string) =>
+                        store.interrupt(id, lease, { reason: 'evicted', release: true }),
+                ],
+                [
+                    'a suspend after a stop',
+                    async (id: string, lease: string) => {
+                        await store.stop(id, null);
+                        return store.suspend(id, lease);
+                    },
+                ],
+            ])('stamps the end once with %s, never before the start', async (_name, end) => {
+                const id = await queue();
+                const c = await claim();
+                await end(id, c.leaseToken);
+                const [first] = await ends(id);
+                expect(first?.ended).toBeInstanceOf(Date);
+                expect(first!.ended!.getTime()).toBeGreaterThanOrEqual(first!.start.getTime());
+
+                await end(id, c.leaseToken);
+                expect((await ends(id))[0]?.ended).toEqual(first?.ended);
+            });
+
+            it('ends a lost lease at the claim that supersedes it, and gives the adopter its own start', async () => {
+                const id = await queue();
+                const original = await claim();
+                await expireLease(sql, id);
+                const adopter = await claim();
+                await adopt(id, adopter.leaseToken, original.claimSeq);
+
+                const [a, b] = await ends(id);
+                expect(a?.ended).toBeInstanceOf(Date);
+                expect(b?.ended).toBeNull();
+                expect(b!.start.getTime()).toBeGreaterThanOrEqual(a!.ended!.getTime());
+                expect(b!.start.getTime()).toBeGreaterThanOrEqual(a!.start.getTime());
+            });
+
+            it('lets a stale lease end nothing', async () => {
+                const id = await queue();
+                const first = await claim();
+                await expireLease(sql, id);
+                await claim();
+                const before = await ends(id);
+                await store.interrupt(id, first.leaseToken, { reason: 'late', release: true });
+                await store.complete(id, first.leaseToken, { status: 'succeeded', exitCode: 0, output: '' });
+                expect(await ends(id)).toEqual(before);
+                expect(before[1]?.ended).toBeNull();
+            });
+
+            it('never stamps an end before the claim started, whatever the clock of the ending transaction', async () => {
+                const id = await queue();
+                const c = await claim();
+                await sql`update job_execution set created_at = now() + interval '1 hour' where job_id = ${id}`;
+                await store.interrupt(id, c.leaseToken, { reason: 'evicted', release: true });
+                const [row] = await sql<{ ok: boolean }[]>`
+                    select ended_at >= created_at as ok from job_execution where job_id = ${id}`;
+                expect(row?.ok).toBe(true);
+            });
+
+            it('refuses in storage to move or precede an end', async () => {
+                const id = await queue();
+                const c = await claim();
+                await expect(
+                    sql`update job_execution set ended_at = created_at - interval '1 second' where job_id = ${id}`
+                ).rejects.toMatchObject({ constraint_name: 'job_execution_ended_after_start' });
+                await store.interrupt(id, c.leaseToken, { reason: 'evicted', release: true });
+                await expect(sql`update job_execution set ended_at = now() where job_id = ${id}`).rejects.toMatchObject(
+                    {
+                        constraint_name: 'job_execution_launch_transition',
+                    }
+                );
+            });
+        });
+
+        it('commits a launch outcome with the operation that proves it, or neither', async () => {
+            const id = await queue();
+            const c = await claim();
+            await expect(
+                sql.begin(async (tx) => {
+                    await tx`update job set status = 'queued', started_at = null, lease_token = null where id = ${id}`;
+                    expect(
+                        (await tx`select launch from job_execution where job_id = ${id}`).map((r) => r.launch)
+                    ).toEqual(['unknown']);
+                    throw new Error('the commit never happened');
+                })
+            ).rejects.toThrow('never happened');
+
+            expect(await launches(id)).toEqual([[c.claimSeq, 'requested', null]]);
+            expect(await store.get(id)).toMatchObject({ status: 'running' });
+        });
+
+        it('converges under repeated recovery: no invented execution, no lost association', async () => {
+            const id = await queue();
+            const first = await claim();
+            const session = randomUUID();
+            await store.session(id, first.leaseToken, session);
+            let last = first;
+            for (let round = 0; round < 3; round++) {
+                await expireLease(sql, id);
+                last = await claim();
+                await adopt(id, last.leaseToken, last.claimSeq - 1);
+                await adopt(id, last.leaseToken, last.claimSeq - 1);
+            }
+            const rows = await launches(id);
+            expect(rows.map((r) => r[0])).toEqual([1, 2, 3, 4].map((n) => first.claimSeq + n - 1));
+            expect(rows.map((r) => r[1])).toEqual(['unknown', 'adopted', 'adopted', 'adopted']);
+            expect(rows.map((r) => r[2])).toEqual(
+                [null, 1, 2, 3].map((n) => (n === null ? null : first.claimSeq + n - 1))
+            );
+            expect((await sessions(id)).filter((r) => r.origin === 'reported')).toHaveLength(1);
         });
     });
 });

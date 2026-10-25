@@ -14,10 +14,17 @@ import { StringDecoder } from 'node:string_decoder';
 import { promisify } from 'node:util';
 import { type BoardJob, UUID_SHAPE } from '../board/board.js';
 import type { DriverConfig } from '../config.js';
-import { containerName, dockerArgs, parseDockerServicePs } from './docker.js';
+import { containerName, dockerArgs, parseDockerServicePs, parseDockerStats } from './docker.js';
 import { CONTAINER_GONE } from '../exec-codes.js';
 import { telemetryConfig, telemetryConfigTar, telemetryCopyTarget } from '../telemetry-config.js';
-import { type Read, type RunOutcome, type RunSession, SERVICE_RESTART_TIMEOUT_MS } from '../runner.js';
+import {
+    composeRuntimeSample,
+    type Read,
+    type RunOutcome,
+    type RunSession,
+    type RuntimeSample,
+    SERVICE_RESTART_TIMEOUT_MS,
+} from '../runner.js';
 import {
     declaredServiceSpecs,
     groupServices,
@@ -640,4 +647,41 @@ export async function restartJobServices(
         if (signal.aborted) for (const spec of specs) await remove(execDocker, spec.name);
         throw e;
     }
+}
+
+// The agent container's own start, read off its inspect: `StartedAt` stays the zero time for a
+// container the daemon never managed to start (an OCI exec failure included), however much that
+// failed start printed. An unreadable or absent container proves nothing.
+export async function dockerAgentStarted(execDocker: ExecDocker, job: BoardJob): Promise<boolean> {
+    try {
+        const { stdout } = await execDocker(['inspect', '--format', '{{.State.StartedAt}}', containerName(job)]);
+        const startedAt = stdout.trim();
+        return startedAt !== '' && !startedAt.startsWith('0001-01-01');
+    } catch {
+        return false;
+    }
+}
+
+// The container is named by this attempt's lease token, so a sample can only ever resolve
+// its own attempt's runner — the same attempt-scoping every per-attempt operation here
+// leans on. A refused read (the container exited between the ask and the stats round-trip,
+// the daemon is busy) answers null, which the loop reads as "report no vitals this round".
+// The service fleet is read in the same sampling round, scoped by the same label pair the
+// teardown tears down with and requiring the `factory.service` key, so the runner and
+// gate containers never answer it; a failed read costs the fleet, not the sample.
+export async function dockerSampleRuntime(
+    execDocker: ExecDocker,
+    config: DriverConfig,
+    job: BoardJob
+): Promise<Omit<RuntimeSample, 'sampledAt'> | null> {
+    const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
+        () => null
+    );
+    const vitals = read ? parseDockerStats(read.stdout) : null;
+    const services = config.servicesEnabled
+        ? await execDocker(servicePsArgs(job))
+              .then((found) => parseDockerServicePs(found.stdout))
+              .catch(() => null)
+        : undefined;
+    return composeRuntimeSample(vitals, services);
 }

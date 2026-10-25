@@ -98,6 +98,37 @@ describe.skipIf(!enabled)('settle receipts — database', () => {
         expect(await receipts(id)).toHaveLength(1);
     });
 
+    // Issue #845: a verdict settles the claim's launch as unknown when nothing proved it, and a
+    // replay of that verdict neither rewrites it nor records a second execution.
+    it('settles an unproven launch as unknown once, and a replayed complete leaves it alone', async () => {
+        const id = await queue();
+        const c = await claim();
+        const launch = () =>
+            sql<
+                { launch: string; updated_at: Date }[]
+            >`select launch, updated_at from job_execution where job_id = ${id}`;
+        await store.complete(id, c.leaseToken, succeeded);
+        const [settled] = await launch();
+        expect(settled?.launch).toBe('unknown');
+
+        await store.complete(id, c.leaseToken, succeeded);
+        expect(await launch()).toEqual([settled]);
+    });
+
+    // Issue #845/#847: a normal run reports its session as observed, and its complete then ends the
+    // claim `observed` with the end stamped, not unknown.
+    it('settles a claim whose session was reported as observed as observed, with its end stamped', async () => {
+        const id = await queue();
+        const c = await claim();
+        await store.session(id, c.leaseToken, randomUUID(), { observed: true });
+        await store.complete(id, c.leaseToken, succeeded);
+        const [row] = await sql<
+            { launch: string; ended_at: Date | null }[]
+        >`select launch, ended_at from job_execution where job_id = ${id}`;
+        expect(row?.launch).toBe('observed');
+        expect(row?.ended_at).not.toBeNull();
+    });
+
     it('a conflicting complete under a concluded lease is rejected as lost', async () => {
         const id = await queue();
         const c = await claim();

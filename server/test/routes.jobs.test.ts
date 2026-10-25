@@ -1928,6 +1928,26 @@ describe('POST /api/jobs/:id/interrupt', () => {
         expect(store.interrupted[0]!.interruption).toEqual({ reason: 'adopted', release: false, claimSeq: 3 });
     });
 
+    it('passes a refused start through on a release', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the runner reports the container never started',
+            release: true,
+            refused: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({
+            reason: 'the runner reports the container never started',
+            release: true,
+            claimSeq: null,
+            refused: true,
+        });
+    });
+
     it('answers 409 INTERRUPTIONS_EXHAUSTED once the budget is spent', async () => {
         const store = stubStore({ interruptExhausted: true });
         const instance = await harnessWith(store);
@@ -1948,6 +1968,8 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['a missing release', { reason: 'evicted' }],
         ['a fractional claim sequence', { reason: 'evicted', release: false, claimSeq: 1.5 }],
         ['an adoption that names no adopted claim', { reason: 'adopted', release: false }],
+        ['a refused flag that is not a boolean', { reason: 'evicted', release: true, refused: 'yes' }],
+        ['a refused adoption', { reason: 'adopted', release: false, claimSeq: 2, refused: true }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);

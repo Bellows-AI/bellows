@@ -1,3 +1,4 @@
+import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
@@ -270,12 +271,7 @@ export interface BoardJob {
 /** Whether the board still recognises this worker as the holder of the job. */
 export type LeaseState = 'held' | 'lost';
 
-/** One interrupted attempt, as `Board.interrupt` reports it. */
-export interface Interruption {
-    reason: string;
-    release: boolean;
-    claimSeq?: number;
-}
+export type { Interruption } from './board-interruption.js';
 
 /**
  * The job statuses the board answers a lease lookup with — the row statuses of
