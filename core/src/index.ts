@@ -281,4 +281,36 @@ export type {
     TokenTemporality,
     TokenType,
 } from './token-contributions.js';
+export {
+    DEFAULT_USAGE_POLICY,
+    UNASSIGNED_REASONS,
+    addTokens,
+    emptyBlock,
+    unmeasuredTokens,
+} from './usage.js';
+export type {
+    BranchEvidence,
+    ExecutionEvidence,
+    Launch,
+    Owner,
+    PerType,
+    RunUsage,
+    SessionSpan,
+    TaskUsage,
+    Tokens,
+    UnassignedReason,
+    UsageBlock,
+    UsageInput,
+    UsageOptions,
+    UsagePolicy,
+    UsagePrecision,
+    UsageReport,
+    UsageRow,
+    UserUsage,
+} from './usage.js';
+export { canonicalTask, resolveOwnership, sessionKeyId } from './usage-ownership.js';
+export type { SessionKey } from './usage-ownership.js';
+export { accountContributions, assignContribution, buildTimeline } from './usage-segments.js';
+export type { Destination, Timeline } from './usage-segments.js';
+export { reduceUsage, taskUsageOf } from './usage-reduce.js';
 export type * from './types.js';
