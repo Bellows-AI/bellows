@@ -105,11 +105,10 @@ export async function recordReportedSession(
  */
 export async function recordLaunchOutcome(
     tx: TransactionSql,
-    orgId: string,
-    jobId: string,
-    claimSeq: string | number,
+    claim: { orgId: string; jobId: string; claimSeq: string | number },
     outcome: { refused: true } | { adopts: number }
 ): Promise<void> {
+    const { orgId, jobId, claimSeq } = claim;
     if ('refused' in outcome) {
         await tx`
             update job_execution set launch = 'refused', updated_at = now()

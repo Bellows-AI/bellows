@@ -843,22 +843,7 @@ export async function interruptJob(
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
-        // The launch outcome this interruption proves (issue #845), decided on the row the update
-        // below changes — locked here. A release is recorded only under the update's own conditions
-        // (a spent budget or a replay records nothing); an adoption link is a fact of the adopting
-        // claim whether or not the expiry already recorded the interruption, and set once.
-        if (refused || !release) {
-            const [held] = await tx<{ claim_seq: string }[]>`
-                select claim_seq from job
-                where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
-                  ${release ? tx`and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET} and not ${recorded}` : tx``}
-                for update
-            `;
-            if (held && release) await recordLaunchOutcome(tx, orgId, id, held.claim_seq, { refused: true });
-            if (held && !release && claimSeq !== null) {
-                await recordLaunchOutcome(tx, orgId, id, held.claim_seq, { adopts: claimSeq });
-            }
-        }
+        await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq }, recorded);
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status
@@ -888,6 +873,34 @@ export async function interruptJob(
         }
         return missedInterrupt(tx, key, recorded);
     });
+}
+
+/**
+ * The launch outcome an interruption proves (issue #845), decided on the row the interruption's
+ * update changes, locked here. A release is recorded only under the update's own conditions (a
+ * spent budget or a replay records nothing); an adoption link is a fact of the adopting claim
+ * whether or not the expiry already recorded the interruption, and set once.
+ */
+async function recordInterruptLaunch(
+    tx: TransactionSql,
+    at: { orgId: string; id: string; leaseToken: string },
+    { release, refused, claimSeq }: { release: boolean; refused: boolean; claimSeq: number | null },
+    recorded: Fragment
+): Promise<void> {
+    if (!refused && release) return;
+    const { orgId, id, leaseToken } = at;
+    const open = release
+        ? tx`and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET} and not ${recorded}`
+        : tx``;
+    const [held] = await tx<{ claim_seq: string }[]>`
+        select claim_seq from job
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken} ${open}
+        for update
+    `;
+    if (!held) return;
+    const claim = { orgId, jobId: id, claimSeq: held.claim_seq };
+    if (release) await recordLaunchOutcome(tx, claim, { refused: true });
+    else if (claimSeq !== null) await recordLaunchOutcome(tx, claim, { adopts: claimSeq });
 }
 
 /**
