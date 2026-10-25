@@ -125,8 +125,13 @@ function buildBlock(items: readonly Item[], extras: readonly Extra[], endsAfterN
     }
     const keys = new Set(items.map((i) => i.keyId));
     const unlocated = extras.filter((e) => e.c.kind === 'unlocated').map((e) => e.c);
+    const unlocatedTokens = sumItems(unlocated);
+    const observations = extras.filter((e) => e.c.kind === 'unresolved').length;
     return {
-        state: TOKEN_TYPE_LIST.some((t) => tokens[t] !== null) ? 'measured' : 'unmeasured',
+        state:
+            TOKEN_TYPE_LIST.some((t) => tokens[t] !== null || unlocatedTokens[t] !== null) || observations > 0
+                ? 'measured'
+                : 'unmeasured',
         provisional: endsAfterNow || items.some((i) => i.live),
         tokens,
         assigned: sumItems(assignedItems.map((i) => i.c)),
@@ -134,8 +139,8 @@ function buildBlock(items: readonly Item[], extras: readonly Extra[], endsAfterN
             reason,
             tokens: sumItems((reasons.get(reason) as Item[]).map((i) => i.c)),
         })),
-        unlocated: sumItems(unlocated),
-        unresolvedTemporality: { observations: extras.filter((e) => e.c.kind === 'unresolved').length },
+        unlocated: unlocatedTokens,
+        unresolvedTemporality: { observations },
         precision: perType((type) => precisionOf(contribs, type)),
         coverage: perType((type) => ({
             measured: new Set(items.filter((i) => tokensOfType(i.c.tokens, type) !== null).map((i) => i.keyId)).size,
@@ -299,7 +304,12 @@ function runsOf(board: readonly ExecutionEvidence[], taskId: string): Map<string
     return runs;
 }
 
-function runUsage(jobId: string, rows: readonly ExecutionEvidence[], items: readonly Item[]): RunUsage {
+function runUsage(
+    jobId: string,
+    rows: readonly ExecutionEvidence[],
+    items: readonly Item[],
+    endsAfterNow: boolean
+): RunUsage {
     const first = rows[0] as ExecutionEvidence;
     const starts = rows.map((r) => r.startedAt).sort(compareText);
     const open = rows.some((r) => r.endedAt === null);
@@ -313,11 +323,11 @@ function runUsage(jobId: string, rows: readonly ExecutionEvidence[], items: read
         operational: rows.some((r) => r.operational),
         startedAt: starts[0] ?? null,
         endedAt: open ? null : (ends.sort(compareText).at(-1) ?? null),
-        usage: buildBlock(items, [], false),
+        usage: buildBlock(items, [], endsAfterNow),
     };
 }
 
-function taskView(acc: Account, taskId: string, includeIdleRuns: boolean): TaskUsage {
+function taskView(acc: Account, taskId: string, includeIdleRuns: boolean, endsAfterNow: boolean): TaskUsage {
     const items = acc.items.filter((i) => i.taskId === taskId);
     const extras = acc.extras.filter((e) => e.taskId === taskId);
     const rowsByRun = runsOf(acc.board, taskId);
@@ -329,15 +339,16 @@ function taskView(acc: Account, taskId: string, includeIdleRuns: boolean): TaskU
     const jobIds = includeIdleRuns ? [...rowsByRun.keys()] : [...assigned.keys()];
     const runs = jobIds
         .filter((id) => rowsByRun.has(id))
-        .map((id) => runUsage(id, rowsByRun.get(id) as ExecutionEvidence[], assigned.get(id) ?? []))
+        .map((id) => runUsage(id, rowsByRun.get(id) as ExecutionEvidence[], assigned.get(id) ?? [], endsAfterNow))
         .sort((a, b) => compareText(a.startedAt ?? '', b.startedAt ?? '') || compareText(a.jobId, b.jobId));
     const taskOwnedItems = items.filter((i) => i.dest.kind === 'unassigned');
     return {
         taskId,
         removed: [...rowsByRun.values()].flat().some((r) => r.removed),
-        usage: buildBlock(items, extras, false),
+        usage: buildBlock(items, extras, endsAfterNow),
         runs,
-        taskOwned: taskOwnedItems.length > 0 || extras.length > 0 ? buildBlock(taskOwnedItems, extras, false) : null,
+        taskOwned:
+            taskOwnedItems.length > 0 || extras.length > 0 ? buildBlock(taskOwnedItems, extras, endsAfterNow) : null,
     };
 }
 
@@ -399,7 +410,7 @@ export function reduceUsage(input: UsageInput, opts: UsageOptions): UsageReport 
     );
     return {
         eligible: buildBlock(acc.items, acc.extras, rangeEndsAfterNow),
-        tasks: taskIds.map((id) => taskView(acc, id, false)),
+        tasks: taskIds.map((id) => taskView(acc, id, false, rangeEndsAfterNow)),
         byUser,
         series: series(acc.items, opts.granularity ?? 'day', opts.now),
         diagnostics: {
@@ -415,5 +426,5 @@ export function taskUsageOf(input: UsageInput, taskId: string, now: Date): TaskU
     const acc = account(input, { range: null, now });
     const known = acc.board.some((e) => canonicalTask(e) === taskId);
     if (!known && !acc.items.some((i) => i.taskId === taskId)) return null;
-    return taskView(acc, taskId, true);
+    return taskView(acc, taskId, true, false);
 }

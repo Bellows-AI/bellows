@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { reduceTokenObservations } from '../src/token-contributions.js';
 import type { TokenContribution, TokenType } from '../src/token-contributions.js';
-import { resolveOwnership, sessionKeyId } from '../src/usage-ownership.js';
 import { reduceUsage, taskUsageOf } from '../src/usage-reduce.js';
 import type { ExecutionEvidence, Tokens, UsageBlock, UsageInput } from '../src/usage.js';
 import { TOKEN_TYPE_LIST, addTokens, emptyBlock } from '../src/usage.js';
@@ -478,6 +477,10 @@ describe('range, series, unlocated and unresolved', () => {
             reduceUsage(settled, { ...ALL, range: { from: at(0), to: '2026-04-01T00:00:00.000Z' } }).eligible
                 .provisional
         ).toBe(true);
+        const ranged = reduceUsage(settled, { ...ALL, range: { from: at(0), to: '2026-04-01T00:00:00.000Z' } });
+        expect(ranged.tasks[0]!.usage.provisional).toBe(true);
+        expect(ranged.tasks[0]!.runs[0]!.usage.provisional).toBe(true);
+        expect(reduceUsage(settled, ALL).tasks[0]!.usage.provisional).toBe(false);
     });
 });
 
@@ -493,6 +496,8 @@ describe('amounts without timed usage are never dropped', () => {
         expect(r.tasks[0]!.usage.unresolvedTemporality).toEqual({ observations: 1 });
         expect(r.byUser.map((u) => u.userId)).toEqual(['uA']);
         expect(r.byUser[0]!.usage.unlocated).toEqual(out(4));
+        expect(r.tasks[0]!.usage.state).toBe('measured');
+        expect(r.byUser[0]!.usage.state).toBe('measured');
     });
 
     it('keeps unlocated and unresolved amounts of unresolved-owner and excluded-repo sessions in the diagnostics', () => {
@@ -601,6 +606,15 @@ describe('conservation over seeded random worlds', () => {
                 delta(Math.floor(r() * 300), Math.floor(r() * 50), { session: null, type: pick(TYPES) })
             );
         }
+        for (let i = 0; i < 6; i++) {
+            contributions.push({
+                ...delta(Math.floor(r() * 300), Math.floor(r() * 50), { session: pick(sessions), type: pick(TYPES) }),
+                kind: 'suppressed',
+                precision: 'unlocated',
+                support: null,
+                reasons: ['source-suppressed'],
+            });
+        }
         return world({
             board,
             branch: [branch({ sessionId: 's5', repo: pick(['repo-1', 'repo-2']) })],
@@ -661,26 +675,39 @@ describe('conservation over seeded random worlds', () => {
 
         it(`gives every contribution exactly one destination, summed independently of the reducer (seed ${seed})`, () => {
             const input = randomWorld(seed);
-            const keys = input.contributions
-                .filter((c) => c.selection.sessionId !== null)
-                .map((c) => ({ agent: c.selection.agent, sessionId: c.selection.sessionId as string }));
-            const owners = resolveOwnership(input, keys);
+            const hasEvidence = (c: TokenContribution): boolean => {
+                const { agent, sessionId } = c.selection;
+                return (
+                    input.board.some((e) => e.sessionId === sessionId && (e.agent === null || e.agent === agent)) ||
+                    input.branch.some((b) => b.sessionId === sessionId && b.agent === agent)
+                );
+            };
+            const conflicted = (c: TokenContribution): boolean => {
+                const { agent, sessionId } = c.selection;
+                const rows = input.board.filter(
+                    (e) => e.sessionId === sessionId && (e.agent === null || e.agent === agent)
+                );
+                const branches = input.branch.filter((b) => b.sessionId === sessionId && b.agent === agent);
+                const tasks = new Set(rows.map((e) => e.requestingRootJobId ?? e.rootJobId));
+                const repos = new Set(
+                    [...rows.map((e) => e.repo), ...branches.map((b) => b.repo)].filter((x) => x !== null)
+                );
+                return tasks.size > 1 || repos.size > 1;
+            };
             const hidden = { timed: none(), unlocated: none(), observations: 0 };
             const unresolved = { timed: none(), unlocated: none(), observations: 0 };
             const total = { timed: none(), unlocated: none(), observations: 0 };
             for (const c of input.contributions) {
-                const owner =
-                    c.selection.sessionId === null
-                        ? null
-                        : owners.get(sessionKeyId(c.selection.agent, c.selection.sessionId));
+                if (c.kind === 'suppressed') continue;
                 const into = (b: typeof total): void => {
                     if (c.kind === 'timed') b.timed = addTokens(b.timed, c.tokens);
                     else if (c.kind === 'unlocated') b.unlocated = addTokens(b.unlocated, c.tokens);
                     else b.observations += 1;
                 };
                 into(total);
-                if (!owner || owner.status === 'excluded') into(hidden);
-                else if (owner.status === 'unresolved') into(unresolved);
+                const sessionId = c.selection.sessionId;
+                if (sessionId === null || input.foreignSessionIds.has(sessionId) || !hasEvidence(c)) into(hidden);
+                else if (conflicted(c)) into(unresolved);
             }
             const r = reduceUsage(input, ALL);
             const d = r.diagnostics.unresolvedOwnership;
@@ -697,6 +724,16 @@ describe('conservation over seeded random worlds', () => {
                     d.unresolvedTemporality.observations +
                     hidden.observations,
             }).toEqual(total);
+            const suppressedTotal = input.contributions
+                .filter((c) => c.kind === 'suppressed')
+                .reduce((acc, c) => addTokens(acc, c.tokens), none());
+            expect(suppressedTotal).not.toEqual(none());
+            expect(r.eligible.tokens).toEqual(
+                reduceUsage(
+                    { ...input, contributions: input.contributions.filter((c) => c.kind !== 'suppressed') },
+                    ALL
+                ).eligible.tokens
+            );
         });
 
         it(`splits an excluded repo from eligible without losing an amount (seed ${seed})`, () => {
