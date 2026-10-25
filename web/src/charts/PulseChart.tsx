@@ -1,13 +1,14 @@
+import type { TokenType } from '@factory-ai/core';
 import type { JobActivityBucket } from '../api/useJobActivity.js';
 import { TOKEN_TYPES } from '../task-stats.js';
 import { formatTick, niceMax } from './scale.js';
 
 /**
  * The pulse (issue 530): a static line chart of one run's recorded activity — one line per token
- * type over the run's wall-clock buckets, all on one scale so the lines compare honestly. The
- * compact form is the sidebar's picture, without axes; the detailed form adds the scale and the
- * run's span for the modal. Pure SVG, no animation: it shows what was recorded, not that the run
- * is alive.
+ * type (a null bucket is a gap in it, not a zero) over the run's wall-clock buckets, all on one
+ * scale so the lines compare honestly. The compact form is the sidebar's picture, without axes; the
+ * detailed form adds the scale and the run's span for the modal. Pure SVG, no animation: it shows
+ * what was recorded, not that the run is alive.
  */
 
 const COMPACT = { width: 120, height: 32, padX: 2, padY: 3 };
@@ -17,6 +18,26 @@ const DETAILED = { width: 480, height: 140, padX: 8, padY: 10 };
 const ISO_CLOCK_START = 11;
 const ISO_CLOCK_END = 16;
 const clockOf = (iso: string): string => iso.slice(ISO_CLOCK_START, ISO_CLOCK_END);
+
+interface Reading {
+    index: number;
+    value: number;
+}
+
+/** The consecutive measured readings of one type: a null bucket is a gap that splits the line, never a zero. */
+function segmentsOf(buckets: readonly JobActivityBucket[], key: TokenType): Reading[][] {
+    const segments: Reading[][] = [];
+    let current: Reading[] = [];
+    buckets.forEach((bucket, index) => {
+        const value = bucket.tokens[key];
+        if (value === null) {
+            if (current.length > 0) segments.push(current);
+            current = [];
+        } else current.push({ index, value });
+    });
+    if (current.length > 0) segments.push(current);
+    return segments;
+}
 
 export function PulseChart({
     buckets,
@@ -38,23 +59,29 @@ export function PulseChart({
         <figure className={detailed ? 'pulse pulse-detailed' : 'pulse'}>
             <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={ariaLabel}>
                 <line className="pulse-axis" x1={padX} x2={width - padX} y1={height - padY} y2={height - padY} />
-                {measured.map((type) => {
-                    const points = buckets.map((bucket, i) => `${x(i)},${y(bucket.tokens[type.key] ?? 0)}`);
-                    return (
-                        <g key={type.key} data-series={type.key} className={type.line}>
-                            <polyline className="pulse-line" points={points.join(' ')} />
-                            {/* One bucket has no line to draw: the dot is the recorded reading. */}
-                            {buckets.length === 1 ? (
+                {measured.map((type) => (
+                    <g key={type.key} data-series={type.key} className={type.line}>
+                        {segmentsOf(buckets, type.key).map((segment) => {
+                            const first = segment[0]!;
+                            // One reading between gaps has no line to draw: the dot is the recorded reading.
+                            return segment.length === 1 ? (
                                 <circle
+                                    key={first.index}
                                     className="pulse-dot"
-                                    cx={x(0)}
-                                    cy={y(buckets[0]!.tokens[type.key] ?? 0)}
+                                    cx={x(first.index)}
+                                    cy={y(first.value)}
                                     r={2}
                                 />
-                            ) : null}
-                        </g>
-                    );
-                })}
+                            ) : (
+                                <polyline
+                                    key={first.index}
+                                    className="pulse-line"
+                                    points={segment.map((p) => `${x(p.index)},${y(p.value)}`).join(' ')}
+                                />
+                            );
+                        })}
+                    </g>
+                ))}
             </svg>
             {detailed ? (
                 <figcaption className="pulse-scale">
