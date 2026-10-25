@@ -48,10 +48,9 @@ import {
 import { reviewRunOf } from '../review/review-step.js';
 import { checkoutDir, type ReclaimResult, type SyncResult } from '../publish/publish.js';
 import { groupServices, missingDeclaredServices, serviceContainerName } from '../services.js';
-import { containerName, parseDockerServiceExit, parseDockerServicePs, parseDockerStats } from './docker.js';
+import { containerName, parseDockerServiceExit, parseDockerServicePs } from './docker.js';
 import {
     appendTailKept,
-    composeRuntimeSample,
     onOwnGroup,
     type KeptLog,
     reportTail,
@@ -61,7 +60,6 @@ import {
     type RunOutcome,
     type Runner,
     type RunSession,
-    type RuntimeSample,
 } from '../runner.js';
 import { applyCloseTimeReadout, dockerAdopt } from './docker-close-read.js';
 import { armRunTimers } from './docker-run-timers.js';
@@ -89,6 +87,8 @@ import {
     type Spawn,
     type ExecDocker,
     readUtf8,
+    dockerAgentStarted,
+    dockerSampleRuntime,
 } from './docker-runner-support.js';
 import { createDeadlineRegistry, type DeadlineRegistry } from '../run-deadline.js';
 import { settleEnd } from '../termination.js';
@@ -389,28 +389,6 @@ async function dockerStartServices(deps: RunnerDeps, job: BoardJob, signal?: Abo
         },
         signal
     );
-}
-
-// The container is named by this attempt's lease token, so a sample can only ever resolve
-// its own attempt's runner — the same attempt-scoping every per-attempt operation here
-// leans on. A refused read (the container exited between the ask and the stats round-trip,
-// the daemon is busy) answers null, which the loop reads as "report no vitals this round".
-// The service fleet is read in the same sampling round, scoped by the same label pair the
-// teardown tears down with and requiring the `factory.service` key, so the runner and
-// gate containers never answer it; a failed read costs the fleet, not the sample.
-async function dockerSampleRuntime(deps: RunnerDeps, job: BoardJob): Promise<Omit<RuntimeSample, 'sampledAt'> | null> {
-    const { config } = deps;
-    const execDocker = attemptExecOf(deps, job);
-    const read = await execDocker(['stats', '--no-stream', '--format', '{{json .}}', containerName(job)]).catch(
-        () => null
-    );
-    const vitals = read ? parseDockerStats(read.stdout) : null;
-    const services = config.servicesEnabled
-        ? await execDocker(servicePsArgs(job))
-              .then((found) => parseDockerServicePs(found.stdout))
-              .catch(() => null)
-        : undefined;
-    return composeRuntimeSample(vitals, services);
 }
 
 /**
@@ -737,7 +715,8 @@ export function createDockerRunner(
         rebind: (group, binding, signal) => rebindGroup(execDocker, group, binding, signal),
         supervisorServing: (group, bound) => supervisorServing(execDocker, group, bound),
         abandon: (job) => ledger.abandon(job),
-        sampleRuntime: (job) => dockerSampleRuntime(deps, job),
+        sampleRuntime: (job) => dockerSampleRuntime(attemptExecOf(deps, job), deps.config, job),
+        agentStarted: (job) => dockerAgentStarted(attemptExecOf(deps, job), job),
         deadServices: (job) => dockerDeadServices(deps, job),
         restartServices: (job, signal) => restartJobServices(job, deps, anyOf(signal, ledger.signal(job))),
         startServices: (job, signal) => dockerStartServices(deps, job, signal),

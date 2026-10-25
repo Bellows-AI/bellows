@@ -95,7 +95,7 @@ export interface JobState {
      * launched nothing (adopted, taken over, agent-less) or has no session to name; the report is
      * made once, and a failed one is logged, never a failed run.
      */
-    confirmLaunch: (() => Promise<void>) | null;
+    confirmLaunch: (() => Promise<boolean>) | null;
     /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
     gateToken: string | null;
     /**
@@ -628,6 +628,37 @@ async function withDeadDetail(
     });
 }
 
+/**
+ * The report that this claim's launch is observed, made the first time something proves the runner
+ * started (`Runner.agentStarted`) so a runner lost mid-run still has its claim counted. Once;
+ * a failed report only logs.
+ */
+export function launchConfirmer(rt: LoopRuntime, job: BoardJob, sessionId: string): () => Promise<boolean> {
+    let sent: Promise<boolean> | null = null;
+    return () =>
+        (sent ??= rt.board
+            .session(job, sessionId, true)
+            .then(() => true)
+            .catch((e: Error) => {
+                rt.log(`job ${job.id}: could not report the launch, continuing: ${e.message}`);
+                // Cleared, so the next round or the tail retries: a failed report must not stand for the run.
+                sent = null;
+                return false;
+            }));
+}
+
+/**
+ * Reports the launch once the runner proves the AGENT container started (`Runner.agentStarted`);
+ * output and vitals prove nothing of the kind. A report that failed stays pending, so the next
+ * round (or the tail) retries it; a runner that cannot answer just proves nothing yet.
+ */
+export async function confirmOnProof(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
+    const confirm = state.confirmLaunch;
+    if (!confirm) return;
+    const proven = await rt.runner.agentStarted(job).catch(() => false);
+    if (proven && (await confirm())) state.confirmLaunch = null;
+}
+
 /** Kicks off one runtime sample fetch, unless one is already in flight; the pump holds the newest. */
 function kickSample(rt: LoopRuntime, job: BoardJob, state: JobState, pump: OutputPump): void {
     if (pump.sampling) return;
@@ -640,7 +671,7 @@ function kickSample(rt: LoopRuntime, job: BoardJob, state: JobState, pump: Outpu
             const exporting = state.transcriptExport?.vitals;
             const read: Omit<RuntimeSample, 'sampledAt'> | null =
                 sampled ?? (exporting ? { cpuPercent: null, memUsedMb: null, memPercent: null } : null);
-            if (sampled) void state.confirmLaunch?.();
+            void confirmOnProof(rt, job, state);
             if (!read) return;
             const services = read.services ? await withDeadDetail({ rt, job, state, pump }, read.services) : undefined;
             pump.sample = {
@@ -734,7 +765,6 @@ export function watchOutput(
     })();
     return {
         push: (tail) => {
-            if (tail !== '') void state.confirmLaunch?.();
             if (tail !== pump.latest) pump.lastOutputAt = Date.now();
             pump.latest = tail;
         },
