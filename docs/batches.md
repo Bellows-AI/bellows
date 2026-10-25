@@ -19,7 +19,7 @@ scheduler runs one stage at a time as ordinary job threads.
 | PR observation: assessment, fingerprint, rows, observer loop | `core/src/batch-observation.ts`, `server/src/github/pr-read.ts`, `server/src/db/batches/batch-store-observation.ts`, `batch-store-observed.ts`, `server/src/batch-pr-observer.ts`, `server/migrations/063_batch_pr_observation.sql` | `core/test/batch-observation.test.ts`, `server/test/github.pr-read.test.ts`, `server/test-db/batch-pr-observation.test.ts` |
 | Batch PRs only; every other followed PR is read by the PR follower ([workflows.md](workflows.md)) | `server/src/batch-pr-observer.ts` (`readFacts`, `createReadPause` shared) | `server/test-db/pr-follow.test.ts` |
 | Automerge: decision, intents, slot, stage verification, merger loop | `core/src/batch-merge.ts`, `server/src/db/batches/batch-store-merge.ts`, `server/src/batch-merger.ts`, `server/src/github/pr-merge.ts`, `server/migrations/064_batch_merge.sql` | `core/test/batch-merge.test.ts`, `server/test-db/batch-merge.test.ts`, `server/test/github.pr-merge.test.ts` |
-| Morning report, built from rows on every read | `server/src/db/batches/batch-store-report.ts` | `server/test-db/batch-dispatch.test.ts` |
+| Morning report, built from rows on every read; membership and token usage (`readUsageFacts` + core `batchUsageOf`, per-type blocks) in ONE repeatable-read snapshot | `server/src/db/batches/batch-store-report.ts`, `core/src/usage-reduce.ts` | `server/test-db/batch-dispatch.test.ts`, `core/test/usage-reduce.test.ts` |
 | Routes, launch checks, request envelope | `server/src/routes/batches/batches.ts`, `batch-handlers.ts`, `batch-launch.ts`, `batch-http.ts` | `server/test/routes.batches.test.ts` |
 | Auth wall: human credentials only | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 | CLI client (`bellows batch …`, wait exit codes) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
@@ -66,6 +66,10 @@ scheduler runs one stage at a time as ordinary job threads.
   (`BATCH_TASK_THREAD`). `server/test-db/batch-dispatch.test.ts`.
 - **A missed callback cannot strand a batch**: `reconcileBatches` runs at boot and every
   `BATCH_RECONCILE_INTERVAL_MS`. `server/test/batch-reconciler.test.ts`.
+- **Batch usage = all-time usage of the member tasks at the report's snapshot; attempts are not token-bearing.**
+  Only `batch_task.root_job_id` is read for tokens (`batch_attempt` rows are counts); a live batch is provisional;
+  a member removed after the start is `unavailable` (`task-removed`) and counted in `usageUnavailableTasks`.
+  `server/test-db/batch-dispatch.test.ts`, `cli/test/batch.test.ts`.
 - **The web is a client of these routes, never a scheduler.** `web/test/batch-detail.dom.test.tsx`.
 - Routes answer `503 BATCHES_UNAVAILABLE` for an org with no batch store (`server/src/orgs.ts`).
 
