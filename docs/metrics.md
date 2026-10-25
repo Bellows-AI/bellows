@@ -7,7 +7,8 @@ and granularity: [date-range.md](date-range.md).
 | --- | --- | --- |
 | Rollups, scope filter, series, `telemetryStats()` | `core/src/telemetry.ts` | `core/test/telemetry.stats.test.ts`, `core/test/telemetry.independent.test.ts` |
 | `ratio`, `weekStart`, `isoWeekKey`, `dayKey` | `core/src/metrics.ts` | `core/test/metrics.invariants.test.ts` |
-| Token observations reduced to contributions (delta / cumulative high-water, source selection, `[1m]` model normalization, range and UTC day/week partition) | `core/src/token-contributions.ts` | `core/test/token-contributions.test.ts` |
+| Token observations reduced to contributions (delta / cumulative high-water, source selection, `[1m]` model normalization, range and UTC day/week partition) | `core/src/token-contributions.ts`, SQL twin `server/migrations/002_views.repeatable.sql` | `core/test/token-contributions.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
+| Usage reducer: session ownership, segment/run assignment, scope and range filters, `UsageBlock` (eligible = assigned + unassigned) | `core/src/usage-reduce.ts`, `core/src/usage-ownership.ts`, `core/src/usage-segments.ts`, types `core/src/usage.ts` | `core/test/usage-reduce.test.ts`, `core/test/usage-ownership.test.ts`, `core/test/usage-segments.test.ts` |
 | Per-task distributions and percentiles | `core/src/task-usage.ts` | `core/test/task-usage.test.ts` |
 | Read cache, cooldown, stale snapshots | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
 | TTL parsing and its floor | `server/src/config.ts` | `server/test/config.persistence.test.ts` |
@@ -38,6 +39,9 @@ null — never zero. Pinned by `core/test/docs.terminology.test.ts`.
   so a scope switch never re-fetches — `server/test/routes.stats.scope.test.ts`.
 - **Repo scoping buckets, it never drops.** `otherRepoSessions`, `sessionsWithoutHook` and
   `unattributedSessions` keep four states distinguishable, and none of them feeds `totals`.
+- **Per token type, eligible timed usage equals run-assigned plus the reasoned unassigned parts in every view**
+  (model, org, user, task, run, series bucket); unlocated, unresolved and conflicting-owner usage stay beside
+  it, never inside — `core/test/usage-reduce.test.ts`.
 - **Per-task distributions exclude, they never zero**, and percentiles are nearest-rank so the
   independent suites can recompute them by hand — `core/src/task-usage.ts`.
 - **`telemetryStats()` takes an injectable `now`** — tests pin a frozen date; keep the injection point.
