@@ -50,6 +50,17 @@ fi
 # the seed, whose `cp -a` of the directory itself lays the baked mode back over it.
 chmod 0700 "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
 
+# The baked skills are the CLI's managed skills, at one path the tool uid can read (issue #1024). A
+# thread seeded before that holds its own copy of each under its config dir — and a copy there is
+# the one the CLI loads, citing a path in this private dir. Only the baked names go: a skill the
+# agent made itself stays.
+for skill in /usr/local/share/factory-skills/*/; do
+    [ -d "$skill" ] || continue
+    skill="${skill%/}"
+    rm -rf "${CLAUDE_CONFIG_DIR:?}/skills/${skill##*/}"
+done
+rmdir "$CLAUDE_CONFIG_DIR/skills" 2>/dev/null || true
+
 # The seed above runs once, but the directory outlives the container and the agent can edit its
 # settings.json — stripping the git guard hook there would disarm it for every later run of the
 # thread. So the baked `hooks` block (the fence, and the file's only content) is laid over the

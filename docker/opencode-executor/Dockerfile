@@ -183,11 +183,15 @@ RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in
 # factory-agent, the one group that reaches the broker's socket; the run-control proxy's socket is
 # node's and its group's. factory-tool's HOME is its own, and its git config includes node's, so the
-# credential helper and safe.directory carry over. Byte-identical in both executor Dockerfiles.
+# credential helper and node's safe.directory carry over. Its own `safe.directory = *` is the tool
+# uid trusting what node made (issue #1023), and nothing else: the tool is the lesser uid, so a
+# repository config it runs gives it nothing. The other direction stays closed — node's git never
+# trusts a repository the tool wrote beyond $WORKDIR, because git would run the tool's
+# core.fsmonitor or filter driver as node. Byte-identical in both executor Dockerfiles.
 RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
     && useradd -u 1001 -g node -M -d /home/factory-tool -s /bin/bash factory-tool \
     && install -d -o factory-tool -g node -m 0700 /home/factory-tool \
-    && printf '[include]\n\tpath = /home/node/.gitconfig\n' > /home/factory-tool/.gitconfig \
+    && printf '[include]\n\tpath = /home/node/.gitconfig\n[safe]\n\tdirectory = *\n' > /home/factory-tool/.gitconfig \
     && chown factory-tool:node /home/factory-tool/.gitconfig \
     && install -d -o root -g factory-agent -m 2750 /run/factory-tool \
     && install -d -o node -g node -m 0750 /run/factory-control

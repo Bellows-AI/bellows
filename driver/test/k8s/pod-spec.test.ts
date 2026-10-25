@@ -91,8 +91,9 @@ describe('the runner job spec', () => {
     });
 
     // Issue #452: the managed settings come from the per-attempt Secret, mounted read-only and
-    // 0444 over /etc/claude-code — root-owned in the pod, so the agent (uid 1000) cannot rewrite
-    // the scope that outranks every other.
+    // 0444 over /etc/claude-code/managed-settings.json — root-owned in the pod, so the agent (uid 1000)
+    // cannot rewrite the scope that outranks every other. The file, not the directory (issue #1024):
+    // the image's managed skills sit beside it.
     it('mounts the rendered managed settings read-only from the attempt Secret for a claude-code runner', () => {
         const s = spec();
         expect(s.spec.template.spec.volumes).toContainEqual({
@@ -105,9 +106,31 @@ describe('the runner job spec', () => {
         });
         expect(s.spec.template.spec.containers[0]!.volumeMounts).toContainEqual({
             name: 'telemetry-config',
-            mountPath: '/etc/claude-code',
+            mountPath: '/etc/claude-code/managed-settings.json',
+            subPath: 'managed-settings.json',
             readOnly: true,
         });
+    });
+
+    // Issues #1016, #1021, #1023, #1024: the two uids' sharing contract lives in the image — the tool's
+    // TMPDIR and compile cache, the system gitconfig, the managed skills. A volume mounted over any of
+    // them, or over a directory above one, would silently retire it on this executor only.
+    it('mounts nothing over the paths the cross-uid sharing contract keeps in the image', () => {
+        const contract = [
+            '/tmp/factory-tmp',
+            '/home/factory-tool/.cache/node-compile-cache',
+            '/etc/gitconfig',
+            '/etc/claude-code/.claude/skills',
+            '/usr/local/share/factory-skills',
+        ];
+        for (const pod of [spec(), runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), opencodeJob, null)]) {
+            for (const container of pod.spec.template.spec.containers) {
+                for (const { mountPath } of container.volumeMounts) {
+                    const over = contract.filter((path) => path === mountPath || path.startsWith(`${mountPath}/`));
+                    expect(over, `${container.name} mounts ${mountPath}`).toEqual([]);
+                }
+            }
+        }
     });
 
     it('mounts the rendered otel.json read-only from the attempt Secret for an opencode runner', () => {
@@ -122,7 +145,8 @@ describe('the runner job spec', () => {
         });
         expect(s.spec.template.spec.containers[0]!.volumeMounts).toContainEqual({
             name: 'telemetry-config',
-            mountPath: '/etc/opencode-otel',
+            mountPath: '/etc/opencode-otel/otel.json',
+            subPath: 'otel.json',
             readOnly: true,
         });
     });
