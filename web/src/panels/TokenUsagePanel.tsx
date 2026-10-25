@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { inputTokens, type TelemetryStats } from '@factory-ai/core';
+import { inputTokens, type TelemetryStats, type Tokens } from '@factory-ai/core';
 import type { TelemetryMeta } from '../api/useStats.js';
 import { BarChart } from '../charts/BarChart.js';
 import { PAD } from '../charts/scale.js';
@@ -17,6 +17,36 @@ const MONTH_DAY_START_INDEX = 5;
 /** The X-axis's target label count — roughly one label every N/12 bars, whatever N is. */
 const CHART_LABEL_TARGET_COUNT = 12;
 
+export interface ChartPoint {
+    start: string;
+    partial: boolean;
+    sessions: number;
+    /** Null: the bucket holds no token figure at all (no usage was observed in it). */
+    tokens: Tokens | null;
+}
+
+/**
+ * Tokens bucket by the instant a point was observed, sessions by when the session began, so the
+ * two series come as separate lists on one granularity; the chart reads their union by bucket
+ * start. A bucket only one list carries keeps the other side unmeasured (tokens) or zero
+ * (sessions: none began there).
+ */
+export function chartPoints({ series, usage }: Pick<TelemetryStats, 'series' | 'usage'>): ChartPoint[] {
+    const byStart = new Map<string, ChartPoint>();
+    for (const p of series.points) {
+        byStart.set(p.start, { start: p.start, partial: p.partial, sessions: p.sessions, tokens: null });
+    }
+    for (const p of usage.series.points) {
+        const existing = byStart.get(p.start) ?? { start: p.start, partial: false, sessions: 0, tokens: null };
+        byStart.set(p.start, {
+            ...existing,
+            partial: existing.partial || p.partial,
+            tokens: p.usage.state === 'unmeasured' ? null : p.usage.tokens,
+        });
+    }
+    return [...byStart.values()].sort((a, b) => a.start.localeCompare(b.start));
+}
+
 /**
  * The usage chart. The bucket size is the server's decision — daily up to 92 days of window,
  * weekly beyond — and the payload NAMES it, so the caption and disclosure describe what is
@@ -24,7 +54,8 @@ const CHART_LABEL_TARGET_COUNT = 12;
  * be a lie with correct numbers.
  */
 export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats; meta: TelemetryMeta }) {
-    const { granularity, points } = telemetry.series;
+    const { granularity } = telemetry.series;
+    const points = chartPoints(telemetry);
     const daily = granularity === 'day';
     const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
     const toggle = (id: string) =>
@@ -93,13 +124,13 @@ export function TokenUsagePanel({ telemetry, meta }: { telemetry: TelemetryStats
                                     label: 'Total input',
                                     // Raw, uncoerced: an unmeasured bucket reads as a dash in the
                                     // exact readout, never as a fabricated zero. Geometry coerces.
-                                    values: points.map((p) => inputTokens(p.tokens).total),
+                                    values: points.map((p) => (p.tokens === null ? null : inputTokens(p.tokens).total)),
                                     className: 'bar-primary',
                                 },
                                 {
                                     id: 'output',
                                     label: 'Output',
-                                    values: points.map((p) => p.tokens.output),
+                                    values: points.map((p) => p.tokens?.output ?? null),
                                     className: 'bar-ok',
                                 },
                             ]}

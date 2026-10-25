@@ -1,4 +1,4 @@
-import type { OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
+import { emptyBlock, type OrganizationMeta, type TaskUsageStats, type TelemetryStats } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -51,7 +51,6 @@ const TOTAL_EDIT_DECISIONS = 3;
 const READY_TELEMETRY = {
     totals: {
         sessions: 2,
-        tokens: { input: 1200, output: 300, cacheRead: 4000, cacheCreation: 100 },
         activeHours: 1.5,
         linesAdded: 5,
         linesRemoved: 2,
@@ -68,6 +67,18 @@ const READY_TELEMETRY = {
     byUser: [],
     series: { granularity: 'day', points: [] },
     coverage: { from: null, to: null },
+    usage: {
+        totals: {
+            ...emptyBlock('measured'),
+            tokens: { input: 1200, output: 300, cacheRead: 4000, cacheCreation: 100 },
+        },
+        series: { granularity: 'day', points: [] },
+        byUser: [],
+        diagnostics: {
+            unresolvedOwnership: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+            excludedRepo: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+        },
+    },
 } as unknown as TelemetryStats;
 
 const NO_TELEMETRY = {
@@ -78,6 +89,15 @@ const NO_TELEMETRY = {
     byUser: [],
     series: { granularity: 'day', points: [] },
     coverage: { from: null, to: null },
+    usage: {
+        totals: emptyBlock('unmeasured'),
+        series: { granularity: 'day', points: [] },
+        byUser: [],
+        diagnostics: {
+            unresolvedOwnership: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+            excludedRepo: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+        },
+    },
 } as unknown as TelemetryStats;
 
 const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });

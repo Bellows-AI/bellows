@@ -1,11 +1,15 @@
-import type { JobRun, TelemetryInput } from '@factory-ai/core';
+import { rollupsFromFacts, type JobRun, type TelemetryInput } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryHealth } from '../src/telemetry/client.js';
 import type { ActivityBucket } from '../src/telemetry/run-activity.js';
 import { emptyUsageFacts } from '../src/telemetry/usage-facts.js';
-import { sampleTelemetry } from './helpers-config.js';
+import type { UsageFacts } from '../src/telemetry/usage-facts.js';
+import { sampleFetch } from './helpers-config.js';
 
 export interface TelemetryStubOptions {
+    /** The session rollups; when given without `facts` the usage facts are empty (no token figures). */
     rollups?: () => Promise<TelemetryInput>;
+    /** The usage facts the token figures reduce from; default: the committed synthetic fixture. */
+    facts?: () => UsageFacts;
     /** The run rows one fetch returns beside the rollups; empty unless a test feeds some. */
     runs?: () => JobRun[];
     health?: () => Promise<TelemetryHealth>;
@@ -29,10 +33,12 @@ export function stubTelemetryClient(options: TelemetryStubOptions = {}): Telemet
             stub.rollupCalls += 1;
             // The stub mirrors the real shape: ONE fetch returns both lists, and every range
             // and scope is served from re-aggregating them.
+            const sample = sampleFetch();
+            const facts = options.facts ? options.facts() : options.rollups ? emptyUsageFacts('stub') : sample.facts;
             return {
-                input: options.rollups ? await options.rollups() : structuredClone(sampleTelemetry()),
+                input: options.rollups ? await options.rollups() : rollupsFromFacts(facts),
                 runs: options.runs ? options.runs() : [],
-                facts: emptyUsageFacts('stub'),
+                facts,
             };
         },
         async runActivity(input) {

@@ -282,7 +282,7 @@ describe('ownership in the report', () => {
         ]);
     });
 
-    it('a repo filter moves other repos to excludedRepo only; a repo-less session cannot pass a filter', () => {
+    it('a repo filter moves other repos to excludedRepo only; a repo-less session cannot pass a filter and is not counted there', () => {
         const input = world({
             board: [
                 ev({ jobId: 'a', rootJobId: 'a', sessionId: 'sa', repo: 'repo-1' }),
@@ -297,7 +297,7 @@ describe('ownership in the report', () => {
         });
         const filtered = reduceUsage(input, { ...ALL, repos: ['repo-1'] });
         expect(filtered.eligible.tokens).toEqual(out(1));
-        expect(filtered.diagnostics.excludedRepo).toEqual({ ...EMPTY_DIAGNOSTIC, sessions: 2, tokens: out(110) });
+        expect(filtered.diagnostics.excludedRepo).toEqual({ ...EMPTY_DIAGNOSTIC, sessions: 1, tokens: out(10) });
         expect(reduceUsage(input, ALL).eligible.tokens).toEqual(out(111));
         expectConserved(filtered.eligible);
     });
@@ -737,7 +737,9 @@ describe('conservation over seeded random worlds', () => {
         });
 
         it(`splits an excluded repo from eligible without losing an amount (seed ${seed})`, () => {
-            const input = randomWorld(seed);
+            const world0 = randomWorld(seed);
+            // A repo-less session is out of a filtered view, not "another repo": give every one a repo here.
+            const input = { ...world0, board: world0.board.map((e) => ({ ...e, repo: e.repo ?? 'repo-2' })) };
             const withRepo = reduceUsage(input, { ...ALL, repos: ['repo-1'] });
             const without = reduceUsage(input, ALL);
             const x = withRepo.diagnostics.excludedRepo;
@@ -749,4 +751,50 @@ describe('conservation over seeded random worlds', () => {
             expect(withRepo.diagnostics.unresolvedOwnership).toEqual(without.diagnostics.unresolvedOwnership);
         });
     }
+});
+
+describe('one scope meaning on every dimension', () => {
+    const scopedWorld = () =>
+        world({
+            board: [
+                ev({ jobId: 'a', rootJobId: 'a', sessionId: 'sa', repo: 'repo-1', authorId: 'u1' }),
+                ev({ jobId: 'c', rootJobId: 'c', sessionId: 'sc', repo: null, authorId: 'u1' }),
+                ev({ jobId: 'x1', rootJobId: 'tx1', sessionId: 'sx', repo: 'repo-1', authorId: 'u2' }),
+                ev({
+                    jobId: 'x2',
+                    rootJobId: 'tx2',
+                    sessionId: 'sx',
+                    repo: 'repo-1',
+                    authorId: 'u2',
+                    startedAt: at(20),
+                    endedAt: at(30),
+                }),
+            ],
+            contributions: [
+                delta(1, 1, { session: 'sa' }),
+                delta(1, 100, { session: 'sc' }),
+                delta(5, 9, { session: 'sx' }),
+            ],
+        });
+
+    it('an empty repo list means nothing is in scope, like the session side; undefined means no filter', () => {
+        const input = scopedWorld();
+        const none_ = reduceUsage(input, { ...ALL, repos: [] });
+        expect(none_.eligible.tokens).toEqual(none());
+        expect(none_.tasks).toEqual([]);
+        expect(none_.byUser).toEqual([]);
+        expect(reduceUsage(input, ALL).eligible.tokens).toEqual(out(101));
+    });
+
+    it('a repo-less session under a filter is out of the view without being counted as another repo', () => {
+        const d = reduceUsage(scopedWorld(), { ...ALL, repos: ['repo-2'] }).diagnostics.excludedRepo;
+        expect(d.sessions).toBe(1);
+        expect(d.tokens).toEqual(out(1));
+    });
+
+    it('scope=mine does not report the org-wide unresolved-ownership figure', () => {
+        const input = scopedWorld();
+        expect(reduceUsage(input, ALL).diagnostics.unresolvedOwnership.sessions).toBe(1);
+        expect(reduceUsage(input, { ...ALL, userId: 'u1' }).diagnostics.unresolvedOwnership).toEqual(EMPTY_DIAGNOSTIC);
+    });
 });

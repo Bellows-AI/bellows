@@ -2,13 +2,25 @@ import { describe, expect, it } from 'vitest';
 import { inputTokens, telemetryStats } from '../src/telemetry.js';
 import type { DateRange } from '../src/range.js';
 import type { SessionRollup, TelemetryInput } from '../src/types.js';
-import { FIXTURE_NOW, FIXTURE_REPO, sampleTelemetry } from './fixtures/load.js';
+import {
+    EMPTY_REPORT,
+    FIXTURE_NOW,
+    FIXTURE_REPO,
+    fixturePointSum,
+    fixtureReport,
+    sampleTelemetry,
+} from './fixtures/load.js';
 
 const input = sampleTelemetry();
-const stats = telemetryStats(input, { repos: [FIXTURE_REPO], now: FIXTURE_NOW });
+const stats = telemetryStats(input, {
+    repos: [FIXTURE_REPO],
+    now: FIXTURE_NOW,
+    usage: fixtureReport({ repos: [FIXTURE_REPO] }),
+});
 
 const inScope = input.sessions.filter((s) => s.repo === FIXTURE_REPO);
 const billable = (t: { input: number | null; output: number | null }) => (t.input ?? 0) + (t.output ?? 0);
+const idsOf = (sessions: readonly SessionRollup[]) => sessions.map((s) => s.sessionId);
 
 const session = (over: Partial<SessionRollup>): SessionRollup => ({
     sessionId: 's',
@@ -17,7 +29,6 @@ const session = (over: Partial<SessionRollup>): SessionRollup => ({
     hook: true,
     firstSeen: '2026-08-01T00:00:00.000Z',
     lastSeen: '2026-08-01T01:00:00.000Z',
-    tokens: { input: 10, output: 5, cacheRead: null, cacheCreation: null },
     linesAdded: 1,
     linesRemoved: 0,
     editsAccepted: 1,
@@ -39,7 +50,8 @@ describe('repo scoping', () => {
 
     it('excludes another repo from the totals entirely', () => {
         // s09-other-repo is the largest session in the fixture, so a broken filter inflates this.
-        expect(stats.totals.tokens.input).toBe(inScope.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
+        expect(stats.usage.totals.tokens.input).toBe(fixturePointSum(idsOf(inScope), 'input'));
+        expect(stats.usage.diagnostics.excludedRepo.tokens.input).toBe(90000);
     });
 });
 
@@ -104,10 +116,9 @@ describe('output invariants', () => {
 
     it('never sums the four token types into one figure', () => {
         // A long cached conversation would count the same context repeatedly.
-        expect(billable(stats.totals.tokens)).toBe(
-            (stats.totals.tokens.input ?? 0) + (stats.totals.tokens.output ?? 0)
-        );
-        expect(Object.keys(stats.totals.tokens).sort()).toEqual(['cacheCreation', 'cacheRead', 'input', 'output']);
+        const tokens = stats.usage.totals.tokens;
+        expect(billable(tokens)).toBe((tokens.input ?? 0) + (tokens.output ?? 0));
+        expect(Object.keys(tokens).sort()).toEqual(['cacheCreation', 'cacheRead', 'input', 'output']);
     });
 });
 
@@ -142,10 +153,11 @@ describe('the null-not-zero contract', () => {
     it('reports an empty store as zero sessions with null tokens, not zeros', () => {
         const empty = telemetryStats(
             { sessions: [], coverage: { from: null, to: null } },
-            { repos: [FIXTURE_REPO], now: FIXTURE_NOW }
+            { repos: [FIXTURE_REPO], now: FIXTURE_NOW, usage: EMPTY_REPORT }
         );
         expect(empty.totals.sessions).toBe(0);
-        expect(empty.totals.tokens.input).toBeNull();
+        expect(empty.usage.totals.tokens.input).toBeNull();
+        expect(empty.usage.totals.state).toBe('unmeasured');
         expect(empty.totals.editAcceptance).toEqual({ accepted: null, rejected: null, decisions: null, ratio: null });
         expect(empty.series.points).toEqual([]);
     });
@@ -158,7 +170,7 @@ describe('edit acceptance invariants', () => {
                 sessions: [session({ editsAccepted: accepted, editsRejected: rejected })],
                 coverage: { from: null, to: null },
             },
-            { now: FIXTURE_NOW }
+            { now: FIXTURE_NOW, usage: EMPTY_REPORT }
         ).totals.editAcceptance;
 
     it('reports wholly unmeasured input as four nulls, never zeros', () => {
@@ -193,7 +205,7 @@ describe('edit acceptance invariants', () => {
                 ],
                 coverage: { from: null, to: null },
             },
-            { now: FIXTURE_NOW }
+            { now: FIXTURE_NOW, usage: EMPTY_REPORT }
         ).totals.editAcceptance;
         const EXPECTED_ACCEPTED = 5;
         const EXPECTED_REJECTED = 5;
@@ -217,7 +229,7 @@ describe('coverage and scope edges', () => {
     });
 
     it('counts everything when no repo filter is given', () => {
-        const all = telemetryStats(input, { now: FIXTURE_NOW });
+        const all = telemetryStats(input, { now: FIXTURE_NOW, usage: fixtureReport() });
         expect(all.otherRepoSessions).toBe(0);
         expect(all.sessionsWithoutHook).toBe(1);
         // The hook-less session is board-owned, so it stays in the totals while still being counted.
@@ -233,7 +245,10 @@ describe('sessions without a hook', () => {
 
     it('stays attributable: counted as hook-less and still in the repo-scoped totals', () => {
         const hookless = session({ sessionId: 'h', hook: false, repo: FIXTURE_REPO });
-        const stats = telemetryStats({ ...input, sessions: [hookless] }, { repos: [FIXTURE_REPO], now: FIXTURE_NOW });
+        const stats = telemetryStats(
+            { ...input, sessions: [hookless] },
+            { repos: [FIXTURE_REPO], now: FIXTURE_NOW, usage: EMPTY_REPORT }
+        );
         expect(stats.sessionsWithoutHook).toBe(1);
         expect(stats.totals.sessions).toBe(1);
         expect(stats.otherRepoSessions).toBe(0);
@@ -241,22 +256,33 @@ describe('sessions without a hook', () => {
 
     it('with an unknown repo is out of a filtered view without being another repo, and in an unfiltered one', () => {
         const unknown = session({ sessionId: 'u', hook: false, repo: null });
-        const filtered = telemetryStats({ ...input, sessions: [unknown] }, { repos: [FIXTURE_REPO], now: FIXTURE_NOW });
+        const filtered = telemetryStats(
+            { ...input, sessions: [unknown] },
+            { repos: [FIXTURE_REPO], now: FIXTURE_NOW, usage: EMPTY_REPORT }
+        );
         expect(filtered.totals.sessions).toBe(0);
         expect(filtered.otherRepoSessions).toBe(0);
         expect(filtered.sessionsWithoutHook).toBe(1);
-        expect(telemetryStats({ ...input, sessions: [unknown] }, { now: FIXTURE_NOW }).totals.sessions).toBe(1);
+        expect(
+            telemetryStats({ ...input, sessions: [unknown] }, { now: FIXTURE_NOW, usage: EMPTY_REPORT }).totals.sessions
+        ).toBe(1);
     });
 });
 
 describe('caller scope', () => {
     const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: null };
-    const mine = telemetryStats(input, { repos: [FIXTURE_REPO], now: FIXTURE_NOW, user: { id: ALICE.id } });
+    const mine = telemetryStats(input, {
+        repos: [FIXTURE_REPO],
+        now: FIXTURE_NOW,
+        user: { id: ALICE.id },
+        usage: fixtureReport({ repos: [FIXTURE_REPO], userId: ALICE.id }),
+    });
     const aliceSessions = inScope.filter((s) => s.user?.id === ALICE.id);
 
     it("counts only the caller's sessions, recomputed by hand", () => {
         expect(mine.totals.sessions).toBe(aliceSessions.length);
-        expect(mine.totals.tokens.input).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
+        expect(mine.usage.totals.tokens.input).toBe(fixturePointSum(idsOf(aliceSessions), 'input'));
+        expect(mine.usage.byUser.map((row) => row.userId)).toEqual([ALICE.id]);
         expect(mine.byUser.map((row) => row.user.login)).toEqual(['alice']);
         // The other members' sessions are simply out of "mine" — not a new bucket to conflate.
         expect(mine.byUser.find((row) => row.user.login === 'bob')).toBeUndefined();
@@ -288,7 +314,10 @@ describe('daily series', () => {
         to: '2026-08-22T00:00:00.000Z',
     };
     const daily = (sessions: SessionRollup[]) =>
-        telemetryStats({ sessions, coverage: { from: null, to: null } }, { repos: [FIXTURE_REPO], now: NOW, range });
+        telemetryStats(
+            { sessions, coverage: { from: null, to: null } },
+            { repos: [FIXTURE_REPO], now: NOW, range, usage: EMPTY_REPORT }
+        );
 
     it('seeds every day in the window, keeping the quiet ones as quiet days', () => {
         // Sessions on the 19th and the 21st; the 20th had none. A gap that closed itself
@@ -332,7 +361,12 @@ describe('series granularity', () => {
     const DAY_MS = 86_400_000;
     const at = (daysBack: number) => new Date(NOW.getTime() - daysBack * DAY_MS).toISOString();
     const stats = (from: string, to: string) =>
-        telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW, range: { preset: 'custom', from, to } });
+        telemetryStats(input, {
+            repos: [FIXTURE_REPO],
+            now: NOW,
+            usage: EMPTY_REPORT,
+            range: { preset: 'custom', from, to },
+        });
 
     // Mirrors telemetry.ts' MAX_DAILY_SERIES_DAYS boundary, restated by hand.
     const DAILY_BOUNDARY_DAYS = 92;
@@ -348,12 +382,14 @@ describe('series granularity', () => {
     it('lets the coverage span decide for all-time', () => {
         // The fixture's coverage spans about four months: weekly, though the request was open.
         const YOUNG_SESSION_AGE_DAYS = 9;
-        expect(telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW }).series.granularity).toBe('week');
+        expect(telemetryStats(input, { repos: [FIXTURE_REPO], now: NOW, usage: EMPTY_REPORT }).series.granularity).toBe(
+            'week'
+        );
         const young: TelemetryInput = {
             sessions: [session({ firstSeen: at(10), lastSeen: at(YOUNG_SESSION_AGE_DAYS) })],
             coverage: { from: at(10), to: NOW.toISOString() },
         };
-        expect(telemetryStats(young, { now: NOW }).series.granularity).toBe('day');
+        expect(telemetryStats(young, { now: NOW, usage: EMPTY_REPORT }).series.granularity).toBe('day');
     });
 
     it('names daily for the month preset', () => {
@@ -383,7 +419,10 @@ describe('user attribution', () => {
             const row = byLogin.get(login) as (typeof stats.byUser)[number];
             const sessions = mine(login);
             expect(row.sessions).toBe(sessions.length);
-            expect(billable(row.tokens)).toBe(sessions.reduce((sum, s) => sum + billable(s.tokens), 0));
+            const usage = stats.usage.byUser.find((u) => u.userId === row.user.id)?.usage.tokens;
+            expect(billable(usage as { input: number | null; output: number | null })).toBe(
+                fixturePointSum(idsOf(sessions), 'input') + fixturePointSum(idsOf(sessions), 'output')
+            );
         }
         expect(byLogin.get('alice')?.user).toEqual(ALICE);
         expect(byLogin.get('bob')?.user).toEqual(BOB);
@@ -399,25 +438,52 @@ describe('user attribution', () => {
     });
 
     it('keeps out-of-repo-scope sessions out of byUser even when attributed', () => {
-        // s09 is bob's and is the other-repo session: a leak would put bob at 5.
-        const BOB_SESSION_COUNT = 4;
+        // s09 is bob's and is the other-repo session: a leak would put bob at 7.
+        const BOB_SESSION_COUNT = 6;
         expect(stats.byUser.find((row) => row.user.login === 'bob')?.sessions).toBe(BOB_SESSION_COUNT);
     });
 
-    it('sums an all-null token group to null, never zero', () => {
-        const noTokens = { tokens: { input: null, output: null, cacheRead: null, cacheCreation: null } };
+    it('reports sessions whose usage carries no token points as unmeasured, never zero', () => {
         const quiet = telemetryStats(
             {
-                sessions: [
-                    session({ sessionId: 'a', user: ALICE, ...noTokens }),
-                    session({ sessionId: 'b', user: ALICE, ...noTokens }),
-                ],
+                sessions: [session({ sessionId: 'a', user: ALICE }), session({ sessionId: 'b', user: ALICE })],
                 coverage: { from: null, to: null },
             },
-            { now: FIXTURE_NOW }
+            { now: FIXTURE_NOW, usage: EMPTY_REPORT }
         );
-        expect(quiet.byUser).toHaveLength(1);
-        expect(quiet.byUser[0]?.tokens.input).toBeNull();
-        expect(quiet.byUser[0]?.tokens.output).toBeNull();
+        expect(quiet.byUser).toEqual([{ user: ALICE, sessions: 2 }]);
+        expect(quiet.usage.byUser).toEqual([]);
+        expect(quiet.usage.totals.tokens).toEqual({ input: null, output: null, cacheRead: null, cacheCreation: null });
+    });
+});
+
+describe('the payload carries tokens only inside usage', () => {
+    it('has no token field on the totals, the session series or the per-user session rows', () => {
+        expect(stats.totals).not.toHaveProperty('tokens');
+        expect(stats.series.points.every((p) => !('tokens' in p))).toBe(true);
+        expect(stats.byUser.every((row) => !('tokens' in row))).toBe(true);
+        expect(input.sessions.every((s) => !('tokens' in s))).toBe(true);
+    });
+
+    it('names the removed task and the unresolved and foreign usage instead of dropping them', () => {
+        expect(stats.usage.diagnostics.unresolvedOwnership.sessions).toBe(1);
+        expect(stats.usage.diagnostics.unresolvedOwnership.tokens.input).toBe(6000);
+        const removed = fixtureReport({ repos: [FIXTURE_REPO] }).tasks.find((t) => t.taskId === 't-s18');
+        expect(removed?.removed).toBe(true);
+        // The removal no longer erases the author from the session figures either.
+        expect(input.sessions.find((s) => s.sessionId === 's18-removed')?.user?.id).toBe('u-bob');
+    });
+
+    it('serves the usage series on the granularity of the session series', () => {
+        expect(stats.usage.series.granularity).toBe(stats.series.granularity);
+        expect(stats.usage.series.points.filter((p) => p.partial)).toHaveLength(1);
+    });
+
+    it('closes the usage totals: assigned plus unassigned equals the eligible tokens per type', () => {
+        const { tokens, assigned, unassigned } = stats.usage.totals;
+        for (const type of ['input', 'output', 'cacheRead', 'cacheCreation'] as const) {
+            const rest = unassigned.reduce((sum, u) => sum + (u.tokens[type] ?? 0), 0);
+            expect(tokens[type]).toBe((assigned[type] ?? 0) + rest);
+        }
     });
 });

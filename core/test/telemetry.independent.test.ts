@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { telemetryStats } from '../src/telemetry.js';
-import { FIXTURE_NOW, FIXTURE_REPO, sampleTelemetry } from './fixtures/load.js';
+import { FIXTURE_NOW, FIXTURE_REPO, fixturePointSum, fixtureReport, sampleTelemetry } from './fixtures/load.js';
 
 /**
  * Recomputes the headline telemetry figures from the raw fixture without importing anything
@@ -12,18 +12,22 @@ import { FIXTURE_NOW, FIXTURE_REPO, sampleTelemetry } from './fixtures/load.js';
  */
 
 const telemetry = sampleTelemetry();
-const stats = telemetryStats(telemetry, { repos: [FIXTURE_REPO], now: FIXTURE_NOW });
+const stats = telemetryStats(telemetry, {
+    repos: [FIXTURE_REPO],
+    now: FIXTURE_NOW,
+    usage: fixtureReport({ repos: [FIXTURE_REPO] }),
+});
 
 const mine = telemetry.sessions.filter((s) => s.repo === FIXTURE_REPO);
+const idsOf = (sessions: typeof mine) => sessions.map((s) => s.sessionId);
 
 describe('totals, recomputed by hand', () => {
-    it('matches on each token type', () => {
-        const add = (pick: (t: (typeof mine)[number]['tokens']) => number | null) =>
-            mine.reduce((sum, s) => sum + (pick(s.tokens) ?? 0), 0);
-        expect(stats.totals.tokens.input).toBe(add((t) => t.input));
-        expect(stats.totals.tokens.output).toBe(add((t) => t.output));
-        expect(stats.totals.tokens.cacheRead).toBe(add((t) => t.cacheRead));
-        expect(stats.totals.tokens.cacheCreation).toBe(add((t) => t.cacheCreation));
+    it('matches on each token type, summed from the raw points of the in-scope sessions', () => {
+        const tokens = stats.usage.totals.tokens;
+        expect(tokens.input).toBe(fixturePointSum(idsOf(mine), 'input'));
+        expect(tokens.output).toBe(fixturePointSum(idsOf(mine), 'output'));
+        expect(tokens.cacheRead).toBe(fixturePointSum(idsOf(mine), 'cacheRead'));
+        expect(tokens.cacheCreation).toBe(fixturePointSum(idsOf(mine), 'cacheCreation'));
     });
 
     it('matches on session count, lines, and active hours', () => {
@@ -53,7 +57,12 @@ describe('caller scope, recomputed by hand', () => {
     // Same fixture, scoped to alice: the hand restatement below filters the raw sessions the
     // same way the scope option claims to, so a wrong filter shows as a mismatch.
     const ALICE_ID = 'u-alice';
-    const mine = telemetryStats(telemetry, { repos: [FIXTURE_REPO], now: FIXTURE_NOW, user: { id: ALICE_ID } });
+    const mine = telemetryStats(telemetry, {
+        repos: [FIXTURE_REPO],
+        now: FIXTURE_NOW,
+        user: { id: ALICE_ID },
+        usage: fixtureReport({ repos: [FIXTURE_REPO], userId: ALICE_ID }),
+    });
     const aliceSessions = mine0();
 
     function mine0() {
@@ -62,10 +71,10 @@ describe('caller scope, recomputed by hand', () => {
 
     it("totals exactly the caller's attributed sessions", () => {
         // Landmark pinned against the fixture: a silent regeneration should fail here too.
-        const ALICE_SESSION_COUNT = 5;
+        const ALICE_SESSION_COUNT = 9;
         expect(mine.totals.sessions).toBe(aliceSessions.length);
-        expect(mine.totals.tokens.input).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.input ?? 0), 0));
-        expect(mine.totals.tokens.output).toBe(aliceSessions.reduce((sum, s) => sum + (s.tokens.output ?? 0), 0));
+        expect(mine.usage.totals.tokens.input).toBe(fixturePointSum(idsOf(aliceSessions), 'input'));
+        expect(mine.usage.totals.tokens.output).toBe(fixturePointSum(idsOf(aliceSessions), 'output'));
         expect(mine.totals.sessions).toBe(ALICE_SESSION_COUNT);
     });
 
@@ -83,12 +92,13 @@ describe('caller scope, recomputed by hand', () => {
 
 describe('landmarks pinned against the fixture', () => {
     it('pins the fixture shape, so a silent regeneration is caught', () => {
-        const FIXTURE_SESSION_COUNT = 15;
-        const FIXTURE_REPO_SESSION_COUNT = 13;
+        // 21 declared sessions; one is an unresolved conflict and has no rollup, one is another repo.
+        const FIXTURE_SESSION_COUNT = 20;
+        const FIXTURE_REPO_SESSION_COUNT = 19;
         expect(telemetry.sessions).toHaveLength(FIXTURE_SESSION_COUNT);
         expect(mine).toHaveLength(FIXTURE_REPO_SESSION_COUNT);
         expect(telemetry.coverage.from).toBe('2026-04-15T12:00:00Z');
-        expect(telemetry.coverage.to).toBe('2026-08-21T06:45:00Z');
+        expect(telemetry.coverage.to).toBe('2026-08-21T08:20:00Z');
     });
 
     it('emits a contiguous week series over the whole window', () => {

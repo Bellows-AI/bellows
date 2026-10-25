@@ -237,6 +237,22 @@ try {
                     ${j.failureKind ?? null}, ${j.output ?? null})
             on conflict (org_id, id) do nothing
         `;
+        // The claim's own evidence of who owns the session: the usage reader attributes tokens
+        // through `job_execution` x `job_execution_session`, never through the job row's pointer.
+        // The repo the session's hook stamped, so the claim and the session agree on it.
+        const sessionRepo = data.sessions.find((s) => s.sessionId === j.sessionId)?.repo ?? repo;
+        await sql`
+            insert into job_execution (org_id, job_id, claim_seq, root_job_id, author_id, repo, agent, launch,
+                                       origin, created_at, ended_at)
+            values (${LOCAL_ORG_ID}, ${j.id}, 1, ${j.rootJobId}, ${createdBy}, ${sessionRepo}, ${CLAUDE_CODE}, 'observed',
+                    'claim', ${new Date(j.startedAt ?? j.createdAt)}, ${new Date(j.finishedAt ?? j.createdAt)})
+            on conflict (org_id, job_id, claim_seq) do nothing
+        `;
+        await sql`
+            insert into job_execution_session (org_id, job_id, claim_seq, session_id, agent, origin)
+            values (${LOCAL_ORG_ID}, ${j.id}, 1, ${j.sessionId}, ${CLAUDE_CODE}, 'reported')
+            on conflict (org_id, job_id, claim_seq, session_id) do nothing
+        `;
     }
 
     console.log('\nseeded (SYNTHETIC — not measurements):');

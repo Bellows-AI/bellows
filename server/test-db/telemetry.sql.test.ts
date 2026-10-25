@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { telemetryStats } from '@factory-ai/core';
+import { reduceUsage, telemetryStats, type TokenType } from '@factory-ai/core';
+import type { TelemetryFetch } from '../src/telemetry/client.js';
 import { migrate } from '../src/db/migrate.js';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
 import { useTestDb } from './harness.js';
@@ -22,6 +23,18 @@ beforeAll(async () => {
 });
 
 const T = (iso: string) => new Date(iso);
+
+/** What the stats service does at read time for the all-time, org-wide request. */
+const statsOf = ({ input, facts }: Pick<TelemetryFetch, 'input' | 'facts'>) => {
+    const now = new Date();
+    return telemetryStats(input, { now, usage: reduceUsage(facts, { range: null, now }) });
+};
+
+/** The raw timed points of one session summed per type, straight from the fetched facts. */
+const pointSum = (facts: TelemetryFetch['facts'], session: string, type: TokenType, agent = 'claude-code') =>
+    facts.contributions
+        .filter((c) => c.kind === 'timed' && c.selection.sessionId === session && c.selection.agent === agent)
+        .reduce<number | null>((sum, c) => (c.tokens[type] === null ? sum : (sum ?? 0) + c.tokens[type]), null);
 
 async function point(row: {
     session: string;
@@ -336,11 +349,13 @@ describe.skipIf(!enabled)('the postgres client', () => {
         const userId = await member('hookless-author');
         const root = await job({ session: session, createdBy: userId, repo: 'acme/app' });
         await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const fetched = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = fetched;
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]).toMatchObject({ repo: 'acme/app', hook: false, taskKey: root });
         expect(input.sessions[0]?.user?.login).toBe('hookless-author');
-        const stats = telemetryStats(input);
+        const stats = statsOf(fetched);
+        expect(stats.usage.totals.tokens.input).toBe(10);
         expect(stats.sessionsWithoutHook).toBe(1);
         expect(stats.totals.sessions).toBe(1);
     });
@@ -369,8 +384,12 @@ describe.skipIf(!enabled)('the postgres client', () => {
             time: '2026-08-01T10:00:00Z',
             agent: 'opencode',
         });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(Object.fromEntries(input.sessions.map((s) => [s.agent, [s.tokens.input, s.taskKey]]))).toEqual({
+        const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(
+            Object.fromEntries(
+                input.sessions.map((s) => [s.agent, [pointSum(facts, s.sessionId, 'input', s.agent), s.taskKey]])
+            )
+        ).toEqual({
             'claude-code': [7, root],
             opencode: [9, root],
         });
@@ -388,17 +407,20 @@ describe.skipIf(!enabled)('the postgres client', () => {
             time: '2026-08-01T10:00:00Z',
             agent: 'opencode',
         });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(input.sessions.map((s) => [s.agent, s.tokens.input])).toEqual([['opencode', 9]]);
+        const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions.map((s) => [s.agent, pointSum(facts, s.sessionId, 'input', s.agent)])).toEqual([
+            ['opencode', 9],
+        ]);
     });
 
     it('leaves unmeasured fields null rather than zero', async () => {
         await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
         await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        const session = input.sessions[0];
-        expect(session?.tokens.input).toBe(10);
-        expect(session?.tokens.output).toBeNull();
+        const fetched = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const session = fetched.input.sessions[0];
+        const { tokens } = statsOf(fetched).usage.totals;
+        expect(tokens.input).toBe(10);
+        expect(tokens.output).toBeNull();
         expect(session?.linesAdded).toBeNull();
         expect(session?.editsAccepted).toBeNull();
         expect(session?.activeSeconds).toBeNull();
@@ -638,10 +660,9 @@ describe.skipIf(!enabled)('task attribution', () => {
             await point({ session, field: 'tokens_input', value: tokens, time: '2026-08-01T10:30:00Z' });
         }
 
-        const { input } = await fetchOrg();
-        const tokensOf = (session: string) => input.sessions.find((s) => s.sessionId === session)?.tokens.input;
-        expect(tokensOf(callerSession)).toBe(10);
-        expect(tokensOf(reviewerSession)).toBe(7);
+        const { input, facts } = await fetchOrg();
+        expect(pointSum(facts, callerSession, 'input')).toBe(10);
+        expect(pointSum(facts, reviewerSession, 'input')).toBe(7);
         expect(input.sessions.map((s) => s.taskKey)).toEqual([rootId, rootId]);
     });
 
@@ -663,26 +684,26 @@ describe.skipIf(!enabled)('task attribution', () => {
         expect(input.sessions[0]?.user).toBeNull();
     });
 
-    it('leaves a removed thread with neither member nor task, its tokens still in the totals', async () => {
-        // Deleting the thread's job rows removes the only bridge to both the member and the
-        // task — the session falls into the unattributed figure rather than vanishing, and
-        // its tokens keep counting in the organization's totals.
+    it('keeps a deleted thread attributable from the retained execution evidence, tokens in the totals', async () => {
+        // Deleting the thread's job rows must not erase who it belonged to: the execution rows
+        // are the retained provenance, so the task and author survive and the usage report
+        // (not the rollup) is what says the task was removed.
         const userId = await member('doomed-author');
         const rootId = await job({ session: 'task-5', createdBy: userId });
         await seedSession('task-5');
 
         const before = await fetchOrg();
         expect(before.input.sessions[0]?.taskKey).toBe(rootId);
-        expect(before.input.sessions[0]?.tokens.input).toBe(10);
+        expect(pointSum(before.facts, 'task-5', 'input')).toBe(10);
 
         await sql`delete from job where root_job_id = ${rootId}`;
-        const { input } = await fetchOrg();
-        expect(input.sessions[0]?.taskKey).toBeNull();
-        expect(input.sessions[0]?.user).toBeNull();
-        expect(input.sessions[0]?.tokens.input).toBe(10);
-        const stats = telemetryStats(input);
-        expect(stats.unattributedSessions).toBe(1);
-        expect(stats.totals.tokens.input).toBe(10);
+        const after = await fetchOrg();
+        expect(pointSum(after.facts, 'task-5', 'input')).toBe(10);
+        const stats = statsOf(after);
+        expect(stats.usage.totals.tokens.input).toBe(10);
+        expect(stats.totals.sessions).toBe(1);
+        const task = reduceUsage(after.facts, { range: null, now: new Date() }).tasks.find((t) => t.taskId === rootId);
+        expect(task?.usage.tokens.input).toBe(10);
     });
 
     it('fetches the org run rows beside the rollups, and never another orgs', async () => {
@@ -696,6 +717,37 @@ describe.skipIf(!enabled)('task attribution', () => {
         expect(runs.map((r) => r.rootJobId)).toEqual([mineRoot]);
         // The column is new: every row so far reads unmeasured, never zero.
         expect(runs[0]?.agentTurns).toBeNull();
+    });
+
+    it('serves stats whose token totals equal the independent SQL sums of the raw points', async () => {
+        // End to end: fetchRollups -> the read-time reduction /api/stats performs -> numbers a
+        // second query over the same rows reproduces without any of the reducer's code.
+        const hooked = randomUUID();
+        const hookless = randomUUID();
+        const userId = await member('sum-author');
+        await job({ session: hooked, createdBy: userId });
+        await job({ session: hookless, createdBy: userId });
+        await branch({ session: hooked, branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
+        for (const [session, base] of [
+            [hooked, 100],
+            [hookless, 3],
+        ] as const) {
+            await point({ session, field: 'tokens_input', value: base, time: '2026-08-01T10:10:00Z' });
+            await point({ session, field: 'tokens_input', value: base * 2, time: '2026-08-01T10:40:00Z' });
+            await point({ session, field: 'tokens_output', value: base + 1, time: '2026-08-01T10:20:00Z' });
+        }
+
+        const stats = statsOf(await fetchOrg());
+        const [sums] = await sql<{ input: string; output: string }[]>`
+            select coalesce(sum(value) filter (where field = 'tokens_input'), 0) as input,
+                   coalesce(sum(value) filter (where field = 'tokens_output'), 0) as output
+            from metric_point_used
+            where session_id in (${hooked}, ${hookless})`;
+        expect(stats.usage.totals.tokens.input).toBe(Number(sums?.input));
+        expect(stats.usage.totals.tokens.output).toBe(Number(sums?.output));
+        expect(stats.usage.totals.tokens.cacheRead).toBeNull();
+        expect(stats.sessionsWithoutHook).toBe(1);
+        expect(stats.totals.sessions).toBe(2);
     });
 });
 

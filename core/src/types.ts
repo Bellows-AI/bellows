@@ -1,3 +1,5 @@
+import type { UsageBlock } from './usage.js';
+
 /**
  * Telemetry from AI coding agents, scoped to the repos this deployment reports on.
  *
@@ -99,7 +101,6 @@ export interface SessionRollup {
     taskKey: string | null;
     firstSeen: string;
     lastSeen: string;
-    tokens: TokenTotals;
     linesAdded: number | null;
     linesRemoved: number | null;
     editsAccepted: number | null;
@@ -123,16 +124,34 @@ export interface TelemetryPoint {
     /** The bucket's UTC start: midnight of the day, or the ISO week's Monday, as YYYY-MM-DD. */
     start: string;
     sessions: number;
-    tokens: TokenTotals;
     linesAdded: number;
     linesRemoved: number;
     partial: boolean;
 }
 
+/**
+ * Every token figure of the stats payload, reduced from the cached usage facts at read time:
+ * partitioned by the instant each point was observed, owned by the board's evidence. Session
+ * counts, lines, edits and active time stay on `TelemetryStats` (session-overlap semantics).
+ * Its diagnostics follow the request's scope: under `scope=mine` `diagnostics.excludedRepo` counts
+ * the caller's sessions, while `meta.telemetry.otherRepoSessions` stays organization-wide.
+ */
+export interface StatsUsage {
+    totals: UsageBlock;
+    /** Token buckets by observation time, on the same granularity as `TelemetryStats.series`. */
+    series: { granularity: 'day' | 'week'; points: { start: string; partial: boolean; usage: UsageBlock }[] };
+    /** One entry per author of eligible usage; `userId` null is usage with no known author. */
+    byUser: { user: UserRef | null; userId: string | null; usage: UsageBlock }[];
+    /** Usage the figures above deliberately leave out, so the gap is a number rather than a guess. */
+    diagnostics: {
+        unresolvedOwnership: { sessions: number; tokens: TokenTotals };
+        excludedRepo: { sessions: number; tokens: TokenTotals };
+    };
+}
+
 export interface TelemetryStats {
     totals: {
         sessions: number;
-        tokens: TokenTotals;
         activeHours: number | null;
         linesAdded: number | null;
         linesRemoved: number | null;
@@ -140,10 +159,10 @@ export interface TelemetryStats {
     };
     /** Sessions the hook attributed to a different repo. */
     otherRepoSessions: number;
-    /** Sessions with telemetry but no hook data — the plugin is missing, or failing. */
+    /** Board-owned sessions that no branch report named: attributed and counted, but the hook is missing or failing. */
     sessionsWithoutHook: number;
-    /** Per-user rollup over the in-scope sessions that carry a user. */
-    byUser: readonly { user: UserRef; sessions: number; tokens: TokenTotals }[];
+    /** Per-user session counts over the in-scope sessions that carry a user. */
+    byUser: readonly { user: UserRef; sessions: number }[];
     /**
      * In-scope sessions with no user — telemetry exists but no board task matches the session
      * id. Distinct from `sessionsWithoutHook`, which counts sessions with no repo at all.
@@ -152,6 +171,7 @@ export interface TelemetryStats {
     /** The usage series, bucketed by the granularity the window span chose. */
     series: { granularity: 'day' | 'week'; points: TelemetryPoint[] };
     coverage: { from: string | null; to: string | null };
+    usage: StatsUsage;
 }
 
 /**
@@ -205,7 +225,7 @@ export interface TaskUsageDistribution {
  * figure degrades to null (with `tasks` 0) when nothing was measured — never to zero.
  */
 export interface TaskUsageStats {
-    /** Input + output per task. Tasks with no measured tokens are excluded, not zeroed. */
+    /** Stopgap until the four-type distributions land: input + output per canonical task. Tasks with no measured tokens are excluded, not zeroed. */
     tokensPerTask: TaskUsageDistribution;
     /** Runs per task — job rows queued in the range, every run and follow-up counted once. */
     jobTurnsPerTask: TaskUsageDistribution;

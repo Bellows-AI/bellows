@@ -1,7 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { taskUsageStats, telemetryStats } from '@factory-ai/core';
-import type { TelemetryInput } from '@factory-ai/core';
+import { taskUsageStats } from '@factory-ai/core';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +6,7 @@ import type { StatsPayload, TelemetryMeta } from '../src/api/useStats.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
+import { fixtureStats } from './telemetry-fixture.js';
 
 /**
  * The dashboard's single-page interactions, driven in jsdom over a stubbed board: the custom
@@ -18,11 +16,7 @@ import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
 const REPO = 'Bellows-AI/bellows.ai';
 const NOW = new Date('2026-08-21T12:00:00.000Z');
-const input = JSON.parse(
-    // A path, not a URL object: under jsdom the global URL is jsdom's, which node:fs refuses.
-    readFileSync(fileURLToPath(`${import.meta.url}/../../../core/test/fixtures/telemetry-sessions.json`), 'utf8')
-) as TelemetryInput;
-const telemetry = telemetryStats(input, { repos: [REPO], now: NOW });
+const telemetry = fixtureStats({ repos: [REPO], now: NOW });
 
 const telemetryMeta: TelemetryMeta = {
     status: 'ok',

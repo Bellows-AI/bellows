@@ -1,10 +1,9 @@
 import type { Sql } from 'postgres';
-import type { JobRun } from '@factory-ai/core';
+import { rollupsFromFacts, type JobRun } from '@factory-ai/core';
 import type { TelemetryClient, TelemetryFetch, TelemetryHealth } from './client.js';
 import { TelemetryError } from './errors.js';
 import { bucketizeActivity, type ActivityBucket } from './run-activity.js';
 import { readUsageFacts } from './usage-facts.js';
-import { rollupsFromFacts } from './usage-rollups.js';
 
 interface RunRow {
     root_job_id: string;
