@@ -304,6 +304,42 @@ describe('the installation token', () => {
         });
     });
 
+    it('requests actions:read, which gh pr checks needs to read a check suite workflow run', () => {
+        expect(RUNNER_TOKEN_PERMISSIONS).toEqual({
+            contents: 'write',
+            pull_requests: 'write',
+            issues: 'write',
+            checks: 'read',
+            actions: 'read',
+        });
+    });
+
+    it('names the permissions and how to grant them when GitHub refuses a narrowed mint with a 422', async () => {
+        const fetchFn = (async () =>
+            new Response(
+                JSON.stringify({ message: 'The permissions requested are not granted to this installation.' }),
+                {
+                    status: 422,
+                }
+            )) as typeof fetch;
+
+        const failure = await provider({ fetchFn })
+            .fresh('acme/widgets')
+            .then(
+                () => null,
+                (error: unknown) => error as Error
+            );
+
+        expect(failure?.message).toMatch(/failed with 422/);
+        expect(failure?.message).toMatch(/Actions: read/);
+        expect(failure?.message).toMatch(/GitHub App.*permissions/s);
+    });
+
+    it('leaves a 422 on the unscoped mint as GitHub reported it', async () => {
+        const fetchFn = (async () => new Response('nope', { status: 422 })) as typeof fetch;
+        await expect(provider({ fetchFn }).get()).rejects.not.toThrow(/Actions: read/);
+    });
+
     it('refuses a repo label that is not owner/name rather than minting wide', async () => {
         const { calls, fetchFn } = stubFetch();
         await expect(provider({ fetchFn }).fresh('widgets')).rejects.toThrow(/owner\/name/);
