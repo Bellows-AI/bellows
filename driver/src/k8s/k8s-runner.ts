@@ -231,7 +231,10 @@ async function agentStarted(deps: K8sDeps, job: BoardJob): Promise<boolean> {
         const read = podsOf(pods, 'listing the runner pods');
         const state =
             read.kind === 'value' ? containerStatusOf(livePodOfItems(read.value), AGENT_CONTAINER)?.state : undefined;
-        return Boolean(state?.running ?? state?.terminated?.startedAt);
+        if (state?.running) return true;
+        // A refused start (StartError) can carry the epoch as its start time: only a real instant proves it ran.
+        const startedAt = Date.parse(state?.terminated?.startedAt ?? '');
+        return Number.isFinite(startedAt) && startedAt > 0;
     } catch {
         return false;
     }

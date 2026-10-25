@@ -58,6 +58,11 @@ describe('the agent container start proof (issue #845)', () => {
         expect(await withStatuses([sidecarsUp, running]).agentStarted(job)).toBe(true);
         expect(await withStatuses([ended]).agentStarted(job)).toBe(true);
         expect(await withStatuses([neverStarted]).agentStarted(job)).toBe(false);
+        const epochStart = {
+            name: AGENT_CONTAINER,
+            state: { terminated: { exitCode: 128, reason: 'StartError', startedAt: '1970-01-01T00:00:00Z' } },
+        };
+        expect(await withStatuses([epochStart]).agentStarted(job)).toBe(false);
     });
 
     it('answers false, never an error, when the pod cannot be read', async () => {

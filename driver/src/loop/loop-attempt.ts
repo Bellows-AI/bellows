@@ -96,6 +96,8 @@ export interface JobState {
      * made once, and a failed one is logged, never a failed run.
      */
     confirmLaunch: (() => Promise<boolean>) | null;
+    /** A launch-proof probe is in flight; the next sample round skips its own. */
+    probingLaunch: boolean;
     /** The attempt's gate-endpoint token once its gate session booted — where the sampler tells the agent a service died. */
     gateToken: string | null;
     /**
@@ -195,6 +197,7 @@ export function newJobState(): JobState {
         keepGroup: false,
         launched: false,
         confirmLaunch: null,
+        probingLaunch: false,
         gateToken: null,
         gateLoss: null,
         control: null,
@@ -654,9 +657,15 @@ export function launchConfirmer(rt: LoopRuntime, job: BoardJob, sessionId: strin
  */
 export async function confirmOnProof(rt: LoopRuntime, job: BoardJob, state: JobState): Promise<void> {
     const confirm = state.confirmLaunch;
-    if (!confirm) return;
-    const proven = await rt.runner.agentStarted(job).catch(() => false);
-    if (proven && (await confirm())) state.confirmLaunch = null;
+    if (!confirm || state.probingLaunch) return;
+    // One probe at a time: a slow inspect must not overlap the next sample round's.
+    state.probingLaunch = true;
+    try {
+        const proven = await rt.runner.agentStarted(job).catch(() => false);
+        if (proven && (await confirm())) state.confirmLaunch = null;
+    } finally {
+        state.probingLaunch = false;
+    }
 }
 
 /** Kicks off one runtime sample fetch, unless one is already in flight; the pump holds the newest. */
