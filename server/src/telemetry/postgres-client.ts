@@ -98,8 +98,7 @@ export function createPostgresTelemetryClient({ sql, orgId, ready, log }: Postgr
                     const facts = await readUsageFacts(tx, orgId);
                     log?.(
                         `usage facts org=${orgId} rows=${JSON.stringify(facts.stats.rows)} ` +
-                            `contributions=${JSON.stringify(facts.stats.contributions)} ` +
-                            `foreignSessions=${facts.stats.foreignSessions} ms=${facts.stats.ms}`
+                            `contributions=${JSON.stringify(facts.stats.contributions)} ms=${facts.stats.ms}`
                     );
                     // The org's own run rows, cached beside the rollups for the per-task statistics.
                     const runRows = await tx<RunRow[]>`

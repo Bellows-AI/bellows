@@ -1,6 +1,8 @@
 import type { TransactionSql } from 'postgres';
 import {
     reduceTokenObservations,
+    resolveOwnership,
+    sessionKeyId,
     type BranchEvidence,
     type ExecutionEvidence,
     type Launch,
@@ -35,8 +37,6 @@ export interface FactsStats {
         users: number;
     };
     contributions: { timed: number; unlocated: number; unresolved: number; suppressed: number };
-    /** Session ids another organization also has evidence for, dropped before they reached memory as evidence. */
-    foreignSessions: number;
     ms: number;
 }
 
@@ -184,7 +184,7 @@ export async function readUsageFacts(
 
     const foreign = new Set(foreignRows.map((r) => r.session_id));
     const foreignList = tx.array([...foreign]);
-    const [observationRows, spanRows, fieldRows] = await Promise.all([
+    const [allObservationRows, allSpanRows, allFieldRows] = await Promise.all([
         tx<ObservationRow[]>`
             select agent, session_id, source, metric, field, temporality, start_time, time, value, attrs
             from metric_point
@@ -207,6 +207,18 @@ export async function readUsageFacts(
     const branch: BranchEvidence[] = branchRows
         .filter((r) => !foreign.has(r.session_id))
         .map((r) => ({ orgId, agent: r.agent, sessionId: r.session_id, repo: r.repo }));
+    // Points are read by session id, so another agent's key on a tenant session id arrives too: keep only the
+    // keys this organization owns (board or branch evidence naming that agent).
+    const keys = [...allObservationRows, ...allSpanRows, ...allFieldRows].map((r) => ({
+        agent: r.agent,
+        sessionId: r.session_id,
+    }));
+    const owners = resolveOwnership({ orgId, board, branch, foreignSessionIds: foreign }, keys);
+    const owned = (r: { agent: string; session_id: string }): boolean =>
+        owners.get(sessionKeyId(r.agent, r.session_id))?.status !== 'excluded';
+    const observationRows = allObservationRows.filter(owned);
+    const spanRows = allSpanRows.filter(owned);
+    const fieldRows = allFieldRows.filter(owned);
     const authorIds = [...new Set(board.map((e) => e.authorId).filter((a): a is string => a !== null))];
     const userRows = authorIds.length
         ? await tx<{ id: string; github_login: string; display_name: string | null; avatar_url: string | null }[]>`
@@ -257,7 +269,6 @@ export async function readUsageFacts(
                 unresolved: count('unresolved'),
                 suppressed: count('suppressed'),
             },
-            foreignSessions: foreign.size,
             ms: Date.now() - started,
         },
     };
@@ -277,7 +288,6 @@ export function emptyUsageFacts(orgId: string): UsageFacts {
         stats: {
             rows: { evidence: 0, branch: 0, observations: 0, spans: 0, fields: 0, users: 0 },
             contributions: { timed: 0, unlocated: 0, unresolved: 0, suppressed: 0 },
-            foreignSessions: 0,
             ms: 0,
         },
     };

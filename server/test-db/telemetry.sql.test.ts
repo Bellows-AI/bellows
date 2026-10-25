@@ -332,9 +332,10 @@ describe.skipIf(!enabled)('the postgres client', () => {
     });
 
     it('attributes a board-owned session without a hook to its task and author, repo from the execution', async () => {
+        const session = randomUUID();
         const userId = await member('hookless-author');
-        const root = await job({ session: 's1', createdBy: userId, repo: 'acme/app' });
-        await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+        const root = await job({ session: session, createdBy: userId, repo: 'acme/app' });
+        await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]).toMatchObject({ repo: 'acme/app', hook: false, taskKey: root });
@@ -345,22 +346,24 @@ describe.skipIf(!enabled)('the postgres client', () => {
     });
 
     it('returns a session with neither a board owner nor a hook to no organization', async () => {
+        const session = randomUUID();
         // It used to be returned to EVERY organization (`session_summary.org_id is null`): usage of
         // a stranger's local run in each tenant's totals. Nobody's evidence names it, so it is
         // nobody's; only the global reconciliation sees it.
-        await point({ session: 'orphan', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+        await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
         for (const org of [ORG, OTHER_ORG]) {
             const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: org }).fetchRollups();
             expect(input.sessions).toEqual([]);
-            expect(JSON.stringify(facts)).not.toContain('orphan');
+            expect(JSON.stringify(facts)).not.toContain(session);
         }
     });
 
     it('keys a rollup by agent and session: a session shared by two agents does not collide', async () => {
-        const root = await job({ session: 'shared-s', createdBy: null });
-        await point({ session: 'shared-s', field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        const session = randomUUID();
+        const root = await job({ session: session, createdBy: null });
+        await point({ session: session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
         await point({
-            session: 'shared-s',
+            session: session,
             field: 'tokens_input',
             value: 9,
             time: '2026-08-01T10:00:00Z',
@@ -374,11 +377,12 @@ describe.skipIf(!enabled)('the postgres client', () => {
     });
 
     it('does not let evidence naming one agent own the other agent’s session', async () => {
+        const session = randomUUID();
         const root = await job({ session: null });
-        await claim({ job: root, root, session: 'named-s', agent: 'opencode' });
-        await point({ session: 'named-s', field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        await claim({ job: root, root, session: session, agent: 'opencode' });
+        await point({ session: session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
         await point({
-            session: 'named-s',
+            session: session,
             field: 'tokens_input',
             value: 9,
             time: '2026-08-01T10:00:00Z',
@@ -511,19 +515,20 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it('resolves a follow-up chain to its one shared author', async () => {
+        const session = randomUUID();
         // Every member of a thread shares the parent's session AND, by the follow-up author
         // guard, the parent's author — so the join is deterministic no matter which member's row
         // the minimum happens to pick.
         const userId = await member('thread-author');
-        const rootId = await job({ session: 'attr-4', createdBy: userId });
-        await job({ session: 'attr-4', createdBy: userId, root: rootId, parent: rootId });
+        const rootId = await job({ session: session, createdBy: userId });
+        await job({ session: session, createdBy: userId, root: rootId, parent: rootId });
         await branch({
-            session: 'attr-4',
+            session: session,
             branch: 'feat/a',
             from: '2026-08-01T10:00:00Z',
             to: '2026-08-01T11:00:00Z',
         });
-        await point({ session: 'attr-4', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await point({ session: session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
@@ -531,11 +536,12 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it('does not pick an author when the trusted evidence names two: the task stays, the user is unknown', async () => {
+        const session = randomUUID();
         const first = await member('author-one');
         const second = await member('author-two');
-        const rootId = await job({ session: 'attr-6', createdBy: first });
-        await job({ session: 'attr-6', createdBy: second, root: rootId, parent: rootId });
-        await point({ session: 'attr-6', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        const rootId = await job({ session: session, createdBy: first });
+        await job({ session: session, createdBy: second, root: rootId, parent: rootId });
+        await point({ session: session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
@@ -604,24 +610,26 @@ describe.skipIf(!enabled)('task attribution', () => {
     // thread (task) both belong to.
     it('keeps a reviewer’s tokens on its review row’s session, apart from the caller’s', async () => {
         const userId = await member('review-author');
-        const rootId = await job({ session: 'caller-s', createdBy: userId });
+        const callerSession = randomUUID();
+        const reviewerSession = randomUUID();
+        const rootId = await job({ session: callerSession, createdBy: userId });
         const reviewId = randomUUID();
         await sql`
             insert into job (org_id, id, command, status, root_job_id, created_by, session_id, created_at,
                              review_of, review_key, review_profile, review_spec, review_revision, review_ref)
-            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, 'reviewer-s', now(),
+            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, ${reviewerSession}, now(),
                     ${rootId}, 'sec-1', 'security', '{}'::jsonb, 'head:abc', 'refs/factory/review/x/sec-1')
         `;
         await claim({
             job: reviewId,
             root: rootId,
-            session: 'reviewer-s',
+            session: reviewerSession,
             author: userId,
             requesting: { job: rootId, root: rootId },
         });
         for (const [session, tokens] of [
-            ['caller-s', 10],
-            ['reviewer-s', 7],
+            [callerSession, 10],
+            [reviewerSession, 7],
         ] as const) {
             await branch({ session, branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
             await point({ session, field: 'tokens_input', value: tokens, time: '2026-08-01T10:30:00Z' });
@@ -629,8 +637,8 @@ describe.skipIf(!enabled)('task attribution', () => {
 
         const { input } = await fetchOrg();
         const tokensOf = (session: string) => input.sessions.find((s) => s.sessionId === session)?.tokens.input;
-        expect(tokensOf('caller-s')).toBe(10);
-        expect(tokensOf('reviewer-s')).toBe(7);
+        expect(tokensOf(callerSession)).toBe(10);
+        expect(tokensOf(reviewerSession)).toBe(7);
         expect(input.sessions.map((s) => s.taskKey)).toEqual([rootId, rootId]);
     });
 

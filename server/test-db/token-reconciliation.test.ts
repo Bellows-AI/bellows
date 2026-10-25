@@ -48,6 +48,7 @@ interface Built {
 }
 
 let w: World;
+const SESSIONS_WITHOUT_HOOK = 7; // board-owned rollups with no branch report, counted in totals
 let sql: Sql;
 let built: Built;
 
@@ -334,7 +335,7 @@ describe.skipIf(!enabled)('token reconciliation', () => {
         expect(removed.usage.tokens.input).toBe(AMOUNT.removed);
         // The conflicting session is a tenant diagnostic, not eligible usage.
         expect(report.diagnostics.unresolvedOwnership.tokens.input).toBe(AMOUNT.conflict);
-        expect(report.diagnostics.sessionsWithoutHook).toBeGreaterThan(0);
+        expect(report.diagnostics.sessionsWithoutHook).toBe(SESSIONS_WITHOUT_HOOK);
         // Every point inside a confirmed claim is assigned (incl. the removed task and the hook-less
         // board session); the gap, the backfill row and the branch-only session are not.
         const reason = (r: string) => report.eligible.unassigned.find((u) => u.reason === r)?.tokens.input ?? 0;
@@ -424,11 +425,20 @@ describe.skipIf(!enabled)('token reconciliation', () => {
         expect(after.eligible.counts.tasks).toBe(before.eligible.counts.tasks);
     });
 
+    it('reads no point of a key the tenant does not own: another agent on a tenant session id', async () => {
+        const f = await facts(built.A);
+        const two = built.ids.twoAgents!;
+        const keyed = [...f.contributions.map((c) => c.selection), ...f.spans, ...f.fields].filter(
+            (k) => k.sessionId === two
+        );
+        expect(keyed.length).toBeGreaterThan(0);
+        expect(new Set(keyed.map((k) => k.agent))).toEqual(new Set(['opencode']));
+    });
+
     it('measures the facts: rows per query and contributions per kind', async () => {
         const f = await facts(built.A);
         expect(f.stats.rows.evidence).toBeGreaterThan(f.board.length); // the shared session's rows were read, then dropped
         expect(f.stats.contributions.timed).toBeGreaterThan(0);
-        expect(f.stats.foreignSessions).toBe(1);
         const lines: string[] = [];
         await createPostgresTelemetryClient({ sql, orgId: built.A, log: (m) => lines.push(m) }).fetchRollups();
         expect(lines).toHaveLength(1);
