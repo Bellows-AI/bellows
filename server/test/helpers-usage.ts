@@ -24,7 +24,7 @@ export interface UsageSessionSpec {
     hook?: boolean;
 }
 
-function point(sessionId: string, type: TokenType, value: number, at: string): TokenContribution {
+export function point(sessionId: string, type: TokenType, value: number, at: string): TokenContribution {
     return {
         selection: { agent: 'claude-code', sessionId },
         source: 'otel',

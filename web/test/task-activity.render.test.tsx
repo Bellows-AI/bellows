@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
-import { job } from './tasks-fixtures.js';
+import { job, usageBlock } from './tasks-fixtures.js';
 import { TaskActivity } from '../src/panels/TaskActivity.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
@@ -37,7 +37,8 @@ const payload = (over: Partial<JobActivity> = {}): JobActivity => ({
             edits: 0,
         },
     ],
-    totals: { input: 3_200_000, output: 500_000, cacheRead: 9_000_000, cacheCreation: 100_000 },
+    usage: usageBlock({ input: 3_200_000, output: 500_000, cacheRead: 9_000_000, cacheCreation: 100_000 }),
+    task: null,
     ...over,
 });
 
@@ -57,6 +58,29 @@ describe('TaskActivity', () => {
         expectNoPlaceholder(html);
     });
 
+    it('draws no line for a token type the run never measured, instead of a flat zero', () => {
+        const html = render({
+            [RUN_ID]: payload({
+                buckets: [
+                    {
+                        start: '2026-09-22T20:45:00.000Z',
+                        tokens: { input: 5, output: 0, cacheRead: null, cacheCreation: null },
+                        edits: null,
+                    },
+                    {
+                        start: '2026-09-22T21:00:00.000Z',
+                        tokens: { input: 0, output: 7, cacheRead: null, cacheCreation: null },
+                        edits: null,
+                    },
+                ],
+            }),
+        });
+        expect(html).toContain('data-series="input"');
+        expect(html).toContain('data-series="output"');
+        expect(html).not.toContain('data-series="cacheRead"');
+        expect(html).not.toContain('data-series="cacheCreation"');
+    });
+
     it('is one labeled button over the whole summary, which opens a dialog', () => {
         const html = render({ [RUN_ID]: payload() });
         const button = html.match(/<button[^>]*task-stats-trigger[^>]*>([\s\S]*?)<\/button>/);
@@ -69,7 +93,7 @@ describe('TaskActivity', () => {
     });
 
     it('keeps the summary actionable, with no chart, when the run has no telemetry', () => {
-        for (const answer of ['unavailable' as const, payload({ buckets: [], totals: null })]) {
+        for (const answer of ['unavailable' as const, payload({ buckets: [], usage: usageBlock(null) })]) {
             const html = render({ [RUN_ID]: answer });
             expect(html).toContain('No telemetry for this run.');
             expect(html).not.toContain('<svg');

@@ -3,33 +3,119 @@ import { json, runCli } from './harness.js';
 
 const cli = (argv: string[], respond: (url: string) => Response) => runCli(argv, (sent) => respond(sent.url));
 
+const NULLS = { input: null, output: null, cacheRead: null, cacheCreation: null };
+const block = (tokens: Record<string, number | null>, over: Record<string, unknown> = {}) => {
+    const t = { ...NULLS, ...tokens };
+    const exact = { input: 'exact', output: 'exact', cacheRead: 'exact', cacheCreation: 'exact' };
+    const kinds = Object.fromEntries(
+        Object.entries(t).map(([k, v]) => [k, v === null ? null : exact[k as keyof typeof exact]])
+    );
+    const coverage = Object.fromEntries(
+        Object.entries(t).map(([k, v]) => [k, { measured: v === null ? 0 : 1, contributors: 1 }])
+    );
+    return {
+        state: 'measured',
+        provisional: false,
+        tokens: t,
+        assigned: t,
+        unassigned: [],
+        unlocated: NULLS,
+        unresolvedTemporality: { observations: 0 },
+        precision: kinds,
+        coverage,
+        rows: [],
+        counts: { sessions: 1, runs: 1, tasks: 1 },
+        ...over,
+    };
+};
+const run = (jobId: string, kind: string, tokens: Record<string, number | null>, reviewOf: string | null = null) => ({
+    jobId,
+    kind,
+    reviewOf,
+    live: false,
+    operational: true,
+    startedAt: '2026-01-01T00:00:00.000Z',
+    endedAt: '2026-01-01T00:02:00.000Z',
+    usage: block(tokens),
+});
+
 describe('bellows job activity', () => {
-    it('prints one row per bucket and keeps the payload under --json', async () => {
-        const body = {
+    const body = () => {
+        const mine = run('job-1', 'run', { input: 100, output: 20 });
+        const review = run('rev-1', 'review', { output: 9 }, 'job-1');
+        const owned = block({ output: 5 }, { unassigned: [{ reason: 'no-segment', tokens: { ...NULLS, output: 5 } }] });
+        const taskTokens = { input: 100, output: 34 };
+        return {
             jobId: 'job-1',
             sessionId: 's',
             from: '2026-01-01T00:00:00.000Z',
             to: '2026-01-01T00:02:00.000Z',
             bucketMs: 60_000,
             buckets: [
-                {
-                    start: '2026-01-01T00:00:00.000Z',
-                    tokens: { input: 100, output: 20, cacheRead: 0, cacheCreation: 0 },
-                    edits: 3,
-                },
+                { start: '2026-01-01T00:00:00.000Z', tokens: { ...NULLS, input: 100, output: 0 }, edits: 3 },
+                { start: '2026-01-01T00:01:00.000Z', tokens: { ...NULLS, input: 0, output: 20 }, edits: null },
             ],
-            totals: { input: 100, output: 20, cacheRead: 0, cacheCreation: 0 },
+            usage: mine.usage,
+            task: {
+                taskId: 'job-1',
+                removed: false,
+                usage: block(taskTokens),
+                runs: [mine, review],
+                taskOwned: owned,
+            },
         };
-        const human = await cli(['job', 'activity', 'job-1'], () => json(body));
-        expect(human.out).toContain('input 100  output 20  cache-read 0  cache-creation 0  edits 3');
+    };
 
-        const machine = await cli(['job', 'activity', 'job-1', '--json'], () => json(body));
-        expect(JSON.parse(machine.out).data).toEqual(body);
+    it('fails the command, with the board message, when the board answers 503 UNAVAILABLE', async () => {
+        const down = () => json({ error: 'Telemetry is disabled (TELEMETRY_SOURCE=off)', code: 'UNAVAILABLE' }, 503);
+        const { code, err, out } = await runCli(['job', 'activity', 'job-1'], down);
+        expect(code).not.toBe(0);
+        expect(out).toBe('');
+        expect(err).toContain('Telemetry is disabled');
+    });
+
+    it('keeps the whole payload under --json, nulls and review runs included', async () => {
+        const machine = await cli(['job', 'activity', 'job-1', '--json'], () => json(body()));
+        expect(JSON.parse(machine.out).data).toEqual(body());
+    });
+
+    it('prints the four types apart per bucket, with - for a type never measured and no total', async () => {
+        const human = (await cli(['job', 'activity', 'job-1'], () => json(body()))).out;
+        expect(human).toContain('input 100  output 0  cache-read -  cache-creation -  edits 3');
+        expect(human).toContain('input 0  output 20  cache-read -  cache-creation -  edits -');
+        expect(human).not.toMatch(/total/i);
+    });
+
+    it('lists the task with its review run and the run-unassigned reason', async () => {
+        const human = (await cli(['job', 'activity', 'job-1'], () => json(body()))).out;
+        expect(human).toContain('run usage: input 100 (1/1)  output 20 (1/1)  cache-read -  cache-creation -');
+        expect(human).toContain('task job-1: input 100 (1/1)  output 34 (1/1)');
+        expect(human).toContain('review of job-1 rev-1: input -  output 9 (1/1)');
+        expect(human).toContain('unassigned (no-segment): input -  output 5  cache-read -  cache-creation -');
+    });
+
+    it('marks an estimated or mixed figure with ~ and shows measured/contributors per type', async () => {
+        const data = body();
+        data.usage.precision.output = 'estimated';
+        data.usage.coverage.output = { measured: 2, contributors: 3 };
+        const human = (await cli(['job', 'activity', 'job-1'], () => json(data))).out;
+        expect(human).toContain('run usage: input 100 (1/1)  output ~20 (2/3)');
     });
 
     it('says plainly when there is nothing to chart', async () => {
-        const body = { jobId: 'job-1', sessionId: null, from: null, to: null, bucketMs: null, buckets: [] };
-        expect((await cli(['job', 'activity', 'job-1'], () => json(body))).out).toContain('no activity');
+        const empty = {
+            jobId: 'job-1',
+            sessionId: null,
+            from: null,
+            to: null,
+            bucketMs: null,
+            buckets: [],
+            usage: block({}, { state: 'unmeasured' }),
+            task: null,
+        };
+        expect((await cli(['job', 'activity', 'job-1'], () => json(empty))).out).toBe(
+            'no activity: the run measured no usage\n'
+        );
     });
 });
 

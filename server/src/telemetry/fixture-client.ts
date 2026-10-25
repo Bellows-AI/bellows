@@ -1,19 +1,22 @@
 import { readFileSync } from 'node:fs';
 import { rollupsFromFacts, type JobRun } from '@factory-ai/core';
-import type { TelemetryClient, TelemetryFetch } from './client.js';
-import type { ActivityBucket } from './run-activity.js';
+import type { TaskFacts, TelemetryClient, TelemetryFetch } from './client.js';
 import { TelemetryError } from './errors.js';
-import { emptyUsageFacts, type UsageFacts } from './usage-facts.js';
+import { emptyUsageFacts, factsForTask, taskOfJob, type UsageFacts } from './usage-facts.js';
 
 const FIXTURE = new URL('../../../core/test/fixtures/telemetry-usage.json', import.meta.url);
 
 /** The committed JSON: usage facts (the id set as an array) plus the board's run rows. */
-type FixtureFile = Omit<UsageFacts, 'foreignSessionIds' | 'stats'> & { foreignSessionIds: string[]; runs: JobRun[] };
+type FixtureFile = Omit<UsageFacts, 'foreignSessionIds' | 'stats' | 'edits'> & {
+    foreignSessionIds: string[];
+    runs: JobRun[];
+};
 
 /** Parses the committed fixture into one fetch: facts, the session rollups derived from them, and the runs. */
 export function parseFixtureFetch(raw: string): TelemetryFetch {
     const { runs, foreignSessionIds, ...rest } = JSON.parse(raw) as FixtureFile;
     const facts: UsageFacts = {
+        edits: [],
         ...rest,
         foreignSessionIds: new Set(foreignSessionIds),
         stats: emptyUsageFacts(rest.orgId).stats,
@@ -39,9 +42,11 @@ export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClie
             // them would silently poison every later request.
             return structuredClone(load());
         },
-        // The fixture replays facts, not raw points per session — there is nothing to bucket.
-        async runActivity(): Promise<ActivityBucket[]> {
-            return [];
+        // The fixture's facts carry no edit points; the task read is the same facts narrowed to one task.
+        async fetchTaskFacts({ jobId, rootJobId }): Promise<TaskFacts> {
+            const { facts } = load();
+            const taskId = taskOfJob(facts.board, jobId) ?? rootJobId;
+            return structuredClone({ taskId, facts: factsForTask(facts, taskId) });
         },
         async health() {
             return { status: 'ok', reason: null };
@@ -58,8 +63,8 @@ export function createNullTelemetryClient(): TelemetryClient {
         async fetchRollups(): Promise<TelemetryFetch> {
             throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
         },
-        async runActivity(): Promise<ActivityBucket[]> {
-            return [];
+        async fetchTaskFacts(): Promise<TaskFacts> {
+            throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
         },
         async health() {
             return { status: 'unreachable', reason: 'Telemetry is disabled (TELEMETRY_SOURCE=off)' };

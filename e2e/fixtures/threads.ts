@@ -13,7 +13,14 @@
  *
  * Append-only after #278: lanes add fixtures, they never change an existing one.
  */
-import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
+import {
+    OBJECTIVE_MODE,
+    WORKFLOW_MODE,
+    emptyBlock,
+    type JobMode,
+    type Tokens,
+    type UsageBlock,
+} from '@factory-ai/core';
 import type { Page } from '@playwright/test';
 
 export type ThreadStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -583,23 +590,80 @@ export const interruptedThread = thread([
     }),
 ]);
 
+/** A measured block of exactly these tokens; a type left out was never measured (null, never zero). */
+function measuredBlock(tokens: Partial<Tokens>): UsageBlock {
+    const t: Tokens = { input: null, output: null, cacheRead: null, cacheCreation: null, ...tokens };
+    const precision = (v: number | null) => (v === null ? null : ('exact' as const));
+    return {
+        ...emptyBlock('measured'),
+        tokens: t,
+        assigned: t,
+        precision: {
+            input: precision(t.input),
+            output: precision(t.output),
+            cacheRead: precision(t.cacheRead),
+            cacheCreation: precision(t.cacheCreation),
+        },
+    };
+}
+
 /**
- * The activity payload a mocked thread answers with (issues #339, #530): empty buckets and null
- * totals, so the page's activity summary renders its "no telemetry" state. The page fetches
- * `GET /api/jobs/:id/activity` for every run beside its thread poll — a mocked thread must answer
- * that too, or the real board 404s a task id the fixture only names, and the console watcher
- * fails the spec.
+ * The activity payload a mocked thread answers with (issues #339, #530, #847): the newest run
+ * measured on three of the four token types (cache creation was never measured: null, rendered
+ * "—"), plus the canonical task around it - the thread's other runs unmeasured and one review run
+ * that is not a row of the thread - so the page's activity summary and statistics modal render
+ * figures, the "—" and the review note. A thread whose newest run has no session answers the
+ * unmeasured payload. The page fetches `GET /api/jobs/:id/activity` once, for the newest run, beside
+ * its thread poll - a mocked thread must answer that too, or the real board 404s a task id the
+ * fixture only names, and the console watcher fails the spec.
  */
 export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
     const head = jobs[jobs.length - 1] ?? null;
-    return {
+    const base = {
         jobId: head?.id ?? null,
         sessionId: head?.sessionId ?? null,
         from: head?.startedAt ?? null,
         to: head?.finishedAt ?? head?.startedAt ?? null,
         bucketMs: null,
         buckets: [],
-        totals: null,
+    };
+    if (head === null || head.sessionId === null) return { ...base, usage: emptyBlock('unmeasured'), task: null };
+    const mine = measuredBlock({ input: 1200, output: 300, cacheRead: 9000 });
+    const review = measuredBlock({ input: 40, output: 10 });
+    const run = (job: ThreadJob, kind: 'run' | 'follow-up', usage: UsageBlock) => ({
+        jobId: job.id,
+        kind,
+        reviewOf: null,
+        live: false,
+        operational: true,
+        startedAt: job.startedAt,
+        endedAt: job.finishedAt,
+        usage,
+    });
+    const runs = [
+        ...jobs.slice(0, -1).map((job, index) => run(job, index === 0 ? 'run' : 'follow-up', emptyBlock('unmeasured'))),
+        run(head, jobs.length === 1 ? 'run' : 'follow-up', mine),
+        {
+            jobId: 'cccccccc-0000-4000-8000-000000000001',
+            kind: 'review',
+            reviewOf: head.id,
+            live: false,
+            operational: false,
+            startedAt: head.finishedAt,
+            endedAt: head.finishedAt,
+            usage: review,
+        },
+    ];
+    return {
+        ...base,
+        usage: mine,
+        task: {
+            taskId: jobs[0]!.id,
+            removed: false,
+            usage: measuredBlock({ input: 1240, output: 310, cacheRead: 9000 }),
+            runs,
+            taskOwned: null,
+        },
     };
 }
 
