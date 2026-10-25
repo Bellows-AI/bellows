@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import {
     type PublishResult,
@@ -21,8 +22,14 @@ import { git, hasGit, ROOT, SCRIPT_IDENTITY, setupWorktreeFixture } from './fixt
  * hook moves the content, bound or not. Real git throughout, offline: the remote is the fixture's
  * `file://` bare repo.
  */
-/** The `git` every supervised step resolves to, run the way its shim is: a node script fronting the real git. */
+/**
+ * The directory the supervisor puts first on every step's PATH: the hardened `git`, written the way
+ * `gitShimOf` writes it. Every step goes through it, the probe's own git calls included.
+ */
 const HARDENED_GIT = join(dirname(fileURLToPath(import.meta.url)), '../src/scripts/git-harden.cjs');
+const shimDir = mkdtempSync(join(tmpdir(), 'publish-hooks-shim-'));
+writeFileSync(join(shimDir, 'git'), `#!${process.execPath}\n${readFileSync(HARDENED_GIT, 'utf8')}`, { mode: 0o755 });
+afterAll(() => rmSync(shimDir, { recursive: true, force: true }));
 
 describe.skipIf(!hasGit())('a publish over repository hooks', () => {
     const fx = setupWorktreeFixture();
@@ -49,25 +56,21 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
             if (step.args[1] === 'view') throw new Error('no pull requests found');
             return { stdout: step.args[1] === 'create' ? `${PR_URL}\n` : '' };
         }
-        const hardened = step.entrypoint === 'git';
-        const stdout = execFileSync(
-            hardened ? process.execPath : step.entrypoint,
-            hardened ? [HARDENED_GIT, ...step.args] : step.args,
-            {
-                cwd: step.inRepo ? fx.checkout() : fx.dir(),
-                // No global or system config: a member's own core.hooksPath must not hide the hooks under test.
-                env: {
-                    ...process.env,
-                    ...SCRIPT_IDENTITY,
-                    GIT_CONFIG_GLOBAL: '/dev/null',
-                    GIT_CONFIG_NOSYSTEM: '1',
-                    ...(hardened ? { GIT_HARDEN_REAL: 'git' } : {}),
-                    ...onHost(step.envLiterals),
-                },
-                encoding: 'utf8',
-                stdio: ['ignore', 'pipe', 'pipe'],
-            }
-        );
+        const stdout = execFileSync(step.entrypoint, step.args, {
+            cwd: step.inRepo ? fx.checkout() : fx.dir(),
+            // No global or system config: a member's own core.hooksPath must not hide the hooks under test.
+            env: {
+                ...process.env,
+                ...SCRIPT_IDENTITY,
+                GIT_CONFIG_GLOBAL: '/dev/null',
+                GIT_CONFIG_NOSYSTEM: '1',
+                PATH: `${shimDir}${delimiter}${process.env.PATH ?? ''}`,
+                GIT_HARDEN_REAL: execFileSync('which', ['git'], { encoding: 'utf8' }).trim(),
+                ...onHost(step.envLiterals),
+            },
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
         return { stdout };
     };
 
