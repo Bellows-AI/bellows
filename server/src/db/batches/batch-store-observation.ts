@@ -388,7 +388,10 @@ interface ObservationRow {
     next_refresh_at: Date;
 }
 
-export async function readObservations(deps: ObservationDeps, batchId: string): Promise<BatchPrObservation[]> {
+export async function readObservations(
+    deps: { sql: Sql | TransactionSql; orgId: string },
+    batchId: string
+): Promise<BatchPrObservation[]> {
     const { sql, orgId } = deps;
     const rows = await sql<ObservationRow[]>`
         select o.task_key, o.repo, o.pr_number, o.attempt, o.revision::text as revision, o.fingerprint, o.outcome,

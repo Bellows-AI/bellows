@@ -1,4 +1,5 @@
 import type { Sql } from 'postgres';
+import type { TelemetrySource } from '../../telemetry/client.js';
 import { recordedBatch, replayInTx, stampKey } from './batch-store-idempotency.js';
 import {
     deleteChildren,
@@ -9,7 +10,7 @@ import {
     writeResolved,
 } from './batch-store-rows.js';
 import { closeBatchTask } from './batch-store-close.js';
-import { readReport, type ReportTelemetrySource } from './batch-store-report.js';
+import { readReport } from './batch-store-report.js';
 import {
     acceptBatchTask,
     cancelBatch,
@@ -51,7 +52,7 @@ export function createBatchStore({
     /** The clock the time limit and the retry backoff are read against; production leaves it unset. */
     now?: () => Date;
     /** Where usage is read from; absent is the org's own database. Fixture and off report it `unavailable`. */
-    telemetrySource?: ReportTelemetrySource;
+    telemetrySource?: TelemetrySource;
 }): BatchStore {
     const gate = async () => {
         if (ready) await ready;

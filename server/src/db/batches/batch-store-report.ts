@@ -11,6 +11,7 @@ import {
     type UsageBlock,
 } from '@factory-ai/core';
 import type { Sql, TransactionSql } from 'postgres';
+import type { TelemetrySource } from '../../telemetry/client.js';
 import { readUsageFacts } from '../../telemetry/usage-facts.js';
 import { type BatchPrObservation, readObservations } from './batch-store-observation.js';
 import { type BoardMergeRow, boardMergeColumns, boardMerging, readVerification } from './batch-store-rows.js';
@@ -94,11 +95,9 @@ function stateOf(batch: ReportBatch, tasks: readonly ReportTaskRow[]): BatchRepo
     return moving ? 'running' : 'parked';
 }
 
-/** Where the report's usage comes from: only a postgres telemetry source describes the board's own tasks. */
-export type ReportTelemetrySource = 'postgres' | 'fixture' | 'off';
-
 export interface ReportDeps {
-    telemetrySource?: ReportTelemetrySource;
+    /** Only a postgres telemetry source describes the board's own tasks. */
+    telemetrySource?: TelemetrySource;
     /** Test hook: runs between the membership reads and the usage read, inside the snapshot. */
     beforeUsage?: () => Promise<void>;
     /** Test seam: the usage reader, so a failing telemetry read can be injected. */
@@ -168,7 +167,7 @@ async function assembleReport(
             order by a.recorded_at, a.task_key
         `,
         readVerification(sql, { orgId, id }),
-        readObservations({ sql: sql as unknown as Sql, orgId }, id),
+        readObservations({ sql, orgId }, id),
     ]);
     const observed = new Map(observations.map((row) => [row.taskKey, row]));
     const state = stateOf(batch, tasks);
@@ -292,17 +291,20 @@ async function readBatchUsage(
     tasks: readonly ReportTaskRow[],
     { telemetrySource = 'postgres', readFacts = readUsageFacts }: ReportDeps
 ): Promise<BatchUsage> {
-    const [{ at }] = (await tx<{ at: Date }[]>`select now() as at`) as unknown as [{ at: Date }];
+    const [snapshot] = await tx<{ at: Date }[]>`select now() as at`;
+    const at = snapshot!.at;
     const unavailable: BatchUsage = { snapshotAt: at, tasks: null, total: emptyBlock('unavailable') };
     if (telemetrySource !== 'postgres') return unavailable;
     const roots = tasks.flatMap((task) => (task.root_job_id ? [task.root_job_id] : []));
+    let facts: Awaited<ReturnType<typeof readUsageFacts>>;
     try {
-        const facts = await tx.savepoint((sp) => readFacts(sp, orgId, { taskIds: roots }));
-        const { tasks: byRoot, total } = batchUsageOf(facts, roots, at);
-        return { snapshotAt: at, tasks: byRoot, total };
-    } catch {
+        facts = await tx.savepoint((sp) => readFacts(sp, orgId, { taskIds: roots }));
+    } catch (e) {
+        console.error(`[batches] usage read failed: ${(e as Error).message}`);
         return unavailable;
     }
+    const { tasks: byRoot, total } = batchUsageOf(facts, roots, at);
+    return { snapshotAt: at, tasks: byRoot, total };
 }
 
 function usageOfTask(

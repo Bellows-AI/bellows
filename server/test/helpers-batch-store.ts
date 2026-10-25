@@ -9,6 +9,7 @@ import {
     TASK_RETRY,
     TASK_SUCCEEDED,
     type BatchPlan,
+    type UsageBlock,
 } from '@factory-ai/core';
 import {
     BATCH_DRAFT,
@@ -31,6 +32,8 @@ export interface MemoryBatchStore extends BatchStore {
     readonly writes: string[];
     /** Plants a task's runtime state, standing in for the scheduler the SQL store's own suite pins. */
     mark(id: string, taskKey: string, state: Partial<BatchTaskState>): void;
+    /** Plants a task's token usage block, standing in for the telemetry read the SQL store's own suite pins. */
+    plantUsage(id: string, taskKey: string, block: UsageBlock): void;
     /** Stamps the batch's time limit as passed, standing in for the scheduler pass the SQL suite pins. */
     expire(id: string): void;
     /** Stamps the batch complete, standing in for the scheduler pass the SQL suite pins. */
@@ -45,6 +48,7 @@ export function memoryBatchStore(): MemoryBatchStore {
     const batches = new Map<string, BatchRecord>();
     const keys = new Map<string, { fingerprint: string; id: string }>();
     const writes: string[] = [];
+    const planted = new Map<string, UsageBlock>();
     const scope = (caller: string | null, idem: BatchIdempotency) => [caller ?? '', idem.operation, idem.key].join('|');
     const recorded = (caller: string | null, idem: BatchIdempotency | undefined) => {
         if (!idem) return null;
@@ -225,7 +229,32 @@ export function memoryBatchStore(): MemoryBatchStore {
                 },
                 prs: { merged: [], open: [] },
                 verification: [],
-                tasks: [],
+                tasks: batch.tasks.map((task) => ({
+                    key: task.key,
+                    stage: task.stage,
+                    required: true,
+                    execution: task.execution,
+                    gate: task.gate,
+                    attempts: task.attempt,
+                    infraRetries: 0,
+                    repairs: 0,
+                    manualRetries: 0,
+                    remaining: { infraRetries: batch.plan.infraRetries, repairs: batch.plan.repairs },
+                    attention: task.attention,
+                    waitReason: task.waitReason,
+                    closedAt: task.closedAt,
+                    closedBy: null,
+                    pr: task.pr || null,
+                    job: task.rootJobId,
+                    usage: {
+                        wallClockMs: 0,
+                        agentTurns: 0,
+                        tokenUsage: planted.get(`${id}:${task.key}`) ?? emptyBlock('unmeasured'),
+                        tokenUsageUnavailable: null,
+                    },
+                    observation: null,
+                    next: { action: 'none' as const },
+                })),
                 latestObservationAt: null,
                 usageSnapshotAt: new Date().toISOString(),
                 totals: {
@@ -260,6 +289,9 @@ export function memoryBatchStore(): MemoryBatchStore {
         complete(id) {
             const batch = batches.get(id)!;
             batches.set(id, { ...batch, completedAt: new Date().toISOString() });
+        },
+        plantUsage(id, taskKey, block) {
+            planted.set(`${id}:${taskKey}`, block);
         },
         mark(id, taskKey, state) {
             const task = batches.get(id)!.tasks.find((candidate) => candidate.key === taskKey)!;

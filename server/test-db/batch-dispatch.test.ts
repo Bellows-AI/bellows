@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { resolveBatchPlan, taskUsageOf, type BatchPlan, type TokenType } from '@factory-ai/core';
 import { randomUUID } from 'node:crypto';
@@ -10,6 +10,7 @@ import type { BatchStore } from '../src/db/batches/batch-store-types.js';
 import { claimDue, commitObservation } from '../src/db/batches/batch-store-observation.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
+import { markExecutionsRemoved } from '../src/db/jobs/job-store-provenance.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testConfig } from '../test/helpers-config.js';
@@ -1744,7 +1745,7 @@ describe.skipIf(!enabled)('batch report usage', () => {
     });
 
     it('is unchanged by an adoption row or a dimension row', async () => {
-        const { id, root, sessions, run, point } = await build();
+        const { id, root, w, sessions, run } = await build();
         const before = await report(id);
         await run(root.a, {
             root: root.a,
@@ -1755,11 +1756,35 @@ describe.skipIf(!enabled)('batch report usage', () => {
             launch: 'adopted',
             adopts: 2,
         });
-        await point(sessions.a, 'input')(0, at('10:52'));
+        // A dimension row: the same session, type and time again under another model and source.
+        await w.point({
+            session: sessions.a,
+            field: 'tokens_input',
+            value: 100,
+            time: at('10:10'),
+            source: 'transcript',
+            attrs: { model: 'm2' },
+        });
+        // A batch_attempt row for a (a retry onto an existing run) is one attempt more and no token at all.
+        await sql`
+            insert into batch_attempt (org_id, batch_id, task_key, attempt, kind, job_id, repo, source_branch)
+            select ${ORG}, ${id}, 'a', max(attempt) + 1, 'retry', ${root.a}, min(repo), min(source_branch)
+            from batch_attempt where org_id = ${ORG} and batch_id = ${id} and task_key = 'a'
+        `;
         const after = await report(id);
         expect(after.totals.tokenUsage.tokens).toEqual(before.totals.tokenUsage.tokens);
         expect(after.totals.tokenUsage.counts).toEqual(before.totals.tokenUsage.counts);
-        expect(after.tasks.map((t) => t.attempts)).toEqual(before.tasks.map((t) => t.attempts));
+        expect(after.tasks.map((t) => t.usage.tokenUsage.tokens)).toEqual(
+            before.tasks.map((t) => t.usage.tokenUsage.tokens)
+        );
+        expect(after.tasks.map((t) => [t.key, t.attempts])).toEqual(
+            before.tasks.map((t) => [t.key, t.key === 'a' ? t.attempts + 1 : t.attempts])
+        );
+    });
+
+    it('does not report a reducer failure as unavailable telemetry', async () => {
+        const { id } = await build();
+        await expect(report(id, { readFacts: async () => null as never })).rejects.toThrow();
     });
 
     it('reads membership and usage in one snapshot: a change committed between them is not mixed in', async () => {
@@ -1771,7 +1796,11 @@ describe.skipIf(!enabled)('batch report usage', () => {
                 const extra = await w.job({ org: ORG, root: root.a, parent: root.a, author: ALICE });
                 await run(extra, { root: root.a, session: sessions.a, start: '14:00', end: '14:30' });
                 await point(sessions.a, 'input')(1000, at('14:10'));
-                await sql`delete from job where org_id = ${ORG} and id = ${root.b}`;
+                // removeThread refuses a batch-backed thread, so this is its write path without the guard.
+                await sql.begin(async (tx) => {
+                    await markExecutionsRemoved(tx, ORG, [root.b]);
+                    await tx`delete from job where org_id = ${ORG} and id = ${root.b}`;
+                });
             },
         });
         expect(during.totals.tokenUsage.tokens).toEqual(before.totals.tokenUsage.tokens);
@@ -1789,11 +1818,14 @@ describe.skipIf(!enabled)('batch report usage', () => {
     it('reports usage unavailable, not zero, and still explains scheduling, when telemetry cannot be read', async () => {
         const { id } = await build();
         const healthy = await report(id);
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined);
         const failing = await report(id, {
             readFacts: async () => {
                 throw new Error('telemetry down');
             },
         });
+        expect(logged).toHaveBeenCalledWith(expect.stringContaining('telemetry down'));
+        logged.mockRestore();
         expect(failing.totals.tokenUsage.state).toBe('unavailable');
         expect(failing.tasks.every((t) => t.usage.tokenUsageUnavailable === 'telemetry')).toBe(true);
         expect(failing.tasks.map((t) => [t.key, t.execution, t.next])).toEqual(

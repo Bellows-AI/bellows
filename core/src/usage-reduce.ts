@@ -429,11 +429,13 @@ export function reduceUsage(input: UsageInput, opts: UsageOptions): UsageReport 
     };
 }
 
+const isKnownTask = (acc: Account, taskId: string): boolean =>
+    acc.board.some((e) => canonicalTask(e) === taskId) || acc.items.some((i) => i.taskId === taskId);
+
 /** All-time usage of one canonical task, reviews folded in, every known run listed. Null when no evidence names it. */
 export function taskUsageOf(input: UsageInput, taskId: string, now: Date): TaskUsage | null {
     const acc = account(input, { range: null, now });
-    const known = acc.board.some((e) => canonicalTask(e) === taskId);
-    if (!known && !acc.items.some((i) => i.taskId === taskId)) return null;
+    if (!isKnownTask(acc, taskId)) return null;
     return taskView(acc, taskId, true, false);
 }
 
@@ -451,8 +453,7 @@ export function batchUsageOf(
     const wanted = new Set(taskIds);
     const tasks = new Map<string, TaskUsage | null>();
     for (const id of wanted) {
-        const known = acc.board.some((e) => canonicalTask(e) === id) || acc.items.some((i) => i.taskId === id);
-        tasks.set(id, known ? taskView(acc, id, true, false) : null);
+        tasks.set(id, isKnownTask(acc, id) ? taskView(acc, id, true, false) : null);
     }
     const inBatch = (taskId: string | null): boolean => taskId !== null && wanted.has(taskId);
     return {
