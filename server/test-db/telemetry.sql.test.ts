@@ -158,8 +158,8 @@ describe.skipIf(!enabled)('migrations', () => {
         `;
         expect(partitions).toEqual([{ name: 'metric_point_default', bound: 'DEFAULT' }]);
 
-        // Backfill imports arbitrarily old transcripts and an OTLP client's clock can skew
-        // ahead; a range table with no covering partition rejects both.
+        // An OTLP client's clock can skew
+        // ahead; a range table with no covering partition rejects it.
         const session = `partition-${randomUUID()}`;
         await point({ session, field: 'tokens_input', value: 1, time: '2001-01-01T00:00:00Z' });
         await point({ session, field: 'tokens_input', value: 1, time: '2099-01-01T00:00:00Z' });
