@@ -133,6 +133,8 @@ export interface TelemetryPoint {
  * Every token figure of the stats payload, reduced from the cached usage facts at read time:
  * partitioned by the instant each point was observed, owned by the board's evidence. Session
  * counts, lines, edits and active time stay on `TelemetryStats` (session-overlap semantics).
+ * Its diagnostics follow the request's scope: under `scope=mine` `diagnostics.excludedRepo` counts
+ * the caller's sessions, while `meta.telemetry.otherRepoSessions` stays organization-wide.
  */
 export interface StatsUsage {
     totals: UsageBlock;
