@@ -87,7 +87,7 @@ export interface SessionRollup {
     /**
      * Who queued the board task this session belongs to, resolved by joining the telemetry
      * rows to the job audit rows on session id. null means no matching task exists — a local
-     * dev run, a backfilled transcript, a job that died before reporting its session. The
+     * dev run, a job that died before reporting its session. The
      * telemetry tables carry no identity themselves (the collector strips it on purpose);
      * attribution is a read-side join, so this stays null rather than guessed.
      */
@@ -95,8 +95,8 @@ export interface SessionRollup {
     /**
      * The job thread the session's board task belongs to — the `root_job_id` of the job rows
      * that resolved `user`, resolved by the same read-side join. null means no matching task
-     * exists, exactly as for `user`: a removed thread, a local dev run, a backfilled
-     * transcript. It is a key into the board's own rows, never a label.
+     * exists, exactly as for `user`: a removed thread, a local dev run. It is a key into the
+     * board's own rows, never a label.
      */
     taskKey: string | null;
     firstSeen: string;
