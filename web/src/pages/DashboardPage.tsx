@@ -138,7 +138,7 @@ export function DashboardPage() {
                 behind `data` would hide it in the one state it exists for. */}
             <div className="two-up">
                 {data?.telemetry && state === 'ready' ? (
-                    <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} />
+                    <ByUserPanel telemetry={data.telemetry} meta={data.meta.telemetry} scope={data.meta.scope} />
                 ) : null}
                 <RecentTasksPanel jobs={completed.jobs} error={completed.error} />
             </div>

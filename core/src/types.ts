@@ -1,4 +1,4 @@
-import type { UsageBlock } from './usage.js';
+import type { PerType, UsageBlock } from './usage.js';
 
 /**
  * Telemetry from AI coding agents, scoped to the repos this deployment reports on.
@@ -219,14 +219,27 @@ export interface TaskUsageDistribution {
 }
 
 /**
+ * A token-type distribution. `tasks` is the contributors; `partial` is how many of them measured
+ * only part of their sessions for the type; `tasksInScope` is every canonical task considered.
+ */
+export type TokenDistribution = TaskUsageDistribution & { partial: number; tasksInScope: number };
+
+/**
  * What a task costs, as distributions over the job threads in scope. The three figures are
  * measured differently and never conflated: tokens sum over attributed sessions, job turns
  * count the board's own run rows, agent turns sum the close-time counts of those runs. Every
  * figure degrades to null (with `tasks` 0) when nothing was measured — never to zero.
  */
 export interface TaskUsageStats {
-    /** Stopgap until the four-type distributions land: input + output per canonical task. Tasks with no measured tokens are excluded, not zeroed. */
-    tokensPerTask: TaskUsageDistribution;
+    /**
+     * Each token type per canonical task, never combined. A task that did not measure the type is
+     * excluded, not zeroed; a measured zero participates. `byModel` carries every normalized model
+     * in scope so switching the model never refetches.
+     */
+    tokens: {
+        all: PerType<TokenDistribution>;
+        byModel: { model: string; rawModels: string[]; dist: PerType<TokenDistribution> }[];
+    };
     /** Runs per task — job rows queued in the range, every run and follow-up counted once. */
     jobTurnsPerTask: TaskUsageDistribution;
     /**

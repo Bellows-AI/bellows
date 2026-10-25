@@ -12,7 +12,7 @@ and granularity: [date-range.md](date-range.md).
 | `ratio`, `weekStart`, `isoWeekKey`, `dayKey` | `core/src/metrics.ts` | `core/test/metrics.invariants.test.ts` |
 | Token observations reduced to contributions (delta / cumulative high-water, source selection, `[1m]` model normalization, range and UTC day/week partition) | `core/src/token-contributions.ts`, SQL twin `server/migrations/002_views.repeatable.sql` | `core/test/token-contributions.test.ts`, `server/test-db/telemetry.token-reduction.test.ts` |
 | Usage reducer: session ownership, segment/run assignment, scope and range filters, `UsageBlock` (eligible = assigned + unassigned) | `core/src/usage-reduce.ts`, `core/src/usage-ownership.ts`, `core/src/usage-segments.ts`, types `core/src/usage.ts` | `core/test/usage-reduce.test.ts`, `core/test/usage-ownership.test.ts`, `core/test/usage-segments.test.ts` |
-| Per-task distributions and percentiles (tokens per task = input + output of the report's canonical tasks, a stopgap) | `core/src/task-usage.ts` | `core/test/task-usage.test.ts` |
+| Per-task distributions and percentiles (one per token type, overall and per normalized model, over the report's canonical tasks) | `core/src/task-usage.ts` | `core/test/task-usage.test.ts` |
 | Read cache, cooldown, stale snapshots | `server/src/stats-service.ts`, `server/src/cache.ts` | `server/test/routes.stats.get.test.ts` |
 | TTL parsing and its floor | `server/src/config.ts` | `server/test/config.persistence.test.ts` |
 
@@ -47,7 +47,12 @@ null — never zero. Pinned by `core/test/docs.terminology.test.ts`.
   (model, org, user, task, run, series bucket); unlocated, unresolved and conflicting-owner usage stay beside
   it, never inside — `core/test/usage-reduce.test.ts`.
 - **Per-task distributions exclude, they never zero**, and percentiles are nearest-rank so the
-  independent suites can recompute them by hand — `core/src/task-usage.ts`.
+  independent suites can recompute them by hand; a measured zero participates, an unmeasured task is
+  absent, the four types are never added (the one sanctioned sum is the labelled Total input) —
+  `core/src/task-usage.ts`.
+- **Runs and tokens filter on different owners.** Run-based distributions filter `job.repo` and the
+  creator, token distributions the task owner's repo and author; the two sets can differ — stated limit,
+  `core/test/task-usage.test.ts`.
 - **`telemetryStats()` takes an injectable `now`** — tests pin a frozen date; keep the injection point.
 - **No field named `cost`/`usd`/`price` exists in `TelemetryStats` or the task statistics**, and
   `core/test/telemetry.stats.test.ts` and `core/test/task-usage.test.ts` assert their absence.

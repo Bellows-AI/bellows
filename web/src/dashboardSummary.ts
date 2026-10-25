@@ -141,9 +141,12 @@ export function analyticsState(telemetry: TelemetryStats, tasks: TaskUsageStats 
     if (telemetry.totals.sessions > 0) return 'ready';
     const measured =
         tasks !== null &&
-        [tasks.tokensPerTask, tasks.jobTurnsPerTask, tasks.agentTurnsPerTask, tasks.wallClockPerTask].some(
-            (d) => d.tasks > 0
-        );
+        [
+            ...Object.values(tasks.tokens.all),
+            tasks.jobTurnsPerTask,
+            tasks.agentTurnsPerTask,
+            tasks.wallClockPerTask,
+        ].some((d) => d.tasks > 0);
     return measured ? 'partial' : 'empty';
 }
 

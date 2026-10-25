@@ -33,41 +33,142 @@ function run(over: Partial<JobRun>): JobRun {
     };
 }
 
-// The spec's 1k/2k/3k scenario: three tasks, hand-checkable percentiles.
+/** A task whose block carries per-model parent rows (children deliberately differ from the parent). */
+function modelTask(
+    taskId: string,
+    rows: { model: string; raw?: string[]; tokens: TokenTotals; children?: TokenTotals[] }[],
+    over: {
+        tokens?: TokenTotals;
+        coverage?: Partial<Record<keyof TokenTotals, { measured: number; contributors: number }>>;
+    } = {}
+): TaskUsage {
+    const base = task(taskId, over.tokens ?? T(null, null));
+    return {
+        ...base,
+        usage: {
+            ...base.usage,
+            coverage: { ...base.usage.coverage, ...over.coverage },
+            rows: rows.map((r) => ({
+                model: r.model,
+                rawModels: r.raw ?? [r.model],
+                querySource: null,
+                tokens: r.tokens,
+                ...(r.children === undefined
+                    ? {}
+                    : {
+                          children: r.children.map((tokens) => ({
+                              model: r.model,
+                              rawModels: r.raw ?? [r.model],
+                              querySource: 'main',
+                              tokens,
+                          })),
+                      }),
+            })),
+        },
+    };
+}
+
+const cell = (
+    input: number | null,
+    output: number | null,
+    cacheRead: number | null = null,
+    cacheCreation: number | null = null
+): TokenTotals => ({
+    input,
+    output,
+    cacheRead,
+    cacheCreation,
+});
+
 const threeTasks = [task('t1', T(600, 400)), task('t2', T(1200, 800)), task('t3', T(2400, 600))];
 
-describe('tokens per task', () => {
-    it('reports avg 2k, p50 2k and p95 3k over the 1k/2k/3k scenario', () => {
-        const stats = taskUsageStats(threeTasks, []);
-        expect(stats.tokensPerTask).toEqual({ avg: 2000, p50: 2000, p95: 3000, tasks: 3 });
+describe('token distributions per type', () => {
+    // Output per task over A..G: A 100, B 0 (measured zero), C 300, D null (excluded), E 500 (partial),
+    // F 700 (removed), G 900 (review folded). Contributors = 6 -> sorted 0,100,300,500,700,900.
+    // avg = 2500/6; p50 = ceil(0.5*6)=3rd = 300; p95 = ceil(0.95*6)=6th = 900.
+    const world = [
+        task('A', cell(1, 100)),
+        task('B', cell(2, 0)),
+        task('C', cell(3, 300)),
+        task('D', cell(4, null)),
+        {
+            ...task('E', cell(5, 500)),
+            usage: {
+                ...task('E', cell(5, 500)).usage,
+                coverage: { ...emptyBlock('measured').coverage, output: { measured: 1, contributors: 2 } },
+            },
+        },
+        task('F', cell(6, 700), true),
+        task('G', cell(7, 900)),
+    ];
+
+    it('counts a measured zero, excludes an unmeasured task, flags partial contributors', () => {
+        const out = taskUsageStats(world, []).tokens.all.output;
+        expect(out).toEqual({ avg: 2500 / 6, p50: 300, p95: 900, tasks: 6, partial: 1, tasksInScope: 7 });
     });
 
-    it('excludes a task with no measured tokens rather than counting it as zero', () => {
-        const stats = taskUsageStats(
-            [threeTasks[0] as TaskUsage, threeTasks[2] as TaskUsage, task('t2', T(null, null))],
-            []
-        );
-        // Nearest-rank median of two values is the lower one: ceil(0.5·2) = 1st of the sort.
-        expect(stats.tokensPerTask).toEqual({ avg: 2000, p50: 1000, p95: 3000, tasks: 2 });
+    it('keeps the four types separate: each has its own contributors', () => {
+        const all = taskUsageStats(world, []).tokens.all;
+        // input is measured for all 7: 1..7 -> avg 4, p50 = ceil(3.5)=4th = 4, p95 = ceil(6.65)=7th = 7.
+        expect(all.input).toMatchObject({ avg: 4, p50: 4, p95: 7, tasks: 7 });
+        expect(all.cacheRead).toEqual({ avg: null, p50: null, p95: null, tasks: 0, partial: 0, tasksInScope: 7 });
     });
 
-    it('sums input and output only, never cache reads', () => {
-        const stats = taskUsageStats(
-            [task('t1', { input: 100, output: 50, cacheRead: 999_999, cacheCreation: 888_888 })],
-            []
-        );
-        expect(stats.tokensPerTask.p50).toBe(150);
+    it('nearest-rank edges: N=1 and N=20 (p95 is the 19th)', () => {
+        expect(taskUsageStats([task('a', cell(null, 42))], []).tokens.all.output).toMatchObject({ p50: 42, p95: 42 });
+        const twenty = Array.from({ length: 20 }, (_, i) => task(`t${i}`, cell(null, (i + 1) * 10)));
+        // values 10..200; p95 = ceil(0.95*20)=19th = 190; p50 = 10th = 100.
+        expect(taskUsageStats(twenty, []).tokens.all.output).toMatchObject({ p50: 100, p95: 190, avg: 105 });
     });
 
-    it('keeps a task with only one of the two measured', () => {
-        expect(taskUsageStats([task('t1', T(null, 70))], []).tokensPerTask.p50).toBe(70);
-    });
-
-    it('answers null figures, not zeros, when no task carries measured tokens', () => {
+    it('answers null figures, not zeros, when nothing is measured', () => {
         const stats = taskUsageStats([], []);
-        expect(stats.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(stats.tokens.all.output).toEqual({
+            avg: null,
+            p50: null,
+            p95: null,
+            tasks: 0,
+            partial: 0,
+            tasksInScope: 0,
+        });
+        expect(stats.tokens.byModel).toEqual([]);
         expect(stats.jobTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
-        expect(stats.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+    });
+
+    describe('by model', () => {
+        // m1 spans a [1m] raw variant. T1: m1 out 100 (children 60+60 would double count to 220),
+        // m2 out 50. T2: m1 out 300. T3: m2 out null (unmeasured), m1 absent. T4: unknown model out 0.
+        const tasks = [
+            modelTask('T1', [
+                {
+                    model: 'm1',
+                    raw: ['m1', 'm1[1m]'],
+                    tokens: cell(null, 100),
+                    children: [cell(null, 60), cell(null, 60)],
+                },
+                { model: 'm2', tokens: cell(null, 50) },
+            ]),
+            modelTask('T2', [{ model: 'm1', raw: ['m1[1m]'], tokens: cell(null, 300) }]),
+            modelTask('T3', [{ model: 'm2', tokens: cell(null, null) }]),
+            modelTask('T4', [{ model: 'Unknown model', tokens: cell(null, 0) }]),
+        ];
+        const byModel = taskUsageStats(tasks, []).tokens.byModel;
+        const group = (m: string) => byModel.find((g) => g.model === m);
+
+        it('lists models by contributing tasks desc then name, with their raw variants', () => {
+            // m1: T1,T2 (2 tasks); m2: T1,T3 (2 tasks); Unknown model: T4 (1).
+            expect(byModel.map((g) => g.model)).toEqual(['m1', 'm2', 'Unknown model']);
+            expect(group('m1')?.rawModels).toEqual(['m1', 'm1[1m]']);
+        });
+
+        it('uses per-model denominators and never adds children to their parent', () => {
+            // m1 output: 100 and 300 -> avg 200, p50 = 1st = 100, p95 = 2nd = 300 (not 220).
+            expect(group('m1')?.dist.output).toMatchObject({ avg: 200, p50: 100, p95: 300, tasks: 2, tasksInScope: 4 });
+            // m2: T1 50; T3 unmeasured -> excluded.
+            expect(group('m2')?.dist.output).toMatchObject({ avg: 50, tasks: 1 });
+            // measured zero participates.
+            expect(group('Unknown model')?.dist.output).toMatchObject({ avg: 0, p50: 0, tasks: 1 });
+        });
     });
 });
 
@@ -87,10 +188,10 @@ describe('canonical tasks from the usage report', () => {
         expect(find('t-s18').usage.tokens.output).toBe(2200);
     });
 
-    it('takes one value per task, input plus output of the whole canonical task', () => {
-        expect(stats.tokensPerTask.tasks).toBe(report.tasks.length);
-        const expected = report.tasks.map((t) => (t.usage.tokens.input ?? 0) + (t.usage.tokens.output ?? 0));
-        expect(stats.tokensPerTask.avg).toBe(expected.reduce((a, b) => a + b, 0) / expected.length);
+    it('takes one value per canonical task per type, never input plus output', () => {
+        const expected = report.tasks.flatMap((t) => (t.usage.tokens.output === null ? [] : [t.usage.tokens.output]));
+        expect(stats.tokens.all.output.tasks).toBe(expected.length);
+        expect(stats.tokens.all.output.avg).toBe(expected.reduce((a, b) => a + b, 0) / expected.length);
     });
 });
 
@@ -112,7 +213,7 @@ describe('job turns per task', () => {
         // still enters — with a real zero (no run of it was queued inside the range).
         const stats = taskUsageStats([task('t1', T(10, 5))], []);
         expect(stats.jobTurnsPerTask).toEqual({ avg: 0, p50: 0, p95: 0, tasks: 1 });
-        expect(stats.tokensPerTask.tasks).toBe(1);
+        expect(stats.tokens.all.input.tasks).toBe(1);
         expect(stats.agentTurnsPerTask.tasks).toBe(1);
         expect(stats.agentTurnsPerTask.p50).toBe(0);
     });
@@ -141,7 +242,7 @@ describe('agent turns per task', () => {
             ]
         );
         expect(stats.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
-        expect(stats.tokensPerTask.tasks).toBe(1);
+        expect(stats.tokens.all.input.tasks).toBe(1);
         expect(stats.jobTurnsPerTask).toEqual({ avg: 2, p50: 2, p95: 2, tasks: 1 });
     });
 
@@ -166,13 +267,13 @@ describe('range interaction', () => {
         expect(stats.jobTurnsPerTask).toEqual({ avg: 1, p50: 1, p95: 1, tasks: 1 });
         expect(stats.agentTurnsPerTask).toEqual({ avg: 11, p50: 11, p95: 11, tasks: 1 });
         // No attributed usage carries measured tokens: excluded, not zeroed.
-        expect(stats.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(stats.tokens.all.input.tasks).toBe(0);
     });
 
     it('keeps out a run queued after the range and a task with no usage in it', () => {
         const runs = [run({ rootJobId: 't2', createdAt: '2026-08-21T01:00:00Z' })];
         const stats = taskUsageStats([], filterJobRuns(runs, range));
-        expect(stats.tokensPerTask.tasks).toBe(0);
+        expect(stats.tokens.all.input.tasks).toBe(0);
         expect(stats.jobTurnsPerTask.tasks).toBe(0);
     });
 });
@@ -188,7 +289,7 @@ describe('caller scope', () => {
             ],
             { user: { id: ALICE.id } }
         );
-        expect(stats.tokensPerTask).toEqual({ avg: 15, p50: 15, p95: 15, tasks: 1 });
+        expect(stats.tokens.all.input).toMatchObject({ avg: 10, p50: 10, p95: 10, tasks: 1 });
         expect(stats.jobTurnsPerTask.tasks).toBe(1);
         expect(stats.agentTurnsPerTask.p50).toBe(ALICE_AGENT_TURNS);
     });
@@ -237,7 +338,7 @@ describe('wall clock per task', () => {
             [run({ rootJobId: 't1', wallClockMs: 60_000 }), run({ rootJobId: 't2', wallClockMs: null })]
         );
         expect(stats.wallClockPerTask).toEqual({ avg: 60_000, p50: 60_000, p95: 60_000, tasks: 1 });
-        expect(stats.tokensPerTask.tasks).toBe(2);
+        expect(stats.tokens.all.input.tasks).toBe(2);
     });
 
     it('counts a task with no in-range run as zero banked time, not missing', () => {

@@ -4,6 +4,10 @@ import type { StatsPayload } from '../api/useStats.js';
 import { duration, int, num, pct, tokens } from '../format.js';
 import { selectionText } from '../dashboardSummary.js';
 import { Icon, type IconName } from '../components/Icon.js';
+import { TokenFigures } from '../components/usage/TokenFigures.js';
+import { UsageBreakdown } from '../components/usage/UsageBreakdown.js';
+import { UsageDiagnostics } from '../components/usage/UsageDiagnostics.js';
+import { UsageStateNote } from '../components/usage/UsageStateNote.js';
 
 /** The glyph inside a card's 40px disc. */
 const DISC_ICON_SIZE = 24;
@@ -37,6 +41,37 @@ function MetricCard({
     );
 }
 
+/** The wording of each attribution readout, in one place; every count stays a separate sentence. */
+const ATTRIBUTION_READOUTS = {
+    unresolvedOwnership: (n: number) => `${n} sessions whose task or repo could not be resolved`,
+    excludedRepo: (n: number) => `${n} sessions attributed to a repo outside this selection`,
+    sessionsWithoutHook: (n: number) => `${n} sessions with no hook report`,
+    otherRepoSessions: (n: number) => `${n} sessions the hook attributed to another repo`,
+} as const;
+
+/** Tenant-safe counts only: never a session id, repo name or user. Nothing is rendered at zero. */
+function AttributionReadouts({ telemetry }: { telemetry: TelemetryStats }) {
+    const { unresolvedOwnership, excludedRepo } = telemetry.usage.diagnostics;
+    const readouts = (
+        [
+            ['unresolvedOwnership', unresolvedOwnership.sessions],
+            ['excludedRepo', excludedRepo.sessions],
+            ['sessionsWithoutHook', telemetry.sessionsWithoutHook],
+            ['otherRepoSessions', telemetry.otherRepoSessions],
+        ] as const
+    )
+        .filter(([, count]) => count > 0)
+        .map(([key, count]) => ATTRIBUTION_READOUTS[key](count));
+    if (readouts.length === 0) return null;
+    return (
+        <ul className="usage-attribution">
+            {readouts.map((text) => (
+                <li key={text}>{text}</li>
+            ))}
+        </ul>
+    );
+}
+
 /**
  * The metric summary: four cards — Sessions, Tokens, Active time, Edit acceptance — each an icon
  * disc beside its figure. The Tokens card headlines total input (the four token types are never
@@ -51,7 +86,8 @@ function MetricCard({
 export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetryStats; meta: StatsPayload['meta'] }) {
     const t = telemetry.totals;
     const ea = t.editAcceptance;
-    const tk = telemetry.usage.totals.tokens;
+    const usage = telemetry.usage.totals;
+    const tk = usage.tokens;
     const input = inputTokens(tk);
     // The acceptance copy keeps the measured denominator visible and never invents one:
     // ratio present → "A of D measured..."; acceptances unmeasured with decisions measured →
@@ -76,21 +112,11 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                 </MetricCard>
                 <MetricCard icon="layers" value={tokens(input.total)} label="Total input tokens">
                     <span className="usage-caption">
-                        {tk.output === null ? 'Output not measured' : `${tokens(tk.output)} output`}
-                        {' · '}
                         {input.cacheHitRatio === null
                             ? 'Cache hit rate not measured'
                             : `${pct(input.cacheHitRatio)} cache hit rate`}
                     </span>
-                    <span className="usage-caption">
-                        {tk.input === null ? 'Uncached not measured' : `${tokens(tk.input)} uncached`}
-                        {' · '}
-                        {tk.cacheRead === null ? 'Cache read not measured' : `${tokens(tk.cacheRead)} read from cache`}
-                        {' · '}
-                        {tk.cacheCreation === null
-                            ? 'Cache write not measured'
-                            : `${tokens(tk.cacheCreation)} written to cache`}
-                    </span>
+                    <TokenFigures tokens={tk} precision={usage.precision} coverage={usage.coverage} />
                 </MetricCard>
                 <MetricCard icon="clock" value={duration(t.activeHours)} label="Active time">
                     <span className="usage-caption">
@@ -103,6 +129,16 @@ export function UsageSummaryPanel({ telemetry, meta }: { telemetry: TelemetrySta
                     <span className="usage-caption">{editNote}</span>
                 </MetricCard>
             </div>
+            <UsageStateNote block={usage} />
+            {usage.rows.length > 0 ? (
+                <details className="usage-by-model chart-disclosure">
+                    <summary>By model</summary>
+                    <UsageBreakdown usage={usage} />
+                </details>
+            ) : null}
+            <UsageDiagnostics usage={usage}>
+                <AttributionReadouts telemetry={telemetry} />
+            </UsageDiagnostics>
         </section>
     );
 }

@@ -126,7 +126,8 @@ describe('GET /api/stats scope: computed figures', () => {
         const EXPECTED_MINE_SESSIONS = 2;
         // Both the unknown-author task's session and the hook-only one: outside mine, still named.
         const EXPECTED_UNATTRIBUTED = 2;
-        const EXPECTED_MINE_TOKENS_P50 = 3000;
+        const EXPECTED_MINE_INPUT_P50 = 2000;
+        const EXPECTED_MINE_OUTPUT_P50 = 1000;
         const mine = (await app.inject({ method: 'GET', url: '/api/stats?scope=mine', headers: { cookie } })).json();
         expect(mine.meta.scope).toBe('mine');
         expect(mine.meta.scopeLogin).toBe('carol');
@@ -140,7 +141,8 @@ describe('GET /api/stats scope: computed figures', () => {
         // Coverage still describes the store, not the scope.
         expect(mine.telemetry.coverage.from).toBe('2026-08-20T00:00:00.000Z');
         // The task set narrows with the scope: only the caller's task survives.
-        expect(mine.tasks.tokensPerTask).toMatchObject({ p50: EXPECTED_MINE_TOKENS_P50, tasks: 1 });
+        expect(mine.tasks.tokens.all.input).toMatchObject({ p50: EXPECTED_MINE_INPUT_P50, tasks: 1 });
+        expect(mine.tasks.tokens.all.output).toMatchObject({ p50: EXPECTED_MINE_OUTPUT_P50, tasks: 1 });
         expect(mine.tasks.jobTurnsPerTask.tasks).toBe(1);
         expect(mine.tasks.agentTurnsPerTask).toMatchObject({ p50: CAROL_AGENT_TURNS, tasks: 1 });
 
@@ -154,7 +156,7 @@ describe('GET /api/stats scope: computed figures', () => {
         expect(org.telemetry.usage.diagnostics.unresolvedOwnership.sessions).toBe(0);
         expect(JSON.stringify(org)).not.toContain('t-foreign');
         // t-carol, t-dave and the unknown-author task have usage; a task without a run banks a measured zero.
-        expect(org.tasks.tokensPerTask).toMatchObject({ tasks: 3 });
+        expect(org.tasks.tokens.all.input).toMatchObject({ tasks: 3 });
         expect(org.tasks.agentTurnsPerTask).toMatchObject({ tasks: 3 });
     });
 

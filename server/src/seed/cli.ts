@@ -26,6 +26,10 @@ import {
     TIMED_OUT_TOKENS_PER_BUCKET,
 } from './synthetic.js';
 import { CLAUDE_CODE } from '@factory-ai/core';
+import { plantUsageSpecimen } from './usage-specimen.js';
+
+/** The specimen's timelines start this many days before the seed ran, inside every default window. */
+const SPECIMEN_EPOCH_AGO_DAYS = 3;
 
 /**
  * A database whose name ends here is understood to be disposable.
@@ -226,12 +230,14 @@ try {
     for (const j of data.jobs) {
         const createdBy = memberIds.get(j.createdBy);
         if (!createdBy) continue;
+        // The repo the session's hook stamped, so the claim, the job and the session agree on it.
+        const sessionRepo = data.sessions.find((s) => s.sessionId === j.sessionId)?.repo ?? repo;
         await sql`
-            insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id,
+            insert into job (org_id, id, root_job_id, parent_job_id, command, status, created_by, session_id, repo,
                              created_at, started_at, finished_at, agent_turns, failure_kind, output)
             values (${LOCAL_ORG_ID}, ${j.id}, ${j.rootJobId}, ${j.parentJobId}, 'seed task',
                     ${j.failureKind ? 'failed' : 'succeeded'},
-                    ${createdBy}, ${j.sessionId}, ${new Date(j.createdAt)},
+                    ${createdBy}, ${j.sessionId}, ${sessionRepo}, ${new Date(j.createdAt)},
                     ${new Date(j.startedAt ?? j.createdAt)},
                     ${new Date(j.finishedAt ?? j.createdAt)}, ${j.agentTurns},
                     ${j.failureKind ?? null}, ${j.output ?? null})
@@ -239,8 +245,6 @@ try {
         `;
         // The claim's own evidence of who owns the session: the usage reader attributes tokens
         // through `job_execution` x `job_execution_session`, never through the job row's pointer.
-        // The repo the session's hook stamped, so the claim and the session agree on it.
-        const sessionRepo = data.sessions.find((s) => s.sessionId === j.sessionId)?.repo ?? repo;
         await sql`
             insert into job_execution (org_id, job_id, claim_seq, root_job_id, author_id, repo, agent, launch,
                                        origin, created_at, ended_at)
@@ -253,6 +257,18 @@ try {
             values (${LOCAL_ORG_ID}, ${j.id}, 1, ${j.sessionId}, ${CLAUDE_CODE}, 'reported')
             on conflict (org_id, job_id, claim_seq, session_id) do nothing
         `;
+    }
+
+    const specimenAuthor = memberIds.get(SYNTHETIC_MEMBERS[0].login);
+    if (specimenAuthor) {
+        const specimen = await plantUsageSpecimen(sql, {
+            orgId: LOCAL_ORG_ID,
+            repo,
+            authorId: specimenAuthor,
+            now,
+            epochAgoDays: SPECIMEN_EPOCH_AGO_DAYS,
+        });
+        console.log(`[seed] usage specimen: ${specimen.tasks} tasks, ${specimen.readings} readings`);
     }
 
     console.log('\nseeded (SYNTHETIC — not measurements):');

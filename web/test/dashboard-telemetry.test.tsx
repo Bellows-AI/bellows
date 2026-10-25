@@ -101,15 +101,19 @@ const NO_TELEMETRY = {
 } as unknown as TelemetryStats;
 
 const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });
+const tokenDists = (d: ReturnType<typeof dist>) => {
+    const t = { ...d, partial: 0, tasksInScope: d.tasks };
+    return { all: { input: t, cacheRead: t, cacheCreation: t, output: t }, byModel: [] };
+};
 const MEASURED_TASK_COUNT = 7;
 const MEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(MEASURED_TASK_COUNT),
+    tokens: tokenDists(dist(MEASURED_TASK_COUNT)),
     jobTurnsPerTask: dist(MEASURED_TASK_COUNT),
     agentTurnsPerTask: dist(MEASURED_TASK_COUNT),
     wallClockPerTask: dist(MEASURED_TASK_COUNT),
 } as unknown as TaskUsageStats;
 const UNMEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(0),
+    tokens: tokenDists(dist(0)),
     jobTurnsPerTask: dist(0),
     agentTurnsPerTask: dist(0),
     wallClockPerTask: dist(0),

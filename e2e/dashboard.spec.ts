@@ -127,7 +127,7 @@ test.describe('date range selector', () => {
         for (const label of ['Average', 'Median', 'P95', 'Measured tasks']) {
             await expect(panel.getByRole('button', { name: label })).toBeVisible();
         }
-        for (const label of ['Tokens per task', 'Runs per task', 'Agent turns per task']) {
+        for (const label of ['Uncached input per task', 'Output per task', 'Runs per task', 'Agent turns per task']) {
             await expect(panel.getByText(label)).toBeVisible();
         }
         await page.screenshot({ path: `${SHOTS}/per-task.png`, fullPage: true });
@@ -213,5 +213,68 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         await page.unroute('**/api/stats**');
         await expect(page.getByText('showing the last successful')).toHaveCount(0, { timeout: 90_000 });
         await expect(page.locator('.usage-summary')).toBeVisible();
+    });
+});
+
+test.describe('token accounting (the usage specimen)', () => {
+    test('the by-user selector ranks by Total input, re-ranks by Output and shows an unmeasured user as a dash', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const panel = page.locator('section.panel', { hasText: 'Usage by user' });
+        const selector = panel.getByLabel('Rank by');
+        await expect(selector).toHaveValue('inputSide');
+        await expect(panel.getByRole('button', { name: 'Total input' })).toBeVisible();
+
+        await selector.selectOption('output');
+        const header = panel.locator('th[aria-sort="descending"]');
+        await expect(header).toContainText('Output');
+        // The input-only specimen author measured no output: its Output is a dash with no bar.
+        const noUser = panel.locator('tbody tr', { hasText: 'Specimen Input Only' });
+        await expect(noUser).toHaveCount(1);
+        await expect(noUser.locator('.usage-bar')).toHaveCount(0);
+        await expect(noUser.locator('td').nth(2)).toHaveText('—');
+        // A ranked user does carry a bar, and the ranking column is named after the selection.
+        await expect(panel.locator('tbody tr .usage-bar').first()).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/by-user-output.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('the summary breakdown expands to query sources without moving a figure', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const summary = page.locator('.usage-summary');
+        const figures = async () => summary.locator('.usage-groups').innerText();
+        const before = await figures();
+        await summary.locator('.usage-by-model summary').click();
+        await summary.getByRole('button', { name: 'Show query sources for model-a' }).click();
+        await expect(summary.locator('.usage-child-row').first()).toBeVisible();
+        expect(await figures()).toBe(before);
+        // What the totals leave out is its own readout, never inside the headline.
+        const diagnostics = summary.locator('.usage-diagnostics');
+        await expect(diagnostics).toContainText('usage whose time is unknown');
+        await expect(summary.locator('.usage-groups')).not.toContainText('usage whose time is unknown');
+        await page.screenshot({ path: `${SHOTS}/models-expanded.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('per-task usage shows one row per token type with contributors, partials and a model selector', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const panel = page.locator('section.panel', { hasText: 'Per-task usage' });
+        for (const label of ['Uncached input', 'Cache read', 'Cache write', 'Output']) {
+            await expect(panel.getByText(`${label} per task`)).toBeVisible();
+        }
+        await expect(panel).toContainText('partial');
+        await expect(panel).toContainText('Figures describe observed usage, not guaranteed complete consumption');
+        const before = await panel.locator('tbody').innerText();
+        await panel.getByLabel('Model').selectOption('model-a');
+        expect(await panel.locator('tbody').innerText()).not.toBe(before);
+        await expect(panel).toContainText('Includes');
+        await page.screenshot({ path: `${SHOTS}/per-task-model.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
     });
 });

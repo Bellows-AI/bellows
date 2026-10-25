@@ -307,7 +307,7 @@ describe('GET /api/stats: an empty repo source is one scope on every side', () =
             cacheRead: null,
             cacheCreation: null,
         });
-        expect(tasks.tokensPerTask.tasks).toBe(0);
+        expect(tasks.tokens.all.output.tasks).toBe(0);
         expect(tasks.jobTurnsPerTask.tasks).toBe(0);
     });
 });

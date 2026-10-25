@@ -185,6 +185,10 @@
             "linter": { "rules": { "suspicious": { "noControlCharactersInRegex": "off" } } }
         },
         {
+            "includes": ["server/src/seed/usage-specimen.ts"],
+            "linter": { "rules": { "style": { "noMagicNumbers": "off" } } }
+        },
+        {
             "includes": ["server/src/telemetry/otlp.ts"],
             "linter": { "rules": { "complexity": { "useLiteralKeys": "off" } } }
         },
