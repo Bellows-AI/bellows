@@ -7,18 +7,29 @@
 --
 --   session_id     the session the RECORD names (opencode `sessionID`, claude `sessionId`), never the
 --                  label of the artifact it arrived in.
---   run_claim_seq  the run: the claim whose `job_execution_session` row owns that session (the
---                  ingesting stream's claim when it does, else the earliest owner). A session the job
---                  does not own is dropped, never stored.
+--   run_claim_seq  the run, fixed when the call half is first stored and never moved by a later
+--                  delivery: the claim among those holding the session whose window
+--                  [job_execution.created_at, ended_at) holds the call's own time, else (no time, or
+--                  none holds it) the claim that reported the session. A result half takes its call's
+--                  run. A session the job does not own is dropped, never stored.
 --   kind/operation gate run | PR create, publish. A `gh pr view|list` lookup is classified, not stored.
+--   compound       the call's command was a compound shell line (`||`, `&&`, `;`, a pipe, a
+--                  substitution): what it printed is no evidence of what the call did, so its result
+--                  is always unknown. Kept on the call half, which is what a later result is read against.
 --   outcome        passed | failed | unknown; null on a `call` row.
 --   execution_id   the `executionId` of the gate server's answer: joins job_gate_run.
 --   operation_id   the `operationId` of the publish reply: joins job_pr_operation. Neither id has a
 --                  foreign key: one that points at no row (its write may have failed) is an unlinked
 --                  observation and never fails the ingest.
 --   pr_*           set only on a result that confirmed a PR of the job's own repository.
---   stream, claim_seq, byte_offset
---                  provenance: the artifact stream and the record's byte offset in it.
+--   started_at, ended_at
+--                  the execution's own times when the record carries them (claude: the record's
+--                  `timestamp`, the call's as started_at and the result's as ended_at; opencode:
+--                  `state.time.{start,end}`); null when absent, never zero.
+--   artifact_session, stream, claim_seq, byte_offset
+--                  provenance: the artifact the record was read from (its session coordinate, which
+--                  may differ from session_id: an export of several sessions is filed under one) and
+--                  the record's byte offset in it.
 --
 -- Only classified fields are stored: never a command, raw output, environment or token.
 -- Removing a thread deletes its rows.
@@ -44,6 +55,10 @@ create table if not exists transcript_tool_event (
     pr_repo       text,
     pr_number     integer     check (pr_number is null or pr_number > 0),
     pr_url        text,
+    compound      boolean     not null default false,
+    started_at    timestamptz,
+    ended_at      timestamptz,
+    artifact_session text     not null,
     stream        text        not null,
     claim_seq     bigint      not null,
     byte_offset   bigint      not null,

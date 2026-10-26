@@ -8,6 +8,14 @@ import type { GateRunWrite } from '../src/db/jobs/job-store-gate-runs.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { expireLease, testOrg } from './fixtures.js';
+import {
+    chunkOf,
+    claudeCall,
+    claudeProgress,
+    claudeResult,
+    GATE,
+    SESSION,
+} from '../test/helpers-transcript-records.js';
 
 /**
  * Issue #983: tool calls read out of a transcript become classified rows, one per (org, job, executor,
@@ -79,6 +87,9 @@ interface Row {
     byte_offset: string;
     claim_seq: string;
     stream: string;
+    artifact_session: string;
+    started_at: Date | null;
+    ended_at: Date | null;
 }
 
 const rowsOf = (jobId: string, orgId = ORG) =>
@@ -88,8 +99,19 @@ const rowsOf = (jobId: string, orgId = ORG) =>
     `;
 
 const claudeGates = () => [{ offset: 0, text: fixture('claude-gates.jsonl') }];
-const ingest = (c: Claim, executor: string, chunks: { offset: number; text: string }[], on: JobStore = store) =>
-    on.ingestTranscriptTools(c.id, { executor, stream: STREAM, claimSeq: c.claimSeq, chunks });
+const ingest = (
+    c: Claim,
+    executor: string,
+    chunks: { offset: number; text: string }[],
+    over: { on?: JobStore; session?: string } = {}
+) =>
+    (over.on ?? store).ingestTranscriptTools(c.id, {
+        executor,
+        stream: STREAM,
+        session: over.session ?? 'artifact-1',
+        claimSeq: c.claimSeq,
+        chunks,
+    });
 
 describe.skipIf(!enabled)('transcript tool events', () => {
     it('stores the classified calls and results, and puts the run on the claim that owns the session', async () => {
@@ -302,7 +324,7 @@ describe.skipIf(!enabled)('transcript tool events', () => {
     it('is scoped to its organization: another org cannot ingest into this job, and every row carries its org', async () => {
         const c = await claimed();
         await owns(c, 'claude-session-1');
-        expect(await ingest(c, CLAUDE_CODE, claudeGates(), other)).toEqual({ result: 'missing' });
+        expect(await ingest(c, CLAUDE_CODE, claudeGates(), { on: other })).toEqual({ result: 'missing' });
         await ingest(c, CLAUDE_CODE, claudeGates());
         expect(await rowsOf(c.id, OTHER_ORG)).toEqual([]);
         const [counted] = await sql<{ count: string }[]>`
@@ -318,5 +340,169 @@ describe.skipIf(!enabled)('transcript tool events', () => {
         await ingest(c, CLAUDE_CODE, claudeGates());
         await sql`delete from job where org_id = ${ORG} and id = ${c.id}`;
         expect(await rowsOf(c.id)).toEqual([]);
+    });
+
+    describe('review round 1', () => {
+        const T = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes)).toISOString();
+        const gatePass = '{"exitCode":0,"output":"ok"}';
+
+        /** Two claims of one job holding one session, and the instant the second took over. */
+        async function twoRuns(): Promise<{ c1: Claim; c2: Claim; at: (minutes: number) => string; first: string }> {
+            const c1 = await claimed();
+            await owns(c1, SESSION);
+            const c2 = await reclaimed(c1);
+            await owns(c2, SESSION);
+            const windows = await sql<{ created_at: Date }[]>`
+                select created_at from job_execution where org_id = ${ORG} and job_id = ${c1.id} order by claim_seq
+            `;
+            const [began, took] = windows.map((w) => w.created_at.getTime()) as [number, number];
+            return {
+                c1,
+                c2,
+                // A time inside the first claim's window, and one a number of minutes after the takeover.
+                first: new Date((began + took) / 2).toISOString(),
+                at: (minutes) => new Date(took + minutes * 60_000).toISOString(),
+            };
+        }
+
+        it('pairs a call in chunk 0 with its result in chunk 3, through puts and through finalize', async () => {
+            const lines = [claudeCall('t1', GATE), claudeProgress(1), claudeProgress(2), claudeResult('t1', gatePass)];
+            const chunks = lines.map((_, i) => chunkOf(i * 1000, [lines[i]!]));
+            const c = await claimed();
+            await owns(c, SESSION);
+            for (const chunk of chunks) await ingest(c, CLAUDE_CODE, [chunk]);
+            const rows = await rowsOf(c.id);
+            expect(rows.map((r) => [r.part, r.outcome])).toEqual([
+                ['call', null],
+                ['result', 'passed'],
+            ]);
+
+            // Finalize: every chunk once more, in offset order; nothing changes.
+            for (const chunk of chunks) await ingest(c, CLAUDE_CODE, [chunk]);
+            expect(await rowsOf(c.id)).toEqual(rows);
+
+            // Reordered puts, then the finalize pass, give the same rows.
+            const c2 = await claimed();
+            await owns(c2, SESSION);
+            for (const chunk of [...chunks].reverse()) await ingest(c2, CLAUDE_CODE, [chunk]);
+            for (const chunk of chunks) await ingest(c2, CLAUDE_CODE, [chunk]);
+            expect((await rowsOf(c2.id)).map((r) => [r.part, r.outcome, r.byte_offset])).toEqual(
+                rows.map((r) => [r.part, r.outcome, r.byte_offset])
+            );
+        });
+
+        it('a compound create read against a result in a later chunk is stored unknown, with no PR', async () => {
+            const c = await claimed();
+            await owns(c, SESSION);
+            const pr = `https://github.com/${REPO}/pull/12`;
+            await ingest(c, CLAUDE_CODE, [
+                chunkOf(0, [claudeCall('t1', 'gh pr create --fill || gh pr view --json url')]),
+            ]);
+            await ingest(c, CLAUDE_CODE, [chunkOf(5000, [claudeResult('t1', pr)])]);
+            const result = (await rowsOf(c.id)).find((r) => r.part === 'result');
+            expect(result).toMatchObject({ operation: 'create', outcome: 'unknown', pr_repo: null, pr_number: null });
+        });
+
+        it('a call whose result never lands stays a call row: unknown, not a success', async () => {
+            const c = await claimed();
+            await owns(c, SESSION);
+            await ingest(c, CLAUDE_CODE, [chunkOf(0, [claudeCall('t1', GATE), claudeProgress(1)])]);
+            expect((await rowsOf(c.id)).map((r) => r.part)).toEqual(['call']);
+        });
+
+        it('a result delivered by a later claim stays with the run that made the call', async () => {
+            const { c1, c2, at, first } = await twoRuns();
+            await ingest(c1, CLAUDE_CODE, [chunkOf(0, [claudeCall('t1', GATE, first)])]);
+            // The resumed session re-exports its history, result included, on the second claim's stream.
+            await ingest(c2, CLAUDE_CODE, [
+                chunkOf(0, [claudeCall('t1', GATE, first), claudeResult('t1', gatePass, at(10))]),
+            ]);
+            const rows = await rowsOf(c1.id);
+            expect(rows.map((r) => [r.part, r.run_claim_seq])).toEqual([
+                ['call', String(c1.claimSeq)],
+                ['result', String(c1.claimSeq)],
+            ]);
+        });
+
+        it('history first delivered after a takeover is attributed by its own timestamp', async () => {
+            const { c1, c2, at, first } = await twoRuns();
+            await ingest(c2, CLAUDE_CODE, [
+                chunkOf(0, [
+                    claudeCall('early', GATE, first),
+                    claudeResult('early', gatePass, at(5)),
+                    claudeCall('late', GATE, at(10)),
+                    claudeResult('late', gatePass, at(20)),
+                ]),
+            ]);
+            const rows = await rowsOf(c1.id);
+            const runOf = (id: string) => [
+                ...new Set(rows.filter((r) => r.tool_call_id === id).map((r) => r.run_claim_seq)),
+            ];
+            expect(runOf('early')).toEqual([String(c1.claimSeq)]);
+            expect(runOf('late')).toEqual([String(c2.claimSeq)]);
+        });
+
+        it('stores when each half started and ended, null when the record does not say', async () => {
+            const c = await claimed();
+            await owns(c, SESSION);
+            await ingest(c, CLAUDE_CODE, [
+                chunkOf(0, [
+                    claudeCall('timed', GATE, T(10)),
+                    claudeResult('timed', gatePass, T(15)),
+                    claudeCall('untimed', GATE),
+                    claudeResult('untimed', gatePass),
+                ]),
+            ]);
+            const rows = await rowsOf(c.id);
+            const half = (id: string, part: string) => rows.find((r) => r.tool_call_id === id && r.part === part);
+            expect(half('timed', 'call')?.started_at?.toISOString()).toBe(T(10));
+            expect(half('timed', 'call')?.ended_at).toBeNull();
+            expect(half('timed', 'result')?.ended_at?.toISOString()).toBe(T(15));
+            expect(half('untimed', 'call')?.started_at).toBeNull();
+            expect(half('untimed', 'result')?.ended_at).toBeNull();
+        });
+
+        it('stores an opencode part’s own start and end', async () => {
+            const c = await claimed();
+            await owns(c, 'oc-1');
+            const part = {
+                table: 'part',
+                row: {
+                    session_id: 'oc-1',
+                    data: JSON.stringify({
+                        type: 'tool',
+                        tool: 'bash',
+                        callID: 'c1',
+                        sessionID: 'oc-1',
+                        state: {
+                            status: 'completed',
+                            input: { command: GATE },
+                            output: gatePass,
+                            time: { start: Date.parse(T(10)), end: Date.parse(T(16)) },
+                        },
+                    }),
+                },
+            };
+            await ingest(c, OPENCODE, [{ offset: 0, text: `${JSON.stringify(part)}\n` }]);
+            const result = (await rowsOf(c.id)).find((r) => r.part === 'result');
+            expect(result?.started_at?.toISOString()).toBe(T(10));
+            expect(result?.ended_at?.toISOString()).toBe(T(16));
+        });
+
+        it('keeps the artifact session apart from the record session, so a source record resolves', async () => {
+            const c = await claimed();
+            await owns(c, 'opencode-session-A');
+            await owns(c, 'opencode-session-B');
+            // The export is uploaded under session B and holds the records of session A as well.
+            await ingest(c, OPENCODE, [{ offset: 0, text: fixture('opencode-export.jsonl') }], {
+                session: 'opencode-session-B',
+            });
+            const rows = await rowsOf(c.id);
+            expect(rows.length).toBeGreaterThan(0);
+            expect(new Set(rows.map((r) => r.artifact_session))).toEqual(new Set(['opencode-session-B']));
+            expect(new Set(rows.map((r) => r.session_id))).toEqual(
+                new Set(['opencode-session-A', 'opencode-session-B'])
+            );
+        });
     });
 });

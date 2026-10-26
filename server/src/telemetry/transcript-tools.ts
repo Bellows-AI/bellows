@@ -25,19 +25,31 @@ export interface ToolResult {
     repo: string | null;
     prNumber: number | null;
     prUrl: string | null;
+    /** When the execution started, as an instant, when the record carries it (OpenCode `state.time`). */
+    startedAt: string | null;
+    /** When it ended, as an instant, when the record carries it: the result record's own time. */
+    endedAt: string | null;
     /** Byte offset of the record that carried the result, in the stream. */
     offset: number;
 }
 
-export interface ToolActivity {
+/** A classified call, before any result is paired with it. */
+export interface ToolCall {
     session: string;
     toolCallId: string;
     kind: ToolKind;
     operation: ToolOperation;
     gate: string | null;
     filtered: boolean | null;
+    /** False when the command is a compound line: what it printed is no evidence of what this call did. */
+    lone: boolean;
+    /** When the call started, as an instant, when the record carries it. */
+    startedAt: string | null;
     /** Byte offset of the record that carried the call, in the stream. */
     offset: number;
+}
+
+export interface ToolActivity extends Omit<ToolCall, 'lone'> {
     /** Null while the call has no paired result: interrupted, or the result not delivered yet. */
     result: ToolResult | null;
 }
@@ -53,28 +65,41 @@ interface RawCall {
     id: string;
     command: string;
     offset: number;
+    startedAt: string | null;
 }
 
-interface RawResult {
+/**
+ * A result read off the stream and not yet classified: it is classified against its call (`resolveResult`),
+ * which may be in another chunk. Its text lives only in memory; it is never stored.
+ */
+export interface PendingResult {
     session: string;
-    id: string;
+    toolCallId: string;
     text: string;
     errored: boolean;
     offset: number;
+    startedAt: string | null;
+    endedAt: string | null;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;
-const GATE_RUN = /\$\{?BELLOWS_GATE_URL\}?\/run\b/;
+const GATE_RUN = /^\s*curl\b.*\$\{?BELLOWS_GATE_URL\}?\/run\b/s;
 const GATE_NAME = /\\?"gate\\?"\s*:\s*\\?"([A-Za-z0-9_.:-]+)/;
 const GATE_FILTER = /\\?"filter\\?"\s*:/;
-const PUBLISH = /control\.sock\b[^|;&]*\/publish\b/;
-const PR_CREATE = /\bgh\s+pr\s+create\b/;
-const PR_LOOKUP = /\bgh\s+pr\s+(?:view|list)\b/;
+const PUBLISH = /^\s*curl\b.*control\.sock\b[^|;&]*\/publish\b/s;
+const PR_CREATE = /^\s*gh\s+pr\s+create\b/;
+const PR_LOOKUP = /^\s*gh\s+pr\s+(?:view|list)\b/;
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
     typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const asString = (value: unknown): string | null => (typeof value === 'string' && value !== '' ? value : null);
+
+/** An instant, as ISO text, from epoch milliseconds or a date string; null when absent or not a time. */
+const instantOf = (value: unknown): string | null => {
+    const ms = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN;
+    return Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : null;
+};
 
 const parseJson = (text: string): unknown => {
     try {
@@ -97,7 +122,7 @@ function* linesOf(chunks: readonly TranscriptChunk[]): Generator<{ text: string;
 
 interface Reading {
     calls: RawCall[];
-    results: RawResult[];
+    results: PendingResult[];
 }
 
 const textOfContent = (content: unknown): string => {
@@ -110,16 +135,27 @@ const textOfContent = (content: unknown): string => {
 };
 
 /** One content block of a Claude record: a Bash `tool_use` is a call, a `tool_result` a result. */
-function claudeBlock(raw: unknown, at: { session: string; offset: number }, into: Reading): void {
+function claudeBlock(raw: unknown, at: { session: string; offset: number; time: string | null }, into: Reading): void {
     const block = asRecord(raw);
     if (block?.type === 'tool_use' && block.name === 'Bash') {
         const id = asString(block.id);
         const command = asString(asRecord(block.input)?.command);
-        if (id && command) into.calls.push({ ...at, id, command });
+        if (id && command) {
+            into.calls.push({ session: at.session, offset: at.offset, startedAt: at.time, id, command });
+        }
         return;
     }
     const id = block?.type === 'tool_result' ? asString(block.tool_use_id) : null;
-    if (id) into.results.push({ ...at, id, text: textOfContent(block?.content), errored: block?.is_error === true });
+    if (!id) return;
+    into.results.push({
+        session: at.session,
+        offset: at.offset,
+        toolCallId: id,
+        text: textOfContent(block?.content),
+        errored: block?.is_error === true,
+        startedAt: null,
+        endedAt: at.time,
+    });
 }
 
 /** Claude jsonl: `tool_use` blocks of an assistant record, `tool_result` blocks of a user record, paired by id. */
@@ -130,7 +166,8 @@ function readClaude(chunks: readonly TranscriptChunk[]): Reading {
         const session = asString(record?.sessionId);
         const content = asRecord(record?.message)?.content;
         if (!session || !Array.isArray(content)) continue;
-        for (const block of content) claudeBlock(block, { session, offset: line.offset }, reading);
+        const at = { session, offset: line.offset, time: instantOf(record?.timestamp) };
+        for (const block of content) claudeBlock(block, at, reading);
     }
     return reading;
 }
@@ -155,13 +192,22 @@ function readOpencode(chunks: readonly TranscriptChunk[]): Reading {
         const part = opencodePart(line.text);
         if (!part) continue;
         const { session, id, state } = part;
-        const at = { session, id, offset: line.offset };
+        const time = asRecord(state.time);
+        const startedAt = instantOf(time?.start);
         const command = asString(asRecord(state.input)?.command);
-        if (command) reading.calls.push({ ...at, command });
+        if (command) reading.calls.push({ session, id, offset: line.offset, command, startedAt });
         if (state.status !== 'completed' && state.status !== 'error') continue;
         const exit = asRecord(state.metadata)?.exit;
         const errored = state.status === 'error' || (typeof exit === 'number' && exit !== 0);
-        reading.results.push({ ...at, text: asString(state.output) ?? asString(state.error) ?? '', errored });
+        reading.results.push({
+            session,
+            toolCallId: id,
+            offset: line.offset,
+            text: asString(state.output) ?? asString(state.error) ?? '',
+            errored,
+            startedAt,
+            endedAt: instantOf(time?.end),
+        });
     }
     return reading;
 }
@@ -182,21 +228,45 @@ function jsonObjectOf(text: string): Record<string, unknown> | null {
 
 const uuidOrNull = (value: unknown): string | null => (typeof value === 'string' && UUID.test(value) ? value : null);
 
-type Classified = Pick<ToolActivity, 'kind' | 'operation' | 'gate' | 'filtered'>;
+type Classified = Pick<ToolCall, 'kind' | 'operation' | 'gate' | 'filtered' | 'lone'>;
+
+/**
+ * The simple commands of a shell line: it is split at every unquoted `;`, `&`, `|`, newline, backtick,
+ * parenthesis and `$(`, and a quoted separator splits nothing. Whether a call is the invocation it
+ * looks like is decided on a command's own first words, never on a substring of the line.
+ */
+/** A shell line's tokens: an escape, a quoted string, a redirection `&`, a separator, plain text, a stray character. */
+const SHELL_TOKEN = /\\[\s\S]|'[^']*'|"(?:\\[\s\S]|[^"\\])*"|[<>]&|&>|\$\(|[;|&\n`()]|[^\\'"<>&$;|\n`()]+|[\s\S]/g;
+const SEPARATOR = /^(?:\$\(|[;|&\n`()])$/;
+
+function simpleCommands(command: string): string[] {
+    const parts: string[] = [];
+    let current = '';
+    const flush = () => {
+        if (current.trim() !== '') parts.push(current);
+        current = '';
+    };
+    for (const [token] of command.replace(/\\\r?\n/g, ' ').matchAll(SHELL_TOKEN)) {
+        if (SEPARATOR.test(token)) flush();
+        else current += token;
+    }
+    flush();
+    return parts;
+}
 
 function classifyCall(command: string): Classified | null {
-    if (GATE_RUN.test(command)) {
-        return {
-            kind: 'gate',
-            operation: 'run',
-            gate: GATE_NAME.exec(command)?.[1] ?? null,
-            filtered: GATE_FILTER.test(command),
-        };
+    const parts = simpleCommands(command);
+    const lone = parts.length === 1;
+    const find = (pattern: RegExp) => parts.find((part) => pattern.test(part));
+    const gate = find(GATE_RUN);
+    if (gate !== undefined) {
+        const filtered = GATE_FILTER.test(gate);
+        return { kind: 'gate', operation: 'run', gate: GATE_NAME.exec(gate)?.[1] ?? null, filtered, lone };
     }
-    const pr = (operation: ToolOperation): Classified => ({ kind: 'pr', operation, gate: null, filtered: null });
-    if (PUBLISH.test(command)) return pr('publish');
-    if (PR_CREATE.test(command)) return pr('create');
-    if (PR_LOOKUP.test(command)) return pr('lookup');
+    const pr = (operation: ToolOperation): Classified => ({ kind: 'pr', operation, gate: null, filtered: null, lone });
+    if (find(PUBLISH) !== undefined) return pr('publish');
+    if (find(PR_CREATE) !== undefined) return pr('create');
+    if (find(PR_LOOKUP) !== undefined) return pr('lookup');
     return null;
 }
 
@@ -209,10 +279,9 @@ function prOfUrl(url: string | null, jobRepo: string | null): Pick<ToolResult, '
     return { repo: match[1]!, prNumber: Number(match[2]), prUrl: url! };
 }
 
-type Fields = Omit<ToolResult, 'offset'>;
+type Fields = Omit<ToolResult, 'offset' | 'startedAt' | 'endedAt'>;
 const UNKNOWN: Fields = { outcome: 'unknown', ...NO_FIELDS };
-
-function gateResult(found: RawResult): Fields {
+function gateResult(found: PendingResult): Fields {
     const body = jsonObjectOf(found.text);
     const exitCode = body?.exitCode;
     if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) return UNKNOWN;
@@ -224,59 +293,98 @@ function gateResult(found: RawResult): Fields {
     };
 }
 
-function publishResult(found: RawResult, jobRepo: string | null): Fields {
+function publishResult(found: PendingResult, jobRepo: string | null): Fields {
     const body = jsonObjectOf(found.text);
     const pr = body?.published === true ? prOfUrl(asString(body.prUrl), jobRepo) : null;
     return pr ? { ...NO_FIELDS, ...pr, outcome: 'passed', operationId: uuidOrNull(body?.operationId) } : UNKNOWN;
 }
 
-function createResult(found: RawResult, jobRepo: string | null): Fields {
+function createResult(found: PendingResult, jobRepo: string | null): Fields {
     if (found.errored) return { outcome: 'failed', ...NO_FIELDS };
     const lines = found.text.split('\n').map((l) => l.trim());
     const pr = prOfUrl(lines.filter((l) => l !== '').at(-1) ?? null, jobRepo);
     return pr ? { ...NO_FIELDS, ...pr, outcome: 'passed' } : UNKNOWN;
 }
 
-function resultOf(operation: ToolOperation, found: RawResult, jobRepo: string | null): Fields {
-    if (operation === 'run') return gateResult(found);
-    if (operation === 'publish') return publishResult(found, jobRepo);
-    return operation === 'create' ? createResult(found, jobRepo) : UNKNOWN;
+function fieldsOf(call: Pick<ToolCall, 'operation' | 'lone'>, found: PendingResult, jobRepo: string | null): Fields {
+    if (!call.lone) return UNKNOWN;
+    if (call.operation === 'run') return gateResult(found);
+    if (call.operation === 'publish') return publishResult(found, jobRepo);
+    return call.operation === 'create' ? createResult(found, jobRepo) : UNKNOWN;
+}
+
+/**
+ * The result a call got, classified against that call. A result is never classified on its own: what
+ * its text means depends on the call, which may have been read in another chunk. `repo` is the job's
+ * repository: a PR is confirmed only for that one.
+ */
+export function resolveResult(
+    call: Pick<ToolCall, 'operation' | 'lone'>,
+    found: PendingResult,
+    repo: string | null
+): ToolResult {
+    const { startedAt, endedAt, offset } = found;
+    return { ...fieldsOf(call, found, repo), startedAt, endedAt, offset };
+}
+
+const executorReading = (executor: string, chunks: readonly TranscriptChunk[]): Reading | null =>
+    executor === CLAUDE_CODE ? readClaude(chunks) : executor === OPENCODE ? readOpencode(chunks) : null;
+
+const keyOf = (session: string, id: string) => `${session}\0${id}`;
+
+/**
+ * The classified calls and the unclassified results of the chunks, each side on its own: a call and
+ * its result need not sit in the same chunk. The same id seen twice (a resumed session replaying its
+ * history) counts once, the first sighting winning.
+ */
+export function readTranscript(input: { executor: string; chunks: readonly TranscriptChunk[] }): {
+    calls: ToolCall[];
+    results: PendingResult[];
+} {
+    const reading = executorReading(input.executor, input.chunks);
+    if (!reading) return { calls: [], results: [] };
+    const seenCalls = new Set<string>();
+    const calls: ToolCall[] = [];
+    for (const call of reading.calls) {
+        const k = keyOf(call.session, call.id);
+        if (seenCalls.has(k)) continue;
+        const classified = classifyCall(call.command);
+        if (!classified) continue;
+        seenCalls.add(k);
+        calls.push({
+            session: call.session,
+            toolCallId: call.id,
+            ...classified,
+            startedAt: call.startedAt,
+            offset: call.offset,
+        });
+    }
+    const seenResults = new Set<string>();
+    const results = reading.results.filter((found) => {
+        const k = keyOf(found.session, found.toolCallId);
+        if (seenResults.has(k)) return false;
+        seenResults.add(k);
+        return true;
+    });
+    return { calls, results };
 }
 
 /**
  * Every classified tool call of the chunks, each with its paired result when there is one. A result
- * is paired by (session, call id) wherever it sits in the stream, so one delivered before its call
- * still pairs; the same id seen twice (a resumed session replaying its history) counts once, the
- * first sighting winning. `repo` is the job's repository: a PR is confirmed only for that one.
+ * is paired by (session, call id) wherever it sits in the chunks, so one delivered before its call
+ * still pairs. `repo` is the job's repository: a PR is confirmed only for that one.
  */
 export function classifyTranscript(input: {
     executor: string;
     chunks: readonly TranscriptChunk[];
     repo: string | null;
 }): ToolActivity[] {
-    const { executor, chunks, repo } = input;
-    const reading = executor === CLAUDE_CODE ? readClaude(chunks) : executor === OPENCODE ? readOpencode(chunks) : null;
-    if (!reading) return [];
-    const key = (session: string, id: string) => `${session}\0${id}`;
-    const results = new Map<string, RawResult>();
-    for (const found of reading.results)
-        if (!results.has(key(found.session, found.id))) results.set(key(found.session, found.id), found);
-    const seen = new Set<string>();
-    const activities: ToolActivity[] = [];
-    for (const call of reading.calls) {
-        const k = key(call.session, call.id);
-        if (seen.has(k)) continue;
-        const classified = classifyCall(call.command);
-        if (!classified) continue;
-        seen.add(k);
-        const found = results.get(k);
-        activities.push({
-            session: call.session,
-            toolCallId: call.id,
-            ...classified,
-            offset: call.offset,
-            result: found ? { ...resultOf(classified.operation, found, repo), offset: found.offset } : null,
-        });
-    }
-    return activities.sort((a, b) => a.offset - b.offset);
+    const { calls, results } = readTranscript(input);
+    const found = new Map(results.map((r) => [keyOf(r.session, r.toolCallId), r]));
+    return calls
+        .map(({ lone, ...call }): ToolActivity => {
+            const pending = found.get(keyOf(call.session, call.toolCallId));
+            return { ...call, result: pending ? resolveResult({ ...call, lone }, pending, input.repo) : null };
+        })
+        .sort((a, b) => a.offset - b.offset);
 }

@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { CLAUDE_CODE, OPENCODE } from '@factory-ai/core';
-import { classifyTranscript, type ToolActivity } from '../src/telemetry/transcript-tools.js';
+import {
+    classifyTranscript,
+    readTranscript,
+    resolveResult,
+    type ToolActivity,
+} from '../src/telemetry/transcript-tools.js';
+import { claudeCall, claudeResult, GATE } from './helpers-transcript-records.js';
 
 /**
  * Issue #983: gate runs and pull-request operations are read out of an executor's own transcript.
@@ -213,5 +219,129 @@ describe('provenance and boundaries', () => {
                 repo: REPO,
             })
         ).toEqual([]);
+    });
+});
+
+const claudeText = (lines: string[]) => [{ offset: 0, text: `${lines.join('\n')}\n` }];
+const PR_URL = `https://github.com/${REPO}/pull/12`;
+
+describe('a command counts as the invocation it is, not a substring', () => {
+    const only = (command: string, result?: string) =>
+        classifyTranscript({
+            executor: CLAUDE_CODE,
+            chunks: claudeText([claudeCall('t1', command), ...(result ? [claudeResult('t1', result)] : [])]),
+            repo: REPO,
+        });
+
+    it('gh pr create with a fallback that prints a URL is unknown, never a creation', () => {
+        const [a] = only(`gh pr create --fill || gh pr view --json url --jq .url`, PR_URL);
+        expect(a).toMatchObject({ kind: 'pr', operation: 'create' });
+        expect(a?.result).toMatchObject({ outcome: 'unknown', prUrl: null, prNumber: null });
+    });
+
+    it.each([
+        ['and', 'gh pr create --fill && echo done'],
+        ['sequence', 'gh pr create --fill; gh pr view --json url'],
+        ['pipe', 'gh pr create --fill | tail -1'],
+        ['substitution', 'url=$(gh pr create --fill); echo $url'],
+        ['backticks', 'echo `gh pr create --fill`'],
+        ['newline', 'gh pr create --fill\ngh pr view --json url'],
+    ])('a compound create (%s) is unknown even with a URL result', (_name, command) => {
+        const [a] = only(command, PR_URL);
+        expect(a?.result?.outcome).toBe('unknown');
+        expect(a?.result?.prUrl).toBeNull();
+    });
+
+    it('a lone create, with quoted separators and a continued line, still confirms', () => {
+        const [a] = only('gh pr create --title "a; b || c" --body \'x && y\' \\\n  --fill', PR_URL);
+        expect(a?.result).toMatchObject({ outcome: 'passed', prNumber: 12 });
+    });
+
+    it('a gate run in a compound command is unknown, not a verdict', () => {
+        const [a] = only(`${GATE}; echo done`, '{"exitCode":0,"output":"ok"}');
+        expect(a).toMatchObject({ kind: 'gate', operation: 'run' });
+        expect(a?.result?.outcome).toBe('unknown');
+    });
+
+    it.each([
+        ['an echo', 'echo "curl -X POST $BELLOWS_GATE_URL/run"'],
+        ['a grep', 'grep -rn BELLOWS_GATE_URL/run docs'],
+        ['a gh mention', 'echo "run gh pr create later"'],
+        ['a publish mention', 'cat notes-control.sock-publish.txt && echo /publish'],
+        ['a commit message', 'git commit -m "gh pr create works"'],
+    ])('%s mentioning one creates no activity', (_name, command) => {
+        expect(only(command, PR_URL)).toEqual([]);
+    });
+});
+
+describe('timing', () => {
+    it('keeps a Claude record timestamp on the call and on the result, as an instant', () => {
+        const [a] = classifyTranscript({
+            executor: CLAUDE_CODE,
+            chunks: claudeText([
+                claudeCall('t1', GATE, '2026-01-02T03:04:05.000Z'),
+                claudeResult('t1', '{"exitCode":0}', '2026-01-02T03:09:05.500Z'),
+            ]),
+            repo: REPO,
+        });
+        expect(a?.startedAt).toBe('2026-01-02T03:04:05.000Z');
+        expect(a?.result).toMatchObject({ startedAt: null, endedAt: '2026-01-02T03:09:05.500Z' });
+    });
+
+    it('keeps an OpenCode gate part start and end from state.time', () => {
+        const part = {
+            table: 'part',
+            row: {
+                session_id: 'oc-1',
+                data: JSON.stringify({
+                    type: 'tool',
+                    tool: 'bash',
+                    callID: 'c1',
+                    sessionID: 'oc-1',
+                    state: {
+                        status: 'completed',
+                        input: { command: GATE },
+                        output: '{"exitCode":0}',
+                        time: { start: 1000, end: 7000 },
+                    },
+                }),
+            },
+        };
+        const [a] = classifyTranscript({
+            executor: OPENCODE,
+            chunks: [{ offset: 0, text: `${JSON.stringify(part)}\n` }],
+            repo: REPO,
+        });
+        expect(a?.startedAt).toBe('1970-01-01T00:00:01.000Z');
+        expect(a?.result).toMatchObject({
+            startedAt: '1970-01-01T00:00:01.000Z',
+            endedAt: '1970-01-01T00:00:07.000Z',
+        });
+    });
+
+    it('a missing or malformed time stays null, never zero', () => {
+        const [a] = classifyTranscript({
+            executor: CLAUDE_CODE,
+            chunks: claudeText([claudeCall('t1', GATE, 'not a time'), claudeResult('t1', '{"exitCode":0}')]),
+            repo: REPO,
+        });
+        expect(a?.startedAt).toBeNull();
+        expect(a?.result).toMatchObject({ startedAt: null, endedAt: null });
+    });
+});
+
+describe('halves read apart', () => {
+    it('a result read in a chunk without its call resolves once the call is known', () => {
+        const calls = readTranscript({ executor: CLAUDE_CODE, chunks: claudeText([claudeCall('t1', GATE)]) });
+        const results = readTranscript({
+            executor: CLAUDE_CODE,
+            chunks: claudeText([claudeResult('t1', '{"exitCode":2}')]),
+        });
+        expect(results.calls).toEqual([]);
+        const [call] = calls.calls;
+        const [pending] = results.results;
+        expect(call).toMatchObject({ toolCallId: 't1', operation: 'run', gate: 'test' });
+        expect(pending).toMatchObject({ toolCallId: 't1', session: 'claude-session-1' });
+        expect(resolveResult(call!, pending!, REPO)).toMatchObject({ outcome: 'failed', exitCode: 2 });
     });
 });
