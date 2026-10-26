@@ -201,6 +201,15 @@ else
     fail=$((fail + 1))
 fi
 
+# Tools agents reach for in repo scripts (issue #1022).
+if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v python3 && command -v pgrep && command -v pkill && command -v ps' >/dev/null 2>&1; then
+    printf 'ok   %s\n' 'python3, ps, pgrep and pkill are on PATH'
+    pass=$((pass + 1))
+else
+    printf 'FAIL %s\n' 'python3, ps, pgrep and pkill are on PATH'
+    fail=$((fail + 1))
+fi
+
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"

@@ -1892,3 +1892,28 @@ describe('the executor images commit identity', () => {
         }
     });
 });
+
+// Issue #1022: the small CLI tools measured as missing in production runs. The apt layer is shared
+// byte for byte (BuildKit reuses it, and every layer above acli/gh, across the two images), so the
+// common packages live there and ripgrep, opencode's alone, sits in its own step below it.
+describe('the executor image tools (issue #1022)', () => {
+    const aptLayer = (file: string) =>
+        /^RUN apt-get update \\\n {4}&& apt-get install -y --no-install-recommends ([^\\\n]+) \\\n {4}&& rm -rf [^\n]+$/m.exec(
+            read(file)
+        );
+
+    it('installs python3 and procps in the apt layer, byte-identical in both images', () => {
+        const claude = aptLayer('docker/claude-executor/Dockerfile');
+        const opencode = aptLayer('docker/opencode-executor/Dockerfile');
+        expect(claude?.[1]?.split(' ')).toEqual(['ca-certificates', 'curl', 'git', 'procps', 'python3']);
+        expect(opencode?.[0]).toBe(claude?.[0]);
+    });
+
+    it('installs ripgrep in opencode only, after the shared apt layer and before the CLI', () => {
+        const opencode = read('docker/opencode-executor/Dockerfile');
+        const rg = opencode.indexOf('--no-install-recommends ripgrep');
+        expect(rg).toBeGreaterThan(opencode.indexOf('ARG GH_VERSION='));
+        expect(rg).toBeLessThan(opencode.indexOf('npm install -g opencode-ai@'));
+        expect(read('docker/claude-executor/Dockerfile')).not.toMatch(/install[^\n]*ripgrep/);
+    });
+});

@@ -22,7 +22,9 @@
 FROM mirror.gcr.io/library/node:24-bookworm-slim
 
 # What -slim drops and the rest of this file needs: git (Claude Code shells out to it for status,
-# diffs and blame), curl (the two downloads below) and the CA bundle both verify against.
+# diffs and blame), curl (the two downloads below) and the CA bundle both verify against. Also
+# procps (ps, pgrep, pkill) and python3, which agents reach for in repo scripts and measured as
+# missing in production runs (issue #1022).
 #
 # The doc/man/locale strip is in THIS layer, not a later one: deleting in a later layer leaves the
 # bytes in this one and saves nothing. Worth 0.9MB, measured — NOT the ~18MB `dpkg-query
@@ -32,7 +34,7 @@ FROM mirror.gcr.io/library/node:24-bookworm-slim
 # because it is large. Byte-identical to the same layer in docker/opencode-executor/Dockerfile,
 # deliberately — see the acli/gh note below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git procps python3 \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # npm stays in this image — the CLI's plugin path uses it — so its own bundled dependency tree

@@ -384,6 +384,14 @@ else
     bad 'no baked auth file in the opencode data directory' 'auth.json exists in the image'
 fi
 
+# Tools agents reach for in repo scripts (issue #1022), and the ripgrep opencode's grep and glob
+# tools resolve from PATH instead of downloading one into ~/.cache/opencode/bin at run time.
+if docker run --rm --entrypoint sh "$IMAGE" -c 'command -v python3 && command -v pgrep && command -v pkill && command -v ps && command -v rg' >/dev/null 2>&1; then
+    ok 'python3, ps, pgrep, pkill and rg are on PATH'
+else
+    bad 'python3, ps, pgrep, pkill and rg are on PATH' 'one is missing'
+fi
+
 # The agent's tool isolation (issue #814), the same checks in both images.
 # shellcheck source=../tool-isolation-checks.sh
 . "$HERE/../tool-isolation-checks.sh"
