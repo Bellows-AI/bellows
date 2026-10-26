@@ -52,5 +52,7 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
   exports for the run alone (`driver/src/gates.ts`, `driver/src/scripts/gate-loop.sh`).
 - The helper answers `https://github.com` only: an Enterprise `GITHUB_API_URL` deployment's agent runs git and
   gh without a credential.
+- A transient relay failure on an adopted runner falls back to the env lease: that one call may be refused
+  (`docker/claude-executor/attempt-pair.cjs`); the next re-reads the pair.
 - A supervised step's token rides its step request, which crosses the mailbox volume, not memory.
 - No in-place edit and no per-task picker in the UI: delete and re-add.

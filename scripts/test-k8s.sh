@@ -1411,9 +1411,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
     docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/claude-executor/github-credential.cjs "$work/"
+cp docker/claude-executor/github-credential.cjs docker/claude-executor/attempt-pair.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs attempt-pair.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!

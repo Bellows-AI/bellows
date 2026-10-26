@@ -146,6 +146,18 @@ describe('the attempt pair as a curl config', () => {
         });
     });
 
+    it('drops a CR or LF from the pair, so it cannot add a curl config line', async () => {
+        const out = await new Promise<string>((resolve) => {
+            execFile(
+                process.execPath,
+                [MODULE],
+                { env: { PATH: process.env.PATH ?? '', RUNNER_JOB_ID: JOB, RUNNER_LEASE_TOKEN: 'a\nurl = "x"\r' } },
+                (_error, stdout) => resolve(stdout)
+            );
+        });
+        expect(out.split('\n')).toHaveLength(3);
+    });
+
     it('prints the relayed lease where FACTORY_CONTROL_SOCKET names a supervisor that answers', async () => {
         const { socket } = await relay(json(200, JSON.stringify({ leaseToken: NEW })));
         const out = await new Promise<string>((resolve) => {

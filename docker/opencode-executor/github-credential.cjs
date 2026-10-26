@@ -125,8 +125,12 @@ async function ask(deps, pair) {
 async function obtain(deps) {
     const { env } = deps;
     // Read on every call: an adopting claim rotates the lease under a container whose env stays as it was.
+    if (!env.FACTORY_STATS_URL) {
+        deps.stderr(GUIDANCE.pair);
+        return null;
+    }
     const pair = await deps.pair(env);
-    if (!env.FACTORY_STATS_URL || !pair.jobId || !pair.leaseToken) {
+    if (!pair.jobId || !pair.leaseToken) {
         deps.stderr(GUIDANCE.pair);
         return null;
     }

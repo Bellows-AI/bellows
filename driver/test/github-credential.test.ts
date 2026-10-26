@@ -261,6 +261,38 @@ describe('the runner GitHub helper as a process', () => {
         expect(out.stderr).toBe('');
     });
 
+    it('presents the lease a relay socket serves, not the one in its env (#1045)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'github-credential-relay-'));
+        const socket = join(dir, 'control.sock');
+        const relay = createServer((_request, response) => {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ leaseToken: 'lease-relayed' }));
+        });
+        await new Promise<void>((resolve) => relay.listen(socket, resolve));
+        servers.push(relay);
+        const seen: string[] = [];
+        const fake = await board([{ status: 200, body: { token: 'ghs_relay_secret', expiresAt: '' } }]);
+        fake.server.on('request', (request: IncomingMessage) => {
+            seen.push(String(request.headers['x-factory-job-lease-token']));
+        });
+        servers.push(fake.server);
+        try {
+            const out = await run(process.execPath, [HELPER, 'token'], {
+                env: {
+                    PATH: process.env.PATH,
+                    FACTORY_STATS_URL: fake.url,
+                    FACTORY_CONTROL_SOCKET: socket,
+                    RUNNER_JOB_ID: JOB,
+                    RUNNER_LEASE_TOKEN: LEASE,
+                },
+            });
+            expect(out.stdout).toBe('ghs_relay_secret\n');
+            expect(seen).toEqual(['lease-relayed']);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it('prints guidance on stderr, no token anywhere, and exits non-zero on a refusal', async () => {
         const fake = await board([{ status: 403, body: { error: 'refused', token: 'ghs_never_secret' } }]);
         servers.push(fake.server);

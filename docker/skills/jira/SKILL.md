@@ -10,8 +10,9 @@ metadata:
 
 Reach Jira with `curl` against `$JIRA_API`, the board's connector for this task. You hold no Jira
 credential: the board adds the task's authorized connection to each call, and only while this
-attempt is running. Your run's own job id and lease token are what the board checks. The Atlassian MCP server is deliberately not configured, and `acli` cannot use this
-connection — do not use either.
+attempt is running. Your run's own job id and lease token are what the board checks. The Atlassian
+MCP server is deliberately not configured, and `acli` cannot use this connection — do not use
+either.
 
 Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it through
 `$JIRA_API` rather than fetching the page. Never put the lease token in a URL or echo it.
@@ -64,5 +65,5 @@ message the board returned, which says what to fix (no connection selected, conn
 no longer authorized, read-only connection) — and do not work around it by guessing ticket
 contents. A refusal that says this attempt holds a lease it no longer has is the exception: every
 call re-reads the current pair, so retry it once; if a fresh call is refused the same way, report
-it, and remember it only for this call — a later turn may succeed. Loading this skill never grants access; only the connection the task was started
-with does.
+it, and remember it only for this call — a later turn may succeed. Loading this skill never grants
+access; only the connection the task was started with does.

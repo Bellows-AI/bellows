@@ -78,7 +78,7 @@ async function currentPair(env, options = {}) {
     return { jobId, leaseToken: relayed ?? envLease };
 }
 
-const quoted = (value) => `"${value.replace(/[\\"]/g, '\\$&')}"`;
+const quoted = (value) => `"${value.replace(/[\r\n]/g, '').replace(/[\\"]/g, '\\$&')}"`;
 
 if (require.main === module) {
     currentPair(process.env).then(
