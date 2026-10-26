@@ -272,6 +272,24 @@ describe('a command counts as the invocation it is, not a substring', () => {
         expect(a?.result?.outcome).toBe('unknown');
     });
 
+    it.each([
+        ['a gate run', `${GATE} -H $'x: it\\'s' --write-out "$(printf ok)"`, '{"exitCode":1}\n{"exitCode":0}', 'gate'],
+        [
+            'a publish',
+            `curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/publish -H $'x: it\\'s'`,
+            `{"published":true,"prUrl":"${PR_URL}","prNumber":12}`,
+            'pr',
+        ],
+        ['a PR create', `gh pr create --title $'it\\'s' --fill`, PR_URL, 'pr'],
+    ])(
+        "ANSI-C quoting ($'…') in %s cannot be split safely: the line is compound, unknown",
+        (_n, command, result, kind) => {
+            const [a] = only(command, result);
+            expect(a).toMatchObject({ kind });
+            expect(a?.result?.outcome).toBe('unknown');
+        }
+    );
+
     it('an escaped $ or backtick inside double quotes is plain text: the create still confirms', () => {
         const [a] = only('gh pr create --title "costs \\$(none) and \\`tick\\`" --fill', PR_URL);
         expect(a?.result).toMatchObject({ outcome: 'passed', prNumber: 12 });

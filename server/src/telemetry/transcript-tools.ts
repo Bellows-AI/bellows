@@ -241,6 +241,8 @@ const SHELL_TOKEN = /\\[\s\S]|'[^']*'|"(?:\\[\s\S]|[^"\\])*"|[<>]&|&>|\$\(|[;|&\
 const SEPARATOR = /^(?:\$\(|[;|&\n`()])$/;
 /** A double-quoted string that runs a command of its own: an unescaped `$(` or backtick inside it. */
 const QUOTED_SUBSTITUTION = /^"(?:\\[\s\S]|[^\\$`]|\$(?!\())*(?:\$\(|`)/;
+/** ANSI-C quoting (`$'…'`) escapes its own quote, which the tokens above cannot follow: never lone. */
+const ANSI_C_QUOTE = /\$'/;
 
 function simpleCommands(command: string): string[] {
     const parts: string[] = [];
@@ -261,7 +263,7 @@ function simpleCommands(command: string): string[] {
 
 function classifyCall(command: string): Classified | null {
     const parts = simpleCommands(command);
-    const lone = parts.length === 1;
+    const lone = parts.length === 1 && !ANSI_C_QUOTE.test(command);
     const find = (pattern: RegExp) => parts.find((part) => pattern.test(part));
     const gate = find(GATE_RUN);
     if (gate !== undefined) {
