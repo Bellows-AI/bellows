@@ -4,6 +4,7 @@ import type { JobAdmissionStore } from '../src/db/jobs/job-store-admission.js';
 import type { JobClaimStore } from '../src/db/jobs/job-store-claim.js';
 import type { JobConclusionStore } from '../src/db/jobs/job-store-conclusions.js';
 import type { JobMergeStore } from '../src/db/jobs/job-store-merge.js';
+import type { GateRunStore } from '../src/db/jobs/job-store-gate-runs.js';
 import type { PhaseCheckpointStore } from '../src/db/jobs/job-store-phase-checkpoints.js';
 import type { JobQuestionStore } from '../src/db/jobs/job-store-questions.js';
 import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
@@ -29,7 +30,8 @@ type Slices =
     | JobReclaimStore
     | JobReviewStore
     | JobWorkerStore
-    | PhaseCheckpointStore;
+    | PhaseCheckpointStore
+    | GateRunStore;
 
 type KeysOfEach<T> = T extends unknown ? keyof T : never;
 type SliceKeys = KeysOfEach<Slices>;

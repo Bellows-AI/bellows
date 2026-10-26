@@ -12,11 +12,11 @@ import {
     validateCommandField,
     validateExecutorField,
     validateExecutorScopeField,
-    validateGates,
     validateRepoField,
     validateSkillsField,
     validateVerdictBody,
 } from './job-field-validation.js';
+import { validateGates } from './job-gate-validation.js';
 import { skillCatalog } from '../../skills.js';
 import { bad, body, checkReposVisible, guard } from '../helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';

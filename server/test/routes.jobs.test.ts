@@ -458,6 +458,14 @@ function stubStore(
             boom();
             return { result: 'ok', checkpoints: [] };
         },
+        async writeGateRun() {
+            boom();
+            return { result: 'ok' };
+        },
+        async readGateRuns() {
+            boom();
+            return { result: 'ok', runs: [] };
+        },
         async gates(id, _token, results) {
             boom();
             stub.gatesReported.push({ id, results });
@@ -1836,6 +1844,53 @@ describe('POST /api/jobs/:id/gates', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.gatesReported).toEqual([{ id: ID, results }]);
+    });
+
+    // Issue #983: a gate served from an earlier verified pass says so, and names the execution.
+    it('accepts the execution id and the reused attribution of a gate entry (issue #983)', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const executionId = '77777777-7777-4777-8777-777777777777';
+        const reused = [
+            {
+                name: 'test',
+                status: 'passed',
+                exitCode: 0,
+                output: '[reused]',
+                executionId,
+                reused: { executionId, finishedAt: '2026-10-26T10:01:00.000Z', reason: 'the tree is unchanged' },
+            },
+            { name: 'lint', status: 'passed', exitCode: 0, output: 'ok', executionId },
+            {
+                name: 'ui',
+                status: 'passed',
+                exitCode: 0,
+                output: '[reused]',
+                reused: { executionId, finishedAt: null, reason: 'x' },
+            },
+        ];
+
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates: reused });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.gatesReported).toEqual([{ id: ID, results: reused }]);
+    });
+
+    it.each([
+        ['an execution id that is not a uuid', { executionId: 'run-1' }],
+        ['a numeric execution id', { executionId: 7 }],
+        ['a reused that is not an object', { reused: 'yes' }],
+        ['a reused without its execution id', { reused: { finishedAt: null, reason: 'x' } }],
+        ['a reused with a numeric finish time', { reused: { executionId: ID, finishedAt: 7, reason: 'x' } }],
+        ['a reused without a reason', { reused: { executionId: ID, finishedAt: null } }],
+    ])('refuses %s on a gate entry (issue #983)', async (_label, extra) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/gates`, {
+            leaseToken: TOKEN,
+            gates: [{ name: 'test', status: 'passed', exitCode: 0, output: '', ...extra }],
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_GATES');
     });
 
     it('truncates per-gate output before it reaches the store', async () => {
