@@ -9,7 +9,13 @@ import {
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import type { Job, JobQuestion } from '../src/api/useJobs.js';
-import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
+import type {
+    GateActivity,
+    GateOutcomeCounts,
+    JobActivity,
+    PrActivity,
+    ThreadActivity,
+} from '../src/api/useJobActivity.js';
 import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
 import { TaskDetail } from '../src/panels/TaskDetail.js';
@@ -306,8 +312,56 @@ export function activityAnswer(
         buckets: [],
         usage: usageBlock(tokens),
         task,
+        gates: NO_GATES,
+        prs: NO_PRS,
+        taskActivity: { gates: NO_GATES, prs: NO_PRS },
     };
 }
+
+const ZERO_OUTCOMES: GateOutcomeCounts = {
+    passed: 0,
+    failed: 0,
+    setup_failed: 0,
+    not_started: 0,
+    incomplete: 0,
+    running: 0,
+    unknown: 0,
+};
+
+/** Nothing recorded: every figure null, never zero. */
+export const NO_GATES: GateActivity = {
+    coverage: null,
+    executions: null,
+    byOutcome: null,
+    measuredMs: null,
+    measuredCount: 0,
+    unmeasuredCount: 0,
+    reused: [],
+    observed: null,
+};
+export const NO_PRS: PrActivity = { coverage: null, counts: null, operations: [], distinct: [] };
+
+/** Recorded gate activity: three fully timed executions (two passed, one failed) unless overridden. */
+export function gateActivity(over: Partial<GateActivity> = {}): GateActivity {
+    return {
+        coverage: 'complete',
+        executions: 3,
+        byOutcome: { ...ZERO_OUTCOMES, passed: 2, failed: 1 },
+        measuredMs: 150_000,
+        measuredCount: 3,
+        unmeasuredCount: 0,
+        reused: [],
+        observed: { executions: 0, byOutcome: { ...ZERO_OUTCOMES } },
+        ...over,
+    };
+}
+
+/** An answer whose task-level gate and PR activity is the given one. */
+export function withActivity(answer: JobActivity, gates: GateActivity, prs: PrActivity): JobActivity {
+    return { ...answer, gates, prs, taskActivity: { gates, prs } };
+}
+
+export const OUTCOMES = ZERO_OUTCOMES;
 
 /**
  * A measured task with everything the modal can show: an estimated figure, unlocated and unresolved

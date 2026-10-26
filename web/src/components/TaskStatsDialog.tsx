@@ -1,9 +1,10 @@
 import { useId, useState } from 'react';
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 import type { UsageBlock } from '@factory-ai/core';
+import type { GateActivity, PrActivity } from '../api/useJobActivity.js';
 import { PulseChart } from '../charts/PulseChart.js';
 import { runDuration } from '../format.js';
-import { coverageNote, type RunStat, TOKEN_TYPES, type TaskStats } from '../task-stats.js';
+import { coverageNote, gateFigures, prFigures, type RunStat, TOKEN_TYPES, type TaskStats } from '../task-stats.js';
 import { ObservedUsageNote } from './usage/CoverageNote.js';
 import { PrecisionBadge } from './usage/PrecisionBadge.js';
 import { TokenFigures } from './usage/TokenFigures.js';
@@ -145,6 +146,86 @@ function UsageSection({ stats }: { stats: TaskStats }) {
     );
 }
 
+/** Gate executions of the task by outcome and measured duration; "—" and a note where the board recorded less. */
+function GatesSection({ gates }: { gates: GateActivity }) {
+    const figures = gateFigures(gates);
+    return (
+        <section className="task-stats-usage" aria-label="Gates">
+            <h3>Gates</h3>
+            <dl className="task-stats-totals">
+                <div>
+                    <dt>Executions</dt>
+                    <dd>{figures.executions}</dd>
+                </div>
+                {figures.outcomes.map((outcome) => (
+                    <div key={outcome.key}>
+                        <dt>{outcome.label}</dt>
+                        <dd>{outcome.count}</dd>
+                    </div>
+                ))}
+                <div>
+                    <dt>Duration</dt>
+                    <dd>{figures.duration}</dd>
+                </div>
+            </dl>
+            {figures.durationNote === null ? null : <p className="task-stats-note">{figures.durationNote}</p>}
+            {figures.reused.length === 0 ? null : (
+                <ul className="task-stats-note">
+                    {figures.reused.map((r) => (
+                        <li key={`${r.gate}-${r.text}`}>
+                            {r.gate} <span className="pill pill-accent">reused</span> {r.text}
+                        </li>
+                    ))}
+                </ul>
+            )}
+            {figures.observed === null ? null : <p className="task-stats-note">{figures.observed}</p>}
+            {figures.partial ? (
+                <p className="task-stats-note">Coverage is partial: some executions are unmeasured or unconfirmed.</p>
+            ) : null}
+        </section>
+    );
+}
+
+/** The PRs the task's runs created or reused: operation and distinct-PR counts apart, each PR linked once. */
+function PullRequestsSection({ prs }: { prs: PrActivity }) {
+    const figures = prFigures(prs);
+    return (
+        <section className="task-stats-usage" aria-label="Pull requests">
+            <h3>Pull requests</h3>
+            <dl className="task-stats-totals">
+                <div>
+                    <dt>Operations</dt>
+                    <dd>{figures.operations}</dd>
+                </div>
+                <div>
+                    <dt>Distinct PRs</dt>
+                    <dd>{figures.distinct}</dd>
+                </div>
+                {figures.byKind.map((kind) => (
+                    <div key={kind.label}>
+                        <dt>{kind.label}</dt>
+                        <dd>{kind.count}</dd>
+                    </div>
+                ))}
+            </dl>
+            {figures.links.length === 0 ? null : (
+                <ul className="task-stats-note">
+                    {figures.links.map((link) => (
+                        <li key={link.url}>
+                            <a href={link.url} target="_blank" rel="noreferrer">
+                                {link.label}
+                            </a>
+                        </li>
+                    ))}
+                </ul>
+            )}
+            {figures.partial ? (
+                <p className="task-stats-note">Coverage is partial: some pull-request calls were not confirmed.</p>
+            ) : null}
+        </section>
+    );
+}
+
 /**
  * The task statistics modal (issues 530, 848): the canonical task's usage - review runs and
  * run-unassigned amounts included - then one row per run, the task-owned row, what the figures
@@ -170,6 +251,8 @@ export function TaskStatsDialog({ open, stats, onClose }: { open: boolean; stats
                         </button>
                     </div>
                     <UsageSection stats={stats} />
+                    {stats.gates === null ? null : <GatesSection gates={stats.gates} />}
+                    {stats.prs === null ? null : <PullRequestsSection prs={stats.prs} />}
                     {latest !== null && buckets.length > 0 ? (
                         <section className="task-stats-pulse">
                             <h3>Latest run ({latest.label}): tokens over time</h3>

@@ -608,6 +608,22 @@ export function measuredBlock(tokens: Partial<Tokens>): UsageBlock {
     };
 }
 
+/** The gate and PR half of an activity answer when the board recorded nothing: null counts, never zeros (issue #983). */
+const NO_RECORDS = (() => {
+    const gates = {
+        coverage: null,
+        executions: null,
+        byOutcome: null,
+        measuredMs: null,
+        measuredCount: 0,
+        unmeasuredCount: 0,
+        reused: [],
+        observed: null,
+    };
+    const prs = { coverage: null, counts: null, operations: [], distinct: [] };
+    return { gates, prs, taskActivity: { gates, prs } };
+})();
+
 /**
  * The activity payload a mocked thread answers with (issues #339, #530, #847): the newest run
  * measured on three of the four token types (cache creation was never measured: null, rendered
@@ -627,6 +643,7 @@ export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
         to: head?.finishedAt ?? head?.startedAt ?? null,
         bucketMs: null,
         buckets: [],
+        ...NO_RECORDS,
     };
     if (head === null || head.sessionId === null) return { ...base, usage: emptyBlock('unmeasured'), task: null };
     const mine = measuredBlock({ input: 1200, output: 300, cacheRead: 9000 });
@@ -756,6 +773,7 @@ export function measuredActivityOf(jobs: readonly ThreadJob[], options: { live?:
         usage,
     });
     return {
+        ...NO_RECORDS,
         jobId: head.id,
         sessionId: head.sessionId,
         from: head.startedAt,
@@ -922,3 +940,57 @@ export const longContentThread = thread([
         runtime: finishedRuntime('2026-09-01T12:29:00.000Z'),
     }),
 ]);
+
+/**
+ * The measured task plus its gate and PR activity (issue #983): three gate executions (two passed,
+ * one failed) none of which carries a timing, so the duration is "-" and the coverage partial; one
+ * completion check that reused an earlier pass; and one PR touched by two operations, so operations
+ * (2) and distinct PRs (1) differ.
+ */
+export function recordedActivityOf(jobs: readonly ThreadJob[]): unknown {
+    const head = jobs[jobs.length - 1]!;
+    const none = { passed: 0, failed: 0, setup_failed: 0, not_started: 0, incomplete: 0, running: 0, unknown: 0 };
+    const url = 'https://github.com/acme/web/pull/7';
+    const gates = {
+        coverage: 'partial',
+        executions: 3,
+        byOutcome: { ...none, passed: 2, failed: 1 },
+        measuredMs: null,
+        measuredCount: 0,
+        unmeasuredCount: 3,
+        reused: [
+            {
+                jobId: head.id,
+                gate: 'lint',
+                executionId: '0a1b2c3d-0000-4000-8000-000000000001',
+                finishedAt: null,
+                reason: 'tree unchanged',
+            },
+        ],
+        observed: { executions: 0, byOutcome: none },
+    };
+    const prs = {
+        coverage: 'complete',
+        counts: { operations: 2, distinct: 1 },
+        operations: [
+            {
+                jobId: head.id,
+                operationId: 'aaaaaaaa-0000-4000-8000-000000000001',
+                kind: 'created',
+                repo: 'acme/web',
+                number: 7,
+                url,
+            },
+            {
+                jobId: head.id,
+                operationId: 'aaaaaaaa-0000-4000-8000-000000000002',
+                kind: 'reused',
+                repo: 'acme/web',
+                number: 7,
+                url,
+            },
+        ],
+        distinct: [{ repo: 'acme/web', number: 7, url }],
+    };
+    return { ...(measuredActivityOf(jobs) as object), gates, prs, taskActivity: { gates, prs } };
+}

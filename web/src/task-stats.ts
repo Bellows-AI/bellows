@@ -1,7 +1,15 @@
 import type { RunUsage, TaskUsage, TokenType, UsageBlock } from '@factory-ai/core';
-import type { JobActivity, ThreadActivity } from './api/useJobActivity.js';
+import type {
+    GateActivity,
+    GateOutcomeKey,
+    JobActivity,
+    PrActivity,
+    PrOperation,
+    ThreadActivity,
+} from './api/useJobActivity.js';
 import { isTerminal, type Job } from './api/useJobs.js';
-import { TOKEN_TYPE_LABELS } from './components/usage/usage-format.js';
+import { duration } from './format.js';
+import { figure, TOKEN_TYPE_LABELS } from './components/usage/usage-format.js';
 
 /**
  * The task statistics read model (issues 530, 848): a pure view over the activity answer. The task's
@@ -77,6 +85,9 @@ export interface TaskStats {
     reviews: number;
     /** Some run is still going, so the figures will move. */
     provisional: boolean;
+    /** The task's gate activity from the newest answer; null until one lands, or when the board refused. */
+    gates: GateActivity | null;
+    prs: PrActivity | null;
 }
 
 const labelOf = (run: RunUsage, number: number | null, numberOf: ReadonlyMap<string, number>): string => {
@@ -96,7 +107,21 @@ function threadTelemetry(
     const usage = entry?.usage ?? (answer === undefined ? null : answer.usage);
     if (usage === null)
         return task === null && answer === undefined ? { state: 'loading', usage } : { state: 'none', usage };
+    if (usage.state === 'unavailable') return { state: 'unavailable', usage };
     return { state: usage.state === 'measured' ? 'measured' : 'none', usage };
+}
+
+/** An answer that carries token figures: telemetry was on for it, even if it measured nothing. */
+const isTokenAnswer = (answer: ThreadActivity[string] | undefined): boolean =>
+    typeof answer === 'object' && answer.usage.state !== 'unavailable';
+
+/** The task-level gate and PR activity of the newest answered run; null while none is answered. */
+function newestTaskActivity(answers: readonly (ThreadActivity[string] | undefined)[]): {
+    gates: GateActivity | null;
+    prs: PrActivity | null;
+} {
+    const newest = [...answers].reverse().find((answer): answer is JobActivity => typeof answer === 'object');
+    return { gates: newest?.taskActivity.gates ?? null, prs: newest?.taskActivity.prs ?? null };
 }
 
 /** The task's statistics: thread runs oldest first, then the task's runs the thread does not list. */
@@ -108,6 +133,7 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
             .reverse()
             .map((answer) => (typeof answer === 'object' ? answer.task : null))
             .find((candidate) => candidate != null) ?? null;
+    const { gates, prs } = newestTaskActivity(answers);
     const taskRuns = task?.runs ?? [];
     const numberOf = new Map(jobs.map((job, index) => [job.id, index + 1] as const));
     const threadRuns: RunStat[] = jobs.map((job, index) => {
@@ -153,7 +179,7 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
     let telemetry: TelemetryState;
     if (task !== null) telemetry = task.usage.state === 'measured' ? 'measured' : 'none';
     else if (loading) telemetry = 'loading';
-    else telemetry = answers.some((answer) => typeof answer === 'object') ? 'none' : 'unavailable';
+    else telemetry = answers.some(isTokenAnswer) ? 'none' : 'unavailable';
     return {
         runs,
         latest: threadRuns.at(-1) ?? null,
@@ -167,6 +193,8 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
         taskOwned: task?.taskOwned ?? null,
         reviews: taskRuns.filter((run) => run.kind === 'review').length,
         provisional: (task?.usage.provisional ?? false) || runs.some((run) => run.live),
+        gates,
+        prs,
     };
 }
 
@@ -174,4 +202,104 @@ export function taskStats(jobs: readonly Job[], activity: ThreadActivity): TaskS
 export function coverageNote(label: string, coverage: Coverage<unknown>): string | null {
     if (coverage.measured === coverage.runs) return null;
     return `${label} measured for ${coverage.measured} of ${coverage.runs} runs.`;
+}
+
+const OUTCOME_LABELS: Record<GateOutcomeKey, string> = {
+    passed: 'Passed',
+    failed: 'Failed',
+    setup_failed: 'Setup failed',
+    not_started: 'Not started',
+    incomplete: 'Incomplete',
+    running: 'Running',
+    unknown: 'Unknown',
+};
+const OUTCOME_ORDER = Object.keys(OUTCOME_LABELS) as GateOutcomeKey[];
+
+const MS_PER_SECOND = 1000;
+const MS_PER_TENTH_SECOND = 100;
+const TENTHS_PER_SECOND = 10;
+/** Characters of an execution id the dialog shows: enough to tell two executions apart. */
+const SHORT_ID_LENGTH = 8;
+const MS_PER_MINUTE = 60_000;
+const MS_PER_HOUR = 3_600_000;
+
+/** A gate duration: seconds and minutes are what a gate takes, so the hour-scale `duration` is only the long tail. */
+function gateDuration(ms: number): string {
+    if (ms < MS_PER_SECOND) return `${ms}ms`;
+    if (ms < MS_PER_MINUTE) return `${Math.round(ms / MS_PER_TENTH_SECOND) / TENTHS_PER_SECOND}s`;
+    if (ms < MS_PER_HOUR)
+        return `${Math.floor(ms / MS_PER_MINUTE)}m ${Math.round((ms % MS_PER_MINUTE) / MS_PER_SECOND)}s`;
+    return duration(ms / MS_PER_HOUR);
+}
+
+/** How the dialog words the task's gate activity; every figure the board did not record reads "—". */
+export interface GateFigures {
+    /** False: nothing was recorded, so every figure is a dash. */
+    recorded: boolean;
+    partial: boolean;
+    executions: string;
+    outcomes: { key: GateOutcomeKey; label: string; count: number }[];
+    duration: string;
+    durationNote: string | null;
+    reused: { gate: string; text: string }[];
+    /** Gate calls only the transcript shows: agent activity, kept apart from the board's executions. */
+    observed: string | null;
+}
+
+export function gateFigures(gates: GateActivity): GateFigures {
+    const timed = gates.measuredCount + gates.unmeasuredCount;
+    const observed = gates.observed?.executions ?? 0;
+    return {
+        recorded: gates.coverage !== null,
+        partial: gates.coverage === 'partial',
+        executions: figure(gates.executions),
+        outcomes: OUTCOME_ORDER.flatMap((key) => {
+            const count = gates.byOutcome?.[key] ?? 0;
+            return count > 0 ? [{ key, label: OUTCOME_LABELS[key], count }] : [];
+        }),
+        duration: gates.measuredMs === null ? '—' : gateDuration(gates.measuredMs),
+        durationNote:
+            gates.coverage !== null && gates.unmeasuredCount > 0
+                ? `Duration measured for ${gates.measuredCount} of ${timed} executions.`
+                : null,
+        reused: gates.reused.map((r) => ({
+            gate: r.gate,
+            text: `Reused the result of execution ${r.executionId.slice(0, SHORT_ID_LENGTH)}: ${r.reason}`,
+        })),
+        observed:
+            observed === 0
+                ? null
+                : `${observed} more gate ${observed === 1 ? 'call appears' : 'calls appear'} in the agent transcript with no board record.`,
+    };
+}
+
+const PR_KIND_LABELS: Record<PrOperation['kind'], string> = {
+    created: 'Created',
+    reused: 'Reused',
+    agent_created: 'Created by the agent',
+    unknown: 'Kind not recorded',
+};
+
+/** How the dialog words the task's PR activity: operations and distinct PRs are separate figures. */
+export interface PrFigures {
+    recorded: boolean;
+    partial: boolean;
+    operations: string;
+    distinct: string;
+    byKind: { label: string; count: number }[];
+    links: { label: string; url: string }[];
+}
+
+export function prFigures(prs: PrActivity): PrFigures {
+    return {
+        recorded: prs.coverage !== null,
+        partial: prs.coverage === 'partial',
+        operations: figure(prs.counts?.operations ?? null),
+        distinct: figure(prs.counts?.distinct ?? null),
+        byKind: (Object.keys(PR_KIND_LABELS) as PrOperation['kind'][]).flatMap((kind) => {
+            const count = prs.operations.filter((o) => o.kind === kind).length;
+            return count > 0 ? [{ label: PR_KIND_LABELS[kind], count }] : [];
+        }),
+        links: prs.distinct.map((pr) => ({ label: `${pr.repo}#${pr.number}`, url: pr.url })),
+    };
 }
