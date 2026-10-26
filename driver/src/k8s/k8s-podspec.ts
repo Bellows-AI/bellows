@@ -781,8 +781,11 @@ export const EXPORT_SECRET_ENV = 'BELLOWS_CONTROL_TOKEN';
 /** One export's Secret: a name the driver's admission policy allows (`factory-job-…-env`), unique per export run. */
 export const volumeExportSecretName = (run: string): string => `factory-job-export-${run}-env`;
 
-/** The Secret carrying the export's control token; labelled `factory.job` as admission requires, with a value no scan reads as a job. */
-export const volumeExportSecretBody = (target: { root: string; run: string }, token: string) => ({
+/**
+ * The Secret carrying the export's control token; labelled `factory.job` as admission requires, with a value no scan reads as a job.
+ * Owned by the export Job (created first), so the garbage collector removes it with the Job, TTL included, whatever became of the driver.
+ */
+export const volumeExportSecretBody = (target: { root: string; run: string }, token: string, owner: JobOwner) => ({
     apiVersion: 'v1',
     kind: 'Secret',
     type: 'Opaque',
@@ -793,6 +796,7 @@ export const volumeExportSecretBody = (target: { root: string; run: string }, to
             [VOLUME_EXPORT_LABEL]: target.root,
             [VOLUME_EXPORT_RUN_LABEL]: target.run,
         },
+        ownerReferences: [{ apiVersion: 'batch/v1', kind: 'Job', name: owner.name, uid: owner.uid, controller: false }],
     },
     stringData: { [EXPORT_SECRET_ENV]: token },
 });

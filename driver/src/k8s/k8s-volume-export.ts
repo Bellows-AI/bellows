@@ -16,7 +16,13 @@ import {
 import type { ReaperArm } from '../reaper.js';
 import { SUPERVISOR_DRAIN_MS } from '../supervisor-contract.js';
 import { jobPodsPath, secretsPath } from './k8s-auxspec.js';
-import { jobsPath, volumeExportJobSpec, volumeExportSecretBody, volumeExportSecretName } from './k8s-podspec.js';
+import {
+    type JobOwner,
+    jobsPath,
+    volumeExportJobSpec,
+    volumeExportSecretBody,
+    volumeExportSecretName,
+} from './k8s-podspec.js';
 import { deleteSecretAcked } from './k8s-teardown.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
 import {
@@ -68,6 +74,12 @@ interface Run {
 
 const jobPath = (run: Pick<Run, 'deps' | 'name'>): string => `${jobsPath(run.deps.config.k8sNamespace)}/${run.name}`;
 const left = (run: Pick<Run, 'clock'>): number => Math.max(1, run.clock.workEnd - Date.now());
+/**
+ * The bound of one cleanup call: `VOLUME_EXPORT_CLEANUP_MS`, never past the export's own deadline, with no run
+ * signal — a stopped reaper or a spent work budget must not cancel the removal it owes.
+ */
+const cleanupMs = (run: Pick<Run, 'clock'>): number =>
+    Math.max(1, Math.min(VOLUME_EXPORT_CLEANUP_MS, run.clock.deadline - Date.now()));
 
 const record = (body: string): Record<string, unknown> | null => {
     try {
@@ -165,14 +177,30 @@ async function awaitJob(run: Run): Promise<VolumeExport> {
 }
 
 const contended = (why: string): VolumeExport => ({ result: 'contended', why });
+/** A held workload that cannot be read or removed: counts as a failed attempt, so the thread's attempts stay bounded. */
+const failedAttempt = (why: string): VolumeExport => inconclusive(why);
 
-/** The Job under the name, read: its uid, creation time and this-export label; or why it could not be read (absent = `null`). */
-async function readHeld(
-    run: Run
-): Promise<{ uid: string | undefined; createdMs: number; ours: boolean } | null | string> {
+interface Held {
+    uid: string | undefined;
+    createdMs: number;
+    ours: boolean;
+    /** The run id the held Job is labelled with, which names its Secret. */
+    run: string | undefined;
+}
+
+/**
+ * The Job under the name, read: its uid, creation time and run label; or why it could not be read (absent = `null`).
+ * `cleanup` reads under its own bound and no signal, for the removal owed after the work's budget is spent.
+ */
+async function readHeld(run: Run, cleanup = false): Promise<Held | null | string> {
     let response: K8sResponse;
     try {
-        response = await run.deps.request('GET', jobPath(run), undefined, { signal: run.signal, timeoutMs: left(run) });
+        response = await run.deps.request(
+            'GET',
+            jobPath(run),
+            undefined,
+            cleanup ? { timeoutMs: cleanupMs(run) } : { signal: run.signal, timeoutMs: left(run) }
+        );
     } catch (e) {
         return `the export job under the name could not be read: ${(e as Error).message}`;
     }
@@ -182,10 +210,12 @@ async function readHeld(
     const metadata = objectOf(record(response.body)?.metadata);
     const labels = objectOf(metadata?.labels);
     const uid = metadata?.uid;
+    const heldRun = labels?.[VOLUME_EXPORT_RUN_LABEL];
     return {
         uid: typeof uid === 'string' ? uid : undefined,
         createdMs: Date.parse(String(metadata?.creationTimestamp)),
-        ours: labels?.[VOLUME_EXPORT_RUN_LABEL] === run.id,
+        ours: heldRun === run.id,
+        run: typeof heldRun === 'string' && /^[a-z0-9-]+$/.test(heldRun) ? heldRun : undefined,
     };
 }
 
@@ -195,24 +225,32 @@ async function readHeld(
  */
 async function nameHeld(run: Run): Promise<VolumeExport> {
     const held = await readHeld(run);
-    if (typeof held === 'string') return contended(held);
+    if (typeof held === 'string') return failedAttempt(held);
     if (held === null) return contended('the export job under the name just ended');
-    if (held.uid === undefined || !exportWorkloadStale(held.createdMs, run.drainMs, Date.now())) {
+    if (!Number.isFinite(held.createdMs))
+        return failedAttempt('the export job under the name has no readable creation time');
+    if (!exportWorkloadStale(held.createdMs, run.drainMs, Date.now())) {
         return contended('another export holds the name and is within its deadline');
     }
-    await deleteByUid(run, held.uid);
+    if (held.uid === undefined) return failedAttempt('the stale export job under the name carries no uid');
+    // Its Secret first, by the run label the Job carries: the Job's TTL would otherwise leave the Secret for good.
+    if (held.run !== undefined) {
+        await deleteSecretAcked(run.deps, volumeExportSecretName(held.run), undefined, cleanupMs(run));
+    }
+    if (!(await deleteByUid(run, held.uid)))
+        return failedAttempt('the stale export job under the name could not be removed');
     return contended('removed a stale export job; the next round exports');
 }
 
 /** Creates the Secret carrying the token; the result, when it ended the export. */
-async function createSecret(run: Run, target: { root: string }): Promise<VolumeExport | null> {
+async function createSecret(run: Run, target: { root: string }, owner: JobOwner): Promise<VolumeExport | null> {
     run.secretSent = true;
     let response: K8sResponse;
     try {
         response = await run.deps.request(
             'POST',
             secretsPath(run.deps.config.k8sNamespace),
-            volumeExportSecretBody({ root: target.root, run: run.id }, run.channel.token),
+            volumeExportSecretBody({ root: target.root, run: run.id }, run.channel.token, owner),
             { signal: run.signal, timeoutMs: left(run) }
         );
     } catch (e) {
@@ -250,16 +288,18 @@ async function createJob(run: Run, job: object): Promise<{ created: Created; end
 }
 
 /** Deletes one Job incarnation (Foreground, so its pod goes with it) under a uid precondition. */
-async function deleteByUid(run: Run, uid: string): Promise<void> {
+async function deleteByUid(run: Run, uid: string): Promise<boolean> {
     try {
-        await run.deps.request(
+        const response = await run.deps.request(
             'DELETE',
             `${jobPath(run)}?propagationPolicy=Foreground`,
             { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } },
-            { timeoutMs: VOLUME_EXPORT_CLEANUP_MS }
+            { timeoutMs: cleanupMs(run) }
         );
+        return response.status < HTTP_ERROR_STATUS || response.status === HTTP_NOT_FOUND;
     } catch {
         // The Job's activeDeadlineSeconds and ttl end it; the next round's name check clears what is left.
+        return false;
     }
 }
 
@@ -269,8 +309,11 @@ async function deleteByUid(run: Run, uid: string): Promise<void> {
  */
 async function deleteJob(run: Run, created: Created): Promise<void> {
     if (created.kind === 'none') return;
-    if (created.uid !== undefined) return deleteByUid(run, created.uid);
-    const held = await readHeld(run);
+    if (created.uid !== undefined) {
+        await deleteByUid(run, created.uid);
+        return;
+    }
+    const held = await readHeld(run, true);
     if (typeof held === 'object' && held !== null && held.ours && held.uid !== undefined) {
         await deleteByUid(run, held.uid);
     }
@@ -278,7 +321,7 @@ async function deleteJob(run: Run, created: Created): Promise<void> {
 
 /** Deletes the export's Secret once, if its create was sent; a refusal leaves a token the closed channel already revoked. */
 async function deleteSecret(run: Run): Promise<void> {
-    if (run.secretSent) await deleteSecretAcked(run.deps, volumeExportSecretName(run.id));
+    if (run.secretSent) await deleteSecretAcked(run.deps, volumeExportSecretName(run.id), undefined, cleanupMs(run));
 }
 
 /** Whether the claim exists: `false` on a 404, an Error for any other answer. */
@@ -314,18 +357,21 @@ async function openChannel(
     }
 }
 
-/** Creates the Secret and the Job and waits it out; the caller removes both. */
+/**
+ * Creates the Job, then the Secret owned by it, and waits it out; the caller removes both. The Job's pod waits on
+ * its `secretKeyRef` until the Secret exists (the kubelet retries a missing one, it does not fail the pod).
+ */
 async function exportOnJob(run: Run, target: { root: string; generation: number }): Promise<VolumeExport> {
     const env = volumeExportEnv(target.root, run.channel, run.clock.giveUpMs);
     const deadline = Math.max(1, Math.ceil((run.clock.workEnd - Date.now()) / MS_PER_SECOND));
     const spec = volumeExportJobSpec(run.deps.config, { ...target, name: run.name, run: run.id }, env, deadline);
-    const refused = await createSecret(run, target);
-    if (refused) return refused;
     const made = await createJob(run, spec);
     run.created = made.created;
     if (made.ended) return made.ended;
     run.uid = made.created.kind === 'job' ? made.created.uid : undefined;
-    return awaitJob(run);
+    if (run.uid === undefined) return inconclusive('the export job answered no uid for its secret to be owned by');
+    const refused = await createSecret(run, target, { name: run.name, uid: run.uid });
+    return refused ?? awaitJob(run);
 }
 
 export function createKubernetesVolumeExporter(

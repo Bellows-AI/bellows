@@ -388,7 +388,8 @@ const ack = (track) => {
 // A 409 at the offset where this exporter was killed mid-PUT: the board recorded a chunk whose ack was lost,
 // and this run cut its bytes differently. When the recorded chunk (length and sha256, same stream) is a
 // prefix of the bytes held, those bytes are stored: ack them and carry on after them. Anything else is a
-// different chunk at that offset, which stops the stream.
+// different chunk at that offset, which stops the stream. Limit, stated: a recorded chunk as long as or longer
+// than the held bytes stops it too, though the held bytes may be its prefix.
 const recordedPrefix = (track, answer) => {
     const { recorded } = answer.json;
     const body = track.inflight.body;
@@ -428,13 +429,14 @@ const upload = async (track) => {
     }
     const query = new URLSearchParams({ session: track.session, offset: String(track.inflight.offset) });
     const answer = await request('PUT', `/export/chunk?${query}`, track.inflight.body);
+    const prefix = answer.status === STATUS_CONFLICT ? recordedPrefix(track, answer) : 0;
     if (answer.status === STATUS_OK) {
         track.failures = 0;
         ack(track);
     } else if (answer.status === STATUS_UNAUTHORIZED) {
         bail(EXIT_UNAUTHORIZED);
-    } else if (answer.status === STATUS_CONFLICT && recordedPrefix(track, answer) > 0) {
-        continueAfter(track, recordedPrefix(track, answer));
+    } else if (prefix > 0) {
+        continueAfter(track, prefix);
     } else if ([STATUS_REFUSED, STATUS_CONFLICT, STATUS_BAD_REQUEST].includes(answer.status)) {
         stopStream(track, answer);
     } else {

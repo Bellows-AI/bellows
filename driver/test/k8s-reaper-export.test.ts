@@ -8,6 +8,7 @@ import { taskVolumesPath } from '../src/k8s/k8s-task-volume.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import type { VolumeExportChannel, VolumeExportProof } from '../src/loop/loop-export.js';
 import type { VolumeThread } from '../src/reaper.js';
+import { VOLUME_EXPORT_CLEANUP_MS } from '../src/reaper-export.js';
 
 /**
  * The kubernetes arm of the reaper's export-before-delete (issue #938): the one-shot exporter pod over
@@ -42,11 +43,14 @@ interface Recorded {
     method: K8sMethod;
     path: string;
     body?: unknown;
+    opts?: { signal?: AbortSignal; timeoutMs?: number };
 }
 
 interface World {
     claim?: K8sResponse | Error;
     create?: K8sResponse | Error;
+    /** Ms the create waits before it answers (a timeout that arrives late, not an immediate throw). */
+    createDelayMs?: number;
     /** The answer to creating the export's Secret. */
     secret?: K8sResponse | Error;
     /** The Job under the name as a GET reads it, given the run id this export labelled its Job with. */
@@ -71,8 +75,11 @@ const scene = (world: World = {}) => {
         close,
     };
     const states = [...(world.pod ?? [jobState({ succeeded: 1 })])];
-    const request: K8sRequest = async (method, path, body) => {
-        calls.push({ method, path, ...(body === undefined ? {} : { body }) });
+    const request: K8sRequest = async (method, path, body, opts) => {
+        calls.push({ method, path, ...(body === undefined ? {} : { body }), ...(opts ? { opts } : {}) });
+        if (world.createDelayMs && method === 'POST' && path === jobsPath(NAMESPACE)) {
+            await new Promise((resolve) => setTimeout(resolve, world.createDelayMs));
+        }
         const answer =
             method === 'GET' && path === CLAIM
                 ? (world.claim ?? json(200, {}))
@@ -107,8 +114,10 @@ const scene = (world: World = {}) => {
     return { arm, calls, close, controller: new AbortController() };
 };
 
-const deletes = (calls: Recorded[]): Recorded[] =>
-    calls.filter((call) => call.method === 'DELETE' && call.path.startsWith(JOB));
+const deletes = (calls: Recorded[]): Omit<Recorded, 'opts'>[] =>
+    calls
+        .filter((call) => call.method === 'DELETE' && call.path.startsWith(JOB))
+        .map(({ opts: _opts, ...call }) => call);
 const secretDeletes = (calls: Recorded[]): Recorded[] =>
     calls.filter((call) => call.method === 'DELETE' && call.path.startsWith(secretsPath(NAMESPACE)));
 const runOf = (calls: Recorded[]): string | undefined =>
@@ -190,11 +199,16 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
             valueFrom: { secretKeyRef: { name: secretName, key: 'BELLOWS_CONTROL_TOKEN' } },
         });
         const secret = calls.find((call) => call.method === 'POST' && call.path === secretsPath(NAMESPACE))!;
-        expect(calls.indexOf(secret)).toBeLessThan(calls.findIndex((call) => call.path === jobsPath(NAMESPACE)));
+        // The Job first, then the Secret it owns: the garbage collector removes the Secret with the Job.
+        expect(calls.indexOf(secret)).toBeGreaterThan(calls.findIndex((call) => call.path === jobsPath(NAMESPACE)));
         expect(secret.body).toMatchObject({
             kind: 'Secret',
             type: 'Opaque',
-            metadata: { name: secretName, labels: { 'factory.job': `volume-export-${ROOT}` } },
+            metadata: {
+                name: secretName,
+                labels: { 'factory.job': `volume-export-${ROOT}` },
+                ownerReferences: [{ apiVersion: 'batch/v1', kind: 'Job', name: NAME, uid: POD_UID, controller: false }],
+            },
             stringData: { BELLOWS_CONTROL_TOKEN: 'export-token' },
         });
         expect(Number(env.EXPORT_GIVEUP_MS)).toBeLessThan(600);
@@ -273,15 +287,22 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('never_started');
         expect(calls.some((call) => call.method === 'GET' && call.path === JOB)).toBe(false);
         expect(deletes(calls)).toEqual([]);
-        expect(secretDeletes(calls)).toHaveLength(1);
+        expect(calls.some((call) => call.path === secretsPath(NAMESPACE))).toBe(false);
         expect(close).toHaveBeenCalledTimes(1);
     });
 
-    it('is never_started when the Secret is refused: no Job is created, and the Secret delete is still owed once', async () => {
+    it('is never_started when the Secret is refused: the Job is deleted by uid and the Secret delete is still owed once', async () => {
         const { arm, calls, controller } = scene({ secret: json(403, { message: 'denied' }) });
         expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('never_started');
-        expect(calls.some((call) => call.path === jobsPath(NAMESPACE))).toBe(false);
+        expect(deletes(calls)).toHaveLength(1);
+        expect(deletes(calls)[0]!.body).toMatchObject({ preconditions: { uid: POD_UID } });
         expect(secretDeletes(calls)).toHaveLength(1);
+    });
+
+    it('is inconclusive when the create answers no uid, since the Secret has no owner to name', async () => {
+        const { arm, calls, controller } = scene({ create: json(201, {}) });
+        expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
+        expect(calls.some((call) => call.path === secretsPath(NAMESPACE))).toBe(false);
     });
 
     describe('a create that timed out (the Job may exist)', () => {
@@ -299,7 +320,39 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
                     body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'ours-uid' } },
                 },
             ]);
-            expect(secretDeletes(calls)).toHaveLength(1);
+            expect(secretDeletes(calls)).toEqual([]);
+        });
+
+        it('cleans up after a create that timed out late, under its own bound and with no run signal', async () => {
+            const { arm, calls, controller } = scene({
+                create: new Error('timed out'),
+                createDelayMs: 450,
+                held: (run) =>
+                    json(200, { metadata: { uid: 'ours-uid', labels: { 'factory.volume-export-run': run } } }),
+            });
+            const result = await arm.exportVolume!(thread, ATTEMPT, controller.signal);
+            expect(result.result).toBe('inconclusive');
+            const cleanup = calls.filter(
+                (call) => call.path === JOB_DELETE || (call.method === 'GET' && call.path === JOB)
+            );
+            expect(cleanup).toHaveLength(2);
+            for (const call of cleanup) {
+                expect(call.opts?.signal).toBeUndefined();
+                expect(call.opts?.timeoutMs).toBeGreaterThan(1);
+                expect(call.opts?.timeoutMs).toBeLessThanOrEqual(VOLUME_EXPORT_CLEANUP_MS);
+            }
+        });
+
+        it('reads and deletes with no signal after the reaper stopped', async () => {
+            const { arm, calls, controller } = scene({
+                create: new Error('aborted'),
+                held: (run) =>
+                    json(200, { metadata: { uid: 'ours-uid', labels: { 'factory.volume-export-run': run } } }),
+            });
+            controller.abort();
+            await arm.exportVolume!(thread, ATTEMPT, controller.signal);
+            expect(deletes(calls)).toHaveLength(1);
+            expect(calls.find((call) => call.method === 'GET' && call.path === JOB)?.opts?.signal).toBeUndefined();
         });
 
         it.each([
@@ -322,11 +375,35 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         const heldAgo = (ms: number) => () =>
             json(200, { metadata: { uid: 'held-uid', creationTimestamp: new Date(Date.now() - ms).toISOString() } });
 
-        it('leaves one within its deadline alone: contended, nothing deleted, the Secret still removed', async () => {
+        it('leaves one within its deadline alone: contended and uncounted, nothing deleted, no Secret made', async () => {
             const { arm, calls, controller } = scene({ create: CONFLICT, held: heldAgo(100) });
             expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
             expect(deletes(calls)).toEqual([]);
-            expect(secretDeletes(calls)).toHaveLength(1);
+            expect(secretDeletes(calls)).toEqual([]);
+        });
+
+        it('deletes a stale one’s Secret, named by its run label, before the Job', async () => {
+            const stale = () =>
+                json(200, {
+                    metadata: {
+                        uid: 'held-uid',
+                        creationTimestamp: new Date(Date.now() - 5_000).toISOString(),
+                        labels: { 'factory.volume-export-run': 'run-x' },
+                    },
+                });
+            const { arm, calls, controller } = scene({ create: CONFLICT, held: stale });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            const secret = calls.findIndex(
+                (call) =>
+                    call.method === 'DELETE' && call.path === `${secretsPath(NAMESPACE)}/factory-job-export-run-x-env`
+            );
+            expect(secret).toBeGreaterThan(-1);
+            expect(secret).toBeLessThan(calls.findIndex((call) => call.path === JOB_DELETE));
+        });
+
+        it('counts a stale one the API server will not delete as a failed attempt', async () => {
+            const { arm, controller } = scene({ create: CONFLICT, held: heldAgo(5_000), del: json(403, {}) });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
         });
 
         it('deletes one past the whole budget, by the uid just read, and exports next round', async () => {
@@ -342,12 +419,12 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         });
 
         it.each([
-            ['cannot be read', () => json(500, {})],
-            ['has no creation time', () => json(200, { metadata: { uid: 'held-uid' } })],
-            ['is gone', () => json(404, {})],
-        ])('leaves one that %s alone', async (_name, held) => {
+            ['cannot be read', () => json(500, {}), 'inconclusive'],
+            ['has no creation time', () => json(200, { metadata: { uid: 'held-uid' } }), 'inconclusive'],
+            ['is gone', () => json(404, {}), 'contended'],
+        ])('leaves one that %s alone', async (_name, held, result) => {
             const { arm, calls, controller } = scene({ create: CONFLICT, held });
-            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe(result);
             expect(deletes(calls)).toEqual([]);
         });
     });

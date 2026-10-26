@@ -529,7 +529,7 @@ const SECRET_DELETE = `DELETE ${secretsPath(NS)}/factory-job-export-<run>-env`;
 scenario(
     'the reaper exporting a not-whole thread’s claim that the relay did not prove drained (K-VX)',
     volumeExportOf(false),
-    { writes: [SECRET_POST, `POST ${jobsPath(NS)}`, EXPORT_JOB, SECRET_DELETE] },
+    { writes: [`POST ${jobsPath(NS)}`, SECRET_POST, EXPORT_JOB, SECRET_DELETE] },
     {}
 );
 
@@ -538,8 +538,8 @@ scenario(
     volumeExportOf(true),
     {
         writes: [
-            SECRET_POST,
             `POST ${jobsPath(NS)}`,
+            SECRET_POST,
             EXPORT_JOB,
             SECRET_DELETE,
             `DELETE ${API}/persistentvolumeclaims/factory-task-<root>-1`,

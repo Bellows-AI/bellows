@@ -63,6 +63,8 @@ interface Run {
     files: RunnerFiles;
     /** `yes`: our create answered. `maybe`: it ended unanswered, the container may exist. `no`: nothing of ours exists. */
     made: 'yes' | 'maybe' | 'no';
+    /** The container id `docker create` answered: what a removal addresses, so a name that changed hands is safe. */
+    madeId?: string;
 }
 
 /** The control token's env file: a 0600 file the daemon reads at create, so the token never rides argv. */
@@ -128,23 +130,28 @@ const FINISHED = new Set(['exited', 'dead']);
  */
 async function nameHeld(run: Run): Promise<VolumeExport> {
     const contended = (why: string): VolumeExport => ({ result: 'contended', why });
-    let created: string;
+    let read: string;
     try {
-        created = (await run.bound(['inspect', '--format', '{{.Created}}', run.name])).stdout.trim();
+        read = (await run.bound(['inspect', '--format', '{{.Id}} {{.Created}}', run.name])).stdout.trim();
     } catch (e) {
-        return contended(
-            noSuchObject(e, ['container'])
-                ? 'the export container under the name just ended'
-                : `the export container under the name could not be read: ${(e as Error).message}`
-        );
+        return noSuchObject(e, ['container'])
+            ? contended('the export container under the name just ended')
+            : inconclusive(`the export container under the name could not be read: ${(e as Error).message}`);
     }
-    if (!exportWorkloadStale(Date.parse(created), run.drainMs, Date.now())) {
+    // A held container that cannot be read or removed counts as a failed attempt; only a live one is `contended`.
+    const [id, ...created] = read.split(/\s+/);
+    const createdMs = Date.parse(created.join(' '));
+    if (!id || !Number.isFinite(createdMs)) {
+        return inconclusive('the export container under the name has no readable id and creation time');
+    }
+    if (!exportWorkloadStale(createdMs, run.drainMs, Date.now())) {
         return contended('another export holds the name and is within its deadline');
     }
     try {
-        await run.bound(['rm', '-f', run.name]);
+        // By the id just read: a name that changed hands since is not removed.
+        await run.bound(['rm', '-f', id]);
     } catch (e) {
-        return contended(`a stale export container could not be removed: ${(e as Error).message}`);
+        return inconclusive(`a stale export container could not be removed: ${(e as Error).message}`);
     }
     return contended('removed a stale export container; the next round exports');
 }
@@ -155,7 +162,8 @@ async function runContainer(makeArgs: (envFile: string) => string[], run: Run): 
     try {
         await run.files.writeFile(envFile, `${SECRET_ENV}=${run.channel.token}\n`, { mode: 0o600 });
         run.made = 'maybe';
-        await run.bound(makeArgs(envFile));
+        const answered = (await run.bound(makeArgs(envFile))).stdout.trim();
+        if (/^[0-9a-f]{12,64}$/.test(answered)) run.madeId = answered;
         run.made = 'yes';
     } catch (e) {
         if (NAME_IN_USE.test(dockerErrorDetail(e))) {
@@ -202,15 +210,20 @@ async function runContainer(makeArgs: (envFile: string) => string[], run: Run): 
 const removeWorkload = async (run: Run): Promise<void> => {
     const { execDocker, name } = run;
     if (run.made === 'no') return;
+    // Each call under its own bound, never past the export's deadline, and no run signal.
+    const timeout = (): number => Math.max(1, Math.min(VOLUME_EXPORT_CLEANUP_MS, run.clock.deadline - Date.now()));
     try {
+        let target = run.madeId || name;
         if (run.made === 'maybe') {
-            const owner = await execDocker(
-                ['inspect', '--format', `{{index .Config.Labels "${VOLUME_EXPORT_RUN_LABEL}"}}`, name],
-                { timeout: VOLUME_EXPORT_CLEANUP_MS }
+            const read = await execDocker(
+                ['inspect', '--format', `{{.Id}} {{index .Config.Labels "${VOLUME_EXPORT_RUN_LABEL}"}}`, name],
+                { timeout: timeout() }
             );
-            if (owner.stdout.trim() !== run.id) return;
+            const [id, owner] = read.stdout.trim().split(/\s+/);
+            if (!id || owner !== run.id) return;
+            target = id;
         }
-        await execDocker(['rm', '-f', name], { timeout: VOLUME_EXPORT_CLEANUP_MS });
+        await execDocker(['rm', '-f', target], { timeout: timeout() });
     } catch {
         // Already gone, or the daemon refused.
     }

@@ -6,6 +6,7 @@ import type { ExecDocker } from '../src/docker/docker-runner-support.js';
 import { claudeExportScript } from '../src/container-scripts.js';
 import type { VolumeExportChannel, VolumeExportProof } from '../src/loop/loop-export.js';
 import type { VolumeThread } from '../src/reaper.js';
+import { VOLUME_EXPORT_CLEANUP_MS } from '../src/reaper-export.js';
 
 /**
  * The docker arm of the reaper's export-before-delete (issue #938): the one-shot exporter container over
@@ -53,8 +54,10 @@ const scene = (world: World = {}) => {
         proof: () => world.proof ?? { drained: true },
         close,
     };
+    const seen: { args: string[]; options?: { timeout?: number; signal?: AbortSignal } | undefined }[] = [];
     const execDocker: ExecDocker = async (args, options) => {
         calls.push([...args]);
+        seen.push({ args: [...args], options });
         const verb = args[0] === 'volume' ? 'volume' : (args[0] as keyof NonNullable<World['on']>);
         const answer = world.on?.[verb]?.(args);
         if (answer instanceof Error) throw answer;
@@ -80,7 +83,7 @@ const scene = (world: World = {}) => {
         drainMs: world.drainMs ?? 600,
         files,
     });
-    return { arm, calls, close, channel, written, removedFiles, controller: new AbortController() };
+    return { arm, calls, seen, close, channel, written, removedFiles, controller: new AbortController() };
 };
 
 const removals = (calls: string[][]): string[][] => calls.filter((call) => call[0] === 'rm');
@@ -127,6 +130,26 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
         const giveUps = envs.filter((entry) => /^EXPORT_(DRAIN_)?GIVEUP_MS=/.test(entry));
         expect(giveUps).toHaveLength(2);
         for (const entry of giveUps) expect(Number(entry.split('=')[1])).toBeLessThan(600);
+    });
+
+    it('removes by the container id the create answered, under a bound of its own and no run signal', async () => {
+        const id = 'abcdef012345';
+        const controller = new AbortController();
+        const { arm, seen } = scene({
+            on: {
+                ...WAITS,
+                create: () => {
+                    controller.abort();
+                    return id;
+                },
+            },
+        });
+        await arm.exportVolume!(thread, ATTEMPT, controller.signal);
+        const removal = seen.find((call) => call.args[0] === 'rm')!;
+        expect(removal.args).toEqual(['rm', '-f', id]);
+        expect(removal.options?.signal).toBeUndefined();
+        expect(removal.options?.timeout).toBeGreaterThan(1);
+        expect(removal.options?.timeout).toBeLessThanOrEqual(VOLUME_EXPORT_CLEANUP_MS);
     });
 
     it('is drained when the relay proved it, and removes the container and closes the channel once', async () => {
@@ -217,7 +240,8 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
 
     describe('a container already under the export name (a second replica’s, or a crashed driver’s)', () => {
         const IN_USE = { create: () => refusal(`Conflict. The container name "/${NAME}" is already in use`) };
-        const createdAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
+        const HELD_ID = 'f00dfeed0123';
+        const createdAgo = (ms: number) => `${HELD_ID} ${new Date(Date.now() - ms).toISOString()}`;
 
         it('leaves one within its deadline alone: contended, nothing removed, no failed attempt', async () => {
             const { arm, calls, controller } = scene({
@@ -227,26 +251,35 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
             expect(removals(calls)).toEqual([]);
         });
 
-        it('removes one past the whole budget, by name, and exports next round', async () => {
+        it('removes one past the whole budget, by the id it just read, and exports next round', async () => {
             const { arm, calls, controller } = scene({
                 on: { ...IN_USE, inspect: () => createdAgo(5_000) },
             });
             expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
-            expect(removals(calls)).toEqual([['rm', '-f', NAME]]);
+            expect(removals(calls)).toEqual([['rm', '-f', HELD_ID]]);
         });
 
         it.each([
             ['cannot be read', () => refusal('daemon went away')],
-            ['answers no date', () => 'not a date'],
-        ])('leaves one whose age %s alone', async (_name, inspect) => {
+            ['answers no date', () => `${HELD_ID} not a date`],
+            ['answers no id', () => new Date().toISOString()],
+        ])('counts one whose age %s as a failed attempt and removes nothing', async (_name, inspect) => {
             const { arm, calls, controller } = scene({ on: { ...IN_USE, inspect } });
-            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
             expect(removals(calls)).toEqual([]);
+        });
+
+        it('counts a stale container the daemon cannot remove as a failed attempt', async () => {
+            const { arm, controller } = scene({
+                on: { ...IN_USE, inspect: () => createdAgo(5_000), rm: () => refusal('device busy') },
+            });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
         });
     });
 
     describe('a create that ended unanswered', () => {
         const KILLED = { create: () => refusal('timed out', { killed: true }) };
+        const OWN_ID = 'cafe00112233';
         const idOf = (calls: string[][]): string =>
             calls
                 .find((call) => call[0] === 'create')!
@@ -259,19 +292,22 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
                 on: {
                     ...KILLED,
                     inspect: (args) =>
-                        args.includes('--format') && args[2]?.includes('volume-export-run') ? idOf(calls) : 'exited',
+                        args.includes('--format') && args[2]?.includes('volume-export-run')
+                            ? `${OWN_ID} ${idOf(calls)}`
+                            : 'exited',
                 },
             });
             calls = ours.calls;
             await ours.arm.exportVolume!(thread, ATTEMPT, ours.controller.signal);
-            expect(removals(ours.calls)).toEqual([['rm', '-f', NAME]]);
+            expect(removals(ours.calls)).toEqual([['rm', '-f', OWN_ID]]);
         });
 
         it('leaves a container that carries another export’s id', async () => {
             const theirs = scene({
                 on: {
                     ...KILLED,
-                    inspect: (args) => (args[2]?.includes('volume-export-run') ? 'another-replica' : 'exited'),
+                    inspect: (args) =>
+                        args[2]?.includes('volume-export-run') ? `${OWN_ID} another-replica` : 'exited',
                 },
             });
             await theirs.arm.exportVolume!(thread, ATTEMPT, theirs.controller.signal);
