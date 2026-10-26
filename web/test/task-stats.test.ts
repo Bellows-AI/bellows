@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { ThreadActivity } from '../src/api/useJobActivity.js';
 import { figure } from '../src/components/usage/usage-format.js';
-import { coverageNote, taskStats } from '../src/task-stats.js';
-import { NO_TOKENS, activityAnswer, job, runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
+import { coverageNote, gateFigures, prFigures, taskStats } from '../src/task-stats.js';
+import {
+    NO_GATES,
+    NO_PRS,
+    NO_TOKENS,
+    OUTCOMES,
+    activityAnswer,
+    gateActivity,
+    job,
+    runUsage,
+    taskUsage,
+    usageBlock,
+    withActivity,
+} from './tasks-fixtures.js';
 
 /**
  * The task statistics read model (issues #530, #847, #848): the totals are the canonical task's usage
@@ -153,5 +165,144 @@ describe('taskStats', () => {
         const task = taskUsage(A, [runUsage(A, 'run', { input: 1 })], { block });
         const stats = taskStats([job({ id: A })], { [A]: activityAnswer(A, { input: 1 }, task) });
         expect(stats.usage?.coverage.input).toEqual({ measured: 1, contributors: 2 });
+    });
+});
+
+/**
+ * Gate and PR activity (issue #983): the task-level answer the newest run carries, worded for the
+ * dialog. A figure nobody recorded is "—", never 0, and a partial answer says so.
+ */
+describe('taskStats gate and PR activity', () => {
+    const answer = (gates = gateActivity(), prs = NO_PRS) => withActivity(activityAnswer(B, { input: 1 }), gates, prs);
+
+    it('reads the task-level gates and PRs from the newest answered run', () => {
+        const gates = gateActivity({ executions: 5 });
+        const stats = taskStats([job({ id: A }), job({ id: B })], {
+            [A]: withActivity(activityAnswer(A, { input: 1 }), gateActivity({ executions: 1 }), NO_PRS),
+            [B]: answer(gates),
+        });
+        expect(stats.gates).toEqual(gates);
+    });
+
+    it('has no gate or PR activity while nothing is answered or the board refused', () => {
+        expect(taskStats([job({ id: B })], {}).gates).toBeNull();
+        expect(taskStats([job({ id: B })], { [B]: 'unavailable' }).prs).toBeNull();
+    });
+
+    it('words the outcome counts in order and leaves zero outcomes out', () => {
+        const figures = gateFigures(gateActivity());
+        expect(figures.executions).toBe('3');
+        expect(figures.outcomes).toEqual([
+            { key: 'passed', label: 'Passed', count: 2 },
+            { key: 'failed', label: 'Failed', count: 1 },
+        ]);
+        expect(figures.duration).toBe('2m 30s');
+        expect(figures.durationNote).toBeNull();
+        expect(figures.partial).toBe(false);
+    });
+
+    it('shows a dash, not 0, when nothing was recorded', () => {
+        expect(gateFigures(NO_GATES)).toMatchObject({
+            executions: '—',
+            outcomes: [],
+            duration: '—',
+            durationNote: null,
+            partial: false,
+            recorded: false,
+        });
+        expect(prFigures(NO_PRS)).toMatchObject({ operations: '—', distinct: '—', links: [], recorded: false });
+    });
+
+    it('says how many executions the duration covers, and a dash when none was timed', () => {
+        const some = gateFigures(gateActivity({ measuredCount: 2, unmeasuredCount: 1, coverage: 'partial' }));
+        expect(some.durationNote).toBe('Duration measured for 2 of 3 executions.');
+        expect(some.partial).toBe(true);
+        const none = gateFigures(
+            gateActivity({ executions: 2, measuredMs: null, measuredCount: 0, unmeasuredCount: 2, coverage: 'partial' })
+        );
+        expect(none.duration).toBe('—');
+        expect(none.durationNote).toBe('Duration measured for 0 of 2 executions.');
+    });
+
+    it('attributes a reused check to the execution it reused, and counts agent-observed calls apart', () => {
+        const figures = gateFigures(
+            gateActivity({
+                reused: [
+                    {
+                        jobId: A,
+                        gate: 'test',
+                        executionId: '0a1b2c3d-0000-4000-8000-000000000001',
+                        finishedAt: null,
+                        reason: 'tree unchanged',
+                    },
+                ],
+                observed: { executions: 2, byOutcome: { ...OUTCOMES, unknown: 2 } },
+            })
+        );
+        expect(figures.reused).toEqual([
+            { gate: 'test', text: 'Reused the result of execution 0a1b2c3d: tree unchanged' },
+        ]);
+        expect(figures.observed).toBe('2 more gate calls appear in the agent transcript with no board record.');
+    });
+
+    it('counts operations apart from distinct PRs and links each PR once', () => {
+        const figures = prFigures({
+            coverage: 'complete',
+            counts: { operations: 3, distinct: 2 },
+            operations: [
+                {
+                    jobId: A,
+                    operationId: 'o1',
+                    kind: 'created',
+                    repo: 'acme/web',
+                    number: 7,
+                    url: 'https://github.com/acme/web/pull/7',
+                },
+                {
+                    jobId: A,
+                    operationId: 'o2',
+                    kind: 'reused',
+                    repo: 'acme/web',
+                    number: 7,
+                    url: 'https://github.com/acme/web/pull/7',
+                },
+                {
+                    jobId: B,
+                    operationId: null,
+                    kind: 'agent_created',
+                    repo: 'acme/web',
+                    number: 9,
+                    url: 'https://github.com/acme/web/pull/9',
+                },
+            ],
+            distinct: [
+                { repo: 'acme/web', number: 7, url: 'https://github.com/acme/web/pull/7' },
+                { repo: 'acme/web', number: 9, url: 'https://github.com/acme/web/pull/9' },
+            ],
+        });
+        expect(figures).toMatchObject({ operations: '3', distinct: '2', partial: false });
+        expect(figures.byKind).toEqual([
+            { label: 'Created', count: 1 },
+            { label: 'Reused', count: 1 },
+            { label: 'Created by the agent', count: 1 },
+        ]);
+        expect(figures.links).toEqual([
+            { label: 'acme/web#7', url: 'https://github.com/acme/web/pull/7' },
+            { label: 'acme/web#9', url: 'https://github.com/acme/web/pull/9' },
+        ]);
+    });
+});
+
+describe('taskStats with telemetry off (issue #983)', () => {
+    it('reads tokens as unavailable, not unmeasured, when the answer arrives with gate records but no token figures', () => {
+        const off = withActivity(
+            { ...activityAnswer(A, null), usage: usageBlock(null, { state: 'unavailable' }) },
+            gateActivity(),
+            NO_PRS
+        );
+        const stats = taskStats([job({ id: A })], { [A]: off });
+        expect(stats.telemetry).toBe('unavailable');
+        expect(stats.runs[0]!.telemetry).toBe('unavailable');
+        expect(stats.gates?.executions).toBe(3);
     });
 });

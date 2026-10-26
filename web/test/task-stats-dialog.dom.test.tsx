@@ -3,7 +3,18 @@ import { describe, expect, it } from 'vitest';
 import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
 import { TaskStatsDialog } from '../src/components/TaskStatsDialog.js';
 import { taskStats } from '../src/task-stats.js';
-import { activityAnswer, fullTask, job, runUsage, taskUsage } from './tasks-fixtures.js';
+import {
+    NO_GATES,
+    NO_PRS,
+    OUTCOMES,
+    activityAnswer,
+    fullTask,
+    gateActivity,
+    job,
+    runUsage,
+    taskUsage,
+    withActivity,
+} from './tasks-fixtures.js';
 import './dom.js';
 
 /** The statistics modal's states (issue #848): which run it charts, and what it says when it has no figures. */
@@ -73,5 +84,81 @@ describe('TaskStatsDialog', () => {
         expect(reason.textContent).toContain('usage between runs of this task');
         // Each reason carries its own figures.
         expect(reason.querySelector('.usage-figures')).not.toBeNull();
+    });
+});
+
+/** Gate and PR activity in the modal (issue #983): counts by outcome, the reused attribution, PR links, "—" for unknowns. */
+describe('TaskStatsDialog gate and PR activity', () => {
+    const task = taskUsage(A, [runUsage(A, 'run', tokens)]);
+    const answered = (gates = NO_GATES, prs = NO_PRS) => ({
+        [A]: withActivity(activityAnswer(A, tokens, task), gates, prs),
+    });
+
+    it('lists gate counts by outcome, the measured duration and a reused badge with its source', () => {
+        const dialog = open(
+            [job({ id: A })],
+            answered(
+                gateActivity({
+                    reused: [
+                        {
+                            jobId: A,
+                            gate: 'lint',
+                            executionId: '0a1b2c3d-0000-4000-8000-000000000001',
+                            finishedAt: null,
+                            reason: 'tree unchanged',
+                        },
+                    ],
+                })
+            )
+        );
+        const gates = within(dialog).getByRole('region', { name: 'Gates' });
+        expect(within(gates).getByText('Passed').nextSibling?.textContent).toBe('2');
+        expect(within(gates).getByText('Failed').nextSibling?.textContent).toBe('1');
+        expect(within(gates).getByText('2m 30s')).toBeTruthy();
+        expect(within(gates).getByText('reused')).toBeTruthy();
+        expect(within(gates).getByText(/Reused the result of execution 0a1b2c3d: tree unchanged/)).toBeTruthy();
+    });
+
+    it('links each PR and counts operations apart from distinct PRs', () => {
+        const url = 'https://github.com/acme/web/pull/7';
+        const dialog = open(
+            [job({ id: A })],
+            answered(NO_GATES, {
+                coverage: 'complete',
+                counts: { operations: 2, distinct: 1 },
+                operations: [
+                    { jobId: A, operationId: 'o1', kind: 'created', repo: 'acme/web', number: 7, url },
+                    { jobId: A, operationId: 'o2', kind: 'reused', repo: 'acme/web', number: 7, url },
+                ],
+                distinct: [{ repo: 'acme/web', number: 7, url }],
+            })
+        );
+        const prs = within(dialog).getByRole('region', { name: 'Pull requests' });
+        expect(within(prs).getByRole('link', { name: 'acme/web#7' }).getAttribute('href')).toBe(url);
+        expect(within(prs).getByText('Operations').nextSibling?.textContent).toBe('2');
+        expect(within(prs).getByText('Distinct PRs').nextSibling?.textContent).toBe('1');
+    });
+
+    it('shows a dash, never 0, for what was not recorded, and says when coverage is partial', () => {
+        const dialog = open(
+            [job({ id: A })],
+            answered(
+                gateActivity({
+                    executions: 2,
+                    byOutcome: { ...OUTCOMES, passed: 1, unknown: 1 },
+                    measuredMs: null,
+                    measuredCount: 0,
+                    unmeasuredCount: 2,
+                    coverage: 'partial',
+                })
+            )
+        );
+        const gates = within(dialog).getByRole('region', { name: 'Gates' });
+        expect(within(gates).getByText('Duration').nextSibling?.textContent).toBe('—');
+        expect(within(gates).getByText('Duration measured for 0 of 2 executions.')).toBeTruthy();
+        expect(within(gates).getByText(/partial/i)).toBeTruthy();
+        const prs = within(dialog).getByRole('region', { name: 'Pull requests' });
+        expect(within(prs).getByText('Operations').nextSibling?.textContent).toBe('—');
+        expect(within(prs).getByText('Distinct PRs').nextSibling?.textContent).toBe('—');
     });
 });
