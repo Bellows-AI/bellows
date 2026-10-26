@@ -438,6 +438,8 @@ export interface SupervisorBinding {
     token: string;
     agentToken: string;
     exportToken: string;
+    /** The claim's lease token: the agent's helpers read it from the supervisor, never from an env fixed at creation. */
+    leaseToken: string;
 }
 
 /** The names that carry the run-control credentials: only the supervisor container receives one. */

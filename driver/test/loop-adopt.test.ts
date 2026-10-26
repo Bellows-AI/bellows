@@ -247,6 +247,7 @@ describe('taking over a live run (#829)', () => {
                     token: 'tok-new',
                     agentToken: 'tok-new-agent',
                     exportToken: 'tok-new-export',
+                    leaseToken: s.ctx.job.leaseToken,
                 },
             },
         ]);

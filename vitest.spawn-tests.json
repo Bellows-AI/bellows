@@ -6,6 +6,7 @@
         "core/test/release-script.test.ts",
         "core/test/skills.fix-scripts.test.ts",
         "core/test/vitest-projects.test.ts",
+        "driver/test/attempt-pair.test.ts",
         "driver/test/branch-reporter.test.ts",
         "driver/test/claude-bridge.test.ts",
         "driver/test/docker-read-faults.test.ts",
