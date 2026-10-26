@@ -12,7 +12,7 @@ import {
     type GateReport,
     beginGates,
     mintGateCredentials,
-    noChangeOf,
+    noChangeSkip,
     openRunControl,
     probeDeadServices,
     runDeclaredGates,
@@ -582,20 +582,9 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
             reports: [],
         };
     }
-    // A task that changed nothing has nothing for the gates to judge (issue #1020). Only a confirmed
-    // read skips: a probe that failed or timed out is inconclusive, and the gates run.
-    if (await noChangeOf(ctx)) {
-        const why = 'the task produced no change (no diff against its base)';
-        rt.log(`job ${job.id}: gates skipped — ${why}`);
-        return {
-            failure: null,
-            deadServices: [],
-            gatesSkipped: why,
-            noChange: true,
-            recoveredServices: [],
-            reports: [],
-        };
-    }
+    // A task that changed nothing has nothing for the gates to judge (issue #1020).
+    const unchanged = await noChangeSkip(ctx);
+    if (unchanged) return unchanged;
     // A gate against a dead service fails on an environment the agent cannot fix, and a
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The
     // services are stateless fixtures, so a dead one is restarted first; only a restart that
