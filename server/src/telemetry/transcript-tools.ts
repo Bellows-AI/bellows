@@ -232,12 +232,15 @@ type Classified = Pick<ToolCall, 'kind' | 'operation' | 'gate' | 'filtered' | 'l
 
 /**
  * The simple commands of a shell line: it is split at every unquoted `;`, `&`, `|`, newline, backtick,
- * parenthesis and `$(`, and a quoted separator splits nothing. Whether a call is the invocation it
+ * parenthesis and `$(`, and a quoted separator splits nothing — but a `$(` or backtick inside double
+ * quotes still runs a command, so it counts as one more. Whether a call is the invocation it
  * looks like is decided on a command's own first words, never on a substring of the line.
  */
 /** A shell line's tokens: an escape, a quoted string, a redirection `&`, a separator, plain text, a stray character. */
 const SHELL_TOKEN = /\\[\s\S]|'[^']*'|"(?:\\[\s\S]|[^"\\])*"|[<>]&|&>|\$\(|[;|&\n`()]|[^\\'"<>&$;|\n`()]+|[\s\S]/g;
 const SEPARATOR = /^(?:\$\(|[;|&\n`()])$/;
+/** A double-quoted string that runs a command of its own: an unescaped `$(` or backtick inside it. */
+const QUOTED_SUBSTITUTION = /^"(?:\\[\s\S]|[^\\$`]|\$(?!\())*(?:\$\(|`)/;
 
 function simpleCommands(command: string): string[] {
     const parts: string[] = [];
@@ -249,6 +252,8 @@ function simpleCommands(command: string): string[] {
     for (const [token] of command.replace(/\\\r?\n/g, ' ').matchAll(SHELL_TOKEN)) {
         if (SEPARATOR.test(token)) flush();
         else current += token;
+        // The substituted command is a command of its own: the line is compound.
+        if (QUOTED_SUBSTITUTION.test(token)) parts.push(token);
     }
     flush();
     return parts;

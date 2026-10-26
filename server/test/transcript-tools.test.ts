@@ -264,6 +264,20 @@ describe('a command counts as the invocation it is, not a substring', () => {
     });
 
     it.each([
+        ['$() in double quotes', `${GATE} --write-out "\\n$(printf '{\\"exitCode\\":0}')"`],
+        ['backticks in double quotes', `${GATE} --write-out "\\n\`printf ok\`"`],
+    ])('a substitution inside double quotes (%s) makes the line compound: unknown', (_name, command) => {
+        const [a] = only(command, '{"exitCode":1,"output":"x"}\n{"exitCode":0}');
+        expect(a).toMatchObject({ kind: 'gate', operation: 'run' });
+        expect(a?.result?.outcome).toBe('unknown');
+    });
+
+    it('an escaped $ or backtick inside double quotes is plain text: the create still confirms', () => {
+        const [a] = only('gh pr create --title "costs \\$(none) and \\`tick\\`" --fill', PR_URL);
+        expect(a?.result).toMatchObject({ outcome: 'passed', prNumber: 12 });
+    });
+
+    it.each([
         ['an echo', 'echo "curl -X POST $BELLOWS_GATE_URL/run"'],
         ['a grep', 'grep -rn BELLOWS_GATE_URL/run docs'],
         ['a gh mention', 'echo "run gh pr create later"'],
