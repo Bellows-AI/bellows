@@ -326,7 +326,8 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         it('cleans up after a create that timed out late, under its own bound and with no run signal', async () => {
             const { arm, calls, controller } = scene({
                 create: new Error('timed out'),
-                createDelayMs: 450,
+                drainMs: 4000,
+                createDelayMs: 2500,
                 held: (run) =>
                     json(200, { metadata: { uid: 'ours-uid', labels: { 'factory.volume-export-run': run } } }),
             });
