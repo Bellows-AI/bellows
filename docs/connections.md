@@ -19,6 +19,7 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | GitHub: `POST /api/jobs/:id/credentials/github` (attempt pair only, `no-store`) | `server/src/routes/github-credential.ts`, `server/src/db/github-credential.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
 | GitHub: one mint per ask, narrowed to the task's repo and `RUNNER_TOKEN_PERMISSIONS` | `server/src/github/app-token.ts` (`fresh`) | `server/test/github.app-token.test.ts` |
 | GitHub, runner side: the image helper behind git's `credential.helper` and the `gh` wrapper; byte-identical in both images | `docker/claude-executor/github-credential.cjs`, `gh-wrapper.sh`, `entrypoint.sh`, `docker/opencode-executor/entrypoint.sh` | `driver/test/github-credential.test.ts`, `driver/test/executor-images.test.ts` |
+| The attempt pair on an adopted runner: the supervisor answers the lease it follows on `GET /attempt`; every helper (Jira recipes, GitHub helper, branch reporter) reads it through `attempt-pair.cjs`, byte-identical in both images | `driver/src/scripts/supervisor.cjs` (`relayRequest`), `docker/claude-executor/control-proxy.cjs`, `docker/claude-executor/attempt-pair.cjs`, `driver/src/supervisor-contract.ts` (`SupervisorBinding.leaseToken`) | `driver/test/supervisor.test.ts`, `driver/test/attempt-pair.test.ts`, `driver/test/takeover-sim.test.ts` |
 | GitHub, the helper's cache (`GITHUB_CACHE_DIR`; memory-backed, agent container only) | `driver/src/claim.ts`, `driver/src/docker/docker.ts`, `driver/src/k8s/k8s-podspec.ts` | `driver/test/github-credential.test.ts` |
 | GitHub, driver side: asked before the sync's fetch, each publish, each github-writing helper and each gate run | `driver/src/github-credential-call.ts`, `loop-github.ts`, `loop-gates.ts`, `gates.ts`, `k8s-gate.ts`, `supervised-steps.ts` | `driver/test/board.test.ts`, `driver/test/loop/`, `driver/test/gates.test.ts`, `driver/test/k8s/` |
 | `GITHUB_TOKEN` and `GH_TOKEN` reserved env names | `core/src/env.ts`, `driver/src/claim.ts`, `driver/src/config.ts`, `server/migrations/072_github_env_reserved.sql` | `server/test/routes.env.test.ts`, `driver/test/config.test.ts`, `driver/test/executor-images.test.ts` |
@@ -49,7 +50,6 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past
   its hour runs on an expired token. It rides that run's gate step, whose env the gate container
   exports for the run alone (`driver/src/gates.ts`, `driver/src/scripts/gate-loop.sh`).
-- A runner whose driver was lost keeps its old pair; once the lease rotates, the helper is refused for that run.
 - The helper answers `https://github.com` only: an Enterprise `GITHUB_API_URL` deployment's agent runs git and
   gh without a credential.
 - A supervised step's token rides its step request, which crosses the mailbox volume, not memory.

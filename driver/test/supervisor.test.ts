@@ -193,6 +193,8 @@ interface Driver {
     /** The agent's and the exporter's bearer tokens this driver accepts on the relayed routes. */
     agentToken: string;
     exportToken: string;
+    /** The lease pair this holder's claim carries: what the agent is told it holds once the supervisor follows it. */
+    leaseToken: string;
     /** Every relayed request (`/publish`, `/review`, `/export`) it received, and whether its connection has closed. */
     seen: { method: string; url: string; authorization: string; body: Buffer; closed: boolean }[];
     /** Replaces the default relayed answer; the request has already been recorded in `seen`. */
@@ -249,11 +251,13 @@ async function startDriver({
     token = TOKEN,
     agentToken = AGENT_TOKEN,
     exportToken = EXPORT_TOKEN,
+    leaseToken = `lease-of-${token}`,
 }: {
     release?: boolean;
     token?: string;
     agentToken?: string;
     exportToken?: string;
+    leaseToken?: string;
 } = {}): Promise<Driver> {
     const driver: Driver = {
         url: '',
@@ -265,6 +269,7 @@ async function startDriver({
         silentControl: false,
         agentToken,
         exportToken,
+        leaseToken,
         seen: [],
         relayAnswer: null,
         stop: false,
@@ -1686,6 +1691,7 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
                         token: next.token,
                         agentToken: next.agentToken,
                         exportToken: next.exportToken,
+                        leaseToken: next.leaseToken,
                     })
                 ),
             rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
@@ -1741,7 +1747,7 @@ describe('the supervisor run: following a newer holder (issue #829)', () => {
         token: string,
         relay = { agent: AGENT_TOKEN, export: EXPORT_TOKEN }
     ) =>
-        `{"claimSeq":${claimSeq},"url":${JSON.stringify(url)},"token":${JSON.stringify(token)},"agentToken":${JSON.stringify(relay.agent)},"exportToken":${JSON.stringify(relay.export)}}`;
+        `{"claimSeq":${claimSeq},"url":${JSON.stringify(url)},"token":${JSON.stringify(token)},"agentToken":${JSON.stringify(relay.agent)},"exportToken":${JSON.stringify(relay.export)},"leaseToken":"lease-named"}`;
     it.each([
         ['an empty file', () => ''],
         ['a partial write', () => '{"claimSeq":2,"url":"http://127'],
@@ -2244,6 +2250,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
                 token: driver.token,
                 agentToken: driver.agentToken,
                 exportToken: driver.exportToken,
+                leaseToken: driver.leaseToken,
             })
         );
     /** A supervisor of claim 1 following a binding file. */
@@ -2254,10 +2261,66 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         const supervised = relayed(driver, { SUPERVISOR_CLAIM_SEQ: '1', SUPERVISOR_BINDING_FILE: file, ...env });
         return {
             supervised,
+            file,
             name: (next: Driver, claimSeq: number) => named(next, claimSeq, file),
             rebound: () => supervised.logs.some((line) => line.startsWith('supervisor: rebound to claim')),
         };
     };
+
+    describe('GET /attempt, the lease the agent holds now (#1045)', () => {
+        const attempt = (socket: string, method = 'GET', url = '/attempt') => viaSocket(socket, method, url);
+
+        it('answers 404 until a newer holder is followed, and never asks the holder', async () => {
+            const driver = await startDriver();
+            const { supervised, name, rebound } = bound(driver);
+            const { agent } = await ready(supervised);
+            const before = await attempt(agent);
+            expect(before.status).toBe(404);
+            expect(before.body.toString()).not.toContain('lease');
+            const next = await startDriver({ token: 'tok-next', leaseToken: 'lease-next' });
+            name(next, 2);
+            await until('the rebind', rebound);
+            const after = await attempt(agent);
+            expect(after.status).toBe(200);
+            expect(after.headers['cache-control']).toBe('no-store');
+            expect(JSON.parse(after.body.toString())).toEqual({ leaseToken: 'lease-next' });
+            expect(driver.seen).toEqual([]);
+            expect(next.seen).toEqual([]);
+            expect([...supervised.logs].join('\n')).not.toContain('lease-next');
+            await finish(supervised);
+        });
+
+        it('follows the newest holder, and a binding without a lease is not followed', async () => {
+            const driver = await startDriver();
+            const { supervised, file, name, rebound } = bound(driver);
+            const { agent } = await ready(supervised);
+            const second = await startDriver({ token: 'tok-2', leaseToken: 'lease-2' });
+            name(second, 2);
+            await until('the first rebind', rebound);
+            const bare = JSON.stringify({
+                claimSeq: 3,
+                url: second.url,
+                token: 'tok-3',
+                agentToken: AGENT_TOKEN,
+                exportToken: EXPORT_TOKEN,
+            });
+            writeFileSync(file, bare);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            expect(JSON.parse((await attempt(agent)).body.toString())).toEqual({ leaseToken: 'lease-2' });
+            await finish(supervised);
+        });
+
+        it('is the agent relay only: not under the export relay, no other method, no query', async () => {
+            const driver = await startDriver();
+            const supervised = relayed(driver);
+            const { agent, export: exported } = await ready(supervised);
+            expect((await attempt(exported)).status).toBe(404);
+            expect((await attempt(agent, 'POST')).status).toBe(404);
+            expect((await attempt(agent, 'GET', '/attempt?x=1')).status).toBe(404);
+            expect(driver.seen).toEqual([]);
+            await finish(supervised);
+        });
+    });
 
     it.each([
         ['POST', '/publish', '{}'],

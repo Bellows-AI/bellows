@@ -10,7 +10,8 @@
  *   node github-credential.cjs token       the token alone on stdout, for the gh wrapper
  *   node github-credential.cjs clear       remove the cache, at the entrypoint's exit
  *
- * Reads FACTORY_STATS_URL (the board), RUNNER_JOB_ID and RUNNER_LEASE_TOKEN (the attempt pair).
+ * Reads FACTORY_STATS_URL (the board) and the attempt pair through `attempt-pair.cjs`: the container's
+ * RUNNER_JOB_ID and RUNNER_LEASE_TOKEN, with the lease the supervisor names now (#1045).
  * The token goes to stdout and nowhere else — stdout is the channel git and the wrapper read — and
  * never to stderr, which carries only guidance a person can act on. A refusal exits non-zero, and
  * git then falls back to no credential.
@@ -20,6 +21,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { currentPair } = require('./attempt-pair.cjs');
 
 /** Memory-backed in both executors: docker `--tmpfs`, kubernetes `emptyDir: {medium: Memory}`. */
 const CACHE_DIR = '/run/factory-github';
@@ -43,8 +45,10 @@ const GUIDANCE = {
         'github-credential: this container holds no attempt credential (FACTORY_STATS_URL, RUNNER_JOB_ID, ' +
         'RUNNER_LEASE_TOKEN), so there is no GitHub token here.',
     refused:
-        'github-credential: the board refused this attempt a GitHub token: the attempt is no longer running, ' +
-        'or its task is no longer authorized (its author left the organization). Do not retry: report it and stop.',
+        'github-credential: the board refused this attempt a GitHub token: the call carried a lease this attempt ' +
+        'no longer holds, or its task is no longer authorized (its author left the organization). Each call ' +
+        'reads the current pair: retry once, and if a fresh call is refused the same way, report it. A later ' +
+        'turn may succeed.',
     noApp:
         'github-credential: the board holds no GitHub App installation for this organization, so it issues no ' +
         'GitHub token. Ask an admin to install the App; git and gh run without a credential until then.',
@@ -54,13 +58,12 @@ const GUIDANCE = {
 };
 
 /** The attempt the cache belongs to: a cache written under another pair is never read. */
-const attemptOf = (env) =>
-    crypto.createHash('sha256').update(`${env.RUNNER_JOB_ID}|${env.RUNNER_LEASE_TOKEN}`).digest('hex');
+const attemptOf = (pair) => crypto.createHash('sha256').update(`${pair.jobId}|${pair.leaseToken}`).digest('hex');
 
-function readCache(deps) {
+function readCache(deps, pair) {
     try {
         const cached = JSON.parse(fs.readFileSync(path.join(deps.dir, CACHE_FILE), 'utf8'));
-        if (cached.attempt !== attemptOf(deps.env) || typeof cached.token !== 'string') return null;
+        if (cached.attempt !== attemptOf(pair) || typeof cached.token !== 'string') return null;
         const expires = Date.parse(cached.expiresAt);
         return Number.isFinite(expires) && deps.now() < expires - RENEW_SKEW_MS ? cached.token : null;
     } catch {
@@ -73,7 +76,7 @@ function readCache(deps) {
  * docker tmpfs is mounted so; a kubernetes emptyDir stays the kubelet's, mounted in this container
  * alone). A directory this user cannot write is no cache.
  */
-function writeCache(deps, token, expiresAt) {
+function writeCache(deps, pair, token, expiresAt) {
     try {
         fs.mkdirSync(deps.dir, { recursive: true, mode: DIR_MODE });
         try {
@@ -83,7 +86,7 @@ function writeCache(deps, token, expiresAt) {
         }
         const file = path.join(deps.dir, CACHE_FILE);
         const tmp = `${file}.${process.pid}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify({ token, expiresAt, attempt: attemptOf(deps.env) }), {
+        fs.writeFileSync(tmp, JSON.stringify({ token, expiresAt, attempt: attemptOf(pair) }), {
             mode: FILE_MODE,
         });
         fs.renameSync(tmp, file);
@@ -97,14 +100,14 @@ function clearCache(deps) {
 }
 
 /** One ask of the board: a token, a refusal to stop on, or null to retry. */
-async function ask(deps) {
+async function ask(deps, pair) {
     const { env } = deps;
-    const url = `${env.FACTORY_STATS_URL.replace(/\/+$/, '')}/api/jobs/${env.RUNNER_JOB_ID}/credentials/github`;
+    const url = `${env.FACTORY_STATS_URL.replace(/\/+$/, '')}/api/jobs/${pair.jobId}/credentials/github`;
     let response;
     try {
         response = await deps.fetch(url, {
             method: 'POST',
-            headers: { 'x-factory-job-id': env.RUNNER_JOB_ID, 'x-factory-job-lease-token': env.RUNNER_LEASE_TOKEN },
+            headers: { 'x-factory-job-id': pair.jobId, 'x-factory-job-lease-token': pair.leaseToken },
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
     } catch {
@@ -121,16 +124,18 @@ async function ask(deps) {
 /** The attempt's token: the cached one while it has more than the skew left, else a renewed one. */
 async function obtain(deps) {
     const { env } = deps;
-    if (!env.FACTORY_STATS_URL || !env.RUNNER_JOB_ID || !env.RUNNER_LEASE_TOKEN) {
+    // Read on every call: an adopting claim rotates the lease under a container whose env stays as it was.
+    const pair = await deps.pair(env);
+    if (!env.FACTORY_STATS_URL || !pair.jobId || !pair.leaseToken) {
         deps.stderr(GUIDANCE.pair);
         return null;
     }
-    const cached = readCache(deps);
+    const cached = readCache(deps, pair);
     if (cached) return cached;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-        const answer = await ask(deps);
+        const answer = await ask(deps, pair);
         if (answer?.token) {
-            writeCache(deps, answer.token, answer.expiresAt);
+            writeCache(deps, pair, answer.token, answer.expiresAt);
             return answer.token;
         }
         if (answer?.stop) {
@@ -196,6 +201,7 @@ const readStdin = () =>
 if (require.main === module) {
     main(process.argv.slice(2), {
         env: process.env,
+        pair: currentPair,
         dir: CACHE_DIR,
         now: Date.now,
         fetch: globalThis.fetch,

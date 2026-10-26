@@ -27,6 +27,8 @@ const RELAY_SOCKET = 'control.sock';
 /** `PUBLISH_PATH` and `REVIEW_PATH` of driver/src/control-channel.ts. */
 const PUBLISH_PATH = '/publish';
 const REVIEW_PATH = '/review';
+/** The supervisor's answer to which lease pair the agent holds now (`relayRequest`, #1045): read by `attempt-pair.cjs`. */
+const ATTEMPT_PATH = '/attempt';
 const REVIEW_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 /** Far past any publish or review request; the board bounds its own bodies too. */
 const BODY_LIMIT_BYTES = 1024 * 1024;
@@ -34,8 +36,9 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_TOO_LARGE = 413;
 const HTTP_BAD_GATEWAY = 502;
 
-/** Whether this method and path is one of the three the skills call. */
+/** Whether this method and path is one of the four the skills and helpers call. */
 function allowed(method, url) {
+    if (method === 'GET' && url === ATTEMPT_PATH) return true;
     if (method === 'POST' && (url === PUBLISH_PATH || url === REVIEW_PATH)) return true;
     if (method !== 'GET' || !url.startsWith(`${REVIEW_PATH}/`)) return false;
     return REVIEW_KEY.test(url.slice(REVIEW_PATH.length + 1));

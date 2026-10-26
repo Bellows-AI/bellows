@@ -88,6 +88,7 @@ describe('the run-control proxy', () => {
         ['POST', '/publish', '{"title":"draft"}'],
         ['POST', '/review', '{"key":"security-1","profile":"security"}'],
         ['GET', '/review/security-1', undefined],
+        ['GET', '/attempt', undefined],
     ])(
         'forwards %s %s to the relay with no credential, and the relay’s answer unchanged',
         async (method, path, body) => {
@@ -110,6 +111,9 @@ describe('the run-control proxy', () => {
         ['POST', '/step'],
         ['GET', '/review/../control'],
         ['GET', '/review/'],
+        ['GET', '/attempt?x=1'],
+        ['GET', '/attempt/'],
+        ['POST', '/attempt'],
         ['DELETE', '/review/security-1'],
         ['POST', '/export/chunk'],
     ])('answers %s %s 404 without reaching the relay', async (method, path) => {

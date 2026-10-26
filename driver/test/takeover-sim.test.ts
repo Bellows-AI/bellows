@@ -5,10 +5,12 @@
  * names the lane case it mirrors; its expectations are the lane's.
  */
 import { existsSync, mkdtempSync } from 'node:fs';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
+import { AGENT_MAILBOX_DIR, MAILBOX_FILES } from '../src/supervisor-contract.js';
 import { takeoverBoundMs } from '../src/supervisor-plan.js';
 import { busyWait } from './fixtures/host-stall.js';
 import { liveSupervisors } from './fixtures/supervisor-tracker.js';
@@ -31,7 +33,43 @@ const firstGroup = (s: Sim) => [...s.groups.values()][0]!;
 const settled = (s: Sim) =>
     until('the job to settle', s, () => s.row.status === 'succeeded', 25_000 + takeoverBoundMs(s.config));
 
+/** `GET /attempt` on a group's agent relay: the status and lease the supervisor answers. */
+const attemptOf = (g: Group) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = request(
+            { socketPath: join(g.root, 'out', AGENT_MAILBOX_DIR, MAILBOX_FILES.relay), path: '/attempt' },
+            (res) => {
+                let body = '';
+                res.on('data', (chunk) => (body += chunk));
+                res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+            }
+        );
+        req.on('error', reject);
+        req.end();
+    });
+
 const scenarios: Record<string, (s: Sim) => Promise<void>> = {
+    // #1045: the adopted runner's helpers read the new claim's lease from its supervisor, not their env.
+    "t2: after the takeover the agent's /attempt answers the new claim's lease": async (s) => {
+        s.release();
+        const a = await s.start('A');
+        await until('the agent released', s, () => Boolean(released(s)));
+        const g = firstGroup(s);
+        expect((await attemptOf(g)).status).toBe(404);
+        await s.kill(a);
+        s.expireLease();
+        await s.start('B');
+        await until('the rebind', s, () => g.logs.some((l) => l.startsWith('supervisor: rebound to claim 2')));
+        expect(g.lease).not.toBe(s.row.leaseToken);
+        expect(await attemptOf(g)).toEqual({
+            status: 200,
+            body: JSON.stringify({ leaseToken: s.row.leaseToken }),
+        });
+        s.agentExits(g, 0);
+        await settled(s);
+        expect(s.text()).not.toContain(s.row.leaseToken ?? 'unreachable');
+    },
+
     't2: a hard kill while the agent runs: the next claim takes the running agent over': async (s) => {
         s.release();
         const a = await s.start('A');
