@@ -113,6 +113,17 @@ describe('test-jobs --changed path-to-phase map', () => {
         ]);
     });
 
+    it('runs the image-checks phase for an executor image file and for either image check script', () => {
+        for (const file of [
+            'docker/claude-executor/test.sh',
+            'docker/opencode-executor/test.sh',
+            'docker/claude-executor/entrypoint.sh',
+            'docker/opencode-executor/Dockerfile',
+        ]) {
+            expect(classify([file]).selected).toContain('image-checks');
+        }
+    });
+
     it('unions the phases of several files and ignores files no lane executes', () => {
         expect(
             classify(['driver/src/run-deadline.ts', 'driver/src/k8s/k8s-runner.ts', 'docs/jobs.md', 'web/src/App.tsx'])

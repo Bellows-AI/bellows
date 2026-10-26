@@ -22,7 +22,7 @@ PARALLEL_SLOTS=2
 WATCH_STALLS="${LANE_WATCH_STALLS:-0}"
 valid_phase() {
     case "$1" in
-    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|ask-user-question|question-round-trip) return 0 ;;
+    board|driver|github-credential|services|orphan-reaper|node-disruption|driver-kill|run-deadline|capacity|review|workflows|acceptance|compose-driver|auth|cooperative-stop|tool-isolation|image-checks|ask-user-question|question-round-trip) return 0 ;;
     esac
     return 1
 }
@@ -62,7 +62,7 @@ while [ "$#" -gt 0 ]; do
         echo 'Usage: scripts/test-jobs.sh [--phase PHASE[,PHASE...] | --changed BASE] [--cli-workers 1|2] [--watch-stalls] [--parallel [--slots 2|3|4]]'
         echo 'Phases: all (default), board, driver, github-credential, services, orphan-reaper,'
         echo '        node-disruption, run-deadline, review, workflows, acceptance, compose-driver, auth, cooperative-stop,'
-        echo '        tool-isolation, ask-user-question, question-round-trip, driver-kill, capacity'
+        echo '        tool-isolation, image-checks, ask-user-question, question-round-trip, driver-kill, capacity'
         echo 'A comma list (--phase driver,services) runs those phases, in lane order, on one board fixture.'
         echo '--changed BASE runs the phases scripts/test-jobs-changed.mjs maps from `git diff --name-only` since the merge base with BASE'
         echo '        (uncommitted and untracked files included), prints why, and falls back to the full lane for'
@@ -103,7 +103,7 @@ selected_phase() {
 needs_board() {
     [ "$PHASE" = all ] && return 0
     for phase in ${PHASE//,/ }; do
-        case "$phase" in cooperative-stop|tool-isolation|ask-user-question) ;; *) return 0 ;; esac
+        case "$phase" in cooperative-stop|tool-isolation|image-checks|ask-user-question) ;; *) return 0 ;; esac
     done
     return 1
 }
@@ -165,7 +165,7 @@ for tool in docker node timeout; do
 done
 docker info >/dev/null 2>&1 || { echo 'test-jobs: docker daemon is unavailable'; exit 1; }
 images=''
-if selected_phase cooperative-stop || selected_phase tool-isolation; then
+if selected_phase cooperative-stop || selected_phase tool-isolation || selected_phase image-checks; then
     images='claude-executor opencode-executor'
 elif selected_phase ask-user-question || selected_phase question-round-trip; then
     images='claude-executor'
@@ -3614,6 +3614,31 @@ seam_lane() { # seam_lane <claude|opencode>
 claude_seam_lanes() { seam_lane claude; }
 opencode_seam_lanes() { seam_lane opencode; }
 lane_pair claude_seam_lanes opencode_seam_lanes
+
+fi
+
+if selected_phase image-checks; then
+begin_phase image-checks
+# --- The executor images' own check scripts -----------------------------------------------------
+#
+# docker/<executor>/test.sh pins what the image bakes (entrypoint contract, managed settings, seeding,
+# skills paths, tool uid). Nothing else ran them, so claude-executor's drifted from the entrypoint
+# unnoticed (issue #1039). They run offline against the images `make runners` builds.
+
+echo
+echo '# executor image checks (docker/<executor>/test.sh against the built images)'
+
+for cli in claude opencode; do
+    if ! docker image inspect "$cli-executor" >/dev/null 2>&1; then
+        bad "$cli-executor image checks" "the $cli-executor image is missing — run make runners"
+        continue
+    fi
+    if IMAGE="$cli-executor" bash "docker/$cli-executor/test.sh" >"$work/image-checks-$cli.log" 2>&1; then
+        ok "$cli-executor image checks ($(tail -n 1 "$work/image-checks-$cli.log" | tr -d '\n'))"
+    else
+        bad "$cli-executor image checks" "$(grep -A3 '^FAIL' "$work/image-checks-$cli.log" | head -c 380)"
+    fi
+done
 
 fi
 
