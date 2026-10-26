@@ -5,6 +5,7 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
+import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { JobActionStore } from './job-store-actions.js';
 import type { JobMergeStore } from './job-store-merge.js';
@@ -81,6 +82,10 @@ export interface GateReport {
     exitCode: number | null;
     /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
     output: string | null;
+    /** The recorded execution this entry is (issue #983); absent for a gate no record covers. */
+    executionId?: string;
+    /** Set when the gate was not launched but served from an earlier verified pass (issue #983). */
+    reused?: { executionId: string; finishedAt: string | null; reason: string };
 }
 
 /**
@@ -838,7 +843,8 @@ export type JobStore = JobActionStore &
     JobReclaimStore &
     JobReviewStore &
     JobWorkerStore &
-    PhaseCheckpointStore;
+    PhaseCheckpointStore &
+    GateRunStore;
 
 /** The page states the task list serves. `attention` is the inbox view: running and review. */
 export type TaskState = 'attention' | 'running' | 'review' | 'past';

@@ -218,6 +218,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     [`/api/jobs/${JOB_ID}/conclusion`, 'worker'],
     [`/api/jobs/${JOB_ID}/phase-checkpoint`, 'worker'],
     [`/api/jobs/${JOB_ID}/phase-checkpoints`, 'worker'],
+    // The gate-run record (issue #983): the driver's own writes and its one read, under the lease.
+    [`/api/jobs/${JOB_ID}/gate-run`, 'worker'],
+    [`/api/jobs/${JOB_ID}/gate-runs`, 'worker'],
     [`/api/jobs/${JOB_ID}/output`, 'worker'],
     // Both are the driver's gate machinery — the state reports after each gate runs and the
     // post-sync re-read of `.bellows.yaml`. Missing from this table is what left the last run's

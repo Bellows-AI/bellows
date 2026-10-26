@@ -4,6 +4,9 @@
 //
 // Environment (set by the driver; a path, never a credential):
 //   REPO — the checkout directory to probe (the task worktree).
+//   MUTATED_SINCE_MS — optional epoch milliseconds: the answer then carries `mutatedSince`, whether
+//     any non-ignored file or directory outside `.factory/` has an mtime at or after it (the gate-run
+//     record's mutation guard). A walk that cannot read a path answers true: unknown is mutated.
 //
 // "Unpushed" counts commits the REMOTE default branch does not have — never the upstream
 // range of the current branch, which is fatal for a branch that was never pushed at all (no
@@ -60,6 +63,50 @@ const fingerprintOf = (cwd) => {
         return null;
     }
 };
+// Whether a file or a directory holding one of the tree's paths was touched at or after `sinceMs`:
+// the fingerprint cannot see a file changed and put back, the mtime can. A path that is gone is
+// skipped — its directory's mtime records the removal; any other read failure is true. A nested
+// repository (a submodule, an untracked repo) is walked the same way, recursively.
+const mutatedSince = (cwd, sinceMs) => {
+    try {
+        const fs = require('node:fs');
+        const path = require('node:path');
+        const listed = execFileSync(
+            'git',
+            ['ls-files', '-z', '--cached', '--others', '--exclude-standard', ...FINGERPRINT_PATHSPEC],
+            {
+                cwd,
+                encoding: 'buffer',
+                maxBuffer: FINGERPRINT_MAX_BUFFER,
+            }
+        )
+            .toString('utf8')
+            .split('\0')
+            .filter(Boolean);
+        const nested = new Set(listed);
+        const paths = new Set(listed);
+        paths.add('.');
+        for (const name of listed) {
+            for (let dir = path.dirname(name); dir !== '.'; dir = path.dirname(dir)) paths.add(dir);
+        }
+        for (const name of paths) {
+            try {
+                const stat = fs.lstatSync(path.join(cwd, name));
+                if (stat.mtimeMs >= sinceMs) return true;
+                // A listed directory is a submodule or a nested repository: the files inside it ship
+                // with the tree, and touching one moves neither this directory nor the fingerprint.
+                if (nested.has(name) && stat.isDirectory() && mutatedSince(path.join(cwd, name), sinceMs)) {
+                    return true;
+                }
+            } catch (e) {
+                if (e.code !== 'ENOENT') return true;
+            }
+        }
+        return false;
+    } catch {
+        return true;
+    }
+};
 const CONFLICTING_PATHS_MAX = 50;
 const out = {
     cloned: false,
@@ -93,6 +140,8 @@ try {
         out.unpushed = 0;
     }
     out.fingerprint = fingerprintOf(repo);
+    const sinceMs = Number(process.env.MUTATED_SINCE_MS);
+    if (process.env.MUTATED_SINCE_MS && Number.isFinite(sinceMs)) out.mutatedSince = mutatedSince(repo, sinceMs);
     // No change: nothing uncommitted AND no diff of HEAD against the base (exit 0 of --quiet). A
     // missing base ref, a failed status or any other error leaves it false: unknown is never a skip.
     try {

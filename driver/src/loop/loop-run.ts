@@ -7,7 +7,7 @@ import type { DeadService, RunOutcome, RunSession } from '../runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
 import { preHelperStep } from './loop-helpers.js';
-import type { GateFailure, GateSession } from './loop-gates.js';
+import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
 import {
     type GateReport,
     beginGates,
@@ -19,7 +19,7 @@ import {
     sizeGateForVerify,
 } from './loop-gates.js';
 import { drainTranscriptExport } from './loop-export.js';
-import { openChain, replayGates } from './loop-phase-checkpoints.js';
+import { openChain, replayGates, runClaimSeqOf } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
 import {
@@ -180,7 +180,8 @@ async function checkPlanStep(ctx: AttemptCtx): Promise<SetupConclusion | null> {
 async function acquireGateSession(ctx: AttemptCtx): Promise<GateSession | null | SetupConclusion> {
     const { rt, job, state } = ctx;
     try {
-        const gateOut = await raceStep(state.signal, beginGates(rt, job, state, { takeover: Boolean(ctx.takeover) }));
+        const opts = { takeover: Boolean(ctx.takeover), runClaimSeq: runClaimSeqOf(ctx) };
+        const gateOut = await raceStep(state.signal, beginGates(rt, job, state, opts));
         if (gateOut === null) return STOOD_DOWN;
         await recordSetup(ctx);
         return gateOut.value;
@@ -468,6 +469,7 @@ async function verifyRun(
     // A stand-down that cut the read short settles here, before any probe or phase.
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     const treeAfter = gating || evidencePolicyActive(job) ? await probeTreeNow(ctx) : null;
+    ctx.treeAfter = treeAfter;
     if (await endIfDown(ctx, 'its gates')) return STOOD_DOWN;
     // An adopted run's gates are served from the board when its checkpoint covers this very tree.
     const resumedGates = phases.resumeGates(gating !== null, treeAfter);
@@ -603,7 +605,7 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         }
         recoveredServices = deadBefore;
     }
-    const failure = await runDeclaredGates(rt, job, gateSession, state);
+    const failure = await runDeclaredGates(rt, job, gateSession, { state, treeAfter: ctx.treeAfter ?? null });
     // A service OOM-killed by the suite fails the gate for a reason the agent cannot fix: re-probe.
     const deadAfter = failure ? await probeDeadServices(rt, job) : [];
     return {
@@ -630,24 +632,6 @@ async function reportNewSession(
     } catch (e) {
         rt.log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
     }
-}
-
-/**
- * The task tree's fingerprint as the run left it, before the gates; compared with the startup
- * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, or a probe
- * that failed.
- */
-async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
-    const { rt, job, treeBefore, state } = ctx;
-    // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
-    if (treeBefore === null && !ctx.adopted && !ctx.takeover) return null;
-    // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
-    // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
-    const raced = await raceStep(
-        state.signal,
-        rt.runner.probeTree(job, state.signal).catch(() => null)
-    );
-    return raced?.value ?? null;
 }
 
 /** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */

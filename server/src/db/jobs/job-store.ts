@@ -62,6 +62,7 @@ import {
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
 import { stageConclusion } from './job-store-conclusions.js';
+import { readGateRuns, writeGateRun } from './job-store-gate-runs.js';
 import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-checkpoints.js';
 
 /**
@@ -87,6 +88,8 @@ function workerMethods(
     | 'stageConclusion'
     | 'writePhaseCheckpoint'
     | 'readPhaseCheckpoints'
+    | 'writeGateRun'
+    | 'readGateRuns'
     | 'leases'
     | 'artifactScope'
     | 'restoreScope'
@@ -155,6 +158,16 @@ function workerMethods(
         async readPhaseCheckpoints(id, leaseToken, runClaimSeq) {
             await gate();
             return readPhaseCheckpoints(ctx, { id, leaseToken }, runClaimSeq);
+        },
+
+        async writeGateRun(id, leaseToken, run) {
+            await gate();
+            return writeGateRun(ctx, { id, leaseToken }, run);
+        },
+
+        async readGateRuns(id, leaseToken, runClaimSeq) {
+            await gate();
+            return readGateRuns(ctx, { id, leaseToken }, runClaimSeq);
         },
 
         async leases(ids, withThreads) {

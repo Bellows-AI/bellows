@@ -45,6 +45,7 @@
         "driver/test/scripts-claude-turns.test.ts",
         "driver/test/scripts-credential-helper.test.ts",
         "driver/test/scripts-gate-shell.test.ts",
+        "driver/test/scripts-git-probe-mutation.test.ts",
         "driver/test/scripts-git-review-snapshot.test.ts",
         "driver/test/scripts-opencode-export.test.ts",
         "driver/test/scripts-opencode-readout.test.ts",

@@ -20,6 +20,7 @@ import {
     baseBranchOf,
     CREDENTIAL_HELPER,
     probeNoChange,
+    probeGateTree,
     probeTreeFingerprint,
     publishCheckout,
     type PublishStep,
@@ -506,7 +507,7 @@ async function stepHostFor(groups: SupervisedGroups, job: BoardJob): Promise<Ste
  */
 export function supervisedStepMembers(
     groups: SupervisedGroups
-): Pick<Runner, 'publishGit' | 'probeTree' | 'probeNoChange' | 'snapshotTree' | 'runHelper'> {
+): Pick<Runner, 'publishGit' | 'probeTree' | 'probeGateTree' | 'probeNoChange' | 'snapshotTree' | 'runHelper'> {
     return {
         publishGit: async (job, githubToken, options) =>
             publishCheckout(
@@ -518,6 +519,12 @@ export function supervisedStepMembers(
             probeTreeFingerprint(
                 job,
                 supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal })
+            ),
+        probeGateTree: async (job, sinceMs, signal) =>
+            probeGateTree(
+                job,
+                supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal }),
+                sinceMs
             ),
         probeNoChange: async (job, signal) =>
             probeNoChange(job, supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal })),

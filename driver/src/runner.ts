@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import type { BoardJob, ReviewClaim, ServiceStatus } from './board/board.js';
 import type { HelperCall, HelperPlan, HelperResult } from './helpers.js';
 import type { Bound } from './poll.js';
-import type { PublishOptions, PublishResult, SyncResult, ReclaimResult } from './publish/publish.js';
+import type { PublishOptions, PublishResult, SyncResult, ReclaimResult, TreeProbe } from './publish/publish.js';
 import type { SnapshotResult } from './review/review-snapshot.js';
 import type { StartupCause } from './startup-cause.js';
 import type { GateStepRequest, ReviewControl } from './supervised-steps.js';
@@ -375,6 +375,12 @@ export interface Runner {
      */
     probeTree(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
     /**
+     * The tree fingerprint and, for a `sinceMs`, the mutation guard (`mutatedSince`, issue #983): the
+     * probes the gate manager runs inside the checkout's queue around one gate. Over the same transport
+     * as `probeTree`; nothing here throws for an unknown — it is null, never a guess.
+     */
+    probeGateTree(job: BoardJob, sinceMs: number | null, signal?: AbortSignal): Promise<TreeProbe>;
+    /**
      * True only when the task's checkout is confirmed to hold no change — nothing uncommitted, no
      * diff against its base (issue #1020) — over the same transport as `probeTree`; the loop skips
      * the close-time gates on it. Anything unconfirmed answers false.
@@ -541,6 +547,7 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     releaseServices: 'group',
     publishGit: 'group',
     probeTree: 'group',
+    probeGateTree: 'group',
     probeNoChange: 'group',
     adopt: 'attempt',
     snapshotTree: 'group',
