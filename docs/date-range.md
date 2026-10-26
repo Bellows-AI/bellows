@@ -6,6 +6,8 @@ How a selected range narrows the payload, and who owns each half of it.
 | --- | --- | --- |
 | `resolveRange`, `filterTelemetryInput`, `filterJobRuns` | `core/src/range.ts` | `core/test/range.test.ts` |
 | Query parsing and `400 BAD_RANGE` | `server/src/routes/stats.ts` (`parseRange`) | `server/test/routes.stats.get.test.ts` |
+| Token contributions partition into `[from,to)` and UTC day/week buckets by observation time; unlocated and unresolved stay out | `core/src/token-contributions.ts` (`partitionByRange`, `bucketTimedContributions`) | `core/test/token-contributions.test.ts` |
+| Token figures re-reduced per request over the cached facts; an open edge reads as epoch or far future | `core/src/telemetry.ts` (`usageRangeOf`), `server/src/stats-service.ts` | `core/test/telemetry.usage-range.test.ts` |
 | Series granularity and bucketing | `core/src/telemetry.ts` (`seriesGranularity`, `bucketSeries`) | `core/test/telemetry.stats.test.ts` |
 | UTC day/week helpers | `core/src/metrics.ts` (`dayStart`, `dayKey`) | `core/test/metrics.invariants.test.ts` |
 | The selector and its custom-range draft | `web/src/components/RangeSelector.tsx` | `web/test/range-selector.test.tsx` |
@@ -17,6 +19,9 @@ How a selected range narrows the payload, and who owns each half of it.
 - **Presets are a rolling lookback, not a calendar period.**
 - **`to` is exclusive, and a bare `YYYY-MM-DD` is widened to the next day**, or "custom: today to
   today" is an empty interval.
+- **Token figures partition by point time, half-open** (a point at `to` is out, at `from` in), so a long
+  session never inflates a short range; session counts, lines, edits and active time keep overlap —
+  `core/test/telemetry.usage-range.test.ts`.
 - **Sessions are kept on overlap, not containment**; a task enters a range on session overlap OR on
   its run being queued in range (`filterJobRuns`).
 - **`TelemetryInput.coverage` is never filtered**, even under caller scope — it is how the UI tells

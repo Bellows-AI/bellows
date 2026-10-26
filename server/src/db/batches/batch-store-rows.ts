@@ -161,7 +161,10 @@ function planOf(batch: BatchRow, targets: TargetRow[], stages: StageRow[], tasks
 }
 
 /** Each automerge stage's combined verification, in stage order; shared by the record and the report. */
-export async function readVerification(sql: Sql, { orgId, id }: BatchAddress): Promise<BatchStageVerification[]> {
+export async function readVerification(
+    sql: Sql | TransactionSql,
+    { orgId, id }: BatchAddress
+): Promise<BatchStageVerification[]> {
     const rows = await sql<
         { stage_key: string; state: string; detail: string | null; head_sha: string | null; checked_at: Date }[]
     >`

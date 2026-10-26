@@ -122,7 +122,7 @@ export type VerdictBody = Parameters<Board['complete']>[1];
 export type SetupHalt =
     | { halt: 'fault'; log: string; verdict: VerdictBody }
     | { halt: 'leave'; log: string }
-    | { halt: 'interrupt'; reason: string }
+    | { halt: 'interrupt'; reason: string; refused?: true }
     | { halt: 'concluded'; log: string; verdict: VerdictBody };
 
 /**
@@ -155,7 +155,7 @@ export interface AdoptedRecord {
 export type EndDecision =
     | { kind: 'verdict'; verdict: VerdictBody; log?: string }
     | { kind: 'park'; phase: string; beforePark?: () => Promise<void> }
-    | { kind: 'interrupt'; reason: string; exitCode: number | null }
+    | { kind: 'interrupt'; reason: string; exitCode: number | null; refused?: true }
     | { kind: 'leave'; log: string }
     | { kind: 'none'; log: string };
 

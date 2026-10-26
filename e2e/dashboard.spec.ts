@@ -127,7 +127,7 @@ test.describe('date range selector', () => {
         for (const label of ['Average', 'Median', 'P95', 'Measured tasks']) {
             await expect(panel.getByRole('button', { name: label })).toBeVisible();
         }
-        for (const label of ['Tokens per task', 'Runs per task', 'Agent turns per task']) {
+        for (const label of ['Uncached input per task', 'Output per task', 'Runs per task', 'Agent turns per task']) {
             await expect(panel.getByText(label)).toBeVisible();
         }
         await page.screenshot({ path: `${SHOTS}/per-task.png`, fullPage: true });
@@ -177,12 +177,12 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         };
         await stampInside(1440);
 
-        // Usage by user and Recent tasks sit side by side from 1200px and stack below.
+        // Usage by user takes the whole row and Recent tasks stacks below it, at every width.
         const byUser = page.locator('section.panel', { hasText: 'Usage by user' });
         const recent = page.locator('section.panel', { hasText: 'Recent tasks' });
         const [a, b] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
-        expect(Math.abs(a.y - b.y), 'same row at 1440').toBeLessThan(2);
-        expect(b.x).toBeGreaterThan(a.x + a.width);
+        expect(b.y, 'stacked at 1440').toBeGreaterThanOrEqual(a.y + a.height);
+        expect(Math.abs(a.width - b.width), 'same width at 1440').toBeLessThan(2);
         await page.setViewportSize({ width: 1024, height: 900 });
         const [c, d] = [(await byUser.boundingBox())!, (await recent.boundingBox())!];
         expect(d.y, 'stacked at 1024').toBeGreaterThanOrEqual(c.y + c.height);
@@ -213,5 +213,90 @@ test.describe('the analytics dashboard layout (issue 283)', () => {
         await page.unroute('**/api/stats**');
         await expect(page.getByText('showing the last successful')).toHaveCount(0, { timeout: 90_000 });
         await expect(page.locator('.usage-summary')).toBeVisible();
+    });
+});
+
+test.describe('token accounting (the usage specimen)', () => {
+    test('the by-user selector ranks by Total input, re-ranks by Output and shows an unmeasured user as a dash', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const panel = page.locator('section.panel', { hasText: 'Usage by user' });
+        const selector = panel.getByLabel('Rank by');
+        await expect(selector).toHaveValue('inputSide');
+        await expect(panel.getByRole('button', { name: 'Total input' })).toBeVisible();
+
+        await selector.selectOption('output');
+        const header = panel.locator('th[aria-sort="descending"]');
+        await expect(header).toContainText('Output');
+        // The input-only specimen author measured no output: its Output is a dash with no bar.
+        const inputOnly = panel.locator('tbody tr', { hasText: 'Specimen Input Only' });
+        await expect(inputOnly).toHaveCount(1);
+        await expect(inputOnly.locator('.usage-bar')).toHaveCount(0);
+        await expect(inputOnly.locator('td').nth(2)).toHaveText('—');
+        // A ranked user does carry a bar, and the ranking column is named after the selection.
+        await expect(panel.locator('tbody tr .usage-bar').first()).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/by-user-output.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('a bucket that measured no tokens draws no bar and reads as dashes, not zeros', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const chart = page.locator('section.panel', { hasText: 'AI token usage' });
+        const bars = await chart.locator('.bucket-hit').evaluateAll((hits) =>
+            hits.flatMap((hit) => {
+                // The exact readout: a dash is an unmeasured figure, never a zero.
+                if (!/Total input —, Output —/.test(hit.getAttribute('aria-label') ?? '')) return [];
+                const centre = Number(hit.getAttribute('x')) + Number(hit.getAttribute('width')) / 2;
+                const all = [...(hit as SVGElement).ownerSVGElement!.querySelectorAll('rect.bar')];
+                return [
+                    all.filter(
+                        (b) => Math.abs(Number(b.getAttribute('x')) + Number(b.getAttribute('width')) / 2 - centre) < 1
+                    ).length,
+                ];
+            })
+        );
+        expect(bars.length, 'the seeded window holds a bucket nothing measured').toBeGreaterThan(0);
+        expect(bars.every((count) => count === 0)).toBe(true);
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('the summary breakdown expands to query sources without moving a figure', async ({ page }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const summary = page.locator('.usage-summary');
+        const figures = async () => summary.locator('.usage-groups').innerText();
+        const before = await figures();
+        await summary.locator('.usage-by-model summary').click();
+        await summary.getByRole('button', { name: 'Show query sources for model-a' }).click();
+        await expect(summary.locator('.usage-child-row').first()).toBeVisible();
+        expect(await figures()).toBe(before);
+        // What the totals leave out is its own readout, never inside the headline.
+        const diagnostics = summary.locator('.usage-diagnostics');
+        await expect(diagnostics).toContainText('usage whose time is unknown');
+        await expect(summary.locator('.usage-groups')).not.toContainText('usage whose time is unknown');
+        await page.screenshot({ path: `${SHOTS}/models-expanded.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('per-task usage shows one row per token type with contributors, partials and a model selector', async ({
+        page,
+    }) => {
+        const problems = watchConsole(page);
+        await open(page);
+        const panel = page.locator('section.panel', { hasText: 'Per-task usage' });
+        for (const label of ['Uncached input', 'Cache read', 'Cache write', 'Output']) {
+            await expect(panel.getByText(`${label} per task`)).toBeVisible();
+        }
+        await expect(panel).toContainText('partial');
+        await expect(panel).toContainText('Figures describe observed usage, not guaranteed complete consumption');
+        const before = await panel.locator('tbody').innerText();
+        await panel.getByLabel('Model').selectOption('model-a');
+        expect(await panel.locator('tbody').innerText()).not.toBe(before);
+        await expect(panel).toContainText('Includes');
+        await page.screenshot({ path: `${SHOTS}/per-task-model.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
     });
 });

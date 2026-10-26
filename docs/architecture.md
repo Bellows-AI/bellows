@@ -42,7 +42,7 @@ Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations
   "module has no exported member". `core/test/core-index.test.ts`.
 - **The session id is the only join key** between a metric and a checkout:
   `OTEL_METRICS_INCLUDE_SESSION_ID` must stay true, or every session reads as hook-less. A session
-  counts only when the hook tagged it with an in-list repo; the other outcomes are named buckets,
+  counts only when its repo (the hook's report, else the board execution's) is in the list; the other outcomes are named buckets,
   never drops ([repos.md](repos.md)).
 - **Polling is the authority; no notification is load-bearing.** A webhook, a kick or a heartbeat answer
   only makes convergence faster; each has a periodic read behind it, and the source holds no

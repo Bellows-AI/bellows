@@ -1,24 +1,71 @@
 /**
- * Regenerates telemetry-sessions.json:
+ * Regenerates telemetry-usage.json (the synthetic usage facts the offline dashboard and the
+ * tests replay):
  *
  *     node core/test/fixtures/generate-telemetry.mjs
  *
- * Committed so the fixture is reproducible and reviewable as intent rather than as 600 lines
- * of JSON. This is SYNTHETIC — hence the loud badge the UI shows when it is the active source.
+ * Committed so the fixture is reproducible and reviewable as intent rather than as thousands of
+ * lines of JSON. This is SYNTHETIC — hence the loud badge the UI shows when it is the active source.
  *
  * The degradation cases are the point of this file. Each session is labelled with the case it
- * exercises; deleting one silently removes a test.
+ * exercises; deleting one silently removes a test. A session is declared once and expanded into
+ * what the board and the telemetry store would hold for it: an execution (the board's evidence),
+ * a branch report (the hook, unless the case is "no hook"), token points per measured type,
+ * a span, field totals and a run row.
  */
 import { writeFileSync } from 'node:fs';
 
 const REPO = 'Bellows-AI/bellows.ai';
-const sessions = [];
+const AGENT = 'claude-code';
+const ORG = 'fixture';
 
-// Who queued the board task the session belongs to, resolved server-side by joining
-// session_branch to job on session id. Sessions with no matching job row (local dev runs,
-// backfilled transcripts) carry null — the fixture exercises both.
 const ALICE = { id: 'u-alice', login: 'alice', name: 'Alice Doe', avatarUrl: 'https://example.com/alice.png' };
 const BOB = { id: 'u-bob', login: 'bob', name: null, avatarUrl: null };
+
+const board = [];
+const branch = [];
+const contributions = [];
+const spans = [];
+const fields = [];
+const runs = [];
+
+const MINUTE = 60_000;
+const TYPES = ['input', 'output', 'cacheRead', 'cacheCreation'];
+
+// Two delta points per measured type, a third and two thirds into the session. A type left null
+// has no point at all: partial measurement is a missing series, never a zero.
+function points(sessionId, { from, to }, tokens, { model, querySource }) {
+    const span = Date.parse(to) - Date.parse(from);
+    for (const type of TYPES) {
+        const value = tokens[type];
+        if (value === null) continue;
+        const first = Math.round(value * 0.6);
+        [first, value - first].forEach((amount, index) => {
+            const observedAt = new Date(Date.parse(from) + (span * (index + 1)) / 3).toISOString();
+            contributions.push({
+                selection: { agent: AGENT, sessionId },
+                source: 'otel',
+                series: {
+                    agent: AGENT,
+                    sessionId,
+                    metric: 'claude_code.token.usage',
+                    field: type,
+                    temporality: 'delta',
+                    startTime: null,
+                    attrsKey: '[]',
+                },
+                model,
+                querySource,
+                tokens: { input: null, output: null, cacheRead: null, cacheCreation: null, [type]: amount },
+                observedAt,
+                support: { from: observedAt, to: observedAt },
+                kind: 'timed',
+                precision: 'exact',
+                reasons: [],
+            });
+        });
+    }
+}
 
 function session(id, opts) {
     const {
@@ -33,25 +80,66 @@ function session(id, opts) {
         activeSeconds,
         commits = 0,
         user = null,
-        taskKey = null,
+        // The board execution that ran the session: `job` is the run, `root` its thread. Absent
+        // means no board task — only the hook knows the session.
+        job = null,
+        root = job,
+        review = null,
+        removed = false,
+        hook = true,
+        model = 'claude-sonnet-4-5',
+        querySource = 'main',
+        extraJobs = [],
     } = opts;
 
-    sessions.push({
-        sessionId: id,
-        agent: 'claude-code',
-        repo,
-        firstSeen: from,
-        lastSeen: to,
-        tokens,
-        linesAdded,
-        linesRemoved,
-        editsAccepted,
-        editsRejected,
-        activeSeconds,
-        commits,
-        user,
-        taskKey,
-    });
+    spans.push({ agent: AGENT, sessionId: id, firstSeen: from, lastSeen: to });
+    points(id, { from, to }, tokens, { model, querySource });
+    for (const [field, value] of [
+        ['lines_added', linesAdded],
+        ['lines_removed', linesRemoved],
+        ['edits_accept', editsAccepted],
+        ['edits_reject', editsRejected],
+        ['active_seconds', activeSeconds],
+        ['commits', commits],
+    ]) {
+        if (value !== undefined) fields.push({ agent: AGENT, sessionId: id, field, value });
+    }
+    if (hook) branch.push({ orgId: ORG, agent: AGENT, sessionId: id, repo });
+    for (const jobId of job === null ? [] : [job, ...extraJobs]) {
+        board.push({
+            orgId: ORG,
+            jobId,
+            claimSeq: 1,
+            sessionId: id,
+            agent: AGENT,
+            rootJobId: root,
+            requestingJobId: review?.job ?? null,
+            requestingRootJobId: review?.root ?? null,
+            authorId: user?.id ?? null,
+            repo,
+            launch: 'observed',
+            adoptsClaimSeq: null,
+            origin: 'claim',
+            startedAt: new Date(Date.parse(from) - 2 * MINUTE).toISOString(),
+            endedAt: new Date(Date.parse(to) + MINUTE).toISOString(),
+            live: false,
+            removed,
+            operational: !removed,
+        });
+    }
+    if (job !== null && !opts.noRun) {
+        runs.push({
+            rootJobId: root,
+            repo,
+            createdBy: user?.id ?? null,
+            createdAt: new Date(Date.parse(from) - 3 * MINUTE).toISOString(),
+            agentTurns:
+                opts.agentTurns === undefined
+                    ? Math.round((Date.parse(to) - Date.parse(from)) / MINUTE / 2)
+                    : opts.agentTurns,
+            wallClockMs: Date.parse(to) - Date.parse(from) + 3 * MINUTE,
+        });
+    }
 }
 
 // Named fields rather than positional args: each token count is then an object property value,
@@ -69,7 +157,7 @@ session('s01-token-heavy', {
     activeSeconds: 1320,
     commits: 3,
     user: ALICE,
-    taskKey: 't-s01',
+    job: 't-s01',
 });
 
 session('s02-mid-a', {
@@ -83,7 +171,7 @@ session('s02-mid-a', {
     activeSeconds: 1080,
     commits: 2,
     user: ALICE,
-    taskKey: 't-s02',
+    job: 't-s02',
 });
 
 session('s03-mid-b', {
@@ -97,7 +185,7 @@ session('s03-mid-b', {
     activeSeconds: 720,
     commits: 1,
     user: ALICE,
-    taskKey: 't-s03',
+    job: 't-s03',
 });
 
 session('s04-april', {
@@ -111,7 +199,7 @@ session('s04-april', {
     activeSeconds: 3000,
     commits: 4,
     user: BOB,
-    taskKey: 't-s04',
+    job: 't-s04',
 });
 
 // Stretches the weekly window so the seeded-series assertion has interior gaps to catch.
@@ -126,7 +214,7 @@ session('s05-april-earliest', {
     activeSeconds: 2400,
     commits: 2,
     user: BOB,
-    taskKey: 't-s05',
+    job: 't-s05',
 });
 
 session('s06-may', {
@@ -140,7 +228,7 @@ session('s06-may', {
     activeSeconds: 3600,
     commits: 2,
     user: BOB,
-    taskKey: 't-s06',
+    job: 't-s06',
 });
 
 session('s07-july-a', {
@@ -180,12 +268,12 @@ session('s09-other-repo', {
     activeSeconds: 3600,
     commits: 6,
     user: BOB,
-    taskKey: 't-s09',
+    job: 't-s09',
 });
 
-// Case: telemetry arrived but the hook never reported -> sessionsWithoutHook.
+// Case: a board-owned session the hook never reported -> attributed and counted, but named by
+// sessionsWithoutHook (the plugin is missing, or failing).
 session('s10-no-hook', {
-    repo: null,
     from: '2026-07-13T09:00:00Z',
     to: '2026-07-13T09:40:00Z',
     tokens: T({ input: 20000, output: 4000, cacheRead: 100000, cacheCreation: 6000 }),
@@ -195,6 +283,9 @@ session('s10-no-hook', {
     editsRejected: 1,
     activeSeconds: 1500,
     commits: 1,
+    user: ALICE,
+    job: 't-s10',
+    hook: false,
 });
 
 session('s11-july-c', {
@@ -219,7 +310,7 @@ session('s12-june', {
     editsRejected: 1,
     activeSeconds: 780,
     user: ALICE,
-    taskKey: 't-s12',
+    job: 't-s12',
 });
 
 session('s13-august', {
@@ -233,7 +324,7 @@ session('s13-august', {
     activeSeconds: 2700,
     commits: 2,
     user: BOB,
-    taskKey: 't-s13',
+    job: 't-s13',
 });
 
 session('s14-july-d', {
@@ -259,18 +350,121 @@ session('s15-june-b', {
     activeSeconds: 480,
     commits: 2,
     user: ALICE,
-    taskKey: 't-s15',
+    job: 't-s15',
 });
 
-const ordered = [...sessions].sort((a, b) => a.firstSeen.localeCompare(b.firstSeen));
+// Case: a follow-up run of the first task, in a session of its own -> one task, two runs.
+session('s16-follow-up', {
+    from: '2026-08-21T08:00:00Z',
+    to: '2026-08-21T08:20:00Z',
+    tokens: T({ input: 11000, output: 2500, cacheRead: 70000, cacheCreation: 4000 }),
+    linesAdded: 45,
+    linesRemoved: 12,
+    editsAccepted: 3,
+    editsRejected: 0,
+    activeSeconds: 700,
+    commits: 1,
+    user: ALICE,
+    job: 't-s01-f1',
+    root: 't-s01',
+});
+
+// Case: a review of the second task -> its tokens fold into that task, the run stays its own.
+session('s17-review', {
+    from: '2026-08-17T09:10:00Z',
+    to: '2026-08-17T09:25:00Z',
+    tokens: T({ input: 8000, output: 1800, cacheRead: 40000, cacheCreation: 2500 }),
+    linesAdded: 0,
+    linesRemoved: 0,
+    editsAccepted: 0,
+    editsRejected: 0,
+    activeSeconds: 600,
+    user: ALICE,
+    job: 't-s02-review',
+    review: { job: 't-s02', root: 't-s02' },
+});
+
+// Case: a task removed from the board -> its usage is retained and named removed, not lost.
+session('s18-removed', {
+    from: '2026-08-19T13:00:00Z',
+    to: '2026-08-19T13:30:00Z',
+    tokens: T({ input: 15000, output: 2200, cacheRead: 80000, cacheCreation: 3000 }),
+    linesAdded: 60,
+    linesRemoved: 15,
+    editsAccepted: 4,
+    editsRejected: 1,
+    activeSeconds: 1100,
+    commits: 1,
+    user: BOB,
+    job: 't-s18',
+    removed: true,
+    noRun: true,
+});
+
+// Case: partial measurement -> cache types were never reported, so they read null, not zero.
+session('s19-partial', {
+    from: '2026-08-18T10:00:00Z',
+    to: '2026-08-18T10:30:00Z',
+    tokens: T({ input: 14000, output: 2600, cacheRead: null, cacheCreation: null }),
+    linesAdded: 50,
+    linesRemoved: 10,
+    editsAccepted: 2,
+    editsRejected: 1,
+    activeSeconds: 900,
+    user: BOB,
+    job: 't-s19',
+    agentTurns: null,
+});
+
+// Case: no model and no query source on the points -> the `unknown` row, never a dropped amount.
+session('s20-unknown-model', {
+    from: '2026-08-14T11:00:00Z',
+    to: '2026-08-14T11:20:00Z',
+    tokens: T({ input: 9000, output: 1700, cacheRead: 36000, cacheCreation: 1800 }),
+    linesAdded: 30,
+    linesRemoved: 6,
+    editsAccepted: 2,
+    editsRejected: 0,
+    activeSeconds: 700,
+    user: ALICE,
+    job: 't-s20',
+    model: null,
+    querySource: null,
+});
+
+// Case: two tasks claim one session -> unresolved ownership, kept out of every figure and
+// named in the diagnostics instead of being guessed onto one of them.
+session('s21-conflict', {
+    from: '2026-08-12T15:00:00Z',
+    to: '2026-08-12T15:30:00Z',
+    tokens: T({ input: 6000, output: 900, cacheRead: 21000, cacheCreation: 1000 }),
+    linesAdded: 10,
+    linesRemoved: 2,
+    editsAccepted: 1,
+    editsRejected: 0,
+    activeSeconds: 400,
+    user: BOB,
+    job: 't-c1',
+    extraJobs: ['t-c2'],
+    noRun: true,
+});
+
+// The second claimant of the conflicting session carries a different thread.
+board.find((e) => e.jobId === 't-c2').rootJobId = 't-c2';
+
+const users = [ALICE, BOB];
+const byTime = (a, b) => a.localeCompare(b);
 const payload = {
-    sessions,
-    coverage: {
-        from: ordered[0].firstSeen,
-        to: ordered[ordered.length - 1].lastSeen,
-    },
+    orgId: ORG,
+    board: board.sort((a, b) => byTime(a.startedAt, b.startedAt) || byTime(a.jobId, b.jobId)),
+    branch,
+    foreignSessionIds: [],
+    contributions: contributions.sort((a, b) => byTime(a.observedAt, b.observedAt)),
+    spans: spans.sort((a, b) => byTime(a.firstSeen, b.firstSeen)),
+    users,
+    fields,
+    runs: runs.sort((a, b) => byTime(a.createdAt, b.createdAt)),
 };
 
-const target = new URL('./telemetry-sessions.json', import.meta.url);
-writeFileSync(target, `${JSON.stringify(payload, null, 4)}\n`);
-console.log(`wrote ${sessions.length} sessions`);
+writeFileSync(new URL('./telemetry-usage.json', import.meta.url), `${JSON.stringify(payload, null, 1)}\n`);
+console.log(`wrote ${spans.length} sessions, ${contributions.length} points, ${runs.length} runs`);

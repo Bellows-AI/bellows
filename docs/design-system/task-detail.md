@@ -11,7 +11,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 | An agent question in its run's exchange: states, answer value, submit | `web/src/panels/TaskQuestion.tsx`, `web/src/task-question.ts`, `web/src/api/answer-question.ts` | `web/test/task-question.render.test.tsx`, `e2e/task-question.spec.ts` |
 | Gate tones, follow-up eligibility, a thread's interruptions | `web/src/task-outcome.ts` | `web/test/task-derivations.test.ts` |
 | Activity pulse (latest run, token types) and the Task statistics modal trigger | `web/src/panels/TaskActivity.tsx`, `web/src/charts/PulseChart.tsx`, `web/src/api/useJobActivity.ts` | `web/test/task-activity.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
-| Task statistics modal: runs, agent turns, token totals, per-run rows; loading/unavailable/partial/provisional | `web/src/components/TaskStatsDialog.tsx`, `web/src/task-stats.ts` | `web/test/task-stats.test.ts`, `web/test/task-activity.render.test.tsx` |
+| Task statistics modal: `task.usage` figures (reviews included), one row per `task.runs[]` entry with expandable models, the task-owned row, estimates/unlocated, models; loading/unavailable/partial/provisional | `web/src/components/TaskStatsDialog.tsx`, `web/src/task-stats.ts` | `web/test/task-stats.test.ts`, `web/test/task-detail.dom.test.tsx`, `web/test/task-stats-dialog.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 
 ## Invariants
 
@@ -31,5 +31,7 @@ Classes defined here: `task-layout`, `task-main`, `task-support`, `task-summary`
 `question-chip`, `question-option`, `question-hint`, `question-other`, `question-error`,
 `question-status`, `question-answers`, `task-stats`, `task-stats-trigger`, `task-stats-scope`,
 `task-stats-summary`, `task-stats-note`, `task-stats-head`, `task-stats-totals`, `task-stats-runs`,
-`task-stats-pulse`, `pulse`, `pulse-detailed`, `pulse-axis`, `pulse-line`, `pulse-dot`, `pulse-input`,
-`pulse-output`, `pulse-cache-read`, `pulse-cache-creation`, `pulse-scale`, `pulse-legend`, `pulse-swatch`.
+`task-stats-pulse`, `task-stats-line`, `task-stats-usage`, `task-stats-owned`, `task-stats-models`,
+`task-stats-run-note`, `task-stats-toggle`, `task-stats-detail`, `pulse`, `pulse-detailed`, `pulse-axis`,
+`pulse-line`, `pulse-dot`, `pulse-input`, `pulse-output`, `pulse-cache-read`,
+`pulse-cache-creation`, `pulse-scale`, `pulse-legend`, `pulse-swatch`.

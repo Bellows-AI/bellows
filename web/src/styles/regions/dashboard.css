@@ -278,23 +278,6 @@
         max-width: 52ch;
     }
 
-    /* Usage by user and Recent tasks: side by side from 1200px, stacked below. With one child
-       (no telemetry to attribute), Recent tasks takes the full width. */
-    .two-up {
-        display: grid;
-        gap: 24px;
-        /* A bare implicit track sizes to the widest table's content and overflows a phone; the
-           tables scroll inside their own wraps instead. */
-        grid-template-columns: minmax(0, 1fr);
-    }
-
-    @media (min-width: 1200px) {
-        .two-up {
-            grid-auto-columns: minmax(0, 1fr);
-            grid-auto-flow: column;
-        }
-    }
-
     /* Recent tasks' heading row: the title and its Task board source pill. */
     .recent-tasks-head {
         align-items: center;
@@ -509,6 +492,44 @@
         height: 100%;
     }
 
+    /* Selector rows above the by-user and per-task tables, and the per-user model drawers. */
+    .by-user-metric,
+    .task-usage-model {
+        align-items: center;
+        color: var(--ink-muted);
+        display: flex;
+        font-size: 13px;
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    .by-user-models-toggle {
+        background: none;
+        border: 0;
+        color: var(--accent);
+        cursor: pointer;
+        font-size: 13px;
+        margin-inline-start: 8px;
+        padding: 0;
+        text-decoration: underline;
+    }
+
+    .by-user-models {
+        margin-top: 12px;
+    }
+
+    .usage-by-model {
+        margin-top: 8px;
+    }
+
+    .usage-attribution {
+        color: var(--ink-muted);
+        font-size: 13px;
+        line-height: 18px;
+        margin: 4px 0 0;
+        padding-inline-start: 16px;
+    }
+
     /* The board section's task identity cell: the title wraps to at most two lines, then clamps.
        td nowrap is overridden, because clamping needs wrapping to be possible at all. */
     .task-title {
@@ -526,6 +547,7 @@
         .range-draft input,
         .range-draft-actions button,
         .legend-button,
+        .by-user-models-toggle,
         .chart-disclosure summary {
             align-items: center;
             display: inline-flex;
@@ -538,6 +560,11 @@
         .chart-disclosure summary {
             align-content: center;
             display: list-item;
+        }
+
+        .by-user-metric select,
+        .task-usage-model select {
+            min-height: 44px;
         }
     }
 }

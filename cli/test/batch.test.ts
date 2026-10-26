@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { run } from '../src/run.js';
+import type { UsageBlock } from '../src/usage-types.js';
 import { ENV, NO_SETTINGS, runCli, type Sent as Recorded } from './harness.js';
 const ID = '11111111-1111-4111-8111-111111111111';
 
@@ -95,7 +96,23 @@ const REPORT = (state = 'running') => ({
             closedBy: null,
             pr: 'https://github.com/o/api/pull/9',
             job: '/api/jobs/j1',
-            usage: { wallClockMs: 5000, agentTurns: 7, tokens: null },
+            usage: {
+                wallClockMs: 5000,
+                agentTurns: 7,
+                tokenUsage: block('measured', {
+                    provisional: true,
+                    tokens: { input: 120, output: 0, cacheRead: null, cacheCreation: 5 },
+                    precision: { input: 'estimated', output: 'exact', cacheRead: null, cacheCreation: 'exact' },
+                    coverage: {
+                        input: { measured: 1, contributors: 2 },
+                        output: { measured: 2, contributors: 2 },
+                        cacheRead: { measured: 0, contributors: 2 },
+                        cacheCreation: { measured: 2, contributors: 2 },
+                    },
+                    unassigned: [{ reason: 'no-segment', tokens: { ...NONE, input: 9 } }],
+                }),
+                tokenUsageUnavailable: null,
+            },
             observation: {
                 outcome: 'checks_pending',
                 checks: 'pending',
@@ -126,13 +143,18 @@ const REPORT = (state = 'running') => ({
             closedBy: null,
             pr: null,
             job: '/api/jobs/j2',
-            usage: { wallClockMs: 0, agentTurns: 0, tokens: null },
+            usage: {
+                wallClockMs: 0,
+                agentTurns: 0,
+                tokenUsage: block('unavailable'),
+                tokenUsageUnavailable: 'task-removed',
+            },
             observation: null,
             next: { action: 'retry', method: 'POST', path: `/api/batches/${ID}/tasks/b/retry` },
         },
     ],
     latestObservationAt: OBSERVED_AT,
-    unavailable: ['tokens', 'cost'],
+    usageSnapshotAt: OBSERVED_AT,
     totals: {
         accepted: 0,
         failed: 1,
@@ -141,7 +163,33 @@ const REPORT = (state = 'running') => ({
         repairs: 1,
         wallClockMs: 5000,
         agentTurns: 7,
+        tokenUsage: block('measured', {
+            provisional: true,
+            tokens: { input: 120, output: 0, cacheRead: null, cacheCreation: 5 },
+            precision: { input: 'estimated', output: 'exact', cacheRead: null, cacheCreation: 'exact' },
+            coverage: per({ measured: 2, contributors: 3 }),
+        }),
+        usageUnavailableTasks: 1,
     },
+});
+
+const NONE = { input: null, output: null, cacheRead: null, cacheCreation: null };
+const per = <T>(value: T) => ({ input: value, output: value, cacheRead: value, cacheCreation: value });
+
+/** A usage block as the board sends it; `over` replaces fields. */
+const block = (state: UsageBlock['state'], over: Partial<UsageBlock> = {}): UsageBlock => ({
+    state,
+    provisional: false,
+    tokens: NONE,
+    assigned: NONE,
+    unassigned: [],
+    unlocated: NONE,
+    unresolvedTemporality: { observations: 0 },
+    precision: per(null),
+    coverage: per({ measured: 0, contributors: 0 }),
+    rows: [],
+    counts: { sessions: 0, runs: 0, tasks: 0 },
+    ...over,
 });
 
 const isReport = (sent: Sent) => sent.url.endsWith('/report');
@@ -559,7 +607,7 @@ describe('batch wait', () => {
 });
 
 describe('batch report', () => {
-    it('reads the report route and prints each task’s next action, observation age and unavailable usage', async () => {
+    it('reads the report route and prints each task’s next action, observation age and usage', async () => {
         const clock = { t: Date.parse(OBSERVED_AT) + 90_000 };
         const result = await cli(['batch', 'report', ID], () => json(REPORT()), { clock });
 
@@ -568,7 +616,17 @@ describe('batch report', () => {
             { method: 'GET', url: `http://board/api/batches/${ID}/report`, body: null, key: null },
         ]);
         expect(result.out).toContain(`${ID} running "Overnight"`);
-        expect(result.out).toContain('tokens: unavailable · cost: unavailable');
+        // Four types side by side, `-` for unmeasured, a measured zero stays 0, `~` for estimated, no sum.
+        expect(result.out).toContain(
+            `tokens as of ${OBSERVED_AT}: input ~120 (2/3)  output 0 (2/3)  cache-read -  cache-creation 5 (2/3) (provisional)`
+        );
+        expect(result.out).toContain('partial: 1 removed task(s) not counted');
+        expect(result.out).toContain(
+            '    tokens: input ~120 (1/2)  output 0 (2/2)  cache-read -  cache-creation 5 (2/2) (provisional)'
+        );
+        expect(result.out).toContain('unassigned (no-segment): input 9  output -  cache-read -  cache-creation -');
+        expect(result.out).toContain('    tokens (task removed): unavailable');
+        expect(result.out).not.toContain('cost: unavailable');
         expect(result.out).toContain('latest observation 1m ago');
         expect(result.out).toContain('observed checks_pending 1m ago');
         expect(result.out).toContain('next: merge https://github.com/o/api/pull/9');

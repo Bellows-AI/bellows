@@ -1,5 +1,5 @@
 import type { JobRun, TelemetryInput } from '@factory-ai/core';
-import type { ActivityBucket } from './run-activity.js';
+import type { UsageFacts } from './usage-facts.js';
 
 export type TelemetrySource = 'postgres' | 'fixture' | 'off';
 
@@ -21,6 +21,13 @@ export interface TelemetryHealth {
 export interface TelemetryFetch {
     input: TelemetryInput;
     runs: JobRun[];
+    /** The ownership and contribution facts the token figures reduce from; same snapshot as `input`. */
+    facts: UsageFacts;
+}
+
+export interface TaskFacts {
+    taskId: string;
+    facts: UsageFacts;
 }
 
 /**
@@ -30,11 +37,11 @@ export interface TelemetryFetch {
 export interface TelemetryClient {
     fetchRollups(options?: { repos?: readonly string[]; since?: string }): Promise<TelemetryFetch>;
     /**
-     * One session's metric points bucketed over its run's wall clock (issue #339) — the
-     * task page's progress-over-time chart. Keyed by session id alone, like every other
-     * metric_point read: the caller resolved the session through its own org's job row.
+     * The facts of ONE canonical task, read in one repeatable-read snapshot: the task is the one the
+     * job belongs to (its executions' `requesting_root_job_id ?? root_job_id`, else `rootJobId`), so
+     * a run, a follow-up and a named review all answer the same task. Run activity reduces from it.
      */
-    runActivity(input: { sessionId: string; from: string; to: string; bucketMs: number }): Promise<ActivityBucket[]>;
+    fetchTaskFacts(input: { jobId: string; rootJobId: string; edits?: boolean }): Promise<TaskFacts>;
     /** Never throws — it is called on the degradation path. */
     health(): Promise<TelemetryHealth>;
 }

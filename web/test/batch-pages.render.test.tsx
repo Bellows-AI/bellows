@@ -2,10 +2,17 @@ import { validateBatchPlan, type BatchPlan } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { blankPlan, GATE_RESUMES_AUTOMATICALLY, updateTask, type BatchRecord } from '../src/batch-model.js';
+import {
+    blankPlan,
+    GATE_RESUMES_AUTOMATICALLY,
+    updateTask,
+    type BatchRecord,
+    type BatchReportView,
+} from '../src/batch-model.js';
 import { BatchEditor } from '../src/panels/BatchEditor.js';
 import { BatchMonitor } from '../src/panels/BatchMonitor.js';
 import { BatchPlanReview } from '../src/panels/BatchPlanReview.js';
+import { usageBlock } from './tasks-fixtures.js';
 
 /**
  * Render smoke for the batch panels: the markup carries the human gate sentence, the PR to
@@ -59,7 +66,14 @@ const noop = async () => null;
 describe('the batch monitor', () => {
     it('names the pull request to merge and says the gate resumes by itself', () => {
         const html = render(
-            <BatchMonitor batch={started()} report={null} onRetry={noop} onAccept={noop} pending={null} />
+            <BatchMonitor
+                batch={started()}
+                report={null}
+                reportFailed={false}
+                onRetry={noop}
+                onAccept={noop}
+                pending={null}
+            />
         );
         expect(html).toContain('Human review gate.');
         expect(html).toContain(GATE_RESUMES_AUTOMATICALLY);
@@ -74,7 +88,16 @@ describe('the batch monitor', () => {
             tasks: [{ ...started().tasks[0]!, execution: 'failed', pr: 'none', waitReason: null }],
         });
         expect(
-            render(<BatchMonitor batch={failed} report={null} onRetry={noop} onAccept={noop} pending={null} />)
+            render(
+                <BatchMonitor
+                    batch={failed}
+                    report={null}
+                    reportFailed={false}
+                    onRetry={noop}
+                    onAccept={noop}
+                    pending={null}
+                />
+            )
         ).toContain('Retry task-1');
         const acceptedPlan = updateTask(plan(), 'task-1', (task) => ({
             ...task,
@@ -85,19 +108,66 @@ describe('the batch monitor', () => {
             tasks: [{ ...started().tasks[0]!, pr: 'none', waitReason: 'waiting for acceptance: the page loads' }],
         });
         const html = render(
-            <BatchMonitor batch={waiting} report={null} onRetry={noop} onAccept={noop} pending={null} />
+            <BatchMonitor
+                batch={waiting}
+                report={null}
+                reportFailed={false}
+                onRetry={noop}
+                onAccept={noop}
+                pending={null}
+            />
         );
         expect(html).toContain('Accept task-1');
         expect(html).toContain('the page loads');
         const later = started({ plan: acceptedPlan, activeStage: 'stage-2', tasks: waiting.tasks });
         expect(
-            render(<BatchMonitor batch={later} report={null} onRetry={noop} onAccept={noop} pending={null} />)
+            render(
+                <BatchMonitor
+                    batch={later}
+                    report={null}
+                    reportFailed={false}
+                    onRetry={noop}
+                    onAccept={noop}
+                    pending={null}
+                />
+            )
         ).not.toContain('Accept task-1');
+    });
+
+    it('renders measured usage as figures, and a failed report read as unavailable beside Retry', () => {
+        const measuredReport: BatchReportView = {
+            state: 'running',
+            tasks: [],
+            usageSnapshotAt: '2026-09-01T00:10:00.000Z',
+            totals: {
+                tokenUsage: usageBlock({ input: 1200, output: 340, cacheRead: 0, cacheCreation: 5 }),
+                usageUnavailableTasks: 0,
+            },
+        };
+        const props = { onRetry: noop, onAccept: noop, pending: null };
+        const html = render(<BatchMonitor batch={started()} report={measuredReport} reportFailed={false} {...props} />);
+        expect(html).toContain('Token usage');
+        expect(html).toContain('1,200');
+        const failed = started({
+            tasks: [{ ...started().tasks[0]!, execution: 'failed', pr: 'none', waitReason: null }],
+        });
+        const down = render(<BatchMonitor batch={failed} report={null} reportFailed={true} {...props} />);
+        expect(down).toContain('Usage is unavailable');
+        expect(down).toContain('Retry task-1');
     });
 
     it('reports partial progress with the merged pull requests', () => {
         const done = started({ tasks: [{ ...started().tasks[0]!, gate: 'passed', waitReason: null, attempt: 2 }] });
-        const html = render(<BatchMonitor batch={done} report={null} onRetry={noop} onAccept={noop} pending={null} />);
+        const html = render(
+            <BatchMonitor
+                batch={done}
+                report={null}
+                reportFailed={false}
+                onRetry={noop}
+                onAccept={noop}
+                pending={null}
+            />
+        );
         expect(html).toContain('1 of 1 tasks accepted');
         expect(html).toContain('Merged so far');
         expect(html).toContain('repaired, attempt 2');

@@ -1,6 +1,7 @@
-import { validateBatchPlan, type BatchPlan } from '@factory-ai/core';
+import { emptyBlock, validateBatchPlan, type BatchPlan, type UsageBlock } from '@factory-ai/core';
 import { describe, expect, it } from 'vitest';
 import {
+    batchUsageState,
     addStage,
     addTask,
     batchVerdict,
@@ -274,5 +275,29 @@ describe('a started batch', () => {
             ],
         });
         expect(morningReport(batch, null)).toEqual({ accepted: 1, needsYou: 1, notStarted: 1, total: 3 });
+    });
+});
+
+describe('batchUsageState', () => {
+    const totals = (tokenUsage: UsageBlock, usageUnavailableTasks = 0) => ({
+        totals: { tokenUsage, usageUnavailableTasks },
+    });
+
+    it('reads loading before a report and unavailable once it failed to read', () => {
+        expect(batchUsageState(null, false)).toEqual({ state: 'loading', provisional: false, unavailableTasks: 0 });
+        expect(batchUsageState(null, true).state).toBe('unavailable');
+    });
+
+    it('takes the board’s own state, provisional flag and partial count', () => {
+        expect(batchUsageState(totals(emptyBlock('unmeasured')), false).state).toBe('unmeasured');
+        expect(batchUsageState(totals(emptyBlock('unavailable'), 2), false)).toEqual({
+            state: 'unavailable',
+            provisional: false,
+            unavailableTasks: 2,
+        });
+        expect(batchUsageState(totals({ ...emptyBlock('measured'), provisional: true }), false)).toMatchObject({
+            state: 'measured',
+            provisional: true,
+        });
     });
 });

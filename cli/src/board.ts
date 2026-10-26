@@ -10,6 +10,7 @@ import {
     realClock,
 } from './transport.js';
 import type { BoardClock } from './transport.js';
+import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
 
 /**
  * The board client for the person routes the CLI speaks to: the two reads
@@ -84,24 +85,20 @@ export interface BoardJobRecord {
     questions?: readonly QuestionRecord[];
 }
 
-/** The token types a run reports, kept apart. */
-export interface ActivityTokens {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheCreation: number;
-}
-
-/** The run-activity read: tokens by type and edits per bucket of the run's wall clock. */
+/**
+ * The run-activity read: the run's usage, its token and edit figures per bucket of the run's span, and
+ * the canonical task (reviews included) the run belongs to. A bucket's token type is null when the run
+ * never measured it; `task` is null when no evidence names the task.
+ */
 export interface JobActivity {
     jobId: string;
     sessionId: string | null;
     from: string | null;
     to: string | null;
     bucketMs: number | null;
-    buckets: readonly { start: string; tokens: ActivityTokens; edits: number }[];
-    /** The run's token totals by type; null when nothing was measured. */
-    totals: ActivityTokens | null;
+    buckets: readonly { start: string; tokens: Tokens; edits: number | null }[];
+    usage: UsageBlock;
+    task: TaskUsage | null;
 }
 
 /**

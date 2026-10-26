@@ -1,63 +1,31 @@
 import { describe, expect, it } from 'vitest';
-import { TEST_REPO, harness, stubTelemetryClient } from './helpers.js';
+import { TEST_REPO, harness, stubTelemetryClient, usageFactsOf } from './helpers.js';
 import { trackApps } from './helpers-http.js';
 
 const track = trackApps();
 
-const taskSession = (options: {
-    sessionId: string;
-    taskKey: string | null;
-    input: number | null;
-    output: number | null;
-    seen: string;
-    repo?: string;
-}) => ({
-    sessionId: options.sessionId,
-    agent: 'claude-code',
-    repo: options.repo ?? TEST_REPO,
-    user: null,
-    taskKey: options.taskKey,
-    firstSeen: options.seen,
-    lastSeen: options.seen,
-    tokens: { input: options.input, output: options.output, cacheRead: null, cacheCreation: null },
-    linesAdded: 1,
-    linesRemoved: 0,
-    editsAccepted: 1,
-    editsRejected: 0,
-    activeSeconds: 60,
-    commits: 0,
-});
-
 const taskHarness = async () => {
     const OTHER_REPO_TOKENS = 90_000;
     const telemetry = stubTelemetryClient({
-        rollups: async () => ({
-            sessions: [
+        facts: () =>
+            usageFactsOf([
                 // t1: two measured sessions, 1k and 3k billable tokens.
-                taskSession({ sessionId: 'a', taskKey: 't1', input: 600, output: 400, seen: '2026-08-20T01:00:00Z' }),
-                taskSession({
-                    sessionId: 'b',
-                    taskKey: 't1',
-                    input: 2400,
-                    output: 600,
-                    seen: '2026-08-20T02:00:00Z',
-                }),
+                { sessionId: 'a', taskId: 't1', input: 600, output: 400, at: '2026-08-20T01:00:00Z' },
+                { sessionId: 'b', taskId: 't1', input: 2400, output: 600, at: '2026-08-20T02:00:00Z' },
                 // t2: one measured session and one null — the null contributor is skipped,
                 // and the task still enters the token distribution on what it measured.
-                taskSession({ sessionId: 'c', taskKey: 't2', input: 500, output: 500, seen: '2026-08-20T03:00:00Z' }),
-                taskSession({ sessionId: 'd', taskKey: 't2', input: null, output: null, seen: '2026-08-20T04:00:00Z' }),
+                { sessionId: 'c', taskId: 't2', input: 500, output: 500, at: '2026-08-20T03:00:00Z' },
+                { sessionId: 'd', taskId: 't2', input: null, output: null, at: '2026-08-20T04:00:00Z' },
                 // An other-repo session: excluded from the totals above, excluded here too.
-                taskSession({
+                {
                     sessionId: 'e',
-                    taskKey: 't5',
+                    taskId: 't5',
                     input: OTHER_REPO_TOKENS,
                     output: OTHER_REPO_TOKENS,
-                    seen: '2026-08-20T05:00:00Z',
+                    at: '2026-08-20T05:00:00Z',
                     repo: 'Other/repo',
-                }),
-            ],
-            coverage: { from: '2026-08-20T01:00:00Z', to: '2026-08-20T03:00:00Z' },
-        }),
+                },
+            ]),
         runs: () => [
             {
                 rootJobId: 't1',
@@ -107,10 +75,13 @@ describe('GET /api/stats task statistics', () => {
 
         const OTHER_REPO_TOKENS = 90_000;
         const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
-        // Tokens: t1 totals 4k over its two sessions, t2 1k — the null contributor skipped,
-        // and the other-repo task t5 nowhere in the distribution.
-        expect(body.tasks.tokensPerTask).toEqual({ avg: 2500, p50: 1000, p95: 4000, tasks: 2 });
-        expect(body.tasks.tokensPerTask.p95).toBeLessThan(OTHER_REPO_TOKENS);
+        // Tokens, per type: t1 input 3000 / output 1000 over its two sessions, t2 500 / 500 — the
+        // null contributor skipped, and the other-repo task t5 nowhere in a distribution.
+        // Input sorted 500, 3000: avg 1750, nearest-rank p50 = 1st = 500, p95 = 2nd = 3000.
+        expect(body.tasks.tokens.all.input).toMatchObject({ avg: 1750, p50: 500, p95: 3000, tasks: 2 });
+        expect(body.tasks.tokens.all.output).toMatchObject({ avg: 750, p50: 500, p95: 1000, tasks: 2 });
+        expect(body.tasks.tokens.all.cacheRead.tasks).toBe(0);
+        expect(body.tasks.tokens.all.input.p95).toBeLessThan(OTHER_REPO_TOKENS);
         // Job turns: t1 ran twice, t2 once — t2 counts here even though its run was unmeasured.
         expect(body.tasks.jobTurnsPerTask).toEqual({ avg: 1.5, p50: 1, p95: 2, tasks: 2 });
         // Agent turns: t1 banks 9 + 4 = 13; t2 for its unmeasured run and t5 for its repo are
@@ -129,7 +100,7 @@ describe('GET /api/stats task statistics', () => {
         const url = '/api/stats?range=custom&from=2026-09-01T00:00:00Z&to=2026-09-02T00:00:00Z';
         const body = (await app.inject({ method: 'GET', url })).json();
         expect(body.telemetry.totals.sessions).toBe(0);
-        expect(body.tasks.tokensPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
+        expect(body.tasks.tokens.all.input).toMatchObject({ avg: null, p50: null, p95: null, tasks: 0 });
         expect(body.tasks.jobTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
         expect(body.tasks.agentTurnsPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });
         expect(body.tasks.wallClockPerTask).toEqual({ avg: null, p50: null, p95: null, tasks: 0 });

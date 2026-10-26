@@ -36,6 +36,8 @@ export interface BarChartProps {
     /** Overlaid on a second, right-hand axis. Null entries are gaps, not zeros. */
     line?: LineSeries;
     hiddenSeries?: ReadonlySet<string>;
+    /** Extra readout lines per bucket (index-aligned), appended after the series — e.g. the parts a bar sums. */
+    readoutExtra?: readonly (readonly string[])[];
     /** The left axis's name — the right axis is named by the line's label. */
     leftAxisLabel?: string;
     width?: number;
@@ -99,13 +101,15 @@ function bucketParts(
         series: readonly BarSeries[];
         line: LineSeries | undefined;
         hiddenSeries: ReadonlySet<string> | undefined;
+        readoutExtra: readonly (readonly string[])[] | undefined;
     }
 ): string[] {
-    const { bucketLabels, partial, series, line, hiddenSeries } = context;
+    const { bucketLabels, partial, series, line, hiddenSeries, readoutExtra } = context;
     const parts: string[] = [bucketLabels[i] ?? ''];
     if (partial[i]) parts.push('partial period');
     for (const s of series) parts.push(`${s.label} ${exact(s.values[i])}`);
     if (line) parts.push(`${line.label} ${exact(line.values[i])}`);
+    parts.push(...(readoutExtra?.[i] ?? []));
     const hidden = [
         ...series.filter((s) => hiddenSeries?.has(s.id)).map((s) => s.label),
         ...(line && hiddenSeries?.has(line.id) ? [line.label] : []),
@@ -259,6 +263,7 @@ export function BarChart({
     series,
     line,
     hiddenSeries,
+    readoutExtra,
     leftAxisLabel,
     width = 720,
     height = 260,
@@ -333,7 +338,7 @@ export function BarChart({
         );
     }
 
-    const parts = (i: number) => bucketParts(i, { bucketLabels, partial, series, line, hiddenSeries });
+    const parts = (i: number) => bucketParts(i, { bucketLabels, partial, series, line, hiddenSeries, readoutExtra });
 
     // One roving tab stop: pointer movement and keyboard focus feed the same active-bucket
     // state. Keys move BOTH the model and the DOM focus — a stop that moves without its focus

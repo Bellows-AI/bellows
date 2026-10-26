@@ -33,7 +33,8 @@ export function faultHalt(
 }
 
 function startupHalt(cause: StartupCause, detail: string): SetupHalt {
-    if (transientStartup(cause)) return { halt: 'interrupt', reason: `the runner could not start: ${detail}` };
+    if (transientStartup(cause))
+        return { halt: 'interrupt', reason: `the runner could not start: ${detail}`, refused: true };
     return faultHalt(
         `the runner could not start (${cause}): ${detail}`,
         `The runner could not start: ${detail}`,
@@ -148,7 +149,12 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
 export function setupDecision(halt: SetupHalt): EndDecision {
     switch (halt.halt) {
         case 'interrupt':
-            return { kind: 'interrupt', reason: halt.reason, exitCode: null };
+            return {
+                kind: 'interrupt',
+                reason: halt.reason,
+                exitCode: null,
+                ...(halt.refused ? { refused: true } : {}),
+            };
         case 'fault':
         case 'concluded':
             return { kind: 'verdict', verdict: halt.verdict, log: halt.log };
@@ -178,10 +184,11 @@ export function leaveDecision(job: BoardJob, reason: string, exitCode: number | 
  * A run that threw is not handed back: its runner may have survived (`thrownRunDecision`). Only an
  * interrupt that does not land or a spent budget leaves it to the lease (`end`).
  */
-export const interruptDecision = (reason: string, exitCode: number | null): EndDecision => ({
+export const interruptDecision = (reason: string, exitCode: number | null, refused = false): EndDecision => ({
     kind: 'interrupt',
     reason,
     exitCode,
+    ...(refused ? { refused: true as const } : {}),
 });
 
 /**
@@ -196,7 +203,7 @@ export function unreportedDecision(outcome: RunOutcome): EndDecision | null {
         return setupDecision(startupHalt(outcome.startupCause, outcome.output.trim()));
     }
     if (outcome.infraLoss) return interruptDecision(`infrastructure loss: ${outcome.infraLoss}`, outcome.exitCode);
-    return why === null ? null : interruptDecision(why, outcome.exitCode);
+    return why === null ? null : interruptDecision(why, outcome.exitCode, true);
 }
 
 /**

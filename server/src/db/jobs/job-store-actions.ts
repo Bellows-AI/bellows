@@ -35,6 +35,7 @@ import type {
     StopResult,
     SuspendResult,
 } from './job-store-types.js';
+import { markExecutionsRemoved, recordLaunchOutcome } from './job-store-provenance.js';
 import { wakeOneRound } from '../workflows/workflow-blocks/runtime.js';
 import type { ParamValues, WorkflowDefinition } from '../workflows/workflow-schema.js';
 import type { ExecutorScope } from '@factory-ai/core';
@@ -266,13 +267,14 @@ export interface JobActionStore {
      * attempt and appending the reason. `release` hands the claim back claimable at once (a drained
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
-     * the earlier attempt it adopted. `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
+     * claim. `refused` says the runner never started (issue #845). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
         id: string,
         leaseToken: string,
-        interruption: { reason: string; release: boolean; claimSeq?: number | null }
+        interruption: { reason: string; release: boolean; claimSeq?: number | null; refused?: boolean }
     ): Promise<SuspendResult | { result: 'exhausted' }>;
 }
 
@@ -816,7 +818,7 @@ export async function interruptJob(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    { reason, release, claimSeq = null }: Parameters<JobStore['interrupt']>[2]
+    { reason, release, claimSeq = null, refused = false }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
     // One lease-guarded update, an agent ran: the segment banks to the
@@ -841,6 +843,7 @@ export async function interruptJob(
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
+        await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq }, recorded);
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status
@@ -870,6 +873,34 @@ export async function interruptJob(
         }
         return missedInterrupt(tx, key, recorded);
     });
+}
+
+/**
+ * The launch outcome an interruption proves (issue #845), decided on the row the interruption's
+ * update changes, locked here. A release is recorded only under the update's own conditions (a
+ * spent budget or a replay records nothing); an adoption link is a fact of the adopting claim
+ * whether or not the expiry already recorded the interruption, and set once.
+ */
+async function recordInterruptLaunch(
+    tx: TransactionSql,
+    at: { orgId: string; id: string; leaseToken: string },
+    { release, refused, claimSeq }: { release: boolean; refused: boolean; claimSeq: number | null },
+    recorded: Fragment
+): Promise<void> {
+    if (!refused && release) return;
+    const { orgId, id, leaseToken } = at;
+    const open = release
+        ? tx`and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET} and not ${recorded}`
+        : tx``;
+    const [held] = await tx<{ claim_seq: string }[]>`
+        select claim_seq from job
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken} ${open}
+        for update
+    `;
+    if (!held) return;
+    const claim = { orgId, jobId: id, claimSeq: held.claim_seq };
+    if (release) await recordLaunchOutcome(tx, claim, { refused: true });
+    else if (claimSeq !== null) await recordLaunchOutcome(tx, claim, { adopts: claimSeq });
 }
 
 /**
@@ -949,9 +980,11 @@ export async function removeJobThread(
         // The rows are gone for good — nothing joins through job.id at claim time (the
         // claim copies its session labels onto its own row), so deleting the audit trail is
         // the removal, not a cleanup that orphans something.
+        const removedIds = [...members, ...reviews].map((m) => m.id);
+        await markExecutionsRemoved(tx, orgId, removedIds);
         await tx`
             delete from job
-            where org_id = ${orgId} and id = any(${[...members, ...reviews].map((m) => m.id)})
+            where org_id = ${orgId} and id = any(${removedIds})
         `;
 
         // The thread is gone, and with it every PR wait folded for it — the webhook's

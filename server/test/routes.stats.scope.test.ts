@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { UserRef } from '@factory-ai/core';
-import { TEST_REPO, githubAuth, harness, memoryAuthStore, signedIn, stubTelemetryClient } from './helpers.js';
+import {
+    TEST_REPO,
+    githubAuth,
+    harness,
+    memoryAuthStore,
+    signedIn,
+    stubTelemetryClient,
+    usageFactsOf,
+} from './helpers.js';
 import { HTTP_BAD_REQUEST, trackApps } from './helpers-http.js';
 
 const track = trackApps();
@@ -56,7 +64,6 @@ describe('GET /api/stats scope: rejections', () => {
 describe('GET /api/stats scope: computed figures', () => {
     const ATTRIBUTED_TOKENS_INPUT = 1000;
     const ATTRIBUTED_TOKENS_OUTPUT = 500;
-    const ACTIVE_SECONDS = 60;
     const CAROL_AGENT_TURNS = 7;
     const DAVE_AGENT_TURNS = 3;
 
@@ -65,26 +72,14 @@ describe('GET /api/stats scope: computed figures', () => {
         // another member, one unattributed — so a leak in any direction shows in the counts.
         const carol: UserRef = { id: 'u-carol', login: 'carol', name: 'Carol', avatarUrl: null };
         const dave = { id: 'u-dave', login: 'dave', name: null, avatarUrl: null };
-        const sessionOf = (sessionId: string, user: UserRef | null, taskKey: string | null) => ({
+        const at = '2026-08-20T00:00:00.000Z';
+        const spec = (sessionId: string, taskId: string | null, authorId: string | null) => ({
             sessionId,
-            agent: 'claude-code',
-            repo: TEST_REPO,
-            user,
-            taskKey,
-            firstSeen: '2026-08-20T00:00:00.000Z',
-            lastSeen: '2026-08-20T01:00:00.000Z',
-            tokens: {
-                input: ATTRIBUTED_TOKENS_INPUT,
-                output: ATTRIBUTED_TOKENS_OUTPUT,
-                cacheRead: null,
-                cacheCreation: null,
-            },
-            linesAdded: 1,
-            linesRemoved: 0,
-            editsAccepted: 1,
-            editsRejected: 0,
-            activeSeconds: ACTIVE_SECONDS,
-            commits: 0,
+            taskId,
+            authorId,
+            input: ATTRIBUTED_TOKENS_INPUT,
+            output: ATTRIBUTED_TOKENS_OUTPUT,
+            at,
         });
         const runOf = (rootJobId: string, repo: string, createdBy: string, agentTurns: number) => ({
             rootJobId,
@@ -98,16 +93,25 @@ describe('GET /api/stats scope: computed figures', () => {
         // around it once the member exists: one member's id, another's, and null.
         const store = memoryAuthStore();
         const caller = store.seedMember('test-org', 'carol');
+        const mineUser = { ...carol, id: caller.user.id };
         const telemetry = stubTelemetryClient({
-            rollups: async () => ({
-                sessions: [
-                    sessionOf('mine-1', { ...carol, id: caller.user.id }, 't-carol'),
-                    sessionOf('mine-2', { ...carol, id: caller.user.id }, 't-carol'),
-                    sessionOf('daves', dave, 't-dave'),
-                    sessionOf('anon', null, null),
-                ],
-                coverage: { from: '2026-08-20T00:00:00.000Z', to: '2026-08-20T01:00:00.000Z' },
-            }),
+            facts: () => {
+                return usageFactsOf(
+                    [
+                        spec('mine-1', 't-carol', mineUser.id),
+                        spec('mine-2', 't-carol', mineUser.id),
+                        spec('daves', 't-dave', dave.id),
+                        // A task whose author the board never recorded: in the org, outside mine.
+                        spec('unknown-author', 't-nobody', null),
+                        // Hook only: no board task at all, so no author either.
+                        spec('anon', null, null),
+                        // Another organization's session id: nothing of it crosses.
+                        spec('foreign', 't-foreign', dave.id),
+                    ],
+                    [mineUser, dave],
+                    ['foreign']
+                );
+            },
             runs: () => [
                 runOf('t-carol', TEST_REPO, caller.user.id, CAROL_AGENT_TURNS),
                 runOf('t-dave', TEST_REPO, dave.id, DAVE_AGENT_TURNS),
@@ -120,8 +124,10 @@ describe('GET /api/stats scope: computed figures', () => {
         await h.settle();
 
         const EXPECTED_MINE_SESSIONS = 2;
-        const EXPECTED_UNATTRIBUTED = 1;
-        const EXPECTED_MINE_TOKENS_P50 = 3000;
+        // Both the unknown-author task's session and the hook-only one: outside mine, still named.
+        const EXPECTED_UNATTRIBUTED = 2;
+        const EXPECTED_MINE_INPUT_P50 = 2000;
+        const EXPECTED_MINE_OUTPUT_P50 = 1000;
         const mine = (await app.inject({ method: 'GET', url: '/api/stats?scope=mine', headers: { cookie } })).json();
         expect(mine.meta.scope).toBe('mine');
         expect(mine.meta.scopeLogin).toBe('carol');
@@ -129,20 +135,29 @@ describe('GET /api/stats scope: computed figures', () => {
         expect(mine.telemetry.byUser.map((row: { user: { login: string } }) => row.user.login)).toEqual(['carol']);
         // Unattributed sessions stay out of the totals but keep their own figure.
         expect(mine.telemetry.unattributedSessions).toBe(EXPECTED_UNATTRIBUTED);
+        // Tokens follow the trusted author on the board, not the session count: only carol's two sessions.
+        expect(mine.telemetry.usage.totals.tokens).toMatchObject({ input: 2 * ATTRIBUTED_TOKENS_INPUT, output: 1000 });
+        expect(mine.telemetry.usage.byUser.map((row: { userId: string }) => row.userId)).toEqual([caller.user.id]);
         // Coverage still describes the store, not the scope.
         expect(mine.telemetry.coverage.from).toBe('2026-08-20T00:00:00.000Z');
         // The task set narrows with the scope: only the caller's task survives.
-        expect(mine.tasks.tokensPerTask).toMatchObject({ p50: EXPECTED_MINE_TOKENS_P50, tasks: 1 });
+        expect(mine.tasks.tokens.all.input).toMatchObject({ p50: EXPECTED_MINE_INPUT_P50, tasks: 1 });
+        expect(mine.tasks.tokens.all.output).toMatchObject({ p50: EXPECTED_MINE_OUTPUT_P50, tasks: 1 });
         expect(mine.tasks.jobTurnsPerTask.tasks).toBe(1);
         expect(mine.tasks.agentTurnsPerTask).toMatchObject({ p50: CAROL_AGENT_TURNS, tasks: 1 });
 
         // And the same snapshot answers the whole organization from the SAME fetch — all four
         // sessions, the unattributed one included.
-        const EXPECTED_ORG_SESSIONS = 4;
+        const EXPECTED_ORG_SESSIONS = 5;
         const org = (await app.inject({ method: 'GET', url: '/api/stats', headers: { cookie } })).json();
         expect(org.telemetry.totals.sessions).toBe(EXPECTED_ORG_SESSIONS);
-        expect(org.tasks.tokensPerTask).toMatchObject({ tasks: 2 });
-        expect(org.tasks.agentTurnsPerTask).toMatchObject({ tasks: 2 });
+        // The foreign session is in no figure of this organization, not even a diagnostic.
+        expect(org.telemetry.usage.totals.tokens.input).toBe(EXPECTED_ORG_SESSIONS * ATTRIBUTED_TOKENS_INPUT);
+        expect(org.telemetry.usage.diagnostics.unresolvedOwnership.sessions).toBe(0);
+        expect(JSON.stringify(org)).not.toContain('t-foreign');
+        // t-carol, t-dave and the unknown-author task have usage; a task without a run banks a measured zero.
+        expect(org.tasks.tokens.all.input).toMatchObject({ tasks: 3 });
+        expect(org.tasks.agentTurnsPerTask).toMatchObject({ tasks: 3 });
     });
 
     it('serves org and mine from the one fetch the cache paid for', async () => {

@@ -104,6 +104,7 @@ describe('the OTLP wire format', () => {
             'app.version': '42',
             effort: '1.5',
             speed: 'true',
+            series: expect.stringMatching(/^[0-9a-f]{32}$/),
         });
         // arrayValue has no scalar reading, so it is dropped rather than stringified into
         // something nobody can query.
@@ -206,7 +207,7 @@ describe('the two exclusions', () => {
             )
         );
 
-        expect(Object.keys(rows[0]?.attrs ?? {})).toEqual(['type']);
+        expect(Object.keys(rows[0]?.attrs ?? {})).toEqual(['type', 'series']);
         for (const forbidden of [
             'user.email',
             'user.id',
@@ -250,5 +251,30 @@ describe('the two exclusions', () => {
         expect(JSON.stringify(rows)).not.toContain('cost');
         expect(JSON.stringify(rows)).not.toContain('4.1');
         expect(JSON.stringify(rows)).not.toContain('9.5');
+    });
+});
+
+describe('the raw series digest (#846)', () => {
+    const seriesOf = (attributes: ReturnType<typeof attr>[], resource: Record<string, string> = {}) =>
+        flattenMetrics(
+            body(sum('claude_code.token.usage', [{ asInt: '1', timeUnixNano: NANOS, attributes }], 1), resource)
+        ).rows[0]!.attrs.series;
+
+    it('ignores attribute order', () => {
+        expect(seriesOf([attr('type', 'input'), attr('x', '1')])).toBe(
+            seriesOf([attr('x', '1'), attr('type', 'input')])
+        );
+    });
+
+    it('tells apart series that differ only in a dropped point or resource attribute', () => {
+        const base = seriesOf([attr('type', 'input'), attr('x', '1')]);
+        expect(seriesOf([attr('type', 'input'), attr('x', '2')])).not.toBe(base);
+        expect(seriesOf([attr('type', 'input'), attr('x', '1')], { host: 'h' })).not.toBe(base);
+    });
+
+    it('is a one-way digest that never carries a dropped value', () => {
+        const series = seriesOf([attr('type', 'input'), attr('user.email', 'someone@example.com')]);
+        expect(series).toMatch(/^[0-9a-f]{32}$/);
+        expect(series).not.toContain('example');
     });
 });

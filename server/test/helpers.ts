@@ -15,6 +15,7 @@ export * from './helpers-auth-store.js';
 export * from './helpers-auth-store-credentials.js';
 export * from './helpers-identity.js';
 export * from './helpers-telemetry.js';
+export * from './helpers-usage.js';
 export * from './helpers-harness.js';
 export * from './helpers-http.js';
 export * from './helpers-claim.js';

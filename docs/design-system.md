@@ -16,6 +16,7 @@ never utilities, and every color it renders resolves through a token.
 | Theme preference, `data-theme`, pre-paint bootstrap | `web/src/theme.tsx`, `web/public/theme-bootstrap.js` | `web/test/theme.test.tsx` |
 | Appearance control | `web/src/components/ThemeSelector.tsx` | `e2e/auth.spec.ts` (`e2e/appearance.ts`) |
 | Downward-only popover anchoring | `web/src/anchor.ts` | `web/test/anchor.test.ts` |
+| Token usage: four figures, breakdown, notes (no data fetch, no combined total) | `web/src/components/usage/` (`TokenFigures.tsx`, `PrecisionBadge.tsx`, `CoverageNote.tsx`, `UsageBreakdown.tsx`, `UsageDiagnostics.tsx`, `UsageStateNote.tsx`, `usage-format.ts`) | `web/test/usage-components.render.test.tsx`, `web/test/usage-breakdown.dom.test.tsx`, `web/test/usage-format.test.ts`, `e2e/specimen.spec.ts` |
 | Icon set and `ICON_NAMES` | `web/src/components/Icon.tsx` | `web/test/icon.test.tsx` |
 | One-`h1` page heading contract | `web/src/components/PageHeader.tsx` | `web/test/page-header.test.tsx` |
 | Table sorting, row actions, ≤640px card reflow | `web/src/components/DataTable.tsx`, `RowActions.tsx` | `web/test/data-table.test.tsx`, `web/test/dashboard.dom.test.tsx`, `web/test/row-actions.render.test.tsx` |
@@ -88,6 +89,10 @@ Surfaces and feedback: `panel-head`, `panel-actions`, `status`, `alert`, `error`
 
 Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-user-user`,
 `table-cards`, `updated-at`, `icon`.
+
+Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-precision`,
+`usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`,
+`usage-variants`, `usage-child-row`, `usage-diagnostics`, `usage-state-note`.
 
 ## Shared UI units
 

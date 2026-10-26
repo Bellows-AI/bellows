@@ -1137,13 +1137,13 @@ describe('the poll loop', () => {
             complains: true,
         },
         // A stopped claude-code run has no scrape and no empty-scrape notice: the session was minted
-        // and reported at spawn — the one session counted — and the helper must not fire the
-        // opencode-only complaint (issue #152).
+        // and reported at spawn, and again as the launch evidence of the run that started — the two
+        // reports counted — and the helper must not fire the opencode-only complaint (issue #152).
         {
             label: 'reports nothing extra when a stopped claude-code run has no scraped session',
             claimed: job(1),
             outcome: ok(),
-            sessions: 1,
+            sessions: 2,
             complains: false,
         },
     ])('$label', async ({ claimed, outcome, sessions, complains }) => {
@@ -2502,6 +2502,7 @@ describe('the poll loop', () => {
                 id: job(1).id,
                 reason: 'the runner reports the container never started: no such image',
                 release: true,
+                refused: true,
             },
         ]);
     });
@@ -2523,6 +2524,7 @@ describe('the poll loop', () => {
                     id: job(1).id,
                     reason: 'the runner could not start: the registry answered: dial tcp: i/o timeout',
                     release: true,
+                    refused: true,
                 },
             ]);
         });
@@ -2675,7 +2677,8 @@ describe('the poll loop', () => {
         await drive({ ...board, runner });
 
         expect(given).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-        expect(board.board.sessions).toEqual([{ id: job(1).id, sessionId: given }]);
+        // Once before the spawn, once as the launch evidence of the run that followed.
+        expect(board.board.sessions).toEqual(new Array(2).fill({ id: job(1).id, sessionId: given }));
         expect(reportedFirst).toBe(true);
     });
 
@@ -2929,7 +2932,7 @@ describe('the poll loop', () => {
     // it. Already on the board from the insert — nothing re-reported at spawn.
     it.each([
         [
-            'resumes the session the board hands back, and does not report it again',
+            'resumes the session the board hands back, and reports it so the board records it as reported',
             job(1, '44444444-4444-4444-8444-444444444444'),
             '44444444-4444-4444-8444-444444444444',
         ],
@@ -2950,7 +2953,7 @@ describe('the poll loop', () => {
 
         expect(given).toEqual({ id: resumed, resume: true });
         expect(board.board.completed).toHaveLength(1);
-        expect(board.board.sessions).toEqual([]);
+        expect(board.board.sessions).toEqual(new Array(2).fill({ id: claimed.id, sessionId: resumed }));
     });
 
     it('drains what is already running before it returns', async () => {

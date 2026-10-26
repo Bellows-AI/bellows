@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import { THEMES, VIEWPORTS } from './screenshot-matrix.js';
-import { COLUMNS, cellId, OPEN_SELECTOR_ORG, ROWS } from './specimen/matrix.js';
+import { COLUMNS, cellId, OPEN_SELECTOR_ORG, ROWS, USAGE_STATES, usageCellId } from './specimen/matrix.js';
 import type { Column, Row } from './specimen/matrix.js';
 import { noHorizontalOverflow } from './viewport.js';
 
@@ -93,6 +93,19 @@ test.describe('component-state specimen', () => {
                 for (const column of COLUMNS) {
                     await expect(page.locator('thead th', { hasText: column })).toBeAttached();
                 }
+                for (const state of USAGE_STATES) {
+                    await expect(page.locator(`[data-cell="${usageCellId(state)}"]`)).toBeVisible();
+                }
+                await expect(page.locator('[data-cell="Usage/Breakdown expanded"] .usage-child-row')).toHaveCount(0);
+                await page
+                    .locator('[data-cell="Usage/Breakdown expanded"]')
+                    .getByRole('button', { name: 'Show query sources for model-a' })
+                    .click();
+                await expect(page.locator('[data-cell="Usage/Breakdown expanded"] .usage-child-row')).toHaveCount(2);
+                await expect(
+                    page.locator('[data-cell="Usage/Measured"] [data-type="inputSide"] .usage-precision')
+                ).toBeVisible();
+                await expect(page.locator('[data-cell="Usage/Breakdown collapsed"] .usage-child-row')).toHaveCount(0);
                 await noHorizontalOverflow(page);
 
                 for (const target of TARGETS) {
