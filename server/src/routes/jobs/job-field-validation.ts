@@ -436,6 +436,10 @@ export interface Publication {
     baseBranch: string;
 }
 
+/** A branch name the board stores: 1..BRANCH_LIMIT characters of `[\w./-]`. */
+export const isBranchField = (value: unknown): value is string =>
+    typeof value === 'string' && value.length >= 1 && value.length <= BRANCH_LIMIT && !/[^\w./-]/.test(value);
+
 /**
  * The publication a run reports beside a successful publish (036): optional and null, and
  * shape-validated rather than trusted — a forged report must not pin another org's repository
@@ -462,7 +466,7 @@ export function validatePublication(
         ['headBranch', headBranch],
         ['baseBranch', baseBranch],
     ] as const) {
-        if (typeof value !== 'string' || value.length < 1 || value.length > BRANCH_LIMIT || /[^\w./-]/.test(value)) {
+        if (!isBranchField(value)) {
             return { ok: false, message: `publication.${key} must be a branch name (1..${BRANCH_LIMIT})` };
         }
     }

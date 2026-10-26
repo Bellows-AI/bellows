@@ -6,6 +6,7 @@
  */
 
 import type { GateRunStore } from './job-store-gate-runs.js';
+import type { PrOperationStore } from './job-store-pr-operations.js';
 import type { PhaseCheckpointStore } from './job-store-phase-checkpoints.js';
 import type { JobActionStore } from './job-store-actions.js';
 import type { JobMergeStore } from './job-store-merge.js';
@@ -844,7 +845,8 @@ export type JobStore = JobActionStore &
     JobReviewStore &
     JobWorkerStore &
     PhaseCheckpointStore &
-    GateRunStore;
+    GateRunStore &
+    PrOperationStore;
 
 /** The page states the task list serves. `attention` is the inbox view: running and review. */
 export type TaskState = 'attention' | 'running' | 'review' | 'past';

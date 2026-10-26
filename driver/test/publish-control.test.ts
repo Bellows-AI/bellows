@@ -68,6 +68,14 @@ describe('the control server: POST /publish', () => {
         await server.close();
     });
 
+    it('names the operation the publish performed', async () => {
+        const operationId = '88888888-8888-4888-8888-888888888888';
+        const { server, port } = await opened({ publish: async () => ({ ...LANDED, operationId }) });
+        const answer = await post(port, 'tok-p');
+        await expect(answer.json()).resolves.toMatchObject({ prNumber: 42, operationId });
+        await server.close();
+    });
+
     // A row with a body pins the answer's JSON too: a refusal the evidence policy made and a stale
     // checkout are 409s carrying the reason, a failed push a 502 carrying its reason.
     it.each<[PublishVerdict, number, { error: string }?]>([
@@ -199,7 +207,9 @@ describe('the publish relay: what an attempt may publish', () => {
     it("publishes a draft with the board's minted token and remembers what landed", async () => {
         const { relay, state, calls } = relayFor();
         await expect(relay.publish()).resolves.toEqual(LANDED);
-        expect(calls.published).toEqual([{ token: 'ghs_fresh', options: { draft: true } }]);
+        expect(calls.published).toEqual([
+            { token: 'ghs_fresh', options: { draft: true, recordPrOperation: expect.any(Function) } },
+        ]);
         expect(state.draftPublication).toEqual(LANDED);
     });
 
@@ -282,7 +292,12 @@ describe('the publish relay: what an attempt may publish', () => {
                 job: { policy: { review: true }, review: { state: 'approved', revision: 'r1' } },
             });
             await relay.publish();
-            expect(calls.published).toEqual([{ token: 'ghs_fresh', options: { draft: true, revision: 'r1' } }]);
+            expect(calls.published).toEqual([
+                {
+                    token: 'ghs_fresh',
+                    options: { draft: true, revision: 'r1', recordPrOperation: expect.any(Function) },
+                },
+            ]);
         });
     });
 });

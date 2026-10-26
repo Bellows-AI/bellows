@@ -466,6 +466,10 @@ function stubStore(
             boom();
             return { result: 'ok', runs: [] };
         },
+        async writePrOperation() {
+            boom();
+            return { result: 'ok' };
+        },
         async gates(id, _token, results) {
             boom();
             stub.gatesReported.push({ id, results });

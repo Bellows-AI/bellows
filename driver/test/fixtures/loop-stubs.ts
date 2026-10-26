@@ -16,6 +16,7 @@ import type {
     RuntimeReport,
 } from '../../src/board/board.js';
 import type { GateRunRecord, GateRunWrite } from '../../src/board/board-gate-runs.js';
+import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
@@ -91,6 +92,8 @@ export interface BoardStub extends Board {
     gateRunsWritten: GateRunWrite[];
     /** The run claim sequence of every gate-run read the loop made. */
     gateRunReads: { id: string; leaseToken: string; runClaimSeq: number }[];
+    /** Every PR operation the loop recorded (issue #983), with the lease token it wrote under. */
+    prOperationsWritten: { id: string; leaseToken: string; write: PrOperationWrite }[];
     /** The final envelopes the loop staged before each verdict (issue #821). */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
@@ -160,6 +163,8 @@ export function stubBoard(
         gateRuns?: GateRunRecord[] | null | ((signal?: AbortSignal) => Promise<GateRunRecord[] | null>);
         /** The board's answer to a gate-run write (issue #983). */
         gateRunWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
+        /** The board's answer to a PR-operation write (issue #983). */
+        prOperation?: 'ok' | 'lost' | 'rejected' | 'throw';
         /** The board's answer to a staged conclusion (issue #821); held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
@@ -178,6 +183,7 @@ export function stubBoard(
         phaseCheckpointReads: [],
         gateRunsWritten: [],
         gateRunReads: [],
+        prOperationsWritten: [],
         sessions: [],
         sessionEvidence: [],
         progressed: [],
@@ -307,6 +313,15 @@ export function stubBoard(
             board.gateRunsWritten.push(structuredClone(write));
             if (options.gateRunWrite === 'throw') throw new Error('the board is down');
             return options.gateRunWrite ?? 'ok';
+        },
+        async prOperation(claimed, write) {
+            board.prOperationsWritten.push({
+                id: claimed.id,
+                leaseToken: claimed.leaseToken,
+                write: structuredClone(write),
+            });
+            if (options.prOperation === 'throw') throw new Error('the board is down');
+            return options.prOperation ?? 'ok';
         },
         async gateRuns(claimed, runClaimSeq, signal) {
             board.gateRunReads.push({ id: claimed.id, leaseToken: claimed.leaseToken, runClaimSeq });

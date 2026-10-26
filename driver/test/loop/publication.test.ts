@@ -61,7 +61,10 @@ describe('the agent’s draft publication (issue #547)', () => {
         const { board, answers, options } = await driveAgentPublishing(job(1), NOTHING);
 
         expect(answers).toEqual([200]);
-        expect(options).toEqual([{ draft: true }, undefined]);
+        expect(options).toEqual([
+            { draft: true, recordPrOperation: expect.any(Function) },
+            { recordPrOperation: expect.any(Function) },
+        ]);
         expect(board.completed[0]?.status).toBe('succeeded');
         expect(board.completed[0]?.publication).toEqual({
             repo: 'Bellows-AI/factory',
@@ -138,7 +141,11 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
 
         expect(adHoc).toEqual([1, 0, 0]);
         expect(answers).toEqual([200, 200]);
-        expect(options).toEqual([{ draft: true }, { draft: true }, undefined]);
+        expect(options).toEqual([
+            { draft: true, recordPrOperation: expect.any(Function) },
+            { draft: true, recordPrOperation: expect.any(Function) },
+            { recordPrOperation: expect.any(Function) },
+        ]);
         // The close-of-run gates still run over the final tree — policy, not a stage the agent picked.
         expect(stack.ran.names.slice(-2)).toEqual(['test', 'lint']);
         const verdict = board.board.completed[0]!;
@@ -166,4 +173,75 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         expect(verdict.status).toBe('failed');
         expect(verdict.failureKind).toBe('gate');
     });
+});
+
+describe('the PR operation record, from the loop (issue #983)', () => {
+    const LANDED: PublishResult = {
+        ok: true,
+        published: true,
+        branch: 'fix/10',
+        prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+        reason: null,
+        cause: null,
+        repository: 'Bellows-AI/factory',
+        baseBranch: 'main',
+        prNumber: 42,
+    };
+    const NOTE = {
+        operationId: '88888888-8888-4888-8888-888888888888',
+        operation: 'created' as const,
+        repo: 'Bellows-AI/factory',
+        prNumber: 42,
+        prUrl: LANDED.prUrl!,
+        branch: 'fix/10',
+    };
+
+    /** A publisher that, like `publishCheckout`, hands every operation it performs to the recorder it was given. */
+    async function driveAndPublish(answer: 'ok' | 'lost' | 'rejected' | 'throw', claim: BoardJob = job(1)) {
+        const board = stubBoard([claim], { prOperation: answer });
+        const runner = stubRunner(async () => ok(), { publish: LANDED });
+        runner.publishGit = async (_job, _token, options) => {
+            await options?.recordPrOperation?.(NOTE);
+            return { ...LANDED, operationId: NOTE.operationId };
+        };
+        const logs: string[] = [];
+        await drive({ ...board, runner, log: (line) => logs.push(line) });
+        return { board: board.board, logs };
+    }
+
+    it('records the end-of-run publish’s operation against the attempt’s own lease', async () => {
+        const claim = job(1);
+        const { board } = await driveAndPublish('ok', claim);
+        expect(board.prOperationsWritten).toEqual([{ id: claim.id, leaseToken: claim.leaseToken, write: NOTE }]);
+        expect(board.completed[0]?.status).toBe('succeeded');
+    });
+
+    it('records the agent’s mid-run draft publish too', async () => {
+        const board = stubBoard([job(1)]);
+        const { stack, gates } = stubGateStack({}, { control: true });
+        const runner: ReturnType<typeof stubRunner> = stubRunner(
+            async (running) => {
+                const control = stack.controls.get(running.supervisorEnv?.SUPERVISOR_AGENT_TOKEN ?? '');
+                await servePublish(control!.publishing, control!.publisher!);
+                return ok();
+            },
+            { publish: LANDED }
+        );
+        runner.publishGit = async (_job, _token, options) => {
+            await options?.recordPrOperation?.(NOTE);
+            return LANDED;
+        };
+        await drive({ ...board, runner, gates });
+        expect(board.board.prOperationsWritten.map((w) => w.write)).toEqual([NOTE, NOTE]);
+    });
+
+    it.each(['lost', 'rejected', 'throw'] as const)(
+        'a write the board answered %s never fails the publish: it is only unrecorded, and says so',
+        async (answer) => {
+            const { board, logs } = await driveAndPublish(answer);
+            expect(board.completed[0]?.status).toBe('succeeded');
+            expect(board.completed[0]?.publication?.prNumber).toBe(42);
+            expect(logs.some((line) => line.includes('PR operation') && line.includes('unrecorded'))).toBe(true);
+        }
+    );
 });

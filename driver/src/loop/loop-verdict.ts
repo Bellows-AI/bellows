@@ -6,6 +6,7 @@
  * `loop-run.ts` is the only importer.
  */
 
+import { prOperationRecorder } from './loop-pr-operation.js';
 import type { Board, BoardJob, LeaseState, VerdictEvidence } from '../board/board.js';
 import { runTimeoutMs } from '../claim.js';
 import type { HelperFailureReport } from '../helpers.js';
@@ -66,10 +67,12 @@ export async function publishBranch(
     githubToken: string | null,
     options?: PublishOptions
 ): Promise<PublishResult> {
-    return rt.runner.publishGit(job, githubToken ?? undefined, options).catch((e: Error) => {
-        if (stepLost(e)) throw e;
-        return publishFailed(`the publish threw: ${e.message}`, 'unknown');
-    });
+    return rt.runner
+        .publishGit(job, githubToken ?? undefined, { ...options, recordPrOperation: prOperationRecorder(rt, job) })
+        .catch((e: Error) => {
+            if (stepLost(e)) throw e;
+            return publishFailed(`the publish threw: ${e.message}`, 'unknown');
+        });
 }
 
 /** The publication identity to ride the verdict, only when the publish really happened and landed. */
