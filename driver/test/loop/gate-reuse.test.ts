@@ -22,8 +22,8 @@ const CLAIMED = claimedJob();
 
 interface Scene {
     rows?: GateRunRecord[] | null | ((signal?: AbortSignal) => Promise<GateRunRecord[] | null>);
-    /** The completion probe's tree; `undefined` reads SAME_TREE. */
-    tree?: string | null;
+    /** The completion probe's tree, or a reader of it; `undefined` reads SAME_TREE. */
+    tree?: string | null | (() => string | null);
     job?: BoardJob;
     deadServices?: () => Promise<DeadService[]>;
     /** The gate stack's options: scripted setup, a gate that edits the tree, a pending ad-hoc quiesce. */
@@ -287,6 +287,25 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
 
         expect(events).toEqual(['quiesce', 'settled', 'read']);
         expect(r.stack.quiesced).toEqual([r.claimed.gateEnv!.BELLOWS_GATE_TOKEN]);
+    });
+
+    it('reads the completion tree only after the in-flight ad-hoc runs settled: a drain that moved it reuses nothing', async () => {
+        // An on-demand gate still running at the agent's end writes a file while it drains: the passes
+        // certify the tree from before it, so the completion tree must be read after the drain.
+        let tree = SAME_TREE;
+        const r = await run({
+            rows: passes(),
+            tree: () => tree,
+            gateTree: () => tree,
+            stack: {
+                quiesce: async () => {
+                    tree = 'h:drained';
+                },
+            },
+        });
+
+        expect(r.stack.ran.names).toEqual(['test', 'lint']);
+        expect(lastReports(r).some((g) => 'reused' in g)).toBe(false);
     });
 
     // ---- setup must have succeeded in this claim's environment ------------------------------------

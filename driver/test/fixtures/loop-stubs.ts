@@ -350,7 +350,7 @@ export function stubRunner(
         /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
         reclaimSequence?: ReclaimResult[];
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
-        probeTree?: string | null;
+        probeTree?: string | null | (() => string | null);
         /** The gate-run tree probes (issue #983); absent probes as unknown. */
         gateTree?: (sinceMs: number | null) => TreeProbe;
         /** The pre-gate no-change read (issue #1020); absent reads as a changed tree, a function may throw. */
@@ -483,7 +483,7 @@ export function stubRunner(
         async probeTree(probedJob: BoardJob) {
             if (options.probeTree === undefined) return null;
             runner.probed.push(probedJob);
-            return options.probeTree;
+            return typeof options.probeTree === 'function' ? options.probeTree() : options.probeTree;
         },
         async probeGateTree(_probed: BoardJob, sinceMs: number | null) {
             return options.gateTree ? options.gateTree(sinceMs) : { fingerprint: null, mutatedSince: null };

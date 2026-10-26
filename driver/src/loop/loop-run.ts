@@ -7,7 +7,7 @@ import type { DeadService, RunOutcome, RunSession } from '../runner.js';
 import { adoptStep, recordAdopted } from './loop-adopt.js';
 import { askGithubToken } from './loop-github.js';
 import { preHelperStep } from './loop-helpers.js';
-import type { GateFailure, GateSession } from './loop-gates.js';
+import { probeTreeNow, type GateFailure, type GateSession } from './loop-gates.js';
 import {
     type GateReport,
     beginGates,
@@ -632,24 +632,6 @@ async function reportNewSession(
     } catch (e) {
         rt.log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
     }
-}
-
-/**
- * The task tree's fingerprint as the run left it, before the gates; compared with the startup
- * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, or a probe
- * that failed.
- */
-async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
-    const { rt, job, treeBefore, state } = ctx;
-    // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
-    if (treeBefore === null && !ctx.adopted && !ctx.takeover) return null;
-    // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
-    // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
-    const raced = await raceStep(
-        state.signal,
-        rt.runner.probeTree(job, state.signal).catch(() => null)
-    );
-    return raced?.value ?? null;
 }
 
 /** The ad-hoc gate history one attempt's timeout note quotes, read before the session's teardown. */

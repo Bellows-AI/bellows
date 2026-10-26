@@ -17,7 +17,7 @@ import { createPublishRelay } from './loop-publish.js';
 import { createQuestionRelay } from './loop-questions.js';
 import { createReviewRelay } from './loop-review.js';
 import { attachCheckpoint, attachTranscriptExport } from './loop-export.js';
-import type { GateStack, LoopRuntime } from './loop-types.js';
+import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { checkoutKey } from '../publish/publish.js';
 
 /** The report must fit the board's 128 KiB body: the raw per-gate tail budget, and its floor. */
@@ -443,6 +443,29 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
     };
 }
 
+/**
+ * The task tree's fingerprint as the run left it, before the gates; compared with the startup
+ * sync's to answer whether the tree moved. Null when unknown: no before-fingerprint, or a probe
+ * that failed.
+ *
+ * Ad-hoc admission closes and the runs in flight settle first (issue #983): an on-demand gate still
+ * draining may write the tree, and a pass reused at completion certifies exactly this read, with every
+ * ad-hoc run already in the record.
+ */
+export async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
+    const { rt, job, treeBefore, state } = ctx;
+    // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
+    if (treeBefore === null && !ctx.adopted && !ctx.takeover) return null;
+    if (ctx.gateSession && rt.gates) await raceStep(state.signal, rt.gates.server.quiesce(ctx.gateSession.token));
+    // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
+    // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
+    const raced = await raceStep(
+        state.signal,
+        rt.runner.probeTree(job, state.signal).catch(() => null)
+    );
+    return raced?.value ?? null;
+}
+
 /** A walk over the gates that found a reused pass voided by a later change of the tree. */
 const STALE_REUSE = Symbol('stale-reuse');
 /** One gate that ran and passed, in a walk that goes on. */
@@ -498,10 +521,8 @@ export async function runDeclaredGates(
         Math.floor(GATES_REPORT_BUDGET_BYTES / gateSession.declared.length)
     );
     const walk: GateWalk = { ...runCtx, treeAfter, results, perGate, report };
-    // Ad-hoc admission closes and the runs in flight settle first: a run still on its way to a verdict
-    // would otherwise land after the record is read and never count against a reused pass. Raced
-    // against the stand-down, like every wait here.
-    if (!(await raceStep(state.signal, gates.server.quiesce(gateSession.token)))) return null;
+    // Ad-hoc admission is already closed and drained (verifyRun, before the completion tree is read),
+    // so every ad-hoc run has landed in the record read here.
     // A setup that failed in this claim's environment is retried by running the gates, never skipped
     // by serving them from an earlier pass: the reuse waits for a setup that succeeded.
     let earlier = job.setupFailure ? null : await readGateRuns(runCtx, treeAfter);
