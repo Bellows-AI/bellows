@@ -197,8 +197,9 @@ async function runUntilAnswered(
     const budgetMs = reviewBudgetMs(rt.config, review);
     for (let round = 1; ; round += 1) {
         const session = pickSession(review, review.executorType);
-        // A fresh session is recorded before it runs, so a re-leased review resumes it.
-        if (session && !session.resume) {
+        // A fresh session is recorded before it runs, so a re-leased review resumes it; a resumed
+        // one is reported again so the board's claim-time inference becomes a report.
+        if (session) {
             await rt.board.session(review, session.id).catch((e: Error) => {
                 rt.log(`review ${review.id}: the session was not recorded: ${e.message}`);
             });

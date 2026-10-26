@@ -152,7 +152,13 @@ describe('a stand-down after the gates (issue #427)', () => {
 
         await drive({ ...board, runner });
 
-        expect(order).toEqual([expect.stringMatching(/^session:/), 'session:scraped', 'suspend']);
+        // The run's start is proven by the runner, so its launch is reported (observed) before the scraped session.
+        expect(order).toEqual([
+            expect.stringMatching(/^session:/),
+            expect.stringMatching(/^session:/),
+            'session:scraped',
+            'suspend',
+        ]);
         expect(board.board.completed).toEqual([]);
     });
 

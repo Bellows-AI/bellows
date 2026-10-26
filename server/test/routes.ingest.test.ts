@@ -58,13 +58,15 @@ async function harnessWith(store?: StoreStub, jobs?: JobStore) {
 /** A board whose only working call is the lease-guarded session write, recording each one. */
 function sessionBoard(answer: Awaited<ReturnType<JobWorkerStore['session']>> = 'ok') {
     const calls: [string, string, string | null][] = [];
+    const evidence: unknown[] = [];
     const jobs = jobStoreSlice<JobWorkerStore>({
-        async session(id: string, leaseToken: string, sessionId: string | null) {
+        async session(id: string, leaseToken: string, sessionId: string | null, reported?: unknown) {
             calls.push([id, leaseToken, sessionId]);
+            evidence.push(reported);
             return answer;
         },
     });
-    return { jobs, calls };
+    return { jobs, calls, evidence };
 }
 
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -378,6 +380,8 @@ describe('POST /api/sessions/branch — the live opencode session', () => {
         expect(res.statusCode).toBe(HTTP_ACCEPTED);
         expect(store.branches).toHaveLength(1);
         expect(board.calls).toEqual([[JOB_ID, LEASE, 'ses_live1']]);
+        // A live sample comes from a running process: launch evidence, with its agent.
+        expect(board.evidence).toEqual([{ agent: 'opencode', observed: true }]);
     });
 
     it('records it under AUTH_MODE none, where the lease guard alone checks the pair', async () => {

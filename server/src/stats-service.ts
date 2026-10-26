@@ -1,16 +1,18 @@
-import { ALL_TIME, filterJobRuns, filterTelemetryInput, taskUsageStats, telemetryStats } from '@factory-ai/core';
-import type {
-    DateRange,
-    JobRun,
-    OrganizationMeta,
-    TaskUsageStats,
-    TelemetryInput,
-    TelemetryStats,
+import {
+    ALL_TIME,
+    filterJobRuns,
+    filterTelemetryInput,
+    reduceUsage,
+    seriesGranularity,
+    taskUsageStats,
+    telemetryStats,
+    usageRangeOf,
 } from '@factory-ai/core';
+import type { DateRange, OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
 import { createCache } from './cache.js';
 import type { AppConfig } from './config.js';
 import type { RepoSource } from './github/repo-source.js';
-import type { TelemetryClient, TelemetrySource } from './telemetry/client.js';
+import type { TelemetryClient, TelemetryFetch, TelemetrySource } from './telemetry/client.js';
 import { TelemetryError } from './telemetry/errors.js';
 
 /**
@@ -30,17 +32,14 @@ export interface TelemetryMeta {
     repoFilter: readonly string[];
     /** Sessions the hook attributed to a different repo. */
     otherRepoSessions: number;
-    /** Sessions with telemetry but no hook data — the plugin is missing, or failing. */
+    /** Board-owned sessions no branch report named: attributed and counted in the totals, but the hook is missing or failing. */
     sessionsWithoutHook: number;
     /** Sessions no board task matches — the third exclusion, kept distinct from the two above. */
     unattributedSessions: number;
 }
 
-export interface TelemetrySnapshot {
-    input: TelemetryInput;
-    /** The organization's run rows, fetched beside the rollups for the per-task statistics. */
-    runs: JobRun[];
-}
+/** One fetch of the store, cached whole: every range, scope and repo list is a re-reduction of it. */
+export type TelemetrySnapshot = TelemetryFetch;
 
 export interface FetchState {
     state: 'idle' | 'loading' | 'error';
@@ -262,16 +261,27 @@ export function createStatsService({ config, repos, telemetry, now = Date.now }:
             // does (and the runs beside them for the task statistics); it never narrows the
             // snapshot itself, which is what would cost a second fetch.
             const user = scope === 'org' ? undefined : { id: scope.id };
+            const at = new Date(now());
             const input = filterTelemetryInput(entry.value.input, range);
+            // Token figures partition by the instant each point was observed, over the cached
+            // facts: the same range, repos and user the session figures apply, re-reduced here.
+            const usage = reduceUsage(entry.value.facts, {
+                range: usageRangeOf(range),
+                repos: all,
+                now: at,
+                granularity: seriesGranularity(range, entry.value.input, at),
+                ...(user ? { userId: user.id } : {}),
+            });
             const telemetry = telemetryStats(input, {
                 repos: all,
-                now: new Date(now()),
+                now: at,
                 range,
+                usage,
                 ...(user ? { user } : {}),
             });
             // The org's full repo list on BOTH task inputs: the run rows are read org-wide, and
             // the sessions they attribute to come from the same list.
-            const tasks = taskUsageStats(input.sessions, filterJobRuns(entry.value.runs, range), {
+            const tasks = taskUsageStats(usage.tasks, filterJobRuns(entry.value.runs, range), {
                 repos: all,
                 ...(user ? { user } : {}),
             });

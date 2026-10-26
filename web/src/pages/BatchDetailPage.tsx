@@ -90,6 +90,7 @@ function StartedBatch({ batch, refresh }: { batch: BatchRecord; refresh: () => v
             <BatchMonitor
                 batch={batch}
                 report={report}
+                reportFailed={reportRead.error !== null}
                 pending={pending}
                 onRetry={(key) => act(key, () => batchActions.retry(batch.id, key))}
                 onAccept={(key) => act(key, () => batchActions.accept(batch.id, key))}

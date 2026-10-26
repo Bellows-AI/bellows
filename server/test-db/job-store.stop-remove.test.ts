@@ -174,6 +174,20 @@ describe.skipIf(!enabled)('removing a task', () => {
         });
     });
 
+    it("marks the removed thread's executions in the same transaction, leaving provenance in place", async () => {
+        const root = await craft({ status: 'succeeded' });
+        await sql`
+            insert into job_execution (org_id, job_id, claim_seq, root_job_id)
+            values (${ORG}, ${root}, 1, ${root})`;
+
+        await store.removeThread(root, null);
+
+        const rows = await sql<{ removed_at: Date | null }[]>`
+            select removed_at from job_execution where org_id = ${ORG} and job_id = ${root}`;
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.removed_at).not.toBeNull();
+    });
+
     it('refuses while any member of the thread is running, deleting nothing', async () => {
         const root = await craft({ status: 'running', lease: 'live' });
         await craft({ parent: root, status: 'running', lease: 'live' });

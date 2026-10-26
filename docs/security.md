@@ -64,3 +64,5 @@ There is **no opt-out for a declared service or a GATE image**: one needing root
   `baseline` can. There is no `readOnlyRootFilesystem`.
 - **A task volume is a thread boundary** ([workspace.md](workspace.md));
   **membership is not a sandbox** ([auth.md](auth.md)).
+- **`attrs.series` is an unsalted one-way digest** (`server/src/telemetry/otlp.ts`): it covers raw values such as
+  `user.email` and `organization.id`, so a dictionary guess of the other attributes can confirm a value.

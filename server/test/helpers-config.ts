@@ -1,17 +1,16 @@
 import { readFileSync } from 'node:fs';
+import { parseFixtureFetch } from '../src/telemetry/fixture-client.js';
 import type { TelemetryInput } from '@factory-ai/core';
+import type { TelemetryFetch } from '../src/telemetry/client.js';
 import type { AppConfig, AuthConfig } from '../src/config.js';
 
-const TELEMETRY_FIXTURE = new URL('../../core/test/fixtures/telemetry-sessions.json', import.meta.url);
+const TELEMETRY_FIXTURE = new URL('../../core/test/fixtures/telemetry-usage.json', import.meta.url);
 
 export const TEST_REPO = 'Bellows-AI/bellows.ai';
 
-let telemetryPayload: TelemetryInput | null = null;
-export function sampleTelemetry(): TelemetryInput {
-    if (!telemetryPayload) {
-        telemetryPayload = JSON.parse(readFileSync(TELEMETRY_FIXTURE, 'utf8')) as TelemetryInput;
-    }
-    return telemetryPayload;
+/** The committed synthetic fixture as one fetch (facts, derived session rollups, runs). A fresh copy per call. */
+export function sampleFetch(): TelemetryFetch {
+    return structuredClone(parseFixtureFetch(readFileSync(TELEMETRY_FIXTURE, 'utf8')));
 }
 
 export const EMPTY_TELEMETRY: TelemetryInput = {

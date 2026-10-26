@@ -323,10 +323,19 @@ describe('reporting an interrupted attempt (issue #792)', () => {
 
         expect(await boardOn(fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('held');
         expect(await boardOn(fetch).interrupt(job, { reason: 'adopted', release: false, claimSeq: 2 })).toBe('held');
+        expect(await boardOn(fetch).interrupt(job, { reason: 'never started', release: true, refused: true })).toBe(
+            'held'
+        );
 
         expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/interrupt');
         expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', reason: 'evicted', release: true });
         expect(calls[1]!.body).toEqual({ leaseToken: 'token-1', reason: 'adopted', release: false, claimSeq: 2 });
+        expect(calls[2]!.body).toEqual({
+            leaseToken: 'token-1',
+            reason: 'never started',
+            release: true,
+            refused: true,
+        });
     });
 
     it('tells a spent budget apart from a lost lease, and reads a removed job as lost', async () => {
@@ -449,6 +458,23 @@ describe('asking the board for the orphan reaper lease lookups', () => {
         ])('answers null — the whole round aborts — on %s', async (_name, thread) => {
             expect(await answerWith(thread)).toBeNull();
         });
+    });
+});
+
+describe('the session report', () => {
+    it('names the agent the job runs and whether the report is launch evidence', async () => {
+        const { calls, fetch } = recorder(() => new Response('{}', { status: 200 }));
+        const board = boardOn(fetch);
+
+        await board.session({ ...boardJob(), executorType: 'opencode' }, 'ses-1');
+        await board.session({ ...boardJob(), executorType: 'claude-code' }, 'ses-2', true);
+        await board.session({ ...boardJob(), executorType: null }, null);
+
+        expect(calls.map((c) => c.body)).toEqual([
+            { leaseToken: 'token-1', sessionId: 'ses-1', agent: 'opencode', observed: false },
+            { leaseToken: 'token-1', sessionId: 'ses-2', agent: 'claude-code', observed: true },
+            { leaseToken: 'token-1', sessionId: null, agent: null, observed: false },
+        ]);
     });
 });
 

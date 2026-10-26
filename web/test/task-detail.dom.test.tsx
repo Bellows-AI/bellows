@@ -13,6 +13,7 @@ import {
 } from '../../e2e/fixtures/threads.js';
 import { type FetchCall, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 import { expectNoPlaceholder } from './fixtures.js';
+import { runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
 
 /** The board as the page reads it: the session, and every thread and activity read answered by `jobs`. */
 function board(jobs: readonly ThreadJob[], extra: (call: FetchCall) => unknown = () => undefined) {
@@ -116,6 +117,18 @@ describe('the task detail page', () => {
         expect(scrolledTo).toBe(4000);
     });
 
+    it('reads the thread activity once, from the newest run, however many runs the thread has', async () => {
+        const jobs = authoredBy(followUpThread, LOCAL_AUTHOR);
+        expect(jobs.length).toBeGreaterThan(1);
+        const calls = board(jobs);
+        renderApp(`/tasks/${jobs[0]!.id}`);
+
+        await screen.findByRole('button', { name: /Open task statistics/ });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const reads = calls.filter((call) => /\/api\/jobs\/[^/]+\/activity/.test(call.url));
+        expect(reads.map((call) => call.url)).toEqual([`/api/jobs/${jobs[jobs.length - 1]!.id}/activity`]);
+    });
+
     it('the activity pulse opens the Task statistics modal and gives focus back', async () => {
         // Partial data: only the root run reported agent turns, and only the latest run — the one
         // the sidebar pulse draws — reported tokens.
@@ -126,6 +139,7 @@ describe('the task detail page', () => {
         const latest = jobs[jobs.length - 1]!;
         const tokens = { input: 1200, output: 300, cacheRead: 9000, cacheCreation: 50 };
         const zero = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 };
+        const rows = [{ model: 'model-a', rawModels: ['model-a'], querySource: null, tokens }];
         board(jobs, (call) => {
             if (!/\/api\/jobs\/[^/]+\/activity/.test(call.url)) return;
             const measured = call.url.includes(latest.id);
@@ -142,7 +156,20 @@ describe('the task detail page', () => {
                           { start: '2026-09-01T12:10:00.000Z', tokens, edits: 2 },
                       ]
                     : [],
-                totals: measured ? tokens : null,
+                usage: usageBlock(measured ? tokens : null),
+                task: taskUsage(
+                    jobs[0]!.id,
+                    [
+                        runUsage(latest.id, 'follow-up', tokens, { block: { rows } }),
+                        runUsage(
+                            '99999999-9999-4999-8999-999999999999',
+                            'review',
+                            { output: 40 },
+                            { reviewOf: latest.id }
+                        ),
+                    ],
+                    { block: { rows } }
+                ),
             };
         });
         const { container } = renderApp(`/tasks/${jobs[0]!.id}`);
@@ -164,7 +191,20 @@ describe('the task detail page', () => {
         });
         expect(within(open.querySelector<HTMLElement>('.task-stats-totals')!).getByText('Agent turns')).toBeTruthy();
         expect(within(open).getByText('Agent turns measured for 1 of 2 runs.')).toBeTruthy();
-        expect(within(open).getAllByRole('row')).toHaveLength(jobs.length + 1);
+        // The task total comes from the canonical task: the review is counted though it is no row of the thread.
+        expect(within(open).getByText('Includes 1 review run.')).toBeTruthy();
+        const usage = within(open.querySelector<HTMLElement>('.task-stats-usage')!);
+        expect(usage.getByText('1,200')).toBeTruthy();
+        expect(usage.getByText('340')).toBeTruthy();
+        // One row per run of the task, the review too, labelled by the run it reviews.
+        expect(open.querySelectorAll('.task-stats-runs > table > tbody > tr[data-kind]')).toHaveLength(jobs.length + 1);
+        expect(within(open).getByRole('rowheader', { name: /Review of run 2/ })).toBeTruthy();
+        // Expanding a run shows the models behind its four figures; the task's Models section is apart.
+        expect(open.querySelectorAll('.usage-breakdown')).toHaveLength(1);
+        await user.click(within(open).getByRole('button', { name: 'Show usage details for Run 2' }));
+        expect(open.querySelectorAll('.usage-breakdown')).toHaveLength(2);
+        await user.click(within(open).getByRole('button', { name: 'Hide usage details for Run 2' }));
+        expect(open.querySelectorAll('.usage-breakdown')).toHaveLength(1);
         // Each legend swatch wears its own line's color class, four apart.
         const swatches = [...open.querySelectorAll('.pulse-legend .pulse-swatch')].map((swatch) =>
             [...swatch.classList].filter((name) => name !== 'pulse-swatch').join(' ')
@@ -192,6 +232,22 @@ describe('the task detail page', () => {
         await user.tab();
         await user.tab();
         expect(dialog()!.contains(document.activeElement)).toBe(true);
+    });
+
+    it('says the usage is unavailable when the board refuses the activity read, and never a zero', async () => {
+        const jobs = authoredBy(followUpThread, LOCAL_AUTHOR);
+        board(jobs, (call) =>
+            /\/api\/jobs\/[^/]+\/activity/.test(call.url)
+                ? { status: 503, body: { error: 'telemetry unavailable', code: 'UNAVAILABLE' } }
+                : undefined
+        );
+        renderApp(`/tasks/${jobs[0]!.id}`);
+        const user = userEvent.setup();
+
+        await user.click(await screen.findByRole('button', { name: /Open task statistics/ }));
+        const open = await screen.findByRole('dialog', { name: 'Task statistics' });
+        expect(within(open).getByText('Usage is unavailable: the telemetry could not be read.')).toBeTruthy();
+        expect(within(open).queryByText('0')).toBeNull();
     });
 
     it("your own task offers the composer, and the board's 403 renders inside it and keeps the draft", async () => {

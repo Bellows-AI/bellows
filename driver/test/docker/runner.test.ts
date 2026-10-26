@@ -613,6 +613,26 @@ describe('the docker runner', () => {
         expect(tails).toEqual(['step one\n', 'step one\nwarn\n']);
     });
 
+    /** The agent container's own start is the only launch proof: a refused start still prints (issue #845). */
+    it('proves the agent started from the container StartedAt, never from output', async () => {
+        const startedAts = ['2026-10-25T07:00:00.123Z', '0001-01-01T00:00:00Z', ''];
+        const seen: string[][] = [];
+        for (const startedAt of startedAts) {
+            const exec = vitest.fn((args: string[]) => {
+                seen.push(args);
+                return Promise.resolve({ stdout: `${startedAt}\n` });
+            }) as unknown as (args: string[]) => Promise<{ stdout: string }>;
+            const runner = dockerRunner(exec, { spawn: spawnChild('exec not found\n', '', 127) });
+            const proven = await runner.agentStarted(job);
+            expect(proven).toBe(startedAt.startsWith('2026'));
+        }
+        expect(seen[0]).toEqual(['inspect', '--format', '{{.State.StartedAt}}', containerName(job)]);
+        const unreadable = dockerRunner(() => Promise.reject(new Error('no such container')), {
+            spawn: spawnChild('', '', 0),
+        });
+        expect(await unreadable.agentStarted(job)).toBe(false);
+    });
+
     /**
      * The vitals sample goes through the same daemon seam as everything else, named by this
      * attempt's lease token — a sample can only ever resolve its own attempt's runner. A daemon

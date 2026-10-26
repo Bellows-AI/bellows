@@ -21,7 +21,16 @@ import { drainTranscriptExport } from './loop-export.js';
 import { openChain, replayGates } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
 import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
-import { heartbeat, newJobState, raceStep, registerLive, stopIfDraining, watchOutput } from './loop-attempt.js';
+import {
+    confirmOnProof,
+    heartbeat,
+    newJobState,
+    raceStep,
+    launchConfirmer,
+    registerLive,
+    stopIfDraining,
+    watchOutput,
+} from './loop-attempt.js';
 import { attemptQuiesce, abandonOnHandover, end, endIfDown } from './loop-conclusion.js';
 import type { GateRunNote } from '../timeout-note.js';
 import {
@@ -73,7 +82,8 @@ async function reportScrapedSession(
     const { board, log } = rt;
     if (outcome.sessionId) {
         try {
-            await board.session(job, outcome.sessionId);
+            // A start that never ran or was refused: whatever it scraped is no evidence of a launch.
+            await board.session(job, outcome.sessionId, outcome.started && !outcome.refused);
             log(`job ${job.id}: session ${outcome.sessionId}`);
         } catch (e) {
             log(`job ${job.id}: could not report the session, continuing: ${(e as Error).message}`);
@@ -311,7 +321,14 @@ async function reportRunTail(
     if (isAgentless(job)) return;
     // A spool-cap stop is stamped on the outcome the session report reads.
     drainTranscriptExport(ctx, outcome);
-    await reportScrapedSession(rt, job, executorType, outcome);
+    // A run an earlier claim launched (adopted or taken over) is no launch by this claim: the board
+    // would otherwise count the adopting claim as a new token-producing execution.
+    const launchedHere = !ctx.adopted && !ctx.takeover;
+    // A run that finished without ever streaming or being sampled still ran: the fallback for the
+    // evidence the runner's own scrape does not carry (claude-code names its session up front).
+    if (launchedHere && outcome.started && !outcome.refused && !outcome.sessionId)
+        await confirmOnProof(rt, job, ctx.state);
+    await reportScrapedSession(rt, job, executorType, { ...outcome, started: outcome.started && launchedHere });
     // Never throws and never reaches the verdict: a failed upload only leaves a stream without a
     // `complete` manifest.
     await uploadRunArtifacts({ board: rt.board, job, executorType, outcome }, rt);
@@ -349,6 +366,8 @@ async function launchRun(
     // session id reported for one would name a conversation that never existed. A taken-over run's
     // session was reported by the claim that started it.
     if (!ctx.takeover) await reportNewSession(rt, job, session);
+    // A taken-over run was launched by an earlier claim: this one proves nothing about a launch.
+    if (!ctx.takeover && session) state.confirmLaunch = launchConfirmer(rt, job, session.id);
     state.launched = true;
     transition(state, 'launched');
     // The launch hands the checkout claim to the runner, whose group's confirmed end releases it.
@@ -588,13 +607,16 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
     };
 }
 
-/** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
+/**
+ * Tells the board the id of the session this attempt runs under, a resumed one included (the board
+ * upgrades its claim-time inference to a report); a failed report never blocks the run.
+ */
 async function reportNewSession(
     rt: LoopRuntime,
     job: BoardJob,
     session: ReturnType<typeof pickSession>
 ): Promise<void> {
-    if (!session || session.resume) return;
+    if (!session) return;
     try {
         await rt.board.session(job, session.id);
     } catch (e) {

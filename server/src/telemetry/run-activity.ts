@@ -1,47 +1,46 @@
 /**
- * The per-run activity reduction (issue #339): the `metric_point` rows of ONE session, bucketed
- * over the run's wall clock into token and edit figures a small chart can draw. A flat line means
- * stuck; a steady bar means working — the "was the run making progress" answer, read off data the
- * ingest already holds.
+ * The per-run activity read (issues #339, #847): one run's assigned token contributions bucketed over
+ * the run's segment span into figures a small chart can draw, beside the run's usage block and the
+ * canonical task it belongs to. A flat line means stuck; a steady bar means working.
  *
- * The reduction lives here rather than in SQL for the same reason the week bucketing lives in
- * core (docs/metrics.md): the temporality-aware rule is the one correctness hazard in the feature,
- * and it is unit-testable only as plain code. A delta counter SUMS into its bucket; a cumulative
- * counter must be differenced per series — `sum(value)` over a cumulative series produces a
- * plausible, wildly wrong number (002_views.repeatable.sql's header, and test-db covers both
- * shapes).
+ * The ownership, run assignment and token reduction are core's (`taskUsageOf`, `runContributionsOf`);
+ * this file only places the run's already-assigned amounts into time buckets, so the buckets sum to
+ * the run's usage by construction. A token type the run never measured stays null in every bucket.
  */
+import {
+    TOKEN_TYPE_LIST,
+    runContributionsOf,
+    taskUsageOf,
+    type TaskUsage,
+    type TokenContribution,
+    type TokenType,
+    type Tokens,
+    type UsageBlock,
+} from '@factory-ai/core';
+import type { UsageFacts } from './usage-facts.js';
 
-/** One raw `metric_point_used` row, as the SQL read lifts it. */
-export interface ActivityPoint {
-    field: string;
-    temporality: string;
-    /** The cumulative counter's series start; null on a delta point. */
-    startTime: string | null;
-    attrs: Record<string, string>;
-    metric: string;
-    agent: string;
-    value: number;
-    time: string;
-}
-
-/** The four token types the executors report, kept apart — one total would hide the cache split. */
-export interface TokenTypes {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheCreation: number;
-}
-
-/** One bucket of the run's wall clock: tokens processed by type, and edit decisions made inside it. */
+/** One bucket of the run's span: tokens by type (null: type not measured) and edit decisions (null: none measured). */
 export interface ActivityBucket {
     start: string;
-    tokens: TokenTypes;
-    edits: number;
+    tokens: Tokens;
+    edits: number | null;
 }
 
-/** What one charted field adds to: a token type, or the edit count. */
-type Slot = keyof TokenTypes | 'edits';
+/** The run half of the activity answer; `buckets` is empty when the run measured nothing. */
+export interface RunActivity {
+    from: string | null;
+    to: string | null;
+    bucketMs: number | null;
+    buckets: ActivityBucket[];
+    usage: UsageBlock;
+}
+
+export interface RunActivityRead {
+    /** Null when no evidence names the task. */
+    task: TaskUsage | null;
+    /** Null when the job is not among the task's runs. */
+    run: RunActivity | null;
+}
 
 /** The bucket-width ladder, narrow to wide. */
 const MINUTE_MS = 60_000;
@@ -61,149 +60,68 @@ export function pickBucketMs(runMs: number): number {
     return LADDER_MS[LADDER_MS.length - 1]!;
 }
 
-/** The fields this reduction charts, and the bucket slot each one adds to. */
-const SLOT_OF_FIELD: Readonly<Record<string, Slot>> = {
-    tokens_input: 'input',
-    tokens_output: 'output',
-    tokens_cacheRead: 'cacheRead',
-    tokens_cacheCreation: 'cacheCreation',
-    edits_accept: 'edits',
-    edits_reject: 'edits',
-};
-
-/** A cumulative series is keyed by everything that distinguishes one counter from another. */
-const seriesKeyOf = (point: ActivityPoint): string =>
-    [point.agent, point.metric, point.field, point.startTime ?? '', JSON.stringify(point.attrs)].join('|');
-
-const emptyTokens = (): TokenTypes => ({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
-
-function addTo(bucket: ActivityBucket, slot: Slot, value: number): void {
-    if (slot === 'edits') bucket.edits += value;
-    else bucket.tokens[slot] += value;
+/** Index of the bucket a point falls in, clamped: an amount assigned to the run is never dropped for an edge. */
+function indexOf(contribution: TokenContribution, fromMs: number, bucketMs: number, count: number): number {
+    const at = Date.parse(contribution.observedAt as string);
+    return Math.min(count - 1, Math.max(0, Math.floor((at - fromMs) / bucketMs)));
 }
 
-/** One cumulative series parked for pass two: its bucket maxes, and the total it had reached at `from`. */
-interface Series {
-    slot: Slot;
-    maxes: (number | null)[];
-    baseline: number;
-}
-
-/**
- * Folds one parked cumulative series into the buckets as consecutive differences — the running
- * total's increment within each bucket, from the total the series had already reached when the
- * window opened (a follow-up run shares its session's counters, so its first reading is not its
- * own). A counter reset inside one series would difference negative; clamped to 0, which
- * undercounts rather than inverts a bar.
- */
-function foldCumulative(series: Series, buckets: ActivityBucket[], count: number): void {
-    let previous = series.baseline;
-    for (let i = 0; i < count; i += 1) {
-        const value = series.maxes[i] ?? null;
-        if (value === null) continue;
-        addTo(buckets[i]!, series.slot, Math.max(0, value - previous));
-        previous = value;
-    }
-}
-
-/** One cumulative point's parking slot: which series map, and which bucket slot it feeds. */
-interface ParkTarget {
-    cumulative: Map<string, Series>;
-    point: ActivityPoint;
-    slot: Slot;
-    /** The point's bucket; null when it predates the window and only sets the baseline. */
-    index: number | null;
-    count: number;
-}
-
-/**
- * Parks one cumulative point's value as its series' bucket max — the series keyed by everything
- * that distinguishes one counter from another — for pass two's differencing. A point before the
- * window raises the series' baseline instead.
- */
-function parkCumulative(target: ParkTarget): void {
-    const key = seriesKeyOf(target.point);
-    const series = target.cumulative.get(key) ?? {
-        slot: target.slot,
-        maxes: Array.from({ length: target.count }, () => null),
-        baseline: 0,
-    };
-    if (target.index === null) {
-        series.baseline = Math.max(series.baseline, target.point.value);
-    } else {
-        const current = series.maxes[target.index] ?? null;
-        series.maxes[target.index] = current === null ? target.point.value : Math.max(current, target.point.value);
-    }
-    target.cumulative.set(key, series);
-}
-
-/**
- * Pass one over the points: deltas sum straight into their bucket; cumulatives park their max
- * per bucket, per series, for pass two's differencing. Out-of-window delta points and
- * unchartable fields fall out here; a cumulative point before the window sets its baseline.
- */
-function parkPoints(
-    points: readonly ActivityPoint[],
-    buckets: ActivityBucket[],
-    window: { fromMs: number; toMs: number; count: number; bucketMs: number }
-): Map<string, Series> {
-    const cumulative = new Map<string, Series>();
-    for (const point of points) {
-        const timeMs = Date.parse(point.time);
-        const slot = SLOT_OF_FIELD[point.field];
-        if (!Number.isFinite(timeMs) || timeMs > window.toMs || slot === undefined) continue;
-        const before = timeMs < window.fromMs;
-        if (point.temporality === 'cumulative') {
-            const index = before ? null : bucketIndexOf(timeMs, window.fromMs, window.bucketMs, window.count);
-            parkCumulative({ cumulative, point, slot, index, count: window.count });
-        } else if (!before) {
-            addTo(buckets[bucketIndexOf(timeMs, window.fromMs, window.bucketMs, window.count)]!, slot, point.value);
+/** Seeds every bucket of the span (a measured type at 0, an unmeasured one null) and places each amount. */
+function placeInBuckets(
+    measuredTokens: Tokens,
+    amounts: { tokens: readonly TokenContribution[]; edits: readonly TokenContribution[] },
+    span: { fromMs: number; spanMs: number; bucketMs: number }
+): ActivityBucket[] {
+    const { fromMs, spanMs, bucketMs } = span;
+    const tokenContribs = amounts.tokens;
+    const editContribs = amounts.edits;
+    const count = Math.max(1, Math.ceil(spanMs / bucketMs));
+    const zeroOrNull = (type: TokenType): number | null => (measuredTokens[type] === null ? null : 0);
+    const buckets: ActivityBucket[] = Array.from({ length: count }, (_, i) => ({
+        start: new Date(fromMs + i * bucketMs).toISOString(),
+        tokens: {
+            input: zeroOrNull('input'),
+            output: zeroOrNull('output'),
+            cacheRead: zeroOrNull('cacheRead'),
+            cacheCreation: zeroOrNull('cacheCreation'),
+        },
+        edits: editContribs.length === 0 ? null : 0,
+    }));
+    for (const c of tokenContribs) {
+        const bucket = buckets[indexOf(c, fromMs, bucketMs, count)]!;
+        for (const type of TOKEN_TYPE_LIST) {
+            const value = c.tokens[type];
+            if (value !== null) bucket.tokens[type] = (bucket.tokens[type] ?? 0) + value;
         }
     }
-    return cumulative;
-}
-
-/** The bucket a timestamp lands in, clamped into the seeded range. */
-function bucketIndexOf(timeMs: number, fromMs: number, bucketMs: number, count: number): number {
-    const index = Math.floor((timeMs - fromMs) / bucketMs);
-    return Math.min(Math.max(index, 0), count - 1);
-}
-
-/**
- * Buckets the points over `[from, to]` at `bucketMs`, seeding every bucket in the window — a
- * quiet stretch renders as a quiet stretch, never a gap. Delta points sum into the bucket that
- * contains them; cumulative points are reduced per series (max per bucket, then consecutive
- * differences against the total the series had reached before `from`, 0 for a fresh series), with
- * a negative difference clamped to 0 rather than allowed to invert a bar. Delta points outside
- * the window, and fields this reduction does not chart, fall out.
- */
-export function bucketizeActivity(
-    points: readonly ActivityPoint[],
-    opts: { from: string; to: string; bucketMs: number }
-): ActivityBucket[] {
-    const fromMs = Date.parse(opts.from);
-    const toMs = Date.parse(opts.to);
-    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || opts.bucketMs <= 0) return [];
-    const count = Math.max(1, Math.ceil((toMs - fromMs) / opts.bucketMs));
-    const buckets: ActivityBucket[] = Array.from({ length: count }, (_, i) => ({
-        start: new Date(fromMs + i * opts.bucketMs).toISOString(),
-        tokens: emptyTokens(),
-        edits: 0,
-    }));
-    const cumulative = parkPoints(points, buckets, { fromMs, toMs, count, bucketMs: opts.bucketMs });
-    // Pass two: difference each cumulative series down the buckets and fold that in like a delta.
-    for (const series of cumulative.values()) foldCumulative(series, buckets, count);
+    for (const c of editContribs) {
+        const bucket = buckets[indexOf(c, fromMs, bucketMs, count)]!;
+        bucket.edits = (bucket.edits ?? 0) + (c.tokens.input ?? 0);
+    }
     return buckets;
 }
 
-/** The run's token totals by type, summed over its buckets. */
-export function totalTokens(buckets: readonly ActivityBucket[]): TokenTypes {
-    const total = emptyTokens();
-    for (const bucket of buckets) {
-        total.input += bucket.tokens.input;
-        total.output += bucket.tokens.output;
-        total.cacheRead += bucket.tokens.cacheRead;
-        total.cacheCreation += bucket.tokens.cacheCreation;
-    }
-    return total;
+export function buildRunActivity(facts: UsageFacts, taskId: string, jobId: string, now: Date): RunActivityRead {
+    const task = taskUsageOf(facts, taskId, now);
+    const run = task?.runs.find((r) => r.jobId === jobId);
+    if (!task || !run) return { task, run: null };
+    if (run.startedAt === null)
+        return { task, run: { from: null, to: null, bucketMs: null, buckets: [], usage: run.usage } };
+
+    const from = run.startedAt;
+    const to = run.endedAt ?? now.toISOString();
+    const fromMs = Date.parse(from);
+    const spanMs = Math.max(0, Date.parse(to) - fromMs);
+    const bucketMs = pickBucketMs(spanMs);
+    const tokenContribs = runContributionsOf(facts, taskId, jobId, now);
+    const editContribs = runContributionsOf({ ...facts, contributions: facts.edits }, taskId, jobId, now);
+    const base = { from, to, bucketMs, usage: run.usage };
+    if (tokenContribs.length === 0 && editContribs.length === 0) return { task, run: { ...base, buckets: [] } };
+
+    const buckets = placeInBuckets(
+        run.usage.tokens,
+        { tokens: tokenContribs, edits: editContribs },
+        { fromMs, spanMs, bucketMs }
+    );
+    return { task, run: { ...base, buckets } };
 }

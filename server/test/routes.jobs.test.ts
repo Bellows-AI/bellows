@@ -17,6 +17,8 @@ import type {
     SettleOutcome,
     SettleResult,
 } from '../src/db/jobs/job-store-types.js';
+import { TelemetryError } from '../src/telemetry/errors.js';
+import { activityWorld, minute } from './helpers-activity.js';
 import { trackApps } from './helpers-http.js';
 import type {
     AnswerQuestionResult,
@@ -108,6 +110,7 @@ interface StoreStub extends JobStore {
         evidence: unknown;
     }[];
     sessions: { id: string; sessionId: string | null }[];
+    sessionEvidence: unknown[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
     interrupted: { id: string; interruption: { reason: string; release: boolean; claimSeq?: number | null } }[];
@@ -230,6 +233,7 @@ function stubStore(
         commands: [],
         completed: [],
         sessions: [],
+        sessionEvidence: [],
         progressed: [],
         suspended: [],
         interrupted: [],
@@ -396,9 +400,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
-        async session(id, _token, sessionId) {
+        async session(id, _token, sessionId, evidence) {
             boom();
             stub.sessions.push({ id, sessionId });
+            stub.sessionEvidence.push(evidence);
             return options.verdict ?? 'ok';
         },
         async progress(id: string, _token: string, output: string, runtime: RuntimeVitals | null) {
@@ -1517,6 +1522,20 @@ describe('POST /api/jobs/:id/session', () => {
         expect(store.sessions).toEqual([{ id: ID, sessionId: SESSION }]);
     });
 
+    it('passes the reported agent and launch evidence on, defaulting to neither', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const path = `/api/jobs/${ID}/session`;
+
+        await post(instance, path, { leaseToken: TOKEN, sessionId: SESSION, agent: 'claude-code', observed: true });
+        await post(instance, path, { leaseToken: TOKEN, sessionId: SESSION, agent: 'martian', observed: 'yes' });
+
+        expect(store.sessionEvidence).toEqual([
+            { agent: 'claude-code', observed: true },
+            { agent: null, observed: false },
+        ]);
+    });
+
     /**
      * Not pinned to a uuid: claude-code's ids are, but opencode mints its own (`ses_…`), and the
      * board records the session the run used rather than second-guessing a foreign CLI's format.
@@ -1911,6 +1930,26 @@ describe('POST /api/jobs/:id/interrupt', () => {
         expect(store.interrupted[0]!.interruption).toEqual({ reason: 'adopted', release: false, claimSeq: 3 });
     });
 
+    it('passes a refused start through on a release', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the runner reports the container never started',
+            release: true,
+            refused: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({
+            reason: 'the runner reports the container never started',
+            release: true,
+            claimSeq: null,
+            refused: true,
+        });
+    });
+
     it('answers 409 INTERRUPTIONS_EXHAUSTED once the budget is spent', async () => {
         const store = stubStore({ interruptExhausted: true });
         const instance = await harnessWith(store);
@@ -1931,6 +1970,8 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['a missing release', { reason: 'evicted' }],
         ['a fractional claim sequence', { reason: 'evicted', release: false, claimSeq: 1.5 }],
         ['an adoption that names no adopted claim', { reason: 'adopted', release: false }],
+        ['a refused flag that is not a boolean', { reason: 'evicted', release: true, refused: 'yes' }],
+        ['a refused adoption', { reason: 'adopted', release: false, claimSeq: 2, refused: true }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);
@@ -3227,76 +3268,124 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         questions: [],
     };
 
-    it('answers the telemetry buckets over the run window', async () => {
-        const telemetry = stubTelemetryClient({
-            runActivity: () => [
-                {
-                    start: '2026-09-22T21:00:00.000Z',
-                    tokens: { input: 2_000_000, output: 500_000, cacheRead: 7, cacheCreation: 1 },
-                    edits: 3,
-                },
-                {
-                    start: '2026-09-22T21:15:00.000Z',
-                    tokens: { input: 100, output: 0, cacheRead: 0, cacheCreation: 0 },
-                    edits: 0,
-                },
-            ],
-        });
-        const instance = await harnessWith(stubStore({ job: runJob }), undefined, telemetry);
+    const jobOf = (id: string, rootJobId: string, over: Partial<Job> = {}): Job => ({
+        ...runJob,
+        id,
+        rootJobId,
+        followUpTo: id === rootJobId ? null : rootJobId,
+        ...over,
+    });
+    const activityOf = async (jobId: string, rootJobId: string, telemetry = stubTelemetryClient()) => {
+        const instance = await harnessWith(stubStore({ job: jobOf(jobId, rootJobId) }), undefined, telemetry);
+        return instance.inject({ method: 'GET', url: `/api/jobs/${jobId}/activity` });
+    };
+    const sum = (values: (number | null)[]): number | null =>
+        values.every((v) => v === null) ? null : values.reduce<number>((a, v) => a + (v ?? 0), 0);
 
-        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
+    it('answers the run usage, its buckets and the canonical task with the review included', async () => {
+        const { ids, facts } = activityWorld();
+        const telemetry = stubTelemetryClient({ taskFacts: () => facts });
+
+        const response = await activityOf(ids.task, ids.task, telemetry);
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toEqual({
-            jobId: ID,
-            sessionId: runJob.sessionId,
-            from: runJob.startedAt,
-            to: runJob.finishedAt,
-            bucketMs: 900_000,
-            buckets: [
-                {
-                    start: '2026-09-22T21:00:00.000Z',
-                    tokens: { input: 2_000_000, output: 500_000, cacheRead: 7, cacheCreation: 1 },
-                    edits: 3,
-                },
-                {
-                    start: '2026-09-22T21:15:00.000Z',
-                    tokens: { input: 100, output: 0, cacheRead: 0, cacheCreation: 0 },
-                    edits: 0,
-                },
-            ],
-            totals: { input: 2_000_100, output: 500_000, cacheRead: 7, cacheCreation: 1 },
-        });
+        const body = response.json();
+        expect(body).toMatchObject({ jobId: ids.task, from: minute(0), to: minute(10), bucketMs: 60_000 });
+        expect(body.usage.tokens).toEqual({ input: 7, output: 100, cacheRead: null, cacheCreation: null });
+        expect(body.task.runs.map((r: { jobId: string; kind: string }) => [r.jobId, r.kind])).toEqual([
+            [ids.task, 'run'],
+            [ids.followUp, 'follow-up'],
+            [ids.review, 'review'],
+        ]);
+        expect(body.task.usage.tokens).toEqual({ input: 7, output: 225, cacheRead: null, cacheCreation: null });
+        expect(telemetry.activityCalls).toEqual([{ jobId: ids.task, rootJobId: ids.task, edits: true }]);
     });
 
-    it('answers null totals, never a zero total, when the run reported nothing', async () => {
-        const instance = await harnessWith(stubStore({ job: runJob }), undefined, stubTelemetryClient());
-        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
-        expect(response.json()).toMatchObject({ buckets: [], totals: null });
+    it('buckets sum to the run usage per type, and an unmeasured type stays null in every bucket', async () => {
+        const { ids, facts } = activityWorld();
+        const telemetry = stubTelemetryClient({ taskFacts: () => facts });
+        const body = (await activityOf(ids.task, ids.task, telemetry)).json();
+
+        for (const type of ['input', 'output', 'cacheRead', 'cacheCreation'] as const) {
+            expect(sum(body.buckets.map((b: { tokens: Record<string, number | null> }) => b.tokens[type]))).toBe(
+                body.usage.tokens[type]
+            );
+        }
+        expect(body.buckets.every((b: { tokens: { cacheRead: null } }) => b.tokens.cacheRead === null)).toBe(true);
+        // An empty bucket of a measured type is a measured zero, not a gap.
+        expect(body.buckets[0].tokens.output).toBe(0);
+        expect(sum(body.buckets.map((b: { edits: number | null }) => b.edits))).toBe(3);
     });
 
-    it('answers empty for a job that never started or never named a session', async () => {
-        const telemetry = stubTelemetryClient();
-        const instance = await harnessWith(stubStore({ job: { ...runJob, sessionId: null } }), undefined, telemetry);
-        const noSession = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
-        expect(noSession.statusCode).toBe(200);
-        expect(noSession.json()).toEqual({
-            jobId: ID,
-            sessionId: null,
-            from: null,
-            to: null,
-            bucketMs: null,
-            buckets: [],
-            totals: null,
-        });
-        expect(telemetry.activityCalls).toEqual([]);
+    it('does not read a run that measured no input as zero input (shared-session follow-up splits correctly)', async () => {
+        const { ids, facts } = activityWorld();
+        const body = (await activityOf(ids.followUp, ids.task, stubTelemetryClient({ taskFacts: () => facts }))).json();
 
-        const neverStarted = await harnessWith(
-            stubStore({ job: { ...runJob, startedAt: null } }),
+        // Only the minute-15 output belongs to the follow-up; the gap amount is task-owned, the input was the first run's.
+        expect(body.usage.tokens).toEqual({ input: null, output: 60, cacheRead: null, cacheCreation: null });
+        expect(body.buckets.every((b: { tokens: { input: null } }) => b.tokens.input === null)).toBe(true);
+        expect(body.buckets.every((b: { edits: null }) => b.edits === null)).toBe(true);
+    });
+
+    it('answers the same task from the root, the follow-up and the review id', async () => {
+        const { ids, facts } = activityWorld();
+        const telemetry = stubTelemetryClient({ taskFacts: () => facts });
+        const [root, followUp, review] = await Promise.all([
+            activityOf(ids.task, ids.task, telemetry),
+            activityOf(ids.followUp, ids.task, telemetry),
+            activityOf(ids.review, ids.review, telemetry),
+        ]);
+
+        expect(followUp.json().task).toEqual(root.json().task);
+        expect(review.json().task).toEqual(root.json().task);
+        expect(review.json().usage.tokens.output).toBe(25);
+    });
+
+    it('lists a review in task usage though the operational thread does not hold it', async () => {
+        const { ids, facts } = activityWorld();
+        const root = jobOf(ids.task, ids.task);
+        const followUp = jobOf(ids.followUp, ids.task);
+        const instance = await harnessWith(
+            stubStore({ job: root, thread: [root, followUp] }),
             undefined,
-            stubTelemetryClient()
-        ).then((app) => app.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` }));
-        expect(neverStarted.json().buckets).toEqual([]);
+            stubTelemetryClient({ taskFacts: () => facts })
+        );
+
+        const thread = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids.task}/thread` })).json();
+        const activity = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids.task}/activity` })).json();
+
+        expect(thread.jobs.map((j: { id: string }) => j.id)).not.toContain(ids.review);
+        expect(activity.task.runs.map((r: { jobId: string }) => r.jobId)).toContain(ids.review);
+    });
+
+    it('still answers usage when the job no longer names a session', async () => {
+        const { ids, facts } = activityWorld();
+        const instance = await harnessWith(
+            stubStore({ job: jobOf(ids.task, ids.task, { sessionId: null }) }),
+            undefined,
+            stubTelemetryClient({ taskFacts: () => facts })
+        );
+        const body = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids.task}/activity` })).json();
+        expect(body.sessionId).toBeNull();
+        expect(body.usage.tokens.output).toBe(100);
+    });
+
+    it('answers 503 UNAVAILABLE, not an empty 200, when telemetry is off (TELEMETRY_SOURCE=off)', async () => {
+        const off = Object.assign(stubTelemetryClient(), {
+            fetchTaskFacts: async () => {
+                throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
+            },
+        });
+        const response = await activityOf(ID, ID, off);
+        expect(response.statusCode).toBe(503);
+        expect(response.json()).toMatchObject({ code: 'UNAVAILABLE' });
+    });
+
+    it('answers unmeasured usage and no task, never a zero, when nothing names the job', async () => {
+        const body = (await activityOf(ID, ID)).json();
+        expect(body).toMatchObject({ jobId: ID, from: null, to: null, bucketMs: null, buckets: [], task: null });
+        expect(body.usage.state).toBe('unmeasured');
+        expect(body.usage.tokens).toEqual({ input: null, output: null, cacheRead: null, cacheCreation: null });
     });
 });
 

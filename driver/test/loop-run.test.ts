@@ -10,7 +10,8 @@ import { runJob } from '../src/loop/loop-run.js';
 import type { SyncResult } from '../src/publish/publish.js';
 import type { RunOutcome } from '../src/runner.js';
 import { StartupRefused } from '../src/startup-cause.js';
-import { gatedJob, job, ok, stubBoard, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
+import { SUPERVISOR_ENV } from '../src/supervisor-contract.js';
+import { gatedJob, job, ok, stubBoard, stubGateStack, stubRunner, stubRuntime } from './fixtures/loop-stubs.js';
 
 type RunnerOptions = NonNullable<Parameters<typeof stubRunner>[1]>;
 
@@ -208,5 +209,237 @@ describe('how a run ends', () => {
         expect(r.board.interrupted).toHaveLength(1);
         expect(r.board.interrupted[0]?.reason).toContain('registry unreachable');
         expect(r.board.completed).toEqual([]);
+    });
+});
+
+describe('the session an attempt runs under, reported to the board (issue #845)', () => {
+    it('reports a resumed session as well as a new one', async () => {
+        const resumed = job(1, 'sess-prev');
+        const r = await attempt(resumed);
+
+        // Once before the spawn, once as the launch evidence of the run that followed.
+        expect(r.board.sessions).toEqual(new Array(2).fill({ id: resumed.id, sessionId: 'sess-prev' }));
+    });
+
+    // The report precedes the spawn: a start the platform then refuses must stay "requested".
+    it('sends the pre-launch report without launch evidence', async () => {
+        const r = await attempt(job(1, 'sess-prev'));
+
+        expect(r.board.sessionEvidence[0]).toBe(false);
+    });
+
+    it('sends the scraped session of a finished run as launch evidence', async () => {
+        const r = await attempt({ ...job(1), executorType: 'opencode' }, {}, async () => ok({ sessionId: 'ses_ran' }));
+
+        expect(r.board.sessions.at(-1)).toEqual({ id: job(1).id, sessionId: 'ses_ran' });
+        expect(r.board.sessionEvidence.at(-1)).toBe(true);
+    });
+
+    it('does not claim launch evidence for a session scraped from a start that never ran', async () => {
+        const r = await attempt({ ...job(1), executorType: 'opencode' }, {}, async () =>
+            ok({ sessionId: 'ses_never', started: false })
+        );
+
+        // A start that never ran reports no session at all, so no launch is claimed for it.
+        expect(r.board.sessions.some((s) => s.sessionId === 'ses_never')).toBe(false);
+        expect(r.board.sessionEvidence).not.toContain(true);
+    });
+
+    it('does not claim launch evidence for the session of an adopted run: adoption launches nothing', async () => {
+        const r = await attempt(
+            { ...job(1), executorType: 'opencode' },
+            { adopt: async () => ({ outcome: ok({ sessionId: 'ses_adopted' }), claimSeq: 4 }) }
+        );
+
+        const at = r.board.sessions.findIndex((s) => s.sessionId === 'ses_adopted');
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(r.board.sessionEvidence[at]).toBe(false);
+    });
+
+    it('does not claim launch evidence for the session of a taken-over run', async () => {
+        const prior = { ...job(1), leaseToken: 'lease-prior' };
+        const live = {
+            live: true as const,
+            prior,
+            claimSeq: 4,
+            session: 'ses_live',
+            startedAt: 'then',
+            forget: () => {},
+        };
+        const board = stubBoard([]).board;
+        const runner = stubRunner(async () => ok({ sessionId: 'ses_live' }), { adopt: async () => live });
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        const rt = stubRuntime(board, runner, { gates });
+        await runJob(rt, {
+            ...job(1),
+            executorType: 'opencode',
+            claimSeq: 5,
+            supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/', [SUPERVISOR_ENV.controlToken]: 'tok' },
+        });
+
+        const at = board.sessions.findIndex((s) => s.sessionId === 'ses_live');
+        expect(at).toBeGreaterThanOrEqual(0);
+        expect(board.sessionEvidence[at]).toBe(false);
+    });
+
+    it('runs and completes the attempt when the board cannot take the resumed session report', async () => {
+        const resumed = job(1, 'sess-prev');
+        const board = stubBoard([], { failSession: true }).board;
+        const logs: string[] = [];
+        await runJob(
+            stubRuntime(
+                board,
+                stubRunner(async () => ok()),
+                { log: (m) => logs.push(m) }
+            ),
+            resumed
+        );
+
+        expect(logs.some((m) => m.includes('could not report the session, continuing'))).toBe(true);
+        expect(board.completed).toHaveLength(1);
+        expect(board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+});
+
+describe('a normal run reaches observed before its verdict (issue #845, plan F6)', () => {
+    /** Runs `run` for `claimed` and records, per board call, what the board had been told by then. */
+    async function trace(claimed: BoardJob, run: Parameters<typeof stubRunner>[0], options: RunnerOptions = {}) {
+        const board = stubBoard([]).board;
+        const complete = board.complete.bind(board);
+        const evidenceAtComplete: boolean[][] = [];
+        board.complete = async (...args: Parameters<typeof complete>) => {
+            evidenceAtComplete.push([...board.sessionEvidence]);
+            return complete(...args);
+        };
+        await runJob(stubRuntime(board, stubRunner(run, options)), claimed);
+        return { board, evidenceAtComplete };
+    }
+
+    for (const executorType of ['claude-code', 'opencode'] as const) {
+        it(`${executorType}: the first output of the known session is reported as observed, mid-run`, async () => {
+            const resumed = { ...job(1, 'sess-known'), executorType };
+            const board = stubBoard([]).board;
+            let during: boolean[] = [];
+            const runner = stubRunner(async (_job, _session, onOutput) => {
+                onOutput?.('agent is working');
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                during = [...board.sessionEvidence];
+                return ok();
+            });
+            await runJob(stubRuntime(board, runner), resumed);
+            expect(during).toEqual([false, true]);
+            expect(board.sessions.filter((s) => s.sessionId === 'sess-known').length).toBeGreaterThanOrEqual(2);
+        });
+    }
+
+    it('claude-code: a silent run that finishes is still reported observed before its complete', async () => {
+        const t = await trace(job(1), async () => ok());
+
+        expect(t.evidenceAtComplete[0]).toContain(true);
+        expect(t.board.sessionEvidence[0]).toBe(false);
+    });
+
+    it('the runner proof alone observes the launch of a silent, long run', async () => {
+        const board = stubBoard([]).board;
+        let during: boolean[] = [];
+        const runner = stubRunner(async () => {
+            // The pump's period is compressed to nothing by the stub runtime: wait for its report.
+            for (let i = 0; i < 200 && !board.sessionEvidence.includes(true); i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            during = [...board.sessionEvidence];
+            return ok();
+        });
+        await runJob(stubRuntime(board, runner), job(1));
+
+        expect(during).toContain(true);
+    });
+
+    it('a runtime sample without agent-container proof (sidecars up, agent not started) is no launch', async () => {
+        const board = stubBoard([]).board;
+        const runner = stubRunner(
+            async (_job, _session, onOutput) => {
+                onOutput?.('daemon says: exec not found');
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                return ok({ started: false, refused: true });
+            },
+            { sample: { cpuPercent: 1, memUsedMb: 1, memPercent: 1 }, agentStarted: false }
+        );
+        await runJob(stubRuntime(board, runner), job(1));
+
+        expect(board.sessionEvidence).not.toContain(true);
+    });
+
+    it('a launch report that failed is retried by the tail, so the claim is not left unknown', async () => {
+        const board = stubBoard([]).board;
+        const session = board.session.bind(board);
+        let observedAttempts = 0;
+        board.session = async (...args: Parameters<typeof session>) => {
+            if (args[2] === true) observedAttempts += 1;
+            if (args[2] === true && observedAttempts === 1) throw new Error('board blip');
+            return session(...args);
+        };
+        // The mid-run report fails; the run ends only after it was tried, so the tail is the retry.
+        const runner = stubRunner(async () => {
+            for (let i = 0; i < 200 && observedAttempts === 0; i += 1) {
+                await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+            return ok();
+        });
+        await runJob(stubRuntime(board, runner), job(1));
+
+        expect(observedAttempts).toBeGreaterThanOrEqual(2);
+        expect(board.sessionEvidence).toContain(true);
+    });
+
+    it('never reports observed for a start the platform refused', async () => {
+        const t = await trace(job(1), async () => ok({ started: false, refused: true }));
+
+        expect(t.board.sessionEvidence).not.toContain(true);
+    });
+
+    it('never reports observed for a taken-over run, even one that streams output', async () => {
+        const prior = { ...job(1), leaseToken: 'lease-prior' };
+        const live = {
+            live: true as const,
+            prior,
+            claimSeq: 4,
+            session: 'ses_live',
+            startedAt: 'then',
+            forget: () => {},
+        };
+        const board = stubBoard([]).board;
+        const runner = stubRunner(
+            async (_job, _session, onOutput) => {
+                onOutput?.('still going');
+                return ok();
+            },
+            { adopt: async () => live }
+        );
+        const { gates } = stubGateStack({}, { control: true, polled: true });
+        await runJob(stubRuntime(board, runner, { gates }), {
+            ...job(1, 'sess-prev'),
+            claimSeq: 5,
+            supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:1/', [SUPERVISOR_ENV.controlToken]: 'tok' },
+        });
+
+        expect(board.sessionEvidence).not.toContain(true);
+    });
+
+    it('a failing launch report never fails or ends the run', async () => {
+        const board = stubBoard([], { failSession: true }).board;
+        await runJob(
+            stubRuntime(
+                board,
+                stubRunner(async (_job, _session, onOutput) => {
+                    onOutput?.('x');
+                    return ok();
+                })
+            ),
+            job(1)
+        );
+
+        expect(board.completed).toHaveLength(1);
+        expect(board.completed[0]).toMatchObject({ status: 'succeeded' });
     });
 });

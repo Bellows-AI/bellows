@@ -1,4 +1,4 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, EXECUTOR_TYPES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
@@ -269,7 +269,7 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     if (!route) return reply;
     const { store, id } = route;
 
-    const { leaseToken, sessionId } = body(request.body);
+    const { leaseToken, sessionId, agent, observed } = body(request.body);
     if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
         return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
     }
@@ -281,7 +281,12 @@ export async function handleSession(orgs: OrgRegistry, request: FastifyRequest, 
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job session failed'),
-        () => store.session(id, leaseToken, sessionId)
+        () =>
+            store.session(id, leaseToken, sessionId, {
+                agent:
+                    typeof agent === 'string' && (EXECUTOR_TYPES as readonly string[]).includes(agent) ? agent : null,
+                observed: observed === true,
+            })
     );
     if (!result.ok) return reply;
     if (result.value === 'missing') return notFoundJob(reply);
@@ -415,8 +420,8 @@ const INTERRUPTION_REASON_MAX = 500;
 /** The interruption body's fields, or the refusal message for the first bad one. */
 function interruptionOf(
     raw: Record<string, unknown>
-): { reason: string; release: boolean; claimSeq: number | null } | string {
-    const { reason, release, claimSeq } = raw;
+): { reason: string; release: boolean; claimSeq: number | null; refused?: true } | string {
+    const { reason, release, claimSeq, refused } = raw;
     if (typeof reason !== 'string' || !reason.trim() || reason.length > INTERRUPTION_REASON_MAX) {
         return `reason must be a non-empty string of at most ${INTERRUPTION_REASON_MAX} characters`;
     }
@@ -427,7 +432,15 @@ function interruptionOf(
     // An adoption records the earlier claim it adopted, never the adopter's own.
     if (!release && (claimSeq === undefined || claimSeq === null))
         return 'an adoption (release false) names its claimSeq';
-    return { reason, release, claimSeq: (claimSeq as number | null | undefined) ?? null };
+    // A start the runner refused is a released attempt's outcome; an adoption has a runner.
+    if (refused !== undefined && typeof refused !== 'boolean') return 'refused must be a boolean';
+    if (refused === true && !release) return 'refused applies to a release';
+    return {
+        reason,
+        release,
+        claimSeq: (claimSeq as number | null | undefined) ?? null,
+        ...(refused === true ? { refused: true as const } : {}),
+    };
 }
 
 // An attempt the infrastructure interrupted (issue #792): handed back claimable at once with its

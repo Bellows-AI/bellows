@@ -1,9 +1,9 @@
-import { ERROR_CODES } from '@factory-ai/core';
+import { ERROR_CODES, emptyBlock } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
-import { pickBucketMs, totalTokens } from '../../telemetry/run-activity.js';
+import { buildRunActivity } from '../../telemetry/run-activity.js';
 import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusals.js';
 import { guardKeyed, idempotencyOf, sendQueued } from './job-idempotency.js';
 import {
@@ -499,7 +499,8 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
 
 // The run-activity read (issue #339): the run's own progress-over-time chart, bucketed from the
 // session telemetry the executor already reported. A person route, like the job read it extends —
-// the session arrived through this org's own job row, which is the whole org boundary.
+// the org boundary is twice: `store.get` reads the job in the caller's org, and `fetchTaskFacts`
+// resolves the task only through `job_execution.org_id` rows of that org. TELEMETRY_SOURCE=off is a 503.
 export async function handleJobActivity(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return reply;
@@ -516,36 +517,32 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
     if (!job.ok) return reply;
     if (job.value === null) return notFoundJob(reply);
     const run = job.value;
-    // A run that never started, or whose session was never reported, has nothing to chart —
-    // an empty answer, never a fabricated one.
-    if (!run.startedAt || !run.sessionId) {
-        return reply.code(HTTP_OK).send({
-            jobId: id,
-            sessionId: null,
-            from: null,
-            to: null,
-            bucketMs: null,
-            buckets: [],
-            totals: null,
-        });
-    }
-    const to = run.finishedAt ?? new Date().toISOString();
-    const bucketMs = pickBucketMs(Date.parse(to) - Date.parse(run.startedAt));
-    const buckets = await guard(
+    // The canonical task is resolved from the job's own execution rows, so a run, a follow-up and a
+    // named review answer the same `task`. A job nobody ever claimed falls back to its thread root.
+    const read = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job activity read failed'),
-        () => telemetry.runActivity({ sessionId: run.sessionId!, from: run.startedAt!, to, bucketMs })
+        async () => {
+            const { taskId, facts } = await telemetry.fetchTaskFacts({
+                jobId: id,
+                rootJobId: run.rootJobId,
+                edits: true,
+            });
+            return buildRunActivity(facts, taskId, id, new Date());
+        }
     );
-    if (!buckets.ok) return reply;
+    if (!read.ok) return reply;
+    const { task, run: activity } = read.value;
+    // Nothing measured is not a quiet run: `usage.state` says unmeasured and `buckets` stays empty.
     return reply.code(HTTP_OK).send({
         jobId: id,
         sessionId: run.sessionId,
-        from: run.startedAt,
-        to,
-        bucketMs,
-        buckets: buckets.value,
-        // Null is "nothing measured" — a run that reported no points — never a zero total.
-        totals: buckets.value.length === 0 ? null : totalTokens(buckets.value),
+        from: activity?.from ?? null,
+        to: activity?.to ?? null,
+        bucketMs: activity?.bucketMs ?? null,
+        buckets: activity?.buckets ?? [],
+        usage: activity?.usage ?? emptyBlock('unmeasured'),
+        task,
     });
 }
 

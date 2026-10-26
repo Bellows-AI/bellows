@@ -9,6 +9,7 @@ import { OnboardingPage } from '../src/pages/OnboardingPage.js';
 import { ThemeProvider } from '../src/theme.js';
 import { renderApp, renderAt, stubFetch } from './dom.js';
 import { memberSession } from './fixtures.js';
+import { emptyUsage } from './telemetry-fixture.js';
 
 /**
  * The sign-in surfaces a component can answer for on its own: the gate's refusal reason, the
@@ -103,7 +104,11 @@ const member = memberSession({
 const stats = (scope: 'org' | 'mine'): StatsPayload => ({
     telemetry: telemetryStats(
         { sessions: [], coverage: { from: null, to: null } },
-        { repos: ['test-org/repo'], now: new Date('2026-08-21T12:00:00.000Z') }
+        {
+            repos: ['test-org/repo'],
+            now: new Date('2026-08-21T12:00:00.000Z'),
+            usage: emptyUsage(new Date('2026-08-21T12:00:00.000Z')),
+        }
     ),
     tasks: null,
     meta: {
