@@ -1,4 +1,12 @@
-import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SESSION_MARK, VOLUME_EXPORT_LABEL } from '../labels.js';
+import {
+    CLAIM_SEQ_MARK,
+    COMMAND_MARK,
+    JOB_LABEL,
+    LEASE_LABEL,
+    SESSION_MARK,
+    VOLUME_EXPORT_LABEL,
+    VOLUME_EXPORT_RUN_LABEL,
+} from '../labels.js';
 import { CLAUDE_CODE } from '../executors.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
@@ -704,13 +712,14 @@ export function readerJobSpec(
  */
 export function volumeExportJobSpec(
     config: DriverConfig,
-    target: { name: string; root: string; generation: number },
+    target: { name: string; root: string; generation: number; run: string },
     env: [string, string][],
     deadlineSeconds: number
 ) {
     const labels = {
         [JOB_LABEL]: `volume-export-${target.root}`,
         [VOLUME_EXPORT_LABEL]: target.root,
+        [VOLUME_EXPORT_RUN_LABEL]: target.run,
         ...releaseLabel(config),
     };
     return {
@@ -742,7 +751,17 @@ export function volumeExportJobSpec(
                             imagePullPolicy: config.imagePullPolicy,
                             ...containerHardeningField(),
                             command: ['node', '-e', claudeExportScript],
-                            env: env.map(([name, value]) => ({ name, value })),
+                            // The control token rides the export's own Secret, never the Job object.
+                            env: env.map(([name, value]) =>
+                                name === EXPORT_SECRET_ENV
+                                    ? {
+                                          name,
+                                          valueFrom: {
+                                              secretKeyRef: { name: volumeExportSecretName(target.run), key: name },
+                                          },
+                                      }
+                                    : { name, value }
+                            ),
                             volumeMounts: [taskMount()],
                             ...resourcesField(config),
                         },
@@ -755,6 +774,28 @@ export function volumeExportJobSpec(
         },
     };
 }
+
+/** The env var of the volume export that is a credential: it rides the export's Secret. */
+export const EXPORT_SECRET_ENV = 'BELLOWS_CONTROL_TOKEN';
+
+/** One export's Secret: a name the driver's admission policy allows (`factory-job-…-env`), unique per export run. */
+export const volumeExportSecretName = (run: string): string => `factory-job-export-${run}-env`;
+
+/** The Secret carrying the export's control token; labelled `factory.job` as admission requires, with a value no scan reads as a job. */
+export const volumeExportSecretBody = (target: { root: string; run: string }, token: string) => ({
+    apiVersion: 'v1',
+    kind: 'Secret',
+    type: 'Opaque',
+    metadata: {
+        name: volumeExportSecretName(target.run),
+        labels: {
+            [JOB_LABEL]: `volume-export-${target.root}`,
+            [VOLUME_EXPORT_LABEL]: target.root,
+            [VOLUME_EXPORT_RUN_LABEL]: target.run,
+        },
+    },
+    stringData: { [EXPORT_SECRET_ENV]: token },
+});
 
 export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespaces/${namespace}/jobs`;
 

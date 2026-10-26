@@ -9,7 +9,7 @@ import {
     newExportRun,
     VOLUME_EXPORT_CAUSE,
 } from '../src/loop/loop-export.js';
-import { newJobState } from '../src/loop/loop-attempt.js';
+import { killAgent, newJobState } from '../src/loop/loop-attempt.js';
 import type { AttemptCtx, LoopRuntime } from '../src/loop/loop-types.js';
 import type { RunOutcome } from '../src/runner.js';
 
@@ -54,7 +54,7 @@ function setup(options: { gates?: boolean } = {}) {
     state.control = 'token';
     state.transcriptExport = run;
     const ctx = { rt, job, state } as unknown as AttemptCtx;
-    const relay = createExportRelay(rt, job, run, 'token');
+    const relay = createExportRelay(rt, job, run, (kill) => killAgent(rt, job, 'token', kill));
     return { run, board, kill, stopAgent, raiseKill, recordKill, rt, ctx, relay };
 }
 
@@ -188,10 +188,10 @@ describe('the check after the run', () => {
 
 describe('the volume export channel (issue #938)', () => {
     const attempt = { jobId: job.id, claimSeq: 3 };
-    const open = async (answer: { result: string } = { result: 'stored' }) => {
+    const open = async (answer: object = { result: 'stored' }, finalized = 'stored') => {
         const board = {
             putArtifactChunk: vi.fn(async () => answer),
-            finalizeArtifact: vi.fn(async () => 'stored' as const),
+            finalizeArtifact: vi.fn(async () => finalized),
         };
         const server = {
             listen: vi.fn(async () => 4321),
@@ -242,6 +242,21 @@ describe('the volume export channel (issue #938)', () => {
             expect(channel.proof()).toMatchObject({ drained: false, why: expect.stringContaining(result) });
         }
     );
+
+    it('leaves a 409 that names the recorded chunk to the exporter: drained once it closed the stream by the order', async () => {
+        const { channel, relay } = await open({ result: 'conflict', recorded: { length: 1, sha256: 'a'.repeat(64) } });
+        await relay.putChunk('s', 0, new Uint8Array([1, 2]));
+        await relay.finalize({ ...MANIFEST, terminalCause: VOLUME_EXPORT_CAUSE });
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        expect(channel.proof()).toEqual({ drained: true });
+    });
+
+    it.each([['rejected'], ['conflict']])('is not drained after a manifest the board answered %s', async (answer) => {
+        const { channel, relay } = await open({ result: 'stored' }, answer);
+        await relay.finalize({ ...MANIFEST, terminalCause: VOLUME_EXPORT_CAUSE });
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        expect(channel.proof()).toMatchObject({ drained: false, why: expect.stringContaining(answer) });
+    });
 
     it('is not drained when a stream was closed with another cause than the order, or truncated', async () => {
         const { channel, relay } = await open();

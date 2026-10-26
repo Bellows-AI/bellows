@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -62,14 +62,21 @@ const startBoard = async (): Promise<{
             }
             if (mode.chunk === 'hang') return;
             if (mode.chunk === 'conflict') return answer(409, { code: 'ARTIFACT_CONFLICT' });
-            chunks.push({
+            const stored: Stored = {
                 job,
                 claimSeq: Number(url.searchParams.get('claimSeq')),
                 session: url.searchParams.get('session') ?? '',
                 offset: Number(url.searchParams.get('offset')),
                 bytes: Buffer.concat(body),
-            });
-            answer(200, { result: 'stored' });
+            };
+            // Stored once per stream and offset, as the board does: a different body there is a 409 naming it.
+            const held = chunks.find((c) => c.session === stored.session && c.offset === stored.offset);
+            if (held && !held.bytes.equals(stored.bytes)) {
+                const sha256 = createHash('sha256').update(held.bytes).digest('hex');
+                return answer(409, { code: 'ARTIFACT_CONFLICT', recorded: { length: held.bytes.length, sha256 } });
+            }
+            if (!held) chunks.push(stored);
+            answer(200, { result: held ? 'duplicate' : 'stored' });
         });
     });
     server.on('connection', (socket) => {
@@ -188,10 +195,9 @@ async function scene(options: { deadlineMs?: number } = {}) {
                     aborted = true;
                     stop();
                 });
-                const code = await ended;
+                await ended;
                 clearTimeout(timer);
                 const proof = channel.proof();
-                if (code !== 0) return { result: 'inconclusive', why: `the exporter exited ${code}` };
                 return proof.drained ? { result: 'drained' } : { result: 'inconclusive', why: proof.why };
             } finally {
                 channel.close();
@@ -254,6 +260,22 @@ describe('the reaper re-exports a killed exporter’s unacknowledged records bef
         expect(s.board.manifests).toEqual([
             expect.objectContaining({ session: SESSION, state: 'partial', terminalCause: 'reaper_export' }),
         ]);
+        expect(s.outcomes).toEqual(['ok']);
+    });
+
+    it('drains a volume whose exporter was killed mid-PUT: a stored-but-unacknowledged chunk at the offset, cut differently', async () => {
+        const s = await scene();
+        // The killed exporter's last PUT landed (two records past the ack) but its ack was lost.
+        s.board.chunks.push({
+            job: s.jobId,
+            claimSeq: CLAIM_SEQ,
+            session: SESSION,
+            offset: Buffer.byteLength(s.acked),
+            bytes: Buffer.from(s.unacked.split('\n').slice(0, 2).join('\n') + '\n'),
+        });
+        await s.reaper.sweep();
+        expect(s.events).toEqual(['export', 'reap']);
+        expect(s.uploaded()).toBe(s.acked + s.unacked);
         expect(s.outcomes).toEqual(['ok']);
     });
 

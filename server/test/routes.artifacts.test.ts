@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { OCTET_STREAM_CONTENT_TYPE } from '@factory-ai/core';
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
@@ -53,7 +54,10 @@ function memoryArtifacts() {
             }
             const same = Buffer.compare(Buffer.from(held), Buffer.from(body)) === 0;
             if (same) return { result: 'duplicate', key: at(ref, offset) };
-            return { result: 'conflict', recorded: { offset, length: held.length, sha256: '0'.repeat(64) } };
+            return {
+                result: 'conflict',
+                recorded: { offset, length: held.length, sha256: createHash('sha256').update(held).digest('hex') },
+            };
         },
         async finalize(ref, input: ManifestInput) {
             finalizes.push(ref);
@@ -213,6 +217,19 @@ describe('PUT /api/jobs/:id/artifact/chunk', () => {
 
         expect(response.statusCode).toBe(409);
         expect(response.json().code).toBe('ARTIFACT_CONFLICT');
+    });
+
+    it('names the recorded chunk in the 409: its length and sha256, for an exporter to compare with its bytes', async () => {
+        const instance = await boot(SCOPE, memoryArtifacts().store);
+        await putChunk(instance, CURRENT_CLAIM, 0, 'hello');
+
+        const response = await putChunk(instance, CURRENT_CLAIM, 0, 'hello world');
+
+        expect(response.statusCode).toBe(409);
+        expect(response.json().recorded).toEqual({
+            length: 5,
+            sha256: createHash('sha256').update('hello').digest('hex'),
+        });
     });
 
     it('refuses a claim sequence the job has not reached, or never had', async () => {

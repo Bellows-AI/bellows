@@ -21,12 +21,16 @@ export interface VolumeExportAttempt {
 /**
  * What a volume export proved. `drained`: every record the volume held was acknowledged and the streams were
  * closed. `never_started`: the export workload could not be created or scheduled. `inconclusive`: it ran, or
- * its outcome could not be read, without proving a drain.
+ * its outcome could not be read, without proving a drain. `contended`: another export (a second driver replica's)
+ * holds the thread's workload name, so none ran here; it counts as no failed attempt.
  */
 export type VolumeExport =
     | { result: 'drained' }
+    /** The volume was already gone (proven by the platform's own "no such volume"): nothing to export, nothing exported. */
+    | { result: 'gone' }
     | { result: 'inconclusive'; why: string }
-    | { result: 'never_started'; why: string };
+    | { result: 'never_started'; why: string }
+    | { result: 'contended'; why: string };
 
 export type VolumeExportResult = VolumeExport['result'];
 
@@ -81,7 +85,7 @@ export function createVolumeExportGate(deps: {
             again.lastClaimSeq === attempt.claimSeq;
         if (!same) {
             onUnproven();
-            if (again !== null)
+            if (again !== undefined)
                 log(`reaper: thread ${thread.root} — not the thread that was exported, keeping its volumes`);
         }
         return same;
@@ -95,7 +99,10 @@ export function createVolumeExportGate(deps: {
     };
 
     /** One failed attempt; true once the last one has failed. */
-    const failed = (root: string, outcome: Exclude<VolumeExport, { result: 'drained' }>): boolean => {
+    const failed = (
+        root: string,
+        outcome: Exclude<VolumeExport, { result: 'drained' | 'gone' | 'contended' }>
+    ): boolean => {
         const count = (failures.get(root) ?? 0) + 1;
         failures.set(root, count);
         onUnproven();
@@ -128,7 +135,12 @@ export function createVolumeExportGate(deps: {
             return 'abort';
         }
         deps.observe?.volumeExport?.(outcome.result);
-        if (outcome.result === 'drained') return finish(thread, attempt, null);
+        if (outcome.result === 'drained' || outcome.result === 'gone') return finish(thread, attempt, null);
+        if (outcome.result === 'contended') {
+            onUnproven();
+            log(`reaper: thread ${thread.root} — ${outcome.why}, keeping its volumes`);
+            return 'keep';
+        }
         return failed(thread.root, outcome) ? finish(thread, attempt, outcome.why) : 'keep';
     };
 
@@ -138,6 +150,12 @@ export function createVolumeExportGate(deps: {
             if (facts?.live) failures.delete(root);
         },
         deleted: (root: string): void => void failures.delete(root),
+        /** A sweep's round: forgets the attempts of roots that no longer have a volume (deleted by another replica or by hand). */
+        begin(roots: readonly string[]): { exported: boolean } {
+            const keep = new Set(roots);
+            for (const root of failures.keys()) if (!keep.has(root)) failures.delete(root);
+            return { exported: false };
+        },
         abort: (): void => exporting?.abort(),
 
         /**
@@ -153,6 +171,8 @@ export function createVolumeExportGate(deps: {
             round: { exported: boolean }
         ): Promise<ExportVerdict> {
             if (!arm.exportVolume || !facts || isWhole(facts)) return 'delete';
+            // No attempt was ever claimed: no runner wrote a transcript, so the volume holds nothing to export.
+            if (facts.lastJobId === null || facts.lastClaimSeq === null) return 'delete';
             const attempt = { jobId: facts.lastJobId, claimSeq: facts.lastClaimSeq };
             // The last attempt failed but the delete did not happen (a refused read or delete): no more tries.
             if ((failures.get(thread.root) ?? 0) >= attempts) {
@@ -191,6 +211,10 @@ export function newestVolume(thread: VolumeThread): VolumeThread['volumes'][numb
     }
     return best?.volume ?? null;
 }
+
+/** Whether an export workload created at `createdMs` is past its own whole budget (`drainMs`, cleanup included): only then is it provably stale. */
+export const exportWorkloadStale = (createdMs: number, drainMs: number, nowMs: number): boolean =>
+    Number.isFinite(createdMs) && nowMs - createdMs > drainMs;
 
 /** The name of a thread's export workload: one per thread, so a stale one is found and removed by name. */
 export const volumeExportName = (root: string): string => `factory-export-${taskRootOf({ id: root })}`;

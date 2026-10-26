@@ -6,6 +6,7 @@ import {
     reapDecision,
     volumeDecision,
     type OrphanGroup,
+    type ReapInconclusive,
     type ReaperArm,
     type ReapVerdict,
     type VolumeThread,
@@ -577,6 +578,8 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
         exported?: (root: string, signal: AbortSignal) => Promise<Exported>;
         attempts?: number;
         withExportArm?: boolean;
+        /** What the arm's delete answers, instead of removing the volumes. */
+        reapAnswer?: () => ReapInconclusive;
     }) => {
         const events: string[] = [];
         const logs: string[] = [];
@@ -591,6 +594,7 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
             scanVolumes: async () => ({ threads: opts.listed.filter((t) => !reaped.has(t.root)), skipped: [] }),
             reapVolumes: async (t) => {
                 events.push(`reap ${t.root}`);
+                if (opts.reapAnswer) return opts.reapAnswer();
                 reaped.add(t.root);
                 return t.volumes.map((v) => v.name);
             },
@@ -710,6 +714,13 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
         expect(h.events).toEqual([`reap ${ROOT_A}`]);
     });
 
+    it('deletes a not-whole thread nothing ever claimed without an export: no runner wrote a transcript', async () => {
+        const never = thread({ ...NOT_WHOLE, lastJobId: null, lastClaimSeq: null });
+        const h = harness({ listed: [volumesOf(ROOT_A)], answer: stable(never) });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`reap ${ROOT_A}`]);
+    });
+
     it('regression: a thread with no board row is deleted without an export', async () => {
         const h = harness({
             listed: [{ root: ROOT_A, volumes: [{ name: 'v', createdAtMs: FINALIZED }] }],
@@ -785,6 +796,45 @@ describe('the volume sweep re-exports a thread that is not whole before deleting
             await h.sweepAgain(); // A fails twice and is deleted as a loss
             expect(h.events).toEqual([`export ${ROOT_A}`, `export ${ROOT_A}`, `reap ${ROOT_A}`]);
             expect(h.lost).toEqual(['lost']);
+        });
+
+        it('does not count a contended export as a failed attempt: another replica holds the workload', async () => {
+            const h = harness({
+                listed: [volumesOf(ROOT_A)],
+                answer: stable(thread(NOT_WHOLE)),
+                exported: async () => ({ result: 'contended', why: 'another export holds the name' }),
+                attempts: 1,
+            });
+            await h.reaper.sweep();
+            await h.sweepAgain();
+            expect(h.events).toEqual([`export ${ROOT_A}`, `export ${ROOT_A}`]);
+            expect(h.lost).toEqual([]);
+            expect(h.outcomes).toEqual(['aborted', 'aborted']);
+        });
+
+        it('forgets the attempts of a thread whose volume is gone', async () => {
+            const listed = [volumesOf(ROOT_A)];
+            const h = harness({ listed, answer: stable(thread(NOT_WHOLE)), exported: failing, attempts: 2 });
+            await h.reaper.sweep(); // one failed attempt
+            listed.length = 0; // deleted by another replica
+            await h.reaper.sweep();
+            listed.push(volumesOf(ROOT_A)); // a new thread under the same root
+            await h.reaper.sweep(); // the count starts over: attempt 1 of 2 again
+            expect(h.events).toEqual([`export ${ROOT_A}`, `export ${ROOT_A}`]);
+            expect(h.lost).toEqual([]);
+        });
+
+        it('keeps counting when the delete after the last attempt was unconfirmed', async () => {
+            const h = harness({
+                listed: [volumesOf(ROOT_A)],
+                answer: stable(thread(NOT_WHOLE)),
+                exported: failing,
+                attempts: 1,
+                reapAnswer: () => ({ removed: [], inconclusive: 'the daemon timed out' }),
+            });
+            await h.reaper.sweep(); // attempt 1 fails: the delete is tried and unconfirmed
+            await h.sweepAgain(); // no further export: the delete is retried straight away
+            expect(h.events).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`, `reap ${ROOT_A}`]);
         });
 
         it('treats a read that cannot confirm the thread after the last attempt as a keep', async () => {

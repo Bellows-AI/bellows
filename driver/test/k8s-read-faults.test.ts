@@ -15,7 +15,7 @@ import { loadDriverConfig } from '../src/config.js';
 import { commandMark } from '../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../src/k8s/k8s-transport.js';
 import { jobsPath, runnerJobName } from '../src/k8s/k8s-podspec.js';
-import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { jobPath, secretsPath } from '../src/k8s/k8s-auxspec.js';
 import { createKubernetesReaper } from '../src/k8s/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
 import { createReaper } from '../src/reaper.js';
@@ -452,8 +452,19 @@ const volumeExportOf =
         const claims = `${API}/persistentvolumeclaims`;
         const labels = { 'factory.task-root': root, 'factory.task-board': boardIdentity(CONFIG) };
         const reply = (body: unknown): K8sResponse => ({ status: 200, body: JSON.stringify(body) });
-        const request: K8sRequest = async (method, path) => {
+        const request: K8sRequest = async (method, path, body) => {
             const bare = path.split('?')[0]!;
+            if (method === 'POST' && bare === secretsPath(NS)) {
+                alias(
+                    String(
+                        (body as { metadata: { labels: Record<string, string> } }).metadata.labels[
+                            'factory.volume-export-run'
+                        ]
+                    ),
+                    'run'
+                );
+                return { status: 201, body: '{}' };
+            }
             if (method === 'GET' && bare === claims) {
                 return reply({ items: [{ metadata: { name: claim, uid: 'claim-uid', labels } }] });
             }
@@ -512,17 +523,27 @@ const volumeExportOf =
     };
 
 const EXPORT_JOB = `DELETE ${jobsPath(NS)}/factory-export-<root>`;
+const SECRET_POST = `POST ${secretsPath(NS)}`;
+const SECRET_DELETE = `DELETE ${secretsPath(NS)}/factory-job-export-<run>-env`;
 
 scenario(
     'the reaper exporting a not-whole thread’s claim that the relay did not prove drained (K-VX)',
     volumeExportOf(false),
-    { writes: [`POST ${jobsPath(NS)}`, EXPORT_JOB] },
+    { writes: [SECRET_POST, `POST ${jobsPath(NS)}`, EXPORT_JOB, SECRET_DELETE] },
     {}
 );
 
 scenario(
     'the reaper exporting a not-whole thread’s claim before its delete (K-VX2)',
     volumeExportOf(true),
-    { writes: [`POST ${jobsPath(NS)}`, EXPORT_JOB, `DELETE ${API}/persistentvolumeclaims/factory-task-<root>-1`] },
+    {
+        writes: [
+            SECRET_POST,
+            `POST ${jobsPath(NS)}`,
+            EXPORT_JOB,
+            SECRET_DELETE,
+            `DELETE ${API}/persistentvolumeclaims/factory-task-<root>-1`,
+        ],
+    },
     {}
 );

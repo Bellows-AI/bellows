@@ -7,6 +7,7 @@ import type { CheckpointRelay, ExportRelay } from '../export-control.js';
 import type { VolumeExportAttempt } from '../reaper.js';
 import type { RunOutcome } from '../runner.js';
 import { controlTokenOf, type ReviewExporter } from '../supervised-steps.js';
+import type { KillRecord } from '../termination.js';
 import { killAgent } from './loop-attempt.js';
 import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { EXPORT_PRODUCER, EXPORT_SCHEMA_VERSION, SPOOL_FULL_CAUSE } from '../transcript-export.js';
@@ -84,19 +85,15 @@ export function attachCheckpoint(ctx: Pick<AttemptCtx, 'rt' | 'job'>, token: str
     rt.gates?.server.attachCheckpoint(token, createCheckpointRelay(rt, job));
 }
 
-/** The relay behind the control token's export routes: board calls plus the run's bookkeeping. */
+/**
+ * The relay behind the control token's export routes: board calls plus the run's bookkeeping. `stopAgent`
+ * ends the run when the spool fills; a review's relay (and a volume export's) has no agent to stop.
+ */
 export function createExportRelay(
     rt: Pick<LoopRuntime, 'board' | 'log'>,
     job: BoardJob,
     run: ExportRun,
-    control: null
-): ExportRelay;
-export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun, control: string | null): ExportRelay;
-export function createExportRelay(
-    rt: Pick<LoopRuntime, 'board' | 'log'>,
-    job: BoardJob,
-    run: ExportRun,
-    control: string | null
+    stopAgent: ((kill: KillRecord) => Promise<void>) | null
 ): ExportRelay {
     return {
         putChunk: (session, offset, bytes) => rt.board.putArtifactChunk(job, refOf(job, session), offset, bytes),
@@ -119,12 +116,10 @@ export function createExportRelay(
                 rt.log(
                     `job ${job.id}: ${SPOOL_FULL_CAUSE}: ${report.pendingBytes} bytes unacknowledged, stopping the run`
                 );
-                // A review's relay (no `control`) has no agent to stop: its bytes stay on the volume.
-                if (control !== null) {
-                    // A relay with a control token has an agent to stop, and its caller passed the whole runtime.
-                    const kill = { reason: SPOOL_FULL_CAUSE, detail: `${report.pendingBytes} bytes` } as const;
-                    void killAgent(rt as LoopRuntime, job, control, kill).catch(() => undefined);
-                }
+                // Without an agent to stop, the bytes stay on the volume.
+                void stopAgent?.({ reason: SPOOL_FULL_CAUSE, detail: `${report.pendingBytes} bytes` }).catch(
+                    () => undefined
+                );
             }
             if (report.done) run.done = true;
         },
@@ -140,7 +135,10 @@ export function attachTranscriptExport(ctx: Pick<AttemptCtx, 'rt' | 'job' | 'sta
     const { rt, job, state } = ctx;
     if (job.executorType !== CLAUDE_CODE || !rt.gates) return;
     const run = newExportRun();
-    rt.gates.server.attachExporter(token, createExportRelay(rt, job, run, token));
+    rt.gates.server.attachExporter(
+        token,
+        createExportRelay(rt, job, run, (kill) => killAgent(rt, job, token, kill))
+    );
     state.transcriptExport = run;
 }
 
@@ -236,7 +234,10 @@ export function createVolumeExportOpener(
             ...inner,
             async putChunk(session, offset, bytes) {
                 const answer = await inner.putChunk(session, offset, bytes);
-                if (answer.result !== 'stored' && answer.result !== 'duplicate') {
+                // A 409 naming the recorded chunk is the exporter's to resolve (a prefix of what it holds is
+                // acked and continued); one that stops the stream closes it with another cause: `undrained`.
+                const resolvable = answer.result === 'conflict' && answer.recorded !== undefined;
+                if (answer.result !== 'stored' && answer.result !== 'duplicate' && !resolvable) {
                     refusals.push(
                         `${session}@${offset}: ${answer.result === 'refused' ? answer.cause : answer.result}`
                     );
@@ -249,7 +250,11 @@ export function createVolumeExportOpener(
                         `${manifest.session} closed ${manifest.state}: ${manifest.terminalCause ?? 'no cause'}`
                     );
                 }
-                return inner.finalize(manifest);
+                const answer = await inner.finalize(manifest);
+                if (answer !== 'stored' && answer !== 'duplicate') {
+                    undrained.push(`${manifest.session} manifest ${answer}`);
+                }
+                return answer;
             },
         };
         const owner = randomUUID();

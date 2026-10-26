@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { loadDriverConfig } from '../src/config.js';
 import { claudeExportScript } from '../src/container-scripts.js';
-import { jobPodsPath } from '../src/k8s/k8s-auxspec.js';
+import { jobPodsPath, secretsPath } from '../src/k8s/k8s-auxspec.js';
 import { jobsPath } from '../src/k8s/k8s-podspec.js';
 import { createKubernetesReaper } from '../src/k8s/k8s-reaper.js';
 import { taskVolumesPath } from '../src/k8s/k8s-task-volume.js';
@@ -47,6 +47,10 @@ interface Recorded {
 interface World {
     claim?: K8sResponse | Error;
     create?: K8sResponse | Error;
+    /** The answer to creating the export's Secret. */
+    secret?: K8sResponse | Error;
+    /** The Job under the name as a GET reads it, given the run id this export labelled its Job with. */
+    held?: (run: string | undefined) => K8sResponse | Error;
     /** Each pod GET answers the next entry, the last one forever. */
     pod?: (K8sResponse | Error)[];
     /** The answer to listing the Job's pods. */
@@ -72,15 +76,19 @@ const scene = (world: World = {}) => {
         const answer =
             method === 'GET' && path === CLAIM
                 ? (world.claim ?? json(200, {}))
-                : method === 'POST'
-                  ? (world.create ?? json(201, { metadata: { uid: POD_UID } }))
-                  : method === 'GET' && path.startsWith(jobPodsPath(NAMESPACE, NAME))
-                    ? (world.pods ?? json(200, { items: [] }))
-                    : method === 'GET' && path === JOB
-                      ? (states.length > 1 ? states.shift() : states[0])!
-                      : method === 'DELETE'
-                        ? (world.del ?? json(200, {}))
-                        : json(404, {});
+                : method === 'POST' && path === secretsPath(NAMESPACE)
+                  ? (world.secret ?? json(201, {}))
+                  : method === 'POST'
+                    ? (world.create ?? json(201, { metadata: { uid: POD_UID } }))
+                    : method === 'GET' && path.startsWith(jobPodsPath(NAMESPACE, NAME))
+                      ? (world.pods ?? json(200, { items: [] }))
+                      : method === 'GET' && path === JOB && world.held
+                        ? world.held(runOf(calls))
+                        : method === 'GET' && path === JOB
+                          ? (states.length > 1 ? states.shift() : states[0])!
+                          : method === 'DELETE'
+                            ? (world.del ?? json(200, {}))
+                            : json(404, {});
         if (answer instanceof Error) throw answer;
         return answer;
     };
@@ -99,9 +107,18 @@ const scene = (world: World = {}) => {
     return { arm, calls, close, controller: new AbortController() };
 };
 
-const deletes = (calls: Recorded[]): Recorded[] => calls.filter((call) => call.method === 'DELETE');
+const deletes = (calls: Recorded[]): Recorded[] =>
+    calls.filter((call) => call.method === 'DELETE' && call.path.startsWith(JOB));
+const secretDeletes = (calls: Recorded[]): Recorded[] =>
+    calls.filter((call) => call.method === 'DELETE' && call.path.startsWith(secretsPath(NAMESPACE)));
+const runOf = (calls: Recorded[]): string | undefined =>
+    (
+        calls.find((call) => call.method === 'POST' && call.path === jobsPath(NAMESPACE))?.body as {
+            metadata?: { labels?: Record<string, string> };
+        }
+    )?.metadata?.labels?.['factory.volume-export-run'];
 const created = (calls: Recorded[]) =>
-    calls.find((call) => call.method === 'POST')!.body as {
+    calls.find((call) => call.method === 'POST' && call.path === jobsPath(NAMESPACE))!.body as {
         kind: string;
         metadata: { name: string; labels: Record<string, string> };
         spec: {
@@ -117,7 +134,7 @@ const created = (calls: Recorded[]) =>
                     containers: {
                         image: string;
                         command: string[];
-                        env: { name: string; value: string }[];
+                        env: { name: string; value?: string; valueFrom?: unknown }[];
                         securityContext: { allowPrivilegeEscalation: boolean };
                         volumeMounts: unknown;
                     }[];
@@ -130,8 +147,6 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
     it('creates the exporter Job over the newest claim, hardened, deadline-bound and labelled for the runner network policy', async () => {
         const { arm, calls, controller } = scene();
         await arm.exportVolume!(thread, ATTEMPT, controller.signal);
-        const post = calls.find((call) => call.method === 'POST')!;
-        expect(post.path).toBe(jobsPath(NAMESPACE));
         const pod = created(calls);
         expect(pod.kind).toBe('Job');
         expect(pod.metadata.name).toBe(NAME);
@@ -140,6 +155,7 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         expect(pod.metadata.labels).toEqual({
             'factory.job': `volume-export-${ROOT}`,
             'factory.volume-export': ROOT,
+            'factory.volume-export-run': expect.any(String),
             'app.kubernetes.io/instance': 'factory',
         });
         expect(pod.spec.template.metadata.labels).toEqual(pod.metadata.labels);
@@ -158,13 +174,28 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         expect(container.command).toEqual(['node', '-e', claudeExportScript]);
         expect(container.securityContext.allowPrivilegeEscalation).toBe(false);
         expect(container.volumeMounts).toEqual([{ name: 'task', mountPath: '/task' }]);
-        const env = Object.fromEntries(container.env.map((e: { name: string; value: string }) => [e.name, e.value]));
+        const env = Object.fromEntries(container.env.map((e) => [e.name, e.value]));
         expect(env).toMatchObject({
             CLAUDE_TRANSCRIPT_DIR: `/task/.factory/transcripts/${ROOT}`,
             EXPORT_ONCE: 'partial',
             EXPORT_ONCE_CAUSE: 'reaper_export',
             BELLOWS_CONTROL_URL: 'http://driver.factory.svc:8130/control',
-            BELLOWS_CONTROL_TOKEN: 'export-token',
+        });
+        // The token is never on the Job object: it is read from the export's own Secret.
+        expect(JSON.stringify(pod)).not.toContain('export-token');
+        const secretName = `factory-job-export-${runOf(calls)}-env`;
+        expect(secretName).toMatch(/^factory-job-[a-z0-9-]+-env$/);
+        expect(container.env.find((e) => e.name === 'BELLOWS_CONTROL_TOKEN')).toEqual({
+            name: 'BELLOWS_CONTROL_TOKEN',
+            valueFrom: { secretKeyRef: { name: secretName, key: 'BELLOWS_CONTROL_TOKEN' } },
+        });
+        const secret = calls.find((call) => call.method === 'POST' && call.path === secretsPath(NAMESPACE))!;
+        expect(calls.indexOf(secret)).toBeLessThan(calls.findIndex((call) => call.path === jobsPath(NAMESPACE)));
+        expect(secret.body).toMatchObject({
+            kind: 'Secret',
+            type: 'Opaque',
+            metadata: { name: secretName, labels: { 'factory.job': `volume-export-${ROOT}` } },
+            stringData: { BELLOWS_CONTROL_TOKEN: 'export-token' },
         });
         expect(Number(env.EXPORT_GIVEUP_MS)).toBeLessThan(600);
         expect(Number(env.EXPORT_DRAIN_GIVEUP_MS)).toBeLessThan(600);
@@ -181,6 +212,7 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
             },
         ]);
         expect(close).toHaveBeenCalledTimes(1);
+        expect(secretDeletes(calls)).toHaveLength(1);
     });
 
     it('is inconclusive when the pod finished without the relay’s proof, even Succeeded', async () => {
@@ -240,19 +272,84 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
         const { arm, calls, close, controller } = scene({ create: json(403, { message: 'denied' }) });
         expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('never_started');
         expect(calls.some((call) => call.method === 'GET' && call.path === JOB)).toBe(false);
+        expect(deletes(calls)).toEqual([]);
+        expect(secretDeletes(calls)).toHaveLength(1);
         expect(close).toHaveBeenCalledTimes(1);
     });
 
-    it('is inconclusive when the create times out (the pod may exist) and deletes it by name', async () => {
-        const { arm, calls, controller } = scene({ create: new Error('timed out') });
-        expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
-        expect(deletes(calls)).toEqual([{ method: 'DELETE', path: JOB_DELETE }]);
+    it('is never_started when the Secret is refused: no Job is created, and the Secret delete is still owed once', async () => {
+        const { arm, calls, controller } = scene({ secret: json(403, { message: 'denied' }) });
+        expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('never_started');
+        expect(calls.some((call) => call.path === jobsPath(NAMESPACE))).toBe(false);
+        expect(secretDeletes(calls)).toHaveLength(1);
     });
 
-    it('clears a stale pod under the name (409) and is inconclusive this round', async () => {
-        const { arm, calls, controller } = scene({ create: json(409, { reason: 'AlreadyExists' }) });
-        expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
-        expect(deletes(calls)).toEqual([{ method: 'DELETE', path: JOB_DELETE }]);
+    describe('a create that timed out (the Job may exist)', () => {
+        it('removes the Job under the name, by the uid it reads, when it carries this export’s label', async () => {
+            const { arm, calls, controller } = scene({
+                create: new Error('timed out'),
+                held: (run) =>
+                    json(200, { metadata: { uid: 'ours-uid', labels: { 'factory.volume-export-run': run } } }),
+            });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
+            expect(deletes(calls)).toEqual([
+                {
+                    method: 'DELETE',
+                    path: JOB_DELETE,
+                    body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'ours-uid' } },
+                },
+            ]);
+            expect(secretDeletes(calls)).toHaveLength(1);
+        });
+
+        it.each([
+            [
+                'another export’s label',
+                () => json(200, { metadata: { uid: 'theirs', labels: { 'factory.volume-export-run': 'other' } } }),
+            ],
+            ['no label', () => json(200, { metadata: { uid: 'theirs' } })],
+            ['a read that failed', () => json(500, {})],
+            ['a Job that is not there', () => json(404, {})],
+        ])('leaves a Job under the name with %s alone', async (_name, held) => {
+            const { arm, calls, controller } = scene({ create: new Error('timed out'), held });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
+            expect(deletes(calls)).toEqual([]);
+        });
+    });
+
+    describe('a Job already under the export name (409: a second replica’s, or a crashed driver’s)', () => {
+        const CONFLICT = json(409, { reason: 'AlreadyExists' });
+        const heldAgo = (ms: number) => () =>
+            json(200, { metadata: { uid: 'held-uid', creationTimestamp: new Date(Date.now() - ms).toISOString() } });
+
+        it('leaves one within its deadline alone: contended, nothing deleted, the Secret still removed', async () => {
+            const { arm, calls, controller } = scene({ create: CONFLICT, held: heldAgo(100) });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect(deletes(calls)).toEqual([]);
+            expect(secretDeletes(calls)).toHaveLength(1);
+        });
+
+        it('deletes one past the whole budget, by the uid just read, and exports next round', async () => {
+            const { arm, calls, controller } = scene({ create: CONFLICT, held: heldAgo(5_000) });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect(deletes(calls)).toEqual([
+                {
+                    method: 'DELETE',
+                    path: JOB_DELETE,
+                    body: { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: 'held-uid' } },
+                },
+            ]);
+        });
+
+        it.each([
+            ['cannot be read', () => json(500, {})],
+            ['has no creation time', () => json(200, { metadata: { uid: 'held-uid' } })],
+            ['is gone', () => json(404, {})],
+        ])('leaves one that %s alone', async (_name, held) => {
+            const { arm, calls, controller } = scene({ create: CONFLICT, held });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect(deletes(calls)).toEqual([]);
+        });
     });
 
     it('is never_started with no control endpoint, or one that fails to open, and creates nothing', async () => {
@@ -266,7 +363,7 @@ describe('the kubernetes arm: exporting a thread’s volume before its delete (#
     it('skips a claim the API server says is gone (404), and keeps one it could not read', async () => {
         const gone = scene({ claim: json(404, {}) });
         await expect(gone.arm.exportVolume!(thread, ATTEMPT, gone.controller.signal)).resolves.toEqual({
-            result: 'drained',
+            result: 'gone',
         });
         for (const claim of [json(403, {}), new Error('timed out'), json(500, {})]) {
             const failed = scene({ claim });

@@ -11,8 +11,8 @@ export interface BoardThreadFacts {
     artifactsComplete: boolean;
     checkpoint: 'complete' | 'truncated' | 'none';
     checkpointFinalizedAt: string | null;
-    lastJobId: string;
-    lastClaimSeq: number;
+    lastJobId: string | null;
+    lastClaimSeq: number | null;
 }
 
 const CHECKPOINT_STATES: readonly string[] = ['complete', 'truncated', 'none'];
@@ -31,8 +31,10 @@ export const isThreadFacts = (value: unknown, idShape: RegExp): value is BoardTh
         CHECKPOINT_STATES.includes(thread.checkpoint as string) &&
         isTimeOrNull(thread.lastFinalizedAt) &&
         isTimeOrNull(thread.checkpointFinalizedAt) &&
-        idShape.test(String(thread.lastJobId)) &&
-        Number.isInteger(thread.lastClaimSeq) &&
-        Number(thread.lastClaimSeq) >= 0
+        (thread.lastJobId === null
+            ? thread.lastClaimSeq === null
+            : idShape.test(String(thread.lastJobId)) &&
+              Number.isInteger(thread.lastClaimSeq) &&
+              Number(thread.lastClaimSeq) >= 1)
     );
 };

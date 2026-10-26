@@ -167,6 +167,25 @@ describe.skipIf(!enabled)('lease lookup thread facts — database', () => {
         expect(await t.threadOf()).toMatchObject({ lastJobId: child.id, lastClaimSeq: second.claimSeq });
     });
 
+    it('names the newest attempt that was ever claimed when a later follow-up was stopped before its claim', async () => {
+        const t = await task();
+        await t.succeed(t.id, t.first.leaseToken);
+        const child = await jobs.createFollowUp(t.id, 'adjust', null);
+        if (typeof child === 'string' || !('id' in child)) throw new Error(`refused: ${JSON.stringify(child)}`);
+        await jobs.stop(child.id, null);
+        const facts = await t.threadOf();
+        expect(facts).toMatchObject({ lastJobId: t.id, lastClaimSeq: t.first.claimSeq });
+        expect(facts!.lastClaimSeq).toBeGreaterThanOrEqual(1);
+    });
+
+    it('names no attempt for a thread nothing ever claimed', async () => {
+        const created = await jobs.create('never claimed', null, { repo: null, executor: null });
+        if (typeof created === 'string') throw new Error(created);
+        await jobs.stop(created.id, null);
+        const [lease] = await jobs.leases([created.id], true);
+        expect(lease!.thread).toMatchObject({ lastJobId: null, lastClaimSeq: null });
+    });
+
     it('answers no thread for a row that is not a root', async () => {
         const t = await task();
         await t.succeed(t.id, t.first.leaseToken);

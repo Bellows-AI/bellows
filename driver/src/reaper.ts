@@ -285,9 +285,11 @@ const reapThread = async (
     ctx: { log: (message: string) => void; onUnproven: () => void; exporter: { deleted(root: string): void } }
 ): Promise<void> => {
     const { log, onUnproven, exporter } = ctx;
-    for (const removed of settleReap(await arm.reapVolumes!(thread), `thread ${thread.root}`, { log, onUnproven }))
+    const result = await arm.reapVolumes!(thread);
+    for (const removed of settleReap(result, `thread ${thread.root}`, { log, onUnproven }))
         log(`reaper: thread ${thread.root} — removed ${removed}`);
-    exporter.deleted(thread.root);
+    // An unconfirmed delete leaves the volume: its export attempts still count.
+    if (Array.isArray(result)) exporter.deleted(thread.root);
 };
 
 /** The task volume threads and the board's answer for their roots, or null when either proved nothing. */
@@ -414,7 +416,7 @@ export function createReaper(deps: {
         if (volumePolicy === undefined || !arm.scanVolumes || !arm.reapVolumes) return;
         const proven = await proveVolumes(arm, { board: deps.board, log, observe: deps.observe, onUnproven });
         if (proven === null) return;
-        const round = { exported: false };
+        const round = exporter.begin(proven.threads.map((thread) => thread.root));
         for (const thread of proven.threads) {
             const verdict = await verdictOf(thread, proven.leases, volumePolicy, round);
             if (verdict === 'abort') return;

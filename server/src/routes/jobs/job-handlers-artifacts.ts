@@ -140,12 +140,13 @@ export async function handleArtifactChunk(orgs: OrgRegistry, request: FastifyReq
     const put = await indexCall(reply, request, () => artifacts.putChunk(ref, offset, chunk));
     if (!put) return reply;
     if (put.result === 'conflict') {
-        return bad(
-            reply,
-            ERROR_CODES.ARTIFACT_CONFLICT,
-            'a different chunk is already stored at this offset',
-            HTTP_CONFLICT
-        );
+        // The recorded chunk's length and digest let an exporter whose ack was lost (killed mid-PUT) see that
+        // what is stored is a prefix of the bytes it holds, and continue after it.
+        return reply.code(HTTP_CONFLICT).send({
+            error: 'a different chunk is already stored at this offset',
+            code: ERROR_CODES.ARTIFACT_CONFLICT,
+            recorded: { length: put.recorded.length, sha256: put.recorded.sha256 },
+        });
     }
     if (put.result === 'refused') {
         return reply.code(HTTP_PAYLOAD_TOO_LARGE).send({

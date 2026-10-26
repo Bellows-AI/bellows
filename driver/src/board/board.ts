@@ -467,7 +467,9 @@ export interface ArtifactStreamRef {
 
 /** What the board makes of one chunk. `rejected` is a 4xx that a retry cannot change. */
 export type ChunkAnswer =
-    | { result: 'stored' | 'duplicate' | 'conflict' | 'rejected' }
+    | { result: 'stored' | 'duplicate' | 'rejected' }
+    /** `recorded`: the chunk the board holds at that offset, when it said which. */
+    | { result: 'conflict'; recorded?: { length: number; sha256: string } }
     | { result: 'refused'; cause: string };
 
 /** A stream's closing record; copied from the board's manifest shape, times as ISO strings. */

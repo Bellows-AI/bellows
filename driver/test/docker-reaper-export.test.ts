@@ -37,6 +37,16 @@ interface World {
 const scene = (world: World = {}) => {
     const calls: string[][] = [];
     const close = vi.fn();
+    const written: { path: string; body: string; mode: unknown; existedAtCreate?: boolean }[] = [];
+    const removedFiles: string[] = [];
+    const files = {
+        writeFile: (async (path: string, body: string, options?: { mode?: number }) => {
+            written.push({ path, body, mode: options?.mode });
+        }) as never,
+        rm: (async (path: string) => {
+            removedFiles.push(path);
+        }) as never,
+    };
     const channel: VolumeExportChannel = {
         url: 'http://host.docker.internal:9/control',
         token: 'export-token',
@@ -68,8 +78,9 @@ const scene = (world: World = {}) => {
             return world.channel === null ? null : channel;
         },
         drainMs: world.drainMs ?? 600,
+        files,
     });
-    return { arm, calls, close, channel, controller: new AbortController() };
+    return { arm, calls, close, channel, written, removedFiles, controller: new AbortController() };
 };
 
 const removals = (calls: string[][]): string[][] => calls.filter((call) => call[0] === 'rm');
@@ -77,7 +88,7 @@ const WAITS = { wait: () => '0' };
 
 describe('the docker arm: exporting a thread’s volume before its delete (#938)', () => {
     it('runs the exporter over the newest volume with the live runners’ hardening, labels and the script by content', async () => {
-        const { arm, calls, controller } = scene({ on: WAITS });
+        const { arm, calls, written, removedFiles, controller } = scene({ on: WAITS });
         await arm.exportVolume!(thread, ATTEMPT, controller.signal);
         const create = calls.find((call) => call[0] === 'create')!;
         expect(create.slice(0, 1 + containerHardeningArgs().length)).toEqual(['create', ...containerHardeningArgs()]);
@@ -104,9 +115,15 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
                 'EXPORT_ONCE=partial',
                 'EXPORT_ONCE_CAUSE=reaper_export',
                 'BELLOWS_CONTROL_URL=http://host.docker.internal:9/control',
-                'BELLOWS_CONTROL_TOKEN=export-token',
             ])
         );
+        // The token rides a private env file, never argv, and the file is gone once the daemon has read it.
+        expect(create.join(' ')).not.toContain('export-token');
+        expect(create[create.indexOf('--env-file') + 1]).toBe(written[0]!.path);
+        expect(written).toEqual([
+            expect.objectContaining({ body: 'BELLOWS_CONTROL_TOKEN=export-token\n', mode: 0o600 }),
+        ]);
+        expect(removedFiles).toEqual([written[0]!.path]);
         const giveUps = envs.filter((entry) => /^EXPORT_(DRAIN_)?GIVEUP_MS=/.test(entry));
         expect(giveUps).toHaveLength(2);
         for (const entry of giveUps) expect(Number(entry.split('=')[1])).toBeLessThan(600);
@@ -130,12 +147,15 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
         expect(close).toHaveBeenCalledTimes(1);
     });
 
-    it('is never_started when the daemon refuses the create, and still removes the name once', async () => {
-        const { arm, calls, close, controller } = scene({ on: { create: () => refusal('pull access denied') } });
+    it('is never_started when the daemon refuses the create: nothing of ours exists, so nothing is removed, and the env file goes', async () => {
+        const { arm, calls, close, removedFiles, written, controller } = scene({
+            on: { create: () => refusal('pull access denied') },
+        });
         const result = await arm.exportVolume!(thread, ATTEMPT, controller.signal);
         expect(result.result).toBe('never_started');
         expect(calls.some((call) => call[0] === 'start')).toBe(false);
-        expect(removals(calls)).toEqual([['rm', '-f', NAME]]);
+        expect(removals(calls)).toEqual([]);
+        expect(removedFiles).toEqual([written[0]!.path]);
         expect(close).toHaveBeenCalledTimes(1);
     });
 
@@ -186,7 +206,7 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
     it('skips a volume the daemon says is gone, and keeps one it could not read', async () => {
         const gone = scene({ on: { volume: () => refusal('Error: No such volume: x') } });
         await expect(gone.arm.exportVolume!(thread, ATTEMPT, gone.controller.signal)).resolves.toEqual({
-            result: 'drained',
+            result: 'gone',
         });
         expect(gone.calls.some((call) => call[0] === 'create')).toBe(false);
         const failed = scene({ on: { volume: () => refusal('daemon unavailable') } });
@@ -195,12 +215,68 @@ describe('the docker arm: exporting a thread’s volume before its delete (#938)
         expect(failed.calls.some((call) => call[0] === 'create')).toBe(false);
     });
 
-    it('clears a stale container under the name and is inconclusive this round', async () => {
-        const { arm, calls, controller } = scene({
-            on: { create: () => refusal(`Conflict. The container name "/${NAME}" is already in use`) },
+    describe('a container already under the export name (a second replica’s, or a crashed driver’s)', () => {
+        const IN_USE = { create: () => refusal(`Conflict. The container name "/${NAME}" is already in use`) };
+        const createdAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+        it('leaves one within its deadline alone: contended, nothing removed, no failed attempt', async () => {
+            const { arm, calls, controller } = scene({
+                on: { ...IN_USE, inspect: () => createdAgo(100) },
+            });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect(removals(calls)).toEqual([]);
         });
-        expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('inconclusive');
-        expect(removals(calls)).toEqual([['rm', '-f', NAME]]);
+
+        it('removes one past the whole budget, by name, and exports next round', async () => {
+            const { arm, calls, controller } = scene({
+                on: { ...IN_USE, inspect: () => createdAgo(5_000) },
+            });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect(removals(calls)).toEqual([['rm', '-f', NAME]]);
+        });
+
+        it.each([
+            ['cannot be read', () => refusal('daemon went away')],
+            ['answers no date', () => 'not a date'],
+        ])('leaves one whose age %s alone', async (_name, inspect) => {
+            const { arm, calls, controller } = scene({ on: { ...IN_USE, inspect } });
+            expect((await arm.exportVolume!(thread, ATTEMPT, controller.signal)).result).toBe('contended');
+            expect(removals(calls)).toEqual([]);
+        });
+    });
+
+    describe('a create that ended unanswered', () => {
+        const KILLED = { create: () => refusal('timed out', { killed: true }) };
+        const idOf = (calls: string[][]): string =>
+            calls
+                .find((call) => call[0] === 'create')!
+                .find((arg) => arg.startsWith('factory.volume-export-run='))!
+                .split('=')[1]!;
+
+        it('removes the container only when it carries this export’s own id', async () => {
+            let calls: string[][] = [];
+            const ours = scene({
+                on: {
+                    ...KILLED,
+                    inspect: (args) =>
+                        args.includes('--format') && args[2]?.includes('volume-export-run') ? idOf(calls) : 'exited',
+                },
+            });
+            calls = ours.calls;
+            await ours.arm.exportVolume!(thread, ATTEMPT, ours.controller.signal);
+            expect(removals(ours.calls)).toEqual([['rm', '-f', NAME]]);
+        });
+
+        it('leaves a container that carries another export’s id', async () => {
+            const theirs = scene({
+                on: {
+                    ...KILLED,
+                    inspect: (args) => (args[2]?.includes('volume-export-run') ? 'another-replica' : 'exited'),
+                },
+            });
+            await theirs.arm.exportVolume!(thread, ATTEMPT, theirs.controller.signal);
+            expect(removals(theirs.calls)).toEqual([]);
+        });
     });
 
     it('is invisible to the group scan: no job, lease or role label', async () => {

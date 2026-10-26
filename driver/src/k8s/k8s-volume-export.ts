@@ -1,6 +1,9 @@
+import { randomUUID } from 'node:crypto';
+import { VOLUME_EXPORT_RUN_LABEL } from '../labels.js';
 import { generationOfName } from '../task-volume.js';
 import type { OpenVolumeExport, VolumeExportChannel } from '../loop/loop-export.js';
 import {
+    exportWorkloadStale,
     newestVolume,
     VOLUME_EXPORT_CLEANUP_MS,
     type VolumeExport,
@@ -12,8 +15,9 @@ import {
 } from '../reaper-export.js';
 import type { ReaperArm } from '../reaper.js';
 import { SUPERVISOR_DRAIN_MS } from '../supervisor-contract.js';
-import { jobPodsPath } from './k8s-auxspec.js';
-import { jobsPath, volumeExportJobSpec } from './k8s-podspec.js';
+import { jobPodsPath, secretsPath } from './k8s-auxspec.js';
+import { jobsPath, volumeExportJobSpec, volumeExportSecretBody, volumeExportSecretName } from './k8s-podspec.js';
+import { deleteSecretAcked } from './k8s-teardown.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
 import {
     HTTP_CONFLICT,
@@ -42,15 +46,20 @@ const POLL_MS = 2_000;
 
 const inconclusive = (why: string): VolumeExport => ({ result: 'inconclusive', why });
 
-/** `pod` for a Job the arm must remove (by uid when known), `none` when the create provably made nothing. */
+/** `job` for a Job the arm must remove (by uid when known, else by this export's label), `none` when nothing of ours exists. */
 type Created = { kind: 'job'; uid: string | undefined } | { kind: 'none' };
 
 interface Run {
     deps: K8sDeps;
     clock: VolumeExportClock;
+    drainMs: number;
     signal: AbortSignal;
     channel: VolumeExportChannel;
     name: string;
+    /** This export's own id: on its Job and Secret, the proof that a Job under the name is ours. */
+    id: string;
+    /** Whether the Secret create was sent, so its delete is owed exactly once. */
+    secretSent: boolean;
     /** The created Job's uid; set once the create answered. */
     uid: string | undefined;
     /** What the create left to remove; set before anything waits on it. */
@@ -155,7 +164,66 @@ async function awaitJob(run: Run): Promise<VolumeExport> {
     }
 }
 
-/** Creates the Job. The `Created` says whether anything exists to remove; the result, when it ended the export. */
+const contended = (why: string): VolumeExport => ({ result: 'contended', why });
+
+/** The Job under the name, read: its uid, creation time and this-export label; or why it could not be read (absent = `null`). */
+async function readHeld(
+    run: Run
+): Promise<{ uid: string | undefined; createdMs: number; ours: boolean } | null | string> {
+    let response: K8sResponse;
+    try {
+        response = await run.deps.request('GET', jobPath(run), undefined, { signal: run.signal, timeoutMs: left(run) });
+    } catch (e) {
+        return `the export job under the name could not be read: ${(e as Error).message}`;
+    }
+    if (response.status === HTTP_NOT_FOUND) return null;
+    if (response.status >= HTTP_ERROR_STATUS)
+        return `reading the export job under the name answered ${response.status}`;
+    const metadata = objectOf(record(response.body)?.metadata);
+    const labels = objectOf(metadata?.labels);
+    const uid = metadata?.uid;
+    return {
+        uid: typeof uid === 'string' ? uid : undefined,
+        createdMs: Date.parse(String(metadata?.creationTimestamp)),
+        ours: labels?.[VOLUME_EXPORT_RUN_LABEL] === run.id,
+    };
+}
+
+/**
+ * Another export's Job holds the name. It is read first and removed only when provably stale (past the whole
+ * budget an export has, and by the uid just read); one within its deadline is a live export of another replica.
+ */
+async function nameHeld(run: Run): Promise<VolumeExport> {
+    const held = await readHeld(run);
+    if (typeof held === 'string') return contended(held);
+    if (held === null) return contended('the export job under the name just ended');
+    if (held.uid === undefined || !exportWorkloadStale(held.createdMs, run.drainMs, Date.now())) {
+        return contended('another export holds the name and is within its deadline');
+    }
+    await deleteByUid(run, held.uid);
+    return contended('removed a stale export job; the next round exports');
+}
+
+/** Creates the Secret carrying the token; the result, when it ended the export. */
+async function createSecret(run: Run, target: { root: string }): Promise<VolumeExport | null> {
+    run.secretSent = true;
+    let response: K8sResponse;
+    try {
+        response = await run.deps.request(
+            'POST',
+            secretsPath(run.deps.config.k8sNamespace),
+            volumeExportSecretBody({ root: target.root, run: run.id }, run.channel.token),
+            { signal: run.signal, timeoutMs: left(run) }
+        );
+    } catch (e) {
+        return inconclusive(`creating the export secret failed: ${(e as Error).message}`);
+    }
+    return response.status >= HTTP_ERROR_STATUS
+        ? { result: 'never_started', why: `creating the export secret answered ${response.status}` }
+        : null;
+}
+
+/** Creates the Job. The `Created` says whether anything of ours exists to remove; the result, when it ended the export. */
 async function createJob(run: Run, job: object): Promise<{ created: Created; ended?: VolumeExport }> {
     let response: K8sResponse;
     try {
@@ -164,16 +232,13 @@ async function createJob(run: Run, job: object): Promise<{ created: Created; end
             timeoutMs: left(run),
         });
     } catch (e) {
-        // A timed-out create may have made the Job: it is removed by name.
+        // A timed-out create may have made the Job: it is removed if it carries this export's label.
         return {
             created: { kind: 'job', uid: undefined },
             ended: inconclusive(`creating the export job failed: ${(e as Error).message}`),
         };
     }
-    if (response.status === HTTP_CONFLICT) {
-        // A stale Job from a crashed driver holds the name: removed by name, the next round runs.
-        return { created: { kind: 'job', uid: undefined }, ended: inconclusive('a stale export job held the name') };
-    }
+    if (response.status === HTTP_CONFLICT) return { created: { kind: 'none' }, ended: await nameHeld(run) };
     if (response.status >= HTTP_ERROR_STATUS) {
         return {
             created: { kind: 'none' },
@@ -184,19 +249,36 @@ async function createJob(run: Run, job: object): Promise<{ created: Created; end
     return { created: { kind: 'job', uid: typeof uid === 'string' ? uid : undefined } };
 }
 
-/** Deletes the Job once (Foreground, so its pod goes with it), by the uid it was created under when known. */
-async function deleteJob(run: Run, created: Created): Promise<void> {
-    if (created.kind === 'none') return;
+/** Deletes one Job incarnation (Foreground, so its pod goes with it) under a uid precondition. */
+async function deleteByUid(run: Run, uid: string): Promise<void> {
     try {
         await run.deps.request(
             'DELETE',
             `${jobPath(run)}?propagationPolicy=Foreground`,
-            created.uid ? { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid: created.uid } } : undefined,
+            { apiVersion: 'v1', kind: 'DeleteOptions', preconditions: { uid } },
             { timeoutMs: VOLUME_EXPORT_CLEANUP_MS }
         );
     } catch {
         // The Job's activeDeadlineSeconds and ttl end it; the next round's name check clears what is left.
     }
+}
+
+/**
+ * Removes the Job this export created, once: by the uid its create answered, or — for a create that ended
+ * unanswered — by the uid of the Job under the name, only if that Job carries this export's label.
+ */
+async function deleteJob(run: Run, created: Created): Promise<void> {
+    if (created.kind === 'none') return;
+    if (created.uid !== undefined) return deleteByUid(run, created.uid);
+    const held = await readHeld(run);
+    if (typeof held === 'object' && held !== null && held.ours && held.uid !== undefined) {
+        await deleteByUid(run, held.uid);
+    }
+}
+
+/** Deletes the export's Secret once, if its create was sent; a refusal leaves a token the closed channel already revoked. */
+async function deleteSecret(run: Run): Promise<void> {
+    if (run.secretSent) await deleteSecretAcked(run.deps, volumeExportSecretName(run.id));
 }
 
 /** Whether the claim exists: `false` on a 404, an Error for any other answer. */
@@ -232,11 +314,13 @@ async function openChannel(
     }
 }
 
-/** Creates the Job and waits it out; the caller removes it. */
+/** Creates the Secret and the Job and waits it out; the caller removes both. */
 async function exportOnJob(run: Run, target: { root: string; generation: number }): Promise<VolumeExport> {
     const env = volumeExportEnv(target.root, run.channel, run.clock.giveUpMs);
     const deadline = Math.max(1, Math.ceil((run.clock.workEnd - Date.now()) / MS_PER_SECOND));
-    const spec = volumeExportJobSpec(run.deps.config, { ...target, name: run.name }, env, deadline);
+    const spec = volumeExportJobSpec(run.deps.config, { ...target, name: run.name, run: run.id }, env, deadline);
+    const refused = await createSecret(run, target);
+    if (refused) return refused;
     const made = await createJob(run, spec);
     run.created = made.created;
     if (made.ended) return made.ended;
@@ -251,20 +335,33 @@ export function createKubernetesVolumeExporter(
     return async (thread, attempt, signal) => {
         const volume = newestVolume(thread);
         if (!volume) return inconclusive('no volume of the thread reads as a generation');
-        const clock = volumeExportClock(exporting.drainMs ?? SUPERVISOR_DRAIN_MS, Date.now());
+        const drainMs = exporting.drainMs ?? SUPERVISOR_DRAIN_MS;
+        const clock = volumeExportClock(drainMs, Date.now());
         const present = await claimPresent({ deps, clock, signal }, volume.name);
         if (present instanceof Error) return inconclusive(`the volume claim could not be read: ${present.message}`);
-        if (!present) return { result: 'drained' };
+        if (!present) return { result: 'gone' };
         const opened = await openChannel(exporting, attempt);
         if (!('proof' in opened)) return opened;
         const name = volumeExportName(thread.root);
-        const run: Run = { deps, clock, signal, channel: opened, name, uid: undefined, created: { kind: 'none' } };
+        const run: Run = {
+            deps,
+            clock,
+            drainMs,
+            signal,
+            channel: opened,
+            name,
+            id: randomUUID(),
+            secretSent: false,
+            uid: undefined,
+            created: { kind: 'none' },
+        };
         try {
             const generation = generationOfName(thread.root, volume.name) ?? 1;
             return await exportOnJob(run, { root: thread.root, generation });
         } finally {
             opened.close();
             await deleteJob(run, run.created);
+            await deleteSecret(run);
         }
     };
 }

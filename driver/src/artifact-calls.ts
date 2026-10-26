@@ -19,6 +19,14 @@ const ERROR_BODY_PREVIEW_LENGTH = 200;
 /** Copied from core/src/error-codes.ts, for the same reason as ./http.ts. */
 const ARTIFACT_CONFLICT_CODE = 'ARTIFACT_CONFLICT';
 
+/** A chunk 409, with the recorded chunk's length and digest when the board named them. */
+function conflictOf(body: Record<string, unknown>): ChunkAnswer {
+    const { recorded } = body as { recorded?: { length?: unknown; sha256?: unknown } };
+    return typeof recorded?.length === 'number' && typeof recorded.sha256 === 'string'
+        ? { result: 'conflict', recorded: { length: recorded.length, sha256: recorded.sha256 } }
+        : { result: 'conflict' };
+}
+
 export function artifactCalls({
     url,
     token,
@@ -63,7 +71,7 @@ export function artifactCalls({
             if (status === HTTP_PAYLOAD_TOO_LARGE) {
                 return { result: 'refused', cause: typeof body.cause === 'string' ? body.cause : 'refused' };
             }
-            if (status === HTTP_CONFLICT && body.code === ARTIFACT_CONFLICT_CODE) return { result: 'conflict' };
+            if (status === HTTP_CONFLICT && body.code === ARTIFACT_CONFLICT_CODE) return conflictOf(body);
             // Any other 4xx (a claim the board does not know, a removed job) will not change on retry.
             return { result: 'rejected' };
         },
