@@ -33,7 +33,7 @@ docker build -q --build-context skills="$HERE/../skills" -t "$IMAGE" "$HERE" >/d
 
 run() { docker run --rm -v "$REPO:/workspace" "$@"; }
 
-check 'claude runs'            'Claude Code'      run "$IMAGE" --version
+check 'claude runs'            'Claude Code'      run --entrypoint claude "$IMAGE" --version
 check 'acli installed'         'acli version'     run --entrypoint acli "$IMAGE" --version
 check 'gh installed'           'gh version'       run --entrypoint gh "$IMAGE" --version
 # No plugin (issue #841): context-mode's executions cannot run as the tool uid yet.
@@ -103,29 +103,41 @@ fi
 
 # An empty CLAUDE_CONFIG_DIR — the transcript store's per-thread directory, or a volume mounted over
 # the baked configuration — hides everything baked. Seeding is therefore load-bearing, not a nicety.
-VOL="claude-executor-test-$$"
-check 'seeds an empty volume' 'backend-fix' docker run --rm -v "$VOL:/home/node/.claude" \
-    --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; ls "$CLAUDE_CONFIG_DIR"/skills'
-check 'seeding is idempotent' 'ok' docker run --rm -v "$VOL:/home/node/.claude" \
-    --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; echo marker > "$CLAUDE_CONFIG_DIR"/keep; claude-executor --version >/dev/null; [ -f "$CLAUDE_CONFIG_DIR"/keep ] && echo ok'
+# The seed source /opt/claude-home is a symlink to the baked home (#401), so a volume mounted OVER
+# /home/node/.claude hides it; the supported shape points CLAUDE_CONFIG_DIR at the empty directory.
+VOL="$(mktemp -d)"
+chmod 777 "$VOL"
+check 'seeds an empty volume' 'CLAUDE.md' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; ls "$CLAUDE_CONFIG_DIR"'
+# The skills are managed (issue #1024): read from the one path the tool uid can read, never copied
+# into the seeded volume, where the CLI would load the private-dir copy first.
+check 'the seeded volume carries no copy of the baked skills' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/backend-fix && ls /etc/claude-code/.claude/skills | grep -q backend-fix && echo ok'
+check 'seeding is idempotent' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; echo marker > "$CLAUDE_CONFIG_DIR"/keep; claude-executor -p seed >/dev/null 2>&1; [ -f "$CLAUDE_CONFIG_DIR"/keep ] && echo ok'
 # The seed runs once; the hooks block (the guard) is re-laid on every start, so an agent that emptied
 # it in the thread's settings.json cannot disarm the guard for later runs, while an unrelated key
 # the thread wrote survives. An unparseable file is replaced by the baked copy.
-check 'a stripped hooks block is restored, other keys kept' 'ok' docker run --rm -v "$VOL:/home/node/.claude" \
-    --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null
+check 'a stripped hooks block is restored, other keys kept' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1
         echo "{\"hooks\":{},\"model\":\"keep-me\"}" > "$CLAUDE_CONFIG_DIR"/settings.json
-        claude-executor --version >/dev/null
+        claude-executor -p seed >/dev/null 2>&1
         grep -q git-guard.cjs "$CLAUDE_CONFIG_DIR"/settings.json && grep -q keep-me "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
-check 'an unparseable settings.json is replaced by the baked copy' 'ok' docker run --rm -v "$VOL:/home/node/.claude" \
+check 'an unparseable settings.json is replaced by the baked copy' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'echo "{broken" > "$CLAUDE_CONFIG_DIR"/settings.json
-        claude-executor --version >/dev/null
+        claude-executor -p seed >/dev/null 2>&1
         grep -q git-guard.cjs "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
-docker volume rm "$VOL" >/dev/null 2>&1
+rm -rf "$VOL"
 
 # A bind mount carries the host uid, so without safe.directory git refuses the repository outright.
 # Note the single line: a backslash continuation inside single quotes is a literal backslash, not a
 # continuation, and the container would receive a broken script that fails silently.
-check 'git reads the mount' 'true' run --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null; git rev-parse --is-inside-work-tree'
+# The mount is a scratch repository, not $REPO: in a git worktree $REPO/.git is a file pointing outside
+# the mount, which no container could read.
+GITMNT="$(mktemp -d)"
+git -C "$GITMNT" init -q
+check 'git reads the mount' 'true' docker run --rm -v "$GITMNT:/workspace" --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; git rev-parse --is-inside-work-tree'
+rm -rf "$GITMNT"
 
 # The git guard: the PreToolUse hook that keeps the task worktree's checkout on its branch
 # (issue #73). Its case table lives in the script and is pinned offline by vitest too — here it
@@ -176,7 +188,7 @@ docker run --rm \
     -e OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
     -v "$CNF:/claude-member-test" \
     -v "$REPO:/workspace" \
-    --entrypoint sh "$IMAGE" -c 'claude-executor --version >/dev/null 2>&1; cp /etc/claude-code/managed-settings.json "$CLAUDE_CONFIG_DIR/managed.out"'
+    --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; cp /etc/claude-code/managed-settings.json "$CLAUDE_CONFIG_DIR/managed.out"'
 patched="$(cat "$CNF/settings.json")"
 managed="$(cat "$CNF/managed.out")"
 rm -rf "$CNF"
@@ -188,7 +200,8 @@ if node -e '
         c.env.ANTHROPIC_API_KEY === "member-token" &&
         c.enabledPlugins === undefined &&
         c.extraKnownMarketplaces === undefined &&
-        JSON.stringify(c.hooks) === JSON.stringify(require(process.argv[2]).hooks) &&
+        JSON.stringify(c.hooks) ===
+            JSON.stringify(require(process.argv[2]).hooks).replace("__FACTORY_RUN_MODEL__", "claude-member-model") &&
         m.env.CLAUDE_CODE_ENABLE_TELEMETRY === "1" &&
         m.env.OTEL_LOG_USER_PROMPTS === "0" &&
         m.env.OTEL_EXPORTER_OTLP_ENDPOINT === "http://collector:4318";
