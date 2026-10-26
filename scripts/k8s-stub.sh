@@ -14,11 +14,20 @@ case "$*" in
     mkdir -p "$WORKDIR/.factory" && echo "${HOSTNAME:-stub}" >"$WORKDIR/.factory/stub-mark"
     ;;
 esac
-# `factory-stub-commit` (issue #829): one empty commit on the task branch, so the publish after the run
+# `factory-stub-commit` (issue #829): one commit of a file on the task branch, so the publish after the run
 # has something to push; made before any wait, so a driver killed at the wait finds it already there.
 case "$*" in
 *factory-stub-commit*)
-    git -C "$WORKDIR" -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit
+    echo commit >"$WORKDIR/lane-commit-file"
+    git -C "$WORKDIR" add lane-commit-file
+    git -C "$WORKDIR" -c user.name=lane -c user.email=lane@localhost commit -q -m lane-commit
+    ;;
+esac
+# `factory-stub-change` (issue #1020): one file written into the task tree. A task that changes nothing
+# skips its close-time gates, so a lane that counts gate runs needs an agent that leaves a change.
+case "$*" in
+*factory-stub-change*)
+    echo change >"$WORKDIR/lane-change"
     ;;
 esac
 # `factory-stub-transcript-<n>` (issue #779): the session file the

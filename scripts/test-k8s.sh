@@ -2974,7 +2974,7 @@ $LANE_GATES" && ok 'a plan with declared services and gates is committed' ||
 # a. Both sides by name: the agent sees both names on 127.0.0.1 and reaches each service there,
 #    and the gates (reach, then the isolation pair) pass in the gate sidecar.
 begin_phase services-reach
-reached="$(queue_job 'factory-stub-services')"
+reached="$(queue_job 'factory-stub-change factory-stub-services')"
 reached_end="$(await_brief "$reached" 'succeeded*' 420)" && ok 'a run with declared services and gates succeeds' ||
     bad 'a run with declared services and gates succeeds' "status|attempts|count|claimSeq|reason: $reached_end; $(job_output "$reached")"
 reached_out="$(job_output "$reached")"
@@ -2993,7 +2993,7 @@ expect_not_contains 'no service pod or headless Service is created' \
 #    restarts the fleet by the generation bump — one more kubelet restart — and the gates pass.
 begin_phase services-restart
 svc_release="/task/.lane-services"
-restarted="$(queue_job "factory-stub-wait-$svc_release services restart")"
+restarted="$(queue_job "factory-stub-change factory-stub-wait-$svc_release services restart")"
 restart_pod="$(await_runner_pod "$restarted")"
 if [ -z "$restarted" ] || [ -z "$restart_pod" ]; then
     bad 'the restart runner is running' "job '$restarted': $(job_brief "$restarted")"
@@ -3395,7 +3395,7 @@ begin_phase takeover-setup
 n="$RELEASE-t1"
 commit_plan takeover-setup "$(tk_plan "echo x >>$TK_D$n.gate.count" "echo x >>$TK_D$n.setup.count; $(tk_wait "$TK_D$n.go")")" ||
     bad 'the setup plan is committed' 'the plan pod did not commit'
-t1="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+t1="$(queue_job "factory-stub-change factory-stub-pass-$TK_D$n.agent")"
 tk_use "$t1"
 if [ -z "$t1" ]; then
     bad 'the setup job is queued' 'the board refused it'
@@ -3417,7 +3417,7 @@ fi
 begin_phase takeover-agent
 n="$RELEASE-t2"
 commit_plan takeover-agent "$(tk_plan "echo x >>$TK_D$n.gate.count")" || bad 'the agent plan is committed' 'the plan pod did not commit'
-t2="$(queue_job "factory-stub-patient factory-stub-wait-$TK_D$n.go")"
+t2="$(queue_job "factory-stub-change factory-stub-patient factory-stub-wait-$TK_D$n.go")"
 tk_use "$t2"
 t2_pod="$(await_runner_pod "$t2")"
 if [ -z "$t2" ] || [ -z "$t2_pod" ]; then
@@ -3465,7 +3465,7 @@ fi
 begin_phase takeover-gates
 n="$RELEASE-t4"
 commit_plan takeover-gates "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
-t4="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+t4="$(queue_job "factory-stub-change factory-stub-pass-$TK_D$n.agent")"
 tk_use "$t4"
 if [ -z "$t4" ]; then
     bad 'the gate job is queued' 'the board refused it'
@@ -3489,7 +3489,7 @@ fi
 begin_phase takeover-gate-pod-lost
 n="$RELEASE-t4b"
 commit_plan takeover-gate-pod-lost "$(tk_plan "echo x >>$TK_D$n.gate.count; $(tk_wait "$TK_D$n.go")")" || bad 'the gate plan is committed' 'the plan pod did not commit'
-t4b="$(queue_job "factory-stub-pass-$TK_D$n.agent")"
+t4b="$(queue_job "factory-stub-change factory-stub-pass-$TK_D$n.agent")"
 tk_use "$t4b"
 t4b_pod="$(await_runner_pod "$t4b")"
 if [ -z "$t4b" ] || [ -z "$t4b_pod" ]; then
