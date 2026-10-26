@@ -59,4 +59,11 @@ describe('the PR operation record (issue #983)', () => {
         }) as unknown as typeof globalThis.fetch;
         expect(await boardOn(failing).prOperation(job, write)).toBe('rejected');
     });
+
+    it('a board that takes the request and never answers is not recorded once the bound expires', async () => {
+        // The fetch ignores its signal on purpose: the bound must hold even over a transport that
+        // never settles, or the publish that already landed its PR waits on the bookkeeping.
+        const stalled = (() => new Promise<Response>(() => undefined)) as unknown as typeof globalThis.fetch;
+        expect(await boardOn(stalled).prOperation(job, write, AbortSignal.timeout(20))).toBe('rejected');
+    });
 });

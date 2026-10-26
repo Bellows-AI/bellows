@@ -9,6 +9,8 @@ import { type GateRunBoard, gateRunCalls } from './board-gate-runs.js';
 
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+/** How long a PR-operation write may hold up the publish that already landed its PR. */
+const PR_OPERATION_WRITE_MS = 5_000;
 
 /** What the driver did to a PR (copied from the board's): opened it, or found it already there. */
 export type PrOperationKind = 'created' | 'reused';
@@ -33,20 +35,27 @@ type Post = (
 export interface PrOperationBoard {
     /**
      * Records one PR operation under the lease: `ok` only when the board took it. Never throws:
-     * `lost` when the lease is not this attempt's, `rejected` for anything else the board did not take.
+     * `lost` when the lease is not this attempt's, `rejected` for anything else the board did not take,
+     * including a board that has not answered when `signal` (default: a 5 s bound) aborts.
      */
-    prOperation(job: BoardJob, write: PrOperationWrite): Promise<'ok' | 'lost' | 'rejected'>;
+    prOperation(job: BoardJob, write: PrOperationWrite, signal?: AbortSignal): Promise<'ok' | 'lost' | 'rejected'>;
 }
 
 export function prOperationCalls(post: Post): PrOperationBoard {
     return {
-        async prOperation(job, write) {
+        async prOperation(job, write, signal = AbortSignal.timeout(PR_OPERATION_WRITE_MS)) {
             try {
-                const response = await post(
-                    `/api/jobs/${job.id}/pr-operation`,
-                    { leaseToken: job.leaseToken, ...write },
-                    true
-                );
+                // Raced, not only passed down: the bound holds over a transport that ignores its signal.
+                const aborted = new Promise<never>((_, reject) => {
+                    if (signal.aborted) reject(signal.reason);
+                    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+                });
+                const response = await Promise.race([
+                    post(`/api/jobs/${job.id}/pr-operation`, { leaseToken: job.leaseToken, ...write }, true, {
+                        signal,
+                    }),
+                    aborted,
+                ]);
                 if (response.ok) return 'ok';
                 if (response.status === HTTP_NOT_FOUND || response.status === HTTP_CONFLICT) return 'lost';
                 return 'rejected';
