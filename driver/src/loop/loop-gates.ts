@@ -454,9 +454,9 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
  */
 export async function probeTreeNow(ctx: AttemptCtx): Promise<string | null> {
     const { rt, job, treeBefore, state } = ctx;
+    if (ctx.gateSession && rt.gates) await raceStep(state.signal, rt.gates.server.quiesce(ctx.gateSession.token));
     // An adopted run has no synced fingerprint, but its tree is still the revision evidence binds to.
     if (treeBefore === null && !ctx.adopted && !ctx.takeover) return null;
-    if (ctx.gateSession && rt.gates) await raceStep(state.signal, rt.gates.server.quiesce(ctx.gateSession.token));
     // The attempt's own signal is the probe's transport abort AND the race: a stand-down cancels
     // the request in flight and stops waiting on it, and the caller rechecks (issue #472).
     const raced = await raceStep(

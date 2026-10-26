@@ -30,6 +30,8 @@ interface Scene {
     stack?: Parameters<typeof stubGateStack>[1];
     /** What the runner's gate probe reads, per call: a gate that runs may move it. */
     gateTree?: () => string | null;
+    /** The startup sync's fingerprint; `undefined` reads a known one. */
+    syncFingerprint?: string | null;
 }
 
 const EXECUTORS = [
@@ -43,7 +45,11 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         const board = stubBoard([claimed], { gateRuns: scene.rows === undefined ? null : scene.rows });
         const stack = stubGateStack({}, scene.stack);
         const runner = stubRunner(async () => ok(), {
-            sync: { ok: true, reason: null, fingerprint: 'h:before' },
+            sync: {
+                ok: true,
+                reason: null,
+                fingerprint: scene.syncFingerprint === undefined ? 'h:before' : scene.syncFingerprint,
+            },
             probeTree: scene.tree === undefined ? SAME_TREE : scene.tree,
             gateTree: () => ({ fingerprint: scene.gateTree ? scene.gateTree() : SAME_TREE, mutatedSince: false }),
             ...(scene.deadServices ? { deadServices: scene.deadServices } : {}),
@@ -306,6 +312,23 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
 
         expect(r.stack.ran.names).toEqual(['test', 'lint']);
         expect(lastReports(r).some((g) => 'reused' in g)).toBe(false);
+    });
+
+    it('settles the ad-hoc runs before the completion gates even when the startup tree is unknown', async () => {
+        // No startup fingerprint: nothing is reused, but a draining ad-hoc gate must still not run
+        // alongside the completion pass and move the tree after a check passed.
+        const events: string[] = [];
+        const r = await run({
+            rows: passes(),
+            syncFingerprint: null,
+            stack: {
+                quiesce: async () => void events.push('quiesce'),
+                onRun: (name) => events.push(name),
+            },
+        });
+
+        expect(events).toEqual(['quiesce', 'test', 'lint']);
+        expect(r.stack.quiesced).toEqual([r.claimed.gateEnv!.BELLOWS_GATE_TOKEN]);
     });
 
     // ---- setup must have succeeded in this claim's environment ------------------------------------
