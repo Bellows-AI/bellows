@@ -29,9 +29,10 @@ from the tree, and a gate that cannot reach the service (`ENOTFOUND`, connection
 do not work around it by installing the service yourself; end with `FACTORY_BLOCKED:` and the note.
 
 Run, read, fix, run again as often as the work needs: every answer is the gate's own result on the
-tree as it is now. Run the relevant gates before you publish a pull request and report any that
-fail; that is guidance, not a permission check — you can open or update a pull request (the github
-skill) whatever a gate says. The declared gates also run when you finish and a failing one fails
+tree as it is now. Before every push, run the declared gates that cover your change and fix a red
+one before you push; the gates that run when you finish are a backstop, not a reason to skip them.
+An unavailable gate (an environment failure) is reported, not a blocker; the pull request itself
+(the github skill) is held back by a gate only where the repository sets `policy: gates: required`. The declared gates also run when you finish and a failing one fails
 the task, but the work still ships as a draft; only a repository that sets `policy: gates:
 required` in `.bellows.yaml` holds the publish back until they pass.
 
@@ -46,6 +47,13 @@ your own commands instead. Do not guess the URL.
   run one at any point to check partial progress.
 - A gate whose `.bellows.yaml` entry sets `on_demand: true` is skipped when you finish and never
   fails the task: it runs only when you call it. Call it when your change touches what it checks.
+- A gate whose `.bellows.yaml` entry sets `filter: true` accepts `"filter":"<string>"` in the request
+  (`-d '{"gate":"test","filter":"test/api/users.test.js"}'`), up to 256 printable characters on one
+  line. The string reaches the gate command as the environment variable `GATE_FILTER` for that one
+  run; the command must read it, so check the gate's script before relying on it. Use it to run
+  only the tests your change touches. A filter on a gate that did not opt in answers 422: run it
+  without one. A filtered run is never evidence that the gate passed; the gates that run when you
+  finish are always unfiltered.
 - A gate whose `.bellows.yaml` entry declares `timeout:` above 10 (minutes) cannot run ad hoc: the
   call answers 422 and the gate runs only when you finish (an `on_demand` one not at all). Do not
   retry it; run its pieces (a build, one spec) with your own commands instead.

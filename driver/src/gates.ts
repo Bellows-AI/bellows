@@ -65,6 +65,8 @@ export interface GateAttempt {
 export interface GateRunOptions {
     signal?: AbortSignal | undefined;
     timeoutMs?: number | undefined;
+    /** The ad-hoc request's narrowing, set as env `GATE_FILTER` for this one run; never part of the command. */
+    filter?: string | undefined;
 }
 
 export interface GateManager {
@@ -232,12 +234,15 @@ export function createSupervisedGateManager({
     /** One command in the checkout's worktree, under `deadlineMs`, as the attempt's gate step. */
     const exec = async (
         entry: SupervisedEntry,
-        run: { command: string; deadlineMs: number; signal: AbortSignal | undefined }
+        run: { command: string; deadlineMs: number; signal: AbortSignal | undefined; filter?: string | undefined }
     ): Promise<GateRun> => {
         const gate = {
             command: run.command,
             cwd: `${TASK_MOUNT}/${entry.key.split('/')[1]}`,
-            env: envBodyRecord(entry.envBody),
+            env: {
+                ...envBodyRecord(entry.envBody),
+                ...(run.filter === undefined ? {} : { [GATE_FILTER_ENV]: run.filter }),
+            },
             timeoutMs: run.deadlineMs,
         };
         return gateRunOf(await runner.runGate(entry.job, gate, run.signal), run.deadlineMs);
@@ -271,7 +276,7 @@ export function createSupervisedGateManager({
             entries.set(key, { key, job, envBody, pendingSetup: pendingSetupOf(entries.get(key), job) });
         },
 
-        runGate(key, _name, command, { signal, timeoutMs } = {}) {
+        runGate(key, _name, command, { signal, timeoutMs, filter } = {}) {
             return inQueue(key, signal, async (entry) => {
                 // The worktree persists across the attempt's gates, so setup runs once, before the
                 // first gate, until it succeeds.
@@ -281,7 +286,12 @@ export function createSupervisedGateManager({
                     if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true as const };
                     if (entry.pendingSetup === pending) entry.pendingSetup = null;
                 }
-                return exec(entry, { command, deadlineMs: gateDeadlineMs(config, gateTimeoutMs, timeoutMs), signal });
+                return exec(entry, {
+                    command,
+                    deadlineMs: gateDeadlineMs(config, gateTimeoutMs, timeoutMs),
+                    signal,
+                    filter,
+                });
             });
         },
 
@@ -413,7 +423,13 @@ export interface GateServer {
 /** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
 const BODY_LIMIT = 4096;
 
-type GateRequest = { ok: true; gate: string } | { ok: false; status: number; error: string };
+/** The env name a filter reaches the gate command as. */
+const GATE_FILTER_ENV = 'GATE_FILTER';
+/** A filter is a test name or path pattern, not a program: bounded, printable, one line. */
+const FILTER_MAX_CHARS = 256;
+const PRINTABLE_FILTER = /^[\x20-\x7e]+$/;
+
+type GateRequest = { ok: true; gate: string; filter?: string } | { ok: false; status: number; error: string };
 
 /** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`. */
 const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
@@ -424,7 +440,29 @@ const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> 
     if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
         return { ok: false, status: HTTP_BAD_REQUEST, error: 'gate must be a name' };
     }
-    return { ok: true, gate: parsed.gate };
+    if (parsed.filter === undefined) return { ok: true, gate: parsed.gate };
+    if (typeof parsed.filter !== 'string' || !parsed.filter.trim() || parsed.filter.length > FILTER_MAX_CHARS) {
+        return {
+            ok: false,
+            status: HTTP_BAD_REQUEST,
+            error: `filter must be 1-${FILTER_MAX_CHARS} printable characters`,
+        };
+    }
+    if (!PRINTABLE_FILTER.test(parsed.filter)) {
+        return { ok: false, status: HTTP_BAD_REQUEST, error: 'filter must be printable ASCII on one line' };
+    }
+    return { ok: true, gate: parsed.gate, filter: parsed.filter };
+};
+
+/** Why an ad-hoc call of `gate` answers 422, or null: a timeout past what the call can wait, a filter it did not opt into. */
+const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | null => {
+    if ((declaredTimeoutMs(gate) ?? 0) > AD_HOC_MAX_MINUTES * MS_PER_MINUTE) {
+        return `gate "${gate.name}" declares timeout: ${gate.timeoutMinutes}, longer than an ad-hoc run can wait (${AD_HOC_MAX_MINUTES} minutes); ${gate.onDemand ? 'it is on_demand, so the end-of-run gates pass skips it too' : 'it runs in the end-of-run gates pass'}`;
+    }
+    if (filter !== undefined && !gate.filter) {
+        return `gate "${gate.name}" does not accept a filter: its .bellows.yaml entry does not set filter: true`;
+    }
+    return null;
 };
 
 /**
@@ -437,10 +475,11 @@ const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> 
 const runRegisteredGate = async (
     manager: Pick<GateManager, 'acquire' | 'runGate'>,
     claim: GateClaim,
-    gate: DeclaredGate,
+    target: { gate: DeclaredGate; filter?: string | undefined },
     signal: AbortSignal
 ): Promise<{ status: number; body: unknown }> => {
     // A cancelled token runs nothing more.
+    const { gate, filter } = target;
     if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
     try {
         const envBody = claim.freshEnv ? await claim.freshEnv() : (claim.envBody ?? '');
@@ -455,6 +494,7 @@ const runRegisteredGate = async (
         const outcome = await manager.runGate(claim.key, gate.name, gate.command, {
             signal,
             timeoutMs: declaredTimeoutMs(gate),
+            filter,
         });
         // A cancelled run's answer is whatever the kill left — never a verdict to record.
         if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
@@ -542,15 +582,14 @@ export function createGateServer({
         // declare-then-run model exists to prevent.
         const gate = claim.gates.find((candidate) => candidate.name === parsedRequest.gate);
         if (!gate) return respond(reply, HTTP_NOT_FOUND, { error: `no declared gate "${parsedRequest.gate}"` });
-        if ((declaredTimeoutMs(gate) ?? 0) > AD_HOC_MAX_MINUTES * MS_PER_MINUTE) {
-            return respond(reply, HTTP_UNPROCESSABLE, {
-                error: `gate "${gate.name}" declares timeout: ${gate.timeoutMinutes}, longer than an ad-hoc run can wait (${AD_HOC_MAX_MINUTES} minutes); ${gate.onDemand ? 'it is on_demand, so the end-of-run gates pass skips it too' : 'it runs in the end-of-run gates pass'}`,
-            });
-        }
+        const refusal = adHocRefusal(gate, parsedRequest.filter);
+        if (refusal) return respond(reply, HTTP_UNPROCESSABLE, { error: refusal });
 
         const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
-        const result = await runRegisteredGate(manager, claim, gate, cancelled);
-        if (result.status === HTTP_OK) record(auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
+        const result = await runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled);
+        // A filtered run is a partial answer: it never stands as the gate's latest run.
+        if (result.status === HTTP_OK && parsedRequest.filter === undefined)
+            record(auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
         return respond(reply, result.status, withDeadNote(result, claim));
     };
 

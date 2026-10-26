@@ -1657,6 +1657,23 @@ describe('the ad-hoc gate limit in the agent instructions', () => {
     );
 });
 
+// Issue #1041: the agent runs the covering gates before every push, narrowed by a filter where the
+// gate opted in; both agent guides must say how, and that a filtered run proves nothing.
+describe('the gate filter and the pre-push gate run in the agent instructions (issue #1041)', () => {
+    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s documents filter: true, GATE_FILTER and the pre-push run',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toContain('`filter: true`');
+            expect(text).toContain('"filter":"');
+            expect(text).toContain('GATE_FILTER');
+            expect(text).toContain('never evidence');
+            expect(text).toMatch(/[Bb]efore every push, run the declared gates/);
+            expect(text).not.toMatch(/does not stop you from publishing/);
+        }
+    );
+});
+
 // Issue #814: the agent's commands run as their own uid. The launcher in front of each image's
 // entrypoint starts the tool broker as root and drops for good; the entrypoints keep the CLI's own
 // state from the tool uid, which shares its group and its umask.
