@@ -1,6 +1,9 @@
-import type { BoardThreadFacts } from './board/board.js';
+import type { BoardJob, BoardThreadFacts } from './board/board.js';
+import { transcriptDir } from './claim.js';
 import { DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS } from './config.js';
+import { VOLUME_EXPORT_CAUSE } from './loop/loop-export.js';
 import type { ReaperArm, ReaperObserver, VolumeThread } from './reaper.js';
+import { generationOfName, taskRootOf } from './task-volume.js';
 
 /**
  * The reaper's export-before-delete (issue #938): a thread that is not whole may hold transcript records
@@ -160,4 +163,54 @@ export function createVolumeExportGate(deps: {
             return settle(thread, attempt, await runExport(arm, thread, attempt));
         },
     };
+}
+
+/** The time a volume export keeps after its work ends, to remove its workload: the deadline covers both. */
+export const VOLUME_EXPORT_CLEANUP_MS = 20_000;
+
+/** One export's clock: the absolute `deadline` of everything, the `workEnd` of the work before the cleanup reserve. */
+export interface VolumeExportClock {
+    deadline: number;
+    workEnd: number;
+    /** The exporter's own give-up timers: below the work, so it ends itself before the driver's kill. */
+    giveUpMs: number;
+}
+
+export function volumeExportClock(drainMs: number, now: number): VolumeExportClock {
+    const cleanup = Math.min(VOLUME_EXPORT_CLEANUP_MS, Math.floor(drainMs / 2));
+    const work = drainMs - cleanup;
+    return { deadline: now + drainMs, workEnd: now + work, giveUpMs: Math.max(1, Math.floor(work / 2)) };
+}
+
+/** The thread's highest-generation volume: the only one a restore would reach. Null when none reads as a generation. */
+export function newestVolume(thread: VolumeThread): VolumeThread['volumes'][number] | null {
+    let best: { volume: VolumeThread['volumes'][number]; generation: number } | null = null;
+    for (const volume of thread.volumes) {
+        const generation = generationOfName(thread.root, volume.name);
+        if (generation !== null && (best === null || generation > best.generation)) best = { volume, generation };
+    }
+    return best?.volume ?? null;
+}
+
+/** The name of a thread's export workload: one per thread, so a stale one is found and removed by name. */
+export const volumeExportName = (root: string): string => `factory-export-${taskRootOf({ id: root })}`;
+
+/**
+ * The one-shot exporter's env: the volume's transcript directory, the order to close every stream `partial`
+ * with the export's cause, and the control endpoint it uploads through. Give-up timers sit below the deadline.
+ */
+export function volumeExportEnv(
+    root: string,
+    channel: { url: string; token: string },
+    giveUpMs: number
+): [string, string][] {
+    return [
+        ['CLAUDE_TRANSCRIPT_DIR', transcriptDir({ id: root } as BoardJob)],
+        ['EXPORT_ONCE', 'partial'],
+        ['EXPORT_ONCE_CAUSE', VOLUME_EXPORT_CAUSE],
+        ['BELLOWS_CONTROL_URL', channel.url],
+        ['BELLOWS_CONTROL_TOKEN', channel.token],
+        ['EXPORT_GIVEUP_MS', String(giveUpMs)],
+        ['EXPORT_DRAIN_GIVEUP_MS', String(giveUpMs)],
+    ];
 }

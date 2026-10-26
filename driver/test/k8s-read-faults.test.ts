@@ -19,6 +19,7 @@ import { jobPath } from '../src/k8s/k8s-auxspec.js';
 import { createKubernetesReaper } from '../src/k8s/k8s-reaper.js';
 import { createKubernetesRunner } from '../src/k8s/k8s-runner.js';
 import { createReaper } from '../src/reaper.js';
+import { boardIdentity } from '../src/task-volume.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, serviceContainerOf } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 import {
@@ -36,6 +37,7 @@ import {
 } from './fixtures/read-faults.js';
 
 const NS = 'factory';
+const CONFIG = loadDriverConfig({ EXECUTOR: 'kubernetes', K8S_NAMESPACE: NS });
 const START = '2026-08-20T06:00:00.000Z';
 
 const runnerOf = (request: K8sRequest, leases?: Board['leases']) =>
@@ -436,3 +438,91 @@ scenario(
 scenario('a run whose agent failed under a live pod (K-V1)', runVerdict, { writes: [] }, {});
 
 scenario('the dead-service probe of a running service (K-D1)', deadService, { writes: [] }, {});
+
+/**
+ * K-VX (issue #938): the reaper's export of a not-whole thread's volume claim, then its delete. A faulted read
+ * of the export (the claim presence, the pod's phase) must end in a kept claim, never a delete.
+ */
+const volumeExportOf =
+    (drained: boolean): Build<K8sRequest> =>
+    async (tap, alias) => {
+        const root = randomUUID();
+        alias(root, 'root');
+        const claim = `factory-task-${root}-1`;
+        const claims = `${API}/persistentvolumeclaims`;
+        const labels = { 'factory.task-root': root, 'factory.task-board': boardIdentity(CONFIG) };
+        const reply = (body: unknown): K8sResponse => ({ status: 200, body: JSON.stringify(body) });
+        const request: K8sRequest = async (method, path) => {
+            const bare = path.split('?')[0]!;
+            if (method === 'GET' && bare === claims) {
+                return reply({ items: [{ metadata: { name: claim, uid: 'claim-uid', labels } }] });
+            }
+            if (method === 'GET' && bare === `${claims}/${claim}`) return reply({ metadata: { name: claim } });
+            if (method === 'GET' && bare === jobsPath(NS)) return reply({ items: [] });
+            if (method === 'GET' && bare.startsWith(`${jobsPath(NS)}/`)) {
+                return reply({ metadata: { uid: 'pod-uid' }, status: { succeeded: 1 } });
+            }
+            if (method === 'POST' && bare === jobsPath(NS))
+                return { status: 201, body: '{"metadata":{"uid":"pod-uid"}}' };
+            if (method === 'DELETE') return { status: 200, body: '{}' };
+            throw new Error(`the API server fake has no answer for ${method} ${path}`);
+        };
+        const reaper = createReaper({
+            board: {
+                leases: async () => [
+                    {
+                        id: root,
+                        status: 'succeeded' as const,
+                        leaseToken: null,
+                        thread: {
+                            live: false,
+                            lastFinalizedAt: '2020-01-01T00:00:00.000Z',
+                            artifactsComplete: false,
+                            checkpoint: 'complete' as const,
+                            checkpointFinalizedAt: '2020-01-01T00:00:00.000Z',
+                            lastJobId: root,
+                            lastClaimSeq: 1,
+                        },
+                    },
+                ],
+            },
+            arm: createKubernetesReaper({
+                config: CONFIG,
+                request: tap(request),
+                sleep: async () => {},
+                exporting: {
+                    open: async () => ({
+                        url: 'http://driver:1/',
+                        token: 't',
+                        proof: () => (drained ? { drained: true } : { drained: false, why: 'a chunk was refused' }),
+                        close: () => {},
+                    }),
+                    drainMs: 4_000,
+                },
+            }),
+            intervalMs: 0,
+            graceMs: 0,
+            volumePolicy: { ttlMs: 1, boundMs: 2 },
+            log: () => {},
+        });
+        return async () => {
+            await reaper.sweep();
+            return [];
+        };
+    };
+
+const EXPORT_JOB = `DELETE ${jobsPath(NS)}/factory-export-<root>`;
+
+scenario(
+    'the reaper exporting a not-whole thread’s claim that the relay did not prove drained (K-VX)',
+    volumeExportOf(false),
+    { writes: [`POST ${jobsPath(NS)}`, EXPORT_JOB] },
+    {}
+);
+
+scenario(
+    'the reaper exporting a not-whole thread’s claim before its delete (K-VX2)',
+    volumeExportOf(true),
+    { writes: [`POST ${jobsPath(NS)}`, EXPORT_JOB, `DELETE ${API}/persistentvolumeclaims/factory-task-<root>-1`] },
+    {}
+);
