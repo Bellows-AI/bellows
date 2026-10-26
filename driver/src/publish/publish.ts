@@ -6,7 +6,14 @@ import { parseLastJsonLine } from '../json-parse.js';
 import { stepLost } from '../step-control.js';
 import { baseBranchOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
-import { publishedResult, pushRecorded, reconcileAgentPr, resolveOrCreatePr, resumePublication } from './publish-pr.js';
+import {
+    type PrOperationRecorder,
+    publishedResult,
+    pushRecorded,
+    reconcileAgentPr,
+    resolveOrCreatePr,
+    resumePublication,
+} from './publish-pr.js';
 
 // The values that stand alone live below this file and are named here, where every caller finds them.
 export {
@@ -146,6 +153,11 @@ export interface PublishResult {
     stale?: true;
     /** What lies under a failed publish (`publishCauseOf` or the transport's own); null when it did not fail. */
     cause: FailureCause | null;
+    /**
+     * The id minted for the PR operation this publish performed and handed to `PublishOptions.recordPrOperation`
+     * (issue #983); absent when nothing was recorded for it.
+     */
+    operationId?: string;
 }
 
 /** How one publish differs from the board's end-of-run one. */
@@ -158,6 +170,8 @@ export interface PublishOptions {
     revision?: string;
     /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
     draft?: boolean;
+    /** Receives each PR operation as it happens (issue #983); best effort, never part of the publish's verdict. */
+    recordPrOperation?: PrOperationRecorder;
 }
 
 /**
@@ -673,8 +687,15 @@ export async function publishCheckout(
         const draft = options?.draft === true;
         if (!state.dirty && state.unpushed === 0) {
             return (
-                (await reconcileAgentPr(runStep, step, job, state)) ??
-                (await resumePublication(runStep, step, { job, repo, state, plan, draft })) ??
+                (await reconcileAgentPr(runStep, step, { job, state, record: options?.recordPrOperation })) ??
+                (await resumePublication(runStep, step, {
+                    job,
+                    repo,
+                    state,
+                    plan,
+                    draft,
+                    record: options?.recordPrOperation,
+                })) ??
                 publishNothing('no uncommitted changes and nothing unpushed')
             );
         }
@@ -690,10 +711,18 @@ export async function publishCheckout(
         await pushRecorded(runStep, step, { repo, branch, op, sha });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const prUrl = await resolveOrCreatePr(runStep, step, { job, branch, plan, state, draft, op });
-        await recordOperation(step, repo, op, { state: 'opened', ...(prUrl ? { prUrl } : {}) });
+        const landed = await resolveOrCreatePr(runStep, step, {
+            job,
+            branch,
+            plan,
+            state,
+            draft,
+            op,
+            record: options?.recordPrOperation,
+        });
+        await recordOperation(step, repo, op, { state: 'opened', ...(landed.prUrl ? { prUrl: landed.prUrl } : {}) });
 
-        return publishedResult(job, branch, state.defaultBranch, prUrl);
+        return publishedResult(job, branch, state.defaultBranch, landed);
     } catch (e) {
         if (stepLost(e)) throw e;
         const message = `${(e as Error).message}`;

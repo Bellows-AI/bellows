@@ -59,6 +59,7 @@ export function publishAnswer(verdict: PublishVerdict): PublishAnswer {
             prUrl: verdict.prUrl,
             prNumber: verdict.prNumber,
             reason: verdict.reason,
+            operationId: verdict.operationId,
         },
     };
 }

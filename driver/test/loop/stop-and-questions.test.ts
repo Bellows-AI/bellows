@@ -734,12 +734,12 @@ describe('revision-bound evidence', () => {
     it('reports nothing and publishes unbound when no policy is configured', async () => {
         const { completed, options } = await driveWith(gatedJob(1));
         expect(completed).not.toHaveProperty('evidence');
-        expect(options).toEqual([undefined]);
+        expect(options).toEqual([{ recordPrOperation: expect.any(Function) }]);
     });
 
     it('binds the publish to the tree the passing gates assessed, and reports that evidence', async () => {
         const { completed, options } = await driveWith({ ...gatedJob(1), policy: { gates: true } });
-        expect(options).toEqual([{ revision: 'head:bbbb' }]);
+        expect(options).toEqual([{ revision: 'head:bbbb', recordPrOperation: expect.any(Function) }]);
         expect(completed?.status).toBe('succeeded');
         expect(completed?.evidence).toEqual({ treeBefore: 'head:aaaa', treeAfter: 'head:bbbb', gates: 'passed' });
     });
@@ -765,7 +765,7 @@ describe('revision-bound evidence', () => {
 
     it('ships a draft over a failed gate by default, and the failure stays visible (issue #573)', async () => {
         const { completed, options } = await driveWith(gatedJob(1), { gatesFail: true });
-        expect(options).toEqual([{ draft: true }]);
+        expect(options).toEqual([{ draft: true, recordPrOperation: expect.any(Function) }]);
         expect(completed).toMatchObject({ status: 'failed', failureKind: 'gate' });
         expect(completed?.output).toContain('gate "test" failed');
         expect(completed?.publication?.prNumber).toBe(42);
@@ -812,7 +812,7 @@ describe('revision-bound evidence', () => {
     it('binds an approved review to the revision it assessed', async () => {
         const claim = { ...job(1), policy: { review: true }, review: { state: 'approved', revision: 'head:bbbb' } };
         const { completed, options } = await driveWith(claim as BoardJob);
-        expect(options).toEqual([{ revision: 'head:bbbb' }]);
+        expect(options).toEqual([{ revision: 'head:bbbb', recordPrOperation: expect.any(Function) }]);
         expect(completed?.status).toBe('succeeded');
     });
 

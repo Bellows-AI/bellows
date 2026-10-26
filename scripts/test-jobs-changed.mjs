@@ -70,7 +70,7 @@ export const RULES = [
     [/^driver\/src\/(review\/review|review\/review-[a-z-]+|loop\/loop-review)\.ts$/, ['review'], 'reviewer'],
     [/^driver\/src\/scripts\/(review-[a-z-]+\.(cjs|sh)|git-review-snapshot\.cjs)$/, ['review'], 'reviewer'],
     [/^driver\/src\/(question-control|question-validation|loop\/loop-questions)\.ts$/, ['ask-user-question', 'question-round-trip'], 'questions'],
-    [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
+    [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|gates|gate-cause|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell)\.sh$/, ['driver', 'workflows'], 'gates'],
@@ -79,7 +79,7 @@ export const RULES = [
     [/^driver\/src\/(master-prompt|continuation|transcript-export|loop\/loop-export|export-control|evidence-policy|helper-receipts|verdict-budget|loop\/loop-verdict|loop\/loop-attempt|telemetry-config)\.ts$/, ['driver', 'cooperative-stop'], 'agent run and its readout'],
     [/^driver\/src\/scripts\/(claude-export|claude-turns|opencode-cache-probe|opencode-readout)\.cjs$/, ['cooperative-stop', 'tool-isolation'], 'agent transcript readout'],
     [/^driver\/src\/scripts\/helper-noop\.cjs$/, ['driver'], 'helper receipts'],
-    [/^driver\/src\/(board\/board|board\/board-[a-z]+|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],
+    [/^driver\/src\/(board\/board|board\/board-[a-z]+|board\/board-pr-operations|poll|artifact-calls|artifact-upload|driver-metrics|metrics-server|prometheus)\.ts$/, ['board', 'driver'], 'board client'],
     // The kubernetes executor: scripts/test-k8s.sh covers it, the docker lane never loads it.
     [/^driver\/src\/k8s\/k8s-[a-z-]+\.ts$/, NONE, 'kubernetes executor, covered by test:k8s'],
 

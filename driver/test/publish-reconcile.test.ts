@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { type PublishStep, publishCheckout } from '../src/publish/publish.js';
+import type { PrOperationWrite as PrOperationNote } from '../src/board/board-pr-operations.js';
 import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 
 /**
@@ -235,5 +236,98 @@ describe('publication reconciliation after an uncertain response', () => {
         await expect(publishCheckout(JOB, undefined, losing)).rejects.toSatisfy(
             (e) => e instanceof StepChannelClosed || e instanceof StepTimedOut
         );
+    });
+});
+
+/**
+ * The record of each managed PR operation (issue #983): written at execution time from the publish
+ * itself, with an id minted per operation, never derived from the verdict afterwards. A PR the driver
+ * opened is `created`; one it found (an earlier publish, the agent, or a create whose answer was lost)
+ * is `reused`. The recorder is best effort: its failure must never fail the publish or open a second PR.
+ */
+describe('the PR operation record (issue #983)', () => {
+    const recording = (w: ReturnType<typeof world>, fail?: 'reject' | 'throw') => {
+        const notes: PrOperationNote[] = [];
+        const options = {
+            async recordPrOperation(note: PrOperationNote): Promise<void> {
+                notes.push(note);
+                if (fail === 'reject') throw new Error('the board is down');
+            },
+        };
+        return { notes, run: () => publishCheckout(JOB, options, w.run) };
+    };
+    const NOTE = { repo: 'Bellows-AI/factory', prNumber: 42, prUrl: PR_URL, branch: 'fix/10' };
+
+    it('a new PR is `created`, and the reply names the operation', async () => {
+        const w = world();
+        const { notes, run } = recording(w);
+        const result = await run();
+        expect(notes).toEqual([{ ...NOTE, operation: 'created', operationId: expect.any(String) }]);
+        expect(result.operationId).toBe(notes[0]!.operationId);
+    });
+
+    it('an existing branch PR is `reused`', async () => {
+        const w = world();
+        w.state.prs.push(PR_URL);
+        const { notes, run } = recording(w);
+        const result = await run();
+        expect(w.state.prCreates).toBe(0);
+        expect(notes).toEqual([{ ...NOTE, operation: 'reused', operationId: expect.any(String) }]);
+        expect(result.operationId).toBe(notes[0]!.operationId);
+    });
+
+    it('a PR the agent opened on a clean, pushed tree is `reused`: there is no `agent` operation', async () => {
+        const w = world({ dirty: false });
+        w.state.remoteHead = COMMIT;
+        w.state.trackingHead = COMMIT;
+        w.state.prs.push(PR_URL);
+        const { notes, run } = recording(w);
+        const result = await run();
+        expect(w.state.prCreates).toBe(0);
+        expect(notes).toEqual([{ ...NOTE, operation: 'reused', operationId: expect.any(String) }]);
+        expect(result.operationId).toBe(notes[0]!.operationId);
+    });
+
+    it('a retry after a lost create answer reconciles to `reused` and opens no second PR', async () => {
+        const w = world();
+        w.state.lostAnswer.add('gh pr create');
+        const { notes, run } = recording(w);
+        const result = await run();
+        expect(w.state.prCreates).toBe(1);
+        expect(w.state.prs).toEqual([PR_URL]);
+        expect(notes).toEqual([{ ...NOTE, operation: 'reused', operationId: expect.any(String) }]);
+        expect(result.operationId).toBe(notes[0]!.operationId);
+    });
+
+    it('two genuine operations on one PR are two notes with their own ids', async () => {
+        const w = world();
+        const { notes, run } = recording(w);
+        await run();
+        await run();
+        expect(notes.map((n) => n.operation)).toEqual(['created', 'reused']);
+        expect(new Set(notes.map((n) => n.operationId)).size).toBe(2);
+    });
+
+    it('a PR whose number cannot be read is not recorded, and the publish still lands', async () => {
+        const w = world();
+        w.state.prs.push('https://github.com/Bellows-AI/factory/pulls');
+        const { notes, run } = recording(w);
+        expect(await run()).toMatchObject({ ok: true, published: true });
+        expect(notes).toEqual([]);
+    });
+
+    it('a failed record write never fails the publish or opens a second PR: the operation is just unrecorded', async () => {
+        const w = world();
+        const { notes, run } = recording(w, 'reject');
+        const result = await run();
+        expect(result).toMatchObject({ ok: true, published: true, prUrl: PR_URL });
+        expect(notes).toHaveLength(1);
+        expect(w.state.prCreates).toBe(1);
+        expect(w.state.ledger.get(`fix/10@${COMMIT}`)).toMatchObject({ state: 'opened', prUrl: PR_URL });
+    });
+
+    it('carries no operation id when nothing records it', async () => {
+        const w = world();
+        expect(await publish(w)).not.toHaveProperty('operationId');
     });
 });

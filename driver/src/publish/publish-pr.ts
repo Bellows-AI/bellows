@@ -1,4 +1,6 @@
+import { randomUUID } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
+import type { PrOperationKind, PrOperationWrite } from '../board/board-pr-operations.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
@@ -23,6 +25,31 @@ import {
  * workflow itself): reuse or open the branch's PR, retarget it, and the push with the publication
  * ledger and the remote read that keep a retried publish from repeating an effect that landed.
  */
+
+/**
+ * Where each managed PR operation is handed as it happens (issue #983): the loop's recorder writes it
+ * to the board under the attempt's lease. It is best effort by contract — it logs its own failure and
+ * a publish never depends on it.
+ */
+export type PrOperationRecorder = (note: PrOperationWrite) => Promise<void>;
+
+/**
+ * Hands one operation to the recorder, with an id minted for it, and answers that id for the publish
+ * reply. Nothing is minted without a recorder or a PR the board could store (a number the url does not
+ * carry, no repo label). A recorder that throws anyway leaves the operation unrecorded: the PR is
+ * already open, and the publish must neither fail nor open another.
+ */
+async function notePrOperation(
+    record: PrOperationRecorder | undefined,
+    note: { job: BoardJob; branch: string; operation: PrOperationKind; prUrl: string | null }
+): Promise<string | undefined> {
+    const { job, branch, operation, prUrl } = note;
+    const prNumber = prUrl === null ? null : prNumberFromUrl(prUrl);
+    if (!record || !prUrl || prNumber === null || !job.repo) return undefined;
+    const operationId = randomUUID();
+    await record({ operationId, operation, repo: job.repo, prNumber, prUrl, branch }).catch(() => undefined);
+    return operationId;
+}
 
 /**
  * The branch's open PR, whoever opened it — the agent with `gh pr create` or an earlier publish.
@@ -74,14 +101,15 @@ async function retargetPr(step: RunPublishStep, job: BoardJob, branch: string): 
 export async function reconcileAgentPr(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    job: BoardJob,
-    state: GitState
+    context: { job: BoardJob; state: GitState; record?: PrOperationRecorder | undefined }
 ): Promise<PublishResult | null> {
+    const { job, state, record } = context;
     const { branch } = state;
     if (!branch || branch === state.defaultBranch || !isBranchName(branch)) return null;
     const prUrl = await existingPrUrl(runStep, branch);
     if (!prUrl) return null;
     await retargetPr(step, job, branch);
+    const operationId = await notePrOperation(record, { job, branch, operation: 'reused', prUrl });
     return {
         ok: true,
         published: true,
@@ -92,6 +120,7 @@ export async function reconcileAgentPr(
         baseBranch: state.defaultBranch ?? null,
         prNumber: prNumberFromUrl(prUrl),
         cause: null,
+        ...(operationId ? { operationId } : {}),
     };
 }
 
@@ -102,13 +131,25 @@ export async function reconcileAgentPr(
 export async function resolveOrCreatePr(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    context: { job: BoardJob; branch: string; plan: PublishPlan; state: GitState; draft: boolean; op: string }
-): Promise<string | null> {
-    const { job, branch, plan, state, draft, op } = context;
+    context: {
+        job: BoardJob;
+        branch: string;
+        plan: PublishPlan;
+        state: GitState;
+        draft: boolean;
+        op: string;
+        record?: PrOperationRecorder | undefined;
+    }
+): Promise<{ prUrl: string | null; operationId?: string }> {
+    const { job, branch, plan, state, draft, op, record } = context;
+    const noted = async (prUrl: string | null, operation: PrOperationKind) => {
+        const operationId = await notePrOperation(record, { job, branch, operation, prUrl });
+        return { prUrl, ...(operationId ? { operationId } : {}) };
+    };
     const reused = await existingPrUrl(runStep, branch);
     if (reused) {
         await retargetPr(step, job, branch);
-        return reused;
+        return noted(reused, 'reused');
     }
 
     // The PR speaks for the work, not for the command that started it (issue #82): a
@@ -147,7 +188,8 @@ export async function resolveOrCreatePr(
         .join('\n\n');
     // A PR whose creation answered badly may exist all the same: the branch's PRs are read again
     // before the failure stands, so a retry never opens a second one.
-    return reconciled(
+    let opened = false;
+    const prUrl = await reconciled(
         async () => {
             const created = await step({
                 label: 'gh pr create',
@@ -168,10 +210,14 @@ export async function resolveOrCreatePr(
                 inRepo: true,
                 op,
             });
-            return created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+            const url = created.stdout.trim().split('\n').filter(Boolean).pop() ?? null;
+            opened = url !== null;
+            return url;
         },
         () => existingPrUrl(runStep, branch)
     );
+    // An answer lost after the PR landed finds it by the read above: that is a reuse, not a second create.
+    return noted(prUrl, opened ? 'created' : 'reused');
 }
 
 /**
@@ -218,17 +264,18 @@ export const publishedResult = (
     job: BoardJob,
     branch: string,
     base: string | undefined,
-    prUrl: string | null
+    landed: { prUrl: string | null; operationId?: string }
 ): PublishResult => ({
     ok: true,
     published: true,
     branch,
-    prUrl,
+    prUrl: landed.prUrl,
     reason: null,
     repository: job.repo ?? null,
     baseBranch: base ?? null,
-    prNumber: prNumberFromUrl(prUrl ?? ''),
+    prNumber: prNumberFromUrl(landed.prUrl ?? ''),
     cause: null,
+    ...(landed.operationId ? { operationId: landed.operationId } : {}),
 });
 
 /**
@@ -240,9 +287,16 @@ export const publishedResult = (
 export async function resumePublication(
     runStep: RunPublishStep,
     step: RunPublishStep,
-    context: { job: BoardJob; repo: string; state: GitState; plan: PublishPlan; draft: boolean }
+    context: {
+        job: BoardJob;
+        repo: string;
+        state: GitState;
+        plan: PublishPlan;
+        draft: boolean;
+        record?: PrOperationRecorder | undefined;
+    }
 ): Promise<PublishResult | null> {
-    const { job, repo, state, plan, draft } = context;
+    const { job, repo, state, plan, draft, record } = context;
     const { branch } = state;
     if (!branch || branch === state.defaultBranch || !isBranchName(branch)) return null;
     const sha = await headSha(runStep);
@@ -252,7 +306,15 @@ export async function resumePublication(
     // landed — only its answer, and the ledger entry after it, were lost.
     const { state: reached } = await readOperation(runStep, repo, op);
     if (reached !== 'pushing' && reached !== 'pushed') return null;
-    const prUrl = await resolveOrCreatePr(runStep, step, { job, branch, plan, state, draft, op });
-    await recordOperation(step, repo, op, { state: 'opened', ...(prUrl ? { prUrl } : {}) });
-    return publishedResult(job, branch, state.defaultBranch, prUrl);
+    const landed = await resolveOrCreatePr(runStep, step, {
+        job,
+        branch,
+        plan,
+        state,
+        draft,
+        op,
+        record,
+    });
+    await recordOperation(step, repo, op, { state: 'opened', ...(landed.prUrl ? { prUrl: landed.prUrl } : {}) });
+    return publishedResult(job, branch, state.defaultBranch, landed);
 }

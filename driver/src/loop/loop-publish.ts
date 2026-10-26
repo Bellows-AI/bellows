@@ -1,3 +1,4 @@
+import { prOperationRecorder } from './loop-pr-operation.js';
 import type { BoardJob } from '../board/board.js';
 import { evidenceDecision } from '../evidence-policy.js';
 import { askGithubToken } from './loop-github.js';
@@ -47,7 +48,11 @@ async function pushDraft(
     const token = await askGithubToken(rt, job, 'the draft publish');
     if (gone()) return 'gone';
     const result = await rt.runner
-        .publishGit(job, token ?? undefined, { draft: true, ...(revision === null ? {} : { revision }) })
+        .publishGit(job, token ?? undefined, {
+            draft: true,
+            ...(revision === null ? {} : { revision }),
+            recordPrOperation: prOperationRecorder(rt, job),
+        })
         .catch((e: Error) => (stepLost(e) ? 'gone' : publishFailed(`the publish threw: ${e.message}`, 'unknown')));
     // A supervisor lost under the push is the attempt's end, not a verdict on the draft (#925).
     if (result === 'gone') return 'gone';
