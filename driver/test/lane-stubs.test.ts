@@ -429,7 +429,7 @@ describe('the kind recovery stub barrier', () => {
 // #829: the driver-kill lanes (test-jobs `driver-kill`, test-k8s `takeover`) need a commit to
 // publish and a stand-in for `gh`, with state that survives the driver being killed.
 describe('scripts/k8s-stub.sh factory-stub-commit', () => {
-    it('leaves one empty lane-commit on the task branch before any wait', () => {
+    it('leaves one lane-commit, of a file, on the task branch before any wait', () => {
         const dir = mkdtempSync(join(tmpdir(), 'lane-commit-'));
         dirs.push(dir);
         execFileSync('git', ['init', '-q', '-b', 'main', dir]);
@@ -440,6 +440,18 @@ describe('scripts/k8s-stub.sh factory-stub-commit', () => {
         });
         const log = execFileSync('git', ['-C', dir, 'log', '--format=%s'], { encoding: 'utf8' });
         expect(log).toBe('lane-commit\nthe task base\n');
+    });
+});
+
+// #1020: a task that changes nothing skips its gates, so a lane counting gate runs needs a change.
+describe('scripts/k8s-stub.sh factory-stub-change', () => {
+    it('writes one file into the task tree', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'lane-change-'));
+        dirs.push(dir);
+        execFileSync('sh', [join(ROOT, 'scripts/k8s-stub.sh'), 'factory-stub-change'], {
+            env: { PATH: process.env.PATH ?? '', WORKDIR: dir },
+        });
+        expect(readFileSync(join(dir, 'lane-change'), 'utf8')).toBe('change\n');
     });
 });
 

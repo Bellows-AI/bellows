@@ -69,6 +69,7 @@ const out = {
     unpushed: 0,
     hasIdentity: false,
     fingerprint: null,
+    noChange: false,
     conflicts: [],
     rebasing: false,
 };
@@ -92,6 +93,12 @@ try {
         out.unpushed = 0;
     }
     out.fingerprint = fingerprintOf(repo);
+    // No change: nothing uncommitted AND no diff of HEAD against the base (exit 0 of --quiet). A
+    // missing base ref, a failed status or any other error leaves it false: unknown is never a skip.
+    try {
+        git('diff', '--quiet', 'origin/' + out.defaultBranch + '...HEAD');
+        out.noChange = !out.dirty;
+    } catch {}
     // A tree the agent left conflicted, or a rebase it left stopped, is not publishable work.
     out.conflicts = git('diff', '--name-only', '--diff-filter=U')
         .split('\n')

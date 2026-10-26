@@ -330,6 +330,8 @@ export function stubRunner(
         reclaimSequence?: ReclaimResult[];
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
         probeTree?: string | null;
+        /** The pre-gate no-change read (issue #1020); absent reads as a changed tree, a function may throw. */
+        noChange?: boolean | (() => Promise<boolean>);
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
         deadServices?: () => Promise<DeadService[]>;
         /** The pre-gate fleet restart (issue #560); every call is recorded in `restartedServices`. */
@@ -459,6 +461,10 @@ export function stubRunner(
             if (options.probeTree === undefined) return null;
             runner.probed.push(probedJob);
             return options.probeTree;
+        },
+        async probeNoChange() {
+            const { noChange } = options;
+            return typeof noChange === 'function' ? noChange() : (noChange ?? false);
         },
         adopt: options.adopt ?? (async () => null),
         // A runner with no supervisor to stop through: the stop is the hard kill.

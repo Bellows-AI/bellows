@@ -29,6 +29,7 @@ const PHASE_SECONDS = {
     auth: 4,
     'cooperative-stop': 79,
     'tool-isolation': 84,
+    'image-checks': 60,
     'ask-user-question': 35,
     'question-round-trip': 67,
 };
@@ -38,7 +39,7 @@ const GROUP_OVERHEAD_SECONDS = 10;
 export const GROUPS = [
     { name: 'disruption', phases: ['node-disruption', 'driver-kill'] },
     { name: 'engine', phases: ['workflows', 'compose-driver', 'acceptance'] },
-    { name: 'cli-stop', phases: ['cooperative-stop', 'tool-isolation'] },
+    { name: 'cli-stop', phases: ['cooperative-stop', 'tool-isolation', 'image-checks'] },
     { name: 'core', phases: ['board', 'driver', 'github-credential', 'services', 'orphan-reaper', 'auth'] },
     { name: 'guards', phases: ['run-deadline', 'capacity', 'review'] },
     { name: 'cli-ask', phases: ['ask-user-question', 'question-round-trip'] },

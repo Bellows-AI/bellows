@@ -47,6 +47,7 @@ const gatesResult = {
     failure: null,
     deadServices: [],
     gatesSkipped: null,
+    noChange: false,
     recoveredServices: [],
     reports: passedReports,
     setupCleared: true,
@@ -85,6 +86,7 @@ interface Scene {
     setupFailure?: BoardJob['setupFailure'];
     probe?: (signal: AbortSignal) => Promise<string | null>;
     policy?: BoardJob['policy'];
+    noChange?: boolean;
     deadServices?: DeadService[];
     /** A job that declares an `environment.setup` and no gates, its setup runs answered in order. */
     setupOnly?: { setups: GateRun[] };
@@ -118,6 +120,7 @@ async function run(scene: Scene = {}) {
     const runner = stubRunner(async () => ok(), {
         sync: { ok: true, reason: null, fingerprint: 'h:before' },
         probeTree: scene.probeTree === undefined ? TREE : scene.probeTree,
+        ...(scene.noChange === undefined ? {} : { noChange: scene.noChange }),
         publish: scene.publishResult ?? published,
         ...(scene.adopted === undefined ? {} : { adopt: async () => scene.adopted ?? null }),
         ...(scene.deadServices ? { deadServices: async () => scene.deadServices! } : {}),
@@ -162,6 +165,35 @@ describe('resuming an adopted run from its phase checkpoints', () => {
 
         expect(gatesRan(r)).toBe(false);
         expect(r.claimed.setupFailure).toBeNull();
+    });
+
+    // Issue #1020: infrastructure loss never changes a verdict — the replayed skip reads as the live one did.
+    describe('a no-change gates skip', () => {
+        const why = 'the task produced no change (no diff against its base)';
+        const skipped = { ...gatesResult, gatesSkipped: why, noChange: true, reports: [] };
+        const required = { gates: true } as BoardJob['policy'];
+
+        it('a4: is checkpointed with its reason and its no-change flag', async () => {
+            const r = await run({ noChange: true, policy: required });
+
+            expect(gatesRan(r)).toBe(false);
+            const gates = r.board.phaseCheckpointsWritten.find((w) => w.phase === 'gates');
+            expect(gates?.result).toMatchObject({ gatesSkipped: why, noChange: true });
+        });
+
+        it('a5: replays on adoption with the same evidence, and a gates-required publication is not refused', async () => {
+            const live = await run({ noChange: true, policy: required });
+            const replay = await run({ adopted, policy: required, checkpoints: [gatesCp({ result: skipped })] });
+
+            expect(gatesRan(replay)).toBe(false);
+            expect(replay.logs).toContain(`job ${replay.claimed.id}: resumed gates from claim 1's checkpoint`);
+            expect(replay.board.completed[0]).toMatchObject({ status: 'succeeded' });
+            expect(replay.board.completed[0]!.output).not.toContain('publication refused');
+            expect(replay.board.completed[0]!.output).toContain(`[driver] gates skipped — ${why}`);
+            // The before-tree is the claim's own; the gates outcome and the revision are the run's.
+            const { gates, treeAfter } = live.board.completed[0]!.evidence!;
+            expect(replay.board.completed[0]!.evidence).toMatchObject({ gates, treeAfter });
+        });
     });
 
     it('a3: a checkpoint whose reports are missing or malformed runs the gates again', async () => {
