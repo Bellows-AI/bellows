@@ -19,6 +19,7 @@ import { type Bound, pollFor, type Sleep, timeLeft } from './poll.js';
 import {
     baseBranchOf,
     CREDENTIAL_HELPER,
+    probeNoChange,
     probeTreeFingerprint,
     publishCheckout,
     type PublishStep,
@@ -505,7 +506,7 @@ async function stepHostFor(groups: SupervisedGroups, job: BoardJob): Promise<Ste
  */
 export function supervisedStepMembers(
     groups: SupervisedGroups
-): Pick<Runner, 'publishGit' | 'probeTree' | 'snapshotTree' | 'runHelper'> {
+): Pick<Runner, 'publishGit' | 'probeTree' | 'probeNoChange' | 'snapshotTree' | 'runHelper'> {
     return {
         publishGit: async (job, githubToken, options) =>
             publishCheckout(
@@ -518,6 +519,8 @@ export function supervisedStepMembers(
                 job,
                 supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal })
             ),
+        probeNoChange: async (job, signal) =>
+            probeNoChange(job, supervisedStepRunner(await stepHostFor(groups, job), job, { kind: 'probe', signal })),
         snapshotTree: async (job, key, signal) =>
             snapshotTree(
                 job,

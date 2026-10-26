@@ -84,6 +84,53 @@ describe('gates over a run that did not finish cleanly', () => {
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
     });
 
+    // Issue #1020: a task that changed nothing has nothing for the gates to judge.
+    it('skips the declared gates over a task with no change, recording why', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+        const runner = stubRunner(async () => ok(), { noChange: true });
+        const logs: string[] = [];
+
+        await drive({ ...board, runner, gates: stack.gates, log: (line: string) => logs.push(line) });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        const complete = board.board.completed[0]!;
+        expect(complete.status).toBe('succeeded');
+        expect(complete.output).toContain('[driver] gates skipped — the task produced no change');
+        expect(logs.join('\n')).toContain('gates skipped — the task produced no change');
+        expect(stack.stack.unregistered).toBe(1);
+    });
+
+    it('does not let the no-change skip refuse the publication under a gates-required policy', async () => {
+        const board = stubBoard([{ ...gatedJob(1), policy: { gates: true } }]);
+        const stack = stubGateStack({ test: 1 });
+        const runner = stubRunner(async () => ok(), {
+            noChange: true,
+            probeTree: 'head:tree',
+            sync: { ok: true, reason: null, fingerprint: 'head:tree' },
+        });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual([]);
+        expect(board.board.completed[0]).toMatchObject({ status: 'succeeded' });
+        expect(board.board.completed[0]?.output).not.toContain('publication refused');
+    });
+
+    it.each([
+        ['a changed task', false],
+        ['a read that fails', async () => Promise.reject(new Error('probe timed out'))],
+    ])('still runs every gate over %s', async (_label, noChange) => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const runner = stubRunner(async () => ok(), { noChange });
+
+        await drive({ ...board, runner, gates: stack.gates });
+
+        expect(stack.stack.ran.names).toEqual(['test', 'lint']);
+        expect(board.board.completed[0]?.output).not.toContain('gates skipped');
+    });
+
     // 044 names "timeouts where the gates passed" as a query: a timed-out run keeps its gates.
     it('still runs the gates over a timed-out run', async () => {
         const board = stubBoard([gatedJob(1)]);

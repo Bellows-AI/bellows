@@ -104,6 +104,8 @@ export interface GitState {
     hasIdentity: boolean;
     /** The tree fingerprint (`HEAD:hash` of the uncommitted state); null when the probe measured none. */
     fingerprint: string | null;
+    /** Confirmed: nothing uncommitted and no diff of HEAD against the base. False also when unknown. */
+    noChange: boolean;
     /** Unmerged paths the tree still holds (issue #661); empty when none. */
     conflicts: string[];
     /** A rebase is stopped in the tree, conflicted or resolved but not continued. */
@@ -378,6 +380,7 @@ export function parseGitState(stdout: string): GitState {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            noChange: false,
             conflicts: [],
             rebasing: false,
         };
@@ -390,6 +393,7 @@ export function parseGitState(stdout: string): GitState {
         unpushed: typeof p.unpushed === 'number' && Number.isFinite(p.unpushed) && p.unpushed >= 0 ? p.unpushed : 0,
         hasIdentity: p.hasIdentity === true,
         fingerprint: typeof p.fingerprint === 'string' && p.fingerprint ? p.fingerprint : null,
+        noChange: p.noChange === true,
         conflicts: Array.isArray(p.conflicts) ? p.conflicts.filter((c) => typeof c === 'string') : [],
         rebasing: p.rebasing === true,
     };
@@ -481,6 +485,17 @@ export async function probeTreeFingerprint(job: BoardJob, runStep: RunPublishSte
     const probe = await runStep(probeStep(repo)).catch(() => null);
     const fingerprint = parseLastJsonLine<{ fingerprint?: unknown }>(probe?.stdout ?? '', () => ({})).fingerprint;
     return typeof fingerprint === 'string' && fingerprint ? fingerprint : null;
+}
+
+/**
+ * Whether the task's checkout holds no change at all (issue #1020): nothing uncommitted and no diff
+ * against the claim's base. Only a confirmed read answers true; a probe that failed, timed out or
+ * found no checkout answers false, so the gates run.
+ */
+export async function probeNoChange(job: BoardJob, runStep: RunPublishStep): Promise<boolean> {
+    const repo = checkoutDir(job);
+    if (!repo) return false;
+    return (await probeCheckout(runStep, repo, baseBranchOf(job))).noChange;
 }
 
 /**

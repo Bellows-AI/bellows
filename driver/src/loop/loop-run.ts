@@ -488,6 +488,8 @@ function evidenceOf(
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
 function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
     if (!declared) return 'none';
+    // A revision identical to its base needs no gate verdict: the skip is recorded, not a missing pass.
+    if (gated.noChange) return 'passed';
     if (gated.gatesSkipped !== null || gated.deadServices.length > 0) return 'incomplete';
     return gated.failure ? 'failed' : 'passed';
 }
@@ -497,6 +499,8 @@ interface GatesPhase {
     failure: GateFailure | null;
     deadServices: DeadService[];
     gatesSkipped: string | null;
+    /** The gates were skipped because the task produced no change (issue #1020). */
+    noChange?: boolean;
     /** The services found dead before the gates and restarted for them (issue #560): noted, not faults. */
     recoveredServices: DeadService[];
     /** The gates list as the board was last told it; empty when no declared gate ran. */
@@ -558,6 +562,20 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
             reports: [],
         };
     }
+    // A task that changed nothing has nothing for the gates to judge (issue #1020). Only a confirmed
+    // read skips: a probe that failed or timed out is inconclusive, and the gates run.
+    if (await noChangeOf(ctx)) {
+        const why = 'the task produced no change (no diff against its base)';
+        rt.log(`job ${job.id}: gates skipped — ${why}`);
+        return {
+            failure: null,
+            deadServices: [],
+            gatesSkipped: why,
+            noChange: true,
+            recoveredServices: [],
+            reports: [],
+        };
+    }
     // A gate against a dead service fails on an environment the agent cannot fix, and a
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The
     // services are stateless fixtures, so a dead one is restarted first; only a restart that
@@ -586,6 +604,16 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         recoveredServices,
         reports: gateSession.lastReports ?? [],
     };
+}
+
+/** Whether the checkout is confirmed unchanged; a failed or aborted read is false, never a skip. */
+async function noChangeOf(ctx: AttemptCtx): Promise<boolean> {
+    const { rt, job, state } = ctx;
+    const raced = await raceStep(
+        state.signal,
+        rt.runner.probeNoChange(job, state.signal).catch(() => false)
+    );
+    return raced?.value === true;
 }
 
 /** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */

@@ -37,6 +37,7 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
         dirty: boolean;
         unpushed: number;
         hasIdentity: boolean;
+        noChange: boolean;
     } => {
         const out = execFileSync('node', [join(import.meta.dirname, '..', 'src', 'scripts', 'git-probe.cjs')], {
             env: {
@@ -51,6 +52,27 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
         });
         return JSON.parse(out.trim().split('\n').filter(Boolean).pop()!);
     };
+
+    // Issue #1020: the close-time gates skip only on a CONFIRMED no-change read.
+    it('answers noChange only for a clean tree with no diff against the base', () => {
+        expect(probe().noChange).toBe(true);
+
+        writeFileSync(join(repo, 'WIP.md'), 'uncommitted\n');
+        expect(probe().noChange).toBe(false);
+
+        git(repo, 'add', 'WIP.md');
+        git(repo, 'commit', '-m', 'local commit');
+        expect(probe().noChange).toBe(false);
+
+        // Committed then reverted: a commit ahead of the base, but no diff against it.
+        git(repo, 'revert', '--no-edit', 'HEAD');
+        expect(probe()).toMatchObject({ unpushed: 2, noChange: true });
+    });
+
+    it('answers noChange false when the base cannot be read', () => {
+        git(repo, 'update-ref', '-d', 'refs/remotes/origin/main');
+        expect(probe().noChange).toBe(false);
+    });
 
     it('reads the checkout state the publish flow branches on', () => {
         writeFileSync(join(repo, 'WIP.md'), 'uncommitted\n');
@@ -82,6 +104,7 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            noChange: false,
             conflicts: [],
             rebasing: false,
         });
