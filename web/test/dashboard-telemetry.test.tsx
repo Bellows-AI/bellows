@@ -1,4 +1,4 @@
-import type { OrganizationMeta, TaskUsageStats, TelemetryStats } from '@factory-ai/core';
+import { emptyBlock, type OrganizationMeta, type TaskUsageStats, type TelemetryStats } from '@factory-ai/core';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRouter, Outlet, Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -51,7 +51,6 @@ const TOTAL_EDIT_DECISIONS = 3;
 const READY_TELEMETRY = {
     totals: {
         sessions: 2,
-        tokens: { input: 1200, output: 300, cacheRead: 4000, cacheCreation: 100 },
         activeHours: 1.5,
         linesAdded: 5,
         linesRemoved: 2,
@@ -68,6 +67,18 @@ const READY_TELEMETRY = {
     byUser: [],
     series: { granularity: 'day', points: [] },
     coverage: { from: null, to: null },
+    usage: {
+        totals: {
+            ...emptyBlock('measured'),
+            tokens: { input: 1200, output: 300, cacheRead: 4000, cacheCreation: 100 },
+        },
+        series: { granularity: 'day', points: [] },
+        byUser: [],
+        diagnostics: {
+            unresolvedOwnership: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+            excludedRepo: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+        },
+    },
 } as unknown as TelemetryStats;
 
 const NO_TELEMETRY = {
@@ -78,18 +89,31 @@ const NO_TELEMETRY = {
     byUser: [],
     series: { granularity: 'day', points: [] },
     coverage: { from: null, to: null },
+    usage: {
+        totals: emptyBlock('unmeasured'),
+        series: { granularity: 'day', points: [] },
+        byUser: [],
+        diagnostics: {
+            unresolvedOwnership: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+            excludedRepo: { sessions: 0, tokens: emptyBlock('unmeasured').tokens },
+        },
+    },
 } as unknown as TelemetryStats;
 
 const dist = (tasks: number) => ({ avg: null, p50: null, p95: null, tasks });
+const tokenDists = (d: ReturnType<typeof dist>) => {
+    const t = { ...d, partial: 0, tasksInScope: d.tasks };
+    return { all: { input: t, cacheRead: t, cacheCreation: t, output: t }, byModel: [] };
+};
 const MEASURED_TASK_COUNT = 7;
 const MEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(MEASURED_TASK_COUNT),
+    tokens: tokenDists(dist(MEASURED_TASK_COUNT)),
     jobTurnsPerTask: dist(MEASURED_TASK_COUNT),
     agentTurnsPerTask: dist(MEASURED_TASK_COUNT),
     wallClockPerTask: dist(MEASURED_TASK_COUNT),
 } as unknown as TaskUsageStats;
 const UNMEASURED_TASKS: TaskUsageStats = {
-    tokensPerTask: dist(0),
+    tokens: tokenDists(dist(0)),
     jobTurnsPerTask: dist(0),
     agentTurnsPerTask: dist(0),
     wallClockPerTask: dist(0),
@@ -338,19 +362,17 @@ describe('the shared state model', () => {
         expect(render(EMPTY)).toContain('Task board');
     });
 
-    it('pairs Usage by user and Recent tasks in the two-up grid when ready', () => {
+    it('stacks Usage by user above Recent tasks, each on its own row, when ready', () => {
         const html = render(READY);
-        const pair = html.slice(html.indexOf('class="two-up"'));
-        expect(pair).toContain('Usage by user');
-        expect(pair.indexOf('Usage by user')).toBeLessThan(pair.indexOf('Recent tasks'));
+        expect(html).not.toContain('two-up');
+        expect(html.indexOf('Usage by user')).toBeLessThan(html.indexOf('Recent tasks'));
     });
 
-    it('keeps Recent tasks in the two-up grid, alone, whenever Usage by user is absent', () => {
+    it('keeps Recent tasks whenever Usage by user is absent', () => {
         for (const data of [null, EMPTY, DISABLED]) {
             const html = render(data);
-            const pair = html.slice(html.indexOf('class="two-up"'));
-            expect(pair).toContain('Recent tasks');
-            expect(pair).not.toContain('Usage by user');
+            expect(html).toContain('Recent tasks');
+            expect(html).not.toContain('Usage by user');
         }
     });
 

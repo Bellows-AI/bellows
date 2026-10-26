@@ -1,34 +1,52 @@
 import { readFileSync } from 'node:fs';
-import type { TelemetryInput } from '@factory-ai/core';
-import type { TelemetryClient, TelemetryFetch } from './client.js';
-import type { ActivityBucket } from './run-activity.js';
+import { rollupsFromFacts, type JobRun } from '@factory-ai/core';
+import type { TaskFacts, TelemetryClient, TelemetryFetch } from './client.js';
 import { TelemetryError } from './errors.js';
+import { emptyUsageFacts, factsForTask, taskOfJob, type UsageFacts } from './usage-facts.js';
 
-const FIXTURE = new URL('../../../core/test/fixtures/telemetry-sessions.json', import.meta.url);
+const FIXTURE = new URL('../../../core/test/fixtures/telemetry-usage.json', import.meta.url);
+
+/** The committed JSON: usage facts (the id set as an array) plus the board's run rows. */
+type FixtureFile = Omit<UsageFacts, 'foreignSessionIds' | 'stats' | 'edits'> & {
+    foreignSessionIds: string[];
+    runs: JobRun[];
+};
+
+/** Parses the committed fixture into one fetch: facts, the session rollups derived from them, and the runs. */
+export function parseFixtureFetch(raw: string): TelemetryFetch {
+    const { runs, foreignSessionIds, ...rest } = JSON.parse(raw) as FixtureFile;
+    const facts: UsageFacts = {
+        edits: [],
+        ...rest,
+        foreignSessionIds: new Set(foreignSessionIds),
+        stats: emptyUsageFacts(rest.orgId).stats,
+    };
+    return { input: rollupsFromFacts(facts), runs, facts };
+}
 
 /**
- * Replays the committed synthetic sessions so the whole read path runs with no database and
+ * Replays the committed synthetic usage facts so the whole read path runs with no database and
  * no collector. This data is invented, so the UI is required to badge it
  * loudly — synthetic figures beside real figures is exactly the invented-number problem.
  */
 export function createFixtureTelemetryClient(path: URL = FIXTURE): TelemetryClient {
-    let cached: TelemetryInput | null = null;
+    let cached: TelemetryFetch | null = null;
     const load = () => {
-        if (!cached) cached = JSON.parse(readFileSync(path, 'utf8')) as TelemetryInput;
+        if (!cached) cached = parseFixtureFetch(readFileSync(path, 'utf8'));
         return cached;
     };
 
     return {
         async fetchRollups() {
-            // Cloned because attribute() is handed the arrays directly and a caller mutating
-            // them would silently poison every later request. The fixture carries no run rows:
-            // it replays telemetry, and the task panel renders its empty state off the same
-            // payload shape a real deployment answers with.
-            return { input: structuredClone(load()), runs: [] };
+            // Cloned because the reducer is handed the arrays directly and a caller mutating
+            // them would silently poison every later request.
+            return structuredClone(load());
         },
-        // The fixture replays session rollups, not raw points — there is nothing to bucket.
-        async runActivity(): Promise<ActivityBucket[]> {
-            return [];
+        // The fixture's facts carry no edit points; the task read is the same facts narrowed to one task.
+        async fetchTaskFacts({ jobId, rootJobId }): Promise<TaskFacts> {
+            const { facts } = load();
+            const taskId = taskOfJob(facts.board, jobId) ?? rootJobId;
+            return structuredClone({ taskId, facts: factsForTask(facts, taskId) });
         },
         async health() {
             return { status: 'ok', reason: null };
@@ -45,8 +63,8 @@ export function createNullTelemetryClient(): TelemetryClient {
         async fetchRollups(): Promise<TelemetryFetch> {
             throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
         },
-        async runActivity(): Promise<ActivityBucket[]> {
-            return [];
+        async fetchTaskFacts(): Promise<TaskFacts> {
+            throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
         },
         async health() {
             return { status: 'unreachable', reason: 'Telemetry is disabled (TELEMETRY_SOURCE=off)' };

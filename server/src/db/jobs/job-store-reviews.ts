@@ -16,6 +16,7 @@ import { readReviewEvidence } from './job-store-evidence.js';
 import { LEASE_EXPIRED_REASON } from './job-store-actions.js';
 import { buildClaimResult } from './job-store-claim.js';
 import { resolveClaimExecutor } from './job-store-claim-executor.js';
+import { recordExecution } from './job-store-provenance.js';
 import { exists, workspacePathFor } from './job-store-rows.js';
 import type {
     Claim,
@@ -305,6 +306,7 @@ interface ReviewClaimRow {
  */
 async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: string): Promise<Claim> {
     const { orgId, env, executorConfig } = ctx;
+    await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
         select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,

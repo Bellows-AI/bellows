@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { ALL_TIME, filterTelemetryInput, isAllTime, resolveRange } from '../src/range.js';
 import type { DateRange } from '../src/range.js';
+import { taskUsageStats } from '../src/task-usage.js';
 import type { SessionRollup, TelemetryInput } from '../src/types.js';
+import { FIXTURE_REPO, fixtureReport } from './fixtures/load.js';
 
 const NOW = new Date('2026-08-21T12:00:00.000Z');
 
@@ -10,9 +12,9 @@ function session(over: Partial<SessionRollup>): SessionRollup {
         sessionId: 's',
         agent: 'claude-code',
         repo: 'o/r',
+        hook: true,
         firstSeen: '2026-08-11T00:00:00.000Z',
         lastSeen: '2026-08-11T01:00:00.000Z',
-        tokens: { input: 10, output: 5, cacheRead: null, cacheCreation: null },
         linesAdded: 1,
         linesRemoved: 0,
         editsAccepted: 1,
@@ -64,14 +66,12 @@ describe('filterTelemetryInput', () => {
                 sessionId: 'straddles',
                 firstSeen: '2026-08-09T00:00:00.000Z',
                 lastSeen: '2026-08-10T06:00:00.000Z',
-                tokens: { input: 1, output: 1, cacheRead: null, cacheCreation: null },
                 activeSeconds: 1,
             }),
             session({
                 sessionId: 'before',
                 firstSeen: '2026-07-01T00:00:00.000Z',
                 lastSeen: '2026-07-01T01:00:00.000Z',
-                tokens: { input: 99, output: 99, cacheRead: null, cacheCreation: null },
                 activeSeconds: 1,
             }),
         ],
@@ -103,5 +103,34 @@ describe('filterTelemetryInput', () => {
 
     it('leaves coverage alone, so "no usage in range" stays distinct from "no data that far back"', () => {
         expect(filterTelemetryInput(input, august).coverage).toEqual(input.coverage);
+    });
+});
+
+describe('token distributions across adjacent ranges', () => {
+    const TYPES = ['input', 'output', 'cacheRead', 'cacheCreation'] as const;
+    const SPLIT = '2026-06-15T00:00:00.000Z';
+    const before: DateRange = { preset: 'custom', from: '2026-01-01T00:00:00.000Z', to: SPLIT };
+    const after: DateRange = { preset: 'custom', from: SPLIT, to: '2026-12-31T00:00:00.000Z' };
+    const scope = { repos: [FIXTURE_REPO] };
+    const whole = fixtureReport({ ...scope, range: { ...before, to: after.to } });
+    const a = fixtureReport({ ...scope, range: before });
+    const b = fixtureReport({ ...scope, range: after });
+
+    /** The tasks that measured a type, with their value. */
+    const measured = (report: typeof whole, type: (typeof TYPES)[number]) =>
+        new Map(report.tasks.flatMap((t) => (t.usage.tokens[type] === null ? [] : [[t.taskId, t.usage.tokens[type]]])));
+
+    it.each(TYPES)('splits %s by point time: each point lands in exactly one range', (type) => {
+        const sum = (report: typeof whole) =>
+            [...measured(report, type).values()].reduce((x, y) => (x ?? 0) + (y ?? 0), 0);
+        expect(sum(a)).toBeGreaterThan(0);
+        expect(sum(b)).toBeGreaterThan(0);
+        expect(sum(a) + sum(b)).toBe(sum(whole));
+    });
+
+    it.each(TYPES)('contributors of %s in the two ranges union to the whole range', (type) => {
+        const union = new Set([...measured(a, type).keys(), ...measured(b, type).keys()]);
+        expect(union).toEqual(new Set(measured(whole, type).keys()));
+        expect(taskUsageStats(whole.tasks, []).tokens.all[type].tasks).toBe(union.size);
     });
 });

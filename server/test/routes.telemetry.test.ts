@@ -21,9 +21,9 @@ describe('telemetry on /api/stats', () => {
         expect(body.meta.telemetry.status).toBe('ok');
         expect(body.meta.telemetry.source).toBe('fixture');
         expect(body.meta.telemetry.repoFilter).toEqual(['Bellows-AI/bellows.ai']);
-        const EXPECTED_SESSIONS = 13;
+        const EXPECTED_SESSIONS = 19;
         expect(body.telemetry.totals.sessions).toBe(EXPECTED_SESSIONS);
-        expect(body.telemetry.totals.tokens.input).toBeGreaterThan(0);
+        expect(body.telemetry.usage.totals.tokens.input).toBeGreaterThan(0);
     });
 
     it('ages the snapshot on the request clock', async () => {
@@ -63,7 +63,9 @@ describe('degradation states', () => {
         // pipeline is wired and merely silent.
         expect(body.telemetry).not.toBeNull();
         expect(body.telemetry.totals.sessions).toBe(0);
-        expect(body.telemetry.totals.tokens.input).toBeNull();
+        expect(body.telemetry.usage.totals.tokens.input).toBeNull();
+        expect(body.telemetry.usage.totals.state).toBe('unmeasured');
+        expect(body.telemetry.usage.byUser).toEqual([]);
         expect(body.telemetry.totals.editAcceptance).toEqual({
             accepted: null,
             rejected: null,

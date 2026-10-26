@@ -12,14 +12,16 @@ Telemetry and charts. `web/src/styles/regions/dashboard.css`; shared system:
 ## Invariants
 
 - Unmeasured renders "—", a measured zero renders 0, the Tokens card headlines total input rather
-  than a sum of the token types, and no trend, comparison or cost appears here.
+  than a sum of the token types (the by-user ranking defaults to it, Total input), and no trend,
+  comparison or cost appears here.
 - Recent tasks is the board, not telemetry: range and scope do not filter it.
 - The usage bar's width is `aria-hidden` decoration; the partial-bucket hatch is grayscale-safe.
 
-Classes defined here: `two-up`, `dashboard-controls`, `analytics-toolbar`, `analytics-summary`,
+Classes defined here: `dashboard-controls`, `analytics-toolbar`, `analytics-summary`,
 `toolbar-group`, `toolbar-label`, `toolbar-value`, `toolbar-coverage-dot`, `range-dialog-title`,
 `range-draft-fields`, `range-draft-actions`, `updated-at-full`, `usage-groups`, `usage-disc-ok`,
 `usage-body`, `usage-label`, `usage-caption`, `usage-empty`, `usage-track`, `usage-bar`, `tick`,
 `task-title`, `recent-tasks-head`, `chart-wrap`, `chart-caption`, `chart-disclosure`, `chart-empty`,
 `chart-tooltip-box`, `grid-alt`, `axis-label`, `bar-primary`, `bar-ok`, `bar-partial-hatch`, `line`,
-`bucket-hit`, `legend-button`, `swatch-primary`, `swatch-ok`, `swatch-warn`.
+`bucket-hit`, `legend-button`, `by-user-metric`, `task-usage-model`, `by-user-models`,
+`by-user-models-toggle`, `usage-by-model`, `usage-attribution`, `swatch-primary`, `swatch-ok`, `swatch-warn`.

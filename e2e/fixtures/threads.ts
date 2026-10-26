@@ -13,7 +13,15 @@
  *
  * Append-only after #278: lanes add fixtures, they never change an existing one.
  */
-import { OBJECTIVE_MODE, WORKFLOW_MODE, type JobMode } from '@factory-ai/core';
+import {
+    OBJECTIVE_MODE,
+    WORKFLOW_MODE,
+    emptyBlock,
+    type JobMode,
+    type Tokens,
+    type UsageBlock,
+    type UsageRow,
+} from '@factory-ai/core';
 import type { Page } from '@playwright/test';
 
 export type ThreadStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'dead' | 'stopped';
@@ -583,23 +591,209 @@ export const interruptedThread = thread([
     }),
 ]);
 
+/** A measured block of exactly these tokens; a type left out was never measured (null, never zero). */
+export function measuredBlock(tokens: Partial<Tokens>): UsageBlock {
+    const t: Tokens = { input: null, output: null, cacheRead: null, cacheCreation: null, ...tokens };
+    const precision = (v: number | null) => (v === null ? null : ('exact' as const));
+    return {
+        ...emptyBlock('measured'),
+        tokens: t,
+        assigned: t,
+        precision: {
+            input: precision(t.input),
+            output: precision(t.output),
+            cacheRead: precision(t.cacheRead),
+            cacheCreation: precision(t.cacheCreation),
+        },
+    };
+}
+
 /**
- * The activity payload a mocked thread answers with (issues #339, #530): empty buckets and null
- * totals, so the page's activity summary renders its "no telemetry" state. The page fetches
- * `GET /api/jobs/:id/activity` for every run beside its thread poll — a mocked thread must answer
- * that too, or the real board 404s a task id the fixture only names, and the console watcher
- * fails the spec.
+ * The activity payload a mocked thread answers with (issues #339, #530, #847): the newest run
+ * measured on three of the four token types (cache creation was never measured: null, rendered
+ * "—"), plus the canonical task around it - the thread's other runs unmeasured and one review run
+ * that is not a row of the thread - so the page's activity summary and statistics modal render
+ * figures, the "—" and the review note. A thread whose newest run has no session answers the
+ * unmeasured payload. The page fetches `GET /api/jobs/:id/activity` once, for the newest run, beside
+ * its thread poll - a mocked thread must answer that too, or the real board 404s a task id the
+ * fixture only names, and the console watcher fails the spec.
  */
 export function mockedActivityOf(jobs: readonly ThreadJob[]): unknown {
     const head = jobs[jobs.length - 1] ?? null;
-    return {
+    const base = {
         jobId: head?.id ?? null,
         sessionId: head?.sessionId ?? null,
         from: head?.startedAt ?? null,
         to: head?.finishedAt ?? head?.startedAt ?? null,
         bucketMs: null,
         buckets: [],
-        totals: null,
+    };
+    if (head === null || head.sessionId === null) return { ...base, usage: emptyBlock('unmeasured'), task: null };
+    const mine = measuredBlock({ input: 1200, output: 300, cacheRead: 9000 });
+    const review = measuredBlock({ input: 40, output: 10 });
+    const run = (job: ThreadJob, kind: 'run' | 'follow-up', usage: UsageBlock) => ({
+        jobId: job.id,
+        kind,
+        reviewOf: null,
+        live: false,
+        operational: true,
+        startedAt: job.startedAt,
+        endedAt: job.finishedAt,
+        usage,
+    });
+    const runs = [
+        ...jobs.slice(0, -1).map((job, index) => run(job, index === 0 ? 'run' : 'follow-up', emptyBlock('unmeasured'))),
+        run(head, jobs.length === 1 ? 'run' : 'follow-up', mine),
+        {
+            jobId: 'cccccccc-0000-4000-8000-000000000001',
+            kind: 'review',
+            reviewOf: head.id,
+            live: false,
+            operational: false,
+            startedAt: head.finishedAt,
+            endedAt: head.finishedAt,
+            usage: review,
+        },
+    ];
+    return {
+        ...base,
+        usage: mine,
+        task: {
+            taskId: jobs[0]!.id,
+            removed: false,
+            usage: {
+                ...measuredBlock({ input: 1240, output: 310, cacheRead: 9000 }),
+                counts: { sessions: 1, runs: 2, tasks: 1 },
+            },
+            runs,
+            taskOwned: null,
+        },
+    };
+}
+
+/**
+ * The activity payload of a task with everything the statistics modal can show (issue #848): runs
+ * [run, follow-up, review of the newest], model rows (a `[1m]` raw variant with `main`/`subagent`
+ * children, and an `unknown` row), a type measured by one of two sessions, an estimated cache read,
+ * located-nowhere tokens, and a task-owned amount with no run. The task total deliberately differs
+ * from the newest run's, so a spec that sees the task figures proves the modal reads `task.usage`.
+ * `live` makes the newest run provisional.
+ */
+export function measuredActivityOf(jobs: readonly ThreadJob[], options: { live?: boolean } = {}): unknown {
+    const head = jobs[jobs.length - 1]!;
+    const live = options.live === true;
+    const modelA: UsageRow = {
+        model: 'model-a',
+        rawModels: ['model-a', 'model-a[1m]'],
+        querySource: null,
+        tokens: { input: 5000, output: 900, cacheRead: 40_000, cacheCreation: 700 },
+        children: [
+            {
+                model: 'model-a',
+                rawModels: [],
+                querySource: 'main',
+                tokens: { input: 4000, output: 700, cacheRead: 30_000, cacheCreation: 700 },
+            },
+            {
+                model: 'model-a',
+                rawModels: [],
+                querySource: 'subagent',
+                tokens: { input: 1000, output: 200, cacheRead: 10_000, cacheCreation: null },
+            },
+        ],
+    };
+    const unknown: UsageRow = {
+        model: 'unknown',
+        rawModels: [],
+        querySource: null,
+        tokens: { input: 100, output: 20, cacheRead: null, cacheCreation: null },
+    };
+    const precision = { input: 'exact', output: 'exact', cacheRead: 'estimated', cacheCreation: 'exact' } as const;
+    const block = (tokens: Tokens, over: Partial<UsageBlock> = {}): UsageBlock => ({
+        ...emptyBlock('measured'),
+        tokens,
+        assigned: tokens,
+        precision,
+        ...over,
+    });
+    const newest = block(
+        { input: 2000, output: 400, cacheRead: 15_000, cacheCreation: 300 },
+        { rows: [modelA], provisional: live, counts: { sessions: 1, runs: 1, tasks: 1 } }
+    );
+    const first = block({ input: 3100, output: 520, cacheRead: 25_000, cacheCreation: null }, { rows: [unknown] });
+    const review = block({ input: 40, output: 10, cacheRead: null, cacheCreation: null });
+    const owned = block(
+        { input: 500, output: null, cacheRead: null, cacheCreation: null },
+        {
+            unassigned: [
+                { reason: 'no-segment', tokens: { input: 500, output: null, cacheRead: null, cacheCreation: null } },
+            ],
+        }
+    );
+    const total = block(
+        { input: 5640, output: 930, cacheRead: 40_000, cacheCreation: 300 },
+        {
+            rows: [modelA, unknown],
+            provisional: live,
+            unlocated: { input: 1234, output: null, cacheRead: null, cacheCreation: null },
+            coverage: {
+                input: { measured: 2, contributors: 2 },
+                output: { measured: 2, contributors: 2 },
+                cacheRead: { measured: 2, contributors: 2 },
+                cacheCreation: { measured: 1, contributors: 2 },
+            },
+            counts: { sessions: 2, runs: 3, tasks: 1 },
+        }
+    );
+    const run = (job: ThreadJob, kind: 'run' | 'follow-up', usage: UsageBlock) => ({
+        jobId: job.id,
+        kind,
+        reviewOf: null,
+        live: live && job.id === head.id,
+        operational: true,
+        startedAt: job.startedAt,
+        endedAt: job.finishedAt,
+        usage,
+    });
+    return {
+        jobId: head.id,
+        sessionId: head.sessionId,
+        from: head.startedAt,
+        to: head.finishedAt ?? head.startedAt,
+        bucketMs: 300_000,
+        buckets: [
+            {
+                start: '2026-09-01T12:00:00.000Z',
+                tokens: { input: 900, output: 100, cacheRead: 6000, cacheCreation: 300 },
+                edits: 1,
+            },
+            {
+                start: '2026-09-01T12:05:00.000Z',
+                tokens: { input: 1100, output: 300, cacheRead: 9000, cacheCreation: null },
+                edits: 2,
+            },
+        ],
+        usage: newest,
+        task: {
+            taskId: jobs[0]!.id,
+            removed: false,
+            usage: total,
+            runs: [
+                ...jobs.slice(0, -1).map((job, index) => run(job, index === 0 ? 'run' : 'follow-up', first)),
+                run(head, jobs.length === 1 ? 'run' : 'follow-up', newest),
+                {
+                    jobId: 'cccccccc-0000-4000-8000-000000000002',
+                    kind: 'review',
+                    reviewOf: head.id,
+                    live: false,
+                    operational: false,
+                    startedAt: head.finishedAt,
+                    endedAt: head.finishedAt,
+                    usage: review,
+                },
+            ],
+            taskOwned: owned,
+        },
     };
 }
 

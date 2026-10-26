@@ -80,7 +80,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Outcomes, exit codes, `--json` envelope | `cli/src/outcome.ts`, `render.ts` | `cli/test/commands.test.ts` |
 | Prompt input, `task list`, discovery | `cli/src/input.ts`, `tasks.ts`, `discovery.ts` | `cli/test/input.test.ts`, `tasks.test.ts`, `discovery.test.ts` |
 | Diagnostics (`auth status`, `job preflight`, help, `--version`) | `cli/src/diagnose.ts`, `diagnostics.ts`, `selection.ts`, `usage.ts`, `version.ts` | `cli/test/diagnostics.test.ts` |
-| `job activity`, `streams`, `read`; `retry`, `edit`, `reopen`; `questions`, `answer`; `--idempotency-key` | `cli/src/artifacts.ts`, `board.ts`, `run.ts` | `cli/test/artifacts.test.ts`, `retry-edit.test.ts`, `questions.test.ts`, `idempotency.test.ts` |
+| `job activity` (run usage + canonical task, wire types copied in `usage-types.ts`), `streams`, `read`; `retry`, `edit`, `reopen`; `questions`, `answer`; `--idempotency-key` | `cli/src/artifacts.ts`, `board.ts`, `usage-types.ts`, `run.ts` | `cli/test/artifacts.test.ts`, `retry-edit.test.ts`, `questions.test.ts`, `idempotency.test.ts` |
 | `batch` subcommands ([batches.md](batches.md)) | `cli/src/batch.ts`, `batch-commands.ts`, `batch-render.ts` | `cli/test/batch.test.ts` |
 
 ## Invariants

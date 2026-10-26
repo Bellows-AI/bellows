@@ -2,7 +2,7 @@
 
 /**
  * These suites truncate their tables, so pointing them at the database the dashboard actually
- * uses destroys real history — including anything imported by `npm run backfill`. Requiring a
+ * uses destroys real history. Requiring a
  * `_test` database name is the guard, because the failure is silent: the tests pass and the
  * data is simply gone.
  */

@@ -1,7 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { taskUsageStats, telemetryStats } from '@factory-ai/core';
-import type { TelemetryInput } from '@factory-ai/core';
+import { taskUsageStats } from '@factory-ai/core';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
@@ -9,6 +6,7 @@ import type { StatsPayload, TelemetryMeta } from '../src/api/useStats.js';
 import { ByUserPanel } from '../src/panels/ByUserPanel.js';
 import { TokenUsagePanel } from '../src/panels/TokenUsagePanel.js';
 import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
+import { fixtureStats } from './telemetry-fixture.js';
 
 /**
  * The dashboard's single-page interactions, driven in jsdom over a stubbed board: the custom
@@ -18,11 +16,7 @@ import { OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 
 const REPO = 'Bellows-AI/bellows.ai';
 const NOW = new Date('2026-08-21T12:00:00.000Z');
-const input = JSON.parse(
-    // A path, not a URL object: under jsdom the global URL is jsdom's, which node:fs refuses.
-    readFileSync(fileURLToPath(`${import.meta.url}/../../../core/test/fixtures/telemetry-sessions.json`), 'utf8')
-) as TelemetryInput;
-const telemetry = telemetryStats(input, { repos: [REPO], now: NOW });
+const telemetry = fixtureStats({ repos: [REPO], now: NOW });
 
 const telemetryMeta: TelemetryMeta = {
     status: 'ok',
@@ -122,14 +116,32 @@ describe('the custom range picker', () => {
 describe('a supporting table', () => {
     it('sorts from the keyboard and announces the active column', async () => {
         const user = userEvent.setup();
-        render(<ByUserPanel telemetry={telemetry} meta={telemetryMeta} />);
-        const header = screen.getByRole('button', { name: 'New tokens' });
+        render(<ByUserPanel telemetry={telemetry} meta={telemetryMeta} scope="org" />);
+        const header = screen.getByRole('button', { name: 'Total input' });
         const th = header.closest('th');
-        // The by-user table opens sorted by New tokens, largest first.
+        // The by-user table opens ranked by Total input, largest first.
         expect(th?.getAttribute('aria-sort')).toBe('descending');
         header.focus();
         await user.keyboard('{Enter}');
         expect(th?.getAttribute('aria-sort')).toBe('ascending');
+    });
+
+    it('re-ranks by the selected metric and expands a user to the model rows without moving any figure', async () => {
+        const user = userEvent.setup();
+        const { container } = render(<ByUserPanel telemetry={telemetry} meta={telemetryMeta} scope="org" />);
+        const selector = screen.getByLabelText('Rank by') as HTMLSelectElement;
+        expect(selector.value).toBe('inputSide');
+        await user.selectOptions(selector, 'output');
+        const th = screen.getAllByRole('button', { name: 'Output' })[0]?.closest('th');
+        expect(th?.getAttribute('aria-sort')).toBe('descending');
+        const before = container.querySelector('table')?.textContent;
+        const toggle = container.querySelector<HTMLButtonElement>('.by-user-models-toggle');
+        expect(toggle?.getAttribute('aria-expanded')).toBe('false');
+        await user.click(toggle as HTMLButtonElement);
+        expect(toggle?.getAttribute('aria-expanded')).toBe('true');
+        expect(container.querySelector('.by-user-models .usage-breakdown')).not.toBeNull();
+        // The table's own cells are untouched by the expansion (the toggle's label aside).
+        expect(container.querySelector('table')?.textContent?.replace(/Hide models/, 'Show models')).toBe(before);
     });
 });
 

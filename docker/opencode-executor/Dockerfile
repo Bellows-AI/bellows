@@ -28,7 +28,7 @@ FROM mirror.gcr.io/library/node:24-bookworm-slim
 # because it is large. Byte-identical to the same layer in docker/claude-executor/Dockerfile,
 # deliberately — see the acli/gh note below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git procps python3 \
     && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # npm stays in this image, so its own bundled dependency tree ships too — and the version node:24
@@ -67,6 +67,14 @@ RUN curl -fsSL --proto '=https' --tlsv1.2 "https://github.com/cli/cli/releases/d
     && mv "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/libexec/gh \
     && rm -rf "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}" \
     && /usr/local/libexec/gh --version
+
+# ripgrep, opencode-only and BELOW the shared block so the layers above it stay shared with the
+# claude image. opencode's grep and glob tools run `rg`; without it on PATH each task downloads
+# ripgrep from GitHub releases into ~/.cache/opencode/bin on first use, and with no network the
+# tools fail. Claude Code bundles its own search and needs none.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ripgrep \
+    && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale
 
 # Pinned, not `latest`: two builds of the same commit must produce the same CLI, or a runner that
 # starts misbehaving gives no way to tell a code change from a silent upgrade underneath it.

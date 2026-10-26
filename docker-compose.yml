@@ -263,7 +263,7 @@ services:
             POSTGRES_PASSWORD: factory
             # Two databases, deliberately. `npm run test:db` truncates its tables, so it is
             # fenced off to factory_test by a name check in the suite — pointing it at
-            # factory_dev would silently destroy backfilled history.
+            # factory_dev would silently destroy real history.
             POSTGRES_DB: factory_dev
         # Localhost-only, same posture as the dashboard: the bind is the access control.
         # Published because `npm run test:db` and psql both run from the host.

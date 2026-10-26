@@ -6,8 +6,9 @@ the in-memory stores in `server/test/helpers*.ts`.
 
 | Concern | Code | Test |
 | --- | --- | --- |
+| `metric_point_dedup` identity: agent, metric, session (null-safe), time, source, temporality, start time, `md5(attrs)` | `server/migrations/086_metric_point_identity.sql` | `server/test-db/migration.086-metric-point-identity.test.ts` |
 | Migration runner (advisory-locked, one transaction), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
-| Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, the `job-store.*` suites |
+| Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
 | Agent questions, stamped with the asking claim's `claim_seq` (050, 074) | `server/migrations/050_job_question.sql`, `server/migrations/074_job_question_claim_seq.sql`, `server/src/db/jobs/job-store-questions.ts` | `server/test-db/job-store.questions.test.ts` |
@@ -24,6 +25,8 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Admission slots on running `job` rows, unique per budget among running non-review rows (081) | `server/migrations/081_job_admission.sql`, `server/src/db/jobs/job-store-admission.ts` | `server/test-db/job-store.admission.test.ts` |
 | PR follower cadence, one row per followed PR (082; [workflows.md](workflows.md)) | `server/migrations/082_pr_follow.sql`, `server/src/db/pr-follow-store.ts` | `server/test-db/pr-follow.test.ts` |
 | `job.status` transition graph, refused in storage with 23514 `job_status_transition` (084) | `server/migrations/084_job_status_transitions.sql` | `server/test-db/job-store.transitions.test.ts` |
+| Execution provenance outliving the job (085): `job_execution`, `job_execution_session`, no FK to `job` or `app_user`; `launch` moves forward only in storage, a claim given up without evidence is `unknown`, an adopter links `adopts_claim_seq`, removal stamps `removed_at` in its own transaction, pre-epic jobs are backfilled once as `origin='backfill'` / `unknown` with no start or end | `server/migrations/085_job_execution.sql`, `server/src/db/jobs/job-store-provenance.ts` | `server/test-db/migration.085-job-execution.test.ts`, `server/test-db/job-store.execution-provenance.test.ts`, `server/test-db/job-store.interrupt.test.ts` |
+| Usage reader over that provenance and `metric_point`: inside the caller's `repeatable read, read only` transaction, never its own | `server/src/telemetry/usage-facts.ts` | `server/test-db/token-reconciliation.test.ts` |
 | Database-name guards | `server/src/config.ts`, `server/src/seed/cli.ts` | `server/test/config.persistence.test.ts` |
 | db-suite harness: name guard, migrate, truncate and reseed per test; shared fixtures and generated ids | `server/test-db/harness.ts`, `server/test-db/fixtures.ts`, `server/test-db/batch-fixtures.ts` | `server/test/test-db.harness.test.ts`, `server/test/test-db.fixtures.test.ts` |
 | db-suite databases: a once-migrated template, one clone per vitest worker keyed on `VITEST_POOL_ID`, and a run lock on the base database | `server/test-db/global-setup.ts`, `server/test-db/setup-worker.ts`, `server/test-db/database-names.ts`, `server/test-db/run-databases.ts`, `server/test-db/run-lock.ts`, `vitest.db.config.ts` | `server/test/test-db.per-worker.test.ts`, `server/test-db/run-databases.test.ts`, `server/test-db/run-lock.test.ts` |
@@ -45,8 +48,8 @@ the in-memory stores in `server/test/helpers*.ts`.
 - **The schema names no extension** — `metric_point` is `partition by range (time)` with a single
   DEFAULT partition, which is what lets `database.url` point at RDS or Aurora.
 - **Removing that DEFAULT partition breaks every write.** A range-partitioned table rejects any row
-  no partition covers, and neither writer can promise a range: `npm run backfill` imports
-  transcripts of arbitrary age and an OTLP client's clock can run ahead. Every unique index on the
+  no partition covers, and no writer can promise a range: an OTLP client's clock can run ahead
+  or lag arbitrarily. Every unique index on the
   table must keep `time` among its columns.
 - **Migrations run under one database-wide advisory xact lock** (`MIGRATION_LOCK_KEY`): a second
   process reads `schema_migrations` only after the first commits, and a wait past `lockWaitMs` fails

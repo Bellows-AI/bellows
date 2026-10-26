@@ -1,7 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { telemetryStats } from '@factory-ai/core';
+import { reduceUsage, telemetryStats, type TokenType } from '@factory-ai/core';
+import type { TelemetryFetch } from '../src/telemetry/client.js';
 import { migrate } from '../src/db/migrate.js';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
 import { useTestDb } from './harness.js';
@@ -23,6 +24,18 @@ beforeAll(async () => {
 
 const T = (iso: string) => new Date(iso);
 
+/** What the stats service does at read time for the all-time, org-wide request. */
+const statsOf = ({ input, facts }: Pick<TelemetryFetch, 'input' | 'facts'>) => {
+    const now = new Date();
+    return telemetryStats(input, { now, usage: reduceUsage(facts, { range: null, now }) });
+};
+
+/** The raw timed points of one session summed per type, straight from the fetched facts. */
+const pointSum = (facts: TelemetryFetch['facts'], session: string, type: TokenType, agent = 'claude-code') =>
+    facts.contributions
+        .filter((c) => c.kind === 'timed' && c.selection.sessionId === session && c.selection.agent === agent)
+        .reduce<number | null>((sum, c) => (c.tokens[type] === null ? sum : (sum ?? 0) + c.tokens[type]), null);
+
 async function point(row: {
     session: string;
     field: string;
@@ -31,10 +44,13 @@ async function point(row: {
     temporality?: string;
     startTime?: string;
     metric?: string;
+    agent?: string;
+    source?: string;
     attrs?: Record<string, string>;
 }) {
     await sql`insert into metric_point ${sql({
-        agent: 'claude-code',
+        agent: row.agent ?? 'claude-code',
+        source: row.source ?? 'otel',
         metric: row.metric ?? 'claude_code.token.usage',
         field: row.field,
         session_id: row.session,
@@ -70,20 +86,57 @@ async function branch(row: {
 /** An account with a generated github id, for the attribution joins to resolve. */
 const member = (login: string): Promise<string> => account(sql, randomGithubId(), login);
 
-/** A finished board job carrying a session id: the row the attribution joins resolve through. */
+/** The execution row a claim leaves: provenance for a session, the board's own evidence of who owns it. */
+const claim = async (row: {
+    org?: string;
+    job: string;
+    root: string;
+    session: string;
+    author?: string | null;
+    repo?: string | null;
+    agent?: string | null;
+    requesting?: { job: string; root: string };
+}): Promise<void> => {
+    const org = row.org ?? ORG;
+    await sql`
+        insert into job_execution (org_id, job_id, claim_seq, root_job_id, requesting_job_id, requesting_root_job_id,
+                                   author_id, repo, launch, origin, created_at, ended_at)
+        values (${org}, ${row.job}, 1, ${row.root}, ${row.requesting?.job ?? null}, ${row.requesting?.root ?? null},
+                ${row.author ?? null}, ${row.repo ?? null}, 'observed', 'claim', ${T('2026-08-01T00:00:00Z')},
+                ${T('2026-08-02T00:00:00Z')})
+    `;
+    await sql`
+        insert into job_execution_session (org_id, job_id, claim_seq, session_id, agent, origin)
+        values (${org}, ${row.job}, 1, ${row.session}, ${row.agent ?? null}, 'reported')
+    `;
+};
+
+/** A finished board job; with a session id it also files the claim that owns that session. */
 const job = async (row: {
     session?: string | null;
     createdBy?: string | null;
     root?: string;
     parent?: string;
     org?: string;
+    repo?: string | null;
 }): Promise<string> => {
     const id = randomUUID();
+    const root = row.root ?? id;
     await sql`
         insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
-        values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${row.root ?? id}, ${row.parent ?? null},
+        values (${row.org ?? ORG}, ${id}, 'attributed', 'succeeded', ${root}, ${row.parent ?? null},
                 ${row.createdBy ?? null}, ${row.session ?? null}, now())
     `;
+    if (row.session) {
+        await claim({
+            org: row.org ?? ORG,
+            job: id,
+            root,
+            session: row.session,
+            author: row.createdBy ?? null,
+            repo: row.repo ?? null,
+        });
+    }
     return id;
 };
 
@@ -105,8 +158,8 @@ describe.skipIf(!enabled)('migrations', () => {
         `;
         expect(partitions).toEqual([{ name: 'metric_point_default', bound: 'DEFAULT' }]);
 
-        // Backfill imports arbitrarily old transcripts and an OTLP client's clock can skew
-        // ahead; a range table with no covering partition rejects both.
+        // An OTLP client's clock can skew
+        // ahead; a range table with no covering partition rejects it.
         const session = `partition-${randomUUID()}`;
         await point({ session, field: 'tokens_input', value: 1, time: '2001-01-01T00:00:00Z' });
         await point({ session, field: 'tokens_input', value: 1, time: '2099-01-01T00:00:00Z' });
@@ -291,30 +344,83 @@ describe.skipIf(!enabled)('the postgres client', () => {
         expect(input.coverage).toEqual({ from: null, to: null });
     });
 
-    it('reports a session with no hook data as repo null', async () => {
-        await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(input.sessions[0]?.repo).toBeNull();
+    it('attributes a board-owned session without a hook to its task and author, repo from the execution', async () => {
+        const session = randomUUID();
+        const userId = await member('hookless-author');
+        const root = await job({ session: session, createdBy: userId, repo: 'acme/app' });
+        await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+        const fetched = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const { input } = fetched;
+        expect(input.sessions).toHaveLength(1);
+        expect(input.sessions[0]).toMatchObject({ repo: 'acme/app', hook: false, taskKey: root });
+        expect(input.sessions[0]?.user?.login).toBe('hookless-author');
+        const stats = statsOf(fetched);
+        expect(stats.usage.totals.tokens.input).toBe(10);
+        expect(stats.sessionsWithoutHook).toBe(1);
+        expect(stats.totals.sessions).toBe(1);
     });
 
-    it('still reports a hook-less session, which belongs to no organization', async () => {
-        // session_summary reads its org from session_branch, so a session the hook never covered
-        // has none. Those rows feed sessionsWithoutHook — the number that says the plugin is
-        // missing or broken — so filtering them by org would make a broken hook look like an idle
-        // week.
-        await point({ session: 'orphan', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        expect(input.sessions.map((s) => s.sessionId)).toEqual(['orphan']);
-        expect(input.sessions[0]?.repo).toBeNull();
+    it('returns a session with neither a board owner nor a hook to no organization', async () => {
+        const session = randomUUID();
+        // It used to be returned to EVERY organization (`session_summary.org_id is null`): usage of
+        // a stranger's local run in each tenant's totals. Nobody's evidence names it, so it is
+        // nobody's; only the global reconciliation sees it.
+        await point({ session: session, field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
+        for (const org of [ORG, OTHER_ORG]) {
+            const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: org }).fetchRollups();
+            expect(input.sessions).toEqual([]);
+            expect(JSON.stringify(facts)).not.toContain(session);
+        }
+    });
+
+    it('keys a rollup by agent and session: a session shared by two agents does not collide', async () => {
+        const session = randomUUID();
+        const root = await job({ session: session, createdBy: null });
+        await point({ session: session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        await point({
+            session: session,
+            field: 'tokens_input',
+            value: 9,
+            time: '2026-08-01T10:00:00Z',
+            agent: 'opencode',
+        });
+        const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(
+            Object.fromEntries(
+                input.sessions.map((s) => [s.agent, [pointSum(facts, s.sessionId, 'input', s.agent), s.taskKey]])
+            )
+        ).toEqual({
+            'claude-code': [7, root],
+            opencode: [9, root],
+        });
+    });
+
+    it('does not let evidence naming one agent own the other agent’s session', async () => {
+        const session = randomUUID();
+        const root = await job({ session: null });
+        await claim({ job: root, root, session: session, agent: 'opencode' });
+        await point({ session: session, field: 'tokens_input', value: 7, time: '2026-08-01T10:00:00Z' });
+        await point({
+            session: session,
+            field: 'tokens_input',
+            value: 9,
+            time: '2026-08-01T10:00:00Z',
+            agent: 'opencode',
+        });
+        const { input, facts } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions.map((s) => [s.agent, pointSum(facts, s.sessionId, 'input', s.agent)])).toEqual([
+            ['opencode', 9],
+        ]);
     });
 
     it('leaves unmeasured fields null rather than zero', async () => {
         await branch({ session: 's1', branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
         await point({ session: 's1', field: 'tokens_input', value: 10, time: '2026-08-01T10:00:00Z' });
-        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
-        const session = input.sessions[0];
-        expect(session?.tokens.input).toBe(10);
-        expect(session?.tokens.output).toBeNull();
+        const fetched = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        const session = fetched.input.sessions[0];
+        const { tokens } = statsOf(fetched).usage.totals;
+        expect(tokens.input).toBe(10);
+        expect(tokens.output).toBeNull();
         expect(session?.linesAdded).toBeNull();
         expect(session?.editsAccepted).toBeNull();
         expect(session?.activeSeconds).toBeNull();
@@ -369,7 +475,7 @@ describe.skipIf(!enabled)('session attribution', () => {
     // WHO queued the board task a session belongs to, resolved by joining the telemetry rows to
     // the job audit rows on session id at read time. The telemetry tables stay identity-free —
     // the collector strips identity on purpose — so a session with no matching job row (a local
-    // dev run, a backfilled transcript) reads user null, never a guess.
+    // dev run) reads user null, never a guess.
 
     it('resolves the user of the board task a session belongs to', async () => {
         const userId = await member('attributor');
@@ -431,41 +537,56 @@ describe.skipIf(!enabled)('session attribution', () => {
     });
 
     it('resolves a follow-up chain to its one shared author', async () => {
+        const session = randomUUID();
         // Every member of a thread shares the parent's session AND, by the follow-up author
         // guard, the parent's author — so the join is deterministic no matter which member's row
         // the minimum happens to pick.
         const userId = await member('thread-author');
-        const rootId = await job({ session: 'attr-4', createdBy: userId });
-        await sql`
-            insert into job (org_id, id, command, status, root_job_id, parent_job_id, created_by, session_id, created_at)
-            values (${ORG}, ${randomUUID()}, 'attributed', 'succeeded', ${rootId}, ${rootId}, ${userId}, 'attr-4', now())
-        `;
+        const rootId = await job({ session: session, createdBy: userId });
+        await job({ session: session, createdBy: userId, root: rootId, parent: rootId });
         await branch({
-            session: 'attr-4',
+            session: session,
             branch: 'feat/a',
             from: '2026-08-01T10:00:00Z',
             to: '2026-08-01T11:00:00Z',
         });
-        await point({ session: 'attr-4', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await point({ session: session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
         const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
         expect(input.sessions).toHaveLength(1);
         expect(input.sessions[0]?.user?.login).toBe('thread-author');
     });
 
-    it("does not attribute one organization's session through another organization's job", async () => {
+    it('does not pick an author when the trusted evidence names two: the task stays, the user is unknown', async () => {
+        const session = randomUUID();
+        const first = await member('author-one');
+        const second = await member('author-two');
+        const rootId = await job({ session: session, createdBy: first });
+        await job({ session: session, createdBy: second, root: rootId, parent: rootId });
+        await point({ session: session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+
+        const { input } = await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups();
+        expect(input.sessions).toHaveLength(1);
+        expect(input.sessions[0]).toMatchObject({ taskKey: rootId, user: null });
+    });
+
+    it('keeps a session two organizations both have evidence for out of both reads', async () => {
+        const session = randomUUID();
         const userId = await member('other-org-author');
-        await job({ session: 'attr-5', createdBy: userId, org: OTHER_ORG });
+        await job({ session, createdBy: userId, org: OTHER_ORG });
         await branch({
-            session: 'attr-5',
+            session,
             branch: 'feat/a',
             from: '2026-08-01T10:00:00Z',
             to: '2026-08-01T11:00:00Z',
         });
-        await point({ session: 'attr-5', field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
+        await point({ session, field: 'tokens_input', value: 1, time: '2026-08-01T10:30:00Z' });
 
+        // The session id is also evidence of another organization: it belongs to neither tenant's read.
         const mine = (await createPostgresTelemetryClient({ sql, orgId: ORG }).fetchRollups()).input;
-        expect(mine.sessions[0]?.user).toBeNull();
+        expect(mine.sessions).toEqual([]);
+        const theirs = (await createPostgresTelemetryClient({ sql, orgId: OTHER_ORG }).fetchRollups()).input;
+        expect(theirs.sessions).toEqual([]);
     });
 });
 
@@ -514,26 +635,34 @@ describe.skipIf(!enabled)('task attribution', () => {
     // thread (task) both belong to.
     it('keeps a reviewer’s tokens on its review row’s session, apart from the caller’s', async () => {
         const userId = await member('review-author');
-        const rootId = await job({ session: 'caller-s', createdBy: userId });
+        const callerSession = randomUUID();
+        const reviewerSession = randomUUID();
+        const rootId = await job({ session: callerSession, createdBy: userId });
         const reviewId = randomUUID();
         await sql`
             insert into job (org_id, id, command, status, root_job_id, created_by, session_id, created_at,
                              review_of, review_key, review_profile, review_spec, review_revision, review_ref)
-            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, 'reviewer-s', now(),
+            values (${ORG}, ${reviewId}, 'review', 'succeeded', ${rootId}, ${userId}, ${reviewerSession}, now(),
                     ${rootId}, 'sec-1', 'security', '{}'::jsonb, 'head:abc', 'refs/factory/review/x/sec-1')
         `;
+        await claim({
+            job: reviewId,
+            root: rootId,
+            session: reviewerSession,
+            author: userId,
+            requesting: { job: rootId, root: rootId },
+        });
         for (const [session, tokens] of [
-            ['caller-s', 10],
-            ['reviewer-s', 7],
+            [callerSession, 10],
+            [reviewerSession, 7],
         ] as const) {
             await branch({ session, branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
             await point({ session, field: 'tokens_input', value: tokens, time: '2026-08-01T10:30:00Z' });
         }
 
-        const { input } = await fetchOrg();
-        const tokensOf = (session: string) => input.sessions.find((s) => s.sessionId === session)?.tokens.input;
-        expect(tokensOf('caller-s')).toBe(10);
-        expect(tokensOf('reviewer-s')).toBe(7);
+        const { input, facts } = await fetchOrg();
+        expect(pointSum(facts, callerSession, 'input')).toBe(10);
+        expect(pointSum(facts, reviewerSession, 'input')).toBe(7);
         expect(input.sessions.map((s) => s.taskKey)).toEqual([rootId, rootId]);
     });
 
@@ -555,26 +684,26 @@ describe.skipIf(!enabled)('task attribution', () => {
         expect(input.sessions[0]?.user).toBeNull();
     });
 
-    it('leaves a removed thread with neither member nor task, its tokens still in the totals', async () => {
-        // Deleting the thread's job rows removes the only bridge to both the member and the
-        // task — the session falls into the unattributed figure rather than vanishing, and
-        // its tokens keep counting in the organization's totals.
+    it('keeps a deleted thread attributable from the retained execution evidence, tokens in the totals', async () => {
+        // Deleting the thread's job rows must not erase who it belonged to: the execution rows
+        // are the retained provenance, so the task and author survive and the usage report
+        // (not the rollup) is what says the task was removed.
         const userId = await member('doomed-author');
         const rootId = await job({ session: 'task-5', createdBy: userId });
         await seedSession('task-5');
 
         const before = await fetchOrg();
         expect(before.input.sessions[0]?.taskKey).toBe(rootId);
-        expect(before.input.sessions[0]?.tokens.input).toBe(10);
+        expect(pointSum(before.facts, 'task-5', 'input')).toBe(10);
 
         await sql`delete from job where root_job_id = ${rootId}`;
-        const { input } = await fetchOrg();
-        expect(input.sessions[0]?.taskKey).toBeNull();
-        expect(input.sessions[0]?.user).toBeNull();
-        expect(input.sessions[0]?.tokens.input).toBe(10);
-        const stats = telemetryStats(input);
-        expect(stats.unattributedSessions).toBe(1);
-        expect(stats.totals.tokens.input).toBe(10);
+        const after = await fetchOrg();
+        expect(pointSum(after.facts, 'task-5', 'input')).toBe(10);
+        const stats = statsOf(after);
+        expect(stats.usage.totals.tokens.input).toBe(10);
+        expect(stats.totals.sessions).toBe(1);
+        const task = reduceUsage(after.facts, { range: null, now: new Date() }).tasks.find((t) => t.taskId === rootId);
+        expect(task?.usage.tokens.input).toBe(10);
     });
 
     it('fetches the org run rows beside the rollups, and never another orgs', async () => {
@@ -589,74 +718,157 @@ describe.skipIf(!enabled)('task attribution', () => {
         // The column is new: every row so far reads unmeasured, never zero.
         expect(runs[0]?.agentTurns).toBeNull();
     });
+
+    it('serves stats whose token totals equal the independent SQL sums of the raw points', async () => {
+        // End to end: fetchRollups -> the read-time reduction /api/stats performs -> numbers a
+        // second query over the same rows reproduces without any of the reducer's code.
+        const hooked = randomUUID();
+        const hookless = randomUUID();
+        const userId = await member('sum-author');
+        await job({ session: hooked, createdBy: userId });
+        await job({ session: hookless, createdBy: userId });
+        await branch({ session: hooked, branch: 'feat/a', from: '2026-08-01T10:00:00Z', to: '2026-08-01T11:00:00Z' });
+        for (const [session, base] of [
+            [hooked, 100],
+            [hookless, 3],
+        ] as const) {
+            await point({ session, field: 'tokens_input', value: base, time: '2026-08-01T10:10:00Z' });
+            await point({ session, field: 'tokens_input', value: base * 2, time: '2026-08-01T10:40:00Z' });
+            await point({ session, field: 'tokens_output', value: base + 1, time: '2026-08-01T10:20:00Z' });
+        }
+
+        const stats = statsOf(await fetchOrg());
+        const [sums] = await sql<{ input: string; output: string }[]>`
+            select coalesce(sum(value) filter (where field = 'tokens_input'), 0) as input,
+                   coalesce(sum(value) filter (where field = 'tokens_output'), 0) as output
+            from metric_point_used
+            where session_id in (${hooked}, ${hookless})`;
+        expect(stats.usage.totals.tokens.input).toBe(Number(sums?.input));
+        expect(stats.usage.totals.tokens.output).toBe(Number(sums?.output));
+        expect(stats.usage.totals.tokens.cacheRead).toBeNull();
+        expect(stats.sessionsWithoutHook).toBe(1);
+        expect(stats.totals.sessions).toBe(2);
+    });
 });
 
-describe.skipIf(!enabled)('runActivity — the per-run telemetry read (issue #339)', () => {
-    const FROM = '2026-09-22T10:00:00.000Z';
-    const TO = '2026-09-22T10:45:00.000Z';
-    const FIFTEEN_MIN = 900_000;
-
-    it('buckets one session’s points over the run window, and nothing else’s', async () => {
-        // Minted per test: a shared factory_test database must never let one run's session id
-        // collide with another's rows.
-        const sessionId = randomUUID();
-        const otherSession = randomUUID();
-        await point({ session: sessionId, field: 'tokens_input', value: 2_000_000, time: '2026-09-22T10:05:00Z' });
-        await point({ session: sessionId, field: 'tokens_output', value: 500_000, time: '2026-09-22T10:07:00Z' });
-        await point({ session: sessionId, field: 'edits_accept', value: 3, time: '2026-09-22T10:20:00Z' });
-        // A cumulative series rides the same window and must be differenced, not summed.
-        await point({
-            session: sessionId,
-            field: 'tokens_cacheRead',
-            value: 100,
-            time: '2026-09-22T10:06:00Z',
+describe.skipIf(!enabled)('token series reduction', () => {
+    const cumulative = (session: string, value: number, minute: number, attrs: Record<string, string>) =>
+        point({
+            session,
+            field: 'tokens_input',
+            value,
+            time: `2026-08-01T10:0${minute}:00Z`,
             temporality: 'cumulative',
-            startTime: FROM,
+            startTime: '2026-08-01T10:00:00Z',
+            attrs,
         });
-        await point({
-            session: sessionId,
-            field: 'tokens_cacheRead',
-            value: 160,
-            time: '2026-09-22T10:21:00Z',
-            temporality: 'cumulative',
-            startTime: FROM,
-        });
-        // Another session's points and points outside the window both stay out.
-        await point({ session: otherSession, field: 'tokens_input', value: 9_000_000, time: '2026-09-22T10:05:00Z' });
-        await point({ session: sessionId, field: 'tokens_input', value: 7_000_000, time: '2026-09-22T09:55:00Z' });
+    const inputTotal = async (session: string) => {
+        const [row] = await sql<{ value: number }[]>`
+            select value from session_field_total where session_id = ${session} and field = 'tokens_input'
+        `;
+        return row === undefined ? null : Number(row.value);
+    };
 
-        const buckets = await createPostgresTelemetryClient({ sql, orgId: ORG }).runActivity({
-            sessionId,
-            from: FROM,
-            to: TO,
-            bucketMs: FIFTEEN_MIN,
-        });
-
-        expect(buckets).toHaveLength(3);
-        expect(buckets[0]).toEqual({
-            start: FROM,
-            tokens: { input: 2_000_000, output: 500_000, cacheRead: 100, cacheCreation: 0 },
-            edits: 0,
-        });
-        expect(buckets[1]).toEqual({
-            start: '2026-09-22T10:15:00.000Z',
-            tokens: { input: 0, output: 0, cacheRead: 60, cacheCreation: 0 },
-            edits: 3,
-        });
-        expect(buckets[2]).toEqual({
-            start: '2026-09-22T10:30:00.000Z',
-            tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
-            edits: 0,
-        });
+    it('keeps counters of different models apart even when they share a start time', async () => {
+        const session = randomUUID();
+        await cumulative(session, 100, 1, { model: 'model-a' });
+        await cumulative(session, 80, 1, { model: 'model-b' });
+        expect(await inputTotal(session)).toBe(180);
     });
 
-    it('answers empty for a session the pipeline holds nothing about', async () => {
-        const buckets = await createPostgresTelemetryClient({ sql, orgId: ORG }).runActivity({
-            sessionId: randomUUID(),
-            from: FROM,
-            to: TO,
-            bucketMs: FIFTEEN_MIN,
+    it('keeps counters of different query sources apart', async () => {
+        const session = randomUUID();
+        await cumulative(session, 100, 1, { query_source: 'main' });
+        await cumulative(session, 30, 1, { query_source: 'subagent' });
+        expect(await inputTotal(session)).toBe(130);
+    });
+
+    it('counts a cumulative series at its high-water mark when a reading falls back', async () => {
+        const session = randomUUID();
+        for (const [i, v] of [10, 40, 25].entries()) await cumulative(session, v, i, { model: 'model-a' });
+        expect(await inputTotal(session)).toBe(40);
+    });
+
+    it('does not add an unspecified reading as a delta', async () => {
+        const session = randomUUID();
+        await point({ session, field: 'tokens_input', value: 4, time: '2026-08-01T10:00:00Z' });
+        await point({
+            session,
+            field: 'tokens_input',
+            value: 100,
+            time: '2026-08-01T10:01:00Z',
+            temporality: 'unspecified',
         });
-        expect(buckets).toEqual([]);
+        await point({
+            session,
+            field: 'tokens_output',
+            value: 60,
+            time: '2026-08-01T10:02:00Z',
+            temporality: 'unspecified',
+        });
+        await branch({ session, branch: 'feat/a', from: '2026-08-01T09:00:00Z', to: '2026-08-01T11:00:00Z' });
+        expect(await inputTotal(session)).toBe(4);
+        const outputs =
+            await sql`select 1 from session_field_total where session_id = ${session} and field = 'tokens_output'`;
+        expect(outputs).toHaveLength(0);
+        const [slice] = await sql<{ value: number }[]>`
+            select value from branch_field_total where session_id = ${session} and field = 'tokens_input'
+        `;
+        expect(Number(slice?.value)).toBe(4);
+    });
+
+    it('totals a null-session group per agent and keeps it out of the session summaries', async () => {
+        await point({
+            session: null as unknown as string,
+            field: 'tokens_input',
+            value: 3,
+            time: '2026-08-01T10:00:00Z',
+        });
+        await point({
+            session: null as unknown as string,
+            field: 'tokens_input',
+            value: 4,
+            time: '2026-08-01T10:01:00Z',
+        });
+        const rows = await sql<{ agent: string; value: number }[]>`
+            select agent, value from session_field_total where session_id is null and field = 'tokens_input'
+        `;
+        expect(rows.map((r) => [r.agent, Number(r.value)])).toEqual([['claude-code', 7]]);
+        const summaries = await sql`select 1 from session_summary where session_id is null`;
+        expect(summaries).toHaveLength(0);
+    });
+
+    it('sets a transcript copy aside as a diagnostic when OTEL owns the session', async () => {
+        const session = randomUUID();
+        await point({ session, field: 'tokens_input', value: 50, time: '2026-08-01T10:00:00Z' });
+        await point({ session, field: 'tokens_input', value: 999, time: '2026-08-01T10:00:00Z', source: 'transcript' });
+        expect(await inputTotal(session)).toBe(50);
+        const set = await sql<{ source: string; value: number }[]>`
+            select source, value from metric_point_suppressed where session_id = ${session}
+        `;
+        expect(set.map((r) => [r.source, Number(r.value)])).toEqual([['transcript', 999]]);
+    });
+
+    it('folds legacy rows per counter type for a non-token field', async () => {
+        const session = randomUUID();
+        const active = (value: number, minute: number, type: string, series?: string) =>
+            point({
+                session,
+                field: 'active_seconds',
+                metric: 'claude_code.active_time.total',
+                value,
+                time: `2026-08-01T10:0${minute}:00Z`,
+                temporality: 'cumulative',
+                startTime: '2026-08-01T10:00:00Z',
+                attrs: series === undefined ? { type } : { type, series },
+            });
+        await active(10, 1, 'user', 'digest-user');
+        await active(20, 1, 'cli', 'digest-cli');
+        await active(15, 2, 'user');
+        await active(25, 2, 'cli');
+        const [row] = await sql<{ value: number }[]>`
+            select value from session_field_total where session_id = ${session} and field = 'active_seconds'
+        `;
+        expect(Number(row?.value)).toBe(40);
     });
 });

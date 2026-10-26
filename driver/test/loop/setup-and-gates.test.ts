@@ -954,7 +954,8 @@ describe('verification gates', () => {
             runner: stubRunner(async () => ok({ exitCode: null, output: 'refused', refused: true })),
             gates: stubGateStack().gates,
         });
-        expect(board.board.sessions).toEqual([]);
+        // Reported as the resumed session, never cleared.
+        expect(board.board.sessions).toEqual([{ id: gatedJob(4).id, sessionId: 'ses_parent' }]);
     });
 
     // An ordinary job must not pay for the feature: no container, no registration, no reports.

@@ -38,9 +38,19 @@ describe('GET /api/stats: payload and attribution', () => {
         await h.settle();
 
         const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
-        const EXPECTED_SESSIONS = 13;
+        const EXPECTED_SESSIONS = 19;
         expect(body.telemetry.totals.sessions).toBe(EXPECTED_SESSIONS);
-        expect(body.telemetry.totals.tokens.input).toBeGreaterThan(0);
+        // Tokens live only in the usage block: four separate types, never a collapsed total.
+        expect(body.telemetry.totals.tokens).toBeUndefined();
+        expect(body.telemetry.series.points[0].tokens).toBeUndefined();
+        expect(body.telemetry.usage.totals.tokens.input).toBeGreaterThan(0);
+        expect(Object.keys(body.telemetry.usage.totals.tokens).sort()).toEqual([
+            'cacheCreation',
+            'cacheRead',
+            'input',
+            'output',
+        ]);
+        expect(body.telemetry.usage.totals.counts.sessions).toBe(EXPECTED_SESSIONS);
         expect(body.meta.repos).toEqual([{ owner: 'Bellows-AI', name: 'bellows.ai' }]);
         // No auth hook in this harness, so the request carries no caller: the payload names the
         // local org, mode 'config' — the AUTH_MODE=none shape.
@@ -76,6 +86,30 @@ describe('GET /api/stats: payload and attribution', () => {
         expect(body.meta.telemetry.sessionsWithoutHook).toBe(1);
     });
 
+    it('counts a hook-less board session in sessionsWithoutHook AND in the totals', async () => {
+        const h = await harness();
+        const app = track(h.app);
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
+        // The fixture's one hook-less session owns 20000 uncached input tokens of the total.
+        expect(body.meta.telemetry.sessionsWithoutHook).toBe(1);
+        expect(body.telemetry.usage.totals.counts.sessions).toBe(body.telemetry.totals.sessions);
+        expect(body.telemetry.usage.totals.tokens.input).toBe(518000);
+    });
+
+    it('names unresolved and other-repo usage in the diagnostics instead of hiding it', async () => {
+        const h = await harness();
+        const app = track(h.app);
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const { diagnostics } = (await app.inject({ method: 'GET', url: '/api/stats' })).json().telemetry.usage;
+        expect(diagnostics.unresolvedOwnership).toMatchObject({ sessions: 1, tokens: { input: 6000 } });
+        expect(diagnostics.excludedRepo).toMatchObject({ sessions: 1, tokens: { input: 90000 } });
+    });
+
     it('serves per-user attribution beside the totals', async () => {
         const h = await harness();
         const app = track(h.app);
@@ -83,7 +117,7 @@ describe('GET /api/stats: payload and attribution', () => {
         await h.settle();
 
         const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
-        const EXPECTED_ALICE_SESSIONS = 5;
+        const EXPECTED_ALICE_SESSIONS = 9;
         const EXPECTED_UNATTRIBUTED_SESSIONS = 4;
         // The fixture's in-scope sessions carry two users and four unattributed sessions — the
         // board-task join resolved server-side, never a client guess.
@@ -95,7 +129,10 @@ describe('GET /api/stats: payload and attribution', () => {
             user: { login: 'alice', name: 'Alice Doe' },
             sessions: EXPECTED_ALICE_SESSIONS,
         });
-        expect(body.telemetry.byUser[0].tokens.input).toBeGreaterThan(0);
+        expect(body.telemetry.byUser[0].tokens).toBeUndefined();
+        const alice = body.telemetry.usage.byUser.find((row: { userId: string }) => row.userId === 'u-alice');
+        expect(alice.user).toMatchObject({ login: 'alice' });
+        expect(alice.usage.tokens.input).toBeGreaterThan(0);
         expect(body.telemetry.unattributedSessions).toBe(EXPECTED_UNATTRIBUTED_SESSIONS);
     });
 });
@@ -113,11 +150,25 @@ describe('GET /api/stats: range filtering and TTL', () => {
         // The fixture's earliest session starts 2026-04-15 and the harness clock is pinned at
         // 2026-08-21, so a one-day lookback keeps only the two sessions inside it — but any
         // session straddling the lower bound must also survive.
-        const EXPECTED_TOTAL_SESSIONS = 13;
+        const EXPECTED_TOTAL_SESSIONS = 19;
         const body = (await app.inject({ method: 'GET', url: '/api/stats?range=day' })).json();
         expect(body.meta.range.preset).toBe('day');
         expect(body.telemetry.totals.sessions).toBeLessThan(EXPECTED_TOTAL_SESSIONS);
         expect(body.telemetry.coverage.from).toBe('2026-04-15T12:00:00Z');
+    });
+
+    it('re-reduces tokens per range and scope from the cached facts, with no second fetch', async () => {
+        const telemetry = stubTelemetryClient();
+        const h = await harness({ telemetry });
+        const app = track(h.app);
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const all = (await app.inject({ method: 'GET', url: '/api/stats' })).json().telemetry.usage.totals;
+        const day = (await app.inject({ method: 'GET', url: '/api/stats?range=day' })).json().telemetry.usage.totals;
+        // Only the points of the last day count, however long the sessions that carry them ran.
+        expect(day.tokens.input).toBeLessThan(all.tokens.input);
+        expect(telemetry.rollupCalls).toBe(1);
     });
 
     it('does not refetch inside the TTL', async () => {
@@ -236,5 +287,27 @@ describe('GET /api/stats: failure handling', () => {
         );
         await h.settle();
         expect(telemetry.rollupCalls).toBe(1);
+    });
+});
+
+describe('GET /api/stats: an empty repo source is one scope on every side', () => {
+    it('agrees on sessions, tokens and task counts: nothing is in scope', async () => {
+        const h = await harness({ repos: [] });
+        const app = track(h.app);
+        await app.inject({ method: 'GET', url: '/api/stats' });
+        await h.settle();
+
+        const body = (await app.inject({ method: 'GET', url: '/api/stats' })).json();
+        const { telemetry, tasks } = body;
+        expect(telemetry.totals.sessions).toBe(0);
+        expect(telemetry.usage.totals.counts.sessions).toBe(0);
+        expect(telemetry.usage.totals.tokens).toEqual({
+            input: null,
+            output: null,
+            cacheRead: null,
+            cacheCreation: null,
+        });
+        expect(tasks.tokens.all.output.tasks).toBe(0);
+        expect(tasks.jobTurnsPerTask.tasks).toBe(0);
     });
 });

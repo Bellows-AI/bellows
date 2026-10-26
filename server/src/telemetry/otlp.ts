@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { agentOf, canonicalField } from './metric-map.js';
 import type { CanonicalField } from './metric-map.js';
 
@@ -45,6 +46,7 @@ export interface MetricRow {
     temporality: 'delta' | 'cumulative' | 'unspecified';
     startTime: string | null;
     time: string;
+    /** The allowlisted attributes plus `series`, the one-way raw series digest. */
     attrs: Record<string, string>;
 }
 
@@ -81,6 +83,26 @@ function attributes(list: { key: string; value: AnyValue }[] | undefined): Recor
         if (text !== null) out[key] = text;
     }
     return out;
+}
+
+/** Every attribute as the exporter sent it, sorted, one `prefix:key=value` line each; structured values keep their JSON. */
+function rawAttributeLines(prefix: string, list: { key: string; value: AnyValue }[] | undefined): string[] {
+    return (list ?? [])
+        .map(({ key, value }) => `${prefix}:${key}=${scalar(value) ?? JSON.stringify(value ?? null)}`)
+        .sort();
+}
+
+/**
+ * The raw series identity (#846): a one-way digest over the data point's FULL attribute set —
+ * resource, scope and point attributes before the allowlist — plus agent, temporality and start
+ * time. Two series that differ only in a dropped attribute stay two rows in `metric_point_dedup`,
+ * while the dropped values themselves are never stored.
+ */
+/** 128 bits of the sha256: collision-safe for a series key, short enough to read in a row. */
+const DIGEST_HEX_LENGTH = 32;
+
+function seriesDigest(parts: string[]): string {
+    return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, DIGEST_HEX_LENGTH);
 }
 
 /** Nanoseconds per millisecond, as a bigint divisor. */
@@ -124,12 +146,14 @@ function rowsFromDataPoints({
     dataPoints,
     temporality,
     resourceAttrs,
+    rawContext,
     name,
     skipped,
 }: {
     dataPoints: unknown[] | undefined;
     temporality: MetricRow['temporality'];
     resourceAttrs: Record<string, string>;
+    rawContext: string[];
     name: string;
     skipped: Skipped;
 }): MetricRow[] {
@@ -143,14 +167,24 @@ function rowsFromDataPoints({
             continue;
         }
         const attrs = { ...resourceAttrs, ...attributes(point.attributes) };
+        const agent = attrs.agent ?? agentOf(name);
+        const startTime = isoFromNanos(point.startTimeUnixNano);
+        attrs.series = seriesDigest([
+            agent,
+            name,
+            temporality,
+            startTime ?? '',
+            ...rawContext,
+            ...rawAttributeLines('p', point.attributes),
+        ]);
         rows.push({
-            agent: attrs.agent ?? agentOf(name),
+            agent,
             metric: name,
             field: canonicalField(name, attrs),
             sessionId: attrs['session.id'] ?? null,
             value,
             temporality,
-            startTime: isoFromNanos(point.startTimeUnixNano),
+            startTime,
             time,
             attrs,
         });
@@ -175,6 +209,7 @@ function metricContainer(
 function rowsFromMetric(
     metric: Record<string, never>,
     resourceAttrs: Record<string, string>,
+    rawContext: string[],
     skipped: Skipped
 ): MetricRow[] {
     const name = metric.name as unknown as string;
@@ -193,6 +228,7 @@ function rowsFromMetric(
         dataPoints: container.dataPoints,
         temporality: container.temporality,
         resourceAttrs,
+        rawContext,
         name,
         skipped,
     });
@@ -206,10 +242,24 @@ function rowsFromResource(resource: Record<string, never>, skipped: Skipped): Me
         (resource.resource as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
     );
 
+    const rawResource = rawAttributeLines(
+        'r',
+        (resource.resource as { attributes?: { key: string; value: AnyValue }[] } | undefined)?.attributes
+    );
+
     const rows: MetricRow[] = [];
     for (const scope of (resource.scopeMetrics as unknown as Record<string, never>[] | undefined) ?? []) {
+        const info = scope.scope as
+            | { name?: string; version?: string; attributes?: { key: string; value: AnyValue }[] }
+            | undefined;
+        const rawContext = [
+            ...rawResource,
+            `s:name=${info?.name ?? ''}`,
+            `s:version=${info?.version ?? ''}`,
+            ...rawAttributeLines('s', info?.attributes),
+        ];
         for (const metric of (scope.metrics as unknown as Record<string, never>[] | undefined) ?? []) {
-            rows.push(...rowsFromMetric(metric, resourceAttrs, skipped));
+            rows.push(...rowsFromMetric(metric, resourceAttrs, rawContext, skipped));
         }
     }
     return rows;

@@ -1266,6 +1266,13 @@ expect_contains 'the prompt reached it'    "$(field "$ran" output)" 'first promp
 expect_contains 'the driver names itself'  "$(field "$ran" claimedBy)" driver-
 expect_field    'one attempt was enough'   "$ran" attempts 1
 
+# A normal run's claim ends `observed` (the runner proved the agent started) with its end stamped:
+# only observed|adopted claims count as run segments, so `unknown` here is a launch-proof bug.
+exec_rows="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -v ON_ERROR_STOP=1 \
+    -c "select launch || '|' || (ended_at is not null) || '|' || (created_at <= ended_at) from job_execution where job_id = '$first'" 2>&1)"
+if [ "$exec_rows" = 'observed|true|true' ]; then ok 'the finished claim ends observed'
+else bad 'the finished claim ends observed' "job_execution rows (launch|ended|ordered): $exec_rows"; fi
+
 # The driver mints the session id, passes it to the runner as --session-id and reports it to the
 # board. The stub echoes its arguments, so finding the reported id inside the output is what proves
 # the two are the same one — a link built from it opens the session the job actually ran as.
