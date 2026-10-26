@@ -209,8 +209,8 @@ a commit already on the remote.
 
 Push the task branch and open (or update) the pull request yourself with `git push` and `gh pr
 create`, or ask the driver to do it (see the github skill) —
-either lands on the same pull request. Run the relevant declared gates first and report any that
-fail; a failing gate does not stop you from publishing. Finish with the work committed on the task
+either lands on the same pull request. Run the declared gates that cover your change first and fix a red one before you push;
+report any that were unavailable. Finish with the work committed on the task
 branch.
 
 ## Step 6 — Land the PR (one loop, max 5 iterations)

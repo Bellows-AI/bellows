@@ -43,6 +43,8 @@ export interface DeclaredGate {
     command: string;
     timeoutMinutes?: number;
     onDemand?: true;
+    /** The ad-hoc endpoint accepts a `filter` for it, passed as env `GATE_FILTER` for that one run. */
+    filter?: true;
 }
 
 export interface BoardJob {

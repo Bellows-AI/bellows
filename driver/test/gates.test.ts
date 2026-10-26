@@ -154,6 +154,19 @@ describe('the supervised gate manager: one gate as a step', () => {
         ]);
     });
 
+    it('hands a filter to that one run as env GATE_FILTER, over the env body, and never into the command', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        await manager.acquire(KEY, 'node:24', 'A=1\nGATE_FILTER=from-env-body\n', { job: JOB });
+        await manager.runGate(KEY, 'test', 'npm test', { filter: 'a b; $(x) "q"' });
+        await manager.runGate(KEY, 'test', 'npm test');
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm test', 'npm test']);
+        expect(calls.map((call) => call.gate.env)).toEqual([
+            { A: '1', GATE_FILTER: 'a b; $(x) "q"' },
+            { A: '1', GATE_FILTER: 'from-env-body' },
+        ]);
+    });
+
     it('hands each gate the env body of its newest acquire', async () => {
         const { runner, calls } = gateRunner();
         const manager = createSupervisedGateManager({ config, runner });
@@ -520,6 +533,69 @@ describe('the gate server', () => {
             error: 'gate "ui" declares timeout: 45, longer than an ad-hoc run can wait (10 minutes); it is on_demand, so the end-of-run gates pass skips it too',
         });
         expect(ran).toEqual(['smoke']);
+        await server.close();
+    });
+
+    it('runs a filter gate with the request filter as GATE_FILTER for that run, and records no evidence of it', async () => {
+        const { runner, calls } = gateRunner();
+        const manager = createSupervisedGateManager({ config, runner });
+        const server = createGateServer({ host: '127.0.0.1', manager });
+        server.register('tok-f', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test', filter: true }],
+        });
+        const port = await server.listen();
+        const post = (body: object) =>
+            fetch(`http://127.0.0.1:${port}/run`, {
+                method: 'POST',
+                headers: { authorization: 'Bearer tok-f' },
+                body: JSON.stringify(body),
+            });
+        expect((await post({ gate: 'test', filter: 'test/api/users.test.js' })).status).toBe(OK_STATUS);
+        expect(server.lastRuns('tok-f')).toEqual([]);
+        expect((await post({ gate: 'test' })).status).toBe(OK_STATUS);
+        expect(server.lastRuns('tok-f')).toHaveLength(1);
+        expect(calls.map((call) => call.gate.command)).toEqual(['npm test', 'npm test']);
+        expect(calls.map((call) => call.gate.env.GATE_FILTER)).toEqual(['test/api/users.test.js', undefined]);
+        await server.close();
+    });
+
+    it('refuses a filter on a gate that did not opt in with 422, before acquiring', async () => {
+        const acquire = vi.fn(async () => {});
+        const { server, port } = await serveGates({ ...idle, acquire });
+        const res = await fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok-1' },
+            body: JSON.stringify({ gate: 'test', filter: 'x' }),
+        });
+        expect(res.status).toBe(UNPROCESSABLE_STATUS);
+        await expect(res.json()).resolves.toEqual({
+            error: 'gate "test" does not accept a filter: its .bellows.yaml entry does not set filter: true',
+        });
+        expect(acquire).not.toHaveBeenCalled();
+        await server.close();
+    });
+
+    it.each([
+        ['a non-string', 5],
+        ['an empty string', ''],
+        ['only blanks', '   '],
+        ['a newline', 'a\nb'],
+        ['a control character', 'a\u0000b'],
+        ['a non-ASCII character', 'caf\u00e9'],
+        ['257 characters', 'x'.repeat(257)],
+    ])('refuses a filter that is %s with 400', async (_label, filter) => {
+        const { server, port } = await serveGates(idle, {
+            gates: [{ name: 'test', command: 'npm test', filter: true }],
+        });
+        const res = await fetch(`http://127.0.0.1:${port}/run`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer tok-1' },
+            body: JSON.stringify({ gate: 'test', filter }),
+        });
+        expect(res.status).toBe(BAD_REQUEST_STATUS);
         await server.close();
     });
 
