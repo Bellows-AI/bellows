@@ -64,6 +64,7 @@ import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob }
 import { stageConclusion } from './job-store-conclusions.js';
 import { readGateRuns, writeGateRun } from './job-store-gate-runs.js';
 import { writePrOperation } from './job-store-pr-operations.js';
+import { ingestTranscriptTools } from './job-store-transcript-tools.js';
 import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-checkpoints.js';
 
 /**
@@ -92,6 +93,7 @@ function workerMethods(
     | 'writeGateRun'
     | 'readGateRuns'
     | 'writePrOperation'
+    | 'ingestTranscriptTools'
     | 'leases'
     | 'artifactScope'
     | 'restoreScope'
@@ -175,6 +177,11 @@ function workerMethods(
         async writePrOperation(id, leaseToken, operation) {
             await gate();
             return writePrOperation(ctx, { id, leaseToken }, operation);
+        },
+
+        async ingestTranscriptTools(id, input) {
+            await gate();
+            return ingestTranscriptTools(ctx, id, input);
         },
 
         async leases(ids, withThreads) {
