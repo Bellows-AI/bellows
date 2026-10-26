@@ -459,7 +459,11 @@ async function verifyRun(
     // A tree that could not be read binds the row to none: it never resumes, and writing it makes the
     // board drop the later phases a former holder left.
     if (gating && !resumedGates) {
-        await phases.record('gates', treeAfter, { ...gated, setupCleared: job.setupFailure == null });
+        await phases.record('gates', treeAfter, {
+            ...gated,
+            noChange: gated.noChange === true,
+            setupCleared: job.setupFailure == null,
+        });
     }
     return {
         ...gated,
