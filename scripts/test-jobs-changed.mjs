@@ -72,7 +72,7 @@ export const RULES = [
     [/^driver\/src\/(question-control|question-validation|loop\/loop-questions)\.ts$/, ['ask-user-question', 'question-round-trip'], 'questions'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
-    [/^driver\/src\/(loop\/loop-gates|gates|gate-cause|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|board\/board-phase-checkpoints)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
+    [/^driver\/src\/(loop\/loop-gates|gates|gate-cause|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|board\/board-phase-checkpoints|board\/board-gate-runs)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
     [/^driver\/src\/scripts\/gate-(loop|shell)\.sh$/, ['driver', 'workflows'], 'gates'],
     [/^driver\/src\/(docker\/docker-task-volume|task-volume)\.ts$/, ['driver', 'capacity', ...RECOVERY], 'task volume'],
     [/^driver\/src\/(docker\/docker-close-read|close-read|docker\/docker-teardown|loop\/loop-conclusion|loop\/loop-post-run)\.ts$/, ['driver', ...RECOVERY], 'task conclusion'],

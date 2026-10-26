@@ -486,6 +486,33 @@ describe('the supervised-step members both executors share', () => {
         expect(s.submitted.map((step) => step.kind)).toEqual(['probe', 'snapshot', 'probe']);
     });
 
+    // Issue #983: the gate manager's probes around a recorded gate, on either executor's transport.
+    it('probes the tree around a gate: the fingerprint, and the mutation guard only when asked since a moment', async () => {
+        const s = sink(() => ok('{"fingerprint":"h:1","mutatedSince":false}\n'));
+        const { members } = groupsOver(s, { has: true });
+
+        expect(await members.probeGateTree(job, null)).toEqual({ fingerprint: 'h:1', mutatedSince: false });
+        expect(await members.probeGateTree(job, 1_700_000_000_000.9)).toEqual({
+            fingerprint: 'h:1',
+            mutatedSince: false,
+        });
+        const [before, after] = s.submitted;
+        expect(before).toMatchObject({ kind: 'probe', env: { REPO: WORKTREE } });
+        expect((before as { env: Record<string, string> }).env).not.toHaveProperty('MUTATED_SINCE_MS');
+        expect(after).toMatchObject({ kind: 'probe', env: { REPO: WORKTREE, MUTATED_SINCE_MS: '1700000000000' } });
+    });
+
+    it.each([
+        ['a probe that failed', () => ok('')],
+        ['an answer that is not JSON', () => ok('<html>')],
+        ['a guard that is not a boolean', () => ok('{"fingerprint":"h:1","mutatedSince":"no"}')],
+        ['an empty fingerprint', () => ok('{"fingerprint":"","mutatedSince":false}')],
+    ])('reads %s as unknown, never as a clean tree', async (_what, answer) => {
+        const { members } = groupsOver(sink(answer), { has: true });
+        const probed = await members.probeGateTree(job, 5);
+        expect(probed.mutatedSince === false && probed.fingerprint !== null).toBe(false);
+    });
+
     it('creates nothing and submits nothing for an unknown helper id', async () => {
         const s = sink();
         const { members, created } = groupsOver(s);

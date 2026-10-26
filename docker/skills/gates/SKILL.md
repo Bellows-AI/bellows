@@ -20,8 +20,9 @@ curl -sf -X POST "$BELLOWS_GATE_URL/run" \
     -d '{"gate":"test"}'
 ```
 
-The answer is JSON: `{"exitCode":0,"output":"..."}`. `exitCode` `0` means the gate passed; anything
-else failed, and `output` carries its tail — read it, fix what it names, run the gate again.
+The answer is JSON: `{"exitCode":0,"output":"...","executionId":"..."}`. `exitCode` `0` means the gate passed; anything
+else failed, and `output` carries its tail — read it, fix what it names, run the gate again. A 503 with
+`"retryable":true` means the run could not be recorded and did not start: call it again.
 
 If the answer also carries `deadServices`, a service the repository declared (a database, a cache) has
 died: the note names its exit, reason and last log lines. That is an environment fault you cannot fix
@@ -31,6 +32,8 @@ do not work around it by installing the service yourself; end with `FACTORY_BLOC
 Run, read, fix, run again as often as the work needs: every answer is the gate's own result on the
 tree as it is now. Before every push, run the declared gates that cover your change and fix a red
 one before you push; the gates that run when you finish are a backstop, not a reason to skip them.
+A gate you ran unfiltered that passed on exactly the tree you finish with, with nothing touched while it
+ran, is reported as reused when you finish instead of running again; any later change runs it.
 An unavailable gate (an environment failure) is reported, not a blocker; the pull request itself
 (the github skill) is held back by a gate only where the repository sets `policy: gates: required`. The declared gates also run when you finish and a failing one fails
 the task, but the work still ships as a draft; only a repository that sets `policy: gates:

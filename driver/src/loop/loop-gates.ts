@@ -1,9 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { BoardJob, DeclaredGate } from '../board/board.js';
+import type { GateRunRecord } from '../board/board-gate-runs.js';
 import { gateEnvBody, setupTimeoutMs } from '../claim.js';
 import { tailBytes, type DeadService } from '../runner.js';
 import { stepLost } from '../step-control.js';
-import { declaredTimeoutMs, type GateRun } from '../gates.js';
+import { declaredTimeoutMs, type GateLedger, type GateRun } from '../gates.js';
+import { gateIdentity } from '../gate-identity.js';
+import { recordGateRun, type GateEnd } from '../gate-record.js';
+import { GATE_RUNS_READ_MS, reusableRun, reusedReport } from './gate-reuse.js';
 import { clearPendingQuestions, down, raceStep } from './loop-attempt.js';
 import { SUPERVISOR_ENV } from '../supervisor-contract.js';
 import { takeoverBoundMs } from '../supervisor-plan.js';
@@ -42,6 +46,10 @@ export interface GateSession {
     endPass: boolean;
     /** The gates list the last declared pass left on the board; absent before one ran. */
     lastReports?: GateReport[];
+    /** The claim of the run this session gates (`runClaimSeqOf`): the gate-run record is keyed by it. */
+    runClaimSeq: number;
+    /** The gate-run record's probe, identity and board write (issue #983). */
+    ledger: GateLedger;
 }
 
 export interface GateFailure {
@@ -56,6 +64,10 @@ export type GateReport = {
     status: 'running' | 'passed' | 'failed';
     exitCode: number | null;
     output: string | null;
+    /** The recorded execution this entry is (issue #983); absent for a gate no record covers. */
+    executionId?: string;
+    /** Set when the gate was not launched: it is served from an earlier verified pass. */
+    reused?: { executionId: string; finishedAt: string | null; reason: string };
 };
 
 /** Whether the job declares gates or setup, so that a gate environment is started for it at all. */
@@ -104,7 +116,7 @@ export async function beginGates(
     rt: LoopRuntime,
     job: BoardJob,
     state: JobState,
-    opts: { takeover?: boolean } = {}
+    opts: { takeover?: boolean; runClaimSeq?: number } = {}
 ): Promise<GateSession | null> {
     const { gates } = rt;
     // A checkout that declares only `setup` still gets the environment: setup runs in it before
@@ -133,6 +145,8 @@ export async function beginGates(
     }
     try {
         const token = await ensureGatePair(gates, job);
+        const runClaimSeq = opts.runClaimSeq ?? job.claimSeq;
+        const ledger = gateLedger(rt, job, runClaimSeq);
         gates.server.register(token, {
             key,
             image: job.gates.image,
@@ -140,6 +154,7 @@ export async function beginGates(
             job,
             gates: job.gates.gates,
             freshEnv: () => gateEnvNow(rt, job, 'a gate run'),
+            ledger,
             // The agent's ad-hoc gate found the supervisor lost: the attempt's, once its run is over.
             onInfraLoss: (reason) => {
                 state.gateLoss ??= reason;
@@ -164,6 +179,8 @@ export async function beginGates(
             envBody,
             declared,
             endPass: declared.length > 0 || Boolean(job.setupFailure),
+            runClaimSeq,
+            ledger,
         };
     } catch (e) {
         // Filed but never registered: the checkout is forgotten again, so no entry outlives the claim.
@@ -294,6 +311,12 @@ export function departRunControl(rt: LoopRuntime, state: JobState): void {
     state.control = null;
 }
 
+/** What the declared-gates pass runs against: the attempt's state, and the tree the run left (null when unread). */
+export interface GatesPass {
+    state: JobState;
+    treeAfter: string | null;
+}
+
 /** The declared gates of one running attempt: what `runDeclaredGates` and its helper share. */
 interface GatesRunCtx {
     rt: LoopRuntime;
@@ -308,14 +331,33 @@ interface GatesRunCtx {
  * The gate environment's body with a GitHub token asked now: every gate run starts on a token of
  * its own, and a run is never renewed (docs/connections.md).
  */
-const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise<string> => {
-    // `beginGates` adds the gate server's own pair to `job.gateEnv` for the agent; a gate run never
-    // gets it, or a gate could call `/run` on its own checkout and wait behind itself.
-    const gateEnv = Object.fromEntries(
-        Object.entries(job.gateEnv ?? {}).filter(([name]) => !GATE_SERVER_PAIR.includes(name))
-    );
-    return gateEnvBody({ ...job, gateEnv }, await askGithubToken(rt, job, what));
-};
+const gateEnvNow = async (rt: LoopRuntime, job: BoardJob, what: string): Promise<string> =>
+    gateEnvBody(withoutGatePair(job), await askGithubToken(rt, job, what));
+
+/**
+ * `beginGates` adds the gate server's own pair to `job.gateEnv` for the agent; a gate run never
+ * gets it, or a gate could call `/run` on its own checkout and wait behind itself.
+ */
+const withoutGatePair = (job: BoardJob): BoardJob => ({
+    ...job,
+    gateEnv: Object.fromEntries(Object.entries(job.gateEnv ?? {}).filter(([name]) => !GATE_SERVER_PAIR.includes(name))),
+});
+
+/** The gate env body a gate's identity hashes: the claim's env, without the gate server's pair or a GitHub token. */
+export const stableGateEnvBody = (job: BoardJob): string => gateEnvBody(withoutGatePair(job), null);
+
+/**
+ * The gate-run record of one claim (issue #983): the runner's tree probes, the identity of a gate's
+ * configuration — its env WITHOUT the per-run GitHub token, keyed by the board token — and the board
+ * write. The identity is computed from the current claim's job, never from a registered copy.
+ */
+export function gateLedger(rt: LoopRuntime, job: BoardJob, runClaimSeq: number): GateLedger {
+    return {
+        probe: (signal, sinceMs) => rt.runner.probeGateTree(job, sinceMs ?? null, signal),
+        identity: (gate) => gateIdentity(rt.config.boardToken, job, gate, stableGateEnvBody(job)),
+        write: async (row, signal) => (await rt.board.gateRun(job, { runClaimSeq, ...row }, signal)) === 'ok',
+    };
+}
 
 /**
  * A gate the transport could not run is a failed gate (125) — but a lost supervisor (`stepLost`,
@@ -337,25 +379,52 @@ export async function sizeGateForVerify(rt: LoopRuntime, job: BoardJob): Promise
 /** The gate server's URL and token, the agent's alone. */
 const GATE_SERVER_PAIR: readonly string[] = ['BELLOWS_GATE_URL', 'BELLOWS_GATE_TOKEN'];
 
-/** One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate. */
-async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<GateRun | null> {
+/**
+ * One declared gate's re-acquire-then-run outcome, folding a re-acquire failure into a failed gate.
+ * The run is recorded (issue #983) as a `completion` execution: best-effort, since a board hiccup
+ * costs the record, never the gating; exactly one terminal row is written on every exit.
+ */
+async function runOneGate(ctx: GatesRunCtx, gate: DeclaredGate): Promise<{ run: GateRun; executionId: string } | null> {
     const { rt, job, gateSession, state, signal } = ctx;
     const { gates } = rt;
     if (!gates) return null;
-    return gateEnvNow(rt, job, `gate ${gate.name}`)
-        .then((envBody) => gates.manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
-        .then(() => {
-            // The heartbeat can mark the lease lost — or the task stopped or removed — while
-            // acquire is pending: a slow revival or cluster request outlives the beat that said
-            // so. Starting the gate then would be dead work, on a checkout another attempt may
-            // own: the same refusal the check before the acquire makes.
-            if (down(state)) return null;
-            return gates.manager.runGate(gateSession.key, gate.name, gate.command, {
-                signal,
-                timeoutMs: declaredTimeoutMs(gate),
+    const record = recordGateRun(gateSession.ledger, {
+        gate,
+        source: 'completion',
+        filtered: false,
+        requireRecord: false,
+        signal,
+    });
+    let end: GateEnd = { error: new Error('the gate run ended without an answer') };
+    let failure: Error | null = null;
+    try {
+        const run = await gateEnvNow(rt, job, `gate ${gate.name}`)
+            .then((envBody) => gates.manager.acquire(gateSession.key, gateSession.image, envBody, { job }))
+            .then(() => {
+                // The heartbeat can mark the lease lost — or the task stopped or removed — while
+                // acquire is pending: a slow revival or cluster request outlives the beat that said
+                // so. Starting the gate then would be dead work, on a checkout another attempt may
+                // own: the same refusal the check before the acquire makes.
+                if (down(state)) return null;
+                return gates.manager.runGate(gateSession.key, gate.name, gate.command, {
+                    signal,
+                    timeoutMs: declaredTimeoutMs(gate),
+                    execution: record.execution,
+                });
+            })
+            .catch((e: Error) => {
+                failure = e;
+                return refusedToRun(e);
             });
-        })
-        .catch(refusedToRun);
+        if (run === null) {
+            end = { cancelled: true };
+            return null;
+        }
+        end = failure ? { error: failure } : { run, cancelled: down(state) };
+        return { run, executionId: record.executionId };
+    } finally {
+        await record.finish(end);
+    }
 }
 
 /** A finished gate's report entry, and the text a failure carries to the board. */
@@ -392,9 +461,10 @@ export async function runDeclaredGates(
     rt: LoopRuntime,
     job: BoardJob,
     gateSession: GateSession,
-    state: JobState
+    pass: GatesPass
 ): Promise<GateFailure | null> {
     const { gates, log } = rt;
+    const { state, treeAfter } = pass;
     if (!gates) return null;
     // The attempt's own signal is the gate transport's abort: a stand-down cancels the gate in
     // flight, not only the ones after it, and no second controller exists to keep in step
@@ -422,10 +492,22 @@ export async function runDeclaredGates(
         PER_GATE_OUTPUT_FLOOR_BYTES,
         Math.floor(GATES_REPORT_BUDGET_BYTES / gateSession.declared.length)
     );
+    const earlier = await readGateRuns(runCtx, treeAfter);
     for (const gate of gateSession.declared) {
         // The lease can be reclaimed — or the task stopped or removed — mid-gates. Everything
         // after that is dead work, and the attempt settles without a gate verdict.
         if (down(state)) return null;
+        const reused = reusableRun(earlier, gate, {
+            identity: gateSession.ledger.identity(gate),
+            tree: treeAfter,
+            runClaimSeq: gateSession.runClaimSeq,
+        });
+        if (reused) {
+            log(`job ${job.id}: gate ${gate.name} reused from execution ${reused.executionId}, not run again`);
+            results.push(reusedReport(gate, reused));
+            await report();
+            continue;
+        }
         results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
         await report();
         // Re-acquire, then run, under one catch: an environment that cannot be revived is a
@@ -433,14 +515,14 @@ export async function runDeclaredGates(
         // Raced against the stand-down: the re-acquire (an image pull, a cluster request) has no
         // timeout of its own, and the heartbeat keeps the lease while a Stop waits on it.
         const raced = await raceStep(state.signal, runOneGate(runCtx, gate));
-        const outcome = raced?.value;
+        const outcome = raced?.value?.run;
         // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
         // and a cancelled gate is never reported failed — `gate-failed` must not read it.
         if (!outcome || down(state)) return null;
         const { entry, text } = settledGate(gate, outcome, perGate);
         // Replace the gate's own entry — one entry per declared gate, always, so the list the
         // board stores IS the declared list at its current state.
-        results[results.length - 1] = entry;
+        results[results.length - 1] = { ...entry, executionId: raced!.value!.executionId };
         await report();
         if (entry.status === 'failed') {
             return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
@@ -449,6 +531,23 @@ export async function runDeclaredGates(
     // Every gate ran after its setup succeeded: a failed pre-agent setup was fixed.
     job.setupFailure = null;
     return null;
+}
+
+/**
+ * The run's gate record, read once before the declared gates (issue #983): null — reuse nothing, run
+ * every gate — for a tree that could not be read (nothing can match it), a read the board did not
+ * answer in full, one that timed out, or a stand-down that cut it short. Never an empty record by
+ * default: an unconfirmed read is not an answer.
+ */
+async function readGateRuns(ctx: GatesRunCtx, treeAfter: string | null): Promise<GateRunRecord[] | null> {
+    const { rt, job, gateSession, state } = ctx;
+    if (treeAfter === null) return null;
+    const signal = AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]);
+    const raced = await raceStep(
+        state.signal,
+        rt.board.gateRuns(job, gateSession.runClaimSeq, signal).catch(() => null)
+    );
+    return raced?.value ?? null;
 }
 
 /**

@@ -13,6 +13,8 @@ import type { HelperPlan } from '../src/helpers.js';
 import type { PublishResult } from '../src/publish/publish.js';
 import type { AdoptedRun, DeadService, LiveRun } from '../src/runner.js';
 import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from './fixtures/loop-stubs.js';
+import { gateRunRow } from './fixtures/gate-runs.js';
+import type { GateRunRecord } from '../src/board/board-gate-runs.js';
 
 const TREE = 'h:after';
 const deadMongo: DeadService = {
@@ -77,6 +79,8 @@ const publishCp = (over: Partial<PhaseCheckpoint> = {}): PhaseCheckpoint => ({
 interface Scene {
     adopted?: AdoptedRun | LiveRun | null;
     checkpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
+    /** The gate-run rows (issue #983) the board answers with. */
+    gateRuns?: GateRunRecord[] | null;
     write?: 'ok' | 'lost' | 'rejected' | 'throw';
     probeTree?: string | null;
     gated?: boolean;
@@ -105,6 +109,7 @@ async function run(scene: Scene = {}) {
     const board = stubBoard([claimed], {
         githubToken: GITHUB_TOKEN,
         phaseCheckpoints: scene.checkpoints ?? null,
+        gateRuns: scene.gateRuns ?? null,
         phaseCheckpointWrite: scene.write ?? 'ok',
         ...(scene.leaseGone ? { leaseGone: scene.leaseGone } : {}),
     });
@@ -266,6 +271,56 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         expect(r.board.phaseCheckpointReads.map((x) => x.runClaimSeq)).toEqual([4]);
         expect(r.board.phaseCheckpointsWritten.every((w) => w.runClaimSeq === 4)).toBe(true);
         expect(gatesRan(r)).toBe(false);
+    });
+
+    // Issue #983: a takeover whose former holder died before its gates checkpoint still reuses that
+    // holder's eligible ad-hoc passes, which were recorded under the same run claim sequence.
+    it('k: a takeover reuses the former holder’s eligible pass under the same run claim sequence', async () => {
+        const prior = { ...gatedJob(1), claimSeq: 4 } as BoardJob;
+        const live: LiveRun = {
+            live: true,
+            prior,
+            claimSeq: 4,
+            session: 'sess',
+            startedAt: 'then',
+            forget: () => undefined,
+        };
+        const rows = ['test', 'lint'].map((name) =>
+            gateRunRow(prior, name, { treeBefore: TREE, treeAfter: TREE, runClaimSeq: 4, claimSeq: 4 })
+        );
+        const r = await run({ adopted: live, checkpoints: [], gateRuns: rows });
+
+        expect(r.board.gateRunReads.map((x) => x.runClaimSeq)).toEqual([4]);
+        expect(gatesRan(r)).toBe(false);
+        expect(r.board.completed[0]).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('l: a takeover whose former holder’s later run left a running row runs that gate again', async () => {
+        const prior = { ...gatedJob(1), claimSeq: 4 } as BoardJob;
+        const live: LiveRun = {
+            live: true,
+            prior,
+            claimSeq: 4,
+            session: 'sess',
+            startedAt: 'then',
+            forget: () => undefined,
+        };
+        const at = { treeBefore: TREE, treeAfter: TREE, runClaimSeq: 4, claimSeq: 4 };
+        // The lease fence dropped the former holder's terminal write: the latest row of `test` is running.
+        const rows = [
+            gateRunRow(prior, 'test', at),
+            gateRunRow(prior, 'test', {
+                ...at,
+                outcome: 'running',
+                exitCode: null,
+                treeAfter: null,
+                mutatedSince: null,
+            }),
+            gateRunRow(prior, 'lint', at),
+        ];
+        const r = await run({ adopted: live, checkpoints: [], gateRuns: rows });
+
+        expect(r.stack.ran.names).toEqual(['test']);
     });
 
     it('j: a tree that cannot be read runs the gates, records a gates row bound to no tree, and ignores the later ones', async () => {
@@ -430,7 +485,11 @@ describe('writing the phase checkpoints', () => {
                 runClaimSeq: 3,
                 phase: 'gates',
                 tree: TREE,
-                result: gatesResult,
+                // A gate that ran carries the execution its record was written under (issue #983).
+                result: {
+                    ...gatesResult,
+                    reports: passedReports.map((report) => ({ ...report, executionId: expect.any(String) })),
+                },
             },
             {
                 id: r.claimed.id,

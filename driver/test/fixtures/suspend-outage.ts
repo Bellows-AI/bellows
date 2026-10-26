@@ -86,6 +86,9 @@ const runner = {
     async probeTree() {
         return null;
     },
+    async probeGateTree() {
+        return { fingerprint: null, mutatedSince: null };
+    },
     async adopt() {
         return null;
     },

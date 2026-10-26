@@ -15,6 +15,7 @@ import type {
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board/board.js';
+import type { GateRunRecord, GateRunWrite } from '../../src/board/board-gate-runs.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
@@ -23,7 +24,7 @@ import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import type { GateStack, LoopRuntime } from '../../src/loop/loop-types.js';
-import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../../src/publish/publish.js';
+import type { PublishOptions, PublishResult, ReclaimResult, SyncResult, TreeProbe } from '../../src/publish/publish.js';
 import type { PublishRelay } from '../../src/publish/publish-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../../src/question-control.js';
 import { cancelPendingQuestions, hasPendingQuestion, newControl, resolveQuestion } from '../../src/question-control.js';
@@ -86,6 +87,10 @@ export interface BoardStub extends Board {
     }[];
     /** The run claim sequence of every phase checkpoint read the loop made, with the job's lease token. */
     phaseCheckpointReads: { id: string; leaseToken: string; runClaimSeq: number }[];
+    /** Every gate-run row the loop wrote (issue #983), in write order. */
+    gateRunsWritten: GateRunWrite[];
+    /** The run claim sequence of every gate-run read the loop made. */
+    gateRunReads: { id: string; leaseToken: string; runClaimSeq: number }[];
     /** The final envelopes the loop staged before each verdict (issue #821). */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
@@ -151,6 +156,10 @@ export function stubBoard(
         phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
         /** The board's answer to a phase checkpoint write (issue #829); `throw` models a board that throws. */
         phaseCheckpointWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
+        /** The board's answer to a gate-run read (issue #983); null (unreadable) when absent. */
+        gateRuns?: GateRunRecord[] | null | ((signal?: AbortSignal) => Promise<GateRunRecord[] | null>);
+        /** The board's answer to a gate-run write (issue #983). */
+        gateRunWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
         /** The board's answer to a staged conclusion (issue #821); held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
@@ -167,6 +176,8 @@ export function stubBoard(
         staged: [],
         phaseCheckpointsWritten: [],
         phaseCheckpointReads: [],
+        gateRunsWritten: [],
+        gateRunReads: [],
         sessions: [],
         sessionEvidence: [],
         progressed: [],
@@ -292,6 +303,16 @@ export function stubBoard(
             const answer = options.phaseCheckpoints ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },
+        async gateRun(_claimed, write) {
+            board.gateRunsWritten.push(structuredClone(write));
+            if (options.gateRunWrite === 'throw') throw new Error('the board is down');
+            return options.gateRunWrite ?? 'ok';
+        },
+        async gateRuns(claimed, runClaimSeq, signal) {
+            board.gateRunReads.push({ id: claimed.id, leaseToken: claimed.leaseToken, runClaimSeq });
+            const answer = options.gateRuns ?? null;
+            return typeof answer === 'function' ? answer(signal) : answer;
+        },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });
             return options.stageAnswer ?? 'held';
@@ -330,6 +351,8 @@ export function stubRunner(
         reclaimSequence?: ReclaimResult[];
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
         probeTree?: string | null;
+        /** The gate-run tree probes (issue #983); absent probes as unknown. */
+        gateTree?: (sinceMs: number | null) => TreeProbe;
         /** The pre-gate no-change read (issue #1020); absent reads as a changed tree, a function may throw. */
         noChange?: boolean | (() => Promise<boolean>);
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
@@ -461,6 +484,9 @@ export function stubRunner(
             if (options.probeTree === undefined) return null;
             runner.probed.push(probedJob);
             return options.probeTree;
+        },
+        async probeGateTree(_probed: BoardJob, sinceMs: number | null) {
+            return options.gateTree ? options.gateTree(sinceMs) : { fingerprint: null, mutatedSince: null };
         },
         async probeNoChange() {
             const { noChange } = options;

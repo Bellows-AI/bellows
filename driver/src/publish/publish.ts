@@ -456,12 +456,16 @@ export const GIT_STAGE_STEPS: readonly (readonly string[])[] = [
  * read. The claim's base rides as BASE_BRANCH, the branch the probe compares against; probeCheckout
  * pins it as the state's base, so the PR summary, the PR and the recorded base all follow it.
  */
-const probeStep = (repo: string, base: string | null = null): PublishStep => ({
+const probeStep = (repo: string, base: string | null = null, sinceMs: number | null = null): PublishStep => ({
     label: 'probe',
     entrypoint: 'node',
     args: ['-e', gitProbeScript],
     env: false,
-    envLiterals: { REPO: repo, ...(base ? { BASE_BRANCH: base } : {}) },
+    envLiterals: {
+        REPO: repo,
+        ...(base ? { BASE_BRANCH: base } : {}),
+        ...(sinceMs === null ? {} : { MUTATED_SINCE_MS: String(Math.floor(sinceMs)) }),
+    },
     inRepo: false,
 });
 
@@ -485,6 +489,36 @@ export async function probeTreeFingerprint(job: BoardJob, runStep: RunPublishSte
     const probe = await runStep(probeStep(repo)).catch(() => null);
     const fingerprint = parseLastJsonLine<{ fingerprint?: unknown }>(probe?.stdout ?? '', () => ({})).fingerprint;
     return typeof fingerprint === 'string' && fingerprint ? fingerprint : null;
+}
+
+/**
+ * What one probe around a gate run measured (issue #983): the tree fingerprint and, when asked since a
+ * moment, whether any shipped path was touched at or after it. Each is null when unknown; only a
+ * confirmed `false` says untouched.
+ */
+export interface TreeProbe {
+    fingerprint: string | null;
+    mutatedSince: boolean | null;
+}
+
+/**
+ * The fingerprint plus the mutation guard over the same transport as `probeTreeFingerprint`, for the
+ * gate-run record: `sinceMs` (the run's start) asks whether anything was touched since. Never throws
+ * on a probe that failed: that is an unknown, not an error.
+ */
+export async function probeGateTree(
+    job: BoardJob,
+    runStep: RunPublishStep,
+    sinceMs: number | null
+): Promise<TreeProbe> {
+    const repo = checkoutDir(job);
+    if (!repo) return { fingerprint: null, mutatedSince: null };
+    const probe = await runStep(probeStep(repo, null, sinceMs)).catch(() => null);
+    const read = parseLastJsonLine<{ fingerprint?: unknown; mutatedSince?: unknown }>(probe?.stdout ?? '', () => ({}));
+    return {
+        fingerprint: typeof read.fingerprint === 'string' && read.fingerprint ? read.fingerprint : null,
+        mutatedSince: typeof read.mutatedSince === 'boolean' ? read.mutatedSince : null,
+    };
 }
 
 /**
