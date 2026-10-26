@@ -98,6 +98,43 @@ describe.skipIf(!hasGit())('the probe’s mutation guard', () => {
         expect(probed(since()).mutatedSince).toBe(false);
     });
 
+    // A nested repository is listed as one directory: its contents are walked with the same coverage.
+    const nestedRepo = (dir: string): string => {
+        mkdirSync(dir, { recursive: true });
+        git(dir, 'init', '-q');
+        git(dir, 'config', 'user.email', 'a@b.c');
+        git(dir, 'config', 'user.name', 'n');
+        writeFileSync(join(dir, 'inner.txt'), 'inner\n');
+        git(dir, 'add', '-A');
+        git(dir, 'commit', '-q', '-m', 'inner');
+        return join(dir, 'inner.txt');
+    };
+    const touchedAndRestored = (file: string): void => {
+        writeFileSync(file, 'changed\n');
+        writeFileSync(file, 'inner\n');
+    };
+
+    it('is true for a file of an untracked nested repository changed and put back', () => {
+        prepared();
+        const inner = nestedRepo(join(fx.checkout(), 'vendor', 'lib'));
+        age();
+        expect(probed(since()).mutatedSince).toBe(false);
+        touchedAndRestored(inner);
+        expect(probed(since()).mutatedSince).toBe(true);
+    });
+
+    it('is true for a file of a submodule changed and put back', () => {
+        prepared();
+        const source = join(fx.checkout(), '..', 'submodule-source');
+        nestedRepo(source);
+        git(fx.checkout(), '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', source, 'sub');
+        git(fx.checkout(), 'commit', '-q', '-m', 'add submodule');
+        age();
+        expect(probed(since()).mutatedSince).toBe(false);
+        touchedAndRestored(join(fx.checkout(), 'sub', 'inner.txt'));
+        expect(probed(since()).mutatedSince).toBe(true);
+    });
+
     // Unknown is mutated: a walk that cannot read a path never reports the tree untouched.
     it.skipIf(process.getuid?.() === 0)('is true when the walk cannot read a path', () => {
         prepared();

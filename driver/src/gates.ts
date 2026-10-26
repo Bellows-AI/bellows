@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { BoardJob, DeclaredGate } from './board/board.js';
 import type { DriverConfig } from './config.js';
+import { parseGateRequest, type GateRequest } from './gate-request.js';
+import { createGateAdmission } from './gate-admission.js';
 import { CONTAINER_GONE } from './exec-codes.js';
 import {
     GateRecordRefused,
@@ -20,20 +22,17 @@ import { reportTail } from './runner.js';
 import { stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
-import { readBody, respondJson } from './http.js';
+import { respondJson } from './http.js';
 import type { PublishRelay } from './publish/publish-control.js';
 import type { ReviewRelay } from './review/review-control.js';
 import type { CheckpointRelay, ExportRelay } from './export-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
-import { parseJsonObject } from './json-parse.js';
 
 export type { GateExecution, GateLedger, GateMeasure, GateRunStart, TreeProbeFn } from './gate-record.js';
 
 const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
-const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_CONFLICT = 409;
 const HTTP_UNPROCESSABLE = 422;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
@@ -390,6 +389,12 @@ export interface GateServer {
     /** A stop, lost lease or Remove: the same as `unregister`, named for the loop's intent. */
     cancel(token: string): void;
     /**
+     * Closes the token to new ad-hoc runs (503, retryable) and resolves once every one already admitted
+     * has settled, its terminal row written (issue #983): the completion pass reads the gate record only
+     * after this, so no run is still on its way to a verdict it would not see. `register` reopens it.
+     */
+    quiesce(token: string): Promise<void>;
+    /**
      * The latest ad-hoc run per declared gate name, as the server recorded it completing (issue
      * #339) — what a timed-out run's kill note quotes as "the last gate verdicts". A harness
      * failure (409/500) is not a verdict and records nothing; unregister clears.
@@ -445,39 +450,8 @@ export interface GateServer {
     close(): Promise<void>;
 }
 
-/** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
-const BODY_LIMIT = 4096;
-
 /** The env name a filter reaches the gate command as. */
 const GATE_FILTER_ENV = 'GATE_FILTER';
-/** A filter is a test name or path pattern, not a program: bounded, printable, one line. */
-const FILTER_MAX_CHARS = 256;
-const PRINTABLE_FILTER = /^[\x20-\x7e]+$/;
-
-type GateRequest = { ok: true; gate: string; filter?: string } | { ok: false; status: number; error: string };
-
-/** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`. */
-const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
-    const raw = await readBody(request, BODY_LIMIT);
-    if (raw === null) return { ok: false, status: HTTP_PAYLOAD_TOO_LARGE, error: 'body too large' };
-    const parsed = parseJsonObject(raw);
-    if (parsed === null) return { ok: false, status: HTTP_BAD_REQUEST, error: 'body must be JSON' };
-    if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
-        return { ok: false, status: HTTP_BAD_REQUEST, error: 'gate must be a name' };
-    }
-    if (parsed.filter === undefined) return { ok: true, gate: parsed.gate };
-    if (typeof parsed.filter !== 'string' || !parsed.filter.trim() || parsed.filter.length > FILTER_MAX_CHARS) {
-        return {
-            ok: false,
-            status: HTTP_BAD_REQUEST,
-            error: `filter must be 1-${FILTER_MAX_CHARS} printable characters`,
-        };
-    }
-    if (!PRINTABLE_FILTER.test(parsed.filter)) {
-        return { ok: false, status: HTTP_BAD_REQUEST, error: 'filter must be printable ASCII on one line' };
-    }
-    return { ok: true, gate: parsed.gate, filter: parsed.filter };
-};
 
 /** Why an ad-hoc call of `gate` answers 422, or null: a timeout past what the call can wait, a filter it did not opt into. */
 const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | null => {
@@ -599,6 +573,28 @@ const hangupSignal = (reply: ServerResponse): AbortSignal => {
     return hangup.signal;
 };
 
+/**
+ * The request's body, unless its token was cancelled while the body was still arriving: the
+ * claim read before is then the dead session's, and nothing may be acquired for it.
+ */
+const readGateRequest = async (request: IncomingMessage, stillLive: () => boolean): Promise<GateRequest> => {
+    const parsed = await parseGateRequest(request);
+    if (!stillLive()) return { ok: false, status: HTTP_CONFLICT, error: 'gate run cancelled' };
+    return parsed;
+};
+
+/** Notes the latest completed run of a gate for its token: the timeout note's raw material. */
+const recordNote = (
+    history: Map<string, Map<string, GateRunNote>>,
+    token: string,
+    name: string,
+    exitCode: number | null
+): void => {
+    const runs = history.get(token) ?? new Map<string, GateRunNote>();
+    runs.set(name, { name, exitCode, at: new Date().toISOString() });
+    history.set(token, runs);
+};
+
 export function createGateServer({
     host,
     manager,
@@ -612,6 +608,8 @@ export function createGateServer({
     const claims = new Map<string, GateClaim>();
     /** Per token, the controller every ad-hoc run of it listens on — `cancel` aborts it. */
     const cancels = new Map<string, AbortController>();
+    /** Per token, the ad-hoc runs admitted and not yet settled, and whether more are still admitted. */
+    const admission = createGateAdmission();
     /** Per token, the latest completed run per gate name — the timeout note's raw material. */
     const history = new Map<string, Map<string, GateRunNote>>();
     /** The stop poll and the question routes, per control token (`control-channel.ts`). */
@@ -637,7 +635,7 @@ export function createGateServer({
 
         const hangup = hangupSignal(reply);
 
-        const parsedRequest = await readGateRequest(request, auth, claim);
+        const parsedRequest = await readGateRequest(request, () => claims.get(auth) === claim);
         if (!parsedRequest.ok) return respond(reply, parsedRequest.status, { error: parsedRequest.error });
 
         // Only a DECLARED name runs. An arbitrary command string here would make the runner's
@@ -648,33 +646,24 @@ export function createGateServer({
         const refusal = adHocRefusal(gate, parsedRequest.filter);
         if (refusal) return respond(reply, HTTP_UNPROCESSABLE, { error: refusal });
 
+        if (admission.isClosed(auth)) {
+            return respond(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });
+        }
         const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
-        const result = await runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled);
+        const result = await admission.admit(
+            auth,
+            runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled)
+        );
         // A filtered run is a partial answer: it never stands as the gate's latest run.
         if (result.status === HTTP_OK && parsedRequest.filter === undefined)
-            record(auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
+            recordNote(history, auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
         return respond(reply, result.status, withDeadNote(result, claim));
-    };
-
-    /**
-     * The request's body, unless its token was cancelled while the body was still arriving: the
-     * claim read before is then the dead session's, and nothing may be acquired for it.
-     */
-    const readGateRequest = async (request: IncomingMessage, token: string, claim: GateClaim): Promise<GateRequest> => {
-        const parsed = await parseGateRequest(request);
-        if (claims.get(token) !== claim) return { ok: false, status: HTTP_CONFLICT, error: 'gate run cancelled' };
-        return parsed;
-    };
-
-    const record = (token: string, name: string, exitCode: number | null): void => {
-        const runs = history.get(token) ?? new Map<string, GateRunNote>();
-        runs.set(name, { name, exitCode, at: new Date().toISOString() });
-        history.set(token, runs);
     };
 
     return {
         register(token, claim) {
             claims.set(token, { ...claim, envBody: claim.envBody ?? '' });
+            admission.open(token);
             history.set(token, new Map());
             cancels.set(token, new AbortController());
         },
@@ -683,11 +672,13 @@ export function createGateServer({
             claims.delete(token);
             history.delete(token);
             cancels.delete(token);
+            admission.forget(token);
             controller?.abort();
         },
         cancel(token) {
             this.unregister(token);
         },
+        quiesce: (token) => admission.close(token),
         openControl: (token, relay, publisher, reviewer) => channel.open(token, relay, publisher, reviewer),
         grantAgent: (token, agentToken) => channel.grantAgent(token, agentToken),
         grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),

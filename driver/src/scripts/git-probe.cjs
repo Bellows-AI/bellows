@@ -65,7 +65,8 @@ const fingerprintOf = (cwd) => {
 };
 // Whether a file or a directory holding one of the tree's paths was touched at or after `sinceMs`:
 // the fingerprint cannot see a file changed and put back, the mtime can. A path that is gone is
-// skipped — its directory's mtime records the removal; any other read failure is true.
+// skipped — its directory's mtime records the removal; any other read failure is true. A nested
+// repository (a submodule, an untracked repo) is walked the same way, recursively.
 const mutatedSince = (cwd, sinceMs) => {
     try {
         const fs = require('node:fs');
@@ -82,6 +83,7 @@ const mutatedSince = (cwd, sinceMs) => {
             .toString('utf8')
             .split('\0')
             .filter(Boolean);
+        const nested = new Set(listed);
         const paths = new Set(listed);
         paths.add('.');
         for (const name of listed) {
@@ -89,7 +91,13 @@ const mutatedSince = (cwd, sinceMs) => {
         }
         for (const name of paths) {
             try {
-                if (fs.lstatSync(path.join(cwd, name)).mtimeMs >= sinceMs) return true;
+                const stat = fs.lstatSync(path.join(cwd, name));
+                if (stat.mtimeMs >= sinceMs) return true;
+                // A listed directory is a submodule or a nested repository: the files inside it ship
+                // with the tree, and touching one moves neither this directory nor the fingerprint.
+                if (nested.has(name) && stat.isDirectory() && mutatedSince(path.join(cwd, name), sinceMs)) {
+                    return true;
+                }
             } catch (e) {
                 if (e.code !== 'ENOENT') return true;
             }

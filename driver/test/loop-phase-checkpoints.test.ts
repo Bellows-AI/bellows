@@ -125,6 +125,7 @@ async function run(scene: Scene = {}) {
     const runner = stubRunner(async () => ok(), {
         sync: { ok: true, reason: null, fingerprint: 'h:before' },
         probeTree: scene.probeTree === undefined ? TREE : scene.probeTree,
+        gateTree: () => ({ fingerprint: scene.probeTree === undefined ? TREE : scene.probeTree, mutatedSince: false }),
         ...(scene.noChange === undefined ? {} : { noChange: scene.noChange }),
         publish: scene.publishResult ?? published,
         ...(scene.adopted === undefined ? {} : { adopt: async () => scene.adopted ?? null }),

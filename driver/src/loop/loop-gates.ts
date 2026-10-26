@@ -443,6 +443,11 @@ function settledGate(gate: DeclaredGate, outcome: GateRun, perGate: number): { e
     };
 }
 
+/** A walk over the gates that found a reused pass voided by a later change of the tree. */
+const STALE_REUSE = Symbol('stale-reuse');
+/** One gate that ran and passed, in a walk that goes on. */
+const GATE_PASSED = Symbol('gate-passed');
+
 /**
  * Runs every declared gate in order, reporting each state change to the board as it happens.
  * The report REPLACES the stored list — every report carries the whole list so the task view
@@ -492,41 +497,126 @@ export async function runDeclaredGates(
         PER_GATE_OUTPUT_FLOOR_BYTES,
         Math.floor(GATES_REPORT_BUDGET_BYTES / gateSession.declared.length)
     );
-    const earlier = await readGateRuns(runCtx, treeAfter);
+    const walk: GateWalk = { ...runCtx, treeAfter, results, perGate, report };
+    // Ad-hoc admission closes and the runs in flight settle first: a run still on its way to a verdict
+    // would otherwise land after the record is read and never count against a reused pass. Raced
+    // against the stand-down, like every wait here.
+    if (!(await raceStep(state.signal, gates.server.quiesce(gateSession.token)))) return null;
+    // A setup that failed in this claim's environment is retried by running the gates, never skipped
+    // by serving them from an earlier pass: the reuse waits for a setup that succeeded.
+    let earlier = job.setupFailure ? null : await readGateRuns(runCtx, treeAfter);
+    for (;;) {
+        results.length = 0;
+        const verdict = await passOver(walk, earlier);
+        if (verdict !== STALE_REUSE) return verdict;
+        earlier = null;
+    }
+}
+
+/** One walk over the declared gates: the context, the report list the board is told, and the report pump. */
+interface GateWalk extends GatesRunCtx {
+    treeAfter: string | null;
+    results: GateReport[];
+    perGate: number;
+    report: () => Promise<void>;
+}
+
+/** Whether the checkout still reads the tree the reused passes certified; an unreadable tree does not. Null: stood down. */
+async function treeUnchanged(w: GateWalk): Promise<boolean | null> {
+    const { state, gateSession, treeAfter } = w;
+    const probing = gateSession.ledger.probe(AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]));
+    const raced = await raceStep(
+        state.signal,
+        probing.then(
+            (probe) => probe.fingerprint !== null && probe.fingerprint === treeAfter,
+            () => false
+        )
+    );
+    return raced ? raced.value : null;
+}
+
+/** One declared gate executed and settled in the report: its failure, or `GATE_PASSED`; null when stood down. */
+async function executeGate(w: GateWalk, gate: DeclaredGate): Promise<GateFailure | null | typeof GATE_PASSED> {
+    const { state, results, perGate, report } = w;
+    results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
+    await report();
+    // Re-acquire, then run, under one catch: an environment that cannot be revived is a
+    // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
+    // Raced against the stand-down: the re-acquire (an image pull, a cluster request) has no
+    // timeout of its own, and the heartbeat keeps the lease while a Stop waits on it.
+    const raced = await raceStep(state.signal, runOneGate(w, gate));
+    const outcome = raced?.value?.run;
+    // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
+    // and a cancelled gate is never reported failed — `gate-failed` must not read it.
+    if (!outcome || down(state)) return null;
+    const { entry, text } = settledGate(gate, outcome, perGate);
+    // Replace the gate's own entry — one entry per declared gate, always, so the list the
+    // board stores IS the declared list at its current state.
+    results[results.length - 1] = { ...entry, executionId: raced!.value!.executionId };
+    await report();
+    if (entry.status === 'failed') {
+        return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
+    }
+    return GATE_PASSED;
+}
+
+/** The gate's eligible earlier pass, unless a gate of this walk already changed the checkout; null when stood down. */
+async function reusableAfterWalk(
+    w: GateWalk,
+    gate: DeclaredGate,
+    pool: GateRunRecord[] | null,
+    executed: boolean
+): Promise<{ reused: GateRunRecord | null; pool: GateRunRecord[] | null } | null> {
+    const { gateSession, treeAfter } = w;
+    const reused = reusableRun(pool, gate, {
+        identity: gateSession.ledger.identity(gate),
+        tree: treeAfter,
+        runClaimSeq: gateSession.runClaimSeq,
+    });
+    if (!reused || !executed) return { reused, pool };
+    const unchanged = await treeUnchanged(w);
+    if (unchanged === null) return null;
+    // A gate of this walk changed the checkout: nothing reused from here on, this one runs.
+    return unchanged ? { reused, pool } : { reused: null, pool: null };
+}
+
+/**
+ * One walk over the declared gates, reusing a pass from `earlier` where one is eligible. Once a gate of
+ * this walk has run, the tree is read again: a reuse is certified for `treeAfter` only while the
+ * checkout still is `treeAfter`. A gate that edited it (a formatter) voids the reuse of every later
+ * gate, and one already taken before it: the walk is then answered `STALE_REUSE`, to run again without any.
+ */
+async function passOver(
+    w: GateWalk,
+    earlier: GateRunRecord[] | null
+): Promise<GateFailure | null | typeof STALE_REUSE> {
+    const { rt, job, state, gateSession, results, report } = w;
+    let pool = earlier;
+    let executed = false;
+    let reusedAny = false;
     for (const gate of gateSession.declared) {
         // The lease can be reclaimed — or the task stopped or removed — mid-gates. Everything
         // after that is dead work, and the attempt settles without a gate verdict.
         if (down(state)) return null;
-        const reused = reusableRun(earlier, gate, {
-            identity: gateSession.ledger.identity(gate),
-            tree: treeAfter,
-            runClaimSeq: gateSession.runClaimSeq,
-        });
+        const eligible = await reusableAfterWalk(w, gate, pool, executed);
+        if (!eligible) return null;
+        pool = eligible.pool;
+        const { reused } = eligible;
         if (reused) {
-            log(`job ${job.id}: gate ${gate.name} reused from execution ${reused.executionId}, not run again`);
+            reusedAny = true;
+            rt.log(`job ${job.id}: gate ${gate.name} reused from execution ${reused.executionId}, not run again`);
             results.push(reusedReport(gate, reused));
             await report();
             continue;
         }
-        results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
-        await report();
-        // Re-acquire, then run, under one catch: an environment that cannot be revived is a
-        // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
-        // Raced against the stand-down: the re-acquire (an image pull, a cluster request) has no
-        // timeout of its own, and the heartbeat keeps the lease while a Stop waits on it.
-        const raced = await raceStep(state.signal, runOneGate(runCtx, gate));
-        const outcome = raced?.value?.run;
-        // A null is the stand-down abandonment above; a stand-down DURING the gate cancelled it,
-        // and a cancelled gate is never reported failed — `gate-failed` must not read it.
-        if (!outcome || down(state)) return null;
-        const { entry, text } = settledGate(gate, outcome, perGate);
-        // Replace the gate's own entry — one entry per declared gate, always, so the list the
-        // board stores IS the declared list at its current state.
-        results[results.length - 1] = { ...entry, executionId: raced!.value!.executionId };
-        await report();
-        if (entry.status === 'failed') {
-            return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
-        }
+        executed = true;
+        const ran = await executeGate(w, gate);
+        if (ran !== GATE_PASSED) return ran;
+    }
+    if (executed && reusedAny) {
+        const unchanged = await treeUnchanged(w);
+        if (unchanged === null) return null;
+        if (!unchanged) return STALE_REUSE;
     }
     // Every gate ran after its setup succeeded: a failed pre-agent setup was fixed.
     job.setupFailure = null;

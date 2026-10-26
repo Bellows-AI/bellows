@@ -612,7 +612,15 @@ export async function drive(
  */
 export function stubGateStack(
     outcomes: Record<string, number> = {},
-    options: { control?: boolean; polled?: boolean; setup?: GateRun | null } = {}
+    options: {
+        control?: boolean;
+        polled?: boolean;
+        setup?: GateRun | null;
+        /** Called as each declared gate executes: a gate that edits the tree moves what the probe reads. */
+        onRun?: (name: string) => void;
+        /** The ad-hoc server's `quiesce`: settles once no ad-hoc run is in flight; immediate when absent. */
+        quiesce?: (token: string) => Promise<void>;
+    } = {}
 ) {
     const stack = {
         controlOpened: [] as string[],
@@ -636,6 +644,8 @@ export function stubGateStack(
         registeredTokens: [] as string[],
         unregistered: 0,
         cancelled: [] as string[],
+        /** Each token the gate server closed to ad-hoc runs, in order. */
+        quiesced: [] as string[],
         advertised: '',
         ran: { key: '', names: [] as string[] },
         /** Every pre-agent `runSetup` call's options (issue #733), in order. */
@@ -651,6 +661,7 @@ export function stubGateStack(
             },
             runGate: async (key: string, name: string) => {
                 stack.ran = { key, names: [...stack.ran.names, name] };
+                options.onRun?.(name);
                 const code = outcomes[name] ?? 0;
                 return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
             },
@@ -669,6 +680,10 @@ export function stubGateStack(
             },
             cancel: (token: string) => {
                 stack.cancelled.push(token);
+            },
+            quiesce: async (token: string) => {
+                stack.quiesced.push(token);
+                await options.quiesce?.(token);
             },
             // The run-control channel (issue #442) is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.

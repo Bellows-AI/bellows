@@ -26,6 +26,10 @@ interface Scene {
     tree?: string | null;
     job?: BoardJob;
     deadServices?: () => Promise<DeadService[]>;
+    /** The gate stack's options: scripted setup, a gate that edits the tree, a pending ad-hoc quiesce. */
+    stack?: Parameters<typeof stubGateStack>[1];
+    /** What the runner's gate probe reads, per call: a gate that runs may move it. */
+    gateTree?: () => string | null;
 }
 
 const EXECUTORS = [
@@ -37,10 +41,11 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
     async function run(scene: Scene = {}) {
         const claimed = scene.job ?? claimedJob();
         const board = stubBoard([claimed], { gateRuns: scene.rows === undefined ? null : scene.rows });
-        const stack = stubGateStack();
+        const stack = stubGateStack({}, scene.stack);
         const runner = stubRunner(async () => ok(), {
             sync: { ok: true, reason: null, fingerprint: 'h:before' },
             probeTree: scene.tree === undefined ? SAME_TREE : scene.tree,
+            gateTree: () => ({ fingerprint: scene.gateTree ? scene.gateTree() : SAME_TREE, mutatedSince: false }),
             ...(scene.deadServices ? { deadServices: scene.deadServices } : {}),
         });
         await drive({ ...board, runner, gates: stack.gates }, env);
@@ -208,6 +213,104 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
 
         expect(r.runner.restartedServices).toEqual([CLAIMED.id]);
         expect(r.stack.ran.names).toEqual([]);
+    });
+
+    // ---- the reuse is revalidated against the tree the completion pass leaves ------------------------
+    it('does not reuse a pass once an earlier gate of the same pass changed the tree', async () => {
+        let tree = SAME_TREE;
+        const r = await run({
+            rows: [gateRunRow(CLAIMED, 'lint')],
+            gateTree: () => tree,
+            stack: {
+                onRun: (name) => {
+                    if (name === 'test') tree = 'h:formatted';
+                },
+            },
+        });
+
+        expect(r.stack.ran.names).toEqual(['test', 'lint']);
+        expect(lastReports(r).some((g) => 'reused' in g)).toBe(false);
+    });
+
+    it('runs a reused gate again when a later gate of the pass changed the tree it certified', async () => {
+        let tree = SAME_TREE;
+        const r = await run({
+            rows: [gateRunRow(CLAIMED, 'test')],
+            gateTree: () => tree,
+            stack: {
+                onRun: (name) => {
+                    if (name === 'lint') tree = 'h:formatted';
+                },
+            },
+        });
+
+        expect(r.stack.ran.names).toEqual(['lint', 'test', 'lint']);
+        expect(lastReports(r).some((g) => 'reused' in g)).toBe(false);
+    });
+
+    it('a tree that cannot be re-read after a gate ran is not a confirmation', async () => {
+        let tree: string | null = SAME_TREE;
+        const r = await run({
+            rows: [gateRunRow(CLAIMED, 'lint')],
+            gateTree: () => tree,
+            stack: { onRun: () => (tree = null) },
+        });
+
+        expect(r.stack.ran.names).toEqual(['test', 'lint']);
+    });
+
+    // ---- the ad-hoc runs are settled before the record is read ------------------------------------
+    it('closes ad-hoc admission and waits for the in-flight ones before it reads the record', async () => {
+        let settle: (() => void) | undefined;
+        const events: string[] = [];
+        const pending = new Promise<void>((resolve) => {
+            settle = resolve;
+        });
+        const rows = async (): Promise<GateRunRecord[]> => {
+            events.push('read');
+            return passes();
+        };
+        const driven = run({
+            rows,
+            stack: {
+                quiesce: async () => {
+                    events.push('quiesce');
+                    await pending;
+                    events.push('settled');
+                },
+            },
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(events).toEqual(['quiesce']);
+        settle?.();
+        const r = await driven;
+
+        expect(events).toEqual(['quiesce', 'settled', 'read']);
+        expect(r.stack.quiesced).toEqual([r.claimed.gateEnv!.BELLOWS_GATE_TOKEN]);
+    });
+
+    // ---- setup must have succeeded in this claim's environment ------------------------------------
+    describe('with an environment setup', () => {
+        const withSetup = (): BoardJob => ({ ...CLAIMED, gates: { ...CLAIMED.gates!, setup: 'npm ci' } });
+
+        it('a failed setup is retried by the gates: nothing is reused over it', async () => {
+            const job = withSetup();
+            const r = await run({
+                job,
+                rows: passes(job),
+                stack: { setup: { exitCode: 1, output: 'npm ci failed' } },
+            });
+
+            expect(r.stack.ran.names).toEqual(['test', 'lint']);
+            expect(lastReports(r).some((g) => 'reused' in g)).toBe(false);
+        });
+
+        it('a setup that succeeded in this claim lets the passes be reused', async () => {
+            const job = withSetup();
+            const r = await run({ job, rows: passes(job), stack: { setup: { exitCode: 0, output: '' } } });
+
+            expect(r.stack.ran.names).toEqual([]);
+        });
     });
 
     it('a stop during the read stands down with no verdict and runs nothing', async () => {

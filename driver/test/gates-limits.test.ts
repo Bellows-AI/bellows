@@ -22,7 +22,7 @@ const settledWithin = (work: Promise<unknown>, ms: number) =>
 describe('Stop during the declared gates', () => {
     const rtWith = (manager: GateManager): LoopRuntime =>
         ({
-            gates: { manager, server: {} as never, advertiseUrl: () => '' },
+            gates: { manager, server: { quiesce: async () => {} } as never, advertiseUrl: () => '' },
             log: () => {},
             board: { gates: async () => 'held' },
         }) as unknown as LoopRuntime;

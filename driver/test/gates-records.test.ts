@@ -356,3 +356,58 @@ describe('the supervised gate manager: probes inside the queue', () => {
         expect(await manager.runGate(KEY, 'g', 'one')).toEqual({ exitCode: 0, output: '' });
     });
 });
+
+describe('the gate server: closing ad-hoc admission before the completion pass reads the record', () => {
+    it('waits for a run still awaiting its before-probe, and its terminal row lands before the wait ends', async () => {
+        let release: (() => void) | undefined;
+        let probes = 0;
+        const h = await harness({
+            answer: () => answered(1),
+            probe: async () => {
+                probes += 1;
+                if (probes === 1) await new Promise<void>((resolve) => (release = resolve));
+                return BEFORE;
+            },
+        });
+        const call = h.run();
+        await until(() => release !== undefined);
+
+        let quiet = false;
+        const quiesced = h.server.quiesce('tok').then(() => {
+            quiet = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(quiet).toBe(false);
+
+        release?.();
+        await quiesced;
+        expect(h.rows.map((r) => r.outcome)).toEqual(['running', 'failed']);
+        await call;
+        await h.server.close();
+    });
+
+    it('refuses a call that arrives after it, retryable, writing no row and starting no gate', async () => {
+        const h = await harness();
+        await h.server.quiesce('tok');
+        const response = await h.run();
+
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({ retryable: true });
+        expect(h.rows).toEqual([]);
+        expect(h.execs).toEqual([]);
+        await h.server.close();
+    });
+
+    it('opens again when the token is registered anew: a later attempt of the same claim', async () => {
+        const h = await harness();
+        await h.server.quiesce('tok');
+        h.server.register('tok', {
+            key: KEY,
+            image: 'node:24',
+            job: JOB,
+            gates: [{ name: 'test', command: 'npm test' }],
+        });
+        expect((await h.run()).status).toBe(200);
+        await h.server.close();
+    });
+});
