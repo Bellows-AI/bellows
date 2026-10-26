@@ -18,6 +18,7 @@ import type {
     SettleResult,
 } from '../src/db/jobs/job-store-types.js';
 import { TelemetryError } from '../src/telemetry/errors.js';
+import type { ActivityRecords } from '../src/telemetry/run-activity.js';
 import { activityWorld, minute } from './helpers-activity.js';
 import { trackApps } from './helpers-http.js';
 import type {
@@ -133,6 +134,7 @@ interface StoreStub extends JobStore {
     leased: { ids: string[]; threads?: true }[];
     /** The long-poll holds the route requested, with the timeout it was given (issue #323). */
     waits: { id: string; timeoutMs: number }[];
+    recordsRead: string[][];
     /** The question reports and answers the routes handed the store (050). */
     asked: { id: string; questionId: string; questions: AskedQuestion[] }[];
     answered: { id: string; questionId: string; answers: Record<string, string>; answeredBy: string | null }[];
@@ -182,6 +184,8 @@ function stubStore(
         reclaimId?: string | null;
         job?: Job | null;
         thread?: Job[] | null;
+        /** What `activityRecords` answers (issue #983 S4); empty when absent. */
+        records?: ActivityRecords;
         followUp?: FollowUpRefusal;
         retry?: RetryRefusal;
         /** What the store answers a queued-command edit with; ok echoes the new command back. */
@@ -253,6 +257,7 @@ function stubStore(
         reclaimRenewals: [],
         leased: [],
         waits: [],
+        recordsRead: [],
         asked: [],
         answered: [],
         reviewRequests: [],
@@ -492,6 +497,11 @@ function stubStore(
         async thread() {
             boom();
             return options.thread ?? null;
+        },
+        async activityRecords(jobIds) {
+            boom();
+            stub.recordsRead.push([...jobIds]);
+            return options.records ?? { gateRuns: [], reusedGates: [], prOperations: [], toolEvents: [] };
         },
         async list(filter) {
             boom();
@@ -3342,6 +3352,33 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         const instance = await harnessWith(stubStore({ job: jobOf(jobId, rootJobId) }), undefined, telemetry);
         return instance.inject({ method: 'GET', url: `/api/jobs/${jobId}/activity` });
     };
+    const recordsOf = (jobId: string): ActivityRecords => ({
+        gateRuns: [
+            {
+                jobId,
+                executionId: '00000000-0000-4000-8000-000000000001',
+                gate: 'test',
+                source: 'adhoc',
+                filtered: false,
+                outcome: 'passed',
+                startedAt: '2026-09-22T20:50:00.000Z',
+                finishedAt: '2026-09-22T20:51:00.000Z',
+            },
+        ],
+        reusedGates: [],
+        prOperations: [
+            {
+                jobId,
+                operationId: '00000000-0000-4000-8000-0000000000a1',
+                operation: 'created',
+                repo: 'acme/web',
+                prNumber: 7,
+                prUrl: 'https://github.com/acme/web/pull/7',
+            },
+        ],
+        toolEvents: [],
+    });
+
     const sum = (values: (number | null)[]): number | null =>
         values.every((v) => v === null) ? null : values.reduce<number>((a, v) => a + (v ?? 0), 0);
 
@@ -3433,15 +3470,38 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         expect(body.usage.tokens.output).toBe(100);
     });
 
-    it('answers 503 UNAVAILABLE, not an empty 200, when telemetry is off (TELEMETRY_SOURCE=off)', async () => {
+    it('answers 200 with the gate and PR records and unavailable token figures when telemetry is off (TELEMETRY_SOURCE=off)', async () => {
         const off = Object.assign(stubTelemetryClient(), {
             fetchTaskFacts: async () => {
                 throw new TelemetryError('Telemetry is disabled (TELEMETRY_SOURCE=off)', 'UNREACHABLE');
             },
         });
-        const response = await activityOf(ID, ID, off);
-        expect(response.statusCode).toBe(503);
-        expect(response.json()).toMatchObject({ code: 'UNAVAILABLE' });
+        const instance = await harnessWith(stubStore({ job: jobOf(ID, ID), records: recordsOf(ID) }), undefined, off);
+        const response = await instance.inject({ method: 'GET', url: `/api/jobs/${ID}/activity` });
+
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.usage.state).toBe('unavailable');
+        expect(body.buckets).toEqual([]);
+        expect(body.task).toBeNull();
+        expect(body.gates).toMatchObject({ executions: 1, byOutcome: { passed: 1 } });
+        expect(body.prs.counts).toEqual({ operations: 1, distinct: 1 });
+    });
+
+    it('answers the run gates and PRs, and the same figures over every run of the task', async () => {
+        const { ids, facts } = activityWorld();
+        const records = recordsOf(ids.followUp);
+        const store = stubStore({ job: jobOf(ids.task, ids.task), records });
+        const instance = await harnessWith(store, undefined, stubTelemetryClient({ taskFacts: () => facts }));
+        const body = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids.task}/activity` })).json();
+
+        // The records belong to the follow-up: the root run has none, the task has them.
+        expect(body.gates).toMatchObject({ coverage: null, executions: null });
+        expect(body.taskActivity.gates).toMatchObject({ coverage: 'complete', executions: 1 });
+        expect(body.taskActivity.prs.distinct).toEqual([
+            { repo: 'acme/web', number: 7, url: 'https://github.com/acme/web/pull/7' },
+        ]);
+        expect(store.recordsRead).toEqual([[ids.task, ids.followUp, ids.review]]);
     });
 
     it('answers unmeasured usage and no task, never a zero, when nothing names the job', async () => {

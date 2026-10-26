@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { buildRunActivity, pickBucketMs } from '../src/telemetry/run-activity.js';
+import {
+    buildRunActivity,
+    gateActivityOf,
+    pickBucketMs,
+    prActivityOf,
+    type ActivityRecords,
+    type GateRunRecord,
+    type PrOperationRecord,
+    type ToolEventRecord,
+} from '../src/telemetry/run-activity.js';
 import { activityWorld, minute } from './helpers-activity.js';
 
 /**
@@ -66,5 +75,216 @@ describe('buildRunActivity', () => {
         expect(idle.run?.usage.state).toBe('unmeasured');
         expect(buildRunActivity(facts, ids.task, 'not-a-run', NOW)).toMatchObject({ run: null });
         expect(buildRunActivity(facts, 'no-such-task', ids.task, NOW)).toEqual({ task: null, run: null });
+    });
+});
+
+/**
+ * The gate and PR halves of the activity read (issue #983 S4): what the board recorded (`job_gate_run`,
+ * `job_pr_operation`) and what the transcript confirmed (`transcript_tool_event`), reduced per run and
+ * per task. An execution counts once however many records name it, and a figure nobody measured is
+ * null or `partial`, never a zero.
+ */
+const JOB = '11111111-1111-4111-8111-111111111111';
+const OTHER = '22222222-2222-4222-8222-222222222222';
+const exec = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+
+const gateRun = (over: Partial<GateRunRecord> & Pick<GateRunRecord, 'executionId'>): GateRunRecord => ({
+    jobId: JOB,
+    gate: 'test',
+    source: 'adhoc',
+    filtered: false,
+    outcome: 'passed',
+    startedAt: minute(1),
+    finishedAt: minute(2),
+    ...over,
+});
+const toolEvent = (over: Partial<ToolEventRecord> & Pick<ToolEventRecord, 'callId'>): ToolEventRecord => ({
+    jobId: JOB,
+    kind: 'gate',
+    operation: 'run',
+    outcome: 'passed',
+    executionId: null,
+    operationId: null,
+    prRepo: null,
+    prNumber: null,
+    prUrl: null,
+    startedAt: null,
+    endedAt: null,
+    ...over,
+});
+const prOp = (over: Partial<PrOperationRecord> & Pick<PrOperationRecord, 'operationId'>): PrOperationRecord => ({
+    jobId: JOB,
+    operation: 'created',
+    repo: 'acme/web',
+    prNumber: 7,
+    prUrl: 'https://github.com/acme/web/pull/7',
+    ...over,
+});
+const records = (over: Partial<ActivityRecords> = {}): ActivityRecords => ({
+    gateRuns: [],
+    reusedGates: [],
+    prOperations: [],
+    toolEvents: [],
+    ...over,
+});
+
+describe('gateActivityOf', () => {
+    it('counts executions by outcome and sums the measured duration', () => {
+        const out = gateActivityOf(
+            records({
+                gateRuns: [
+                    gateRun({ executionId: exec(1) }),
+                    gateRun({ executionId: exec(2), outcome: 'failed', startedAt: minute(3), finishedAt: minute(5) }),
+                    gateRun({ executionId: exec(3), source: 'completion' }),
+                ],
+            }),
+            [JOB]
+        );
+        expect(out.executions).toBe(3);
+        expect(out.byOutcome).toMatchObject({ passed: 2, failed: 1 });
+        expect(out.measuredMs).toBe(60_000 + 120_000 + 60_000);
+        expect(out).toMatchObject({ measuredCount: 3, unmeasuredCount: 0, coverage: 'complete' });
+    });
+
+    it('counts an execution once when completion reused it and a transcript event names it too', () => {
+        const out = gateActivityOf(
+            records({
+                gateRuns: [gateRun({ executionId: exec(1) })],
+                reusedGates: [
+                    { jobId: JOB, gate: 'test', executionId: exec(1), finishedAt: minute(2), reason: 'tree unchanged' },
+                ],
+                toolEvents: [toolEvent({ callId: 'c1', executionId: exec(1) })],
+            }),
+            [JOB]
+        );
+        expect(out.executions).toBe(1);
+        expect(out.reused).toEqual([
+            { jobId: JOB, gate: 'test', executionId: exec(1), finishedAt: minute(2), reason: 'tree unchanged' },
+        ]);
+        expect(out.observed).toMatchObject({ executions: 0 });
+    });
+
+    it('keeps a transcript-only gate run apart as observed agent activity, once per execution id', () => {
+        const out = gateActivityOf(
+            records({
+                gateRuns: [gateRun({ executionId: exec(1) })],
+                toolEvents: [
+                    toolEvent({ callId: 'a', executionId: exec(9), outcome: 'failed' }),
+                    toolEvent({ callId: 'b', executionId: exec(9), outcome: 'failed' }),
+                    toolEvent({ callId: 'c', outcome: 'unknown' }),
+                ],
+            }),
+            [JOB]
+        );
+        expect(out.executions).toBe(1);
+        expect(out.observed).toMatchObject({ executions: 2, byOutcome: { failed: 1, unknown: 1 } });
+        expect(out.coverage).toBe('partial');
+    });
+
+    it('leaves the duration null and the coverage partial when no timing was recorded', () => {
+        const out = gateActivityOf(
+            records({ gateRuns: [gateRun({ executionId: exec(1), startedAt: null, finishedAt: null })] }),
+            [JOB]
+        );
+        expect(out).toMatchObject({ measuredMs: null, measuredCount: 0, unmeasuredCount: 1, coverage: 'partial' });
+    });
+
+    it('takes the timing of an execution from its transcript event when the record has none', () => {
+        const out = gateActivityOf(
+            records({
+                gateRuns: [gateRun({ executionId: exec(1), startedAt: null, finishedAt: null })],
+                toolEvents: [
+                    toolEvent({ callId: 'c', executionId: exec(1), startedAt: minute(1), endedAt: minute(4) }),
+                ],
+            }),
+            [JOB]
+        );
+        expect(out).toMatchObject({ measuredMs: 180_000, measuredCount: 1, unmeasuredCount: 0 });
+    });
+
+    it('answers null, not zero, when nothing was recorded', () => {
+        expect(gateActivityOf(records(), [JOB])).toMatchObject({
+            coverage: null,
+            executions: null,
+            byOutcome: null,
+            measuredMs: null,
+            observed: null,
+            reused: [],
+        });
+    });
+
+    it('reads only the named jobs, so a run and its task differ', () => {
+        const all = records({
+            gateRuns: [gateRun({ executionId: exec(1) }), gateRun({ executionId: exec(2), jobId: OTHER })],
+        });
+        expect(gateActivityOf(all, [JOB]).executions).toBe(1);
+        expect(gateActivityOf(all, [JOB, OTHER]).executions).toBe(2);
+    });
+});
+
+describe('prActivityOf', () => {
+    it('counts operations apart from the distinct PRs they touched', () => {
+        const out = prActivityOf(
+            records({
+                prOperations: [
+                    prOp({ operationId: exec(1) }),
+                    prOp({ operationId: exec(2), operation: 'reused' }),
+                    prOp({ operationId: exec(3), prNumber: 8, prUrl: 'https://github.com/acme/web/pull/8' }),
+                ],
+            }),
+            [JOB]
+        );
+        expect(out.counts).toEqual({ operations: 3, distinct: 2 });
+        expect(out.operations.map((o) => o.kind)).toEqual(['created', 'reused', 'created']);
+        expect(out.distinct).toEqual([
+            { repo: 'acme/web', number: 7, url: 'https://github.com/acme/web/pull/7' },
+            { repo: 'acme/web', number: 8, url: 'https://github.com/acme/web/pull/8' },
+        ]);
+        expect(out.coverage).toBe('complete');
+    });
+
+    it('adds an agent-created PR from a confirmed transcript create, and never double counts a linked publish', () => {
+        const out = prActivityOf(
+            records({
+                prOperations: [prOp({ operationId: exec(1) })],
+                toolEvents: [
+                    toolEvent({
+                        callId: 'p1',
+                        kind: 'pr',
+                        operation: 'publish',
+                        operationId: exec(1),
+                        prRepo: 'acme/web',
+                        prNumber: 7,
+                        prUrl: 'https://github.com/acme/web/pull/7',
+                    }),
+                    toolEvent({
+                        callId: 'p2',
+                        kind: 'pr',
+                        operation: 'create',
+                        prRepo: 'acme/web',
+                        prNumber: 9,
+                        prUrl: 'https://github.com/acme/web/pull/9',
+                    }),
+                ],
+            }),
+            [JOB]
+        );
+        expect(out.counts).toEqual({ operations: 2, distinct: 2 });
+        expect(out.operations.map((o) => [o.kind, o.number])).toEqual([
+            ['created', 7],
+            ['agent_created', 9],
+        ]);
+    });
+
+    it('marks an unconfirmed transcript PR call as partial coverage, without counting a PR', () => {
+        const out = prActivityOf(
+            records({ toolEvents: [toolEvent({ callId: 'p', kind: 'pr', operation: 'create', outcome: 'unknown' })] }),
+            [JOB]
+        );
+        expect(out).toMatchObject({ coverage: 'partial', counts: { operations: 0, distinct: 0 } });
+    });
+
+    it('answers null counts when nothing was recorded', () => {
+        expect(prActivityOf(records(), [JOB])).toEqual({ coverage: null, counts: null, operations: [], distinct: [] });
     });
 });

@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Sql, TransactionSql } from 'postgres';
 import { reduceUsage, type TokenType, type Tokens, type UsageReport } from '@factory-ai/core';
 import { createPostgresTelemetryClient } from '../src/telemetry/postgres-client.js';
-import { buildRunActivity } from '../src/telemetry/run-activity.js';
+import { createJobStore } from '../src/db/jobs/job-store.js';
+import { buildRunActivity, gateActivityOf, prActivityOf } from '../src/telemetry/run-activity.js';
 import { readGlobalReconciliation, readUsageFacts, type UsageFacts } from '../src/telemetry/usage-facts.js';
 import { useTestDb } from './harness.js';
 import { createWorld, type World } from './usage-world.js';
@@ -352,6 +353,103 @@ describe.skipIf(!enabled)('token reconciliation', () => {
         expect(run.buckets.reduce((n, b) => n + (b.edits ?? 0), 0)).toBe(3);
         expect(without.facts.edits).toEqual([]);
         expect(withEdits.facts.contributions).toEqual(without.facts.contributions);
+    });
+
+    it('reduces the board and transcript records of a task per run and per task, one org only (issue #983)', async () => {
+        const store = createJobStore({ sql, orgId: built.A });
+        const { root, followUp } = built.ids as Record<'root' | 'followUp', string>;
+        const [adhoc, reusedOf, observed] = [randomUUID(), randomUUID(), randomUUID()];
+        const [opCreated, opReused] = [randomUUID(), randomUUID()];
+        const gateRow = ({
+            job,
+            execution,
+            source,
+            outcome,
+            start,
+            end,
+        }: Record<'job' | 'execution' | 'source' | 'outcome', string> & Record<'start' | 'end', string | null>) =>
+            sql`insert into job_gate_run (org_id, job_id, execution_id, run_claim_seq, claim_seq, gate, identity, filtered, source, outcome, started_at, finished_at)
+                values (${built.A}, ${job}, ${execution}, 1, 1, 'test', 'id', false, ${source}, ${outcome}, ${start}, ${end})`;
+        await gateRow({
+            job: root,
+            execution: adhoc,
+            source: 'adhoc',
+            outcome: 'passed',
+            start: '2026-09-20T10:00:00Z',
+            end: '2026-09-20T10:02:00Z',
+        });
+        await gateRow({
+            job: followUp,
+            execution: reusedOf,
+            source: 'adhoc',
+            outcome: 'failed',
+            start: null,
+            end: null,
+        });
+        await sql`update job set gates = ${sql.json([
+            {
+                name: 'test',
+                status: 'passed',
+                exitCode: 0,
+                output: null,
+                reused: { executionId: adhoc, finishedAt: null, reason: 'tree unchanged' },
+            },
+        ])} where org_id = ${built.A} and id = ${root}`;
+        for (const [id, op, n] of [
+            [opCreated, 'created', 7],
+            [opReused, 'reused', 7],
+        ] as const) {
+            await sql`insert into job_pr_operation (org_id, job_id, operation_id, claim_seq, operation, repo, pr_number, pr_url, branch)
+                values (${built.A}, ${root}, ${id}, 1, ${op}, 'acme/web', ${n}, ${`https://github.com/acme/web/pull/${n}`}, 'b')`;
+        }
+        const event = ({
+            call,
+            part,
+            exec,
+            outcome,
+            at,
+        }: {
+            call: string;
+            part: 'call' | 'result';
+            exec: string | null;
+            outcome: string | null;
+            at: string;
+        }) =>
+            sql`insert into transcript_tool_event (org_id, job_id, executor, session_id, tool_call_id, part, run_claim_seq, kind, operation, outcome,
+                    execution_id, started_at, ended_at, artifact_session, stream, claim_seq, byte_offset)
+                values (${built.A}, ${root}, 'main', 's', ${call}, ${part}, 1, 'gate', 'run', ${outcome}, ${exec},
+                    ${part === 'call' ? at : null}, ${part === 'result' ? at : null}, 's', 'transcript-raw', 1, 0)`;
+        // The agent's own call of the managed execution `adhoc`, and one the board never recorded.
+        for (const [call, exec] of [
+            ['c1', adhoc],
+            ['c2', observed],
+        ] as const) {
+            await event({ call, part: 'call', exec, outcome: null, at: '2026-09-20T10:00:00Z' });
+            await event({ call, part: 'result', exec, outcome: 'passed', at: '2026-09-20T10:02:00Z' });
+        }
+
+        const records = await store.activityRecords([root, followUp]);
+        const run = gateActivityOf(records, [root]);
+        expect(run).toMatchObject({ executions: 1, byOutcome: { passed: 1 }, measuredMs: 120_000, unmeasuredCount: 0 });
+        expect(run.reused).toMatchObject([{ jobId: root, executionId: adhoc, reason: 'tree unchanged' }]);
+        expect(run.observed).toMatchObject({ executions: 1 });
+        const task = gateActivityOf(records, [root, followUp]);
+        expect(task).toMatchObject({
+            executions: 2,
+            byOutcome: { passed: 1, failed: 1 },
+            measuredCount: 1,
+            unmeasuredCount: 1,
+            coverage: 'partial',
+        });
+        expect(prActivityOf(records, [root, followUp]).counts).toEqual({ operations: 2, distinct: 1 });
+        expect(prActivityOf(records, [followUp]).counts).toBeNull();
+        // Another organization's store never reads this one's rows.
+        expect(await createJobStore({ sql, orgId: built.B }).activityRecords([root, followUp])).toEqual({
+            gateRuns: [],
+            reusedGates: [],
+            prOperations: [],
+            toolEvents: [],
+        });
     });
 
     it('reads a job with no execution rows as its own thread root, unmeasured', async () => {
