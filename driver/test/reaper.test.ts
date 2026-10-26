@@ -328,6 +328,8 @@ const thread = (overrides: Partial<BoardThreadFacts> = {}): BoardThreadFacts => 
     artifactsComplete: true,
     checkpoint: 'complete',
     checkpointFinalizedAt: new Date(FINALIZED).toISOString(),
+    lastJobId: ROOT_A,
+    lastClaimSeq: 1,
     ...overrides,
 });
 
@@ -558,6 +560,265 @@ describe('the volume sweep: the board decides each thread, the arm deletes every
         });
         await reaper.sweep();
         expect(reaped).toEqual([]);
+    });
+});
+
+describe('the volume sweep re-exports a thread that is not whole before deleting it (issue #938)', () => {
+    const NOT_WHOLE = { artifactsComplete: false };
+    const volumesOf = (root: string): VolumeThread => ({ root, volumes: [{ name: `factory-task-${root}-1` }] });
+    const rowOf = (id: string, facts: BoardThreadFacts | undefined) =>
+        ({ id, status: 'succeeded', leaseToken: null, ...(facts ? { thread: facts } : {}) }) as BoardLease;
+    type Exported = Awaited<ReturnType<NonNullable<ReaperArm['exportVolume']>>>;
+
+    /** `answer(root, call)` is the board's answer for that root's `call`-th lookup (0 = the sweep's batch). */
+    const harness = (opts: {
+        listed: VolumeThread[];
+        answer: (root: string, call: number) => BoardLease | undefined;
+        exported?: (root: string, signal: AbortSignal) => Promise<Exported>;
+        attempts?: number;
+        withExportArm?: boolean;
+    }) => {
+        const events: string[] = [];
+        const logs: string[] = [];
+        const outcomes: string[] = [];
+        const exports: { root: string; attempt: { jobId: string; claimSeq: number }; signal: AbortSignal }[] = [];
+        const lost: string[] = [];
+        const reaped = new Set<string>();
+        const calls = new Map<string, number>();
+        const arm: ReaperArm = {
+            scan: async () => [],
+            reap: async () => [],
+            scanVolumes: async () => ({ threads: opts.listed.filter((t) => !reaped.has(t.root)), skipped: [] }),
+            reapVolumes: async (t) => {
+                events.push(`reap ${t.root}`);
+                reaped.add(t.root);
+                return t.volumes.map((v) => v.name);
+            },
+            ...(opts.withExportArm === false
+                ? {}
+                : {
+                      exportVolume: async (t, attempt, signal) => {
+                          events.push(`export ${t.root}`);
+                          exports.push({ root: t.root, attempt, signal });
+                          return (opts.exported ?? (async () => ({ result: 'drained' as const })))(t.root, signal);
+                      },
+                  }),
+        };
+        const reaper = createReaper({
+            board: {
+                leases: async (ids) => {
+                    const rows: BoardLease[] = [];
+                    for (const id of ids) {
+                        const call = calls.get(id) ?? 0;
+                        calls.set(id, call + 1);
+                        const row = opts.answer(id, call);
+                        if (row) rows.push(row);
+                    }
+                    return rows;
+                },
+            },
+            arm,
+            intervalMs: 3_600_000,
+            graceMs: 0,
+            volumePolicy: POLICY,
+            ...(opts.attempts === undefined ? {} : { exportAttempts: opts.attempts }),
+            now: () => FINALIZED + 8 * 24 * HOUR,
+            log: (m) => logs.push(m),
+            observe: {
+                sweep: (outcome) => void outcomes.push(outcome),
+                scanned: () => undefined,
+                volumeExport: (result) => void (result === 'lost' ? lost.push(result) : undefined),
+            },
+        });
+        const sweepAgain = async () => {
+            calls.clear();
+            await reaper.sweep();
+        };
+        return { reaper, events, logs, outcomes, exports, lost, sweepAgain };
+    };
+    const stable = (facts: BoardThreadFacts) => (root: string) => rowOf(root, facts);
+
+    it('exports the newest attempt of a not-whole thread before reaping its volumes', async () => {
+        const facts = thread({ ...NOT_WHOLE, lastJobId: JOB_B, lastClaimSeq: 4 });
+        const h = harness({ listed: [volumesOf(ROOT_A)], answer: stable(facts) });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`]);
+        expect(h.exports[0]!.attempt).toEqual({ jobId: JOB_B, claimSeq: 4 });
+        expect(h.outcomes).toEqual(['ok']);
+    });
+
+    it.each([
+        ['inconclusive', { result: 'inconclusive', why: 'the pod answered 403' } as const],
+        ['never started', { result: 'never_started', why: 'the pod stayed pending' } as const],
+    ])('keeps the volumes when the re-export is %s, and the round is not ok', async (_name, answer) => {
+        const h = harness({
+            listed: [volumesOf(ROOT_A)],
+            answer: stable(thread(NOT_WHOLE)),
+            exported: async () => answer,
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`export ${ROOT_A}`]);
+        expect(h.outcomes).toEqual(['aborted']);
+        expect(h.logs.join('\n')).toContain(answer.why);
+    });
+
+    it('keeps the volumes when the re-export throws', async () => {
+        const h = harness({
+            listed: [volumesOf(ROOT_A)],
+            answer: stable(thread(NOT_WHOLE)),
+            exported: async () => {
+                throw new Error('the daemon went away');
+            },
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`export ${ROOT_A}`]);
+        expect(h.outcomes).toEqual(['aborted']);
+        expect(h.logs.join('\n')).toContain('the daemon went away');
+    });
+
+    it('keeps a thread that was claimed while it was exporting', async () => {
+        const h = harness({
+            listed: [volumesOf(ROOT_A)],
+            // Call 0 the batch, 1 the read before the export, 2 the read after it.
+            answer: (root, call) => rowOf(root, thread(call < 2 ? NOT_WHOLE : { ...NOT_WHOLE, live: true })),
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`export ${ROOT_A}`]);
+    });
+
+    it('keeps a thread that a newer attempt took over while it was exporting', async () => {
+        const h = harness({
+            listed: [volumesOf(ROOT_A)],
+            answer: (root, call) => rowOf(root, thread({ ...NOT_WHOLE, lastClaimSeq: call < 2 ? 1 : 2 })),
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`export ${ROOT_A}`]);
+    });
+
+    it('does not export a thread found live on the read before the export', async () => {
+        const h = harness({
+            listed: [volumesOf(ROOT_A)],
+            answer: (root, call) => rowOf(root, thread(call === 0 ? NOT_WHOLE : { ...NOT_WHOLE, live: true })),
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([]);
+    });
+
+    it('regression: a whole thread is deleted without an export', async () => {
+        const h = harness({ listed: [volumesOf(ROOT_A)], answer: stable(thread()) });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`reap ${ROOT_A}`]);
+    });
+
+    it('regression: a thread with no board row is deleted without an export', async () => {
+        const h = harness({
+            listed: [{ root: ROOT_A, volumes: [{ name: 'v', createdAtMs: FINALIZED }] }],
+            answer: () => undefined,
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`reap ${ROOT_A}`]);
+    });
+
+    it('regression: an arm that cannot export deletes as before', async () => {
+        const h = harness({ listed: [volumesOf(ROOT_A)], answer: stable(thread(NOT_WHOLE)), withExportArm: false });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`reap ${ROOT_A}`]);
+    });
+
+    it('exports one thread per round, deleting the whole ones meanwhile, and the rest on the next round', async () => {
+        const OTHER = '55555555-5555-4555-8555-555555555555';
+        const WHOLE = '66666666-6666-4666-8666-666666666666';
+        const h = harness({
+            listed: [volumesOf(ROOT_A), volumesOf(OTHER), volumesOf(WHOLE)],
+            answer: (root) => rowOf(root, root === WHOLE ? thread() : thread(NOT_WHOLE)),
+        });
+        await h.reaper.sweep();
+        expect(h.events).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`, `reap ${WHOLE}`]);
+        await h.sweepAgain();
+        expect(h.events.slice(3)).toEqual([`export ${OTHER}`, `reap ${OTHER}`]);
+    });
+
+    describe('retries (TASK_VOLUME_EXPORT_ATTEMPTS)', () => {
+        const failing = async (): Promise<Exported> => ({ result: 'inconclusive', why: 'the board refused a chunk' });
+
+        it('keeps the volumes for N-1 failed attempts, then deletes them and logs the loss', async () => {
+            const h = harness({
+                listed: [volumesOf(ROOT_A)],
+                answer: stable(thread(NOT_WHOLE)),
+                exported: failing,
+                attempts: 3,
+            });
+            await h.reaper.sweep();
+            await h.reaper.sweep();
+            expect(h.events).toEqual([`export ${ROOT_A}`, `export ${ROOT_A}`]);
+            expect(h.lost).toEqual([]);
+            await h.reaper.sweep();
+            expect(h.events.slice(2)).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`]);
+            expect(h.lost).toEqual(['lost']);
+            const loud = h.logs.find((line) => line.includes('LOST'));
+            expect(loud).toContain(ROOT_A);
+            expect(loud).toContain('3 export attempts');
+            expect(loud).toContain('the board refused a chunk');
+        });
+
+        it('counts a never-started attempt as a failed one', async () => {
+            const h = harness({
+                listed: [volumesOf(ROOT_A)],
+                answer: stable(thread(NOT_WHOLE)),
+                exported: async () => ({ result: 'never_started', why: 'no pod' }),
+                attempts: 1,
+            });
+            await h.reaper.sweep();
+            expect(h.events).toEqual([`export ${ROOT_A}`, `reap ${ROOT_A}`]);
+            expect(h.lost).toEqual(['lost']);
+        });
+
+        it('counts failures per thread root, one export a round', async () => {
+            const OTHER = '55555555-5555-4555-8555-555555555555';
+            const h = harness({
+                listed: [volumesOf(ROOT_A), volumesOf(OTHER)],
+                answer: stable(thread(NOT_WHOLE)),
+                exported: async (root) => (root === OTHER ? { result: 'drained' } : failing()),
+                attempts: 2,
+            });
+            await h.reaper.sweep(); // A fails once; the one export of the round was A's
+            await h.sweepAgain(); // A fails twice and is deleted as a loss
+            expect(h.events).toEqual([`export ${ROOT_A}`, `export ${ROOT_A}`, `reap ${ROOT_A}`]);
+            expect(h.lost).toEqual(['lost']);
+        });
+
+        it('treats a read that cannot confirm the thread after the last attempt as a keep', async () => {
+            let reads = 0;
+            const h = harness({
+                listed: [volumesOf(ROOT_A)],
+                answer: (root) => (++reads > 2 ? undefined : rowOf(root, thread(NOT_WHOLE))),
+                exported: failing,
+                attempts: 1,
+            });
+            await h.reaper.sweep();
+            expect(h.events).toEqual([`export ${ROOT_A}`]);
+        });
+    });
+
+    it('aborts a running export on stop(), keeping the volumes', async () => {
+        let aborted: Promise<void> | null = null;
+        const h = harness({
+            listed: [volumesOf(ROOT_A)],
+            answer: stable(thread(NOT_WHOLE)),
+            exported: (_root, signal) => {
+                aborted = new Promise((resolve) => signal.addEventListener('abort', () => resolve()));
+                return aborted.then(() => ({ result: 'inconclusive', why: 'aborted' }));
+            },
+        });
+        const sweeping = h.reaper.sweep();
+        await vi.waitFor(() => expect(h.exports).toHaveLength(1));
+        h.reaper.stop();
+        await sweeping;
+        expect(h.exports[0]!.signal.aborted).toBe(true);
+        expect(h.events).toEqual([`export ${ROOT_A}`]);
+        expect(h.outcomes).toEqual(['aborted']);
+        // An abort is not a failed attempt: the volume still gets all its attempts.
+        expect(h.lost).toEqual([]);
     });
 });
 

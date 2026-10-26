@@ -281,6 +281,8 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
         {
             id: string;
             live: boolean;
+            last_id: string;
+            last_claim_seq: string;
             last_status: JobStatus | null;
             last_finished_at: Date | null;
             pending: boolean | null;
@@ -293,7 +295,7 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
         select r.id, r.checkpoint_truncated, r.checkpoint_finalized_at,
                exists (select 1 from job t where t.org_id = r.org_id and t.root_job_id = r.id
                        and t.status in ('queued', 'running')) as live,
-               last.status as last_status, last.finished_at as last_finished_at,
+               last.id::text as last_id, last.claim_seq as last_claim_seq, last.status as last_status, last.finished_at as last_finished_at,
                (select max(m.created_at) from artifact_manifest m
                 where m.org_id = r.org_id and m.job_id = last.id::text and m.claim_seq = last.claim_seq) as last_manifest_at,
                (r.checkpoint_job_id = last.id::text and r.checkpoint_claim_seq = last.claim_seq) as on_last,
@@ -340,6 +342,8 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
                     artifactsComplete: row.pending === false,
                     checkpoint,
                     checkpointFinalizedAt: row.checkpoint_finalized_at?.toISOString() ?? null,
+                    lastJobId: row.last_id,
+                    lastClaimSeq: Number(row.last_claim_seq),
                 },
             ];
         })

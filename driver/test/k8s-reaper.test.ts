@@ -876,6 +876,8 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
             artifactsComplete: true,
             checkpoint: 'complete' as const,
             checkpointFinalizedAt: new Date(FINAL).toISOString(),
+            lastJobId: '77777777-7777-4777-8777-777777777777',
+            lastClaimSeq: 1,
             ...over,
         });
         const sweep = async (

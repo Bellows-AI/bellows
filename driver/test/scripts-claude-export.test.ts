@@ -646,6 +646,18 @@ describe('the continuous claude-code exporter', () => {
         expect(h.manifests[0]).toMatchObject({ state: 'partial', terminalCause: 'review_failed' });
     });
 
+    it('saves its state under a name of its own, so another exporter over the same volume cannot collide with it (issue #938)', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(3));
+        // What a second exporter mid-save leaves behind: a file at the old shared tmp name, here one
+        // that cannot be written over at all.
+        mkdirSync(join(h.dir, 'export-state', `${SESSION}.json.tmp`), { recursive: true });
+        h.start({ FACTORY_EXPORT_DIR: '', EXPORT_ONCE: 'partial', EXPORT_ONCE_CAUSE: 'reaper_export' });
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(records(3));
+        expect(savedAck(h)?.acked).toBe(Buffer.byteLength(records(3)));
+    });
+
     it('in one-shot mode closes a finished review complete', async () => {
         const h = await harness();
         writeFileSync(fileOf(h), records(2));

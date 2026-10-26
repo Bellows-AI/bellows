@@ -34,8 +34,11 @@
 // longer knows, or an endpoint dead past the give-up window, ends the exporter too.
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const http = require('node:http');
 
+// Entropy of a tmp file's name: two exporters over one volume must not pick the same.
+const TMP_SUFFIX_BYTES = 4;
 const KIB = 1024;
 const MIB = KIB * KIB;
 const MS_PER_MINUTE = 60_000;
@@ -200,7 +203,8 @@ const loadState = (session) => {
 const saveState = (track) => {
     const file = statePath(track.session);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp`;
+    // Another exporter over the same volume (a follow-up claim's, or the reaper's) saves here too: a tmp name of its own.
+    const tmp = `${file}.${process.pid}.${crypto.randomBytes(TMP_SUFFIX_BYTES).toString('hex')}.tmp`;
     const state = { ino: track.ino, base: track.base, acked: track.acked, stopCause: track.stopCause };
     fs.writeFileSync(tmp, JSON.stringify(state));
     fs.renameSync(tmp, file);

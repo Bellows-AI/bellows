@@ -213,6 +213,8 @@ services:
             # (issue #775): the ttl when its checkpoint and artifacts are whole, the bound when not.
             TASK_VOLUME_TTL_MS: ${TASK_VOLUME_TTL_MS:-86400000}
             TASK_VOLUME_BOUND_MS: ${TASK_VOLUME_BOUND_MS:-604800000}
+            # Failed re-exports of a not-whole thread's transcript before its volume is deleted anyway (issue #938).
+            TASK_VOLUME_EXPORT_ATTEMPTS: ${TASK_VOLUME_EXPORT_ATTEMPTS:-3}
             # A stopping driver hands its runs over before docker's ten-second SIGKILL (issue
             # #792): the leases go back as interruptions, the runner containers keep running.
             DRIVER_HANDOVER_MS: ${DRIVER_HANDOVER_MS:-5000}

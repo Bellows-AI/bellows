@@ -78,6 +78,8 @@ describe.skipIf(!enabled)('lease lookup thread facts — database', () => {
             artifactsComplete: true,
             checkpoint: 'none',
             checkpointFinalizedAt: null,
+            lastJobId: t.id,
+            lastClaimSeq: t.first.claimSeq,
         });
     });
 
@@ -152,6 +154,17 @@ describe.skipIf(!enabled)('lease lookup thread facts — database', () => {
         expect(await t.threadOf()).toMatchObject({ live: false, checkpoint: 'none' });
         await artifacts.finalize(t.refOf(child.id, second.claimSeq), COMPLETE);
         expect(await t.threadOf()).toMatchObject({ checkpoint: 'complete' });
+    });
+
+    it('names the newest attempt by id and claim sequence, whether it is live or finalized', async () => {
+        const t = await task();
+        expect(await t.threadOf()).toMatchObject({ lastJobId: t.id, lastClaimSeq: t.first.claimSeq });
+        await t.succeed(t.id, t.first.leaseToken);
+        const child = await jobs.createFollowUp(t.id, 'adjust', null);
+        if (typeof child === 'string' || !('id' in child)) throw new Error(`refused: ${JSON.stringify(child)}`);
+        const second = await claim();
+        await t.succeed(child.id, second.leaseToken);
+        expect(await t.threadOf()).toMatchObject({ lastJobId: child.id, lastClaimSeq: second.claimSeq });
     });
 
     it('answers no thread for a row that is not a root', async () => {

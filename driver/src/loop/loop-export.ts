@@ -4,10 +4,11 @@ import { ARTIFACT_STREAM, NO_SESSION, uploadRunArtifacts } from '../artifact-upl
 import { mergeOpencodeOutcome, parseOpencodeRunOutcome } from '../close-read.js';
 import { CLAUDE_CODE } from '../executors.js';
 import type { CheckpointRelay, ExportRelay } from '../export-control.js';
+import type { VolumeExportAttempt } from '../reaper.js';
 import type { RunOutcome } from '../runner.js';
 import { controlTokenOf, type ReviewExporter } from '../supervised-steps.js';
 import { killAgent } from './loop-attempt.js';
-import type { AttemptCtx, LoopRuntime } from './loop-types.js';
+import type { AttemptCtx, GateStack, LoopRuntime } from './loop-types.js';
 import { EXPORT_PRODUCER, EXPORT_SCHEMA_VERSION, SPOOL_FULL_CAUSE } from '../transcript-export.js';
 
 /**
@@ -84,7 +85,19 @@ export function attachCheckpoint(ctx: Pick<AttemptCtx, 'rt' | 'job'>, token: str
 }
 
 /** The relay behind the control token's export routes: board calls plus the run's bookkeeping. */
-export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun, control: string | null): ExportRelay {
+export function createExportRelay(
+    rt: Pick<LoopRuntime, 'board' | 'log'>,
+    job: BoardJob,
+    run: ExportRun,
+    control: null
+): ExportRelay;
+export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun, control: string | null): ExportRelay;
+export function createExportRelay(
+    rt: Pick<LoopRuntime, 'board' | 'log'>,
+    job: BoardJob,
+    run: ExportRun,
+    control: string | null
+): ExportRelay {
     return {
         putChunk: (session, offset, bytes) => rt.board.putArtifactChunk(job, refOf(job, session), offset, bytes),
         finalize: (manifest) =>
@@ -108,8 +121,9 @@ export function createExportRelay(rt: LoopRuntime, job: BoardJob, run: ExportRun
                 );
                 // A review's relay (no `control`) has no agent to stop: its bytes stay on the volume.
                 if (control !== null) {
+                    // A relay with a control token has an agent to stop, and its caller passed the whole runtime.
                     const kill = { reason: SPOOL_FULL_CAUSE, detail: `${report.pendingBytes} bytes` } as const;
-                    void killAgent(rt, job, control, kill).catch(() => undefined);
+                    void killAgent(rt as LoopRuntime, job, control, kill).catch(() => undefined);
                 }
             }
             if (report.done) run.done = true;
@@ -177,4 +191,100 @@ export function openReviewExport(
         },
     };
     return { exporter, close: () => rt.gates?.server.revokeExporter(token) };
+}
+
+/** The cause the reaper's one-shot exporter closes its manifests with (issue #938): any other cause is a stream it did not drain. */
+export const VOLUME_EXPORT_CAUSE = 'reaper_export';
+
+/** Whether a re-export over a task volume uploaded everything its volume held, or why that is not proven. */
+export type VolumeExportProof = { drained: true } | { drained: false; why: string };
+
+/**
+ * One re-export's door to the board (issue #938): the control endpoint's URL and the exporter token the
+ * one-shot exporter is handed (`BELLOWS_CONTROL_URL`, `BELLOWS_CONTROL_TOKEN`), what the relay saw, and
+ * the single revoke. The exporter's exit code proves nothing (a drain it gave up on exits 0).
+ */
+export interface VolumeExportChannel {
+    url: string;
+    token: string;
+    /** After the exporter ended. */
+    proof(): VolumeExportProof;
+    /** Revokes both tokens; idempotent. Always called, on every exit path. */
+    close(): void;
+}
+
+/** Opens the channel for one thread's newest attempt; null when the driver has no control endpoint to receive the exporter. */
+export type OpenVolumeExport = (attempt: VolumeExportAttempt) => Promise<VolumeExportChannel | null>;
+
+/**
+ * Drained is the exporter's `done` report with no permanent chunk refusal on the way (a 409, a 413 or any
+ * other 4xx the board will not change) and every manifest it closed carrying the order's cause: a stream a
+ * refusal stopped closes with that refusal's cause, and its bytes are then only on the volume.
+ */
+export function createVolumeExportOpener(
+    rt: Pick<LoopRuntime, 'board' | 'log'> & { gates?: GateStack }
+): OpenVolumeExport {
+    return async (attempt) => {
+        const { gates } = rt;
+        if (!gates) return null;
+        const job = { id: attempt.jobId, claimSeq: attempt.claimSeq, executorType: CLAUDE_CODE } as BoardJob;
+        const run = newExportRun();
+        const refusals: string[] = [];
+        const undrained: string[] = [];
+        const inner = createExportRelay(rt, job, run, null);
+        const relay: ExportRelay = {
+            ...inner,
+            async putChunk(session, offset, bytes) {
+                const answer = await inner.putChunk(session, offset, bytes);
+                if (answer.result !== 'stored' && answer.result !== 'duplicate') {
+                    refusals.push(
+                        `${session}@${offset}: ${answer.result === 'refused' ? answer.cause : answer.result}`
+                    );
+                }
+                return answer;
+            },
+            async finalize(manifest) {
+                if (manifest.terminalCause !== VOLUME_EXPORT_CAUSE || manifest.state === 'truncated') {
+                    undrained.push(
+                        `${manifest.session} closed ${manifest.state}: ${manifest.terminalCause ?? 'no cause'}`
+                    );
+                }
+                return inner.finalize(manifest);
+            },
+        };
+        const owner = randomUUID();
+        const token = randomUUID();
+        let closed = false;
+        const close = () => {
+            if (closed) return;
+            closed = true;
+            gates.server.revokeExporter(token);
+            gates.server.closeControl(owner);
+        };
+        try {
+            const port = await gates.server.listen();
+            gates.server.openControl(owner);
+            gates.server.grantExporter(owner, token, relay);
+            return {
+                url: gates.advertiseUrl(port),
+                token,
+                close,
+                proof() {
+                    if (refusals.length > 0) {
+                        return {
+                            drained: false,
+                            why: `the board refused ${refusals.length} chunk(s): ${refusals.join('; ')}`,
+                        };
+                    }
+                    if (undrained.length > 0)
+                        return { drained: false, why: `a stream was left stopped: ${undrained.join('; ')}` };
+                    if (!run.done) return { drained: false, why: 'the exporter did not report done' };
+                    return { drained: true };
+                },
+            };
+        } catch (e) {
+            close();
+            throw e;
+        }
+    };
 }

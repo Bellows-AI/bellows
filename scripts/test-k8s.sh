@@ -395,6 +395,9 @@ expect_contains 'the driver is told the task volume ttl' "$(cat "$work/rendered.
 expect_contains 'the driver is told the task volume bound' "$(cat "$work/rendered.yaml")" \
     "name: TASK_VOLUME_BOUND_MS
                         value: \"604800000\""
+expect_contains 'the driver is told the task volume export attempts' "$(cat "$work/rendered.yaml")" \
+    "name: TASK_VOLUME_EXPORT_ATTEMPTS
+                        value: \"3\""
 expect_not_contains 'the app release creates no claim' "$(cat "$work/rendered.yaml")" \
     'kind: PersistentVolumeClaim'
 

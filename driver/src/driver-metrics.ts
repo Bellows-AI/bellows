@@ -201,6 +201,11 @@ function instruments(registry: Registry) {
             SWEEP_BUCKETS
         ),
         scanned: registry.counter('factory_driver_reaper_scanned_total', 'Objects the reaper scanned.', ['what']),
+        volumeExport: registry.counter(
+            'factory_driver_reaper_volume_export_total',
+            'Reaper re-exports of a not-whole thread before its volume is deleted; lost is a volume deleted after its last attempt failed.',
+            ['result']
+        ),
     };
 }
 
@@ -245,6 +250,7 @@ export function createDriverMetrics(deps: { boardUrl: string; fetch?: typeof glo
         reaper: {
             sweep: (outcome, seconds) => m.sweep.observe(seconds, { outcome }),
             scanned: (what, count) => m.scanned.inc({ what }, count),
+            volumeExport: (result) => m.volumeExport.inc({ result }),
         },
     };
 }
