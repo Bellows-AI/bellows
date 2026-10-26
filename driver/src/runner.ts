@@ -375,6 +375,12 @@ export interface Runner {
      */
     probeTree(job: BoardJob, signal?: AbortSignal): Promise<string | null>;
     /**
+     * True only when the task's checkout is confirmed to hold no change — nothing uncommitted, no
+     * diff against its base (issue #1020) — over the same transport as `probeTree`; the loop skips
+     * the close-time gates on it. Anything unconfirmed answers false.
+     */
+    probeNoChange(job: BoardJob, signal?: AbortSignal): Promise<boolean>;
+    /**
      * Reads and takes down a FINISHED runner an earlier claim of this job left behind (issue
      * #792), before this attempt's sync touches the tree that run left: its verdict, log and
      * session are this attempt's outcome instead of a second run. A RELEASED group whose agent still
@@ -535,6 +541,7 @@ const ADDRESSING: Record<keyof Runner, 'group' | 'attempt'> = {
     releaseServices: 'group',
     publishGit: 'group',
     probeTree: 'group',
+    probeNoChange: 'group',
     adopt: 'attempt',
     snapshotTree: 'group',
     syncCheckout: 'attempt',

@@ -1950,7 +1950,7 @@ stop_driver
 n="$RUN_ID-k2"
 write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
 disruption_driver
-k2="$(create_job "$MK echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
+k2="$(create_job "$MK echo x >\"\$WORKDIR/lane-change\"; echo x >>$D/$n.agent.count; : >$D/$n.ready; $(lane_wait "$D/$n.go"); echo \"ran in \$HOSTNAME\"")"
 lane_use "$k2"
 k2_runner="$(await_first_runner "$k2" running)"
 k2_host="$(runner_host "$k2_runner")"
@@ -2035,7 +2035,7 @@ stop_driver
 n="$RUN_ID-k4"
 write_bellows "$(dk_plan hold "$MK echo x >>$D/$n.gate.count; $(lane_wait "$D/$n.go")")"
 disruption_driver
-k4="$(create_job "$MK echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
+k4="$(create_job "$MK echo x >\"\$WORKDIR/lane-change\"; echo x >>$D/$n.agent.count; echo \"ran in \$HOSTNAME\"")"
 lane_use "$k4"
 lane_await 120 "$LANE_DIR/$n.gate.count" 1 && ok 'k4: the gate is running' || bad 'k4: the gate is running' "$(lane_count "$LANE_DIR/$n.gate.count")"
 driver_kill
@@ -2056,7 +2056,7 @@ write_bellows "$(dk_plan count "$MK echo x >>$D/$n.gate.count")"
 k5_pushes="$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")"
 k5_prs=0 # the stand-in's PR list is the task's own, born with its volume
 disruption_driver
-k5="$(create_job "$MK mkdir -p $LANE_GH_DIR && : >$LANE_GH_DIR/lane-gh-hold && cd \"\$WORKDIR\" && git -c user.name=lane -c user.email=lane@localhost commit -q --allow-empty -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
+k5="$(create_job "$MK mkdir -p $LANE_GH_DIR && : >$LANE_GH_DIR/lane-gh-hold && cd \"\$WORKDIR\" && echo x >lane-change && git add lane-change && git -c user.name=lane -c user.email=lane@localhost commit -q -m lane-commit && echo x >>$D/$n.agent.count && echo \"ran in \$HOSTNAME\"")"
 lane_use "$k5"
 lane_await_file 180 "$LANE_GH_DIR/lane-gh-hold.ready" && ok 'k5: the publish is at the PR' ||
     bad 'k5: the publish is at the PR' "job: $(field "$(body "$(api GET "/api/jobs/$k5")")" status), pushes '$(lane_origin lane_count "$DK_ORIGIN/lane-pushes.log")'"

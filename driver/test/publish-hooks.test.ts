@@ -8,6 +8,7 @@ import type { BoardJob } from '../src/board/board.js';
 import {
     type PublishResult,
     type PublishStep,
+    probeNoChange,
     probeTreeFingerprint,
     publishCheckout,
     STALE_REVISION_REASON,
@@ -124,6 +125,19 @@ describe.skipIf(!hasGit())('a publish over repository hooks', () => {
             expect(shipped('WORK.md')).toBe('verified');
         }
     );
+
+    // Issue #1020: the loop skips the close-time gates on this read, so only a confirmed no-change is true.
+    it('reads a synced, untouched checkout as no change, and any work or an unreadable step as change', async () => {
+        expect(fx.sync().ok).toBe(true);
+        expect(await probeNoChange(job, runStep)).toBe(true);
+
+        writeFileSync(join(fx.checkout(), 'WORK.md'), 'verified\n');
+        expect(await probeNoChange(job, runStep)).toBe(false);
+
+        rmSync(join(fx.checkout(), 'WORK.md'));
+        expect(await probeNoChange(job, runStep)).toBe(true);
+        expect(await probeNoChange(job, async () => Promise.reject(new Error('timed out')))).toBe(false);
+    });
 
     it('never runs the post-checkout hook of the branch switch', async () => {
         expect(fx.sync().ok).toBe(true);

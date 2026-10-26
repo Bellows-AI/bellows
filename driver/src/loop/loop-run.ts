@@ -12,6 +12,7 @@ import {
     type GateReport,
     beginGates,
     mintGateCredentials,
+    noChangeSkip,
     openRunControl,
     probeDeadServices,
     runDeclaredGates,
@@ -477,7 +478,7 @@ async function verifyRun(
     // A tree that could not be read binds the row to none: it never resumes, and writing it makes the
     // board drop the later phases a former holder left.
     if (gating && !resumedGates) {
-        await phases.record('gates', treeAfter, { ...gated, setupCleared: job.setupFailure == null });
+        await phases.record('gates', treeAfter, { noChange: false, ...gated, setupCleared: job.setupFailure == null });
     }
     return {
         ...gated,
@@ -507,6 +508,8 @@ function evidenceOf(
 /** How the declared gates ended for the evidence record: `none` when none were declared to run. */
 function gatesOutcomeOf(declared: boolean, gated: GatesPhase): GatesOutcome {
     if (!declared) return 'none';
+    // A revision identical to its base needs no gate verdict: the skip is recorded, not a missing pass.
+    if (gated.noChange) return 'passed';
     if (gated.gatesSkipped !== null || gated.deadServices.length > 0) return 'incomplete';
     return gated.failure ? 'failed' : 'passed';
 }
@@ -516,6 +519,8 @@ interface GatesPhase {
     failure: GateFailure | null;
     deadServices: DeadService[];
     gatesSkipped: string | null;
+    /** The gates were skipped because the task produced no change (issue #1020). */
+    noChange?: boolean;
     /** The services found dead before the gates and restarted for them (issue #560): noted, not faults. */
     recoveredServices: DeadService[];
     /** The gates list as the board was last told it; empty when no declared gate ran. */
@@ -577,6 +582,9 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
             reports: [],
         };
     }
+    // A task that changed nothing has nothing for the gates to judge (issue #1020).
+    const unchanged = await noChangeSkip(ctx);
+    if (unchanged) return unchanged;
     // A gate against a dead service fails on an environment the agent cannot fix, and a
     // failed gate is what the workflow's gate-fix edge spends a round on (issue #423). The
     // services are stateless fixtures, so a dead one is restarted first; only a restart that

@@ -600,6 +600,7 @@ describe('publishing the produced work', () => {
             unpushed: 2,
             hasIdentity: false,
             fingerprint: null,
+            noChange: false,
             conflicts: [],
             rebasing: false,
         });
@@ -612,6 +613,7 @@ describe('publishing the produced work', () => {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            noChange: false,
             conflicts: [],
             rebasing: false,
         });
@@ -636,6 +638,7 @@ describe('publishing the produced work', () => {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            noChange: false,
             conflicts: [],
             rebasing: false,
         };

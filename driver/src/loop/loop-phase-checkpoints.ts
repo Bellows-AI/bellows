@@ -25,6 +25,8 @@ export interface GatesCheckpoint {
     failure: GateFailure | null;
     deadServices: DeadService[];
     gatesSkipped: string | null;
+    /** The skip was for a task with no change (issue #1020): its evidence reads the same when replayed. */
+    noChange: boolean;
     recoveredServices: DeadService[];
     /** The gates list the board was last told: a claim resets it, so a resumed phase sends it again. */
     reports: GateReport[];
@@ -80,6 +82,8 @@ function gatesOf(raw: unknown): GatesCheckpoint | null {
         failure: raw.failure as GateFailure | null,
         deadServices,
         gatesSkipped: raw.gatesSkipped as string | null,
+        // Absent reads false: only a checkpoint that says so is a no-change skip.
+        noChange: raw.noChange === true,
         recoveredServices,
     };
 }
