@@ -492,3 +492,17 @@ export function releaseGateSession(rt: LoopRuntime, session: GateSession, job: B
     rt.gates?.server.unregister(session.token);
     rt.gates?.manager.release(session.key, job);
 }
+
+/** Whether the checkout is confirmed unchanged; a failed or aborted read is false, never a skip. */
+export async function noChangeOf(ctx: {
+    rt: LoopRuntime;
+    job: BoardJob;
+    state: { signal: AbortSignal };
+}): Promise<boolean> {
+    const { rt, job, state } = ctx;
+    const raced = await raceStep(
+        state.signal,
+        rt.runner.probeNoChange(job, state.signal).catch(() => false)
+    );
+    return raced?.value === true;
+}

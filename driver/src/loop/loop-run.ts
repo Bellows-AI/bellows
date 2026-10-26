@@ -12,6 +12,7 @@ import {
     type GateReport,
     beginGates,
     mintGateCredentials,
+    noChangeOf,
     openRunControl,
     probeDeadServices,
     runDeclaredGates,
@@ -604,16 +605,6 @@ async function runGatesPhase(ctx: AttemptCtx, gateSession: GateSession, outcome:
         recoveredServices,
         reports: gateSession.lastReports ?? [],
     };
-}
-
-/** Whether the checkout is confirmed unchanged; a failed or aborted read is false, never a skip. */
-async function noChangeOf(ctx: AttemptCtx): Promise<boolean> {
-    const { rt, job, state } = ctx;
-    const raced = await raceStep(
-        state.signal,
-        rt.runner.probeNoChange(job, state.signal).catch(() => false)
-    );
-    return raced?.value === true;
 }
 
 /** Tells the board the id of a session this attempt starts; a failed report never blocks the run. */
