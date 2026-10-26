@@ -202,6 +202,41 @@ describe('the branch reporter: wire shape and redirects', () => {
         }
     });
 
+    // An adopting claim rotates the lease under a container whose env stays as it was (#1045): the
+    // supervisor's answer on the control socket is the lease the board now accepts.
+    it.each([
+        ['claude', CLAUDE_REPORTER],
+        ['opencode', OPENCODE_REPORTER],
+    ])('sends the lease the supervisor relays, not the stale env one (%s)', async (_image, reporter) => {
+        const target = await board();
+        const dir = gitRepo();
+        const sockDir = mkdtempSync(join(tmpdir(), 'branch-reporter-sock-'));
+        const socket = join(sockDir, 'control.sock');
+        const relay = createServer((_req, res) => {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end('{"leaseToken":"lease-after-takeover"}');
+        });
+        boards.push(relay);
+        await new Promise<void>((resolve) => relay.listen(socket, resolve));
+        try {
+            const out = await run(reporter, {
+                FACTORY_STATS_URL: target.url,
+                BELLOWS_SESSION_ID: SESSION,
+                WORKDIR: dir,
+                FACTORY_CONTROL_SOCKET: socket,
+                RUNNER_JOB_ID: '11111111-1111-4111-8111-111111111111',
+                RUNNER_LEASE_TOKEN: 'lease-before-takeover',
+            });
+            const sent = await target.waitForRequest();
+            expect(sent.headers['x-factory-job-id']).toBe('11111111-1111-4111-8111-111111111111');
+            expect(sent.headers['x-factory-job-lease-token']).toBe('lease-after-takeover');
+            expect(out).toMatchObject({ status: 0, stdout: '', stderr: '' });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+            rmSync(sockDir, { recursive: true, force: true });
+        }
+    });
+
     // A redirect must not become a second hop for the credential-bearing request: Node strips
     // only selected headers cross-origin, so the pair would stay eligible for forwarding to
     // whatever the Location points at. The request is refused, not followed.

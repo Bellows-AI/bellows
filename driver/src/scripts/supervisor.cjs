@@ -461,6 +461,8 @@ function newRun(settings, now, log) {
             token: settings.token,
             agentToken: settings.agentToken,
             exportToken: settings.exportToken,
+            // Known only once a newer holder names it: the first claim's helpers hold their own pair.
+            leaseToken: null,
         },
         bindingGen: 0,
         bindingAbort: new AbortController(),
@@ -528,8 +530,8 @@ function newerBinding(text, claimSeq) {
     }
     if (named === null || typeof named !== 'object' || Array.isArray(named)) return null;
     if (!Number.isSafeInteger(named.claimSeq) || named.claimSeq <= claimSeq) return null;
-    // The control token and the two the relays attach: a holder that names fewer is not followed.
-    for (const field of ['token', 'agentToken', 'exportToken']) {
+    // The control token, the two the relays attach and the claim's lease: a holder that names fewer is not followed.
+    for (const field of ['token', 'agentToken', 'exportToken', 'leaseToken']) {
         if (typeof named[field] !== 'string' || !/^\S{1,256}$/.test(named[field])) return null;
     }
     try {
@@ -543,6 +545,7 @@ function newerBinding(text, claimSeq) {
         token: named.token,
         agentToken: named.agentToken,
         exportToken: named.exportToken,
+        leaseToken: named.leaseToken,
     };
 }
 
@@ -1625,8 +1628,21 @@ const refuse = (request, response, status) => {
     response.end();
 };
 
+/**
+ * The one agent route answered here, never forwarded (#1045): the lease of the holder this supervisor follows,
+ * for helpers whose env still names the claim the container started under. No lease known yet is a 404.
+ */
+function answerAttempt(run, request, response) {
+    const { leaseToken } = run.binding;
+    if (!leaseToken) return refuse(request, response, HTTP_NOT_FOUND);
+    response.writeHead(HTTP_OK, { 'cache-control': 'no-store' });
+    response.end(JSON.stringify({ leaseToken }));
+}
+
 /** One relayed request: streamed through, fenced by the binding generation it started under. */
 function relayRequest(run, role, request, response) {
+    if (role === 'agent' && request.method === 'GET' && request.url === '/attempt')
+        return answerAttempt(run, request, response);
     const spec = RELAYS[role];
     const state = run.relays[role];
     const route = relayRouteOf(spec, request);

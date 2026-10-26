@@ -10,9 +10,9 @@ metadata:
 
 Reach Jira with `curl` against `$JIRA_API`, the board's connector for this task. You hold no Jira
 credential: the board adds the task's authorized connection to each call, and only while this
-attempt is running. Your run's own pair, `$RUNNER_JOB_ID` and `$RUNNER_LEASE_TOKEN`, is what the
-board checks. The Atlassian MCP server is deliberately not configured, and `acli` cannot use this
-connection — do not use either.
+attempt is running. Your run's own job id and lease token are what the board checks. The Atlassian
+MCP server is deliberately not configured, and `acli` cannot use this connection — do not use
+either.
 
 Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it through
 `$JIRA_API` rather than fetching the page. Never put the lease token in a URL or echo it.
@@ -20,27 +20,29 @@ Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key a
 ## Commands
 
 Every call is one self-contained command; shell state does not carry between them. The pair
-reaches curl as headers in a config on stdin from `printf`, a shell builtin, because an argv shows
-in any process listing — never pass the token as a `-H` argument or in a URL.
+reaches curl as headers in a config on stdin, printed by `attempt-pair.cjs`, which reads the lease
+this attempt holds now on every call (it changes when a new claim adopts this run, so never read
+`$RUNNER_LEASE_TOKEN` yourself). An argv shows in any process listing — never pass the token as a
+`-H` argument or in a URL.
 
 ```bash
 # Full detail, including the comment thread
-printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' \
+node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Accept: application/json' \
     "$JIRA_API/issue/<KEY>?fields=summary,description,status,issuetype,parent,fixVersions,components,labels,comment"
 
 # Search by JQL
-printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Accept: application/json' -G \
+node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Accept: application/json' -G \
     --data-urlencode "jql=project = ABC AND status = 'In Progress' ORDER BY updated DESC" \
     --data-urlencode "fields=summary,status,issuetype,parent,fixVersions,components,labels" \
     "$JIRA_API/search/jql"
 
 # Comment — the body is Atlassian Document Format, not plain text
-printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
+node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
     -X POST "$JIRA_API/issue/<KEY>/comment" \
     -d '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"..."}]}]}}'
 
 # Create
-printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s"\n' "$RUNNER_JOB_ID" "$RUNNER_LEASE_TOKEN" | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
+node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
     -X POST "$JIRA_API/issue" \
     -d '{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"..."}}'
 ```
@@ -60,6 +62,8 @@ printf 'header = "x-factory-job-id: %s"\nheader = "x-factory-job-lease-token: %s
 
 If `JIRA_API` is empty, or a call answers 401/403, **stop and report it** — quote the `error`
 message the board returned, which says what to fix (no connection selected, connection deleted or
-no longer authorized, read-only connection) — do not retry, and do not work around it by guessing
-ticket contents. Loading this skill never grants access; only the connection the task was started
-with does.
+no longer authorized, read-only connection) — and do not work around it by guessing ticket
+contents. A refusal that says this attempt holds a lease it no longer has is the exception: every
+call re-reads the current pair, so retry it once; if a fresh call is refused the same way, report
+it, and remember it only for this call — a later turn may succeed. Loading this skill never grants
+access; only the connection the task was started with does.

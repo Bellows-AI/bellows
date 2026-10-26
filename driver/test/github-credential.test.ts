@@ -32,6 +32,7 @@ interface Deps {
     stdin: () => Promise<string>;
     stdout: (text: string) => void;
     stderr: (line: string) => void;
+    pair: (env: Record<string, string | undefined>) => Promise<{ jobId: string; leaseToken: string }>;
 }
 const helper = createRequire(import.meta.url)(HELPER) as {
     main: (argv: string[], deps: Deps) => Promise<number>;
@@ -64,6 +65,8 @@ type Answer = { status: number; body?: unknown } | Error;
 
 /** A fake board answering each ask in turn (the last answer repeats), and a clock the test moves. */
 function rig(answers: Answer[], env: Record<string, string | undefined> = PAIR_ENV) {
+    // The lease the supervisor names now; null while it names none, so the env's pair stands (`attempt-pair.cjs`).
+    const relayed: { lease: string | null } = { lease: null };
     const asks: { url: string; headers: Record<string, string> }[] = [];
     const sleeps: number[] = [];
     const stdout: string[] = [];
@@ -85,8 +88,12 @@ function rig(answers: Answer[], env: Record<string, string | undefined> = PAIR_E
         stdin: async () => 'protocol=https\nhost=github.com\n\n',
         stdout: (text) => stdout.push(text),
         stderr: (line) => stderr.push(line),
+        pair: async (from) => ({
+            jobId: from.RUNNER_JOB_ID ?? '',
+            leaseToken: relayed.lease ?? from.RUNNER_LEASE_TOKEN ?? '',
+        }),
     };
-    return { deps, asks, sleeps, stdout, stderr, advance: (ms: number) => (now += ms) };
+    return { deps, asks, sleeps, stdout, stderr, relayed, advance: (ms: number) => (now += ms) };
 }
 
 const minted = (token: string, lifetimeMs = HOUR_MS, from = START) => ({
@@ -135,6 +142,25 @@ describe('the runner GitHub helper', () => {
         await helper.obtain(r.deps);
         expect(await helper.main(['git', 'erase'], r.deps)).toBe(0);
         expect(await helper.obtain(r.deps)).toBe('ghs_new_secret');
+    });
+
+    it('presents the lease the supervisor relays, not the one the container started with (#1045)', async () => {
+        const r = rig([minted('ghs_adopted_secret')]);
+        r.relayed.lease = 'lease-after-takeover';
+        expect(await helper.obtain(r.deps)).toBe('ghs_adopted_secret');
+        expect(r.asks.map((ask) => ask.headers)).toEqual([
+            { 'x-factory-job-id': JOB, 'x-factory-job-lease-token': 'lease-after-takeover' },
+        ]);
+    });
+
+    it('never serves a token minted under the lease an adoption has since replaced (#1045)', async () => {
+        const r = rig([minted('ghs_before_secret'), minted('ghs_after_secret')]);
+        expect(await helper.obtain(r.deps)).toBe('ghs_before_secret');
+        r.relayed.lease = 'lease-after-takeover';
+        expect(await helper.obtain(r.deps)).toBe('ghs_after_secret');
+        expect(r.asks).toHaveLength(2);
+        expect(await helper.obtain(r.deps)).toBe('ghs_after_secret');
+        expect(r.asks).toHaveLength(2);
     });
 
     it('never reads a cache another attempt wrote', async () => {
@@ -235,13 +261,46 @@ describe('the runner GitHub helper as a process', () => {
         expect(out.stderr).toBe('');
     });
 
+    it('presents the lease a relay socket serves, not the one in its env (#1045)', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'github-credential-relay-'));
+        const socket = join(dir, 'control.sock');
+        const relay = createServer((_request, response) => {
+            response.writeHead(200, { 'content-type': 'application/json' });
+            response.end(JSON.stringify({ leaseToken: 'lease-relayed' }));
+        });
+        await new Promise<void>((resolve) => relay.listen(socket, resolve));
+        servers.push(relay);
+        const seen: string[] = [];
+        const fake = await board([{ status: 200, body: { token: 'ghs_relay_secret', expiresAt: '' } }]);
+        fake.server.on('request', (request: IncomingMessage) => {
+            seen.push(String(request.headers['x-factory-job-lease-token']));
+        });
+        servers.push(fake.server);
+        try {
+            const out = await run(process.execPath, [HELPER, 'token'], {
+                env: {
+                    PATH: process.env.PATH,
+                    FACTORY_STATS_URL: fake.url,
+                    FACTORY_CONTROL_SOCKET: socket,
+                    RUNNER_JOB_ID: JOB,
+                    RUNNER_LEASE_TOKEN: LEASE,
+                },
+            });
+            expect(out.stdout).toBe('ghs_relay_secret\n');
+            expect(seen).toEqual(['lease-relayed']);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it('prints guidance on stderr, no token anywhere, and exits non-zero on a refusal', async () => {
         const fake = await board([{ status: 403, body: { error: 'refused', token: 'ghs_never_secret' } }]);
         servers.push(fake.server);
         const out = await spawnHelper(['token'], fake.url);
         expect(out.code).not.toBe(0);
         expect(out.stdout).toBe('');
-        expect(out.stderr).toContain('Do not retry');
+        expect(out.stderr).toContain('A later turn may succeed');
+        expect(out.stderr).not.toContain('Do not retry');
         expect(out.stderr).not.toContain('ghs_never_secret');
     });
 });

@@ -28,7 +28,7 @@ const READ_METHODS: readonly string[] = ['GET', 'HEAD'];
 const PROXIED_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'] as const;
 
 const REFUSALS: Record<ConnectionRefusal, string> = {
-    lease: 'This attempt is no longer running, so its Jira connection is closed. Do not retry.',
+    lease: 'This call carried a lease this attempt no longer holds, so its Jira connection refused it. Each call reads the current pair: retry once, and if a fresh call is refused the same way, report it. A later turn may succeed.',
     unselected:
         'No Jira connection is selected for this task, or it was deleted. Start the task with an authorized Jira connection (jiraConnection) and stop here.',
     revoked:

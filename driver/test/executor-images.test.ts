@@ -1288,11 +1288,20 @@ describe('the shared executor skills', () => {
         const curls = fences.match(/^.*\bcurl\b.*$/gm) ?? [];
         expect(curls.length).toBeGreaterThan(0);
         for (const line of curls) {
-            expect(line).toMatch(
-                /^printf 'header = "x-factory-job-id: %s"\\nheader = "x-factory-job-lease-token: %s"\\n' "\$RUNNER_JOB_ID" "\$RUNNER_LEASE_TOKEN" \| curl -K - /
-            );
+            expect(line).toMatch(/^node \/usr\/local\/bin\/attempt-pair\.cjs \| curl -K - /);
         }
         expect(text).not.toMatch(/ATLASSIAN_/);
+        // The pair is read on every call from the one baked helper: an adopted runner's env is stale (#1045).
+        expect(fences).not.toContain('$RUNNER_LEASE_TOKEN');
+    });
+
+    it('ships the attempt pair helper byte-identical, root-owned and executable, in both images (#1045)', () => {
+        expect(read('docker/opencode-executor/attempt-pair.cjs')).toBe(read('docker/claude-executor/attempt-pair.cjs'));
+        for (const image of ['claude', 'opencode']) {
+            const dockerfile = read(`docker/${image}-executor/Dockerfile`);
+            expect(dockerfile, image).toContain('COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs');
+            expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/attempt-pair\.cjs/);
+        }
     });
 
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {

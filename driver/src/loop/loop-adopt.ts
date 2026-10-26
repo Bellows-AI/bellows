@@ -85,6 +85,7 @@ async function takeOver(ctx: AttemptCtx, run: LiveRun): Promise<SetupConclusion 
             token: controlTokenOf(job),
             agentToken: job.supervisorEnv?.[SUPERVISOR_ENV.agentToken] ?? '',
             exportToken: job.supervisorEnv?.[SUPERVISOR_ENV.exportToken] ?? '',
+            leaseToken: job.leaseToken,
         };
         const rebound = await raceStep(state.signal, rt.runner.rebind(run.prior, binding, state.signal));
         if (rebound === null) return STOOD_DOWN;
