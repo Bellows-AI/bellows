@@ -277,6 +277,7 @@ const PR_KIND_LABELS: Record<PrOperation['kind'], string> = {
     created: 'Created',
     reused: 'Reused',
     agent_created: 'Created by the agent',
+    unknown: 'Kind not recorded',
 };
 
 /** How the dialog words the task's PR activity: operations and distinct PRs are separate figures. */

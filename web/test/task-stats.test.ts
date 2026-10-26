@@ -245,6 +245,18 @@ describe('taskStats gate and PR activity', () => {
         expect(figures.observed).toBe('2 more gate calls appear in the agent transcript with no board record.');
     });
 
+    it('words a PR whose creation kind was not recorded, and says coverage is partial', () => {
+        const url = 'https://github.com/acme/web/pull/7';
+        const figures = prFigures({
+            coverage: 'partial',
+            counts: { operations: 1, distinct: 1 },
+            operations: [{ jobId: A, operationId: null, kind: 'unknown', repo: 'acme/web', number: 7, url }],
+            distinct: [{ repo: 'acme/web', number: 7, url }],
+        });
+        expect(figures).toMatchObject({ operations: '1', distinct: '1', partial: true });
+        expect(figures.byKind).toEqual([{ label: 'Kind not recorded', count: 1 }]);
+    });
+
     it('counts operations apart from distinct PRs and links each PR once', () => {
         const figures = prFigures({
             coverage: 'complete',

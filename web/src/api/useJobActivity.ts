@@ -48,7 +48,7 @@ export interface GateActivity {
 export interface PrOperation {
     jobId: string;
     operationId: string | null;
-    kind: 'created' | 'reused' | 'agent_created';
+    kind: 'created' | 'reused' | 'agent_created' | 'unknown';
     repo: string;
     number: number;
     url: string;

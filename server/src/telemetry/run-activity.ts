@@ -134,7 +134,8 @@ export interface GateActivity {
 export interface PrOperationView {
     jobId: string;
     operationId: string | null;
-    kind: 'created' | 'reused' | 'agent_created';
+    /** `unknown`: a confirmed transcript publish whose managed operation row is missing; created versus reused is not invented. */
+    kind: 'created' | 'reused' | 'agent_created' | 'unknown';
     repo: string;
     number: number;
     url: string;
@@ -238,7 +239,28 @@ export function gateActivityOf(records: ActivityRecords, jobIds: readonly string
     };
 }
 
-/** The transcript's PR calls no managed operation covers: the PRs the agent created, and whether any call went unconfirmed. */
+/**
+ * What one unmanaged transcript PR call shows: the PR it confirmed (none for a failed or unconfirmed call),
+ * and whether the figures are short of the truth because of it. A confirmed publish here has no managed
+ * operation row: the PR is real, how it was made is not known, so it is `unknown`, never invented.
+ */
+function prFromCall(e: ToolEventRecord): { pr: PrOperationView | null; unconfirmed: boolean } {
+    if (e.outcome === 'unknown') return { pr: null, unconfirmed: true };
+    if (e.outcome !== 'passed' || e.operation === 'run') return { pr: null, unconfirmed: false };
+    const publish = e.operation === 'publish';
+    if (e.prRepo === null || e.prNumber === null || e.prUrl === null) return { pr: null, unconfirmed: true };
+    const pr: PrOperationView = {
+        jobId: e.jobId,
+        operationId: null,
+        kind: publish ? 'unknown' : 'agent_created',
+        repo: e.prRepo,
+        number: e.prNumber,
+        url: e.prUrl,
+    };
+    return { pr, unconfirmed: publish };
+}
+
+/** The transcript's PR calls no managed operation covers: the PRs they confirm, and whether any call went unconfirmed. */
 function observedPrCalls(records: ActivityRecords, jobs: ReadonlySet<string>, managed: ReadonlyMap<string, unknown>) {
     const created: PrOperationView[] = [];
     const seen = new Set<string>();
@@ -249,17 +271,9 @@ function observedPrCalls(records: ActivityRecords, jobs: ReadonlySet<string>, ma
         seen.add(e.callId);
         if (e.operationId !== null && managed.has(e.operationId)) continue;
         observed = true;
-        if (e.outcome === 'unknown') unconfirmed = true;
-        const confirmed = e.operation === 'create' && e.outcome === 'passed';
-        if (!confirmed || e.prRepo === null || e.prNumber === null || e.prUrl === null) continue;
-        created.push({
-            jobId: e.jobId,
-            operationId: null,
-            kind: 'agent_created',
-            repo: e.prRepo,
-            number: e.prNumber,
-            url: e.prUrl,
-        });
+        const call = prFromCall(e);
+        if (call.unconfirmed) unconfirmed = true;
+        if (call.pr) created.push(call.pr);
     }
     return { created, observed, unconfirmed };
 }

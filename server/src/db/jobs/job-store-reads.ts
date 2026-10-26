@@ -76,6 +76,13 @@ export interface JobReadStore {
     activityRecords(jobIds: readonly string[]): Promise<ActivityRecords>;
 
     /**
+     * Every job of the task `id` belongs to — its thread plus the named reviews, which carry thread
+     * roots of their own — from board records, so it is the same with telemetry on, off or failing.
+     * Empty when `id` is not a job in this org.
+     */
+    taskJobIds(id: string): Promise<string[]>;
+
+    /**
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and
      * `gates` stays off the same way; `runtime` does travel, a bounded vitals object whose
      * `activity` line is the live summary the nav and task view render (issue #61).

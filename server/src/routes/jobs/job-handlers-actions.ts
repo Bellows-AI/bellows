@@ -526,11 +526,9 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
         (e) => request.log.error({ err: e }, 'job activity read failed'),
         async () => {
             const tokens = await tokenActivity(telemetry, run, id);
-            // The task's runs when telemetry names them, else the operational thread: the board's own records need no telemetry.
-            const taskJobIds = tokens.read
-                ? tokens.read.task?.runs.map((r) => r.jobId)
-                : (await route.store.thread(id))?.map((j) => j.id);
-            const jobIds = [...new Set([id, ...(taskJobIds ?? [])])];
+            // Task membership is the board's (thread plus named reviews), never telemetry's: the same jobs with telemetry on, off or failing.
+            const taskJobIds = await route.store.taskJobIds(id);
+            const jobIds = [...new Set([id, ...taskJobIds])];
             const records = await route.store.activityRecords(jobIds);
             return { tokens, jobIds, records };
         }

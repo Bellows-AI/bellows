@@ -452,6 +452,42 @@ describe.skipIf(!enabled)('token reconciliation', () => {
         });
     });
 
+    it('resolves a task from board records alone: thread plus named reviews, the same from any member, one org only (issue #983)', async () => {
+        const store = createJobStore({ sql, orgId: built.A });
+        const { root, followUp, reviewJob } = built.ids as Record<'root' | 'followUp' | 'reviewJob', string>;
+        const task = new Set(await store.taskJobIds(root));
+        // The thread (a workflow node among it) and the named review, a thread root of its own.
+        for (const id of [root, followUp, reviewJob]) expect(task.has(id)).toBe(true);
+        for (const other of [built.ids.cross!, built.ids.taskB!, built.ids.otherOrg!])
+            expect(task.has(other)).toBe(false);
+        for (const from of [followUp, reviewJob]) expect(new Set(await store.taskJobIds(from))).toEqual(task);
+        expect(await store.taskJobIds(randomUUID())).toEqual([]);
+        expect(await createJobStore({ sql, orgId: built.B }).taskJobIds(root)).toEqual([]);
+    });
+
+    it('keeps a gate call and a PR call that never got a result as unknown observations, partial coverage (issue #983)', async () => {
+        const store = createJobStore({ sql, orgId: built.A });
+        const { root } = built.ids as Record<'root', string>;
+        const [gateCall, prCall] = [randomUUID(), randomUUID()];
+        for (const [call, kind, operation] of [
+            [gateCall, 'gate', 'run'],
+            [prCall, 'pr', 'create'],
+        ] as const) {
+            await sql`insert into transcript_tool_event (org_id, job_id, executor, session_id, tool_call_id, part, run_claim_seq, kind, operation, outcome,
+                    started_at, artifact_session, stream, claim_seq, byte_offset)
+                values (${built.A}, ${root}, 'main', ${`s-${call}`}, ${call}, 'call', 1, ${kind}, ${operation}, null,
+                    '2026-09-21T10:00:00Z', 's', 'transcript-raw', 1, 0)`;
+        }
+        const records = await store.activityRecords([root]);
+        const mine = records.toolEvents.filter((e) => [gateCall, prCall].some((c) => e.callId.includes(c)));
+        expect(mine.map((e) => [e.kind, e.outcome]).sort()).toEqual([
+            ['gate', 'unknown'],
+            ['pr', 'unknown'],
+        ]);
+        expect(gateActivityOf(records, [root]).coverage).toBe('partial');
+        expect(prActivityOf(records, [root]).coverage).toBe('partial');
+    });
+
     it('reads a job with no execution rows as its own thread root, unmeasured', async () => {
         const client = createPostgresTelemetryClient({ sql, orgId: built.A });
         const lonely = randomUUID();

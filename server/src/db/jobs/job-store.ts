@@ -38,7 +38,7 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob } from './job-store-claim.js';
-import { activityRecordsOf } from './job-store-activity-records.js';
+import { activityRecordsOf, taskJobIdsOf } from './job-store-activity-records.js';
 import { orgDemand } from './job-store-admission.js';
 import { claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-reclaims.js';
 import {
@@ -350,6 +350,11 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async get(id) {
             await gate();
             return getJob(ctx, id);
+        },
+
+        async taskJobIds(id) {
+            await gate();
+            return taskJobIdsOf(ctx, id);
         },
 
         async activityRecords(jobIds) {

@@ -186,6 +186,8 @@ function stubStore(
         thread?: Job[] | null;
         /** What `activityRecords` answers (issue #983 S4); empty when absent. */
         records?: ActivityRecords;
+        /** What `taskJobIds` answers: the canonical task's job ids, from board records; just the asked id when absent. */
+        taskJobs?: string[];
         followUp?: FollowUpRefusal;
         retry?: RetryRefusal;
         /** What the store answers a queued-command edit with; ok echoes the new command back. */
@@ -497,6 +499,10 @@ function stubStore(
         async thread() {
             boom();
             return options.thread ?? null;
+        },
+        async taskJobIds(id) {
+            boom();
+            return options.taskJobs ?? [id];
         },
         async activityRecords(jobIds) {
             boom();
@@ -3491,7 +3497,11 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
     it('answers the run gates and PRs, and the same figures over every run of the task', async () => {
         const { ids, facts } = activityWorld();
         const records = recordsOf(ids.followUp);
-        const store = stubStore({ job: jobOf(ids.task, ids.task), records });
+        const store = stubStore({
+            job: jobOf(ids.task, ids.task),
+            records,
+            taskJobs: [ids.task, ids.followUp, ids.review],
+        });
         const instance = await harnessWith(store, undefined, stubTelemetryClient({ taskFacts: () => facts }));
         const body = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids.task}/activity` })).json();
 
@@ -3502,6 +3512,51 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
             { repo: 'acme/web', number: 7, url: 'https://github.com/acme/web/pull/7' },
         ]);
         expect(store.recordsRead).toEqual([[ids.task, ids.followUp, ids.review]]);
+    });
+
+    describe('task membership comes from board records, whatever telemetry does', () => {
+        const failing = Object.assign(stubTelemetryClient(), {
+            fetchTaskFacts: async () => {
+                throw new TelemetryError('Telemetry is unreachable', 'UNREACHABLE');
+            },
+        });
+        const totalsVia = async (
+            telemetry: ReturnType<typeof stubTelemetryClient>,
+            via: 'task' | 'review',
+            world = activityWorld()
+        ) => {
+            const { ids, facts } = world;
+            const members = [ids.task, ids.followUp, ids.review];
+            const store = stubStore({
+                job: jobOf(ids[via], via === 'task' ? ids.task : ids.review),
+                records: recordsOf(ids.review),
+                taskJobs: members,
+            });
+            const instance = await harnessWith(store, undefined, telemetry);
+            const body = (await instance.inject({ method: 'GET', url: `/api/jobs/${ids[via]}/activity` })).json();
+            return { body, store, members, facts };
+        };
+
+        it.each([
+            ['telemetry off', () => Object.assign(stubTelemetryClient(), { fetchTaskFacts: failing.fetchTaskFacts })],
+            ['telemetry failing', () => failing],
+        ])('includes a named review run in the task totals with %s', async (_name, make) => {
+            const { body, store, members } = await totalsVia(make(), 'task');
+            expect(store.recordsRead).toEqual([members]);
+            expect(body.taskActivity.gates).toMatchObject({ coverage: 'complete', executions: 1 });
+            expect(body.taskActivity.prs.counts).toEqual({ operations: 1, distinct: 1 });
+        });
+
+        it('answers the same task totals requested through the review, telemetry on, off or failing', async () => {
+            const world = activityWorld();
+            const on = stubTelemetryClient({ taskFacts: () => world.facts });
+            const answers = await Promise.all(
+                [on, failing].flatMap((t) => (['task', 'review'] as const).map((via) => totalsVia(t, via, world)))
+            );
+            const [first, ...rest] = answers.map((a) => a.body.taskActivity);
+            for (const other of rest) expect(other).toEqual(first);
+            for (const a of answers) expect(new Set(a.store.recordsRead[0])).toEqual(new Set(a.members));
+        });
     });
 
     it('answers unmeasured usage and no task, never a zero, when nothing names the job', async () => {

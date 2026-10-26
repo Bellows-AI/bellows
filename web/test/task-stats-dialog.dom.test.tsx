@@ -115,7 +115,10 @@ describe('TaskStatsDialog gate and PR activity', () => {
         expect(within(gates).getByText('Passed').nextSibling?.textContent).toBe('2');
         expect(within(gates).getByText('Failed').nextSibling?.textContent).toBe('1');
         expect(within(gates).getByText('2m 30s')).toBeTruthy();
-        expect(within(gates).getByText('reused')).toBeTruthy();
+        // Reuse is a good outcome: the badge is the neutral info pill, never the loud red `badge`.
+        const badge = within(gates).getByText('reused');
+        expect(badge.classList.contains('pill-accent')).toBe(true);
+        expect(badge.classList.contains('badge')).toBe(false);
         expect(within(gates).getByText(/Reused the result of execution 0a1b2c3d: tree unchanged/)).toBeTruthy();
     });
 

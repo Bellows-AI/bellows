@@ -173,7 +173,7 @@ function GatesSection({ gates }: { gates: GateActivity }) {
                 <ul className="task-stats-note">
                     {figures.reused.map((r) => (
                         <li key={`${r.gate}-${r.text}`}>
-                            {r.gate} <span className="badge">reused</span> {r.text}
+                            {r.gate} <span className="pill pill-accent">reused</span> {r.text}
                         </li>
                     ))}
                 </ul>

@@ -12,7 +12,7 @@ type GateOutcome = ActivityRecords['gateRuns'][number]['outcome'];
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
-interface EventRow {
+export interface EventRow {
     job_id: string;
     executor: string;
     session_id: string;
@@ -30,8 +30,12 @@ interface EventRow {
     ended_at: Date | null;
 }
 
-/** One record per call: the result half carries the outcome and ids, either half may carry the times. */
-function mergeCalls(rows: EventRow[]): ToolEventRecord[] {
+/**
+ * One record per call: the result half carries the outcome and ids, either half may carry the times.
+ * A call with no result (interrupted, or still running) is kept with an `unknown` outcome: it is an
+ * observation of something that may have happened, which the reducers read as partial coverage.
+ */
+export function mergeCalls(rows: EventRow[]): ToolEventRecord[] {
     const calls = new Map<string, { call?: EventRow; result?: EventRow }>();
     for (const r of rows) {
         const key = `${r.job_id}\0${r.executor}\0${r.session_id}\0${r.tool_call_id}`;
@@ -41,24 +45,52 @@ function mergeCalls(rows: EventRow[]): ToolEventRecord[] {
     }
     const out: ToolEventRecord[] = [];
     for (const [callId, { call, result }] of calls) {
-        // A call with no result yet has no outcome to count; it is not an observation of anything finished.
-        if (!result) continue;
+        const row = result ?? call;
+        if (!row) continue;
         out.push({
-            jobId: result.job_id,
+            jobId: row.job_id,
             callId,
-            kind: result.kind,
-            operation: result.operation,
-            outcome: result.outcome ?? 'unknown',
-            executionId: result.execution_id,
-            operationId: result.operation_id,
-            prRepo: result.pr_repo,
-            prNumber: result.pr_number,
-            prUrl: result.pr_url,
-            startedAt: iso(call?.started_at ?? result.started_at),
-            endedAt: iso(result.ended_at ?? call?.ended_at ?? null),
+            kind: row.kind,
+            operation: row.operation,
+            outcome: result?.outcome ?? 'unknown',
+            executionId: row.execution_id,
+            operationId: row.operation_id,
+            prRepo: row.pr_repo,
+            prNumber: row.pr_number,
+            prUrl: row.pr_url,
+            startedAt: iso(call?.started_at ?? result?.started_at ?? null),
+            endedAt: iso(result?.ended_at ?? call?.ended_at ?? null),
         });
     }
     return out;
+}
+
+/**
+ * Every job of the canonical task `id` belongs to, from board records alone: the thread of the task's
+ * root plus the named reviews of any of its jobs (a review has a thread root of its own, `review_of`
+ * links it to the run it assesses). A review id resolves to its caller's task. Empty when `id` is not a job here.
+ */
+export async function taskJobIdsOf(ctx: JobStoreContext, id: string): Promise<string[]> {
+    const { sql, orgId } = ctx;
+    const rows = await sql<{ id: string }[]>`
+        with task as (
+            select coalesce(caller.root_job_id, named.root_job_id) as root_id
+            from job named
+            left join job caller on caller.org_id = named.org_id and caller.id = named.review_of
+            where named.org_id = ${orgId} and named.id = ${id}
+        )
+        select j.id
+        from job j
+        where j.org_id = ${orgId}
+          and (
+              j.root_job_id in (select root_id from task)
+              or j.review_of in (
+                  select m.id from job m where m.org_id = ${orgId} and m.root_job_id in (select root_id from task)
+              )
+          )
+        order by j.created_at, j.id
+    `;
+    return rows.map((r) => r.id);
 }
 
 export async function activityRecordsOf(ctx: JobStoreContext, jobIds: readonly string[]): Promise<ActivityRecords> {

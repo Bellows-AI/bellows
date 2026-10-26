@@ -9,6 +9,7 @@ import {
     type PrOperationRecord,
     type ToolEventRecord,
 } from '../src/telemetry/run-activity.js';
+import { mergeCalls, type EventRow } from '../src/db/jobs/job-store-activity-records.js';
 import { activityWorld, minute } from './helpers-activity.js';
 
 /**
@@ -284,7 +285,92 @@ describe('prActivityOf', () => {
         expect(out).toMatchObject({ coverage: 'partial', counts: { operations: 0, distinct: 0 } });
     });
 
+    it('keeps a confirmed publish whose managed operation row is missing: the PR and its link count, the kind is unknown, coverage partial', () => {
+        const out = prActivityOf(
+            records({
+                toolEvents: [
+                    toolEvent({
+                        callId: 'p1',
+                        kind: 'pr',
+                        operation: 'publish',
+                        operationId: exec(1),
+                        prRepo: 'acme/web',
+                        prNumber: 7,
+                        prUrl: 'https://github.com/acme/web/pull/7',
+                    }),
+                ],
+            }),
+            [JOB]
+        );
+        expect(out.coverage).toBe('partial');
+        expect(out.counts).toEqual({ operations: 1, distinct: 1 });
+        expect(out.operations.map((o) => [o.kind, o.number])).toEqual([['unknown', 7]]);
+        expect(out.distinct).toEqual([{ repo: 'acme/web', number: 7, url: 'https://github.com/acme/web/pull/7' }]);
+    });
+
+    it('is partial, not complete, when a confirmed PR call carries no link to count', () => {
+        const out = prActivityOf(
+            records({ toolEvents: [toolEvent({ callId: 'p', kind: 'pr', operation: 'create', outcome: 'passed' })] }),
+            [JOB]
+        );
+        expect(out).toMatchObject({ coverage: 'partial', counts: { operations: 0, distinct: 0 } });
+    });
+
+    it('reads an unknown PR call beside a managed operation as partial coverage', () => {
+        const out = prActivityOf(
+            records({
+                prOperations: [prOp({ operationId: exec(1) })],
+                toolEvents: [toolEvent({ callId: 'p', kind: 'pr', operation: 'create', outcome: 'unknown' })],
+            }),
+            [JOB]
+        );
+        expect(out).toMatchObject({ coverage: 'partial', counts: { operations: 1, distinct: 1 } });
+    });
+
     it('answers null counts when nothing was recorded', () => {
         expect(prActivityOf(records(), [JOB])).toEqual({ coverage: null, counts: null, operations: [], distinct: [] });
+    });
+});
+
+describe('mergeCalls', () => {
+    const row = (over: Partial<EventRow>): EventRow => ({
+        job_id: JOB,
+        executor: 'claude',
+        session_id: 's1',
+        tool_call_id: 'c1',
+        part: 'call',
+        kind: 'gate',
+        operation: 'run',
+        outcome: null,
+        execution_id: null,
+        operation_id: null,
+        pr_repo: null,
+        pr_number: null,
+        pr_url: null,
+        started_at: new Date(minute(1)),
+        ended_at: null,
+        ...over,
+    });
+
+    it('keeps a call with no result as an unknown observation, never dropping it', () => {
+        const [gate, pr] = mergeCalls([
+            row({ tool_call_id: 'g' }),
+            row({ tool_call_id: 'p', kind: 'pr', operation: 'create' }),
+        ]);
+        expect(gate).toMatchObject({ kind: 'gate', outcome: 'unknown', executionId: null });
+        expect(pr).toMatchObject({ kind: 'pr', operation: 'create', outcome: 'unknown', prUrl: null });
+    });
+
+    it('drives both reducers to partial coverage with one unknown beside successful records', () => {
+        const toolEvents = mergeCalls([
+            row({ tool_call_id: 'g' }),
+            row({ tool_call_id: 'p', kind: 'pr', operation: 'create' }),
+        ]);
+        const gates = gateActivityOf(records({ gateRuns: [gateRun({ executionId: exec(1) })], toolEvents }), [JOB]);
+        expect(gates.coverage).toBe('partial');
+        expect(gates.observed).toMatchObject({ executions: 1, byOutcome: { unknown: 1 } });
+        const prs = prActivityOf(records({ prOperations: [prOp({ operationId: exec(2) })], toolEvents }), [JOB]);
+        expect(prs.coverage).toBe('partial');
+        expect(prs.counts).toEqual({ operations: 1, distinct: 1 });
     });
 });
