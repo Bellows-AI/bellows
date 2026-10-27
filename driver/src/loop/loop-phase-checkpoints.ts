@@ -143,13 +143,21 @@ export interface PhaseChain {
 }
 
 /**
+ * The claim sequence of the run this attempt belongs to: the claim that ran the agent — the adopted or
+ * taken-over run's own, else this attempt's. The phase checkpoints and the gate-run record are both
+ * keyed by it.
+ */
+export const runClaimSeqOf = (ctx: Pick<AttemptCtx, 'adopted' | 'takeover' | 'job'>): number =>
+    ctx.adopted?.claimSeq ?? ctx.takeover?.claimSeq ?? ctx.job.claimSeq;
+
+/**
  * The attempt's chain. Only an adopted or taken-over run reads — once, bounded by the attempt's own
  * signal and a timeout, never retried; a fresh run has nothing to resume. It writes under the
  * attempt's own lease for the run the claim `runClaimSeq` started.
  */
 export async function openChain(ctx: AttemptCtx): Promise<PhaseChain> {
     const { rt, job, state } = ctx;
-    const runClaimSeq = ctx.adopted?.claimSeq ?? ctx.takeover?.claimSeq ?? job.claimSeq;
+    const runClaimSeq = runClaimSeqOf(ctx);
     const resuming = Boolean(ctx.adopted ?? ctx.takeover);
     const rows = new Map<CheckpointPhase, PhaseCheckpoint>();
     if (resuming) {

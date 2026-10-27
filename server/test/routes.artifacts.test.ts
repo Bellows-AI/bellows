@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ArtifactStore, Manifest, ManifestInput } from '../src/artifacts/artifact-store.js';
 import type { StreamRef } from '../src/artifacts/keys.js';
-import type { JobReadStore } from '../src/db/jobs/job-store-reads.js';
 import type { JobArtifactScope, JobStore } from '../src/db/jobs/job-store-types.js';
 import { UNATTRIBUTED_MEMBER } from '../src/routes/jobs/job-handlers-artifacts.js';
 import { trackApps } from './helpers-http.js';
@@ -22,8 +21,8 @@ const STREAM = 'log';
  * A job store that answers the claim scope and refuses everything else: an upload that reached any
  * other method — a status, session, gates, verdict or publication write — would throw.
  */
-function scopeOnlyStore(scope: JobArtifactScope | null) {
-    const base = { artifactScope: async () => scope } satisfies Partial<JobReadStore>;
+function scopeOnlyStore(scope: JobArtifactScope | null, extra: Partial<JobStore> = {}) {
+    const base = { artifactScope: async () => scope, ...extra } satisfies Partial<JobStore>;
     return new Proxy(base, {
         get(target, name) {
             if (name in target) return target[name as keyof typeof target];
@@ -55,6 +54,19 @@ function memoryArtifacts() {
             if (same) return { result: 'duplicate', key: at(ref, offset) };
             return { result: 'conflict', recorded: { offset, length: held.length, sha256: '0'.repeat(64) } };
         },
+        async listChunks(ref) {
+            return [...chunks]
+                .filter(([k]) => k.startsWith(`${JSON.stringify(ref)}@`))
+                .map(([k, body]) => ({
+                    offset: Number(k.split('@').pop()),
+                    length: body.length,
+                    sha256: '0'.repeat(64),
+                }));
+        },
+        async readChunk(ref, offset) {
+            const body = chunks.get(at(ref, offset));
+            return body ? { offset, length: body.length, sha256: '0'.repeat(64), body } : null;
+        },
         async finalize(ref, input: ManifestInput) {
             finalizes.push(ref);
             const manifest = { ...input, terminalCause: input.terminalCause ?? null };
@@ -67,11 +79,15 @@ function memoryArtifacts() {
     return { store, chunks, puts, finalizes };
 }
 
-async function boot(scope: JobArtifactScope | null, artifacts?: ArtifactStore): Promise<FastifyInstance> {
+async function boot(
+    scope: JobArtifactScope | null,
+    artifacts?: ArtifactStore,
+    extra: Partial<JobStore> = {}
+): Promise<FastifyInstance> {
     const config = testConfig();
     const instance = await buildApp({
         config,
-        orgs: staticRegistry({ config, jobs: scopeOnlyStore(scope), artifacts }),
+        orgs: staticRegistry({ config, jobs: scopeOnlyStore(scope, extra), artifacts }),
     });
     track(instance);
     return instance;
@@ -298,5 +314,96 @@ describe('PUT /api/jobs/:id/artifact/manifest', () => {
         expect(ahead.json().code).toBe('BAD_CLAIM_SEQ');
         expect(incomplete.statusCode).toBe(400);
         expect(incomplete.json().code).toBe('BAD_ARTIFACT');
+    });
+});
+
+describe('the transcript tool ingest', () => {
+    type Ingest = Parameters<JobStore['ingestTranscriptTools']>;
+    const recorder = (fail = false) => {
+        const calls: { id: string; input: Ingest[1] }[] = [];
+        const ingestTranscriptTools: JobStore['ingestTranscriptTools'] = async (id, input) => {
+            calls.push({ id, input });
+            if (fail) throw new Error('the board is down');
+            return { result: 'ok', written: 0 };
+        };
+        return { calls, ingestTranscriptTools };
+    };
+    /** The coordinates each executor's real exporter uploads its tool-bearing records under. */
+    const CLAUDE = { stream: 'transcript' };
+    const OPENCODE_RAW = { stream: 'transcript-raw', executor: 'opencode' };
+    const put =
+        (claimSeq: number, offset: number, text: string, over: Record<string, string> = CLAUDE) =>
+        (instance: FastifyInstance) =>
+            sendChunk(instance, chunkQuery(claimSeq, offset, over), text);
+
+    it('reads the chunk a claude exporter uploads on its own stream, under the stream’s claim and artifact session', async () => {
+        const ingest = recorder();
+        const instance = await boot(SCOPE, memoryArtifacts().store, ingest);
+        await put(CURRENT_CLAIM, 0, 'a\n')(instance);
+        await put(CURRENT_CLAIM, 2, 'b\n')(instance);
+
+        expect(ingest.calls.map((c) => c.input.chunks.map((x) => x.offset))).toEqual([[0], [2]]);
+        expect(ingest.calls[1]).toMatchObject({
+            id: JOB,
+            input: { executor: 'claude-code', stream: 'transcript', session: SESSION, claimSeq: CURRENT_CLAIM },
+        });
+    });
+
+    it('reads an opencode export on transcript-raw, and each executor only on its own stream', async () => {
+        const ingest = recorder();
+        const instance = await boot(SCOPE, memoryArtifacts().store, ingest);
+        await put(CURRENT_CLAIM, 0, 'a\n', OPENCODE_RAW)(instance);
+        await put(CURRENT_CLAIM, 0, 'a\n', { stream: 'transcript', executor: 'opencode' })(instance);
+        await put(CURRENT_CLAIM, 0, 'a\n', { stream: 'transcript-raw' })(instance);
+        expect(ingest.calls).toHaveLength(1);
+        expect(ingest.calls[0]?.input).toMatchObject({ executor: 'opencode', stream: 'transcript-raw' });
+    });
+
+    it('a repeated put reads the same chunk again; the store is what makes that a no-op', async () => {
+        const ingest = recorder();
+        const instance = await boot(SCOPE, memoryArtifacts().store, ingest);
+        await put(CURRENT_CLAIM, 0, 'a\n')(instance);
+        const again = await put(CURRENT_CLAIM, 0, 'a\n')(instance);
+        expect(again.json()).toEqual({ result: 'duplicate', offset: 0 });
+        expect(ingest.calls).toHaveLength(2);
+    });
+
+    it('a finalize reads every chunk of the stream, in offset order, one at a time', async () => {
+        const ingest = recorder();
+        const instance = await boot(SCOPE, memoryArtifacts().store, ingest);
+        await put(CURRENT_CLAIM, 4, 'c\n')(instance);
+        await put(CURRENT_CLAIM, 0, 'a\n')(instance);
+        await put(CURRENT_CLAIM, 2, 'b\n')(instance);
+        ingest.calls.length = 0;
+        const done = await putManifest(instance, CURRENT_CLAIM, CLAUDE);
+        expect(done.statusCode).toBe(200);
+        expect(ingest.calls.map((c) => c.input.chunks.map((x) => x.offset))).toEqual([[0], [2], [4]]);
+    });
+
+    it('other streams, and executors it cannot read, are never read', async () => {
+        const ingest = recorder();
+        const instance = await boot(SCOPE, memoryArtifacts().store, ingest);
+        await putChunk(instance, CURRENT_CLAIM, 0, 'log line\n');
+        await put(CURRENT_CLAIM, 0, 'a\n', { stream: 'transcript', executor: 'some-other-agent' })(instance);
+        await putManifest(instance, CURRENT_CLAIM);
+        expect(ingest.calls).toEqual([]);
+    });
+
+    it('a failing ingest never fails the upload', async () => {
+        const instance = await boot(SCOPE, memoryArtifacts().store, recorder(true));
+        const sent = await put(CURRENT_CLAIM, 0, 'a\n')(instance);
+        const done = await putManifest(instance, CURRENT_CLAIM, CLAUDE);
+        expect(sent.statusCode).toBe(200);
+        expect(done.statusCode).toBe(200);
+    });
+
+    it('a refused or conflicting put is not read', async () => {
+        const ingest = recorder();
+        const instance = await boot(SCOPE, memoryArtifacts().store, ingest);
+        await put(CURRENT_CLAIM, 0, 'a\n')(instance);
+        ingest.calls.length = 0;
+        const conflict = await put(CURRENT_CLAIM, 0, 'different\n')(instance);
+        expect(conflict.statusCode).toBe(409);
+        expect(ingest.calls).toEqual([]);
     });
 });

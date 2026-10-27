@@ -38,6 +38,7 @@ import { closeMergedPr } from './job-store-merge.js';
 import { answerQuestionBy, askQuestionReport } from './job-store-questions.js';
 import { readReviewFor, requestReviewFor } from './job-store-reviews.js';
 import { claimJob } from './job-store-claim.js';
+import { activityRecordsOf, taskJobIdsOf } from './job-store-activity-records.js';
 import { orgDemand } from './job-store-admission.js';
 import { claimReclaimRow, ackReclaimRow, renewReclaimRow } from './job-store-reclaims.js';
 import {
@@ -62,6 +63,9 @@ import {
 import type { CreateJobStoreDeps, JobStore, JobStoreContext, RuntimeVitals } from './job-store-types.js';
 import { heartbeatJob, sessionReport, progressReport, gatesReport, completeJob } from './job-store-worker.js';
 import { stageConclusion } from './job-store-conclusions.js';
+import { readGateRuns, writeGateRun } from './job-store-gate-runs.js';
+import { writePrOperation } from './job-store-pr-operations.js';
+import { ingestTranscriptTools } from './job-store-transcript-tools.js';
 import { readPhaseCheckpoints, writePhaseCheckpoint } from './job-store-phase-checkpoints.js';
 
 /**
@@ -87,6 +91,10 @@ function workerMethods(
     | 'stageConclusion'
     | 'writePhaseCheckpoint'
     | 'readPhaseCheckpoints'
+    | 'writeGateRun'
+    | 'readGateRuns'
+    | 'writePrOperation'
+    | 'ingestTranscriptTools'
     | 'leases'
     | 'artifactScope'
     | 'restoreScope'
@@ -155,6 +163,26 @@ function workerMethods(
         async readPhaseCheckpoints(id, leaseToken, runClaimSeq) {
             await gate();
             return readPhaseCheckpoints(ctx, { id, leaseToken }, runClaimSeq);
+        },
+
+        async writeGateRun(id, leaseToken, run) {
+            await gate();
+            return writeGateRun(ctx, { id, leaseToken }, run);
+        },
+
+        async readGateRuns(id, leaseToken, runClaimSeq) {
+            await gate();
+            return readGateRuns(ctx, { id, leaseToken }, runClaimSeq);
+        },
+
+        async writePrOperation(id, leaseToken, operation) {
+            await gate();
+            return writePrOperation(ctx, { id, leaseToken }, operation);
+        },
+
+        async ingestTranscriptTools(id, input) {
+            await gate();
+            return ingestTranscriptTools(ctx, id, input);
         },
 
         async leases(ids, withThreads) {
@@ -322,6 +350,16 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async get(id) {
             await gate();
             return getJob(ctx, id);
+        },
+
+        async taskJobIds(id) {
+            await gate();
+            return taskJobIdsOf(ctx, id);
+        },
+
+        async activityRecords(jobIds) {
+            await gate();
+            return activityRecordsOf(ctx, jobIds);
         },
 
         async waitForSettle(id, timeoutMs) {

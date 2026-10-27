@@ -9,7 +9,7 @@ import {
 } from '@factory-ai/core';
 import type { ExecutorScope } from '@factory-ai/core';
 import { GATES_OUTCOMES, type RecordedEvidence } from '../../db/evidence-policy.js';
-import type { FailureCause, FailureKind, GateReport, JobOutcome, JobStatus } from '../../db/jobs/job-store-types.js';
+import type { FailureCause, FailureKind, JobOutcome, JobStatus } from '../../db/jobs/job-store-types.js';
 import {
     type ParamValues,
     type WorkflowDefinition,
@@ -17,13 +17,11 @@ import {
     interpolate,
     nodeOf,
 } from '../../db/workflows/workflow-schema.js';
-import { body } from '../helpers.js';
 import {
     AGENT_TURNS_MAX,
     BRANCH_LIMIT,
     CONTEXT_COST_MAX,
     CONTEXT_TOKENS_MAX,
-    GATE_NAME_LIMIT,
     INT4_MAX,
     INT4_MIN,
     LEASE_SECONDS_MAX,
@@ -186,40 +184,6 @@ export function buildWorkflowSelection(
         },
         command: interpolated,
     };
-}
-
-function validateGateEntry(raw: unknown): GateReport | string {
-    const entry = body(raw);
-    const { name, status, exitCode, output } = entry;
-    if (typeof name !== 'string' || !name.trim() || name.length > GATE_NAME_LIMIT) {
-        return `every gate needs a name of at most ${GATE_NAME_LIMIT} characters`;
-    }
-    if (status !== 'running' && status !== 'passed' && status !== 'failed') {
-        return "gate status must be 'running', 'passed' or 'failed'";
-    }
-    if (exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode)) {
-        return 'gate exitCode must be an integer or null';
-    }
-    if (output !== undefined && output !== null && typeof output !== 'string') {
-        return 'gate output must be a string or null';
-    }
-    return {
-        name,
-        status,
-        exitCode: (exitCode as number | undefined) ?? null,
-        output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
-    };
-}
-
-export function validateGates(raw: unknown): { ok: true; value: GateReport[] } | { ok: false; message: string } {
-    if (!Array.isArray(raw)) return { ok: false, message: 'gates must be an array' };
-    const results: GateReport[] = [];
-    for (const item of raw) {
-        const one = validateGateEntry(item);
-        if (typeof one === 'string') return { ok: false, message: one };
-        results.push(one);
-    }
-    return { ok: true, value: results };
 }
 
 export interface CompleteFields {
@@ -472,6 +436,10 @@ export interface Publication {
     baseBranch: string;
 }
 
+/** A branch name the board stores: 1..BRANCH_LIMIT characters of `[\w./-]`. */
+export const isBranchField = (value: unknown): value is string =>
+    typeof value === 'string' && value.length >= 1 && value.length <= BRANCH_LIMIT && !/[^\w./-]/.test(value);
+
 /**
  * The publication a run reports beside a successful publish (036): optional and null, and
  * shape-validated rather than trusted — a forged report must not pin another org's repository
@@ -498,7 +466,7 @@ export function validatePublication(
         ['headBranch', headBranch],
         ['baseBranch', baseBranch],
     ] as const) {
-        if (typeof value !== 'string' || value.length < 1 || value.length > BRANCH_LIMIT || /[^\w./-]/.test(value)) {
+        if (!isBranchField(value)) {
             return { ok: false, message: `publication.${key} must be a branch name (1..${BRANCH_LIMIT})` };
         }
     }

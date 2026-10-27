@@ -15,6 +15,8 @@ import type {
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board/board.js';
+import type { GateRunRecord, GateRunWrite } from '../../src/board/board-gate-runs.js';
+import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
@@ -23,7 +25,7 @@ import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src
 import type { HelperResult } from '../../src/helpers.js';
 import { createLoop, type Loop } from '../../src/loop/loop.js';
 import type { GateStack, LoopRuntime } from '../../src/loop/loop-types.js';
-import type { PublishOptions, PublishResult, ReclaimResult, SyncResult } from '../../src/publish/publish.js';
+import type { PublishOptions, PublishResult, ReclaimResult, SyncResult, TreeProbe } from '../../src/publish/publish.js';
 import type { PublishRelay } from '../../src/publish/publish-control.js';
 import type { ControlEntry, QuestionRelay, QuestionResolution } from '../../src/question-control.js';
 import { cancelPendingQuestions, hasPendingQuestion, newControl, resolveQuestion } from '../../src/question-control.js';
@@ -86,6 +88,12 @@ export interface BoardStub extends Board {
     }[];
     /** The run claim sequence of every phase checkpoint read the loop made, with the job's lease token. */
     phaseCheckpointReads: { id: string; leaseToken: string; runClaimSeq: number }[];
+    /** Every gate-run row the loop wrote (issue #983), in write order. */
+    gateRunsWritten: GateRunWrite[];
+    /** The run claim sequence of every gate-run read the loop made. */
+    gateRunReads: { id: string; leaseToken: string; runClaimSeq: number }[];
+    /** Every PR operation the loop recorded (issue #983), with the lease token it wrote under. */
+    prOperationsWritten: { id: string; leaseToken: string; write: PrOperationWrite }[];
     /** The final envelopes the loop staged before each verdict (issue #821). */
     staged: ({ id: string } & Parameters<Board['complete']>[1])[];
     sessions: { id: string; sessionId: string | null }[];
@@ -151,6 +159,12 @@ export function stubBoard(
         phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
         /** The board's answer to a phase checkpoint write (issue #829); `throw` models a board that throws. */
         phaseCheckpointWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
+        /** The board's answer to a gate-run read (issue #983); null (unreadable) when absent. */
+        gateRuns?: GateRunRecord[] | null | ((signal?: AbortSignal) => Promise<GateRunRecord[] | null>);
+        /** The board's answer to a gate-run write (issue #983). */
+        gateRunWrite?: 'ok' | 'lost' | 'rejected' | 'throw';
+        /** The board's answer to a PR-operation write (issue #983). */
+        prOperation?: 'ok' | 'lost' | 'rejected' | 'throw';
         /** The board's answer to a staged conclusion (issue #821); held when absent. */
         stageAnswer?: Awaited<ReturnType<Board['stageConclusion']>>;
     } = {}
@@ -167,6 +181,9 @@ export function stubBoard(
         staged: [],
         phaseCheckpointsWritten: [],
         phaseCheckpointReads: [],
+        gateRunsWritten: [],
+        gateRunReads: [],
+        prOperationsWritten: [],
         sessions: [],
         sessionEvidence: [],
         progressed: [],
@@ -292,6 +309,25 @@ export function stubBoard(
             const answer = options.phaseCheckpoints ?? null;
             return typeof answer === 'function' ? answer(signal) : answer;
         },
+        async gateRun(_claimed, write) {
+            board.gateRunsWritten.push(structuredClone(write));
+            if (options.gateRunWrite === 'throw') throw new Error('the board is down');
+            return options.gateRunWrite ?? 'ok';
+        },
+        async prOperation(claimed, write) {
+            board.prOperationsWritten.push({
+                id: claimed.id,
+                leaseToken: claimed.leaseToken,
+                write: structuredClone(write),
+            });
+            if (options.prOperation === 'throw') throw new Error('the board is down');
+            return options.prOperation ?? 'ok';
+        },
+        async gateRuns(claimed, runClaimSeq, signal) {
+            board.gateRunReads.push({ id: claimed.id, leaseToken: claimed.leaseToken, runClaimSeq });
+            const answer = options.gateRuns ?? null;
+            return typeof answer === 'function' ? answer(signal) : answer;
+        },
         async stageConclusion(claimed, result) {
             board.staged.push({ id: claimed.id, ...result });
             return options.stageAnswer ?? 'held';
@@ -329,7 +365,9 @@ export function stubRunner(
         /** Answers popped per reclaimWorktree call, falling back to `reclaim` (issue #344). */
         reclaimSequence?: ReclaimResult[];
         /** The post-gate tree probe's answer, recorded in `probed`; absent probes as unknown (null). */
-        probeTree?: string | null;
+        probeTree?: string | null | (() => string | null);
+        /** The gate-run tree probes (issue #983); absent probes as unknown. */
+        gateTree?: (sinceMs: number | null) => TreeProbe;
         /** The pre-gate no-change read (issue #1020); absent reads as a changed tree, a function may throw. */
         noChange?: boolean | (() => Promise<boolean>);
         /** The dead-service probe (issue #423); every call is counted in `deadServiceProbes`. */
@@ -460,7 +498,12 @@ export function stubRunner(
         async probeTree(probedJob: BoardJob) {
             if (options.probeTree === undefined) return null;
             runner.probed.push(probedJob);
-            return options.probeTree;
+            return typeof options.probeTree === 'function' ? options.probeTree() : options.probeTree;
+        },
+        async probeGateTree(_probed: BoardJob, sinceMs: number | null) {
+            return options.gateTree
+                ? options.gateTree(sinceMs)
+                : { fingerprint: null, content: null, mutatedSince: null };
         },
         async probeNoChange() {
             const { noChange } = options;
@@ -586,7 +629,15 @@ export async function drive(
  */
 export function stubGateStack(
     outcomes: Record<string, number> = {},
-    options: { control?: boolean; polled?: boolean; setup?: GateRun | null } = {}
+    options: {
+        control?: boolean;
+        polled?: boolean;
+        setup?: GateRun | null;
+        /** Called as each declared gate executes: a gate that edits the tree moves what the probe reads. */
+        onRun?: (name: string) => void;
+        /** The ad-hoc server's `quiesce`: settles once no ad-hoc run is in flight; immediate when absent. */
+        quiesce?: (token: string) => Promise<void>;
+    } = {}
 ) {
     const stack = {
         controlOpened: [] as string[],
@@ -610,6 +661,8 @@ export function stubGateStack(
         registeredTokens: [] as string[],
         unregistered: 0,
         cancelled: [] as string[],
+        /** Each token the gate server closed to ad-hoc runs, in order. */
+        quiesced: [] as string[],
         advertised: '',
         ran: { key: '', names: [] as string[] },
         /** Every pre-agent `runSetup` call's options (issue #733), in order. */
@@ -625,6 +678,7 @@ export function stubGateStack(
             },
             runGate: async (key: string, name: string) => {
                 stack.ran = { key, names: [...stack.ran.names, name] };
+                options.onRun?.(name);
                 const code = outcomes[name] ?? 0;
                 return { exitCode: code, output: code === 0 ? `${name} ok` : `${name} failed badly` };
             },
@@ -643,6 +697,10 @@ export function stubGateStack(
             },
             cancel: (token: string) => {
                 stack.cancelled.push(token);
+            },
+            quiesce: async (token: string) => {
+                stack.quiesced.push(token);
+                await options.quiesce?.(token);
             },
             // The run-control channel (issue #442) is opt-in: a stack without it models a driver
             // whose endpoint could not open, where a Stop kills at once.

@@ -110,20 +110,17 @@ declared service listens. Before connecting to a database or any other backing s
 
 The repository may declare CI-style checks in `.bellows.yaml` — named commands (`test`, `lint`,
 build) that run in a separate container sharing this workspace. When `BELLOWS_GATE_URL` and
-`BELLOWS_GATE_TOKEN` are set, run one with `node`:
+`BELLOWS_GATE_TOKEN` are set, run one with `factory-gate`:
 
 ```bash
-node -e 'fetch(process.env.BELLOWS_GATE_URL+"/run",{method:"POST",headers:{
-"authorization":"Bearer "+process.env.BELLOWS_GATE_TOKEN,"content-type":"application/json"},
-body:JSON.stringify({gate:"test"})}).then(r=>r.json()).then(j=>{console.log("exit",j.exitCode);
-console.log(j.output)})'
+factory-gate test
 ```
 
-`exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
+The answer is JSON, `{"exitCode":0,"output":"..."}`. `exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
 Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
 A gate that sets `on_demand: true` is skipped when you finish and never fails the task: it runs
 only when you call it, so call it when your change touches what it checks.
-A gate that sets `filter: true` accepts `"filter":"<string>"` in the request (up to 256 printable
+A gate that sets `filter: true` accepts `--filter <string>` after the name (up to 256 printable
 characters, one line): the string reaches the gate command as the environment variable
 `GATE_FILTER` for that one run, so run only the tests you changed with it. A filter on a gate that
 did not opt in answers 422. A filtered run is never evidence that the gate passed, and the gates

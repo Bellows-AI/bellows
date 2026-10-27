@@ -4,6 +4,7 @@ import { type CheckpointRead, checkpointCalls, type TranscriptRef, type Transcri
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from '../github-credential-call.js';
 import { type Reclaim, reclaimCalls } from '../reclaim-calls.js';
+import { recordCalls, type RecordBoard } from './board-pr-operations.js';
 import { phaseCheckpointCalls, type PhaseCheckpointBoard } from './board-phase-checkpoints.js';
 import { verdictCalls } from './board-verdict.js';
 import type { TaskRestore } from '../task-restore.js';
@@ -512,7 +513,7 @@ export interface ArtifactManifest {
     terminalCause: string | null;
 }
 
-export interface Board extends PhaseCheckpointBoard {
+export interface Board extends PhaseCheckpointBoard, RecordBoard {
     /**
      * Stores one chunk of an artifact stream at its source byte offset. Authorized by the job's
      * claim sequence, not its lease, so a superseded attempt may still call it; a repeat of the
@@ -965,6 +966,7 @@ export function createBoard({
 
         ...verdictCalls(post, leaseSeconds),
         ...phaseCheckpointCalls(post),
+        ...recordCalls(post),
         ...artifactCalls({ url, token, fetch }),
         ...checkpointCalls(post),
         ...githubCredentialCall({ url, fetch }),

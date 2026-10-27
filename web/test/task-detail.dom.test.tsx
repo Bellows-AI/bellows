@@ -13,7 +13,7 @@ import {
 } from '../../e2e/fixtures/threads.js';
 import { type FetchCall, OPEN_BOARD_SESSION, renderApp, stubFetch } from './dom.js';
 import { expectNoPlaceholder } from './fixtures.js';
-import { runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
+import { NO_GATES, NO_PRS, runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
 
 /** The board as the page reads it: the session, and every thread and activity read answered by `jobs`. */
 function board(jobs: readonly ThreadJob[], extra: (call: FetchCall) => unknown = () => undefined) {
@@ -157,6 +157,9 @@ describe('the task detail page', () => {
                       ]
                     : [],
                 usage: usageBlock(measured ? tokens : null),
+                gates: NO_GATES,
+                prs: NO_PRS,
+                taskActivity: { gates: NO_GATES, prs: NO_PRS },
                 task: taskUsage(
                     jobs[0]!.id,
                     [

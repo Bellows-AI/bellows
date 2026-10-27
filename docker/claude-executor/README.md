@@ -8,6 +8,7 @@ this repo's application.
 | The image — Node 24, `@anthropic-ai/claude-code`, `gh`, `acli`; no plugin | `Dockerfile` | `test.sh` |
 | `ENTRYPOINT` (`/usr/local/bin/factory-launch`): as root, the tool broker, then the drop to `node` | `factory-launch.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | The tool shell: each command as `factory-tool` (1001) through the broker; the run-control proxy | `factory-tool.cjs`, `tool-bash.sh`, `control-proxy.cjs` | `driver/test/tool-broker.test.ts`, `driver/test/control-proxy.test.ts`, `test.sh` |
+| The gate server and run-control calls the skills make: `factory-gate`, `factory-control`, fixed destinations, root-owned (the claude allowlist names exactly these) | `factory-gate.cjs`, `factory-control.cjs` | `driver/test/factory-wrappers.test.ts`, `driver/test/executor-images.test.ts` |
 | `/usr/local/bin/claude-executor`: `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Git/gh guard, wired as the `PreToolUse` hook | `git-guard.cjs`, `claude-home/settings.json` | `driver/test/executor-images.test.ts`, `git-guard.cjs --selftest` |
 | Sidecars: branch reporting to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |

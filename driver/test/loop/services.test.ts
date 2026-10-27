@@ -79,7 +79,7 @@ describe('a dead declared service (issue #423)', () => {
         );
         expect(complete.output).toContain('chown: changing ownership of /data/db: Operation not permitted');
         // The finished work stays recoverable: a draft PR, recorded on the verdict.
-        expect(runner.publishOptions).toEqual([{ draft: true }]);
+        expect(runner.publishOptions).toEqual([{ draft: true, recordPrOperation: expect.any(Function) }]);
         expect(complete.output).toContain(
             '[driver] published factory/1 — https://github.com/Bellows-AI/factory/pull/7'
         );

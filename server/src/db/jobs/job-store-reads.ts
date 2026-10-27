@@ -18,6 +18,7 @@ import type {
 } from './job-store-types.js';
 import type { RestoreScopeResult } from '../restore-types.js';
 import type { JobLeaseInfo, JobThreadFacts } from '../lease-types.js';
+import type { ActivityRecords } from '../../telemetry/run-activity.js';
 import { questionsOfJobs } from './job-store-questions.js';
 import { type TaskCursor, decodeCursor, encodeCursor } from '../task-summary.js';
 
@@ -67,6 +68,19 @@ export interface JobReadStore {
      * holds no such job.
      */
     waitForSettle(id: string, timeoutMs: number): Promise<SettleOutcome | null>;
+
+    /**
+     * The gate executions, reused completion checks, managed PR operations and classified transcript
+     * calls of these jobs (issue #983), for the activity read. Reads only; the reduction is the caller's.
+     */
+    activityRecords(jobIds: readonly string[]): Promise<ActivityRecords>;
+
+    /**
+     * Every job of the task `id` belongs to — its thread plus the named reviews, which carry thread
+     * roots of their own — from board records, so it is the same with telemetry on, off or failing.
+     * Empty when `id` is not a job in this org.
+     */
+    taskJobIds(id: string): Promise<string[]>;
 
     /**
      * Newest first. `output` is not selected — it is unbounded and no list view shows it — and

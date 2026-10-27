@@ -1,7 +1,19 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { BoardJob, DeclaredGate } from './board/board.js';
 import type { DriverConfig } from './config.js';
+import { parseGateRequest, type GateRequest } from './gate-request.js';
+import { createGateAdmission } from './gate-admission.js';
 import { CONTAINER_GONE } from './exec-codes.js';
+import {
+    GateRecordRefused,
+    measuredRun,
+    recordGateRun,
+    type GateEnd,
+    type GateExecution,
+    type GateLedger,
+    type GateMeasure,
+} from './gate-record.js';
+
 import type { GateRunNote } from './timeout-note.js';
 import { createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
@@ -10,18 +22,17 @@ import { reportTail } from './runner.js';
 import { stepLost, type StepBroker } from './step-control.js';
 import type { GateStepRequest } from './supervised-steps.js';
 import type { StepResult } from './supervisor-contract.js';
-import { readBody, respondJson } from './http.js';
+import { respondJson } from './http.js';
 import type { PublishRelay } from './publish/publish-control.js';
 import type { ReviewRelay } from './review/review-control.js';
 import type { CheckpointRelay, ExportRelay } from './export-control.js';
 import type { QuestionRelay, QuestionResolution } from './question-control.js';
-import { parseJsonObject } from './json-parse.js';
+
+export type { GateExecution, GateLedger, GateMeasure, GateRunStart, TreeProbeFn } from './gate-record.js';
 
 const HTTP_OK = 200;
-const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
-const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_CONFLICT = 409;
 const HTTP_UNPROCESSABLE = 422;
 const HTTP_INTERNAL_SERVER_ERROR = 500;
@@ -50,6 +61,8 @@ export interface GateRun {
     output: string;
     /** True when the environment's `setup` command failed: the gate itself never ran. */
     setupFailed?: true;
+    /** What the run measured around the gate command (issue #983); present only for a run given an `execution`. */
+    measure?: GateMeasure;
 }
 
 /**
@@ -67,6 +80,8 @@ export interface GateRunOptions {
     timeoutMs?: number | undefined;
     /** The ad-hoc request's narrowing, set as env `GATE_FILTER` for this one run; never part of the command. */
     filter?: string | undefined;
+    /** Records the run (issue #983): probes the tree inside the queue around it and writes the running row first. */
+    execution?: GateExecution | undefined;
 }
 
 export interface GateManager {
@@ -104,6 +119,9 @@ export interface GateRunner {
     runGate(job: BoardJob, gate: GateStepRequest, signal?: AbortSignal): Promise<StepResult>;
 }
 
+/** What a gate cancelled before it started answers — discarded by whoever cancelled it. */
+const cancelledRun = (): GateRun => ({ exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' });
+
 /** A harness failure, not a verdict: the gate could not be run at all. */
 const gateHarness = (message: string): Error => Object.assign(new Error(message), { code: CONTAINER_GONE });
 
@@ -121,6 +139,8 @@ function answerOnAbort(queued: Promise<GateRun>, signal: AbortSignal, cancelled:
 }
 
 const MS_PER_MINUTE = 60_000;
+/** One tree probe around a gate run: a probe that outlasts it reads as unknown, never as a hang of the gate. */
+export const GATE_RUN_PROBE_MS = 15_000;
 
 /** A declared gate's `timeout:` in ms; undefined when it declares none (or the claim carried no positive number). */
 export const declaredTimeoutMs = (gate: DeclaredGate): number | undefined =>
@@ -222,11 +242,14 @@ export function createSupervisedGateManager({
     config,
     runner,
     gateTimeoutMs = config.gateTimeoutMs,
+    probeTimeoutMs = GATE_RUN_PROBE_MS,
 }: {
     config: DriverConfig;
     runner: GateRunner;
     /** The wall-clock cap on ONE gate. A hung gate must fail the gate, not stall the verdict forever. */
     gateTimeoutMs?: number;
+    /** The cap on one tree probe around a recorded gate. */
+    probeTimeoutMs?: number;
 }): GateManager {
     const entries = new Map<string, SupervisedEntry>();
     const serialize = keyQueue();
@@ -259,7 +282,7 @@ export function createSupervisedGateManager({
         work: (entry: SupervisedEntry) => Promise<GateRun>
     ): Promise<GateRun> => {
         if (!entries.has(key)) return Promise.reject(gateHarness(`no gate environment for ${key}`));
-        const cancelled: GateRun = { exitCode: CANCELLED_EXIT_CODE, output: '[driver] gate cancelled' };
+        const cancelled = cancelledRun();
         if (signal?.aborted) return Promise.resolve(cancelled);
         const queued = serialize(key, async (): Promise<GateRun> => {
             if (signal?.aborted) return cancelled;
@@ -276,7 +299,7 @@ export function createSupervisedGateManager({
             entries.set(key, { key, job, envBody, pendingSetup: pendingSetupOf(entries.get(key), job) });
         },
 
-        runGate(key, _name, command, { signal, timeoutMs, filter } = {}) {
+        runGate(key, _name, command, { signal, timeoutMs, filter, execution } = {}) {
             return inQueue(key, signal, async (entry) => {
                 // The worktree persists across the attempt's gates, so setup runs once, before the
                 // first gate, until it succeeds.
@@ -286,12 +309,11 @@ export function createSupervisedGateManager({
                     if (setupRun.exitCode !== 0) return { ...setupRun, setupFailed: true as const };
                     if (entry.pendingSetup === pending) entry.pendingSetup = null;
                 }
-                return exec(entry, {
-                    command,
-                    deadlineMs: gateDeadlineMs(config, gateTimeoutMs, timeoutMs),
-                    signal,
-                    filter,
-                });
+                const run = { command, deadlineMs: gateDeadlineMs(config, gateTimeoutMs, timeoutMs), signal, filter };
+                if (!execution) return exec(entry, run);
+                return (
+                    (await measuredRun(execution, { signal, probeTimeoutMs }, () => exec(entry, run))) ?? cancelledRun()
+                );
             });
         },
 
@@ -347,6 +369,8 @@ export interface GateClaim {
      * agent's call answers incomplete, and the attempt is the loop's to interrupt.
      */
     onInfraLoss?: (reason: string) => void;
+    /** The claim's gate-run record (issue #983); absent, an ad-hoc run is not recorded. */
+    ledger?: GateLedger;
 }
 
 export interface GateServer {
@@ -364,6 +388,12 @@ export interface GateServer {
     unregister(token: string): void;
     /** A stop, lost lease or Remove: the same as `unregister`, named for the loop's intent. */
     cancel(token: string): void;
+    /**
+     * Closes the token to new ad-hoc runs (503, retryable) and resolves once every one already admitted
+     * has settled, its terminal row written (issue #983): the completion pass reads the gate record only
+     * after this, so no run is still on its way to a verdict it would not see. `register` reopens it.
+     */
+    quiesce(token: string): Promise<void>;
     /**
      * The latest ad-hoc run per declared gate name, as the server recorded it completing (issue
      * #339) — what a timed-out run's kill note quotes as "the last gate verdicts". A harness
@@ -420,39 +450,8 @@ export interface GateServer {
     close(): Promise<void>;
 }
 
-/** `{"gate":"<≤64 chars>"}` — a body many times that size is an attack, not a request. */
-const BODY_LIMIT = 4096;
-
 /** The env name a filter reaches the gate command as. */
 const GATE_FILTER_ENV = 'GATE_FILTER';
-/** A filter is a test name or path pattern, not a program: bounded, printable, one line. */
-const FILTER_MAX_CHARS = 256;
-const PRINTABLE_FILTER = /^[\x20-\x7e]+$/;
-
-type GateRequest = { ok: true; gate: string; filter?: string } | { ok: false; status: number; error: string };
-
-/** Reads and validates the ad-hoc endpoint's request body: `{"gate": "<declared name>"}`. */
-const parseGateRequest = async (request: IncomingMessage): Promise<GateRequest> => {
-    const raw = await readBody(request, BODY_LIMIT);
-    if (raw === null) return { ok: false, status: HTTP_PAYLOAD_TOO_LARGE, error: 'body too large' };
-    const parsed = parseJsonObject(raw);
-    if (parsed === null) return { ok: false, status: HTTP_BAD_REQUEST, error: 'body must be JSON' };
-    if (typeof parsed.gate !== 'string' || !parsed.gate.trim()) {
-        return { ok: false, status: HTTP_BAD_REQUEST, error: 'gate must be a name' };
-    }
-    if (parsed.filter === undefined) return { ok: true, gate: parsed.gate };
-    if (typeof parsed.filter !== 'string' || !parsed.filter.trim() || parsed.filter.length > FILTER_MAX_CHARS) {
-        return {
-            ok: false,
-            status: HTTP_BAD_REQUEST,
-            error: `filter must be 1-${FILTER_MAX_CHARS} printable characters`,
-        };
-    }
-    if (!PRINTABLE_FILTER.test(parsed.filter)) {
-        return { ok: false, status: HTTP_BAD_REQUEST, error: 'filter must be printable ASCII on one line' };
-    }
-    return { ok: true, gate: parsed.gate, filter: parsed.filter };
-};
 
 /** Why an ad-hoc call of `gate` answers 422, or null: a timeout past what the call can wait, a filter it did not opt into. */
 const adHocRefusal = (gate: DeclaredGate, filter: string | undefined): string | null => {
@@ -481,36 +480,74 @@ const runRegisteredGate = async (
     // A cancelled token runs nothing more.
     const { gate, filter } = target;
     if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
+    // The run's record (issue #983): one execution id, a running row before the gate executes, and
+    // exactly one terminal row on every exit below — `end` is what the `finally` writes.
+    const record = claim.ledger
+        ? recordGateRun(claim.ledger, {
+              gate,
+              source: 'adhoc',
+              filtered: filter !== undefined,
+              requireRecord: true,
+              signal,
+          })
+        : null;
+    let end: GateEnd = { error: new Error('the gate run ended without an answer') };
+    try {
+        const unready = await acquireFor(manager, claim);
+        if (unready) {
+            end = { error: unready };
+            return {
+                status: HTTP_INTERNAL_SERVER_ERROR,
+                body: { error: `gate environment failed to start: ${unready.message}` },
+            };
+        }
+        try {
+            const outcome = await manager.runGate(claim.key, gate.name, gate.command, {
+                signal,
+                timeoutMs: declaredTimeoutMs(gate),
+                filter,
+                execution: record?.execution,
+            });
+            end = { run: outcome, cancelled: signal.aborted };
+            // A cancelled run's answer is whatever the kill left — never a verdict to record.
+            if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
+            const { measure: _measure, ...verdict } = outcome;
+            return { status: HTTP_OK, body: record ? { ...verdict, executionId: record.executionId } : verdict };
+        } catch (e) {
+            end = { error: e, cancelled: signal.aborted };
+            return failedRunAnswer(e, claim, signal);
+        }
+    } finally {
+        await record?.finish(end);
+    }
+};
+
+/** Acquires the checkout's gate environment for the claim; the error that kept it from starting, or null. */
+const acquireFor = async (manager: Pick<GateManager, 'acquire'>, claim: GateClaim): Promise<Error | null> => {
     try {
         const envBody = claim.freshEnv ? await claim.freshEnv() : (claim.envBody ?? '');
         await manager.acquire(claim.key, claim.image, envBody, claim.job && { job: claim.job });
+        return null;
     } catch (e) {
-        return {
-            status: HTTP_INTERNAL_SERVER_ERROR,
-            body: { error: `gate environment failed to start: ${(e as Error).message}` },
-        };
+        return e as Error;
     }
-    try {
-        const outcome = await manager.runGate(claim.key, gate.name, gate.command, {
-            signal,
-            timeoutMs: declaredTimeoutMs(gate),
-            filter,
-        });
-        // A cancelled run's answer is whatever the kill left — never a verdict to record.
-        if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
-        return { status: HTTP_OK, body: outcome };
-    } catch (e) {
-        if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
-        if (stepLost(e)) {
-            const reason = `the task supervisor running the gate was lost: ${(e as Error).message}`;
-            claim.onInfraLoss?.(reason);
-            return { status: HTTP_SERVICE_UNAVAILABLE, body: { error: reason, incomplete: true } };
-        }
-        if ((e as { code?: number }).code === CONTAINER_GONE) {
-            return { status: HTTP_CONFLICT, body: { error: 'gate environment is gone' } };
-        }
-        return { status: HTTP_INTERNAL_SERVER_ERROR, body: { error: (e as Error).message } };
+};
+
+/** The ad-hoc answer for a gate run that threw: cancelled, unrecorded, a lost supervisor, a gone container, or a fault. */
+const failedRunAnswer = (e: unknown, claim: GateClaim, signal: AbortSignal): { status: number; body: unknown } => {
+    if (signal.aborted) return { status: HTTP_CONFLICT, body: { error: 'gate run cancelled' } };
+    if (e instanceof GateRecordRefused) {
+        return { status: HTTP_SERVICE_UNAVAILABLE, body: { error: e.message, retryable: true } };
     }
+    if (stepLost(e)) {
+        const reason = `the task supervisor running the gate was lost: ${(e as Error).message}`;
+        claim.onInfraLoss?.(reason);
+        return { status: HTTP_SERVICE_UNAVAILABLE, body: { error: reason, incomplete: true } };
+    }
+    if ((e as { code?: number }).code === CONTAINER_GONE) {
+        return { status: HTTP_CONFLICT, body: { error: 'gate environment is gone' } };
+    }
+    return { status: HTTP_INTERNAL_SERVER_ERROR, body: { error: (e as Error).message } };
 };
 
 /** Mutates the STORED claim — replacing it would read as a cancel to a request already holding it. */
@@ -536,6 +573,28 @@ const hangupSignal = (reply: ServerResponse): AbortSignal => {
     return hangup.signal;
 };
 
+/**
+ * The request's body, unless its token was cancelled while the body was still arriving: the
+ * claim read before is then the dead session's, and nothing may be acquired for it.
+ */
+const readGateRequest = async (request: IncomingMessage, stillLive: () => boolean): Promise<GateRequest> => {
+    const parsed = await parseGateRequest(request);
+    if (!stillLive()) return { ok: false, status: HTTP_CONFLICT, error: 'gate run cancelled' };
+    return parsed;
+};
+
+/** Notes the latest completed run of a gate for its token: the timeout note's raw material. */
+const recordNote = (
+    history: Map<string, Map<string, GateRunNote>>,
+    token: string,
+    name: string,
+    exitCode: number | null
+): void => {
+    const runs = history.get(token) ?? new Map<string, GateRunNote>();
+    runs.set(name, { name, exitCode, at: new Date().toISOString() });
+    history.set(token, runs);
+};
+
 export function createGateServer({
     host,
     manager,
@@ -549,6 +608,8 @@ export function createGateServer({
     const claims = new Map<string, GateClaim>();
     /** Per token, the controller every ad-hoc run of it listens on — `cancel` aborts it. */
     const cancels = new Map<string, AbortController>();
+    /** Per token, the ad-hoc runs admitted and not yet settled, and whether more are still admitted. */
+    const admission = createGateAdmission();
     /** Per token, the latest completed run per gate name — the timeout note's raw material. */
     const history = new Map<string, Map<string, GateRunNote>>();
     /** The stop poll and the question routes, per control token (`control-channel.ts`). */
@@ -574,7 +635,7 @@ export function createGateServer({
 
         const hangup = hangupSignal(reply);
 
-        const parsedRequest = await readGateRequest(request, auth, claim);
+        const parsedRequest = await readGateRequest(request, () => claims.get(auth) === claim);
         if (!parsedRequest.ok) return respond(reply, parsedRequest.status, { error: parsedRequest.error });
 
         // Only a DECLARED name runs. An arbitrary command string here would make the runner's
@@ -585,33 +646,24 @@ export function createGateServer({
         const refusal = adHocRefusal(gate, parsedRequest.filter);
         if (refusal) return respond(reply, HTTP_UNPROCESSABLE, { error: refusal });
 
+        if (admission.isClosed(auth)) {
+            return respond(reply, HTTP_SERVICE_UNAVAILABLE, { error: 'ad-hoc gate runs are closed', retryable: true });
+        }
         const cancelled = AbortSignal.any([cancels.get(auth)?.signal ?? AbortSignal.abort(), hangup]);
-        const result = await runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled);
+        const result = await admission.admit(
+            auth,
+            runRegisteredGate(manager, claim, { gate, filter: parsedRequest.filter }, cancelled)
+        );
         // A filtered run is a partial answer: it never stands as the gate's latest run.
         if (result.status === HTTP_OK && parsedRequest.filter === undefined)
-            record(auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
+            recordNote(history, auth, gate.name, (result.body as { exitCode: number | null }).exitCode);
         return respond(reply, result.status, withDeadNote(result, claim));
-    };
-
-    /**
-     * The request's body, unless its token was cancelled while the body was still arriving: the
-     * claim read before is then the dead session's, and nothing may be acquired for it.
-     */
-    const readGateRequest = async (request: IncomingMessage, token: string, claim: GateClaim): Promise<GateRequest> => {
-        const parsed = await parseGateRequest(request);
-        if (claims.get(token) !== claim) return { ok: false, status: HTTP_CONFLICT, error: 'gate run cancelled' };
-        return parsed;
-    };
-
-    const record = (token: string, name: string, exitCode: number | null): void => {
-        const runs = history.get(token) ?? new Map<string, GateRunNote>();
-        runs.set(name, { name, exitCode, at: new Date().toISOString() });
-        history.set(token, runs);
     };
 
     return {
         register(token, claim) {
             claims.set(token, { ...claim, envBody: claim.envBody ?? '' });
+            admission.open(token);
             history.set(token, new Map());
             cancels.set(token, new AbortController());
         },
@@ -620,11 +672,13 @@ export function createGateServer({
             claims.delete(token);
             history.delete(token);
             cancels.delete(token);
+            admission.forget(token);
             controller?.abort();
         },
         cancel(token) {
             this.unregister(token);
         },
+        quiesce: (token) => admission.close(token),
         openControl: (token, relay, publisher, reviewer) => channel.open(token, relay, publisher, reviewer),
         grantAgent: (token, agentToken) => channel.grantAgent(token, agentToken),
         grantExporter: (token, exporterToken, exporter) => channel.grantExporter(token, exporterToken, exporter),

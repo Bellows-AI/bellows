@@ -3,7 +3,8 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { type BoardScanner, storeFor, telemetryFor } from './job-context.js';
-import { buildRunActivity } from '../../telemetry/run-activity.js';
+import { TelemetryError } from '../../telemetry/errors.js';
+import { buildRunActivity, gateActivityOf, prActivityOf } from '../../telemetry/run-activity.js';
 import { followUpRefusal, retryRefusal, waitControlRefusal } from './job-refusals.js';
 import { guardKeyed, idempotencyOf, sendQueued } from './job-idempotency.js';
 import {
@@ -15,7 +16,7 @@ import {
 import { bad, body, guard } from '../helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
-import type { SettleOutcome } from '../../db/jobs/job-store-types.js';
+import type { Job, SettleOutcome } from '../../db/jobs/job-store-types.js';
 import {
     HTTP_ACCEPTED,
     HTTP_CONFLICT,
@@ -498,16 +499,17 @@ export async function handleGetJob(orgs: OrgRegistry, request: FastifyRequest, r
 }
 
 // The run-activity read (issue #339): the run's own progress-over-time chart, bucketed from the
-// session telemetry the executor already reported. A person route, like the job read it extends —
+// session telemetry the executor already reported, beside the run's and the task's gate and PR
+// activity (issue #983), which the board records itself. A person route, like the job read it extends —
 // the org boundary is twice: `store.get` reads the job in the caller's org, and `fetchTaskFacts`
-// resolves the task only through `job_execution.org_id` rows of that org. TELEMETRY_SOURCE=off is a 503.
+// resolves the task only through `job_execution.org_id` rows of that org. TELEMETRY_SOURCE=off is not
+// a refusal: gates and PRs answer, and the token figures say `unavailable`.
 export async function handleJobActivity(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
     if (!route) return reply;
     const { id } = route;
 
     const telemetry = await telemetryFor(orgs, request);
-    if (!telemetry) return noBoard(reply);
 
     const job = await guard(
         reply,
@@ -523,17 +525,18 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
         reply,
         (e) => request.log.error({ err: e }, 'job activity read failed'),
         async () => {
-            const { taskId, facts } = await telemetry.fetchTaskFacts({
-                jobId: id,
-                rootJobId: run.rootJobId,
-                edits: true,
-            });
-            return buildRunActivity(facts, taskId, id, new Date());
+            const tokens = await tokenActivity(telemetry, run, id);
+            // Task membership is the board's (thread plus named reviews), never telemetry's: the same jobs with telemetry on, off or failing.
+            const taskJobIds = await route.store.taskJobIds(id);
+            const jobIds = [...new Set([id, ...taskJobIds])];
+            const records = await route.store.activityRecords(jobIds);
+            return { tokens, jobIds, records };
         }
     );
     if (!read.ok) return reply;
-    const { task, run: activity } = read.value;
-    // Nothing measured is not a quiet run: `usage.state` says unmeasured and `buckets` stays empty.
+    const { tokens, jobIds, records } = read.value;
+    const activity = tokens.read?.run ?? null;
+    // Nothing measured is not a quiet run: `usage.state` says unmeasured (or unavailable) and `buckets` stays empty.
     return reply.code(HTTP_OK).send({
         jobId: id,
         sessionId: run.sessionId,
@@ -541,9 +544,24 @@ export async function handleJobActivity(orgs: OrgRegistry, request: FastifyReque
         to: activity?.to ?? null,
         bucketMs: activity?.bucketMs ?? null,
         buckets: activity?.buckets ?? [],
-        usage: activity?.usage ?? emptyBlock('unmeasured'),
-        task,
+        usage: activity?.usage ?? emptyBlock(tokens.read ? 'unmeasured' : 'unavailable'),
+        task: tokens.read?.task ?? null,
+        gates: gateActivityOf(records, [id]),
+        prs: prActivityOf(records, [id]),
+        taskActivity: { gates: gateActivityOf(records, jobIds), prs: prActivityOf(records, jobIds) },
     });
+}
+
+/** The token half of the activity read; `read` is null when telemetry is off or unreachable. */
+async function tokenActivity(telemetry: Awaited<ReturnType<typeof telemetryFor>>, run: Job, id: string) {
+    if (!telemetry) return { read: null };
+    try {
+        const { taskId, facts } = await telemetry.fetchTaskFacts({ jobId: id, rootJobId: run.rootJobId, edits: true });
+        return { read: buildRunActivity(facts, taskId, id, new Date()) };
+    } catch (e) {
+        if (e instanceof TelemetryError) return { read: null };
+        throw e;
+    }
 }
 
 // The whole follow-up chain containing this task, oldest first. ANY member resolves to the same

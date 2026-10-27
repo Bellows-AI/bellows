@@ -54,7 +54,7 @@ iso_check 'a tool starts in a directory the CLI shares with it but the broker ma
     agent -e T='printf "%s %s" "$(pwd)" "$(id -u)"' -- \
     sh -c 'mkdir -m 0770 /tmp/shared && cd /tmp/shared && '"$TOOL_SHELL"' -c "$T"'
 iso_check 'a tool reaches the run-control proxy, which forwards to the supervisor'"'"'s relay and holds no token' 'relayed' \
-    agent -e T='curl -s --unix-socket /run/factory-control/control.sock -X POST -d x http://control/publish' -- \
+    agent -e T='factory-control publish' -- \
     sh -c 'mkdir /tmp/relay && node -e "require(\"http\").createServer((q, s) => s.end(\"relayed\")).listen(\"/tmp/relay/control.sock\")" &
         sleep 1; FACTORY_CTL_OUT=/tmp/relay node /usr/local/bin/control-proxy.cjs &
         sleep 1; '"$TOOL_SHELL"' -c "$T"'

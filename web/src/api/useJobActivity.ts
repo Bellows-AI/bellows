@@ -16,6 +16,52 @@ export interface JobActivityBucket {
     edits: number | null;
 }
 
+/** A gate execution's outcome; `unknown` is a transcript call whose result proved nothing. */
+export type GateOutcomeKey =
+    | 'passed'
+    | 'failed'
+    | 'setup_failed'
+    | 'not_started'
+    | 'incomplete'
+    | 'running'
+    | 'unknown';
+export type GateOutcomeCounts = Record<GateOutcomeKey, number>;
+
+/** Null: nothing was recorded, so nothing is claimed. `partial`: some figure is missing or unconfirmed. */
+export type ActivityCoverage = 'complete' | 'partial' | null;
+
+/** The gate half of the activity answer (issue 983), copied from the route's payload. */
+export interface GateActivity {
+    coverage: ActivityCoverage;
+    /** Null when nothing was recorded - never a zero. */
+    executions: number | null;
+    byOutcome: GateOutcomeCounts | null;
+    /** Null when no execution carried both its times. */
+    measuredMs: number | null;
+    measuredCount: number;
+    unmeasuredCount: number;
+    reused: { jobId: string; gate: string; executionId: string; finishedAt: string | null; reason: string }[];
+    /** Gate calls the transcript shows that no board record covers. */
+    observed: { executions: number; byOutcome: GateOutcomeCounts } | null;
+}
+
+export interface PrOperation {
+    jobId: string;
+    operationId: string | null;
+    kind: 'created' | 'reused' | 'agent_created' | 'unknown';
+    repo: string;
+    number: number;
+    url: string;
+}
+
+/** The PR half of the activity answer: operations and the distinct PRs they touched are different counts. */
+export interface PrActivity {
+    coverage: ActivityCoverage;
+    counts: { operations: number; distinct: number } | null;
+    operations: PrOperation[];
+    distinct: { repo: string; number: number; url: string }[];
+}
+
 /** The activity route's whole answer, for one run and the canonical task (reviews included) it belongs to. */
 export interface JobActivity {
     jobId: string;
@@ -28,6 +74,11 @@ export interface JobActivity {
     usage: UsageBlock;
     /** The same payload from any run id of the task; null when no evidence names it. */
     task: TaskUsage | null;
+    /** This run's gate and PR activity. */
+    gates: GateActivity;
+    prs: PrActivity;
+    /** The same over every run of the task. */
+    taskActivity: { gates: GateActivity; prs: PrActivity };
 }
 
 /** A run's activity answer, or the board's refusal to give one. An absent run is still loading. */
@@ -47,7 +98,7 @@ const hasTelemetryKey = (job: Job): boolean => job.sessionId !== null && job.sta
 const refetchKeyOf = (job: Job): string => [job.id, job.sessionId, job.startedAt, job.finishedAt].join('|');
 
 /**
- * The thread's activity answer (issue 339, 530, 847). ONE request, for the newest run with a
+ * The thread's activity answer (issue 339, 530, 847, 983). ONE request, for the newest run with a
  * session: its answer carries the run's chart buckets and the canonical task, whose `runs[].usage`
  * is every other run's tokens (`taskStats` reads them there), so the board reads the task's usage
  * once per refetch instead of once per run. A thread with no such run reads `unavailable` without a

@@ -6,7 +6,14 @@ import { parseLastJsonLine } from '../json-parse.js';
 import { stepLost } from '../step-control.js';
 import { baseBranchOf, isBranchName } from './publish-base.js';
 import { headSha, publicationOp, recordOperation } from './publish-reconcile.js';
-import { publishedResult, pushRecorded, reconcileAgentPr, resolveOrCreatePr, resumePublication } from './publish-pr.js';
+import {
+    type PrOperationRecorder,
+    publishedResult,
+    pushRecorded,
+    reconcileAgentPr,
+    resolveOrCreatePr,
+    resumePublication,
+} from './publish-pr.js';
 
 // The values that stand alone live below this file and are named here, where every caller finds them.
 export {
@@ -146,6 +153,11 @@ export interface PublishResult {
     stale?: true;
     /** What lies under a failed publish (`publishCauseOf` or the transport's own); null when it did not fail. */
     cause: FailureCause | null;
+    /**
+     * The id minted for the PR operation this publish performed and handed to `PublishOptions.recordPrOperation`
+     * (issue #983); absent when nothing was recorded for it.
+     */
+    operationId?: string;
 }
 
 /** How one publish differs from the board's end-of-run one. */
@@ -158,6 +170,8 @@ export interface PublishOptions {
     revision?: string;
     /** Open a NEW pull request as a draft — the agent's mid-run publish. An existing PR is reused as it is. */
     draft?: boolean;
+    /** Receives each PR operation as it happens (issue #983); best effort, never part of the publish's verdict. */
+    recordPrOperation?: PrOperationRecorder;
 }
 
 /**
@@ -456,12 +470,16 @@ export const GIT_STAGE_STEPS: readonly (readonly string[])[] = [
  * read. The claim's base rides as BASE_BRANCH, the branch the probe compares against; probeCheckout
  * pins it as the state's base, so the PR summary, the PR and the recorded base all follow it.
  */
-const probeStep = (repo: string, base: string | null = null): PublishStep => ({
+const probeStep = (repo: string, base: string | null = null, sinceMs: number | null = null): PublishStep => ({
     label: 'probe',
     entrypoint: 'node',
     args: ['-e', gitProbeScript],
     env: false,
-    envLiterals: { REPO: repo, ...(base ? { BASE_BRANCH: base } : {}) },
+    envLiterals: {
+        REPO: repo,
+        ...(base ? { BASE_BRANCH: base } : {}),
+        ...(sinceMs === null ? {} : { MUTATED_SINCE_MS: String(Math.floor(sinceMs)) }),
+    },
     inRepo: false,
 });
 
@@ -485,6 +503,42 @@ export async function probeTreeFingerprint(job: BoardJob, runStep: RunPublishSte
     const probe = await runStep(probeStep(repo)).catch(() => null);
     const fingerprint = parseLastJsonLine<{ fingerprint?: unknown }>(probe?.stdout ?? '', () => ({})).fingerprint;
     return typeof fingerprint === 'string' && fingerprint ? fingerprint : null;
+}
+
+/**
+ * What one probe around a gate run measured (issue #983): the tree fingerprint and, when asked since a
+ * moment, whether any shipped path was touched at or after it. Each is null when unknown; only a
+ * confirmed `false` says untouched.
+ */
+export interface TreeProbe {
+    fingerprint: string | null;
+    /** The content key (git-probe.cjs `contentKeyOf`): the files alone, so a commit of the same bytes keeps it. */
+    content: string | null;
+    mutatedSince: boolean | null;
+}
+
+/**
+ * The fingerprint plus the mutation guard over the same transport as `probeTreeFingerprint`, for the
+ * gate-run record: `sinceMs` (the run's start) asks whether anything was touched since. Never throws
+ * on a probe that failed: that is an unknown, not an error.
+ */
+export async function probeGateTree(
+    job: BoardJob,
+    runStep: RunPublishStep,
+    sinceMs: number | null
+): Promise<TreeProbe> {
+    const repo = checkoutDir(job);
+    if (!repo) return { fingerprint: null, content: null, mutatedSince: null };
+    const probe = await runStep(probeStep(repo, null, sinceMs)).catch(() => null);
+    const read = parseLastJsonLine<{ fingerprint?: unknown; content?: unknown; mutatedSince?: unknown }>(
+        probe?.stdout ?? '',
+        () => ({})
+    );
+    return {
+        fingerprint: typeof read.fingerprint === 'string' && read.fingerprint ? read.fingerprint : null,
+        content: typeof read.content === 'string' && read.content ? read.content : null,
+        mutatedSince: typeof read.mutatedSince === 'boolean' ? read.mutatedSince : null,
+    };
 }
 
 /**
@@ -639,8 +693,15 @@ export async function publishCheckout(
         const draft = options?.draft === true;
         if (!state.dirty && state.unpushed === 0) {
             return (
-                (await reconcileAgentPr(runStep, step, job, state)) ??
-                (await resumePublication(runStep, step, { job, repo, state, plan, draft })) ??
+                (await reconcileAgentPr(runStep, step, { job, state, record: options?.recordPrOperation })) ??
+                (await resumePublication(runStep, step, {
+                    job,
+                    repo,
+                    state,
+                    plan,
+                    draft,
+                    record: options?.recordPrOperation,
+                })) ??
                 publishNothing('no uncommitted changes and nothing unpushed')
             );
         }
@@ -656,10 +717,18 @@ export async function publishCheckout(
         await pushRecorded(runStep, step, { repo, branch, op, sha });
 
         // Reuse the branch's PR when one exists, or open one — see resolveOrCreatePr.
-        const prUrl = await resolveOrCreatePr(runStep, step, { job, branch, plan, state, draft, op });
-        await recordOperation(step, repo, op, { state: 'opened', ...(prUrl ? { prUrl } : {}) });
+        const landed = await resolveOrCreatePr(runStep, step, {
+            job,
+            branch,
+            plan,
+            state,
+            draft,
+            op,
+            record: options?.recordPrOperation,
+        });
+        await recordOperation(step, repo, op, { state: 'opened', ...(landed.prUrl ? { prUrl: landed.prUrl } : {}) });
 
-        return publishedResult(job, branch, state.defaultBranch, prUrl);
+        return publishedResult(job, branch, state.defaultBranch, landed);
     } catch (e) {
         if (stepLost(e)) throw e;
         const message = `${(e as Error).message}`;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { JobActivity, ThreadActivity } from '../src/api/useJobActivity.js';
-import { activityAnswer, job, runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
+import { NO_GATES, NO_PRS, activityAnswer, job, runUsage, taskUsage, usageBlock } from './tasks-fixtures.js';
 import { TaskActivity } from '../src/panels/TaskActivity.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
@@ -39,6 +39,9 @@ const payload = (over: Partial<JobActivity> = {}): JobActivity => ({
     ],
     usage: usageBlock({ input: 3_200_000, output: 500_000, cacheRead: 9_000_000, cacheCreation: 100_000 }),
     task: null,
+    gates: NO_GATES,
+    prs: NO_PRS,
+    taskActivity: { gates: NO_GATES, prs: NO_PRS },
     ...over,
 });
 

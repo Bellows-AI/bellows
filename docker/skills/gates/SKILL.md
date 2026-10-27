@@ -14,14 +14,17 @@ workspace, so anything you have written to the tree is exactly what the gates se
 ## Running a gate
 
 ```bash
-curl -sf -X POST "$BELLOWS_GATE_URL/run" \
-    -H "authorization: Bearer $BELLOWS_GATE_TOKEN" \
-    -H "content-type: application/json" \
-    -d '{"gate":"test"}'
+factory-gate test
 ```
 
-The answer is JSON: `{"exitCode":0,"output":"..."}`. `exitCode` `0` means the gate passed; anything
-else failed, and `output` carries its tail — read it, fix what it names, run the gate again.
+`factory-gate <name>` sends the request to the gate server with this run's credentials and prints the
+answer unchanged. A gate that accepts a filter takes `--filter <string>` after the name (see below). It
+exits non-zero when no answer came at all, and with 22 for an answer that is not a 2xx (its body is still
+printed, with the status on stderr).
+
+The answer is JSON: `{"exitCode":0,"output":"...","executionId":"..."}`. `exitCode` `0` means the gate passed; anything
+else failed, and `output` carries its tail — read it, fix what it names, run the gate again. A 503 with
+`"retryable":true` means the run could not be recorded and did not start: call it again.
 
 If the answer also carries `deadServices`, a service the repository declared (a database, a cache) has
 died: the note names its exit, reason and last log lines. That is an environment fault you cannot fix
@@ -31,6 +34,8 @@ do not work around it by installing the service yourself; end with `FACTORY_BLOC
 Run, read, fix, run again as often as the work needs: every answer is the gate's own result on the
 tree as it is now. Before every push, run the declared gates that cover your change and fix a red
 one before you push; the gates that run when you finish are a backstop, not a reason to skip them.
+A gate you ran unfiltered that passed on exactly the tree you finish with, with nothing touched while it
+ran, is reported as reused when you finish instead of running again; any later change runs it.
 An unavailable gate (an environment failure) is reported, not a blocker; the pull request itself
 (the github skill) is held back by a gate only where the repository sets `policy: gates: required`. The declared gates also run when you finish and a failing one fails
 the task, but the work still ships as a draft; only a repository that sets `policy: gates:
@@ -47,8 +52,8 @@ your own commands instead. Do not guess the URL.
   run one at any point to check partial progress.
 - A gate whose `.bellows.yaml` entry sets `on_demand: true` is skipped when you finish and never
   fails the task: it runs only when you call it. Call it when your change touches what it checks.
-- A gate whose `.bellows.yaml` entry sets `filter: true` accepts `"filter":"<string>"` in the request
-  (`-d '{"gate":"test","filter":"test/api/users.test.js"}'`), up to 256 printable characters on one
+- A gate whose `.bellows.yaml` entry sets `filter: true` accepts `--filter <string>` after the name
+  (`factory-gate test --filter test/api/users.test.js`), up to 256 printable characters on one
   line. The string reaches the gate command as the environment variable `GATE_FILTER` for that one
   run; the command must read it, so check the gate's script before relying on it. Use it to run
   only the tests your change touches. A filter on a gate that did not opt in answers 422: run it
