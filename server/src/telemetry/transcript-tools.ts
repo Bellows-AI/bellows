@@ -84,10 +84,11 @@ export interface PendingResult {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;
-const GATE_RUN = /^\s*curl\b.*\$\{?BELLOWS_GATE_URL\}?\/run\b/s;
-const GATE_NAME = /\\?"gate\\?"\s*:\s*\\?"([A-Za-z0-9_.:-]+)/;
-const GATE_FILTER = /\\?"filter\\?"\s*:/;
-const PUBLISH = /^\s*curl\b.*control\.sock\b[^|;&]*\/publish\b/s;
+/** The wrappers the baked skills call (`docker/*-executor/factory-gate.cjs`, `factory-control.cjs`), #1061. */
+const GATE_RUN = /^\s*factory-gate(?:\s|$)/;
+const GATE_NAME = /^\s*factory-gate\s+['"]?([A-Za-z0-9_.:-]+)['"]?(?=\s|$)/;
+const GATE_FILTER = /\s--filter(?:\s|=|$)/;
+const PUBLISH = /^\s*factory-control\s+publish(?:\s|$)/;
 const PR_CREATE = /^\s*gh\s+pr\s+create\b/;
 const PR_LOOKUP = /^\s*gh\s+pr\s+(?:view|list)\b/;
 

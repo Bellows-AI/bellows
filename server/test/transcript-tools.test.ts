@@ -264,8 +264,8 @@ describe('a command counts as the invocation it is, not a substring', () => {
     });
 
     it.each([
-        ['$() in double quotes', `${GATE} --write-out "\\n$(printf '{\\"exitCode\\":0}')"`],
-        ['backticks in double quotes', `${GATE} --write-out "\\n\`printf ok\`"`],
+        ['$() in double quotes', `${GATE} --filter "\\n$(printf '{\\"exitCode\\":0}')"`],
+        ['backticks in double quotes', `${GATE} --filter "\\n\`printf ok\`"`],
     ])('a substitution inside double quotes (%s) makes the line compound: unknown', (_name, command) => {
         const [a] = only(command, '{"exitCode":1,"output":"x"}\n{"exitCode":0}');
         expect(a).toMatchObject({ kind: 'gate', operation: 'run' });
@@ -273,10 +273,10 @@ describe('a command counts as the invocation it is, not a substring', () => {
     });
 
     it.each([
-        ['a gate run', `${GATE} -H $'x: it\\'s' --write-out "$(printf ok)"`, '{"exitCode":1}\n{"exitCode":0}', 'gate'],
+        ['a gate run', `${GATE} --filter $'x: it\\'s'`, '{"exitCode":1}\n{"exitCode":0}', 'gate'],
         [
             'a publish',
-            `curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/publish -H $'x: it\\'s'`,
+            `factory-control publish $'it\\'s'`,
             `{"published":true,"prUrl":"${PR_URL}","prNumber":12}`,
             'pr',
         ],
@@ -296,13 +296,47 @@ describe('a command counts as the invocation it is, not a substring', () => {
     });
 
     it.each([
-        ['an echo', 'echo "curl -X POST $BELLOWS_GATE_URL/run"'],
-        ['a grep', 'grep -rn BELLOWS_GATE_URL/run docs'],
+        ['an echo', 'echo "factory-gate test"'],
+        ['a grep', 'grep -rn factory-gate docs'],
         ['a gh mention', 'echo "run gh pr create later"'],
-        ['a publish mention', 'cat notes-control.sock-publish.txt && echo /publish'],
+        ['a publish mention', 'cat factory-control-publish.txt && echo factory-control publish'],
         ['a commit message', 'git commit -m "gh pr create works"'],
     ])('%s mentioning one creates no activity', (_name, command) => {
         expect(only(command, PR_URL)).toEqual([]);
+    });
+
+    // Issue #1061: the skills call the two wrappers, and the curl forms they replaced are no longer a call.
+    it.each([
+        ['a gate by name', 'factory-gate lint', { gate: 'lint', filtered: false }],
+        ['a filtered gate', 'factory-gate test --filter src/a.test.ts', { gate: 'test', filtered: true }],
+    ])('%s is a gate run', (_name, command, expected) => {
+        const [a] = only(command, '{"exitCode":0,"output":"ok"}');
+        expect(a).toMatchObject({ kind: 'gate', operation: 'run', ...expected });
+        expect(a?.result?.outcome).toBe('passed');
+    });
+
+    it('a lone publish through factory-control confirms on a parseable published answer', () => {
+        const [a] = only('factory-control publish', `{"published":true,"prUrl":"${PR_URL}","prNumber":12}`);
+        expect(a).toMatchObject({ kind: 'pr', operation: 'publish' });
+        expect(a?.result).toMatchObject({ outcome: 'passed', prNumber: 12 });
+    });
+
+    it.each([
+        ['a review request', 'factory-control review security-1 security'],
+        ['a review read', 'factory-control review-result security-1'],
+        ['the curl gate form', 'curl -sf -X POST "$BELLOWS_GATE_URL/run" -d \'{"gate":"test"}\''],
+        [
+            'the curl publish form',
+            'curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/publish',
+        ],
+    ])('%s is no gate run and no publish', (_name, command) => {
+        expect(only(command, '{"exitCode":0}')).toEqual([]);
+    });
+
+    it('a factory-gate in a compound line is unknown, not a verdict', () => {
+        const [a] = only('factory-gate test | tail -1', '{"exitCode":0}');
+        expect(a).toMatchObject({ kind: 'gate', operation: 'run' });
+        expect(a?.result?.outcome).toBe('unknown');
     });
 });
 

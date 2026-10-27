@@ -28,6 +28,8 @@
             "Bash(npm i *)",
             "Bash(npm ci)",
             "Bash(npm ci *)",
+            "Bash(factory-gate *)",
+            "Bash(factory-control *)",
             "Edit(//tmp/**)",
             "Write(//tmp/**)"
         ]
