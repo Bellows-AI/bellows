@@ -57,3 +57,5 @@ reporting a number as measured, or "fixing" anything listed here.
   executor are unmeasured, and so is more than one dashboard replica. The per-thread checkout's sync step
   (`driver/src/supervised-steps.ts`) costs 0.35 to 1.5 s mean at 1 to 16 concurrent threads on local-path
   storage, with no trend; the shared-worktree alternative is unmeasured and its code is gone.
+<!-- live test 983-B5: throwaway, safe to delete -->
+<!-- live test 983-B5: edited after the gate -->
