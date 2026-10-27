@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,5 +63,38 @@ describe('migrations', () => {
         // Without a covering partition a range-partitioned table rejects every insert — a
         // failure mode the hypertable did not have.
         expect(init).toMatch(/partition of metric_point default/);
+    });
+
+    /**
+     * Repeatable files leave no ledger row, so an older build knows a database is ahead of it only by
+     * a versioned file it does not ship (server/src/db/migrate.ts). A change to a repeatable file
+     * therefore ships a no-op marker migration named after the repeatable files' hash, and the newest
+     * marker must name the current hash: a released build cannot ship a newer marker than its own, and
+     * a revert to an earlier definition needs a new number too. Iterating on a view before merge
+     * renames the marker; a dev database that applied the old name reads as ahead (views frozen) until
+     * that ledger row is deleted.
+     */
+    const newestMarkerNames = (all: readonly string[], sha: string): boolean => {
+        const markers = all.filter((name) => /^\d+_views_[0-9a-f]{16}\.sql$/.test(name)).sort();
+        return markers.at(-1)?.endsWith(`_views_${sha}.sql`) ?? false;
+    };
+
+    it('ships a newest versioned marker named after the current repeatable files', () => {
+        const hash = createHash('sha256');
+        for (const name of names.filter((n) => n.endsWith('.repeatable.sql'))) hash.update(`${name}\0${read(name)}\0`);
+        const sha = hash.digest('hex').slice(0, 16);
+
+        expect(
+            newestMarkerNames(names, sha),
+            `a repeatable file changed: add a no-op versioned migration named <next number>_views_${sha}.sql`
+        ).toBe(true);
+    });
+
+    it('a revert to an earlier view definition still needs a new marker', () => {
+        const a = 'aaaaaaaaaaaaaaaa';
+        const b = 'bbbbbbbbbbbbbbbb';
+        expect(newestMarkerNames([`090_views_${a}.sql`, `091_views_${b}.sql`], a)).toBe(false);
+        expect(newestMarkerNames([`090_views_${a}.sql`, `091_views_${b}.sql`, `092_views_${a}.sql`], a)).toBe(true);
+        expect(newestMarkerNames(['001_init.sql'], a)).toBe(false);
     });
 });

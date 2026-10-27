@@ -3,6 +3,7 @@ import { readdirSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { MIGRATION_LOCK_KEY, migrate } from '../src/db/migrate.js';
+import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { assertTestDatabase } from './harness.js';
 
 // Two API processes booting at once. Each test migrates its own fresh schema (search_path), so
@@ -173,5 +174,57 @@ describe.skipIf(!enabled)('migrations across processes', () => {
 
         await run;
         expect(await migrationsTable(schema)).not.toBeNull();
+    });
+});
+
+const viewExists = async (schema: string, view: string) => {
+    const rows = await admin`select 1 from pg_views where schemaname = ${schema} and viewname = ${view}`;
+    return rows.length > 0;
+};
+
+// An older build booting against a newer schema (a crash restart mid-rollout, or a rollback) must
+// not rewrite the newer views: it knows only its own repeatable files.
+describe.skipIf(!enabled)('a database ahead of this build', () => {
+    it('skips the repeatable views when the ledger holds a version this build does not ship', async () => {
+        const schema = await freshSchema();
+        const pool = processPool(schema, `mig-ahead-${randomUUID()}`);
+        await migrate(pool, { attempts: 1 });
+        await admin.unsafe(`insert into ${schema}.schema_migrations (version) values ('999_from_a_newer_build.sql')`);
+        await admin.unsafe(`drop view ${schema}.session_summary`);
+
+        const logged: string[] = [];
+        await migrate(pool, { attempts: 1, localUser: true, log: (line) => logged.push(line) });
+
+        expect(await viewExists(schema, 'session_summary')).toBe(false);
+        expect(logged.some((line) => line.includes('999_from_a_newer_build.sql'))).toBe(true);
+        expect(logged.some((line) => line.includes('applying repeatable'))).toBe(false);
+        // Seeding still ran on the skipping path.
+        const org = await admin.unsafe(`select 1 from ${schema}.organization where id = $1`, [LOCAL_ORG_ID]);
+        expect(org.length).toBe(1);
+        expect(await versions(schema)).toBe(VERSIONED + 1);
+    });
+
+    it('a normal re-run still re-applies the repeatable views', async () => {
+        const schema = await freshSchema();
+        const pool = processPool(schema, `mig-rerun-${randomUUID()}`);
+        await migrate(pool, { attempts: 1 });
+        await admin.unsafe(`drop view ${schema}.session_summary`);
+
+        await migrate(pool, { attempts: 1 });
+
+        expect(await viewExists(schema, 'session_summary')).toBe(true);
+    });
+
+    it('a leftover repeatable ledger row does not count as ahead', async () => {
+        const schema = await freshSchema();
+        const pool = processPool(schema, `mig-leftover-${randomUUID()}`);
+        await migrate(pool, { attempts: 1 });
+        await admin.unsafe(`insert into ${schema}.schema_migrations (version) values ('999_x.repeatable.sql')`);
+        await admin.unsafe(`drop view ${schema}.session_summary`);
+
+        await migrate(pool, { attempts: 1 });
+
+        expect(await viewExists(schema, 'session_summary')).toBe(true);
+        expect(await versions(schema)).toBe(VERSIONED);
     });
 });

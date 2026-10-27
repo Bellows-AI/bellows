@@ -7,7 +7,7 @@ the in-memory stores in `server/test/helpers*.ts`.
 | Concern | Code | Test |
 | --- | --- | --- |
 | `metric_point_dedup` identity: agent, metric, session (null-safe), time, source, temporality, start time, `md5(attrs)` | `server/migrations/086_metric_point_identity.sql` | `server/test-db/migration.086-metric-point-identity.test.ts` |
-| Migration runner (advisory-locked, one transaction), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
+| Migration runner (advisory-locked, one transaction; repeatables skipped when the ledger is ahead), boot seeding, session reaping | `server/src/db/migrate.ts` | `core/test/migrations.sql.test.ts`, `server/test-db/migrate.concurrency.test.ts` |
 | Schema (ingest and views: [telemetry.md](telemetry.md)) | `server/migrations/*.sql` | `server/test-db/telemetry.sql.test.ts`, `server/test-db/telemetry.token-reduction.test.ts`, the `job-store.*` suites |
 | Read cache warm-up and degradation | `server/src/stats-service.ts` | `server/test/routes.stats.get.test.ts` |
 | Job and thread reads and writes | `server/src/db/jobs/*` | `server/test-db/job-store.*.test.ts` |
@@ -48,6 +48,15 @@ the in-memory stores in `server/test/helpers*.ts`.
   new versioned file adding a column the views read fails purely on sort order.
 - **`*.repeatable.sql` files are re-applied every boot and drop their views first.** Recording them
   would strand a view fix until a volume is deleted, and `create or replace` cannot retype a column.
+  When `schema_migrations` holds a versioned file this build does not ship, the database is ahead of
+  it and the repeatables are skipped; seeding and reaps still run. So every repeatable change, a revert
+  included, ships a new no-op marker, the newest named after the repeatable files' hash
+  (`090_views_<hash>.sql`). `server/test-db/migrate.concurrency.test.ts`, `core/test/migrations.sql.test.ts`.
+- **A release only expands; a contract waits a release.** New tables, nullable or defaulted columns
+  and appended view columns ship in a release. A drop, rename, type change, `set not null` or a
+  rejecting trigger or check lands at least one release after the last code that touches the object:
+  an older pod still runs against the newer schema mid-rollout and after a rollback.
+  `server/src/db/migrate.ts`, `server/test-db/migrate.concurrency.test.ts`.
 - **The schema names no extension** — `metric_point` is `partition by range (time)` with a single
   DEFAULT partition, which is what lets `database.url` point at RDS or Aurora.
 - **Removing that DEFAULT partition breaks every write.** A range-partitioned table rejects any row
