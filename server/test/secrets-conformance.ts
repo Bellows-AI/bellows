@@ -55,7 +55,10 @@ export function createFaults(): SecretStoreFaults {
 export interface SecretStoreHarness {
     /** A fresh instance over the CURRENT durable state (two of them race on shared state). */
     open(): SecretStore;
-    /** A fresh instance over a structuredClone of the durable state, which becomes the current one. */
+    /**
+     * A fresh instance after a process restart: the reference store clones its state, a database backend
+     * opens a new store over the same database.
+     */
     reopen(): SecretStore;
     clock: { advance(ms: number): void };
     faults: SecretStoreFaults;
@@ -64,9 +67,9 @@ export interface SecretStoreHarness {
     /** Garbage-collect unreferenced versions and prune completed operations past retention. */
     collect(): Promise<void>;
     /** Corrupt the stored active bytes so integrity verification must fail. */
-    tamper(ref: SecretRef): void;
+    tamper(ref: SecretRef): Promise<void>;
     /** `db` is what PostgreSQL would hold (no payload bytes); other keys stand in for the provider. */
-    durableSnapshot(): { db: unknown } & Record<string, unknown>;
+    durableSnapshot(): Promise<{ db: unknown } & Record<string, unknown>>;
     diagnostics(): unknown[];
 }
 
@@ -313,7 +316,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             const store = h.open();
             const identity = orgIdentity();
             const s = await seed(store, identity);
-            const before = structuredClone(h.durableSnapshot());
+            const before = structuredClone(await h.durableSnapshot());
             const writes = h.faults.providerWriteCount;
             const oversize = new Uint8Array(MAX_SECRET_BYTES + 1);
             const createOp = await store.issueOperationId();
@@ -335,7 +338,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
                 'invalid-input',
                 'payload-too-large'
             );
-            expect(h.durableSnapshot()).toEqual(before);
+            expect(await h.durableSnapshot()).toEqual(before);
             expect(h.faults.providerWriteCount).toBe(writes);
             // The operation IDs were never consumed: they still work with a valid payload.
             ok(await store.create({ identity, ref, operationId: createOp, payload: bytes(1) }));
@@ -357,7 +360,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             const store = h.open();
             const identity = orgIdentity();
             const s = await seed(store, identity);
-            const before = structuredClone(h.durableSnapshot());
+            const before = structuredClone(await h.durableSnapshot());
             for (const [bad, reason] of [
                 [null, 'payload-null'],
                 [undefined, 'payload-null'],
@@ -376,7 +379,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
                     reason
                 );
             }
-            expect(h.durableSnapshot()).toEqual(before);
+            expect(await h.durableSnapshot()).toEqual(before);
         },
     },
 
@@ -851,7 +854,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             const store = h.open();
             const good = orgIdentity();
             const s = await seed(store, good);
-            const before = structuredClone(h.durableSnapshot());
+            const before = structuredClone(await h.durableSnapshot());
             const broken = [
                 { ...good, scope: null },
                 { ...good, owningRecord: null },
@@ -883,7 +886,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
                 invalid(await settled(() => store.readActive({ identity, ref: s.ref })));
                 invalid(await settled(() => store.reconcileOperation({ identity, ref: s.ref, operationId })));
             }
-            expect(h.durableSnapshot()).toEqual(before);
+            expect(await h.durableSnapshot()).toEqual(before);
         },
     },
     {
@@ -1337,6 +1340,50 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
     },
     {
         area: 'faults',
+        name: 'a replay paused before staging leaves nothing behind once the operation has finished and the secret is deleted',
+        async run(h) {
+            const a = h.open();
+            const b = h.open();
+            const identity = orgIdentity();
+            const ref = `sec_${randomUUID()}` as SecretRef;
+            const operationId = await a.issueOperationId();
+            const input = { identity, ref, operationId, payload: text('v') };
+            let release!: () => void;
+            let arrive!: () => void;
+            const gate = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            const arrived = new Promise<void>((resolve) => {
+                arrive = resolve;
+            });
+            h.faults.onStep = async (event) => {
+                if (event.step === 'after-intent' && event.operationId === operationId) {
+                    arrive();
+                    await gate;
+                }
+            };
+            const paused = a.create(input);
+            await arrived;
+            noHook(h);
+            const done = ok(await b.create(input));
+            ok(
+                await b.delete({
+                    identity,
+                    ref,
+                    operationId: await b.issueOperationId(),
+                    expectedVersion: done.version,
+                })
+            );
+            await h.collect();
+            const before = await h.durableSnapshot();
+            release();
+            ok(await paused);
+            await h.collect();
+            expect(await h.durableSnapshot()).toEqual(before);
+        },
+    },
+    {
+        area: 'faults',
         name: 'failed deletion cleanup never restores resolution',
         async run(h) {
             const store = h.open();
@@ -1406,7 +1453,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             const store = h.open();
             const identity = orgIdentity();
             const s = await seed(store, identity);
-            const before = structuredClone(h.durableSnapshot());
+            const before = structuredClone(await h.durableSnapshot());
             const writes = h.faults.providerWriteCount;
             const controller = new AbortController();
             controller.abort();
@@ -1423,7 +1470,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
                 'unavailable',
                 'aborted'
             );
-            expect(h.durableSnapshot()).toEqual(before);
+            expect(await h.durableSnapshot()).toEqual(before);
             expect(h.faults.providerWriteCount).toBe(writes);
         },
     },
@@ -1434,7 +1481,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             const store = h.open();
             const identity = orgIdentity();
             const s = await seed(store, identity, text('intact'));
-            h.tamper(s.ref);
+            await h.tamper(s.ref);
             fails(await read(h.reopen(), identity, s.ref), 'integrity-failure', 'integrity-check-failed');
         },
     },
@@ -1461,7 +1508,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             const out = await sentinelRun(h, sentinel);
             expectClean('results and errors', out, sentinel);
             expectClean('diagnostics', h.diagnostics(), sentinel);
-            expectClean('durable db', h.durableSnapshot().db, sentinel);
+            expectClean('durable db', (await h.durableSnapshot()).db, sentinel);
         },
     },
     {
@@ -1470,7 +1517,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
         async run(h) {
             const sentinel = `SENTINEL-${randomUUID()}-payload`;
             await sentinelRun(h, sentinel);
-            const db = JSON.stringify(h.durableSnapshot().db);
+            const db = JSON.stringify((await h.durableSnapshot()).db);
             for (const algorithm of ['sha256', 'sha1', 'md5', 'sha512']) {
                 const digest = createHash(algorithm).update(sentinel).digest();
                 for (const form of [digest.toString('hex'), digest.toString('base64'), digest.toString('base64url')]) {
@@ -1493,7 +1540,7 @@ export const CONFORMANCE_CASES: ConformanceCase[] = [
             fails(attempt.result, 'unavailable', 'provider-unavailable');
             expectClean('result', attempt.result, sentinel);
             expectClean('diagnostics', h.diagnostics(), sentinel);
-            expectClean('durable db', h.durableSnapshot().db, sentinel);
+            expectClean('durable db', (await h.durableSnapshot()).db, sentinel);
             h.faults.providerWrite = 'ok';
             await expectActive(store, { identity: identity, ref: s.ref }, text('one'), s.version);
             ok(

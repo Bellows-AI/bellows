@@ -48,6 +48,7 @@ const PROVEN: Record<keyof ReferenceDefects, string[]> = {
     collectActive: ['collection never removes an active version'],
     collectPending: ['collection never removes an active version'],
     skipAbortCheck: ['an already-aborted signal'],
+    stageAfterTerminal: ['a replay paused before staging leaves nothing behind'],
     skipIntegrityCheck: ['tampered stored bytes'],
     readErrorAsNotFound: ['a provider read error is unavailable'],
     exposeStaged: ['a crash after staging, before activation'],

@@ -128,6 +128,7 @@ export interface ReferenceDefects {
     timeoutAsUnavailable?: boolean;
     cleanupFailRestores?: boolean;
     skipAbortCheck?: boolean;
+    stageAfterTerminal?: boolean;
     skipIntegrityCheck?: boolean;
     readErrorAsNotFound?: boolean;
     validateAfterIntent?: boolean;
@@ -368,7 +369,8 @@ export function createReferenceSecretStore(config: ReferenceStoreConfig): Refere
             return failWith('integrity-failure', 'integrity-check-failed');
         }
         await step('after-intent', recordId);
-        if (rec.kind !== 'delete' && payload) {
+        // A finished operation stages nothing: a late replay would leave a blob no version row names.
+        if (rec.kind !== 'delete' && payload && (defects.stageAfterTerminal || !terminal(rec))) {
             if (signal?.aborted && !defects.skipAbortCheck) {
                 return failWith('unavailable', 'aborted');
             }
@@ -843,8 +845,8 @@ export function createReferenceHarness(defects: ReferenceDefects = {}): SecretSt
         faults,
         rekey: (identity, ref) => open().rekey(identity, ref),
         collect: () => open().collect(),
-        tamper: (ref) => open().tamper(ref),
-        durableSnapshot: () => ({ ...structuredClone(state) }),
+        tamper: async (ref) => open().tamper(ref),
+        durableSnapshot: async () => ({ ...structuredClone(state) }),
         diagnostics: () => structuredClone(diagnostics),
     };
 }
