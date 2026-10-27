@@ -172,7 +172,7 @@ export function refusalDiagnosis(method: string, path: string, status: number, b
 export const TIMEOUT_EXIT_CODE = 124;
 
 export interface K8sClaim {
-    metadata?: { uid?: string; creationTimestamp?: string; annotations?: Record<string, string> };
+    metadata?: { uid?: string; creationTimestamp?: string | null; annotations?: Record<string, string> };
     data?: { holder?: string; claimSeq?: string };
 }
 
@@ -532,7 +532,7 @@ export interface K8sJobStatus {
 }
 
 export interface K8sPod {
-    metadata?: { name?: string; deletionTimestamp?: string };
+    metadata?: { name?: string; deletionTimestamp?: string | null };
     /** The containers as specced: what names a sidecar's image when its status does not (#773). */
     spec?: { initContainers?: { name?: string; image?: string }[] };
     status?: {
@@ -553,8 +553,8 @@ export interface K8sContainerStatus {
     name?: string;
     image?: string;
     state?: {
-        terminated?: { exitCode?: number; reason?: string; message?: string; startedAt?: string };
-        running?: { startedAt?: string };
+        terminated?: { exitCode?: number; reason?: string; message?: string; startedAt?: string | null };
+        running?: { startedAt?: string | null };
         waiting?: { reason?: string; message?: string };
     };
     /** A restarted sidecar's (#773 D8): how often the kubelet restarted it, and how its previous container ended. */
@@ -600,6 +600,14 @@ export function containerFailure(pod: K8sPod | undefined, container?: string): s
     return null;
 }
 
+/** An entry a grammar refused: `refused` is the path of the field, from the entry, that is outside it. */
+export interface Refused {
+    refused: string;
+}
+
+export const isRefused = (value: unknown): value is Refused =>
+    isRecord(value) && typeof value.refused === 'string' && Object.keys(value).length === 1;
+
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
     typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -608,7 +616,11 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
  * or `inconclusive` — a non-2xx answer, a body that is not JSON, a `Status` object (the apiserver's
  * refusal wearing a 2xx) or a body that is not the shape asked for. Never `{}` or `null` invented.
  */
-export function readAnswer<T>(response: K8sResponse, what: string, shape: (value: unknown) => T | null): Read<T> {
+export function readAnswer<T>(
+    response: K8sResponse,
+    what: string,
+    shape: (value: unknown) => T | null | Refused
+): Read<T> {
     if (response.status === HTTP_NOT_FOUND) return { kind: 'absent' };
     if (!is2xx(response.status)) {
         return {
@@ -626,6 +638,9 @@ export function readAnswer<T>(response: K8sResponse, what: string, shape: (value
         return { kind: 'inconclusive', reason: `${what} answered a Status object` };
     }
     const value = shape(body);
+    if (isRefused(value)) {
+        return { kind: 'inconclusive', reason: `${what} answered an unexpected shape: ${value.refused}` };
+    }
     return value === null
         ? { kind: 'inconclusive', reason: `${what} answered an unexpected shape` }
         : { kind: 'value', value };

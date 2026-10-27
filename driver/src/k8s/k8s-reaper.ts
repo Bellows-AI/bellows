@@ -71,7 +71,7 @@ interface ListedItem extends ListedRunnerJob {
         name: string;
         uid: string;
         labels?: Record<string, string>;
-        creationTimestamp?: string;
+        creationTimestamp?: string | null;
     };
 }
 
@@ -102,7 +102,7 @@ const asListedItem =
         if ([jobId, leaseToken, holder].some((label) => label !== undefined && !isLease(label))) return null;
         if (jobId === undefined || leaseToken === undefined) return item;
         const created = item.metadata.creationTimestamp;
-        if (created === undefined || parseRfc3339(created) === null) return null;
+        if (typeof created !== 'string' || parseRfc3339(created) === null) return null;
         return kind !== 'job' || runnerSpecReadable(item, attemptPair(jobId, leaseToken)) ? item : null;
     };
 
@@ -140,7 +140,7 @@ const groupKeyOf = (
     const jobId = item.metadata.labels?.[JOB_LABEL];
     const leaseToken = item.metadata.labels?.[LEASE_LABEL];
     const created = item.metadata.creationTimestamp;
-    if (!name || !jobId || !leaseToken || created === undefined) return null;
+    if (!name || !jobId || !leaseToken || typeof created !== 'string') return null;
     const createdAtMs = parseRfc3339(created);
     if (createdAtMs === null) return null;
     const isRunner =
@@ -340,8 +340,8 @@ const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkV
             name: string;
             uid: string;
             labels?: Record<string, string>;
-            deletionTimestamp?: string;
-            creationTimestamp?: string;
+            deletionTimestamp?: string | null;
+            creationTimestamp?: string | null;
         };
     }>(value);
     if (item === null) return null;
@@ -358,7 +358,7 @@ const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkV
         name,
         uid,
         createdAtMs: typeof creationTimestamp === 'string' ? parseRfc3339(creationTimestamp) : null,
-        terminating: deletionTimestamp !== undefined,
+        terminating: typeof deletionTimestamp === 'string',
     };
 };
 

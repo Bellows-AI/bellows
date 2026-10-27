@@ -42,6 +42,8 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
   `driver/test/k8s-reaper.test.ts`, `driver/test/docker-reaper-boards.test.ts`.
 - **An unconfirmed read is inconclusive, never empty**: a failed, timed-out, null or malformed answer stays a typed
   `Read` the caller leaves alone. `lint/no-silent-empty-read.grit`, `driver/test/k8s-read-faults.test.ts`.
+  A time the kubelet leaves `null` (a lost container's `startedAt`) is unset, and a refused entry is named by position,
+  name and field. `driver/src/k8s/k8s-shapes.ts`, `driver/test/k8s-transport.test.ts`.
 - **Credentials go by reference, never by value**, and **runner pods hold no ServiceAccount token**
   (`automountServiceAccountToken: false`). Both pinned in `driver/test/k8s/`.
 - **Every driver-owned object carries `factory.job`**, every Secret follows `factory-job-…-env`, every

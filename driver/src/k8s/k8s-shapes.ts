@@ -24,46 +24,76 @@ export const isCount = (value: unknown): value is number =>
 export const optionalStrings = (...fields: unknown[]): boolean =>
     fields.every((field) => field === undefined || typeof field === 'string');
 
-/** A timestamp the apiserver serializes, when present: RFC 3339 (`timestamps.ts`). */
+/** A timestamp the apiserver serializes, when set: RFC 3339 (`timestamps.ts`); null is unset, as the kubelet writes it for a container it lost. */
 export const optionalTimestamp = (value: unknown): boolean =>
-    value === undefined || (typeof value === 'string' && parseRfc3339(value) !== null);
+    value === undefined || value === null || (typeof value === 'string' && parseRfc3339(value) !== null);
 
 /** A string map: a record whose every value is a string. */
 export const stringsOnly = (value: unknown): boolean =>
     isRecord(value) && Object.values(value).every((v) => typeof v === 'string');
 
-/** Whether `state` is absent or a record whose present parts are records with the typed fields a decision reads. */
-export const validContainerState = (state: unknown): boolean => {
-    if (state === undefined) return true;
-    if (!isRecord(state)) return false;
-    const { terminated, running, waiting } = state;
-    if (terminated !== undefined) {
-        if (!isRecord(terminated) || !Number.isSafeInteger(terminated.exitCode)) return false;
-        if (!optionalStrings(terminated.reason, terminated.message) || !optionalTimestamp(terminated.startedAt)) {
-            return false;
-        }
-    }
-    if (running !== undefined && (!isRecord(running) || !optionalTimestamp(running.startedAt))) return false;
-    return waiting === undefined || (isRecord(waiting) && optionalStrings(waiting.reason, waiting.message));
+/** The path of the first of `checks` that `part` fails, `at` itself when it is no record; null when it is absent or passes. */
+const partFault = (
+    part: unknown,
+    at: string,
+    checks: readonly (readonly [string, (part: Record<string, unknown>) => boolean])[]
+): string | null => {
+    if (part === undefined) return null;
+    if (!isRecord(part)) return at;
+    const failed = checks.find(([, ok]) => !ok(part));
+    return failed ? `${at}.${failed[0]}` : null;
 };
 
-/** A pod's container statuses, when present: records, each named, each with a readable state and passing `extra`. */
-export const validContainerStatuses = (
+/** The path, from `at`, of the first part of `state` outside the grammar of a container state; null when it is absent or readable. */
+export const containerStateFault = (state: unknown, at = 'state'): string | null => {
+    if (state === undefined) return null;
+    if (!isRecord(state)) return at;
+    return (
+        partFault(state.terminated, `${at}.terminated`, [
+            ['exitCode', (t) => Number.isSafeInteger(t.exitCode)],
+            ['reason', (t) => optionalStrings(t.reason)],
+            ['message', (t) => optionalStrings(t.message)],
+            ['startedAt', (t) => optionalTimestamp(t.startedAt)],
+        ]) ??
+        partFault(state.running, `${at}.running`, [['startedAt', (r) => optionalTimestamp(r.startedAt)]]) ??
+        partFault(state.waiting, `${at}.waiting`, [
+            ['reason', (w) => optionalStrings(w.reason)],
+            ['message', (w) => optionalStrings(w.message)],
+        ])
+    );
+};
+
+/**
+ * The path, from the pod's `status`, of the first container status outside the grammar: each a record,
+ * named, with a readable state and passing `extra` (a fault path from the status, or null). Null when
+ * `statuses` is absent or readable.
+ */
+export const containerStatusesFault = (
     statuses: unknown,
-    extra: (status: Record<string, unknown>) => boolean = () => true
-): boolean =>
-    statuses === undefined ||
-    (Array.isArray(statuses) &&
-        statuses.every((s) => isRecord(s) && nonEmpty(s.name) && validContainerState(s.state) && extra(s)));
+    at: string,
+    extra: (status: Record<string, unknown>) => string | null = () => null
+): string | null => {
+    if (statuses === undefined) return null;
+    if (!Array.isArray(statuses)) return at;
+    for (const [i, s] of statuses.entries()) {
+        if (!isRecord(s)) return `${at}[${i}]`;
+        if (!nonEmpty(s.name)) return `${at}[${i}].name`;
+        const fault = containerStateFault(s.state) ?? extra(s);
+        if (fault !== null) return `${at}[${s.name}].${fault}`;
+    }
+    return null;
+};
 
 /** A container status whose image, when named, is a string. */
-export const validImage = (status: Record<string, unknown>): boolean => optionalStrings(status.image);
+export const imageFault = (status: Record<string, unknown>): string | null =>
+    optionalStrings(status.image) ? null : 'image';
 
 /** A sidecar's status: its image, a restart count that is a count, and a previous ending of the same typed shape as `state`. */
-export const validSidecar = (status: Record<string, unknown>): boolean =>
-    validImage(status) &&
-    (status.restartCount === undefined || isCount(status.restartCount)) &&
-    validContainerState(status.lastState);
+export const sidecarFault = (status: Record<string, unknown>): string | null => {
+    if (imageFault(status) !== null) return 'image';
+    if (status.restartCount !== undefined && !isCount(status.restartCount)) return 'restartCount';
+    return containerStateFault(status.lastState, 'lastState');
+};
 
 /** A pod's `conditions`, when present: a list of records with a string type and string words. */
 export const validPodConditions = (conditions: unknown): boolean =>

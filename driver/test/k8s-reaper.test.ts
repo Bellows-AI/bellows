@@ -159,6 +159,8 @@ describe('the kubernetes reaper arm: scan', () => {
             { metadata: { name: 'x', labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } },
         ],
         ['an in-scope Job with an unparsable creationTimestamp', auxJob('x', JOB, LEASE, 'not-a-date')],
+        // BEL-127: null is an unset time on a pod, and an in-scope Job with no date is no group to age.
+        ['an in-scope Job with a null creationTimestamp', auxJob('x', JOB, LEASE, null as unknown as string)],
         ['an in-scope Job dated "0"', auxJob('x', JOB, LEASE, '0')],
         ['an in-scope Job dated on a day the calendar lacks', auxJob('x', JOB, LEASE, '2026-02-31T00:00:00Z')],
         ['an in-scope Job dated with no time', auxJob('x', JOB, LEASE, '2026-09-01')],

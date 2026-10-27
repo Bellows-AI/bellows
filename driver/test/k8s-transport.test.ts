@@ -14,7 +14,7 @@ import {
     readAnswer,
     refusalDiagnosis,
 } from '../src/k8s/k8s-transport.js';
-import { asNamed } from '../src/k8s/k8s-pod-shapes.js';
+import { asNamed, asPod } from '../src/k8s/k8s-pod-shapes.js';
 import { asJob, readTypedList } from '../src/k8s/k8s-poll.js';
 import { withSignal, type K8sDeps, type K8sRequest } from '../src/k8s/k8s-transport.js';
 
@@ -121,6 +121,34 @@ describe('the typed list reader', () => {
         ['a good entry beside a bad one', '{"items":[{"metadata":{"name":"a"}},{"metadata":{}}]}'],
     ])('makes the whole read inconclusive for %s', async (_name, body) => {
         expect((await read(body)).kind).toBe('inconclusive');
+    });
+
+    const unknownStatus = (name: string, state: unknown) => ({
+        metadata: { name, creationTimestamp: null, deletionTimestamp: null },
+        status: { phase: 'Failed', containerStatuses: [{ name: 'supervisor', state }] },
+    });
+    const readPods = (items: unknown[]) =>
+        readTypedList(deps(JSON.stringify({ items })), '/pods', 'listing the pods', { entry: asPod, once: true });
+
+    it('reads a killed pod whose kubelet left times null as a value (ContainerStatusUnknown)', async () => {
+        const killed = unknownStatus('p1', {
+            terminated: { exitCode: 137, reason: 'ContainerStatusUnknown', startedAt: null, finishedAt: null },
+        });
+        expect(await readPods([killed])).toEqual({ kind: 'value', value: [killed] });
+    });
+
+    it('names the refused entry and field in the inconclusive reason', async () => {
+        const good = unknownStatus('p1', { running: { startedAt: null } });
+        const bad = unknownStatus('p2', { terminated: { exitCode: 'x' } });
+        expect(await readPods([good, bad])).toEqual({
+            kind: 'inconclusive',
+            reason: 'listing the pods answered an unexpected shape: items[1] (p2): status.containerStatuses[supervisor].state.terminated.exitCode',
+        });
+    });
+
+    it('still refuses a started time that is not RFC 3339', async () => {
+        const bad = unknownStatus('p1', { running: { startedAt: 'yesterday' } });
+        expect((await readPods([bad])).kind).toBe('inconclusive');
     });
 
     it('reads a transport failure past its retries as inconclusive, naming what failed', async () => {
