@@ -24,16 +24,21 @@ export interface RepoSource {
     /** "owner/name" for the snapshot — the form every repo identity takes here. */
     snapshotNames(): readonly string[];
     list(): Promise<readonly Repo[]>;
-    /** The picker's view: everything the installation can see, plus who it belongs to. */
-    detail(): Promise<{ repos: readonly InstallationRepo[]; installation: Installation | null }>;
+    /**
+     * The picker's view: everything the installation can see, plus who it belongs to. `error` is
+     * THIS read's failure (a stale list was served): a caller deciding on the list reads it here,
+     * never from `lastError()`, which a concurrent read may already have cleared.
+     */
+    detail(): Promise<{ repos: readonly InstallationRepo[]; installation: Installation | null; error: string | null }>;
     /** The last failure, so a route can report a stale list honestly rather than as an empty one. */
     lastError(): string | null;
     /** When the cached list was fetched, or null if it never was. */
     fetchedAt(): number | null;
     /**
-     * Ages the cached produce past its TTL so the next read re-runs it — the allowlist
-     * intersection included (#125). The stale entry keeps serving until the refresh lands, so
-     * there is no empty-snapshot window between the invalidate and the re-produce.
+     * Ages the cached listing past its TTL so the next read re-fetches it. Every read re-reads the
+     * allowlist anyway; an invalidate also makes an allowlist read in flight ask again. The stale
+     * entry keeps serving until the refresh lands, so there is no empty-snapshot window between the
+     * invalidate and the re-produce.
      */
     invalidate(): void;
 }
@@ -98,24 +103,59 @@ export function createRepoSource({
     ttlMs = INSTALLATION_REPOS_TTL_MS,
     now = Date.now,
 }: RepoSourceDeps): RepoSource {
+    type Listing = { repos: readonly InstallationRepo[]; installation: Installation | null };
     const empty = Object.freeze([]) as readonly InstallationRepo[];
     let error: string | null = null;
+    let allowlistError: string | null = null;
+    // The last narrowed listing: what snapshot() serves, and what a failed allowlist read falls
+    // back to. Never the raw listing — a failed read must not widen the tracked set.
+    let narrowed: Listing | null = null;
+    let reads = 0;
+    let landed = 0;
+    let generation = 0;
 
-    // The one place the allowlist bites: whatever the cache produces is narrowed here, so every
-    // accessor — snapshot, list, detail — carries the same tracked set. Re-read per produce, so a
-    // changed allowlist lands on the next refresh rather than being cached with the list.
-    const narrow = async (listing: {
-        repos: readonly InstallationRepo[];
-        installation: Installation | null;
-    }): Promise<{ repos: readonly InstallationRepo[]; installation: Installation | null }> => {
-        if (!allowlist) return listing;
-        const tracked = await allowlist();
-        if (tracked.length === 0) return listing;
-        const allowed = new Set(tracked);
-        return { ...listing, repos: Object.freeze(listing.repos.filter((repo) => allowed.has(fullName(repo)))) };
+    // The one place the allowlist bites, on every read rather than per produce: the allowlist is
+    // another replica's write too, and only the replica that handled it invalidates its own cache.
+    // Every accessor — snapshot, list, detail — carries the same tracked set.
+    const narrow = async (listing: Listing): Promise<{ listing: Listing; error: string | null }> => {
+        if (!allowlist) return { listing, error: null };
+        let read: number;
+        let tracked: readonly string[];
+        try {
+            // An invalidate() while the read is in flight means the allowlist was just written
+            // here: the answer in hand may predate it, so ask again. Each attempt takes its own
+            // place in the order, so a retry lands over reads that finished while it waited.
+            let started: number;
+            do {
+                started = generation;
+                read = ++reads;
+                tracked = await allowlist();
+            } while (started !== generation);
+        } catch (failure) {
+            const message = (failure as Error).message;
+            allowlistError = message;
+            return { listing: narrowed ?? { repos: empty, installation: listing.installation }, error: message };
+        }
+        const result =
+            tracked.length === 0
+                ? listing
+                : (() => {
+                      const allowed = new Set(tracked);
+                      return {
+                          ...listing,
+                          repos: Object.freeze(listing.repos.filter((r) => allowed.has(fullName(r)))),
+                      };
+                  })();
+        // An older read resolving after a newer one never overwrites it.
+        if (read > landed) {
+            landed = read;
+            allowlistError = null;
+            narrowed = result;
+        }
+        return { listing: result, error: null };
     };
 
-    const cache = createCache<{ repos: readonly InstallationRepo[]; installation: Installation | null }>({
+    const cache = createCache<Listing>({
         ttlMs,
         now,
         produce: async () => {
@@ -126,9 +166,8 @@ export function createRepoSource({
                 try {
                     const names = await stored();
                     const repos = names.map(parseFullName).filter((repo): repo is InstallationRepo => repo !== null);
-                    const listing = await narrow({ repos: Object.freeze(repos), installation: null });
                     error = null;
-                    return listing;
+                    return { repos: Object.freeze(repos), installation: null };
                 } catch (failure) {
                     error = (failure as Error).message;
                     throw failure;
@@ -137,7 +176,7 @@ export function createRepoSource({
             try {
                 const listing = await client.listRepositories();
                 error = null;
-                return await narrow(listing);
+                return listing;
             } catch (failure) {
                 // Recorded and rethrown. The cache keeps its last good entry either way; recording
                 // it here is what lets a route serve that entry AND say it is stale, rather than
@@ -148,39 +187,52 @@ export function createRepoSource({
         },
     });
 
-    const load = async (): Promise<{
-        repos: readonly InstallationRepo[];
-        installation: Installation | null;
-    }> => {
-        if (!cache.isStale()) return cache.peek()!.value;
+    const listing = async (): Promise<{ listing: Listing; error: string | null }> => {
+        if (!cache.isStale()) return { listing: cache.peek()!.value, error: null };
         try {
-            return (await cache.refresh()).value;
-        } catch {
+            return { listing: (await cache.refresh()).value, error: null };
+        } catch (failure) {
             // A failed refresh serves the last good list. Nothing on the read path can do anything
             // useful with a thrown error here — the stored figures are still worth rendering — and
-            // `lastError()` carries the reason to whoever wants to show it.
-            return cache.peek()?.value ?? { repos: empty, installation: null };
+            // the read's `error` carries the reason to whoever wants to show it.
+            return {
+                listing: cache.peek()?.value ?? { repos: empty, installation: null },
+                error: (failure as Error).message,
+            };
         }
     };
+    const load = async () => {
+        const fetched = await listing();
+        const tracked = await narrow(fetched.listing);
+        return { ...tracked.listing, error: fetched.error ?? tracked.error };
+    };
 
+    const current = (): readonly InstallationRepo[] =>
+        (allowlist ? narrowed?.repos : cache.peek()?.value.repos) ?? empty;
     return {
-        snapshot: () => cache.peek()?.value.repos ?? empty,
-        snapshotNames: () => (cache.peek()?.value.repos ?? empty).map(fullName),
+        snapshot: current,
+        snapshotNames: () => current().map(fullName),
         list: async () => (await load()).repos,
         detail: load,
-        lastError: () => error,
+        lastError: () => error ?? allowlistError,
         fetchedAt: () => cache.peek()?.fetchedAt ?? null,
-        invalidate: () => cache.expire(),
+        invalidate: () => {
+            generation += 1;
+            cache.expire();
+        },
     };
 }
 
-/** A fixed list. The route tests use this instead of reaching GitHub. */
+/** A fixed list. The route tests use this instead of reaching GitHub; `error` makes every read an unconfirmed one. */
 export interface StaticRepoSource extends RepoSource {
     /** How many times the source was invalidated — the route tests' observable. */
     invalidations(): number;
 }
 
-export function staticRepoSource(repos: readonly Repo[]): StaticRepoSource {
+export function staticRepoSource(
+    repos: readonly Repo[],
+    { error = null }: { error?: string | null } = {}
+): StaticRepoSource {
     const detailed = Object.freeze(
         repos.map((repo) => Object.freeze({ ...repo, private: false, defaultBranch: null, pushedAt: null }))
     ) as readonly InstallationRepo[];
@@ -189,8 +241,8 @@ export function staticRepoSource(repos: readonly Repo[]): StaticRepoSource {
         snapshot: () => detailed,
         snapshotNames: () => detailed.map(fullName),
         list: async () => detailed,
-        detail: async () => ({ repos: detailed, installation: null }),
-        lastError: () => null,
+        detail: async () => ({ repos: detailed, installation: null, error }),
+        lastError: () => error,
         fetchedAt: () => 0,
         invalidate: () => {
             invalidations += 1;

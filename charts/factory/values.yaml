@@ -38,6 +38,9 @@ dashboard:
         tag: ''
     # IfNotPresent so side-loaded images (kind load docker-image) resolve without a registry.
     imagePullPolicy: IfNotPresent
+    # Above one requires artifacts.backend=s3 (the filesystem backend is one pod's /tmp). Every
+    # replica is still replaced by Recreate, so two versions never share the schema mid-upgrade.
+    replicas: 1
     port: 8080
     # The code-only no-fetch entry (server/dist/offline.js): nothing is fetched or cloned and the
     # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign

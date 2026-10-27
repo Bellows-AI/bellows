@@ -82,6 +82,19 @@ describe('the tracked-repo allowlist (#125)', () => {
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
     });
 
+    it('re-reads the allowlist on a cached read, so a write another replica handled lands without invalidate()', async () => {
+        let tracked: readonly string[] = ['acme/web', 'acme/other'];
+        const source = createRepoSource({
+            client: clientWith('acme/web', 'acme/other'),
+            allowlist: async () => tracked,
+        });
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web', 'acme/other']);
+
+        tracked = ['acme/web'];
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
+        expect(source.snapshotNames()).toEqual(['acme/web']);
+    });
+
     it('leaves a source without an allowlist untouched', async () => {
         const source = createRepoSource({ client: clientWith('acme/web', 'acme/other') });
         expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web', 'acme/other']);
@@ -152,6 +165,57 @@ describe('the tracked-repo allowlist (#125)', () => {
         const listing = await first;
         expect(listing.map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/other']);
         expect(source.snapshotNames()).toEqual(['acme/other']);
+    });
+
+    it('a read retried after invalidate() lands its answer in the snapshot over a read that finished meanwhile', async () => {
+        const pending: Array<{ resolve: (value: readonly string[]) => void }> = [];
+        const source = createRepoSource({
+            client: clientWith('acme/web', 'acme/other'),
+            allowlist: () => new Promise<readonly string[]>((resolve) => pending.push({ resolve })),
+        });
+        const a = source.list();
+        await tick();
+        const b = source.list();
+        await tick();
+        expect(pending.length).toBe(2);
+        pending[1]!.resolve(['acme/web']); // B lands the old choice
+        await b;
+        source.invalidate(); // the choice changes while A is still in flight
+        pending[0]!.resolve(['acme/web']); // A's first answer predates it …
+        await tick();
+        expect(pending.length).toBe(3);
+        pending[2]!.resolve(['acme/other']); // … so it asks again and gets the new one
+        expect((await a).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/other']);
+        expect(source.snapshotNames()).toEqual(['acme/other']);
+    });
+
+    it("carries each read's own allowlist failure, which a concurrent success never clears", async () => {
+        let tracked: readonly string[] = ['acme/web'];
+        const pending: Array<{ resolve: (value: readonly string[]) => void; reject: (e: Error) => void }> = [];
+        let deferred = false;
+        const source = createRepoSource({
+            client: clientWith('acme/web', 'acme/other'),
+            allowlist: () =>
+                deferred
+                    ? new Promise<readonly string[]>((resolve, reject) => pending.push({ resolve, reject }))
+                    : Promise.resolve(tracked),
+        });
+        expect((await source.list()).map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
+
+        deferred = true;
+        tracked = ['acme/web', 'acme/other'];
+        const failing = source.detail();
+        const succeeding = source.detail();
+        await tick();
+        pending[0]!.reject(new Error('allowlist read failed'));
+        pending[1]!.resolve(tracked);
+
+        const failed = await failing;
+        await succeeding;
+        // The failed read served the last narrowed list without acme/other, and says so.
+        expect(failed.repos.map((r) => `${r.owner}/${r.name}`)).toEqual(['acme/web']);
+        expect(failed.error).toBe('allowlist read failed');
+        expect((await succeeding).error).toBeNull();
     });
 });
 

@@ -34,8 +34,7 @@ export const repoRoutes =
                 return bad(reply, ERROR_CODES.REPOS_UNAVAILABLE, `No runtime for '${orgId}'; retry`, HTTP_UNAVAILABLE);
             const repos = rt.repos;
 
-            const { repos: list, installation } = await repos.detail();
-            const error = repos.lastError();
+            const { repos: list, installation, error } = await repos.detail();
 
             // 200 with a named error and the last good list, never 503. Same rule /api/stats
             // follows: a failed refresh must keep the last good answer on screen and explain

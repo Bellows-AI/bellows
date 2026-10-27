@@ -6,7 +6,7 @@ Which repositories an organization sees, where that list comes from, and what it
 | --- | --- | --- |
 | The list itself: fetch, cache, `list()` / `snapshot()` | `server/src/github/repo-source.ts` | `server/test/repo-source.test.ts` |
 | Installation listing | `server/src/github/app-client.ts` | `server/test/github.app-client.test.ts` |
-| Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql` | `server/test/repo-source.test.ts` |
+| Per-org tracked-repo allowlist (`tracked_repo`) | `server/src/db/tracked-repos.ts`, `server/migrations/030_signin_selection.sql` | `server/test/repo-source.test.ts`, `server/test-db/repo-source.replicas.test.ts` |
 | Credential-less fallback to `session_branch` | `server/src/db/stored-repos.ts` | `server/test/routes.repos.test.ts` |
 | Picker route | `server/src/routes/repos.ts` | `server/test/routes.repos.test.ts` |
 | Settings → Repositories page: the tracked list and each repo's env config | `web/src/pages/SettingsRepositoriesPage.tsx`, `web/src/components/repository-setup.ts` | `web/test/repository-setup.test.ts`, `web/test/repository-setup.render.test.tsx`, `web/test/repository-selection.dom.test.tsx` |
@@ -19,6 +19,9 @@ Which repositories an organization sees, where that list comes from, and what it
   `otherRepoSessions`, the picker, and the repo validation of task, batch and env writes. An empty allowlist
   means every reported repo, which is why the onboarding screen's all-checked confirm writes
   nothing. `server/test/repo-source.test.ts`.
+- **Only the listing is cached; the allowlist is read on every `list()`**, so a selection written
+  through one dashboard replica narrows every replica at once, and a failed allowlist read serves the
+  last narrowed list, never the full listing. `server/test-db/repo-source.replicas.test.ts`.
 - **It is a network read, so it cannot be a config field** — it changes under the running process
   on the `RepoSource` TTL. `snapshot()` never blocks, because `StatsService.current()` aggregates
   an already-fetched payload and must not become a fetch.

@@ -4,9 +4,10 @@ Dockerfile calls "what deploys". Its environment block mirrors docker-compose.ym
 service line for line — the chart sets the same environment the compose file sets, which is the
 repo's only configuration mechanism.
 
-Exactly one replica, replaced by Recreate, never rolled. Migrations and S3 artifacts are
-replica-safe; what still is not: the filesystem artifact backend (one pod's /tmp), and an old and a
-new version sharing one schema mid-rollout, which no test covers. The cost is a few seconds of downtime per upgrade.
+dashboard.replicas, default one, always replaced by Recreate, never rolled. Migrations, S3
+artifacts and the tracked-repo list are replica-safe; the filesystem artifact backend (one pod's
+/tmp) is refused above one (validate.yaml). Recreate because an old and a new version sharing one
+schema mid-rollout is not covered by any test. The cost is a few seconds of downtime per upgrade.
 */}}
 apiVersion: apps/v1
 kind: Deployment
@@ -16,7 +17,7 @@ metadata:
         {{- include "factory.labels" . | nindent 8 }}
         app.kubernetes.io/component: dashboard
 spec:
-    replicas: 1
+    replicas: {{ .Values.dashboard.replicas }}
     strategy:
         type: Recreate
     selector:

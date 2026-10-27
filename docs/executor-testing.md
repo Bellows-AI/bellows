@@ -45,7 +45,7 @@ Which lane proves what for the board/driver/runner/telemetry control plane, list
 
 ## What no lane covers
 
-- **Two dashboard replicas on a cluster.** The chart pins one (`charts/factory/templates/deployment.yaml`),
+- **Two dashboard replicas on a cluster.** The chart defaults to one (`charts/factory/values.yaml`),
   so the kind capacity phase runs one board; competing boards are the docker capacity phase's two, and
   `server/test-db/job-store.fairness.test.ts` runs the claim from two connections.
 - **`npm run test:jobs` on a Linux docker daemon.** The compose-driver and question-round-trip phases

@@ -306,7 +306,7 @@ describe('the executor isolation record (#382)', () => {
         expect(prose(testingDocs)).toContain(
             'Its capacity phase runs two driver replicas under `ADMISSION_MAX_RUNNING=2`, deletes the pod holding the first heavy task and samples the running rows every two seconds into `.capacity.tsv`'
         );
-        expect(prose(testingDocs)).toContain('**Two dashboard replicas on a cluster.** The chart pins one');
+        expect(prose(testingDocs)).toContain('**Two dashboard replicas on a cluster.** The chart defaults to one');
     });
 
     // Issue #869: a read nobody confirmed is inconclusive on both executors; the lint plugin and the
