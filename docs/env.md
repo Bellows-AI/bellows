@@ -24,6 +24,7 @@ both the route and the web editors render from. The driver keeps its own copy in
 | The three editors, their drafts, the `.env` disclosure | `web/src/panels/EnvVarsPanel.tsx`, `env-vars-panel-parts.tsx`, `env-draft.ts`, `env-raw.ts` | `web/test/env-draft.test.ts`, `env-raw.test.ts`, `env.render.test.tsx`, `env.dom.test.tsx`, `e2e/env.spec.ts` |
 | Where the editors mount | `web/src/pages/SettingsOrganizationPage.tsx`, `SettingsWorkspacePage.tsx`, `SettingsRepositoriesPage.tsx` | `e2e/env.spec.ts` |
 | The vertical: PUT core env → claim → runner → the probe values in the output | `scripts/test-jobs.sh` | — |
+| The driver deletes every `SECRETS_*` variable at startup, so none is ever forwarded to a runner (the secret-store keys belong to the dashboard) | `driver/src/strip-secret-store-env.ts`, `driver/src/index.ts` | `driver/test/strip-secret-store-env.test.ts` |
 
 ## Invariants
 

@@ -41,7 +41,21 @@ describe('the secret-store test helpers cannot become a production backend', () 
         ]);
     });
 
-    it('main.ts composes no secret store yet', () => {
-        expect(readFileSync(join(SRC, 'main.ts'), 'utf8')).not.toMatch(/secrets/i);
+    it('main.ts calls loadSecretKeys before postgres( and passes secrets to buildApp', () => {
+        const main = readFileSync(join(SRC, 'main.ts'), 'utf8');
+        const keys = main.indexOf('loadSecretKeys(process.env)');
+        expect(keys).toBeGreaterThan(main.indexOf('resolveConfig('));
+        expect(keys).toBeLessThan(main.indexOf('postgres('));
+        expect(main).toMatch(/createPostgresSecretStore\(\{[^}]*\bsql\b[^}]*\bkeys\b/s);
+        expect(main).toMatch(/buildApp\(\{[\s\S]*\bsecrets\b[\s\S]*\}\)/);
+        expect(main).toContain("timedPass('secret_collect'");
+    });
+
+    it('only main.ts and the rotation command read the key environment', () => {
+        const readers = sourceFiles(SRC)
+            .filter((file) => /loadSecretKeys\(/.test(readFileSync(file, 'utf8')))
+            .map((file) => file.slice(SRC.length + 1))
+            .sort();
+        expect(readers).toEqual(['main.ts', 'secrets/rotate-cli.ts', 'secrets/secret-keys.ts']);
     });
 });

@@ -68,8 +68,20 @@ STATE_SETS=(
 # are throwaway: fake OAuth client, no App. Phase one renders with fixed ones; the cluster phase
 # refills AUTH_SETS with per-run random secrets.
 SECRET32="$(printf '%032d' 0)"
-auth_sets() { # auth_sets <publicUrl> <sessionSecret> <jobBoardToken> — (re)fills AUTH_SETS
+# The secret store's keys (docs/secrets.md): required on every render, offline included. Phase one uses
+# fixed throwaway keys of the right shape; the cluster phase refills them per run.
+secret_store_sets() { # secret_store_sets <dataKey> <operationKey> <fingerprintKey> (base64, 32 bytes each) — (re)fills SECRET_STORE_SETS
+    SECRET_STORE_SETS=(
+        --set-string "secretStore.dataKeys=k1:$1"
+        --set secretStore.activeKeyId=k1
+        --set-string "secretStore.operationKey=$2"
+        --set-string "secretStore.fingerprintKey=$3"
+    )
+}
+secret_store_sets "$(printf '%032d' 1 | base64)" "$(printf '%032d' 2 | base64)" "$(printf '%032d' 3 | base64)"
+auth_sets() { # auth_sets <publicUrl> <sessionSecret> <jobBoardToken> — (re)fills AUTH_SETS (and carries SECRET_STORE_SETS)
     AUTH_SETS=(
+        "${SECRET_STORE_SETS[@]}"
         --set "auth.publicUrl=$1"
         --set auth.oauthClientId=client
         --set secret.oauthClientSecret=secret
@@ -312,7 +324,8 @@ expect_not_contains 'the collector config stays inside its block scalar' "$(cat 
 # rule — the executor reading its credentials from RUNNER_CREDENTIALS_SECRET — is pinned in
 # driver/test/k8s/, where the runner spec lives.)
 credentials_clean=1
-for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN DATABASE_URL; do
+for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET INGEST_TOKEN DATABASE_URL \
+    SECRETS_DATA_KEYS SECRETS_OPERATION_KEY SECRETS_FINGERPRINT_KEY; do
     next="$(grep -A1 -- "- name: $cred\$" "$work/rendered.yaml" | sed -n '2p' | tr -d ' ')"
     if [ "$next" = 'valueFrom:' ]; then
         continue
@@ -321,6 +334,24 @@ for cred in GITHUB_APP_PRIVATE_KEY GITHUB_OAUTH_CLIENT_SECRET SESSION_SECRET ING
     bad "credentials travel by secretKeyRef" "$cred is not read from a Secret (next line: '$next')"
 done
 [ "$credentials_clean" = '1' ] && ok 'every credential env is a secretKeyRef'
+
+# The secret store's keys reach the dashboard container and nothing else (docs/secrets.md): the
+# -secret-store Secret is named only by that container, no SECRETS_ variable is rendered outside the
+# dashboard Deployment, and the wait-db init container, driver, collector and runner specs carry none.
+secret_store_doc="$(awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep' "$work/rendered.yaml")"
+dashboard_pod="$(awk '/^ +containers:$/ { on = 1 } on' <<<"$secret_store_doc" | awk '/^ +- name: dashboard$/ { on = 1 } /^ +volumes:$/ { on = 0 } on')"
+init_pod="$(awk '/^ +containers:$/ { exit } { print }' <<<"$secret_store_doc")"
+[ "$(grep -c -- "-secret-store" <<<"$dashboard_pod")" = 3 ] && [ "$(grep -c -- "-secret-store" "$work/rendered.yaml")" = 4 ] &&
+    ok 'the secret-store Secret is referenced by the dashboard container alone' ||
+    bad 'the secret-store Secret is referenced by the dashboard container alone' \
+        "dashboard container: $(grep -c -- "-secret-store" <<<"$dashboard_pod"), whole render: $(grep -c -- "-secret-store" "$work/rendered.yaml")"
+[ "$(grep -c 'SECRETS_' "$work/rendered.yaml")" = 4 ] && [ "$(grep -c 'SECRETS_' <<<"$dashboard_pod")" = 4 ] &&
+    ok 'no SECRETS_ variable is rendered outside the dashboard container' ||
+    bad 'no SECRETS_ variable is rendered outside the dashboard container' \
+        "whole render: $(grep -c 'SECRETS_' "$work/rendered.yaml"), dashboard container: $(grep -c 'SECRETS_' <<<"$dashboard_pod")"
+expect_not_contains 'the wait-db init container carries no secret-store key' "$init_pod" 'SECRETS_'
+expect_not_contains 'the secret-store keys are not in a ConfigMap or the collector config' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' "$work/rendered.yaml")" 'SECRETS_'
 
 # The Role is namespace-scoped and no wider than the calls the runner makes: create a Job, read its
 # status, delete it, list its pods, read one pod's log. Nothing watches; the jobs rule carries no
@@ -655,7 +686,8 @@ expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by
 # leave an authenticated board answering every export 401.
 byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
     --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 \
-    --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 2>&1)"
+    --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 \
+    --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
 expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
     'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
@@ -719,6 +751,18 @@ refuses 'offline still refuses a missing OAuth client id' 'auth.oauthClientId is
 refuses 'offline still refuses a missing board token' 'secret.jobBoardToken of at least 32 characters is required' \
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secret.jobBoardToken=
 refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false
+# The secret store's keys are required on every render, the no-fetch entry included.
+refuses 'a missing data key is refused' 'secretStore.dataKeys is required' "${GH_SETS[@]}" --set-string secretStore.dataKeys=
+refuses 'a missing active key id is refused' 'secretStore.activeKeyId is required' "${GH_SETS[@]}" --set secretStore.activeKeyId=
+refuses 'a missing operation key is refused' 'secretStore.operationKey is required' "${GH_SETS[@]}" --set-string secretStore.operationKey=
+refuses 'a missing fingerprint key is refused' 'secretStore.fingerprintKey is required' "${GH_SETS[@]}" --set-string secretStore.fingerprintKey=
+refuses 'offline still refuses a missing data key' 'secretStore.dataKeys is required' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set-string secretStore.dataKeys=
+refuses 'a managed dashboard Secret alone does not cover the secret-store keys' 'secretStore.existingSecret is empty' \
+    "${GH_SETS[@]}" --set secret.create=false --set secret.existingSecret=managed
+byo_store="$(gh_render --set secretStore.existingSecret=managed-keys --set-string secretStore.dataKeys= --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
+expect_contains 'a managed secret-store Secret is the one the dashboard references' "$byo_store" 'name: managed-keys'
+expect_not_contains 'a managed secret-store Secret is not also created' "$byo_store" "name: $RELEASE-factory-secret-store"
 
 # --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
 
@@ -1543,6 +1587,7 @@ LANE_MARGIN_S=40
 # job that comes back succeeded proves it end to end. The origin is the port-forward's below.
 PORT=18080
 BASE="http://127.0.0.1:$PORT"
+secret_store_sets "$(openssl rand -base64 32)" "$(openssl rand -base64 32)" "$(openssl rand -base64 32)"
 auth_sets "$BASE" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)"
 helm install "$RELEASE" charts/factory "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" \
     --set "dashboard.image.repository=$DASH_REPO" --set-string "dashboard.image.tag=$RELEASE" \
@@ -1578,6 +1623,17 @@ kubectl wait --for=condition=available \
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
+# Key isolation, live (docs/secrets.md): the dashboard container holds all four secret-store variables and
+# no container of the driver pod holds one.
+dash_vars="$(kubectl exec "deploy/$RELEASE-factory" -c dashboard -n "$NAMESPACE" --request-timeout=20s -- env 2>/dev/null | grep -c '^SECRETS_')"
+[ "$dash_vars" = 4 ] && ok 'the dashboard pod has the four secret-store variables' ||
+    bad 'the dashboard pod has the four secret-store variables' "found $dash_vars"
+driver_vars=0
+for container in $(kubectl get "deploy/$RELEASE-factory-driver" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[*].name}'); do
+    driver_vars=$((driver_vars + $(kubectl exec "deploy/$RELEASE-factory-driver" -c "$container" -n "$NAMESPACE" --request-timeout=20s -- env 2>/dev/null | grep -c '^SECRETS_')))
+done
+[ "$driver_vars" = 0 ] && ok 'no driver container holds a secret-store variable' ||
+    bad 'no driver container holds a secret-store variable' "found $driver_vars"
 # The workers were cordoned only so the board landed on the control plane.
 for node in $(cat "$cordoned_file"); do
     lane_uncordon "$node" || bad "$node is schedulable again" 'kubectl uncordon failed'
@@ -1960,7 +2016,7 @@ expect_contains 'the prompt reached the pod' "$result" 'hello from the cluster'
 
 # A normal run's claim ends `observed` (the runner proved the agent started) with its end stamped:
 # only observed|adopted claims count as run segments, so `unknown` here is a launch-proof bug.
-exec_rows="$(bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+exec_rows="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
     env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -qtA -v ON_ERROR_STOP=1 -v "job=$id" \
     postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 select launch || '|' || (ended_at is not null) || '|' || (created_at <= ended_at) from job_execution where job_id = :'job';
@@ -4245,7 +4301,7 @@ const c = require("node:crypto");
 const t = "fat_" + c.randomBytes(32).toString("base64url");
 process.stdout.write(t + " " + c.createHash("sha256").update(t).digest("hex"));
 ')
-    out="$(bounded 30 kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
+    out="$(kubectl exec -i -n "$NAMESPACE" "statefulset/$STATE_RELEASE-postgres" -- \
         env PGOPTIONS='-c statement_timeout=5000 -c lock_timeout=5000' psql -q -v ON_ERROR_STOP=1 -v "login=$1" -v "hash=$hash" -v "owner=${SMOKE_REPO%%/*}" -v "name=${SMOKE_REPO#*/}" \
         postgres://factory:factory@127.0.0.1:5432/factory_dev -f - 2>&1 <<'SQL'
 with o as (

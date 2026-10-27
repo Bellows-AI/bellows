@@ -42,9 +42,17 @@ export const E2E_LOGIN = 'e2e-user';
 const E2E_USER_ID_BASE = 420000;
 const E2E_USER_ID = E2E_USER_ID_BASE + Date.now();
 
+/** Disposable e2e-only secret-store keys (docs/secrets.md): every boot requires them, and no real value belongs here. */
+const E2E_KEY_BYTES = 32;
+const e2eKey = (fill: string) => Buffer.alloc(E2E_KEY_BYTES, fill).toString('base64');
+
 const shared = {
     WEB_ROOT: `${root}web/dist`,
     TELEMETRY_SOURCE: 'postgres',
+    SECRETS_DATA_KEYS: `e2e:${e2eKey('a')}`,
+    SECRETS_ACTIVE_KEY_ID: 'e2e',
+    SECRETS_OPERATION_KEY: e2eKey('b'),
+    SECRETS_FINGERPRINT_KEY: e2eKey('c'),
 };
 
 /**

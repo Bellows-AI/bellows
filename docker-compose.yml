@@ -27,6 +27,13 @@ services:
             # a working dashboard; this one hot-reloads the SPA and 8080 does not serve it at all in
             # this mode (WEB_ROOT is unset without a build).
             - '127.0.0.1:5173:5173'
+        # The secret store's keys (docs/secrets.md) reach the dashboard through this file and no other
+        # service, deliberately not through ${} interpolation of the shared .env: the driver loads .env.
+        # A missing file makes compose stop and name it — `npm run secrets:init` writes one.
+        # SECRETS_ENV_FILE only lets scripts/test-jobs.sh point the file at a per-run copy.
+        env_file:
+            - path: ${SECRETS_ENV_FILE:-secrets.env}
+              required: true
         # Every ${VAR} below is substituted from the repo-root .env, which compose reads on its own
         # — that is where the App private key comes from, and .env is gitignored and dockerignored so it
         # never enters an image layer.

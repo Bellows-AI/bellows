@@ -1,7 +1,7 @@
 # Secret storage
 
 The one contract that environment secrets, managed connection grants and executor credentials store their
-payload bytes through; the interface, the conformance suite and the AES-256-GCM PostgreSQL backend ship here, `main.ts` does not compose the backend yet.
+payload bytes through; the interface, the conformance suite and the AES-256-GCM PostgreSQL backend ship here, `main.ts` composes the backend on every boot.
 
 ## Where things live
 
@@ -9,12 +9,14 @@ payload bytes through; the interface, the conformance suite and the AES-256-GCM 
 | --- | --- | --- |
 | The contract: identity, versions, operations, closed error codes and reasons | `server/src/secrets/secret-store.ts` | `server/test/secrets.boundary.test.ts` |
 | Shared validators: 0..32768 bytes, identity, references, retention window | `server/src/secrets/secret-input.ts` | `server/test/secrets.input.test.ts` |
-| Injection point: optional `AppDeps.secrets`, supplied by no `main.ts` yet | `server/src/app.ts` | `server/test/secrets.boundary.test.ts` |
+| Injection point: `AppDeps.secrets`, supplied by `main.ts` after `loadSecretKeys(process.env)` and before `postgres(`; the collector loop (`SECRET_COLLECT_INTERVAL_MS`, every replica) | `server/src/main.ts`, `server/src/app.ts`, `server/src/secrets/secret-collector.ts` | `server/test/secrets.boundary.test.ts`, `server/test/secrets.boot.test.ts`, `server/test/secrets.collector.test.ts` |
 | Test-only reference store over plain, cloneable durable state | `server/test/secrets-reference-store.ts` | `server/test/secrets.reference.test.ts` |
 | Adapter-agnostic conformance suite: `describeSecretStoreConformance(name, makeHarness)` | `server/test/secrets-conformance.ts` | `server/test/secrets.reference.test.ts` |
 | Proof that each conformance case can fail (defect variants of the reference store) | `server/test/secrets-reference-store.ts` | `server/test/secrets.conformance-meta.test.ts` |
 | PostgreSQL backend: store logic, repo seam (one transaction per method), `091_secret_store.sql` | `server/src/secrets/postgres-secret-store.ts`, `server/src/secrets/postgres-secret-repo.ts`, `server/migrations/091_secret_store.sql` | `server/test-db/secrets-postgres.conformance.test.ts` (the full suite, no skips), `server/test-db/secrets-postgres.{replicas,rotation,faults}.test.ts` |
 | AES-256-GCM envelope and key loading (`SECRETS_*` env: data-key ring, active id, separate operation and fingerprint keys) | `server/src/secrets/secret-envelope.ts`, `server/src/secrets/secret-keys.ts` | `server/test/secrets.envelope.test.ts`, `server/test/secrets.keys.test.ts`, `server/test-db/secrets-postgres.{envelope,sanitization}.test.ts` |
+| Rotation command: `npm run secrets:rotate [-- --batch N]`, `-- --verify-retired <keyId>`; Kubernetes `kubectl exec deploy/<release>-factory -c dashboard -- node server/dist/secrets/rotate-cli.js` | `server/src/secrets/rotate-cli.ts`, `server/src/secrets/rotate-args.ts`, `package.json` | `server/test/secrets.rotate-cli.test.ts` |
+| Key delivery: `secrets.env` (`npm run secrets:init`), compose `env_file` on the dashboard, chart `secretStore.*` Secret on the dashboard container | `scripts/secrets-init.mjs`, `secrets.env.example`, `docker-compose.yml`, `charts/factory/templates/secret.yaml` | `server/test/secrets.environment.test.ts`, `scripts/test-k8s.sh` |
 
 ## Invariants
 
@@ -33,6 +35,10 @@ payload bytes through; the interface, the conformance suite and the AES-256-GCM 
   | BEL-59..61 personal connection | user(owner_user_id, orgId) | connection/id | connection-grant | connection |
   | BEL-35 executor credential | user(userId, null) personal, organization(orgId) org | executor-profile/id | executor-credential | profile |
 
+- **The keys reach the dashboard process alone**, and every boot requires them (`AUTH_MODE=none` and `dashboard.offline` included): they live in
+  the gitignored `secrets.env`, never `.env`, which the driver and CLIs load; only the dashboard's launchers read it, the driver deletes any
+  `SECRETS_*` it is handed, and `scripts/test-jobs.sh` puts them on board launches only. Docker development bind-mounts the tree, so the file is
+  visible inside the driver container; a stated docker-only limit. `server/test/secrets.environment.test.ts`, `driver/test/strip-secret-store-env.test.ts`.
 - **Payload** is opaque bytes, 0 through 32768 inclusive; null and strings are `invalid-input`, rejected before any write. `server/src/secrets/secret-input.ts`.
 - **Operations**: create-if-absent, read-active, replace and delete (both need the expected version),
   reconcile. A successful replace is always a new version, a rekey keeps it, a deleted reference is never reused.

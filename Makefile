@@ -27,6 +27,7 @@ baked-run:
 	docker run --rm --name factory-baked \
 		--network $(BAKED_NETWORK) \
 		-p 127.0.0.1:$(BAKED_PORT):8080 \
+		--env-file secrets.env \
 		-e AUTH_MODE=none \
 		-e AUTH_ALLOW_PUBLIC_BIND=1 \
 		-e ORG_ID="$${ORG_ID}" \

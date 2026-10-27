@@ -203,6 +203,23 @@ secret:
     # `openssl rand -hex 32`. REQUIRED, at least 32 characters.
     jobBoardToken: ''
 
+# The secret store's encryption keys (docs/secrets.md). REQUIRED on every boot, `dashboard.offline`
+# included, and mounted into the dashboard container only: no driver, collector or runner pod ever
+# references the Secret this renders. With existingSecret set (and secret.create false or true) the
+# chart creates nothing and references that one, which must hold the keys `data-keys`,
+# `operation-key` and `fingerprint-key`; activeKeyId is not secret and always comes from here.
+secretStore:
+    existingSecret: ''
+    # `<keyId>:<base64 of 32 bytes>[,...]` — `echo "k1:$(openssl rand -base64 32)"`. A key leaves
+    # the list only after `rotate-cli --verify-retired <keyId>` reports 0 (docs/kubernetes.md).
+    dataKeys: ''
+    # The key id new versions are encrypted under; it must be one of dataKeys.
+    activeKeyId: ''
+    # `openssl rand -base64 32`, each distinct. They cannot be rotated: changing either invalidates
+    # outstanding operation ids.
+    operationKey: ''
+    fingerprintKey: ''
+
 driver:
     # Built from docker/driver.Dockerfile:
     #   docker build -f docker/driver.Dockerfile -t factory-driver:<tag> .

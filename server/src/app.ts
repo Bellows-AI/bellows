@@ -110,7 +110,7 @@ export interface AppDeps {
     metrics?: ServerMetrics | undefined;
     /** `true` for the server's own log; a destination object is the tests' capture of every line. */
     logger?: FastifyServerOptions['logger'];
-    /** The secret-storage seam (docs/secrets.md). No backend ships yet and main.ts supplies none; consumers will read it. */
+    /** The secret-storage seam (docs/secrets.md). main.ts supplies the PostgreSQL backend; consumers read it. */
     secrets?: SecretStore | undefined;
 }
 

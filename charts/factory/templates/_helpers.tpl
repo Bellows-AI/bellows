@@ -64,6 +64,14 @@ The name of the Secret holding the dashboard's credentials — created by this c
 {{- end -}}
 
 {{/*
+The Secret holding the secret store's keys. Its own object, not a key of the dashboard Secret, so
+that exactly one container references it (templates/deployment.yaml) and a test can say so by name.
+*/}}
+{{- define "factory.secretStoreSecretName" -}}
+{{- default (printf "%s-secret-store" (include "factory.fullname" .)) .Values.secretStore.existingSecret -}}
+{{- end -}}
+
+{{/*
 The name of the Secret the kubernetes executor reads runner credentials from, by RUNNER_ENV name.
 The VALUES never travel — the pod spec carries `valueFrom.secretKeyRef`, which keeps the credential
 out of every `kubectl get pods -o yaml` — so only this name is wired through.

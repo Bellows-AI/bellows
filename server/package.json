@@ -6,7 +6,7 @@
     "main": "dist/index.js",
     "scripts": {
         "build": "tsc -b",
-        "dev": "tsx watch --env-file-if-exists=../.env src/index.ts"
+        "dev": "tsx watch --env-file-if-exists=../.env --env-file-if-exists=../secrets.env src/index.ts"
     },
     "dependencies": {
         "@factory-ai/core": "*",
