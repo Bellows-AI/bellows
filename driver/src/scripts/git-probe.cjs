@@ -77,7 +77,7 @@ const ATTR_FIELDS = 3;
 // The staging settings that write beside the index (a shared index) or ask a daemon, off for the copy.
 const ISOLATED = ['-c', 'core.splitIndex=false', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
 // Whether staging this checkout could store the same blob for bytes, a mode or a file type a gate
-// would see differently: line-ending or encoding conversion, any clean filter driver, a checkout
+// would see differently: line-ending or encoding conversion, a clean filter driver a path names, a checkout
 // that does not record modes or symlinks or folds case, an index entry git is told not to look at
 // (assume-unchanged, skip-worktree), or a split index whose shared half a stage would write.
 const hidesChanges = (read, text) => {
@@ -92,10 +92,6 @@ const hidesChanges = (read, text) => {
     if (config('core.filemode', 'bool') === 'false' || config('core.symlinks', 'bool') === 'false') return true;
     // A case-only rename keeps the index's old spelling where git folds case.
     if (config('core.ignorecase', 'bool') === 'true') return true;
-    try {
-        read(['config', '--get-regexp', '^filter\\..*\\.(clean|process)$']);
-        return true;
-    } catch {}
     if (text(['rev-parse', '--shared-index-path'])) return true;
     const tags = read(['ls-files', '-z', '-v', '--cached']).toString('utf8').split('\0');
     if (tags.some((entry) => entry && (entry[0] === 'S' || /^[a-z]/.test(entry)))) return true;
@@ -105,6 +101,24 @@ const hidesChanges = (read, text) => {
         .split('\0');
     for (let i = ATTR_FIELDS - 1; i < attrs.length; i += ATTR_FIELDS) {
         if (attrs[i] && attrs[i] !== 'unspecified' && attrs[i] !== 'unset') return true;
+    }
+    // A filter driver rewrites only the paths whose `filter` attribute names it, so one configured
+    // host-wide (git-lfs) leaves the rest alone. Matched by name, `unset` and `unspecified` included:
+    // a driver may be called that.
+    let drivers = '';
+    try {
+        drivers = read(['config', '--name-only', '--get-regexp', '^filter\\..*\\.(clean|process)$']).toString('utf8');
+    } catch {}
+    const named = new Set(
+        drivers
+            .split('\n')
+            .filter(Boolean)
+            .map((key) => key.slice('filter.'.length, key.lastIndexOf('.')))
+    );
+    if (named.size === 0) return false;
+    const filters = read(['check-attr', '--stdin', '-z', 'filter'], { input: listed }).toString('utf8').split('\0');
+    for (let i = ATTR_FIELDS - 1; i < filters.length; i += ATTR_FIELDS) {
+        if (named.has(filters[i])) return true;
     }
     return false;
 };
