@@ -358,7 +358,7 @@ const asVolumeClaim = (value: unknown, board: string): ListedVolumeClaim | JunkV
         name,
         uid,
         createdAtMs: typeof creationTimestamp === 'string' ? parseRfc3339(creationTimestamp) : null,
-        terminating: typeof deletionTimestamp === 'string',
+        terminating: deletionTimestamp !== undefined && deletionTimestamp !== null,
     };
 };
 

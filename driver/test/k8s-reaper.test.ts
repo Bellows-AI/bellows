@@ -826,6 +826,16 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
         expect(await arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
     });
 
+    it('leaves a claim whose deletion time is not a time to its deletion, never reading it as live', async () => {
+        const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: 42 as unknown as string })])]);
+        expect(await arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
+    });
+
+    it('reads a null deletion time as unset: the claim is listed, not terminating', async () => {
+        const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: null as unknown as string })])]);
+        expect((await arm.scanVolumes!())!.threads.map((thread) => thread.root)).toEqual([ROOT]);
+    });
+
     it.each([
         ['a refused list', [listing([], 500)]],
         ['a transport failure', []],
