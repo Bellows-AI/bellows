@@ -102,7 +102,8 @@ export async function reapPendingSignIns(sql: Sql | TransactionSql): Promise<num
 }
 
 /**
- * A `.repeatable.sql` file is re-applied on every boot instead of being recorded.
+ * A `.repeatable.sql` file is re-applied on every boot instead of being recorded — unless the
+ * ledger holds a versioned file this build does not ship (the database is ahead of it).
  *
  * Without this a fix to a view would never land: the version is already in
  * schema_migrations, so the file is skipped and the old definition survives until someone
@@ -167,8 +168,18 @@ async function applyLocked(
         (await sql<{ version: string }[]>`select version from schema_migrations`).map((r) => r.version)
     );
 
-    for (const { version, sql: body, repeatable } of files()) {
-        if (!repeatable && applied.has(version)) continue;
+    // A ledger version this build does not ship means a newer build already migrated this
+    // database: re-applying this build's repeatables would rewrite its newer views. Repeatable rows
+    // cannot count here — the delete above removed them in this same transaction.
+    const all = files();
+    const known = new Set(all.filter((f) => !f.repeatable).map((f) => f.version));
+    const ahead = [...applied].filter((version) => !known.has(version)).sort();
+    if (ahead.length > 0) {
+        log(`database is ahead of this build (unknown versions: ${ahead.join(', ')}); skipping repeatable migrations`);
+    }
+
+    for (const { version, sql: body, repeatable } of all) {
+        if (repeatable ? ahead.length > 0 : applied.has(version)) continue;
         log(`applying ${repeatable ? 'repeatable ' : ''}migration ${version}`);
         // Body and version row commit together with every other file in this attempt, so a crash
         // between them cannot record a body without its row (033 and 039 are not replayable).
