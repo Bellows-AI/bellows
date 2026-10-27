@@ -41,6 +41,10 @@ dashboard:
     # Above one requires artifacts.backend=s3 (the filesystem backend is one pod's /tmp). Every
     # replica is still replaced by Recreate, so two versions never share the schema mid-upgrade.
     replicas: 1
+    # Above one replica, a stopping pod sleeps this long before SIGTERM so the Service and the load
+    # balancer stop routing to it first (the server exits at once on SIGTERM). Below the pod's 30 s
+    # termination grace period; 0 turns it off. At one replica it is not rendered.
+    preStopSeconds: 15
     port: 8080
     # The code-only no-fetch entry (server/dist/offline.js): nothing is fetched or cloned and the
     # GitHub App credential is not needed. The auth wall stays up, and with no App nobody can sign

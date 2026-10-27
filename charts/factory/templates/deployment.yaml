@@ -235,6 +235,13 @@ spec:
                           path: /api/health
                           port: http
                       periodSeconds: 30
+                  {{- if and (gt (int64 .Values.dashboard.replicas) 1) (gt (int64 .Values.dashboard.preStopSeconds) 0) }}
+                  # Another replica takes the traffic while this one drains (values.yaml).
+                  lifecycle:
+                      preStop:
+                          sleep:
+                              seconds: {{ int64 .Values.dashboard.preStopSeconds }}
+                  {{- end }}
                   volumeMounts:
                       - name: tmp
                         mountPath: /tmp
