@@ -606,6 +606,12 @@ expect_contains 'the dashboard is recreated, never rolled' "$gh_dashboard" 'type
 gh_dashboard_two="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$(gh_render --set dashboard.replicas=2)")"
 expect_contains 'dashboard.replicas sets the dashboard replica count' "$gh_dashboard_two" 'replicas: 2'
 expect_contains 'two dashboards are still recreated, never rolled' "$gh_dashboard_two" 'type: Recreate'
+# Above one, a stopping pod keeps serving while the load balancer drains it; at one there is no
+# other pod to drain to, so the sleep would only lengthen the Recreate gap.
+expect_contains 'two dashboards drain before SIGTERM' "$gh_dashboard_two" 'seconds: 15'
+expect_not_contains 'one dashboard has no drain sleep' "$gh_dashboard" 'preStop:'
+expect_contains 'the drain sleep is configurable' \
+    "$(gh_render --set dashboard.replicas=2 --set dashboard.preStopSeconds=5)" 'seconds: 5'
 # Readiness is the migrations; liveness is the process. A database outage must not restart-loop.
 expect_contains 'the dashboard starts on /api/ready'  "$gh_dashboard" 'startupProbe:'
 expect_contains 'readiness reads the migrations'      "$gh_dashboard" 'path: /api/ready'
@@ -693,6 +699,9 @@ refuses 'zero dashboard replicas are refused' 'dashboard.replicas must be a whol
     "${GH_SETS[@]}" --set dashboard.replicas=0
 refuses 'a fractional dashboard replica count is refused' 'dashboard.replicas must be a whole number of at least 1' \
     "${GH_SETS[@]}" --set dashboard.replicas=1.5
+refuses 'a drain sleep at or past the grace period is refused' \
+    'dashboard.preStopSeconds must be a whole number from 0 below the 30 s termination grace period' \
+    "${GH_SETS[@]}" --set dashboard.replicas=2 --set dashboard.preStopSeconds=30
 expect_contains 'the filesystem backend renders at one dashboard replica' \
     "$(gh_render --set artifacts.backend=filesystem)" 'kind: Deployment'
 refuses 'a missing OAuth client id is refused' 'auth.oauthClientId is required' \

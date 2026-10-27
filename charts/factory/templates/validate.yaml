@@ -35,6 +35,10 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if or (lt (float64 $replicas) 1.0) (ne (float64 (int64 $replicas)) (float64 $replicas)) }}
 {{- fail "dashboard.replicas must be a whole number of at least 1" }}
 {{- end }}
+{{- $preStop := .Values.dashboard.preStopSeconds }}
+{{- if or (not (or (kindIs "int64" $preStop) (kindIs "float64" $preStop))) (lt (float64 $preStop) 0.0) (ge (float64 $preStop) 30.0) (ne (float64 (int64 $preStop)) (float64 $preStop)) }}
+{{- fail "dashboard.preStopSeconds must be a whole number from 0 below the 30 s termination grace period" }}
+{{- end }}
 {{- if and (gt (int64 $replicas) 1) (eq .Values.artifacts.backend "filesystem") }}
 {{- fail (printf "dashboard.replicas above 1 requires artifacts.backend=s3: the filesystem backend is one pod's /tmp (dashboard.replicas=%v, artifacts.backend=filesystem)" $replicas) }}
 {{- end }}
