@@ -252,7 +252,9 @@ function simpleCommands(command: string): string[] {
         if (current.trim() !== '') parts.push(current);
         current = '';
     };
-    for (const [token] of command.replace(/\\\r?\n/g, ' ').matchAll(SHELL_TOKEN)) {
+    // A backslash-newline is removed outright, as the shell removes it outside single quotes, never
+    // replaced by a space: `"te\⏎st"` is the word `test`.
+    for (const [token] of command.replace(/\\\r?\n/g, '').matchAll(SHELL_TOKEN)) {
         if (SEPARATOR.test(token)) flush();
         else current += token;
         // The substituted command is a command of its own: the line is compound.

@@ -271,6 +271,24 @@ describe('a command counts as the invocation it is, not a substring', () => {
     );
 
     it.each([
+        ['a gate name', 'factory-gate "te\\\nst"', { gate: 'test', filtered: false }],
+        ['a filter flag', 'factory-gate test "--fil\\\nter" src/a.test.ts', { gate: 'test', filtered: true }],
+        ['the program name', 'fact\\\nory-gate test', { gate: 'test', filtered: false }],
+    ])('a backslash-newline inside %s is removed, as the shell removes it', (_n, command, expected) => {
+        const [a] = only(command, '{"exitCode":0,"output":"ok"}');
+        expect(a).toMatchObject({ kind: 'gate', ...expected });
+    });
+
+    it.each([
+        ['publish', 'factory-control "pub\\\nlish"', 'publish'],
+        ['create', 'gh pr "cre\\\nate" --fill', 'create'],
+        ['lookup', 'gh pr "vi\\\new"', 'lookup'],
+    ])('a backslash-newline inside a quoted %s verb is removed', (_n, command, operation) => {
+        const [a] = only(command, PR_URL);
+        expect(a).toMatchObject({ kind: 'pr', operation });
+    });
+
+    it.each([
         ['a partly quoted gate name', `factory-gate te'st'`],
         ['an escaped gate name', 'factory-gate t\\est'],
         ['a quoted program name', `'factory-gate' test`],
