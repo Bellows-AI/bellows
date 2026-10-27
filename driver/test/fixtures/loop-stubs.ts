@@ -501,7 +501,9 @@ export function stubRunner(
             return typeof options.probeTree === 'function' ? options.probeTree() : options.probeTree;
         },
         async probeGateTree(_probed: BoardJob, sinceMs: number | null) {
-            return options.gateTree ? options.gateTree(sinceMs) : { fingerprint: null, mutatedSince: null };
+            return options.gateTree
+                ? options.gateTree(sinceMs)
+                : { fingerprint: null, content: null, mutatedSince: null };
         },
         async probeNoChange() {
             const { noChange } = options;

@@ -63,6 +63,120 @@ const fingerprintOf = (cwd) => {
         return null;
     }
 };
+// The content key (issue #983): the tree a gate run saw, as file contents alone — the git tree id of
+// the work tree as `git add -A` would stage it, `.factory/` excluded, plus each nested repository's
+// own key (a submodule, an untracked repo). HEAD is not part of it, so a publish committing the same
+// bytes keeps it. Built in a throwaway index and object directory (the repo's objects read through
+// an alternate), so the checkout's index and .git are never written. Null wherever a staged blob
+// could hide a change a gate sees (`hidesChanges`), and on any failed read. Git-ignored files are
+// not in it, as they are not in the fingerprint: they are the environment, not the work.
+const CONTENT_ATTRS = ['text', 'eol', 'ident', 'working-tree-encoding'];
+const AUTOCRLF_OFF = new Set(['', 'false', 'no', 'off', '0']);
+// `check-attr -z` answers in triples: path, attribute, value.
+const ATTR_FIELDS = 3;
+// The staging settings that write beside the index (a shared index) or ask a daemon, off for the copy.
+const ISOLATED = ['-c', 'core.splitIndex=false', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false'];
+// Whether staging this checkout could store the same blob for bytes, a mode or a file type a gate
+// would see differently: line-ending or encoding conversion, any clean filter driver, a checkout
+// that does not record modes or symlinks or folds case, an index entry git is told not to look at
+// (assume-unchanged, skip-worktree), or a split index whose shared half a stage would write.
+const hidesChanges = (read, text) => {
+    const config = (key, type) => {
+        try {
+            return text(['config', ...(type ? ['--type', type] : []), '--get', key]).toLowerCase();
+        } catch {
+            return '';
+        }
+    };
+    if (!AUTOCRLF_OFF.has(config('core.autocrlf'))) return true;
+    if (config('core.filemode', 'bool') === 'false' || config('core.symlinks', 'bool') === 'false') return true;
+    // A case-only rename keeps the index's old spelling where git folds case.
+    if (config('core.ignorecase', 'bool') === 'true') return true;
+    try {
+        read(['config', '--get-regexp', '^filter\\..*\\.(clean|process)$']);
+        return true;
+    } catch {}
+    if (text(['rev-parse', '--shared-index-path'])) return true;
+    const tags = read(['ls-files', '-z', '-v', '--cached']).toString('utf8').split('\0');
+    if (tags.some((entry) => entry && (entry[0] === 'S' || /^[a-z]/.test(entry)))) return true;
+    const listed = read(['ls-files', '-z', '--cached', '--others', '--exclude-standard']);
+    const attrs = read(['check-attr', '--stdin', '-z', ...CONTENT_ATTRS], { input: listed })
+        .toString('utf8')
+        .split('\0');
+    for (let i = ATTR_FIELDS - 1; i < attrs.length; i += ATTR_FIELDS) {
+        if (attrs[i] && attrs[i] !== 'unspecified' && attrs[i] !== 'unset') return true;
+    }
+    return false;
+};
+const contentTreeOf = (cwd, hash) => {
+    const fs = require('node:fs');
+    const os = require('node:os');
+    const path = require('node:path');
+    const read = (args, extra = {}) =>
+        execFileSync('git', args, { cwd, encoding: 'buffer', maxBuffer: FINGERPRINT_MAX_BUFFER, ...extra });
+    const text = (args) => read(args).toString('utf8').trim();
+    if (hidesChanges(read, text)) throw new Error('a staged blob could hide a change');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'content-key-'));
+    try {
+        const index = path.join(tmp, 'index');
+        try {
+            fs.copyFileSync(path.resolve(cwd, text(['rev-parse', '--git-path', 'index'])), index);
+        } catch (e) {
+            if (e.code !== 'ENOENT') throw e;
+        }
+        const objects = path.join(tmp, 'objects');
+        fs.mkdirSync(objects);
+        const env = {
+            ...process.env,
+            GIT_INDEX_FILE: index,
+            GIT_OBJECT_DIRECTORY: objects,
+            GIT_ALTERNATE_OBJECT_DIRECTORIES: path.resolve(cwd, text(['rev-parse', '--git-path', 'objects'])),
+        };
+        // An untracked nested repository would be staged as a gitlink (or refused with no commit):
+        // it is left out here and keyed by its own content below.
+        const nested = read([
+            'ls-files',
+            '-z',
+            '--others',
+            '--exclude-standard',
+            '--directory',
+            ...FINGERPRINT_PATHSPEC,
+        ])
+            .toString('utf8')
+            .split('\0')
+            .filter((name) => name.endsWith('/') && fs.existsSync(path.join(cwd, name, '.git')))
+            .map((name) => name.slice(0, -1));
+        const skip = nested.map((name) => ':(top,exclude,literal)' + name);
+        // `.factory/` leaves the index after the add: an exclude pathspec naming an ignored path is
+        // refused by `git add` as a path to add.
+        read([...ISOLATED, 'add', '-A', '--', ':/', ...skip], { env });
+        read([...ISOLATED, 'rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', ':(top).factory'], { env });
+        const tree = read(['write-tree'], { env }).toString('utf8').trim();
+        const gitlinks = read(['ls-files', '-z', '--stage'], { env })
+            .toString('utf8')
+            .split('\0')
+            .filter((entry) => entry.startsWith('160000 '))
+            .map((entry) => entry.slice(entry.indexOf('\t') + 1));
+        for (const name of [...gitlinks, ...nested].sort()) {
+            hash.update(name + '\0');
+            const dir = path.join(cwd, name);
+            // An uninitialized submodule has no work tree: its gitlink in the tree is all there is.
+            if (fs.existsSync(path.join(dir, '.git'))) hash.update(contentTreeOf(dir, hash));
+        }
+        return tree;
+    } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+    }
+};
+const contentKeyOf = (cwd) => {
+    try {
+        const hash = require('node:crypto').createHash('sha256');
+        const tree = contentTreeOf(cwd, hash);
+        return tree + ':' + hash.digest('hex');
+    } catch {
+        return null;
+    }
+};
 // Whether a file or a directory holding one of the tree's paths was touched at or after `sinceMs`:
 // the fingerprint cannot see a file changed and put back, the mtime can. A path that is gone is
 // skipped — its directory's mtime records the removal; any other read failure is true. A nested
@@ -116,6 +230,7 @@ const out = {
     unpushed: 0,
     hasIdentity: false,
     fingerprint: null,
+    content: null,
     noChange: false,
     conflicts: [],
     rebasing: false,
@@ -140,6 +255,7 @@ try {
         out.unpushed = 0;
     }
     out.fingerprint = fingerprintOf(repo);
+    out.content = contentKeyOf(repo);
     const sinceMs = Number(process.env.MUTATED_SINCE_MS);
     if (process.env.MUTATED_SINCE_MS && Number.isFinite(sinceMs)) out.mutatedSince = mutatedSince(repo, sinceMs);
     // No change: nothing uncommitted AND no diff of HEAD against the base (exit 0 of --quiet). A

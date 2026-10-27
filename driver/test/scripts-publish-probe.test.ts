@@ -104,6 +104,7 @@ describe.skipIf(!hasGit())('the publish probe script', () => {
             unpushed: 0,
             hasIdentity: false,
             fingerprint: null,
+            content: null,
             noChange: false,
             conflicts: [],
             rebasing: false,

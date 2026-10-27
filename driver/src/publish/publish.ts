@@ -512,6 +512,8 @@ export async function probeTreeFingerprint(job: BoardJob, runStep: RunPublishSte
  */
 export interface TreeProbe {
     fingerprint: string | null;
+    /** The content key (git-probe.cjs `contentKeyOf`): the files alone, so a commit of the same bytes keeps it. */
+    content: string | null;
     mutatedSince: boolean | null;
 }
 
@@ -526,11 +528,15 @@ export async function probeGateTree(
     sinceMs: number | null
 ): Promise<TreeProbe> {
     const repo = checkoutDir(job);
-    if (!repo) return { fingerprint: null, mutatedSince: null };
+    if (!repo) return { fingerprint: null, content: null, mutatedSince: null };
     const probe = await runStep(probeStep(repo, null, sinceMs)).catch(() => null);
-    const read = parseLastJsonLine<{ fingerprint?: unknown; mutatedSince?: unknown }>(probe?.stdout ?? '', () => ({}));
+    const read = parseLastJsonLine<{ fingerprint?: unknown; content?: unknown; mutatedSince?: unknown }>(
+        probe?.stdout ?? '',
+        () => ({})
+    );
     return {
         fingerprint: typeof read.fingerprint === 'string' && read.fingerprint ? read.fingerprint : null,
+        content: typeof read.content === 'string' && read.content ? read.content : null,
         mutatedSince: typeof read.mutatedSince === 'boolean' ? read.mutatedSince : null,
     };
 }

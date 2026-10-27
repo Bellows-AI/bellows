@@ -35,7 +35,7 @@ describe('Stop during the declared gates', () => {
         endPass: true,
         runClaimSeq: 1,
         ledger: {
-            probe: async () => ({ fingerprint: null, mutatedSince: null }),
+            probe: async () => ({ fingerprint: null, content: null, mutatedSince: null }),
             identity: () => 'id',
             write: async () => true,
         },

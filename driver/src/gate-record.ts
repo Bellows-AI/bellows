@@ -9,7 +9,7 @@ const RUNNING_WRITE_MS = 5_000;
 /** The terminal row's own bound: it has to land after a cancel, so it never rides the cancelled signal. */
 const TERMINAL_WRITE_MS = 5_000;
 
-/** The tree around one gate run: fingerprints and the mutation guard, null where a probe could not tell. */
+/** The tree around one gate run: content keys and the mutation guard, null where a probe could not tell. */
 export interface GateMeasure {
     treeBefore: string | null;
     treeAfter: string | null;
@@ -56,7 +56,7 @@ export class GateRecordRefused extends Error {
     }
 }
 
-const UNKNOWN_TREE: TreeProbe = { fingerprint: null, mutatedSince: null };
+const UNKNOWN_TREE: TreeProbe = { fingerprint: null, content: null, mutatedSince: null };
 
 /** One probe, bounded: an abort, the deadline, a throw or a missing probe all read as unknown (null). */
 function probeWithin(
@@ -92,14 +92,16 @@ export async function measuredRun(
     const startedAt = new Date(startedAtMs).toISOString();
     const before = await probeWithin(execution.probe, signal, probeTimeoutMs);
     if (signal?.aborted) return null;
-    const info: GateRunStart = { executionId: execution.executionId, startedAt, treeBefore: before.fingerprint };
+    const info: GateRunStart = { executionId: execution.executionId, startedAt, treeBefore: before.content };
     if (execution.start && !(await execution.start(info).catch(() => false))) throw new GateRecordRefused();
     const verdict = await execute();
     const finishedAt = new Date().toISOString();
     const after = await probeWithin(execution.probe, signal, probeTimeoutMs, startedAtMs);
     const measure: GateMeasure = {
-        treeBefore: before.fingerprint,
-        treeAfter: after.fingerprint,
+        // The content key, not the HEAD-bound fingerprint: a publish commits the same bytes after the
+        // run, and the pass still certifies them.
+        treeBefore: before.content,
+        treeAfter: after.content,
         mutatedSince: after.mutatedSince,
         startedAt,
         finishedAt,

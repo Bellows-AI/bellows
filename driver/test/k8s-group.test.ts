@@ -314,10 +314,16 @@ describe('the task group of one attempt', () => {
     // Issue #983: the gate manager's probes run on kubernetes through the same supervised probe step.
     it('probes the tree around a gate through the attempt’s supervisor, the mutation guard asked since a moment', async () => {
         const api = cluster({ ended: true });
-        const s = steps((step) => (step.kind === 'probe' ? ok('{"fingerprint":"fp","mutatedSince":true}\n') : ok()));
+        const s = steps((step) =>
+            step.kind === 'probe' ? ok('{"fingerprint":"fp","content":"ck","mutatedSince":true}\n') : ok()
+        );
         const k8s = runner(api.request, s.sink);
 
-        expect(await k8s.probeGateTree(job, 1_700_000_000_000)).toEqual({ fingerprint: 'fp', mutatedSince: true });
+        expect(await k8s.probeGateTree(job, 1_700_000_000_000)).toEqual({
+            fingerprint: 'fp',
+            content: 'ck',
+            mutatedSince: true,
+        });
         expect(s.submitted.find((step) => step.kind === 'probe')).toMatchObject({
             env: { MUTATED_SINCE_MS: '1700000000000' },
         });

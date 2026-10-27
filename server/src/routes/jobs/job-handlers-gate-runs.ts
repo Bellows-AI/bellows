@@ -16,7 +16,7 @@ import { resolveJobRoute } from '../route-guards.js';
 
 /** HMAC-SHA256 hex: the driver's gate identity. Anything else is not a digest and is never stored. */
 const IDENTITY = /^[0-9a-f]{64}$/;
-/** A tree fingerprint is `<head sha>:<sha256>`; far under this. */
+/** A tree's content key is `<tree id>:<sha256>`; far under this. */
 const TREE_LIMIT = 256;
 const TIMESTAMP_LIMIT = 40;
 

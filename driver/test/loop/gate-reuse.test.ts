@@ -16,6 +16,8 @@ import { drive, gatedJob, ok, stubBoard, stubGateStack, stubRunner } from '../fi
  * The cases marked GUARD pass before the change too (every gate ran then): they pin that a stale or
  * unconfirmed record never becomes a skip.
  */
+/** The gate probe reading the completion tree, content and fingerprint alike. */
+const SAME_GATE_TREE = () => ({ fingerprint: SAME_TREE, content: SAME_TREE, mutatedSince: false });
 /** A fresh claim per call: the loop writes onto the job it is handed (the gate pair, the setup outcome). */
 const claimedJob = (): BoardJob => ({ ...gatedJob(1), publish: false });
 const CLAIMED = claimedJob();
@@ -30,6 +32,8 @@ interface Scene {
     stack?: Parameters<typeof stubGateStack>[1];
     /** What the runner's gate probe reads, per call: a gate that runs may move it. */
     gateTree?: () => string | null;
+    /** The gate probe's content key, per call; `undefined` reads the same value as `gateTree`. */
+    gateContent?: () => string | null;
     /** The startup sync's fingerprint; `undefined` reads a known one. */
     syncFingerprint?: string | null;
 }
@@ -51,7 +55,11 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
                 fingerprint: scene.syncFingerprint === undefined ? 'h:before' : scene.syncFingerprint,
             },
             probeTree: scene.tree === undefined ? SAME_TREE : scene.tree,
-            gateTree: () => ({ fingerprint: scene.gateTree ? scene.gateTree() : SAME_TREE, mutatedSince: false }),
+            gateTree: () => {
+                const fingerprint = scene.gateTree ? scene.gateTree() : SAME_TREE;
+                const content = scene.gateContent ? scene.gateContent() : fingerprint;
+                return { fingerprint, content, mutatedSince: false };
+            },
             ...(scene.deadServices ? { deadServices: scene.deadServices } : {}),
         });
         await drive({ ...board, runner, gates: stack.gates }, env);
@@ -103,6 +111,39 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         });
     });
 
+    // ---- a publish between the pass and completion (issue #983, found live) ---------------------
+    // The agent gates, then publishes: the publish commits the very bytes the gates passed on, which
+    // moves HEAD and the fingerprint but not the content key the passes were recorded against.
+    it('reuses passes a publish commit kept: the fingerprint moved, the content did not', async () => {
+        const r = await run({
+            rows: passes(),
+            job: { ...CLAIMED, policy: { gates: true } } as BoardJob,
+            tree: 'h:published',
+            gateTree: () => 'h:published',
+            gateContent: () => SAME_TREE,
+        });
+
+        expect(r.stack.ran.names).toEqual([]);
+        expect(r.board.completed[0]).toMatchObject({
+            status: 'succeeded',
+            evidence: { gates: 'passed', treeAfter: 'h:published' },
+        });
+    });
+
+    it.each<[string, Scene]>([
+        [
+            'the content matches but the checkout no longer reads the completion tree',
+            { rows: passes(), tree: 'h:published', gateTree: () => 'h:moved-again', gateContent: () => SAME_TREE },
+        ],
+        [
+            'the content key could not be read',
+            { rows: passes(), tree: 'h:published', gateTree: () => 'h:published', gateContent: () => null },
+        ],
+    ])('GUARD: runs every gate when %s', async (_why, scene) => {
+        const r = await run(scene);
+        expect(r.stack.ran.names).toEqual(['test', 'lint']);
+    });
+
     it('runs only the gate whose pass is missing: test reused, lint runs', async () => {
         const r = await run({ rows: [gateRunRow(CLAIMED, 'test')] });
 
@@ -120,6 +161,7 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         const runner = stubRunner(async () => ok(), {
             sync: { ok: true, reason: null, fingerprint: 'h:before' },
             probeTree: SAME_TREE,
+            gateTree: SAME_GATE_TREE,
         });
         await drive({ ...board, runner, gates: stack.gates }, env);
 
@@ -368,6 +410,7 @@ describe.each(EXECUTORS)('reusing a verified gate pass at completion on the %s e
         const runner = stubRunner(async () => ok(), {
             sync: { ok: true, reason: null, fingerprint: 'h:before' },
             probeTree: SAME_TREE,
+            gateTree: SAME_GATE_TREE,
         });
         await drive({ ...board, runner, gates: stack.gates }, env);
 
