@@ -30,6 +30,7 @@ import { tokenRoutes } from './routes/tokens.js';
 import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
 import { workflowRoutes } from './routes/workflows.js';
+import type { SecretStore } from './secrets/secret-store.js';
 import type { TelemetryStore } from './telemetry/store.js';
 import { skillCatalog } from './skills.js';
 import { readVersion } from './version.js';
@@ -109,6 +110,8 @@ export interface AppDeps {
     metrics?: ServerMetrics | undefined;
     /** `true` for the server's own log; a destination object is the tests' capture of every line. */
     logger?: FastifyServerOptions['logger'];
+    /** The secret-storage seam (docs/secrets.md). No backend ships yet and main.ts supplies none; consumers will read it. */
+    secrets?: SecretStore | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR

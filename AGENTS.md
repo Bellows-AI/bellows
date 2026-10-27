@@ -70,6 +70,7 @@ commit message needs a force-push to fix.
 | `parseRange`, `filterTelemetryInput()`, the range selector | [docs/date-range.md](docs/date-range.md) |
 | `web/src/styles/`, any component, panel or page under `web/src` | [docs/design-system.md](docs/design-system.md) + [lanes](docs/design-system/) |
 | `server/src/db/*`, `stats-service.ts`, migrations | [docs/persistence.md](docs/persistence.md) |
+| `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
 | Bind addresses, container hardening, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
