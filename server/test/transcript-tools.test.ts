@@ -257,6 +257,19 @@ describe('a command counts as the invocation it is, not a substring', () => {
         expect(a?.result).toMatchObject({ outcome: 'passed', prNumber: 12 });
     });
 
+    it.each([
+        ['single-quoted', `${GATE} '--filter' src/a.test.ts`],
+        ['double-quoted', `${GATE} "--filter" src/a.test.ts`],
+        ['partly quoted', `${GATE} --fil'ter' src/a.test.ts`],
+        ['with =', `${GATE} --filter=src/a.test.ts`],
+    ])(
+        'a %s --filter still marks the run filtered: the shell unquotes it before the wrapper sees it',
+        (_n, command) => {
+            const [a] = only(command, '{"exitCode":0,"output":"ok"}');
+            expect(a).toMatchObject({ kind: 'gate', gate: 'test', filtered: true });
+        }
+    );
+
     it('a gate run in a compound command is unknown, not a verdict', () => {
         const [a] = only(`${GATE}; echo done`, '{"exitCode":0,"output":"ok"}');
         expect(a).toMatchObject({ kind: 'gate', operation: 'run' });

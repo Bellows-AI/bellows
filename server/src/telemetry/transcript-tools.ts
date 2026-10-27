@@ -268,7 +268,9 @@ function classifyCall(command: string): Classified | null {
     const find = (pattern: RegExp) => parts.find((part) => pattern.test(part));
     const gate = find(GATE_RUN);
     if (gate !== undefined) {
-        const filtered = GATE_FILTER.test(gate);
+        // Quotes and escapes are removed the way the shell removes them before the wrapper reads its
+        // argv: `'--filter'` and `--fil"ter"` are a filter too. Over-matching only ever marks a run filtered.
+        const filtered = GATE_FILTER.test(gate.replace(/['"\\]/g, ''));
         return { kind: 'gate', operation: 'run', gate: GATE_NAME.exec(gate)?.[1] ?? null, filtered, lone };
     }
     const pr = (operation: ToolOperation): Classified => ({ kind: 'pr', operation, gate: null, filtered: null, lone });
