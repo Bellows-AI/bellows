@@ -4,15 +4,16 @@
 # of its worktrees (<repo>-fix-<N> or <repo>-fix-<N>-<suffix>), and test-leaked orphans. The
 # worktrees and branches stay — they hold the PR. Prints each removal; exits 1 if any failed.
 #
-#   sh cleanup.sh <issue-number>
+#   sh cleanup.sh <issue-tag>     # an issue number (4242) or a lowercase tracker key (eng-12)
 set -u
 
 n="${1:-}"
-case "$n" in '' | *[!0-9]*)
-    echo 'usage: cleanup.sh <issue-number>' >&2
+case "$n" in *'
+'*) n='' ;; esac
+echo "$n" | grep -qE '^([0-9]+|[a-z][a-z0-9]*-[0-9]+)$' || {
+    echo 'usage: cleanup.sh <issue-tag>' >&2
     exit 2
-    ;;
-esac
+}
 tag="fix$n"
 named() { grep -E "^$tag(-|\$)"; }
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
