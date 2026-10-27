@@ -214,8 +214,11 @@ describe.skipIf(!hasGit())('the content key', () => {
         ['line endings converted (core.autocrlf)', () => git(fx.checkout(), 'config', 'core.autocrlf', 'input')],
         ['a text/eol attribute', () => writeFileSync(join(fx.checkout(), '.gitattributes'), '*.md text eol=lf\n')],
         [
-            'a clean filter driver, whatever the attribute value names',
-            () => git(fx.checkout(), 'config', 'filter.unset.clean', 'tr -d 0-9'),
+            'a clean filter driver a path names, even one called `unset`',
+            () => {
+                git(fx.checkout(), 'config', 'filter.unset.clean', 'tr -d 0-9');
+                writeFileSync(join(fx.checkout(), '.gitattributes'), '*.md filter=unset\n');
+            },
         ],
         ['modes not recorded (core.filemode=false)', () => git(fx.checkout(), 'config', 'core.filemode', 'false')],
         ['symlinks not recorded (core.symlinks=false)', () => git(fx.checkout(), 'config', 'core.symlinks', 'false')],
@@ -227,6 +230,15 @@ describe.skipIf(!hasGit())('the content key', () => {
         expect(probe().content).toMatch(KEY);
         make();
         expect(probe().content).toBeNull();
+    });
+
+    it('keeps the key with a filter driver configured host-wide that no path names (git-lfs)', () => {
+        fx.sync();
+        const before = probe().content;
+        git(fx.checkout(), 'config', 'filter.lfs.clean', 'git-lfs clean -- %f');
+        git(fx.checkout(), 'config', 'filter.lfs.process', 'git-lfs filter-process');
+        expect(before).toMatch(KEY);
+        expect(probe().content).toBe(before);
     });
 
     it('has no key where git folds case (core.ignorecase)', () => {
