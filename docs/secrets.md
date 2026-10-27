@@ -1,7 +1,7 @@
 # Secret storage
 
 The one contract that environment secrets, managed connection grants and executor credentials store their
-payload bytes through; the interface and the conformance suite ship here, no backend does.
+payload bytes through; the interface, the conformance suite and the AES-256-GCM PostgreSQL backend ship here, `main.ts` does not compose the backend yet.
 
 ## Where things live
 
@@ -13,7 +13,8 @@ payload bytes through; the interface and the conformance suite ship here, no bac
 | Test-only reference store over plain, cloneable durable state | `server/test/secrets-reference-store.ts` | `server/test/secrets.reference.test.ts` |
 | Adapter-agnostic conformance suite: `describeSecretStoreConformance(name, makeHarness)` | `server/test/secrets-conformance.ts` | `server/test/secrets.reference.test.ts` |
 | Proof that each conformance case can fail (defect variants of the reference store) | `server/test/secrets-reference-store.ts` | `server/test/secrets.conformance-meta.test.ts` |
-| A future database backend runs the same suite | `server/test-db/` | — |
+| PostgreSQL backend: store logic, repo seam (one transaction per method), `091_secret_store.sql` | `server/src/secrets/postgres-secret-store.ts`, `server/src/secrets/postgres-secret-repo.ts`, `server/migrations/091_secret_store.sql` | `server/test-db/secrets-postgres.conformance.test.ts` (the full suite, no skips), `server/test-db/secrets-postgres.{replicas,rotation,faults}.test.ts` |
+| AES-256-GCM envelope and key loading (`SECRETS_*` env: data-key ring, active id, separate operation and fingerprint keys) | `server/src/secrets/secret-envelope.ts`, `server/src/secrets/secret-keys.ts` | `server/test/secrets.envelope.test.ts`, `server/test/secrets.keys.test.ts`, `server/test-db/secrets-postgres.{envelope,sanitization}.test.ts` |
 
 ## Invariants
 
@@ -51,5 +52,9 @@ payload bytes through; the interface and the conformance suite ship here, no bac
   active, so it never resurrects a delete or overwrites a newer winner. A missing staged object is `unknown`, never `failed`. `server/test/secrets-reference-store.ts`, `server/test/secrets-conformance.ts` (faults).
 - **Durable metadata holds no payload and no unkeyed payload digest**; fingerprints are HMACs under a key kept outside the
   database. Errors and diagnostics use closed code/reason sets, so no payload, ciphertext, key or provider body can ride in them. `server/test/secrets-conformance.ts` (sanitization).
-- **Delivery**: contract (BEL-64) -> AES-GCM database backend (Secrets and managed connections project) -> consumers
-  (BEL-54, BEL-35, BEL-59..61) -> AWS/Vault adapters. OAuth refresh is never replayed as a storage retry. `docs/connections.md`.
+- **Envelope** `0x01 | keyIdLen | keyId | nonce(12, random) | ciphertext | tag(16)`; identity, reference and logical version are
+  the AAD, so a tampered, wrong-key or copied envelope is `integrity-failure`, never plaintext. Rotation (`rotate`, `rekey`,
+  `verifyRetired`) is resumable and keeps the logical version; a key leaves the ring only after `verifyRetired` is 0. The
+  operation and fingerprint keys cannot be rotated: changing one invalidates outstanding operation IDs. Purging an owner's
+  secrets is the consumers' job (no foreign key to `organization` or `app_user`). `server/test-db/secrets-postgres.rotation.test.ts`.
+- **Delivery**: contract (BEL-64) -> database backend (BEL-136) -> consumers (BEL-54, BEL-35, BEL-59..61) -> AWS/Vault (BEL-137). OAuth refresh is never replayed as a storage retry. `docs/connections.md`.
