@@ -17,6 +17,9 @@ import { createOrgRegistry } from './orgs.js';
 import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
+import { createPostgresSecretStore } from './secrets/postgres-secret-store.js';
+import { startSecretCollector } from './secrets/secret-collector.js';
+import { loadSecretKeys } from './secrets/secret-keys.js';
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
@@ -46,6 +49,11 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         console.log('[fetch] no GitHub credential: serving stored data only, nothing will be fetched or cloned');
     }
 
+    // Required on every boot, offline included: a dashboard that cannot decrypt must not come up and
+    // look healthy. Throws a message naming the variable, never its value. Read here and handed to
+    // the store only, so the keys never ride the config into the routes (docs/secrets.md).
+    const secretKeys = loadSecretKeys(process.env);
+
     // One pool, and one `migrate()`, for every feature sharing the schema. Two runners would
     // race each other.
     const sql = postgres(config.databaseUrl, { max: config.dbPoolMax });
@@ -60,6 +68,13 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         log: (m) => console.log(`[migrate] ${m}`),
     });
     ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
+
+    const secrets = createPostgresSecretStore({
+        sql,
+        ready,
+        keys: secretKeys,
+        log: (d) => console.log(`[secrets] ${JSON.stringify(d)}`),
+    });
 
     // The ingest route's write side exists whenever there is somewhere to put an export — which is
     // always, unless telemetry is switched off outright. The store takes the org per report from
@@ -116,6 +131,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         orgs,
         ready,
         store,
+        secrets,
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
@@ -149,6 +165,11 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         startBatchPrObserver({
             observeBatchPrs: () => metrics.timedPass('batch_pr_observe', () => orgs.observeBatchPrs()),
         })
+    );
+
+    // Unreferenced versions and finished operations are swept on every replica; each delete re-checks its own guard.
+    void ready.then(() =>
+        startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
     );
 
     await app.listen({ port: config.port, host: config.host });

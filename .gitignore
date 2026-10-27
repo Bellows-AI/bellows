@@ -7,6 +7,8 @@ coverage/
 playwright-report/
 .env
 .env.local
+# The secret store's keys (docs/secrets.md): the dashboard's launchers load it, nothing else does.
+secrets.env
 .DS_Store
 graphify-out/
 # Agent worktrees live inside the checkout; each holds a full copy of the tree, biome.json

@@ -208,6 +208,26 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: job-board-token
                                 optional: true
+                      # The secret store's keys (docs/secrets.md): this container only, none optional
+                      # — a dashboard that cannot decrypt must not come up. The active key id is not
+                      # secret. Required on `dashboard.offline` too.
+                      - name: SECRETS_DATA_KEYS
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretStoreSecretName" . }}
+                                key: data-keys
+                      - name: SECRETS_ACTIVE_KEY_ID
+                        value: {{ .Values.secretStore.activeKeyId | quote }}
+                      - name: SECRETS_OPERATION_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretStoreSecretName" . }}
+                                key: operation-key
+                      - name: SECRETS_FINGERPRINT_KEY
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretStoreSecretName" . }}
+                                key: fingerprint-key
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}

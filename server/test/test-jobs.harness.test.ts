@@ -29,7 +29,9 @@ describe('the test-jobs harness', () => {
     });
 
     it('pins the open board mode instead of inheriting a developer or compose auth mode', () => {
-        expect(SCRIPT).toContain('env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1');
+        // The keys ride the board launch (docs/secrets.md); the expansion is split so no lint reads it as a template.
+        const keys = ['"$', '{SECRET_STORE_ENV[@]}"'].join('');
+        expect(SCRIPT).toContain(`env ${keys} AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1`);
     });
 
     // /api/health answers while the migrations still run; the truncate needs the schema they create.
@@ -172,10 +174,12 @@ describe('the test-jobs harness', () => {
     // whole file on every call (on ubuntu-latest even `exec`): with no .env (a worktree, CI) the
     // postgres start and the driver build were refused.
     it('every compose call goes through the helper that can interpolate the compose file', () => {
-        expect(SCRIPT).toContain('compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }');
+        expect(SCRIPT).toContain(
+            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }'
+        );
         const code = SCRIPT.split('\n').filter((l) => !l.trimStart().startsWith('#'));
         expect(code.filter((l) => l.includes('docker compose'))).toEqual([
-            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }',
+            'compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }',
         ]);
         expect(SCRIPT).toContain('compose -p "$COMPOSE_PROJECT" build driver');
         expect(SCRIPT).toContain('    -e JOB_BOARD_TOKEN= \\\n');

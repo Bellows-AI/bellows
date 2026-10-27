@@ -10,6 +10,23 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}
+{{- if not .Values.secretStore.activeKeyId }}
+{{- fail "secretStore.activeKeyId is required: the key id new secrets are encrypted under (one of secretStore.dataKeys)" }}
+{{- end }}
+{{- if and .Values.secret.create (not .Values.secretStore.existingSecret) }}
+{{- if not .Values.secretStore.dataKeys }}
+{{- fail "secretStore.dataKeys is required (echo \"k1:$(openssl rand -base64 32)\") unless secretStore.existingSecret names a Secret that holds it" }}
+{{- end }}
+{{- if not .Values.secretStore.operationKey }}
+{{- fail "secretStore.operationKey is required (openssl rand -base64 32) unless secretStore.existingSecret names a Secret that holds it" }}
+{{- end }}
+{{- if not .Values.secretStore.fingerprintKey }}
+{{- fail "secretStore.fingerprintKey is required (openssl rand -base64 32) unless secretStore.existingSecret names a Secret that holds it" }}
+{{- end }}
+{{- end }}
+{{- if and (not .Values.secret.create) (not .Values.secretStore.existingSecret) }}
+{{- fail "secret.create is false but secretStore.existingSecret is empty: the dashboard would reference a secret-store Secret nothing creates" }}
+{{- end }}
 {{- if not .Values.auth.publicUrl }}
 {{- fail "auth.publicUrl is required: the origin GitHub redirects back to" }}
 {{- end }}

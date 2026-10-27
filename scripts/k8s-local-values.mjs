@@ -5,7 +5,8 @@
 //
 // The chart always runs GitHub sign-in, so every value below is required and a missing one exits
 // non-zero naming it — before helm renders anything. Variables already in the environment win
-// over .env, as with `node --env-file`.
+// over .env, as with `node --env-file`. The secret store's keys come from the repo-root secrets.env
+// (`npm run secrets:init`), never .env: only the dashboard's launchers load that file (docs/secrets.md).
 //
 // PUBLIC_URL is deliberately not read: .env's points at the dev stack. The cluster is reached
 // through `make start`'s port-forward, so the origin is K8S_PUBLIC_URL, defaulting to that
@@ -15,6 +16,8 @@ import { existsSync, readFileSync } from 'node:fs';
 
 const envFile = new URL('../.env', import.meta.url);
 if (existsSync(envFile)) process.loadEnvFile(envFile);
+const secretsFile = new URL('../secrets.env', import.meta.url);
+if (existsSync(secretsFile)) process.loadEnvFile(secretsFile);
 
 const env = process.env;
 const privateKey =
@@ -29,10 +32,23 @@ const required = {
     SESSION_SECRET: env.SESSION_SECRET?.trim(),
     JOB_BOARD_TOKEN: env.JOB_BOARD_TOKEN?.trim(),
 };
+const secretStoreRequired = {
+    SECRETS_DATA_KEYS: env.SECRETS_DATA_KEYS?.trim(),
+    SECRETS_ACTIVE_KEY_ID: env.SECRETS_ACTIVE_KEY_ID?.trim(),
+    SECRETS_OPERATION_KEY: env.SECRETS_OPERATION_KEY?.trim(),
+    SECRETS_FINGERPRINT_KEY: env.SECRETS_FINGERPRINT_KEY?.trim(),
+};
 const missing = Object.keys(required).filter((name) => !required[name]);
 if (missing.length > 0) {
     process.stderr.write(
         `k8s-local-values: the local cluster runs GitHub sign-in and needs these in .env: ${missing.join(', ')}\n`
+    );
+    process.exit(1);
+}
+const missingKeys = Object.keys(secretStoreRequired).filter((name) => !secretStoreRequired[name]);
+if (missingKeys.length > 0) {
+    process.stderr.write(
+        `k8s-local-values: the secret store needs these in secrets.env (npm run secrets:init): ${missingKeys.join(', ')}\n`
     );
     process.exit(1);
 }
@@ -51,6 +67,12 @@ const values = {
         sessionSecret: required.SESSION_SECRET,
         jobBoardToken: required.JOB_BOARD_TOKEN,
         githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET?.trim() ?? '',
+    },
+    secretStore: {
+        dataKeys: secretStoreRequired.SECRETS_DATA_KEYS,
+        activeKeyId: secretStoreRequired.SECRETS_ACTIVE_KEY_ID,
+        operationKey: secretStoreRequired.SECRETS_OPERATION_KEY,
+        fingerprintKey: secretStoreRequired.SECRETS_FINGERPRINT_KEY,
     },
     // The model credential the real runner images need, into the chart's runner Secret. Optional:
     // a board env var can carry it instead, and an unset one stays the chart's empty value.

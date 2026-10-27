@@ -142,7 +142,19 @@ COMPOSE_PROJECT="factory-jobs-$RUN_ID-compose"
 # through compose(). The compose phase's driver is started with the token cleared
 # (`-e JOB_BOARD_TOKEN=`), like every host-driven one: this value only satisfies the parse.
 COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
-compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" docker compose "$@"; }
+# The secret store's keys (docs/secrets.md), generated per run. They ride ONLY on each board's launch command
+# (SECRET_STORE_ENV) and in the file compose hands the dashboard service (SECRETS_ENV_FILE): never exported, so
+# no driver, CLI or runner this script starts can inherit one. server/test/secrets.environment.test.ts pins that.
+secret_key() { head -c 32 /dev/urandom | base64; }
+SECRET_STORE_ENV=(
+    "SECRETS_DATA_KEYS=jobs:$(secret_key)"
+    SECRETS_ACTIVE_KEY_ID=jobs
+    "SECRETS_OPERATION_KEY=$(secret_key)"
+    "SECRETS_FINGERPRINT_KEY=$(secret_key)"
+)
+SECRETS_ENV_FILE_PATH="${TMPDIR:-/tmp}/factory-jobs-$RUN_ID-secrets.env"
+(umask 077 && printf '%s\n' "${SECRET_STORE_ENV[@]}" >"$SECRETS_ENV_FILE_PATH")
+compose() { JOB_BOARD_TOKEN="$COMPOSE_TOKEN" SECRETS_ENV_FILE="$SECRETS_ENV_FILE_PATH" docker compose "$@"; }
 # The repository every task runs against (issue #263): a ready selection on the board and, in the
 # driver volume, a clone whose origin is a bare repository beside it — no GitHub, no network.
 SMOKE_REPO="factory-smoke/demo"
@@ -407,7 +419,7 @@ cleanup() {
     for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt "$work"/stalls/*; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
     done
-    rm -rf "$work"
+    rm -rf "$work" "$SECRETS_ENV_FILE_PATH"
     end_phase
     printf 'total\t%s\n' "$((SECONDS - lane_started))" >>"$TIMINGS_FILE"
     printf '[timing] total: %ss; timings: %s; exit: %s\n' "$((SECONDS - lane_started))" "$TIMINGS_FILE" "$result"
@@ -983,7 +995,7 @@ docker build -q -t "$IMAGE_BASE" -f "$work/stub-runner.Dockerfile" "$work" >/dev
 # (REPO_CLONE_BASE; server/src/github/local-origin-plan.ts).
 
 start_open_board() { # boots the AUTH_MODE=none board on $BASE and waits until it is migrated
-    env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
+    env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$PORT" HOST=127.0.0.1 \
         REPO_CLONE_BASE="$PLAN_BASE" \
         node server/dist/offline.js >>"$work/server.log" 2>&1 &
     server_pid=$!
@@ -1374,7 +1386,7 @@ echo
 echo '# github credential'
 
 MINT_PORT=$((PORT + 2))
-env AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$MINT_PORT" HOST=127.0.0.1 \
+env "${SECRET_STORE_ENV[@]}" AUTH_MODE=none DATABASE_URL="$DATABASE_URL" PORT="$MINT_PORT" HOST=127.0.0.1 \
     REPO_CLONE_BASE="$PLAN_BASE" \
     node server/dist/offline-mint.js >>"$work/mint-server.log" 2>&1 &
 mint_pid=$!
@@ -2236,7 +2248,7 @@ cap_running() { # cap_running -> how many non-review tasks run, as the database 
 }
 
 cap_board() { # cap_board <port> <log> -> a shared-budget AUTH_MODE=github board; its pid in cap_board_pid
-    env DATABASE_URL="$DATABASE_URL" PORT="$1" HOST=127.0.0.1 \
+    env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$1" HOST=127.0.0.1 \
         REPO_CLONE_BASE="$PLAN_BASE" \
         AUTH_MODE=github \
         GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \
@@ -3241,7 +3253,7 @@ server_pid=""
 AUTH_PORT=$((PORT + 1))
 AUTH_BASE="http://127.0.0.1:$AUTH_PORT"
 
-env DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
+env "${SECRET_STORE_ENV[@]}" DATABASE_URL="$DATABASE_URL" PORT="$AUTH_PORT" HOST=127.0.0.1 \
     REPO_CLONE_BASE="$PLAN_BASE" \
     AUTH_MODE=github \
     GITHUB_OAUTH_CLIENT_ID=stub-client GITHUB_OAUTH_CLIENT_SECRET=stub-secret \

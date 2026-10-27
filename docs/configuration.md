@@ -19,6 +19,7 @@ the shell). `.env.example` is the list; `server/src/config.ts` is the contract.
 | `REPO_CLONE_BASE` (offline entry only; chart `driver.repoCloneBase`): the origin its claim-time plan is read from over git, `<base>/<owner>/<name>.git`; unset, no repo carries a plan | `server/src/github/local-origin-plan.ts`, `server/src/orgs.ts`, `scripts/test-jobs.sh` | `server/test/local-origin-plan.test.ts`, `server/test/test-jobs.harness.test.ts` |
 | CLI `FACTORY_*` variables over `~/.bellows/settings.json` or `--config <path>`; a settings file holding a token readable beyond `0600` is refused; a `FACTORY_URL` carrying `user:password@` is refused without echoing it | `cli/src/config.ts` | `cli/test/config.test.ts` |
 | `DRIVER_METRICS_PORT` (chart `driver.metricsPort`, default `9464`; empty serves none): the driver scrape listener on `GATE_LISTEN_HOST` | `driver/src/config.ts`, `driver/src/metrics-server.ts`, `charts/factory/templates/driver-deployment.yaml` | `driver/test/config.test.ts`, `scripts/test-k8s.sh` |
+| `SECRETS_DATA_KEYS`, `SECRETS_ACTIVE_KEY_ID`, `SECRETS_OPERATION_KEY`, `SECRETS_FINGERPRINT_KEY` (chart `secretStore.*`): required on every boot, read by `loadSecretKeys` from the dashboard's environment only, from the gitignored `secrets.env` (`npm run secrets:init`, [secrets.md](secrets.md)), never `.env` | `server/src/secrets/secret-keys.ts`, `secrets.env.example`, `charts/factory/values.yaml` | `server/test/secrets.keys.test.ts`, `server/test/secrets.boot.test.ts`, `server/test/secrets.environment.test.ts` |
 
 ## Invariants
 

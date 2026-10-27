@@ -17,6 +17,9 @@ import { createMetricsServer } from './metrics-server.js';
 import type { GateStack } from './loop/loop-types.js';
 import { createReaper } from './reaper.js';
 import { run } from './docker/docker-runner-support.js';
+import { stripSecretStoreEnv } from './strip-secret-store-env.js';
+
+stripSecretStoreEnv(process.env);
 
 const config = loadDriverConfig(process.env);
 const HEARTBEAT_INTERVAL_MS = 10_000;
