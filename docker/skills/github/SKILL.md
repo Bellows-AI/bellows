@@ -30,7 +30,7 @@ not a blocker). Commit on the task branch, push it, and open the pull request wi
 Or ask the driver to do the push and the pull request:
 
 ```bash
-curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/publish
+factory-control publish
 ```
 
 The driver pushes the branch and opens (or reuses) the pull request — a draft when it opens one —

@@ -1,7 +1,7 @@
 /** Synthetic transcript records for the tool-event suites: no real repository, host or task id. */
 
 export const SESSION = 'claude-session-1';
-export const GATE = 'curl -sf -X POST "$BELLOWS_GATE_URL/run" -H "x: y" -d \'{"gate":"test"}\'';
+export const GATE = 'factory-gate test';
 
 export const claudeCall = (id: string, command: string, timestamp?: string) =>
     JSON.stringify({

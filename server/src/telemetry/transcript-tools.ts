@@ -84,10 +84,11 @@ export interface PendingResult {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;
-const GATE_RUN = /^\s*curl\b.*\$\{?BELLOWS_GATE_URL\}?\/run\b/s;
-const GATE_NAME = /\\?"gate\\?"\s*:\s*\\?"([A-Za-z0-9_.:-]+)/;
-const GATE_FILTER = /\\?"filter\\?"\s*:/;
-const PUBLISH = /^\s*curl\b.*control\.sock\b[^|;&]*\/publish\b/s;
+/** The wrappers the baked skills call (`docker/*-executor/factory-gate.cjs`, `factory-control.cjs`), #1061. */
+const GATE_RUN = /^\s*factory-gate(?:\s|$)/;
+const GATE_NAME = /^\s*factory-gate\s+([A-Za-z0-9_.:-]+)(?=\s|$)/;
+const GATE_FILTER = /\s--filter(?:\s|=|$)/;
+const PUBLISH = /^\s*factory-control\s+publish(?:\s|$)/;
 const PR_CREATE = /^\s*gh\s+pr\s+create\b/;
 const PR_LOOKUP = /^\s*gh\s+pr\s+(?:view|list)\b/;
 
@@ -251,7 +252,9 @@ function simpleCommands(command: string): string[] {
         if (current.trim() !== '') parts.push(current);
         current = '';
     };
-    for (const [token] of command.replace(/\\\r?\n/g, ' ').matchAll(SHELL_TOKEN)) {
+    // A backslash-newline is removed outright, as the shell removes it outside single quotes, never
+    // replaced by a space: `"te\⏎st"` is the word `test`.
+    for (const [token] of command.replace(/\\\r?\n/g, '').matchAll(SHELL_TOKEN)) {
         if (SEPARATOR.test(token)) flush();
         else current += token;
         // The substituted command is a command of its own: the line is compound.
@@ -264,7 +267,11 @@ function simpleCommands(command: string): string[] {
 function classifyCall(command: string): Classified | null {
     const parts = simpleCommands(command);
     const lone = parts.length === 1 && !ANSI_C_QUOTE.test(command);
-    const find = (pattern: RegExp) => parts.find((part) => pattern.test(part));
+    // Every pattern reads a command's words after quote and escape removal, as the shell hands them to
+    // the program: `te'st'`, `'publish'`, `gh pr 'create'` and `'--filter'` are what they run. The
+    // patterns are anchored at the command's start, so a quoted mention inside `echo` stays a mention.
+    const words = parts.map((part) => part.replace(/['"\\]/g, ''));
+    const find = (pattern: RegExp) => words.find((part) => pattern.test(part));
     const gate = find(GATE_RUN);
     if (gate !== undefined) {
         const filtered = GATE_FILTER.test(gate);

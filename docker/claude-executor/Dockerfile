@@ -197,7 +197,11 @@ COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
 COPY control-proxy.cjs /usr/local/bin/control-proxy.cjs
-RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs
+# The skills' gate-server and run-control calls (issue #1061): fixed-destination commands the managed
+# allowlist can name, root-owned so the agent cannot rewrite where they go.
+COPY factory-gate.cjs /usr/local/bin/factory-gate
+COPY factory-control.cjs /usr/local/bin/factory-control
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
 # the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.
