@@ -5,12 +5,23 @@ description: Fix a GitHub issue end-to-end in an isolated git worktree — fetch
 
 # Fix a GitHub issue end-to-end
 
-Fix the GitHub issue given as the argument. Run all seven phases in order, autonomously — do not
+Fix the issue given as the argument. Run all seven phases in order, autonomously — do not
 pause for approval between phases; stop only when genuinely blocked (see the stop conditions in
 each phase). Track progress with the todo tool throughout.
 
 Everything from Phase 1 on — planning included — runs inside a dedicated git worktree, never the
 main checkout.
+
+## Issue source and reviewer
+
+Two blocks plug into the phases below; a skill that wraps this one names its own.
+
+- **Issue source** — default `<root>/.claude/skills/fix/blocks/source-github.md`. It defines the
+  argument it takes, REF (how prose, briefs and the PR name the issue), `<N>` (the tag every name
+  below carries: worktree, branch, `fix<N>` resources, CLEANUP), and the steps this skill calls by
+  name: **Fetch**, **Close line**, **File a follow-up**, **After the PR**.
+- **Reviewer** — default: the `reviewer` subagent of Phase 4. A review block
+  (`<root>/.claude/skills/fix/blocks/review-codex.md`) adds to and replaces phases as it states.
 
 ## Heavy commands and cleanup
 
@@ -73,9 +84,9 @@ every agent it spawns — copy them into each brief.
 
 ## Phase 0 — Fetch the issue
 
-- If no issue URL/number was given, ask for one and stop.
-- Fetch the issue with full detail, comments included:
-  `gh issue view <url-or-number> --json number,title,body,labels,comments,state`
+- If no issue was given, ask for one and stop.
+- Run the issue source's **Fetch**: the issue with full detail, comments included, saved to
+  `<scratchpad>/issue-<N>.json`. A failed or unreadable fetch is a STOP, never an empty issue.
 - If the issue is already closed, say so and ask whether to proceed.
 - Before touching any code, read this repo's AGENTS.md and the `docs/` file that covers the area
   you will change — the "Read before you touch" table maps areas to files.
@@ -85,7 +96,7 @@ every agent it spawns — copy them into each brief.
 **Factory task exception:** if the current branch already matches `factory/<uuid>`
 (`git branch --show-current`), this run is a Factory board task — the worktree and the branch
 already exist and the board resumes follow-ups on that exact checkout. Skip the creation steps
-below: WORKTREE is the current directory, and wherever this phase says `fix/<issue-number>-<slug>`,
+below: WORKTREE is the current directory, and wherever this phase says `fix/<N>-<slug>`,
 read the task branch you are on. Never create or switch branches in this tree — leaving it off the
 task branch strands the run: the board's resume gate refuses a follow-up whose checkout is not on
 `factory/<uuid>`, and the work becomes unreachable to the thread that owns it.
@@ -94,7 +105,7 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
    (`gh repo view --json defaultBranchRef -q .defaultBranchRef.name`), then update the base:
    `git fetch origin <default-branch>`.
 2. Create the worktree as a sibling of the repo root, with a fresh branch off the default branch:
-   `git worktree add <root>/../<repo-name>-fix-<issue-number> -b fix/<issue-number>-<short-slug> origin/<default-branch>`
+   `git worktree add <root>/../<repo-name>-fix-<N> -b fix/<N>-<short-slug> origin/<default-branch>`
    The slug comes from the issue title. Never reuse an existing branch or an existing path; if
    creation fails, stop and ask.
 3. Untracked files do not follow a worktree, so recreate the environment: clone dependencies from
@@ -194,7 +205,7 @@ For each round, up to 3:
      named is one instance. A later round that finds the same class again means this fix was
      incomplete.
    - A defect in pre-existing code the change does not call is not this PR's blocker: file it as
-     an issue (`gh issue create`) and record it as `deferred: #<issue>`.
+     an issue with the issue source's **File a follow-up** and record it as `deferred: <ref>`.
    - Nitpicks/style: fix only if trivial; do not loop on them.
 4. A round with zero blockers ends the loop.
 
@@ -214,9 +225,9 @@ Pre-flight (all inside WORKTREE):
 
 Then:
 
-1. You are already on the branch chosen in Phase 1 — `fix/<issue-number>-<short-slug>`, or the
+1. You are already on the branch chosen in Phase 1 — `fix/<N>-<short-slug>`, or the
    Factory task branch (`factory/<uuid>`) when this run is a board task; do not cut another.
-2. Commit with a message referencing the issue.
+2. Commit with a message referencing the issue by REF.
 3. Bring the branch up to date with the default branch before pushing. Up to 2 attempts; each
    attempt is fetch, merge, resolve, verify:
    - `git fetch origin <default-branch>` then `git merge origin/<default-branch>`. "Already up
@@ -243,8 +254,9 @@ Then:
    `gh pr create --title "<short title>" --body <body> --base <default-branch>`
    Body must include: a summary of the root cause and the fix, the list of changes, the tests
    added and how they were verified, the "Decided on default" list when any fork took its default,
-   and `Fixes #<N>` on its own line so the issue auto-closes on merge. End the body with: `🤖 Generated with [opencode](https://opencode.ai)`
-6. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL and the
+   and the issue source's **Close line** on its own line so the issue closes on merge. End the body with: `🤖 Generated with [opencode](https://opencode.ai)`
+6. Run the issue source's **After the PR** step with the PR URL.
+7. Leave the worktree in place — it holds the branch the PR is from. Report the PR URL and the
    worktree path — the run continues into Phase 6, which owns the final summary.
 
 Never force-push, never push directly to the default branch, never `git worktree remove` a

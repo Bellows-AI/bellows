@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const skill = fileURLToPath(new URL('../../.claude/skills/fix/', import.meta.url));
 const HEAVY = join(skill, 'heavy.sh');
 const CLEANUP = join(skill, 'cleanup.sh');
+const codex = () => readFileSync(join(skill, 'blocks/review-codex.md'), 'utf8');
 
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
@@ -61,14 +62,27 @@ describe('the fix skills', () => {
         expect(fix).toContain('`<root>/.claude/skills/fix/heavy.sh`');
         expect(fix).toContain('`<root>/.claude/skills/fix/cleanup.sh`');
         expect(fix).toContain('`sh CLEANUP <N>` run');
-        expect(readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8')).toContain('`sh HEAVY codex exec');
+        expect(codex()).toContain('`sh HEAVY codex exec');
+    });
+
+    it('plug an issue source and a reviewer into one workflow', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        const github = readFileSync(join(skill, 'blocks/source-github.md'), 'utf8');
+        for (const step of ['**Fetch**', '**Close line**', '**File a follow-up**', '**After the PR**']) {
+            expect(fix).toContain(step);
+            expect(github).toContain(step);
+        }
+        expect(github).toContain('`Fixes #<N>`');
+        const local = readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8');
+        expect(local).toContain('`<repo root>/.claude/skills/fix/blocks/source-github.md`');
+        expect(local).toContain('`<repo root>/.claude/skills/fix/blocks/review-codex.md`');
     });
 
     it('iterate on the focused suite and run the full suite once, as the ship gate', () => {
         const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
         expect(fix).toContain('`sh HEAVY npx vitest run --changed $BASE`');
         expect(fix).toContain('The full `npm test` runs once, as the Phase 5 gate');
-        expect(readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8')).toContain('re-run the focused suite');
+        expect(codex()).toContain('re-run the focused suite');
     });
 
     it('iterate on test:changed or one project, in AGENTS.md and both fix skills', () => {
@@ -82,11 +96,10 @@ describe('the fix skills', () => {
     it('fix a review finding by its class, sweep accepted classes and defer out-of-path defects', () => {
         const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
         expect(fix).toContain('**Fix the class, not the line.**');
-        expect(fix).toContain('`deferred: #<issue>`');
+        expect(fix).toContain('`deferred: <ref>`');
         expect(fix).toContain("The cap is the user's to raise, never the run's.");
-        const local = readFileSync(join(skill, '../fix-local/SKILL.md'), 'utf8');
-        expect(local).toContain('the sweep block');
-        expect(local).toContain('only a correctness or data-loss defect counts as a blocker');
+        expect(codex()).toContain('the sweep block');
+        expect(codex()).toContain('only a correctness or data-loss defect counts as a blocker');
         expect(readFileSync(join(skill, '../../agents/fix-planner.md'), 'utf8')).toContain('- **Hazards**:');
     });
 
@@ -167,7 +180,7 @@ describe('heavy.sh', () => {
 });
 
 describe('cleanup.sh', () => {
-    const fakes = (dir: string, worktree: string) => {
+    const fakes = (dir: string, worktree: string, tag: string) => {
         const bin = join(dir, 'bin');
         mkdirSync(bin);
         const log = join(dir, 'calls');
@@ -175,14 +188,17 @@ describe('cleanup.sh', () => {
             writeFileSync(join(bin, name), `#!/bin/sh\necho "${name} $*" >> ${log}\n${body}\n`);
             chmodSync(join(bin, name), 0o755);
         };
-        fake('kind', `[ "$1 $2" = 'get clusters' ] && printf 'factory\\nfix4242\\nfix4242-lane\\nfix42420\\n'; exit 0`);
+        fake(
+            'kind',
+            `[ "$1 $2" = 'get clusters' ] && printf 'factory\\nfix${tag}\\nfix${tag}-lane\\nfix${tag}0\\n'; exit 0`
+        );
         fake(
             'docker',
             [
                 'case "$1 $2" in',
-                `  'ps -a') case "$*" in *compose*) printf 'fix4242\\nfactory-ai\\n' ;; *) printf 'fix4242-pg\\nfix42420-pg\\nfactory-ai-postgres-1\\n' ;; esac ;;`,
-                `  'volume ls') printf 'fix4242-data\\nother\\n' ;;`,
-                `  'network ls') printf 'fix4242\\nkind\\n' ;;`,
+                `  'ps -a') case "$*" in *compose*) printf 'fix${tag}\\nfactory-ai\\n' ;; *) printf 'fix${tag}-pg\\nfix${tag}0-pg\\nfactory-ai-postgres-1\\n' ;; esac ;;`,
+                `  'volume ls') printf 'fix${tag}-data\\nother\\n' ;;`,
+                `  'network ls') printf 'fix${tag}\\nkind\\n' ;;`,
                 'esac',
                 'exit 0',
             ].join('\n')
@@ -191,50 +207,54 @@ describe('cleanup.sh', () => {
         return { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` }, log };
     };
 
-    it('refuses anything but an issue number', () => {
-        expect(spawnSync('sh', [CLEANUP]).status).toBe(2);
-        expect(spawnSync('sh', [CLEANUP, 'fix4242']).status).toBe(2);
+    it('refuses anything but an issue number or a lowercase tracker key', () => {
+        for (const arg of [[], ['fix4242'], ['ENG-12'], ['eng'], ['eng-12-x'], ['4242\nx']])
+            expect(spawnSync('sh', [CLEANUP, ...arg]).status, String(arg)).toBe(2);
     });
 
-    it('removes only what is named after the issue and kills processes of its worktrees', async () => {
-        const dir = scratch();
-        const worktree = join(dir, 'repo-fix-4242');
-        const other = join(dir, 'repo-fix-42420');
-        mkdirSync(worktree);
-        mkdirSync(other);
-        const { env, log } = fakes(dir, worktree);
-        const keep = 'setInterval(() => {}, 1000)';
-        const named = spawn('node', ['-e', keep, join(worktree, 'marker')], { stdio: 'ignore' });
-        const inside = spawn('node', ['-e', keep], { cwd: worktree, stdio: 'ignore' });
-        const sibling = spawn('node', ['-e', keep, join(other, 'marker')], { stdio: 'ignore' });
-        children.push(named, inside, sibling);
-        const exited = (child: ChildProcess) => new Promise((resolve) => child.on('exit', resolve));
-        const killed = Promise.all([exited(named), exited(inside)]);
-        await sleep(200);
+    it.each(['4242', 'eng-42'])(
+        'removes only what is named after issue %s and kills processes of its worktrees',
+        async (tag) => {
+            const dir = scratch();
+            const worktree = join(dir, `repo-fix-${tag}`);
+            const other = join(dir, `repo-fix-${tag}0`);
+            mkdirSync(worktree);
+            mkdirSync(other);
+            const { env, log } = fakes(dir, worktree, tag);
+            const keep = 'setInterval(() => {}, 1000)';
+            const named = spawn('node', ['-e', keep, join(worktree, 'marker')], { stdio: 'ignore' });
+            const inside = spawn('node', ['-e', keep], { cwd: worktree, stdio: 'ignore' });
+            const sibling = spawn('node', ['-e', keep, join(other, 'marker')], { stdio: 'ignore' });
+            children.push(named, inside, sibling);
+            const exited = (child: ChildProcess) => new Promise((resolve) => child.on('exit', resolve));
+            const killed = Promise.all([exited(named), exited(inside)]);
+            await sleep(200);
 
-        // Async, so the children's exits are reaped while the script still waits on them.
-        const run = spawn('sh', [CLEANUP, '4242'], { env, stdio: ['ignore', 'ignore', 'pipe'] });
-        let stderr = '';
-        run.stderr.on('data', (chunk: Buffer) => {
-            stderr += chunk.toString();
-        });
-        expect(await exited(run), stderr).toBe(0);
-        await killed;
-        expect(sibling.exitCode).toBeNull();
+            // Async, so the children's exits are reaped while the script still waits on them.
+            const run = spawn('sh', [CLEANUP, tag], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+            let stderr = '';
+            run.stderr.on('data', (chunk: Buffer) => {
+                stderr += chunk.toString();
+            });
+            expect(await exited(run), stderr).toBe(0);
+            await killed;
+            expect(sibling.exitCode).toBeNull();
 
-        const calls = readFileSync(log, 'utf8');
-        for (const call of [
-            'kind delete cluster --name fix4242',
-            'kind delete cluster --name fix4242-lane',
-            'docker compose -p fix4242 down --volumes --remove-orphans',
-            'docker rm -f -v fix4242-pg',
-            'docker volume rm fix4242-data',
-            'docker network rm fix4242',
-        ])
-            expect(calls).toContain(`${call}\n`);
-        const removals = calls.split('\n').filter((line) => / (delete|rm|down) /.test(line));
-        expect(removals).toHaveLength(6);
-    }, 30_000);
+            const calls = readFileSync(log, 'utf8');
+            for (const call of [
+                `kind delete cluster --name fix${tag}`,
+                `kind delete cluster --name fix${tag}-lane`,
+                `docker compose -p fix${tag} down --volumes --remove-orphans`,
+                `docker rm -f -v fix${tag}-pg`,
+                `docker volume rm fix${tag}-data`,
+                `docker network rm fix${tag}`,
+            ])
+                expect(calls).toContain(`${call}\n`);
+            const removals = calls.split('\n').filter((line) => / (delete|rm|down) /.test(line));
+            expect(removals).toHaveLength(6);
+        },
+        30_000
+    );
 
     it.skipIf(!existsSync('/proc/self'))(
         'finds a process by its working directory through /proc on a host without lsof',
@@ -242,7 +262,7 @@ describe('cleanup.sh', () => {
             const dir = scratch();
             const worktree = join(dir, 'repo-fix-4242');
             mkdirSync(worktree);
-            const { env } = fakes(dir, worktree);
+            const { env } = fakes(dir, worktree, '4242');
             // A PATH of the tools the script needs, lsof left out: a slim image ships none.
             const tools = join(dir, 'tools');
             mkdirSync(tools);
