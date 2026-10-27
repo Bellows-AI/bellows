@@ -1,5 +1,14 @@
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -226,4 +235,34 @@ describe('cleanup.sh', () => {
         const removals = calls.split('\n').filter((line) => / (delete|rm|down) /.test(line));
         expect(removals).toHaveLength(6);
     }, 30_000);
+
+    it.skipIf(!existsSync('/proc/self'))(
+        'finds a process by its working directory through /proc on a host without lsof',
+        async () => {
+            const dir = scratch();
+            const worktree = join(dir, 'repo-fix-4242');
+            mkdirSync(worktree);
+            const { env } = fakes(dir, worktree);
+            // A PATH of the tools the script needs, lsof left out: a slim image ships none.
+            const tools = join(dir, 'tools');
+            mkdirSync(tools);
+            for (const tool of ['awk', 'dirname', 'grep', 'ps', 'readlink', 'sed', 'sleep', 'sort', 'tr']) {
+                const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+                symlinkSync(found, join(tools, tool));
+            }
+            const inside = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { cwd: worktree, stdio: 'ignore' });
+            children.push(inside);
+            const killed = new Promise((resolve) => inside.on('exit', resolve));
+            await sleep(200);
+
+            // Only the kill is asserted: the stripped PATH fails the cluster teardown, not under test here.
+            const run = spawnSync('/bin/sh', [CLEANUP, '4242'], {
+                env: { ...env, PATH: `${join(dir, 'bin')}:${tools}` },
+                encoding: 'utf8',
+            });
+            expect(run.stdout).toMatch(new RegExp(`kill -TERM( \\d+)* ${inside.pid}( |$)`, 'm'));
+            await killed;
+        },
+        30_000
+    );
 });
