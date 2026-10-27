@@ -5,7 +5,7 @@ import type { GateReport } from './loop-gates.js';
 /** The longest the one read of a run's gate record may take: bounded, never retried, never a reason to fail. */
 export const GATE_RUNS_READ_MS = 10_000;
 
-/** What a reuse is compared against: the gate's identity now, the tree the completion probe read, the run's claim. */
+/** What a reuse is compared against: the gate's identity now, the completion tree's content key, the run's claim. */
 export interface ReuseWant {
     identity: string;
     tree: string | null;

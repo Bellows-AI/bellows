@@ -60,8 +60,9 @@ const until = async (ready: () => boolean): Promise<void> => {
 };
 
 type Probe = GateLedger['probe'];
-const BEFORE = { fingerprint: 'h:before', mutatedSince: null };
-const AFTER = { fingerprint: 'h:after', mutatedSince: false };
+// The HEAD-bound fingerprint is never what a row stores: the content key is (issue #983).
+const BEFORE = { fingerprint: 'f:before', content: 'h:before', mutatedSince: null };
+const AFTER = { fingerprint: 'f:after', content: 'h:after', mutatedSince: false };
 
 interface Options {
     answer?: (call: { gate: GateStepRequest }, n: number) => StepResult | Error | Promise<StepResult>;
@@ -180,7 +181,7 @@ describe('the gate server: execution records', () => {
     it('carries a mutation the after-probe saw', async () => {
         const h = await harness({
             probe: async (_s, since) =>
-                since === undefined ? BEFORE : { fingerprint: 'h:before', mutatedSince: true },
+                since === undefined ? BEFORE : { fingerprint: 'f:before', content: 'h:before', mutatedSince: true },
         });
         await h.run();
         expect(h.rows[1]).toMatchObject({ outcome: 'passed', treeAfter: 'h:before', mutatedSince: true });

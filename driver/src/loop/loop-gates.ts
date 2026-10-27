@@ -520,12 +520,13 @@ export async function runDeclaredGates(
         PER_GATE_OUTPUT_FLOOR_BYTES,
         Math.floor(GATES_REPORT_BUDGET_BYTES / gateSession.declared.length)
     );
-    const walk: GateWalk = { ...runCtx, treeAfter, results, perGate, report };
-    // Ad-hoc admission is already closed and drained (verifyRun, before the completion tree is read),
-    // so every ad-hoc run has landed in the record read here.
     // A setup that failed in this claim's environment is retried by running the gates, never skipped
     // by serving them from an earlier pass: the reuse waits for a setup that succeeded.
-    let earlier = job.setupFailure ? null : await readGateRuns(runCtx, treeAfter);
+    const content = job.setupFailure ? null : await contentOf(runCtx, treeAfter);
+    const walk: GateWalk = { ...runCtx, treeAfter, content, results, perGate, report };
+    // Ad-hoc admission is already closed and drained (verifyRun, before the completion tree is read),
+    // so every ad-hoc run has landed in the record read here.
+    let earlier = content === null ? null : await readGateRuns(runCtx);
     for (;;) {
         results.length = 0;
         const verdict = await passOver(walk, earlier);
@@ -537,6 +538,8 @@ export async function runDeclaredGates(
 /** One walk over the declared gates: the context, the report list the board is told, and the report pump. */
 interface GateWalk extends GatesRunCtx {
     treeAfter: string | null;
+    /** The content key of `treeAfter` (issue #983): what a reused pass must have run on. Null: nothing is reused. */
+    content: string | null;
     results: GateReport[];
     perGate: number;
     report: () => Promise<void>;
@@ -544,16 +547,40 @@ interface GateWalk extends GatesRunCtx {
 
 /** Whether the checkout still reads the tree the reused passes certified; an unreadable tree does not. Null: stood down. */
 async function treeUnchanged(w: GateWalk): Promise<boolean | null> {
-    const { state, gateSession, treeAfter } = w;
+    const { state, gateSession, treeAfter, content } = w;
     const probing = gateSession.ledger.probe(AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]));
     const raced = await raceStep(
         state.signal,
         probing.then(
-            (probe) => probe.fingerprint !== null && probe.fingerprint === treeAfter,
+            (probe) =>
+                probe.fingerprint !== null &&
+                probe.fingerprint === treeAfter &&
+                probe.content !== null &&
+                probe.content === content,
             () => false
         )
     );
     return raced ? raced.value : null;
+}
+
+/**
+ * The content key of the completion tree (issue #983), read once before the walk: a pass certifies
+ * file contents, which a publish commit keeps while it moves the fingerprint. Taken only while the
+ * checkout still reads `treeAfter`, the fingerprint the evidence binds to; null — nothing reused —
+ * on any other read, a timeout or no completion tree at all.
+ */
+async function contentOf(ctx: GatesRunCtx, treeAfter: string | null): Promise<string | null> {
+    const { gateSession, state } = ctx;
+    if (treeAfter === null) return null;
+    const probing = gateSession.ledger.probe(AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]));
+    const raced = await raceStep(
+        state.signal,
+        probing.then(
+            (probe) => (probe.fingerprint === treeAfter ? probe.content : null),
+            () => null
+        )
+    );
+    return raced?.value ?? null;
 }
 
 /** One declared gate executed and settled in the report: its failure, or `GATE_PASSED`; null when stood down. */
@@ -588,10 +615,10 @@ async function reusableAfterWalk(
     pool: GateRunRecord[] | null,
     executed: boolean
 ): Promise<{ reused: GateRunRecord | null; pool: GateRunRecord[] | null } | null> {
-    const { gateSession, treeAfter } = w;
+    const { gateSession, content } = w;
     const reused = reusableRun(pool, gate, {
         identity: gateSession.ledger.identity(gate),
-        tree: treeAfter,
+        tree: content,
         runClaimSeq: gateSession.runClaimSeq,
     });
     if (!reused || !executed) return { reused, pool };
@@ -650,9 +677,8 @@ async function passOver(
  * answer in full, one that timed out, or a stand-down that cut it short. Never an empty record by
  * default: an unconfirmed read is not an answer.
  */
-async function readGateRuns(ctx: GatesRunCtx, treeAfter: string | null): Promise<GateRunRecord[] | null> {
+async function readGateRuns(ctx: GatesRunCtx): Promise<GateRunRecord[] | null> {
     const { rt, job, gateSession, state } = ctx;
-    if (treeAfter === null) return null;
     const signal = AbortSignal.any([state.signal, AbortSignal.timeout(GATE_RUNS_READ_MS)]);
     const raced = await raceStep(
         state.signal,
