@@ -86,7 +86,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PR_URL = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)$/;
 /** The wrappers the baked skills call (`docker/*-executor/factory-gate.cjs`, `factory-control.cjs`), #1061. */
 const GATE_RUN = /^\s*factory-gate(?:\s|$)/;
-const GATE_NAME = /^\s*factory-gate\s+['"]?([A-Za-z0-9_.:-]+)['"]?(?=\s|$)/;
+const GATE_NAME = /^\s*factory-gate\s+([A-Za-z0-9_.:-]+)(?=\s|$)/;
 const GATE_FILTER = /\s--filter(?:\s|=|$)/;
 const PUBLISH = /^\s*factory-control\s+publish(?:\s|$)/;
 const PR_CREATE = /^\s*gh\s+pr\s+create\b/;
@@ -265,12 +265,14 @@ function simpleCommands(command: string): string[] {
 function classifyCall(command: string): Classified | null {
     const parts = simpleCommands(command);
     const lone = parts.length === 1 && !ANSI_C_QUOTE.test(command);
-    const find = (pattern: RegExp) => parts.find((part) => pattern.test(part));
+    // Every pattern reads a command's words after quote and escape removal, as the shell hands them to
+    // the program: `te'st'`, `'publish'`, `gh pr 'create'` and `'--filter'` are what they run. The
+    // patterns are anchored at the command's start, so a quoted mention inside `echo` stays a mention.
+    const words = parts.map((part) => part.replace(/['"\\]/g, ''));
+    const find = (pattern: RegExp) => words.find((part) => pattern.test(part));
     const gate = find(GATE_RUN);
     if (gate !== undefined) {
-        // Quotes and escapes are removed the way the shell removes them before the wrapper reads its
-        // argv: `'--filter'` and `--fil"ter"` are a filter too. Over-matching only ever marks a run filtered.
-        const filtered = GATE_FILTER.test(gate.replace(/['"\\]/g, ''));
+        const filtered = GATE_FILTER.test(gate);
         return { kind: 'gate', operation: 'run', gate: GATE_NAME.exec(gate)?.[1] ?? null, filtered, lone };
     }
     const pr = (operation: ToolOperation): Classified => ({ kind: 'pr', operation, gate: null, filtered: null, lone });

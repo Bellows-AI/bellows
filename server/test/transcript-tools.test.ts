@@ -270,6 +270,28 @@ describe('a command counts as the invocation it is, not a substring', () => {
         }
     );
 
+    it.each([
+        ['a partly quoted gate name', `factory-gate te'st'`],
+        ['an escaped gate name', 'factory-gate t\\est'],
+        ['a quoted program name', `'factory-gate' test`],
+    ])('%s still reads as the gate it runs: words are read after quote removal', (_n, command) => {
+        const [a] = only(command, '{"exitCode":0,"output":"ok"}');
+        expect(a).toMatchObject({ kind: 'gate', gate: 'test', filtered: false });
+        expect(a?.result?.outcome).toBe('passed');
+    });
+
+    it.each([
+        ['publish', `factory-control 'publish'`, 'publish'],
+        ['publish', `factory-control pub"lish"`, 'publish'],
+        ['publish', 'factory-control pub\\lish', 'publish'],
+        ['create', `gh pr 'create' --fill`, 'create'],
+        ['lookup', `gh pr "view" --json url`, 'lookup'],
+        ['lookup', `gh pr l'ist'`, 'lookup'],
+    ])('a quoted %s verb (%s) is still that operation', (_n, command, operation) => {
+        const [a] = only(command, PR_URL);
+        expect(a).toMatchObject({ kind: 'pr', operation });
+    });
+
     it('a gate run in a compound command is unknown, not a verdict', () => {
         const [a] = only(`${GATE}; echo done`, '{"exitCode":0,"output":"ok"}');
         expect(a).toMatchObject({ kind: 'gate', operation: 'run' });
