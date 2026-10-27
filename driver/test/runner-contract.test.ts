@@ -30,6 +30,7 @@ const IMPLEMENTED_BY: Record<keyof Runner, 'both' | 'kubernetes'> = {
     releaseServices: 'both',
     publishGit: 'both',
     probeTree: 'both',
+    probeGateTree: 'both',
     probeNoChange: 'both',
     adopt: 'both',
     snapshotTree: 'both',

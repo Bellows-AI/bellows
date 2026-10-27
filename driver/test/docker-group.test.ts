@@ -628,8 +628,9 @@ describe('the holder binding (#829)', () => {
         token: 'tok-new-holder',
         agentToken: 'tok-new-agent',
         exportToken: 'tok-new-export',
+        leaseToken: 'lease-new',
     };
-    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'driver.example'];
+    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'lease-new', 'driver.example'];
     const supervisorArgs = supervisorCreateArgs(
         config,
         reviewing,
@@ -748,6 +749,9 @@ describe('the holder binding (#829)', () => {
             { ...BINDING, agentToken: 'has space' },
             { ...BINDING, exportToken: '' },
             { ...BINDING, exportToken: 'x'.repeat(257) },
+            { ...BINDING, leaseToken: '' },
+            { ...BINDING, leaseToken: 'has space' },
+            { ...BINDING, leaseToken: 'x'.repeat(257) },
         ];
         for (const binding of bad) {
             const { calls, execDocker } = exec(async () => ({ stdout: '' }));

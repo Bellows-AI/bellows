@@ -183,9 +183,10 @@ COPY ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
 # The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
 # wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
 COPY github-credential.cjs /usr/local/bin/github-credential.cjs
+COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
 COPY gh-wrapper.sh /usr/local/bin/gh
 COPY stop-plugin/ /usr/local/lib/node_modules/factory-stop-plugin/
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in
@@ -211,7 +212,11 @@ COPY factory-launch.sh /usr/local/bin/factory-launch
 COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
 COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
 COPY control-proxy.cjs /usr/local/bin/control-proxy.cjs
-RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs
+# The skills' gate-server and run-control calls (issue #1061): fixed-destination commands the managed
+# allowlist can name, root-owned so the agent cannot rewrite where they go.
+COPY factory-gate.cjs /usr/local/bin/factory-gate
+COPY factory-control.cjs /usr/local/bin/factory-control
+RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
 # the tool uid (issue #814); a kubernetes emptyDir is made sticky by the tool broker instead.

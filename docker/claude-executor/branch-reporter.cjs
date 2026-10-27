@@ -16,8 +16,10 @@
  *                        reports nothing rather than guessing an endpoint.
  *   RUNNER_JOB_ID        the job this attempt runs for. With the lease token below, the pair
  *                        is the credential the board resolves the report's organization from.
- *   RUNNER_LEASE_TOKEN   that attempt's lease token. The pair rides as headers; the board
- *                        accepts it while the attempt is the job's live one.
+ *   RUNNER_LEASE_TOKEN   that attempt's lease token as the container started. The pair rides as
+ *                        headers; the board accepts it while the attempt is the job's live one.
+ *                        A claim that adopted this runner rotated it: `attempt-pair.cjs` reads the
+ *                        lease the supervisor names now, and this one stands when it names none.
  *   BELLOWS_SESSION_ID   the session to report. The claude runner is always told (the driver
  *                        mints the uuid); the opencode runner is told only when it resumes one,
  *                        and otherwise discovers the id live from opencode's session database.
@@ -48,6 +50,7 @@
 const { execFileSync } = require('node:child_process');
 const { statSync } = require('node:fs');
 const { join } = require('node:path');
+const { currentPair } = require('./attempt-pair.cjs');
 
 // The one line the two copies differ on: the agent the metrics carry, exactly as agentOf()
 // derives it from the OTLP metric names — a branch span under any other name joins to nothing.
@@ -170,8 +173,7 @@ async function report(sessionId) {
     // The attempt pair is the credential, and it goes only when BOTH halves were forwarded: the
     // board resolves the report's organization from the live attempt itself, never from the repo
     // this payload carries. A hand-run container presents no pair rather than a half one.
-    const jobId = (process.env.RUNNER_JOB_ID ?? '').trim();
-    const leaseToken = (process.env.RUNNER_LEASE_TOKEN ?? '').trim();
+    const { jobId, leaseToken } = await currentPair(process.env);
     if (jobId && leaseToken) {
         headers['x-factory-job-id'] = jobId;
         headers['x-factory-job-lease-token'] = leaseToken;

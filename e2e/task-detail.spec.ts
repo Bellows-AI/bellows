@@ -10,6 +10,7 @@ import {
     followUpThread,
     interruptedThread,
     measuredActivityOf,
+    recordedActivityOf,
     publishedThread,
     routeThread,
     runningThread,
@@ -344,6 +345,51 @@ test.describe('the task detail page', () => {
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
         expect(overflow, 'the statistics modal overflows the page at 390px').toBeLessThanOrEqual(0);
         await page.screenshot({ path: `${SHOTS}/task-stats-dialog_390.png`, fullPage: true });
+        expect(problems).toEqual([]);
+    });
+
+    test('the statistics modal shows gate counts, a reused badge, PR links, and a dash for what was not timed', async ({
+        page,
+    }) => {
+        await routeThread(page, followUpThread);
+        await page.unroute('**/api/jobs/*/activity');
+        await page.route('**/api/jobs/*/activity', (route) =>
+            route.fulfill({ json: recordedActivityOf(followUpThread) })
+        );
+        const problems = watchConsole(page);
+        await page.goto(`/tasks/${followUpThread[1]!.id}`);
+        await page.getByRole('button', { name: /Open task statistics/ }).click();
+        const dialog = page.getByRole('dialog');
+
+        const gates = dialog.getByRole('region', { name: 'Gates' });
+        await expect(gates.locator('dt', { hasText: 'Passed' })).toBeVisible();
+        await expect(gates.locator('div', { has: page.locator('dt', { hasText: 'Passed' }) }).locator('dd')).toHaveText(
+            '2'
+        );
+        await expect(gates.locator('div', { has: page.locator('dt', { hasText: 'Failed' }) }).locator('dd')).toHaveText(
+            '1'
+        );
+        await expect(gates.getByText('reused', { exact: true })).toBeVisible();
+        await expect(gates).toContainText('Reused the result of execution 0a1b2c3d: tree unchanged');
+        // No execution carried its timing: a dash and the coverage, not a zero duration.
+        await expect(
+            gates.locator('div', { has: page.locator('dt', { hasText: 'Duration' }) }).locator('dd')
+        ).toHaveText('—');
+        await expect(gates).toContainText('Duration measured for 0 of 3 executions.');
+
+        const prs = dialog.getByRole('region', { name: 'Pull requests' });
+        await expect(prs.getByRole('link', { name: 'acme/web#7' })).toHaveAttribute(
+            'href',
+            'https://github.com/acme/web/pull/7'
+        );
+        await expect(
+            prs.locator('div', { has: page.locator('dt', { hasText: 'Operations' }) }).locator('dd')
+        ).toHaveText('2');
+        await expect(
+            prs.locator('div', { has: page.locator('dt', { hasText: 'Distinct PRs' }) }).locator('dd')
+        ).toHaveText('1');
+        expect(await dialog.innerText()).not.toMatch(/NaN|undefined/);
+        await page.screenshot({ path: `${SHOTS}/task-stats-gates-prs.png`, fullPage: true });
         expect(problems).toEqual([]);
     });
 

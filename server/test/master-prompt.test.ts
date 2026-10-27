@@ -79,7 +79,7 @@ Rules for this turn
 - This is one agent turn inside a Factory-run process, not authority to run that process.
 - Factory decides what happens next from this turn's verdict and final output.
 - Factory runs the declared gates and a publish after your turn, and reuses any pull request you opened; do not emulate the other capabilities this turn's Factory turn context lists.
-- You may push the task branch and open or update a pull request. Run the relevant declared gates before you publish and report any failure; a failed, skipped or unavailable gate does not stop you from publishing or continuing. Never say a gate passed that did not.
+- You may push the task branch and open or update a pull request. Before every push, run the declared gates that cover your change, filtered to your tests when the gate accepts a filter, and fix a red one before you push. An unavailable gate (no BELLOWS_GATE_URL, or an environment failure) is reported, not a blocker. Never say a gate passed that did not.
 - Do not merge or close a pull request, enable auto-merge, or start the next workflow step.
 - You may wait for CI checks and reviews on the pull request you published, fix what they find and push again, and reply to each review comment you addressed saying what changed.
 - After you push and open or update a pull request, load the pr-land skill and follow it to wait for CI and review before you finish.
@@ -185,17 +185,17 @@ describe('resolveMasterPrompt: stable across a thread', () => {
 });
 
 describe('resolveTurnContext: objective', () => {
-    it('renders gates and publish always on, with the targeted-test rule', () => {
+    it('renders gates and publish always on, with the run-covering-gates rule', () => {
         expect(resolveTurnContext(OBJECTIVE)).toBe(
             `Factory turn context
 - Factory-managed capabilities: declared gates, publish/reuse PR
-- The declared gates run the full test suite after your turn; run only the tests that cover what you changed, not the full suite.`
+- The declared gates also run when you finish, as a backstop that is no reason to skip them earlier: run the declared gates that cover what you changed, filtered to your tests when the gate accepts a filter, and fix a red one before you finish.`
         );
     });
 });
 
 describe('resolveTurnContext: targeted-test rule', () => {
-    it('tells a gated workflow node the gates run the full suite', () => {
+    it('tells a gated workflow node to run its covering gates itself, the close-time ones being a backstop', () => {
         const prompt = resolveTurnContext({
             workflowNode: 'task',
             mode: WORKFLOW_MODE,
@@ -203,7 +203,8 @@ describe('resolveTurnContext: targeted-test rule', () => {
             snapshot: defaultSnapshot(),
             helperPlans: undefined,
         });
-        expect(prompt).toContain('The declared gates run the full test suite after your turn');
+        expect(prompt).toContain('as a backstop that is no reason to skip them earlier');
+        expect(prompt).not.toContain('full test suite after your turn');
     });
 });
 

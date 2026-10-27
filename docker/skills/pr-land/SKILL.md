@@ -53,9 +53,9 @@ the reason is on stderr.
    failed:
    - Your change: fix it and run the relevant declared gates — the names under `gates:` in
      `.bellows.yaml`, one per call:
-     `curl -sf -X POST "$BELLOWS_GATE_URL/run" -H "authorization: Bearer $BELLOWS_GATE_TOKEN"
-     -H "content-type: application/json" -d '{"gate":"<name>"}'`. The answer's `exitCode` 0 is a
-     pass; otherwise its `output` tail says what to fix. With `BELLOWS_GATE_URL` unset, run the
+     `factory-gate <name>`. The answer's `exitCode` 0 is a
+     pass; otherwise its `output` tail says what to fix (a gate that sets `filter: true` also takes
+     `--filter <tests>`, see the gates skill). With `BELLOWS_GATE_URL` unset, run the
      failing check's own command instead. Commit, push, back to step 2.
    - A flake the log proves (a network timeout, a runner lost mid-job): `gh run rerun <run-id>
      --failed` once per run, back to step 2.

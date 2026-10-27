@@ -1,3 +1,4 @@
+import type { GateActivity, PrActivity } from './activity-types.js';
 import { batchRoutes } from './batch.js';
 import type { BatchRoutes } from './batch.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
@@ -99,6 +100,10 @@ export interface JobActivity {
     buckets: readonly { start: string; tokens: Tokens; edits: number | null }[];
     usage: UsageBlock;
     task: TaskUsage | null;
+    /** This run's gate and PR activity (issue #983), and the same over every run of the task. */
+    gates: GateActivity;
+    prs: PrActivity;
+    taskActivity: { gates: GateActivity; prs: PrActivity };
 }
 
 /**

@@ -52,6 +52,9 @@ export function claudeManagedSettings(endpoint: string): string {
                 'Bash(npm i *)',
                 'Bash(npm ci)',
                 'Bash(npm ci *)',
+                // The skills' gate-server and run-control commands (#1061): fixed destinations, never a curl.
+                'Bash(factory-gate *)',
+                'Bash(factory-control *)',
                 'Edit(//tmp/**)',
                 'Write(//tmp/**)',
             ],

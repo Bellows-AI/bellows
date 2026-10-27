@@ -112,7 +112,10 @@ describe('the Jira connector proxy', () => {
         });
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.json()).toMatchObject({ code: 'CONNECTION_NOT_AUTHORIZED' });
-        expect(res.json().error).toContain('no longer running');
+        // The pair is re-read on every call and rotates on a takeover: a refusal is no verdict on later turns (#1045).
+        expect(res.json().error).toContain('no longer holds');
+        expect(res.json().error).toContain('retry once');
+        expect(res.json().error).not.toContain('Do not retry');
         expect(calls).toHaveLength(0);
     });
 

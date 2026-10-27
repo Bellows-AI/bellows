@@ -163,7 +163,7 @@ const BINDING_TOKEN = /^\S{1,256}$/;
  * names neither the url nor the token.
  */
 export function bindingBody(binding: SupervisorBinding): string {
-    const { claimSeq, url, token, agentToken, exportToken } = binding;
+    const { claimSeq, url, token, agentToken, exportToken, leaseToken } = binding;
     let protocol = '';
     try {
         protocol = new URL(url).protocol;
@@ -177,5 +177,6 @@ export function bindingBody(binding: SupervisorBinding): string {
     if (!BINDING_TOKEN.test(token)) throw new Error('the holder binding has no valid token');
     if (!BINDING_TOKEN.test(agentToken)) throw new Error('the holder binding has no valid agent token');
     if (!BINDING_TOKEN.test(exportToken)) throw new Error('the holder binding has no valid export token');
-    return JSON.stringify({ claimSeq, url, token, agentToken, exportToken });
+    if (!BINDING_TOKEN.test(leaseToken)) throw new Error('the holder binding has no valid lease token');
+    return JSON.stringify({ claimSeq, url, token, agentToken, exportToken, leaseToken });
 }

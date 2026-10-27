@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Job, RuntimeVitals } from '../src/api/useJobs.js';
-import { job, renderDetail, usageBlock } from './tasks-fixtures.js';
+import { NO_GATES, NO_PRS, job, renderDetail, usageBlock } from './tasks-fixtures.js';
 import { expectNoPlaceholder } from './fixtures.js';
 
 describe('TaskDetail — task activity (issues #339, #530)', () => {
@@ -21,6 +21,9 @@ describe('TaskDetail — task activity (issues #339, #530)', () => {
             ],
             usage: usageBlock({ input: 2_000_000, output: 500_000, cacheRead: 0, cacheCreation: 0 }),
             task: null,
+            gates: NO_GATES,
+            prs: NO_PRS,
+            taskActivity: { gates: NO_GATES, prs: NO_PRS },
         },
     };
 

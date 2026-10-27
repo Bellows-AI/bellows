@@ -16,8 +16,9 @@ stop to ask; unanswered questions go in the final report (§5).
   `fix/<issue-number>` when the task names an issue, otherwise `task/<short-slug>`.
 - Commit as you go. One logical change per commit, messages in the imperative mood, the issue
   reference (e.g. `(#12)`) in the commit that closes the task.
-- Run the relevant declared gates (below) before you publish and report any that fail — guidance,
-  not a permission check: a failing or unavailable gate does not stop you from publishing.
+- Before every push, run the declared gates (below) that cover your change, filtered to your tests
+  when the gate accepts a filter, and fix a red one before you push. An unavailable gate is
+  reported, not a blocker.
 - Finish means: the work committed on the task branch and the tree clean. You may push the branch
   and open or update the pull request yourself (`gh pr create`); the board's own end-of-run
   publish reuses that same pull request. Never say a gate passed that did not.
@@ -109,19 +110,21 @@ declared service listens. Before connecting to a database or any other backing s
 
 The repository may declare CI-style checks in `.bellows.yaml` — named commands (`test`, `lint`,
 build) that run in a separate container sharing this workspace. When `BELLOWS_GATE_URL` and
-`BELLOWS_GATE_TOKEN` are set, run one with `node`:
+`BELLOWS_GATE_TOKEN` are set, run one with `factory-gate`:
 
 ```bash
-node -e 'fetch(process.env.BELLOWS_GATE_URL+"/run",{method:"POST",headers:{
-"authorization":"Bearer "+process.env.BELLOWS_GATE_TOKEN,"content-type":"application/json"},
-body:JSON.stringify({gate:"test"})}).then(r=>r.json()).then(j=>{console.log("exit",j.exitCode);
-console.log(j.output)})'
+factory-gate test
 ```
 
-`exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
+The answer is JSON, `{"exitCode":0,"output":"..."}`. `exitCode` 0 means the gate passed; otherwise read `output`, fix what it names, and run it again.
 Only gates `.bellows.yaml` declares can run — the request carries a gate NAME, never a command.
 A gate that sets `on_demand: true` is skipped when you finish and never fails the task: it runs
 only when you call it, so call it when your change touches what it checks.
+A gate that sets `filter: true` accepts `--filter <string>` after the name (up to 256 printable
+characters, one line): the string reaches the gate command as the environment variable
+`GATE_FILTER` for that one run, so run only the tests you changed with it. A filter on a gate that
+did not opt in answers 422. A filtered run is never evidence that the gate passed, and the gates
+that run when you finish are always unfiltered.
 A gate that declares `timeout:` above 10 (minutes) answers 422 and runs only when you finish (an
 `on_demand` one not at all): do not retry it; run its pieces with your own commands instead.
 If `BELLOWS_GATE_URL` is unset there are no gates here: verify with your own commands instead.

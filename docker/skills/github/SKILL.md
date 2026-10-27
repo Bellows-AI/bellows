@@ -22,15 +22,15 @@ gh pr diff <N>
 ## Opening and updating pull requests
 
 Opening and updating the pull request is yours, whenever your work is worth showing — before the
-task is done too. Run the relevant declared gates first (see the gates skill) and say in the pull
-request which failed or did not run; a failing gate is something to report, not a reason to hold
-back. Commit on the task branch, push it, and open the pull request with `gh pr create`
+task is done too. Run the declared gates that cover your change first (see the gates skill), fix a red one
+before you push, and say in the pull request which did not run (an unavailable gate is reported,
+not a blocker). Commit on the task branch, push it, and open the pull request with `gh pr create`
 (`gh pr edit` updates it). Never state in a title or description that a gate passed unless it did.
 
 Or ask the driver to do the push and the pull request:
 
 ```bash
-curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/publish
+factory-control publish
 ```
 
 The driver pushes the branch and opens (or reuses) the pull request — a draft when it opens one —

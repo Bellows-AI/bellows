@@ -22,7 +22,7 @@ const settledWithin = (work: Promise<unknown>, ms: number) =>
 describe('Stop during the declared gates', () => {
     const rtWith = (manager: GateManager): LoopRuntime =>
         ({
-            gates: { manager, server: {} as never, advertiseUrl: () => '' },
+            gates: { manager, server: { quiesce: async () => {} } as never, advertiseUrl: () => '' },
             log: () => {},
             board: { gates: async () => 'held' },
         }) as unknown as LoopRuntime;
@@ -33,6 +33,12 @@ describe('Stop during the declared gates', () => {
         envBody: '',
         declared: [{ name: 'test', command: 'npm test' }],
         endPass: true,
+        runClaimSeq: 1,
+        ledger: {
+            probe: async () => ({ fingerprint: null, content: null, mutatedSince: null }),
+            identity: () => 'id',
+            write: async () => true,
+        },
     };
 
     it('honours a Stop while the per-gate re-acquire hangs', async () => {
@@ -44,7 +50,7 @@ describe('Stop during the declared gates', () => {
             stop: async () => {},
         };
         const state = newJobState();
-        const gates = runDeclaredGates(rtWith(manager), JOB, session, state);
+        const gates = runDeclaredGates(rtWith(manager), JOB, session, { state, treeAfter: null });
         await delay(5);
         recordEnding(state, 'stop');
         state.abortNow();
@@ -66,7 +72,7 @@ describe('Stop during the declared gates', () => {
         await manager.acquire(KEY, 'node:24', '', { job: JOB });
         void manager.runGate(KEY, 'test', 'npm test'); // a previous attempt's orphaned ad-hoc run
         const state = newJobState();
-        const gates = runDeclaredGates(rtWith(manager), JOB, session, state);
+        const gates = runDeclaredGates(rtWith(manager), JOB, session, { state, treeAfter: null });
         await delay(5);
         recordEnding(state, 'stop');
         state.abortNow();

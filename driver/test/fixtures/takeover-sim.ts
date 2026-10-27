@@ -49,6 +49,7 @@ const GONE_BINDING = bindingBody({
     token: 'gone',
     agentToken: 'gone',
     exportToken: 'gone',
+    leaseToken: 'gone',
 });
 
 export interface Timing {

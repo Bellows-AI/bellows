@@ -1116,6 +1116,8 @@ describe('the claude-executor managed settings', () => {
                 'Bash(npm i *)',
                 'Bash(npm ci)',
                 'Bash(npm ci *)',
+                'Bash(factory-gate *)',
+                'Bash(factory-control *)',
                 'Edit(//tmp/**)',
                 'Write(//tmp/**)',
             ],
@@ -1124,6 +1126,57 @@ describe('the claude-executor managed settings', () => {
             'Project Subagents: Launching a subagent the task worktree or the runner defines (its .claude/agents) with the Agent tool, to do part of the task.'
         );
         expect(JSON.parse(read('docker/claude-executor/claude-home/settings.json'))).not.toHaveProperty('permissions');
+    });
+});
+
+// Issue #1061: the auto-mode classifier refused the gates skill's `curl` of the gate server, and a broad
+// `Bash(curl …*)` rule would admit any URL, so the skills call two baked wrappers whose destination is
+// fixed and the allowlist names exactly those. This pins the two together: a skill that starts a gate
+// or control call any other way fails here, not in a live run.
+describe('the skills and the allowlist agree on the gate and control commands (issue #1061)', () => {
+    const WRAPPER = /^factory-(?:gate|control)\b/;
+    const GUIDES = [
+        ...readdirSync(join(ROOT, 'docker/skills'))
+            .filter((dir) => existsSync(join(ROOT, 'docker/skills', dir, 'SKILL.md')))
+            .map((dir) => `docker/skills/${dir}/SKILL.md`),
+        'docker/opencode-executor/opencode-home/AGENTS.md',
+        'docker/claude-executor/claude-home/CLAUDE.md',
+    ].filter((path) => existsSync(join(ROOT, path)));
+    const allowed = (JSON.parse(read('docker/claude-executor/managed-settings.json')).permissions.allow as string[])
+        .map((rule) => /^Bash\((.*) \*\)$/.exec(rule)?.[1])
+        .filter((prefix): prefix is string => prefix !== undefined);
+
+    /** Every command the guide shows with a wrapper: a fenced line that starts one, or an inline code span that does. */
+    const wrapperCommands = (text: string): string[] => {
+        const joined = text.replace(/\\\n\s*/g, ' ');
+        const fenced = [...joined.matchAll(/^```[^\n]*\n([\s\S]*?)^```$/gm)].flatMap((m) => (m[1] ?? '').split('\n'));
+        const inline = [...joined.matchAll(/`([^`\n]+)`/g)].map((m) => m[1] ?? '');
+        return [...fenced, ...inline].map((line) => line.trim()).filter((line) => WRAPPER.test(line));
+    };
+
+    it('allows the two wrappers and nothing broader', () => {
+        expect(allowed).toEqual(expect.arrayContaining(['factory-gate', 'factory-control']));
+        expect(allowed.filter((prefix) => /curl|node|sh|bash/.test(prefix))).toEqual([]);
+    });
+
+    it('has the gates, github, review and pr-land skills call a wrapper', () => {
+        for (const skill of ['gates', 'github', 'review', 'pr-land']) {
+            expect(wrapperCommands(read(`docker/skills/${skill}/SKILL.md`)), skill).not.toEqual([]);
+        }
+    });
+
+    it.each(GUIDES)('%s: every wrapper command starts with an allowlisted command', (path) => {
+        for (const command of wrapperCommands(read(path))) {
+            const prefix = allowed.find((candidate) => command === candidate || command.startsWith(`${candidate} `));
+            expect(prefix, command).toBeDefined();
+        }
+    });
+
+    it.each(GUIDES)('%s: no command still reaches the gate server or the control socket by hand', (path) => {
+        const text = read(path).replace(/\\\n\s*/g, ' ');
+        expect(text).not.toMatch(/curl[^\n]*(BELLOWS_GATE_URL|--unix-socket|control\.sock)/);
+        expect(text).not.toMatch(/fetch\([^)\n]*BELLOWS_GATE_URL/);
+        expect(text).not.toContain('http://control/');
     });
 });
 
@@ -1288,11 +1341,20 @@ describe('the shared executor skills', () => {
         const curls = fences.match(/^.*\bcurl\b.*$/gm) ?? [];
         expect(curls.length).toBeGreaterThan(0);
         for (const line of curls) {
-            expect(line).toMatch(
-                /^printf 'header = "x-factory-job-id: %s"\\nheader = "x-factory-job-lease-token: %s"\\n' "\$RUNNER_JOB_ID" "\$RUNNER_LEASE_TOKEN" \| curl -K - /
-            );
+            expect(line).toMatch(/^node \/usr\/local\/bin\/attempt-pair\.cjs \| curl -K - /);
         }
         expect(text).not.toMatch(/ATLASSIAN_/);
+        // The pair is read on every call from the one baked helper: an adopted runner's env is stale (#1045).
+        expect(fences).not.toContain('$RUNNER_LEASE_TOKEN');
+    });
+
+    it('ships the attempt pair helper byte-identical, root-owned and executable, in both images (#1045)', () => {
+        expect(read('docker/opencode-executor/attempt-pair.cjs')).toBe(read('docker/claude-executor/attempt-pair.cjs'));
+        for (const image of ['claude', 'opencode']) {
+            const dockerfile = read(`docker/${image}-executor/Dockerfile`);
+            expect(dockerfile, image).toContain('COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs');
+            expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/attempt-pair\.cjs/);
+        }
     });
 
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
@@ -1657,6 +1719,23 @@ describe('the ad-hoc gate limit in the agent instructions', () => {
     );
 });
 
+// Issue #1041: the agent runs the covering gates before every push, narrowed by a filter where the
+// gate opted in; both agent guides must say how, and that a filtered run proves nothing.
+describe('the gate filter and the pre-push gate run in the agent instructions (issue #1041)', () => {
+    it.each(['docker/skills/gates/SKILL.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '%s documents filter: true, GATE_FILTER and the pre-push run',
+        (path) => {
+            const text = read(path).replace(/\s+/g, ' ');
+            expect(text).toContain('`filter: true`');
+            expect(text).toContain('`--filter <string>`');
+            expect(text).toContain('GATE_FILTER');
+            expect(text).toContain('never evidence');
+            expect(text).toMatch(/[Bb]efore every push, run the declared gates/);
+            expect(text).not.toMatch(/does not stop you from publishing/);
+        }
+    );
+});
+
 // Issue #814: the agent's commands run as their own uid. The launcher in front of each image's
 // entrypoint starts the tool broker as root and drops for good; the entrypoints keep the CLI's own
 // state from the tool uid, which shares its group and its umask.
@@ -1761,8 +1840,10 @@ describe('the agent launcher (issue #814)', () => {
                 spawnSync('grep', ['-rl', 'BELLOWS_CONTROL_TOKEN', join(ROOT, dir)], { encoding: 'utf8' }).stdout
             ).toBe('');
         }
+        // The skills reach it through `factory-control` (#1061), which dials the proxy's own socket.
+        expect(read('docker/claude-executor/factory-control.cjs')).toContain(`'${proxy.SOCKET}'`);
         for (const skill of ['docker/skills/review/SKILL.md', 'docker/skills/github/SKILL.md']) {
-            expect(read(skill)).toContain(`--unix-socket ${proxy.SOCKET} http://control/`);
+            expect(read(skill)).toContain('factory-control ');
         }
     });
 });

@@ -69,6 +69,12 @@ for wt in $(git -C "$root" worktree list --porcelain | sed -n 's/^worktree //p' 
     done
     if command -v lsof >/dev/null 2>&1; then
         pids="$pids $(lsof -d cwd -Fpn 2>/dev/null | awk -v wt="$real" '/^p/ {pid = substr($0, 2)} /^n/ {d = substr($0, 2); if (d == wt || index(d, wt "/") == 1) print pid}')"
+    elif [ -d /proc/self ]; then
+        # No lsof (a slim Linux image): the kernel names each process's working directory.
+        for d in /proc/[0-9]*; do
+            c="$(readlink "$d/cwd" 2>/dev/null)" || continue
+            case "$c" in "$real" | "$real"/*) pids="$pids ${d#/proc/}" ;; esac
+        done
     fi
 done
 # Progress filters the driver tests spawn from any checkout outlive their parent and never exit.

@@ -389,6 +389,20 @@ describe('the kubernetes runner and the gates', () => {
         expect(JSON.stringify(posts)).not.toContain('factory-gate-');
     });
 
+    it('carries a gate filter to the gate sidecar step as env GATE_FILTER, beside the command and never in it (issue #1041)', async () => {
+        const { request } = fakeRequest();
+        const steps = fakeSteps(() => stepOk('passed'));
+        const k8s = runner(request, {}, undefined, steps.sink);
+
+        await k8s.runGate(gated, { ...gate, env: { A: '1', GATE_FILTER: 'test/api/users.test.js' } });
+
+        expect(steps.submitted[0]).toMatchObject({
+            kind: 'gate',
+            argv: ['npm test'],
+            env: { A: '1', GATE_FILTER: 'test/api/users.test.js' },
+        });
+    });
+
     /** fakeRequest, with every pod resize answered `resize` and recorded with its patch type. */
     const resizing = (resize: K8sResponse = { status: 200, body: '{}' }) => {
         const base = fakeRequest();

@@ -525,9 +525,10 @@ describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
         token: 'tok-new-holder',
         agentToken: 'tok-new-agent',
         exportToken: 'tok-new-export',
+        leaseToken: 'lease-new',
     };
     const SENTINEL = 'sentinel-body-text';
-    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'driver.example', SENTINEL];
+    const SECRETS = ['tok-new-holder', 'tok-new-agent', 'tok-new-export', 'lease-new', 'driver.example', SENTINEL];
     const podOf = (group: BoardJob) =>
         runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
@@ -633,6 +634,8 @@ describe('the holder binding a supervisor reads, on kubernetes (#829)', () => {
         ['an agent token with whitespace', { ...BINDING, agentToken: 'has space' }],
         ['no export token', { ...BINDING, exportToken: '' }],
         ['an export token with whitespace', { ...BINDING, exportToken: 'has space' }],
+        ['no lease token', { ...BINDING, leaseToken: '' }],
+        ['a lease token with whitespace', { ...BINDING, leaseToken: 'has space' }],
     ])('refuses an invalid binding (%s) before any request, naming no token', async (_what, binding) => {
         const request = vi.fn(() => ok());
         const error = await rebinder(request)

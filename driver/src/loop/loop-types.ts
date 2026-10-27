@@ -81,6 +81,8 @@ export interface AttemptCtx {
     fenced: boolean;
     /** The task tree's fingerprint the startup sync answered; null when unknown. */
     treeBefore: string | null;
+    /** The tree the run left, probed before the gates (`verifyRun`); the close-time gate reuse compares against it. */
+    treeAfter?: string | null;
     /**
      * The session the attempt runs: the task group (issue #771) is created by the sync, before the
      * agent, and its agent container is specced for this session.

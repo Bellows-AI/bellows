@@ -16,8 +16,7 @@ which reviewers exist, by name, under `reviewers:` in `.bellows.yaml`; read that
 Pick a short key for this review (letters, digits, `_`, `-`; up to 64) and a reviewer name:
 
 ```bash
-curl -sf -X POST --unix-socket /run/factory-control/control.sock http://control/review \
-    -d '{"key":"security-1","profile":"security"}'
+factory-control review security-1 security
 ```
 
 Commit or leave your work in the tree first.
@@ -31,7 +30,7 @@ makes a resumed task safe.
 A review is not finished until `done` is `true`. Poll the key until it is:
 
 ```bash
-curl -sf --unix-socket /run/factory-control/control.sock http://control/review/security-1
+factory-control review-result security-1
 ```
 
 - `verdict: "clean"` — the reviewer found no blockers in the tree it was given.

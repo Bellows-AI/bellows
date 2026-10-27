@@ -29,6 +29,8 @@ import {
 import { bad, body, guard } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
 import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
+import type { TranscriptToolStore } from '../../db/jobs/job-store-transcript-tools.js';
+import { ingestTranscriptTools } from './job-transcript-ingest.js';
 
 /**
  * The artifact upload routes: a chunk put and a manifest finalize against the artifact index
@@ -36,7 +38,8 @@ import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
  * it ran under, the board accepts any claim that has existed (1 through the row's current one) and
  * files the bytes under that claim's own prefix. So a superseded or reclaimed attempt can finish
  * its uploads, and because nothing here touches `job` — no status, session, gates, verdict or
- * publication — finishing them advances no authoritative state.
+ * publication — finishing them advances no authoritative state. The one write beside the bytes is the
+ * transcript tool ingest (`job-transcript-ingest.ts`), best effort, into its own table.
  */
 
 /** What a job with no author is filed under: the key layout names a member, and ids only. */
@@ -59,7 +62,7 @@ async function resolveStream(
     reply: FastifyReply,
     named: Record<string, unknown>
 ) {
-    const route = await resolveJobRoute<keyof JobReadStore>(orgs, request, reply);
+    const route = await resolveJobRoute<keyof JobReadStore | keyof TranscriptToolStore>(orgs, request, reply);
     if (!route) return null;
     const artifacts = await artifactsFor(orgs, request);
     if (!artifacts) {
@@ -101,7 +104,7 @@ async function resolveStream(
         session,
         stream,
     };
-    return { artifacts, ref };
+    return { artifacts, ref, jobs: route.store, id: route.id };
 }
 
 /** Runs one index call: a malformed request is a 400, a store failure the usual 503; null once either was sent. */
@@ -135,7 +138,7 @@ export async function handleArtifactChunk(orgs: OrgRegistry, request: FastifyReq
     if (offset === null || !Buffer.isBuffer(request.body)) {
         return bad(reply, ERROR_CODES.BAD_ARTIFACT, 'offset and a raw chunk body are required');
     }
-    const { artifacts, ref } = resolved;
+    const { artifacts, ref, jobs, id } = resolved;
     const chunk = request.body;
     const put = await indexCall(reply, request, () => artifacts.putChunk(ref, offset, chunk));
     if (!put) return reply;
@@ -155,6 +158,7 @@ export async function handleArtifactChunk(orgs: OrgRegistry, request: FastifyReq
             cause: put.cause,
         });
     }
+    await ingestTranscriptTools({ jobs, artifacts, log: request.log, id, ref }, offset);
     return reply.code(HTTP_OK).send({ result: put.result, offset });
 }
 
@@ -183,7 +187,7 @@ export async function handleArtifactManifest(orgs: OrgRegistry, request: Fastify
     ) {
         return bad(reply, ERROR_CODES.BAD_ARTIFACT, 'a manifest needs producer, schemaVersion, state and both times');
     }
-    const { artifacts, ref } = resolved;
+    const { artifacts, ref, jobs, id } = resolved;
     const manifest = {
         producer,
         schemaVersion,
@@ -197,6 +201,7 @@ export async function handleArtifactManifest(orgs: OrgRegistry, request: Fastify
     if (done.result === 'conflict') {
         return bad(reply, ERROR_CODES.ARTIFACT_CONFLICT, 'a different manifest is already recorded', HTTP_CONFLICT);
     }
+    await ingestTranscriptTools({ jobs, artifacts, log: request.log, id, ref }, null);
     return reply.code(HTTP_OK).send({ result: done.result });
 }
 
