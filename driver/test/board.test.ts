@@ -428,6 +428,8 @@ describe('asking the board for the orphan reaper lease lookups', () => {
             artifactsComplete: true,
             checkpoint: 'complete',
             checkpointFinalizedAt: '2026-10-01T00:00:00.000Z',
+            lastJobId: ID_A,
+            lastClaimSeq: 2,
         };
         const answerWith = (thread: unknown) =>
             boardOn(
@@ -443,6 +445,13 @@ describe('asking the board for the orphan reaper lease lookups', () => {
             expect(await answerWith(open)).toEqual([{ id: ID_A, status: 'succeeded', leaseToken: null, thread: open }]);
         });
 
+        it('carries a thread nothing ever claimed, its attempt null', async () => {
+            const never = { ...THREAD, lastJobId: null, lastClaimSeq: null };
+            expect(await answerWith(never)).toEqual([
+                { id: ID_A, status: 'succeeded', leaseToken: null, thread: never },
+            ]);
+        });
+
         it.each([
             ['a thread that is null', null],
             ['a thread that is a string', 'complete'],
@@ -455,6 +464,15 @@ describe('asking the board for the orphan reaper lease lookups', () => {
             ['a missing lastFinalizedAt', { ...THREAD, lastFinalizedAt: undefined }],
             ['a checkpointFinalizedAt that is a number', { ...THREAD, checkpointFinalizedAt: 5 }],
             ['a missing checkpointFinalizedAt', { ...THREAD, checkpointFinalizedAt: undefined }],
+            ['a missing lastJobId', { ...THREAD, lastJobId: undefined }],
+            ['a lastJobId that is no uuid', { ...THREAD, lastJobId: 'job-1' }],
+            ['a missing lastClaimSeq', { ...THREAD, lastClaimSeq: undefined }],
+            ['a lastClaimSeq that is a string', { ...THREAD, lastClaimSeq: '2' }],
+            ['a lastClaimSeq that is negative', { ...THREAD, lastClaimSeq: -1 }],
+            ['a lastClaimSeq that is fractional', { ...THREAD, lastClaimSeq: 1.5 }],
+            ['a lastClaimSeq of 0 — an attempt that never ran', { ...THREAD, lastClaimSeq: 0 }],
+            ['a lastJobId without a lastClaimSeq', { ...THREAD, lastClaimSeq: null }],
+            ['a lastClaimSeq without a lastJobId', { ...THREAD, lastJobId: null }],
         ])('answers null — the whole round aborts — on %s', async (_name, thread) => {
             expect(await answerWith(thread)).toBeNull();
         });

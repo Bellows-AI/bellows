@@ -34,8 +34,11 @@
 // longer knows, or an endpoint dead past the give-up window, ends the exporter too.
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const http = require('node:http');
 
+// Entropy of a tmp file's name: two exporters over one volume must not pick the same.
+const TMP_SUFFIX_BYTES = 4;
 const KIB = 1024;
 const MIB = KIB * KIB;
 const MS_PER_MINUTE = 60_000;
@@ -200,7 +203,8 @@ const loadState = (session) => {
 const saveState = (track) => {
     const file = statePath(track.session);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp`;
+    // Another exporter over the same volume (a follow-up claim's, or the reaper's) saves here too: a tmp name of its own.
+    const tmp = `${file}.${process.pid}.${crypto.randomBytes(TMP_SUFFIX_BYTES).toString('hex')}.tmp`;
     const state = { ino: track.ino, base: track.base, acked: track.acked, stopCause: track.stopCause };
     fs.writeFileSync(tmp, JSON.stringify(state));
     fs.renameSync(tmp, file);
@@ -381,6 +385,28 @@ const ack = (track) => {
     saveState(track);
 };
 
+// A 409 at the offset where this exporter was killed mid-PUT: the board recorded a chunk whose ack was lost,
+// and this run cut its bytes differently. When the recorded chunk (length and sha256, same stream) is a
+// prefix of the bytes held, those bytes are stored: ack them and carry on after them. Anything else is a
+// different chunk at that offset, which stops the stream. Limit, stated: a recorded chunk as long as or longer
+// than the held bytes stops it too, though the held bytes may be its prefix.
+const recordedPrefix = (track, answer) => {
+    const { recorded } = answer.json;
+    const body = track.inflight.body;
+    if (!recorded || !Number.isSafeInteger(recorded.length) || typeof recorded.sha256 !== 'string') return 0;
+    if (recorded.length < 1 || recorded.length >= body.length) return 0;
+    const digest = crypto.createHash('sha256').update(body.subarray(0, recorded.length)).digest('hex');
+    return digest === recorded.sha256 ? recorded.length : 0;
+};
+
+const continueAfter = (track, length) => {
+    const { offset, body } = track.inflight;
+    track.acked = offset + length;
+    track.inflight = { offset: offset + length, body: body.subarray(length) };
+    track.failures = 0;
+    saveState(track);
+};
+
 const stopStream = (track, answer) => {
     // A cap refusal is the board's say-so, anything else is permanent: either way the bytes stay on
     // the volume, the stream stops uploading, and the manifest says why.
@@ -403,11 +429,14 @@ const upload = async (track) => {
     }
     const query = new URLSearchParams({ session: track.session, offset: String(track.inflight.offset) });
     const answer = await request('PUT', `/export/chunk?${query}`, track.inflight.body);
+    const prefix = answer.status === STATUS_CONFLICT ? recordedPrefix(track, answer) : 0;
     if (answer.status === STATUS_OK) {
         track.failures = 0;
         ack(track);
     } else if (answer.status === STATUS_UNAUTHORIZED) {
         bail(EXIT_UNAUTHORIZED);
+    } else if (prefix > 0) {
+        continueAfter(track, prefix);
     } else if ([STATUS_REFUSED, STATUS_CONFLICT, STATUS_BAD_REQUEST].includes(answer.status)) {
         stopStream(track, answer);
     } else {

@@ -34,6 +34,7 @@
         "driver/test/pr-land-status-script.test.ts",
         "driver/test/pr-summary.test.ts",
         "driver/test/publish-hooks.test.ts",
+        "driver/test/reaper-export.test.ts",
         "driver/test/review-collect-script.test.ts",
         "driver/test/review-helpers.test.ts",
         "driver/test/review-reply-script.test.ts",

@@ -116,7 +116,12 @@ const count = (value: unknown): value is number =>
 /** A chunk answer on the wire: the statuses the board's own chunk route answers with. */
 function chunkAnswer(answer: ChunkAnswer): ExportAnswer {
     if (answer.result === 'refused') return { status: HTTP_PAYLOAD_TOO_LARGE, body: { cause: answer.cause } };
-    if (answer.result === 'conflict') return { status: HTTP_CONFLICT, body: { result: 'conflict' } };
+    if (answer.result === 'conflict') {
+        return {
+            status: HTTP_CONFLICT,
+            body: { result: 'conflict', ...(answer.recorded && { recorded: answer.recorded }) },
+        };
+    }
     if (answer.result === 'rejected') return { status: HTTP_BAD_REQUEST, body: { result: 'rejected' } };
     return { status: HTTP_OK, body: { result: answer.result } };
 }

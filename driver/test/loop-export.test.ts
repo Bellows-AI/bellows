@@ -4,10 +4,12 @@ import { agentFaults } from '../src/loop/loop-ledger.js';
 import {
     attachTranscriptExport,
     createExportRelay,
+    createVolumeExportOpener,
     drainTranscriptExport,
     newExportRun,
+    VOLUME_EXPORT_CAUSE,
 } from '../src/loop/loop-export.js';
-import { newJobState } from '../src/loop/loop-attempt.js';
+import { killAgent, newJobState } from '../src/loop/loop-attempt.js';
 import type { AttemptCtx, LoopRuntime } from '../src/loop/loop-types.js';
 import type { RunOutcome } from '../src/runner.js';
 
@@ -52,7 +54,7 @@ function setup(options: { gates?: boolean } = {}) {
     state.control = 'token';
     state.transcriptExport = run;
     const ctx = { rt, job, state } as unknown as AttemptCtx;
-    const relay = createExportRelay(rt, job, run, 'token');
+    const relay = createExportRelay(rt, job, run, (kill) => killAgent(rt, job, 'token', kill));
     return { run, board, kill, stopAgent, raiseKill, recordKill, rt, ctx, relay };
 }
 
@@ -181,5 +183,94 @@ describe('the check after the run', () => {
         drainTranscriptExport(ctx, outcome());
         drainTranscriptExport(ctx, outcome());
         expect(rt.log).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('the volume export channel (issue #938)', () => {
+    const attempt = { jobId: job.id, claimSeq: 3 };
+    const open = async (answer: object = { result: 'stored' }, finalized = 'stored') => {
+        const board = {
+            putArtifactChunk: vi.fn(async () => answer),
+            finalizeArtifact: vi.fn(async () => finalized),
+        };
+        const server = {
+            listen: vi.fn(async () => 4321),
+            openControl: vi.fn(),
+            grantExporter: vi.fn(),
+            revokeExporter: vi.fn(),
+            closeControl: vi.fn(),
+        };
+        const gates = { server, advertiseUrl: (port: number) => `http://driver:${port}` };
+        const channel = await createVolumeExportOpener({ board, gates, log: vi.fn() } as never)(attempt);
+        const relay = server.grantExporter.mock.calls[0]![2] as ReturnType<typeof createExportRelay>;
+        return { board, server, channel: channel!, relay };
+    };
+    const MANIFEST = { session: 's', state: 'partial' as const, startedAt: 'a', finishedAt: 'b' };
+
+    it('has no channel without a control endpoint', async () => {
+        expect(await createVolumeExportOpener({ board: {}, log: vi.fn() } as never)(attempt)).toBeNull();
+    });
+
+    it('hands the exporter the endpoint and a token of its own, and files its chunks under the attempt', async () => {
+        const { board, server, channel, relay } = await open();
+        expect(channel.url).toBe('http://driver:4321');
+        expect(server.grantExporter).toHaveBeenCalledWith(expect.any(String), channel.token, expect.anything());
+        await relay.putChunk('s', 0, new Uint8Array([1]));
+        expect(board.putArtifactChunk).toHaveBeenCalledWith(
+            expect.objectContaining({ id: job.id, claimSeq: 3 }),
+            { executor: 'claude-code', session: 's', stream: 'transcript' },
+            0,
+            new Uint8Array([1])
+        );
+    });
+
+    it('is drained only once the exporter reported done, with nothing refused and every stream closed by the order', async () => {
+        const { channel, relay } = await open();
+        expect(channel.proof()).toMatchObject({ drained: false, why: expect.stringContaining('did not report done') });
+        await relay.putChunk('s', 0, new Uint8Array([1]));
+        await relay.finalize({ ...MANIFEST, terminalCause: VOLUME_EXPORT_CAUSE });
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        expect(channel.proof()).toEqual({ drained: true });
+    });
+
+    it.each([['conflict'], ['rejected']])(
+        'is not drained after a chunk the board answered %s, whatever the exporter says',
+        async (result) => {
+            const { channel, relay } = await open({ result });
+            await relay.putChunk('s', 0, new Uint8Array([1]));
+            relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+            expect(channel.proof()).toMatchObject({ drained: false, why: expect.stringContaining(result) });
+        }
+    );
+
+    it('leaves a 409 that names the recorded chunk to the exporter: drained once it closed the stream by the order', async () => {
+        const { channel, relay } = await open({ result: 'conflict', recorded: { length: 1, sha256: 'a'.repeat(64) } });
+        await relay.putChunk('s', 0, new Uint8Array([1, 2]));
+        await relay.finalize({ ...MANIFEST, terminalCause: VOLUME_EXPORT_CAUSE });
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        expect(channel.proof()).toEqual({ drained: true });
+    });
+
+    it.each([['rejected'], ['conflict']])('is not drained after a manifest the board answered %s', async (answer) => {
+        const { channel, relay } = await open({ result: 'stored' }, answer);
+        await relay.finalize({ ...MANIFEST, terminalCause: VOLUME_EXPORT_CAUSE });
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        expect(channel.proof()).toMatchObject({ drained: false, why: expect.stringContaining(answer) });
+    });
+
+    it('is not drained when a stream was closed with another cause than the order, or truncated', async () => {
+        const { channel, relay } = await open();
+        relay.report({ pendingBytes: 0, oldestUnackedMs: 0, spoolFull: false, done: true });
+        await relay.finalize({ ...MANIFEST, terminalCause: 'upload_rejected' });
+        expect(channel.proof()).toMatchObject({ drained: false, why: expect.stringContaining('upload_rejected') });
+    });
+
+    it('revokes both tokens once, however often it is closed', async () => {
+        const { server, channel } = await open();
+        channel.close();
+        channel.close();
+        expect(server.revokeExporter).toHaveBeenCalledTimes(1);
+        expect(server.revokeExporter).toHaveBeenCalledWith(channel.token);
+        expect(server.closeControl).toHaveBeenCalledTimes(1);
     });
 });

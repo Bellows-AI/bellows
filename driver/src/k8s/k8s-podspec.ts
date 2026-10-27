@@ -1,4 +1,13 @@
-import { CLAIM_SEQ_MARK, COMMAND_MARK, JOB_LABEL, LEASE_LABEL, SESSION_MARK } from '../labels.js';
+import {
+    CLAIM_SEQ_MARK,
+    COMMAND_MARK,
+    JOB_LABEL,
+    LEASE_LABEL,
+    SESSION_MARK,
+    VOLUME_EXPORT_LABEL,
+    VOLUME_EXPORT_RUN_LABEL,
+} from '../labels.js';
+import { CLAUDE_CODE } from '../executors.js';
 import { createHash } from 'node:crypto';
 import type { BoardJob } from '../board/board.js';
 import { executorImage, type DriverConfig } from '../config.js';
@@ -693,6 +702,104 @@ export function readerJobSpec(
         },
     };
 }
+
+/**
+ * The one-shot exporter Job of the reaper's export-before-delete (issue #938): the task volume's newest claim
+ * mounted by the transcript exporter alone, after the thread's group has ended. A Job and no bare pod, so the
+ * runner network policy and the kubelet's deadline treat it like every other driver-specced pod. It carries
+ * `factory.job` (the policy and the driver's admission policy select by it) with a value no attempt's selector
+ * equals, and neither the lease nor the holder label a sweep or a fence reads.
+ */
+export function volumeExportJobSpec(
+    config: DriverConfig,
+    target: { name: string; root: string; generation: number; run: string },
+    env: [string, string][],
+    deadlineSeconds: number
+) {
+    const labels = {
+        [JOB_LABEL]: `volume-export-${target.root}`,
+        [VOLUME_EXPORT_LABEL]: target.root,
+        [VOLUME_EXPORT_RUN_LABEL]: target.run,
+        ...releaseLabel(config),
+    };
+    return {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: { name: target.name, labels },
+        spec: {
+            backoffLimit: 0,
+            completions: 1,
+            parallelism: 1,
+            activeDeadlineSeconds: deadlineSeconds,
+            ttlSecondsAfterFinished: TTL_SECONDS,
+            template: {
+                metadata: { labels, ...doNotDisruptField(config) },
+                spec: {
+                    restartPolicy: 'Never',
+                    automountServiceAccountToken: false,
+                    securityContext: {
+                        ...podHardeningField(),
+                        fsGroup: GATE_GID,
+                        fsGroupChangePolicy: 'OnRootMismatch',
+                    },
+                    ...pullSecretsField(config),
+                    ...schedulingField(config),
+                    containers: [
+                        {
+                            name: 'exporter',
+                            image: executorImage(config, CLAUDE_CODE),
+                            imagePullPolicy: config.imagePullPolicy,
+                            ...containerHardeningField(),
+                            command: ['node', '-e', claudeExportScript],
+                            // The control token rides the export's own Secret, never the Job object.
+                            env: env.map(([name, value]) =>
+                                name === EXPORT_SECRET_ENV
+                                    ? {
+                                          name,
+                                          valueFrom: {
+                                              secretKeyRef: { name: volumeExportSecretName(target.run), key: name },
+                                          },
+                                      }
+                                    : { name, value }
+                            ),
+                            volumeMounts: [taskMount()],
+                            ...resourcesField(config),
+                        },
+                    ],
+                    volumes: [
+                        taskPodVolume({ id: target.root, rootJobId: target.root, taskGeneration: target.generation }),
+                    ],
+                },
+            },
+        },
+    };
+}
+
+/** The env var of the volume export that is a credential: it rides the export's Secret. */
+export const EXPORT_SECRET_ENV = 'BELLOWS_CONTROL_TOKEN';
+
+/** One export's Secret: a name the driver's admission policy allows (`factory-job-…-env`), unique per export run. */
+export const volumeExportSecretName = (run: string): string => `factory-job-export-${run}-env`;
+
+/**
+ * The Secret carrying the export's control token; labelled `factory.job` as admission requires, with a value no scan reads as a job.
+ * Owned by the export Job (created first), so the garbage collector removes it with the Job, TTL included, whatever became of the driver.
+ */
+export const volumeExportSecretBody = (target: { root: string; run: string }, token: string, owner: JobOwner) => ({
+    apiVersion: 'v1',
+    kind: 'Secret',
+    type: 'Opaque',
+    metadata: {
+        name: volumeExportSecretName(target.run),
+        labels: {
+            [JOB_LABEL]: `volume-export-${target.root}`,
+            [VOLUME_EXPORT_LABEL]: target.root,
+            [VOLUME_EXPORT_RUN_LABEL]: target.run,
+        },
+        ownerReferences: [{ apiVersion: 'batch/v1', kind: 'Job', name: owner.name, uid: owner.uid, controller: false }],
+    },
+    stringData: { [EXPORT_SECRET_ENV]: token },
+});
 
 export const jobsPath = (namespace: string): string => `/apis/batch/v1/namespaces/${namespace}/jobs`;
 

@@ -27,6 +27,7 @@ import type {
     VolumeThread,
 } from '../reaper.js';
 import { taskVolumesPath } from './k8s-task-volume.js';
+import { createKubernetesVolumeExporter, type KubernetesVolumeExporting } from './k8s-volume-export.js';
 import { TASK_BOARD_LABEL, TASK_ROOT_LABEL, boardIdentity, generationOfName } from '../task-volume.js';
 import { parseRfc3339 } from '../timestamps.js';
 
@@ -415,13 +416,17 @@ export function createKubernetesReaper({
     config,
     request,
     sleep = abortableSleep,
+    exporting,
 }: {
     config: DriverConfig;
     request: K8sRequest;
     sleep?: (ms: number) => Promise<void>;
+    /** Export a not-whole thread's volume before its delete (issue #938); absent, the arm cannot export. */
+    exporting?: KubernetesVolumeExporting;
 }): ReaperArm {
     const deps: K8sDeps = { config, request, sleep };
     return {
+        ...(exporting ? { exportVolume: createKubernetesVolumeExporter(deps, exporting) } : {}),
         scan: () => scan(deps),
         reap: (group, verdict) => reap(deps, group, verdict),
         scanVolumes: () => scanVolumes(deps),

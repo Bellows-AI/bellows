@@ -5,6 +5,8 @@ import type { JobStatus } from './jobs/job-store-types.js';
  * per volume. `lastFinalizedAt` is the newest attempt's `finished_at` (null while it is live);
  * `artifactsComplete` is false while any stream of that attempt has chunks without a terminal manifest;
  * `checkpoint` is `complete` only when the root's pointer names THAT attempt and is whole.
+ * `lastJobId` / `lastClaimSeq` name the newest attempt that was ever claimed (null when none was): the identity a late transcript export (issue
+ * #938) uploads under.
  */
 export interface JobThreadFacts {
     live: boolean;
@@ -12,6 +14,8 @@ export interface JobThreadFacts {
     artifactsComplete: boolean;
     checkpoint: 'complete' | 'truncated' | 'none';
     checkpointFinalizedAt: string | null;
+    lastJobId: string | null;
+    lastClaimSeq: number | null;
 }
 
 /**

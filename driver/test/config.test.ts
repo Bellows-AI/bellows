@@ -452,6 +452,14 @@ describe('the driver config: the orphan reaper', () => {
         expect(() => loadDriverConfig({ TASK_VOLUME_BOUND_MS: 'week' })).toThrow(/TASK_VOLUME_BOUND_MS/);
     });
 
+    it("retries a thread's transcript re-export three times by default, a positive integer (issue #938)", () => {
+        expect(loadDriverConfig({}).taskVolumeExportAttempts).toBe(3);
+        expect(loadDriverConfig({ TASK_VOLUME_EXPORT_ATTEMPTS: '1' }).taskVolumeExportAttempts).toBe(1);
+        expect(loadDriverConfig({ TASK_VOLUME_EXPORT_ATTEMPTS: '5' }).taskVolumeExportAttempts).toBe(5);
+        for (const bad of ['0', '-1', '2.5', 'many'])
+            expect(() => loadDriverConfig({ TASK_VOLUME_EXPORT_ATTEMPTS: bad })).toThrow(/TASK_VOLUME_EXPORT_ATTEMPTS/);
+    });
+
     it('refuses a bad cadence or grace rather than falling back to the default', () => {
         expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: '-1' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);
         expect(() => loadDriverConfig({ DRIVER_REAP_INTERVAL_MS: 'soon' })).toThrow(/DRIVER_REAP_INTERVAL_MS/);

@@ -106,7 +106,7 @@ export const ctlVolumeArgs = (
         name,
     ]);
 
-const reachDriverArgs = (config: DriverConfig): string[] => [
+export const reachDriverArgs = (config: DriverConfig): string[] => [
     // The control URL names the driver as the agent's does; Linux needs the name mapped.
     '--add-host',
     'host.docker.internal:host-gateway',

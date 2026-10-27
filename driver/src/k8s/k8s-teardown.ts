@@ -44,11 +44,20 @@ function deleteAnswer(response: K8sResponse, uid: string | undefined): SecretDel
 }
 
 /** Deletes one Secret by name — that incarnation only, given its uid — and reads the answer; a transport rejection is `failed`. */
-export async function deleteSecretAcked(deps: K8sDeps, name: string, uid?: string): Promise<SecretDelete> {
+export async function deleteSecretAcked(
+    deps: K8sDeps,
+    name: string,
+    uid?: string,
+    timeoutMs?: number
+): Promise<SecretDelete> {
     try {
         const body = preconditioned(uid);
         const path = `${secretsPath(deps.config.k8sNamespace)}/${name}`;
-        return deleteAnswer(await (body ? deps.request('DELETE', path, body) : deps.request('DELETE', path)), uid);
+        const response =
+            timeoutMs !== undefined
+                ? await deps.request('DELETE', path, body, { timeoutMs })
+                : await (body ? deps.request('DELETE', path, body) : deps.request('DELETE', path));
+        return deleteAnswer(response, uid);
     } catch {
         return 'failed';
     }

@@ -206,4 +206,16 @@ describe('the step and reaper observers', () => {
         expect(text).toContain('factory_driver_reaper_sweep_seconds_count{outcome="aborted"} 1');
         expect(text).toContain('factory_driver_reaper_scanned_total{what="groups"} 5');
     });
+
+    it('counts the reaper volume exports by result, a loss apart from a drain (issue #938)', async () => {
+        const metrics = createDriverMetrics({ boardUrl: BOARD });
+        metrics.reaper.volumeExport?.('drained');
+        metrics.reaper.volumeExport?.('inconclusive');
+        metrics.reaper.volumeExport?.('lost');
+        metrics.reaper.volumeExport?.('lost');
+        const text = await metrics.render();
+        expect(text).toContain('factory_driver_reaper_volume_export_total{result="drained"} 1');
+        expect(text).toContain('factory_driver_reaper_volume_export_total{result="inconclusive"} 1');
+        expect(text).toContain('factory_driver_reaper_volume_export_total{result="lost"} 2');
+    });
 });

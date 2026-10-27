@@ -43,3 +43,10 @@ export const KILL_MARK_PREFIX = 'factory.kill.';
  * a kill of the agent from the teardown of the whole group.
  */
 export const ROLE_LABEL = 'factory.role';
+/**
+ * A volume export's workload (issue #938), a docker container or a kubernetes pod: the thread root whose task
+ * volume it drains. It carries neither the job-and-lease pair nor the role label, so no group scan meets it.
+ */
+export const VOLUME_EXPORT_LABEL = 'factory.volume-export';
+/** One export's own id: what lets the arm remove only the workload it created, never another replica's under the same name. */
+export const VOLUME_EXPORT_RUN_LABEL = 'factory.volume-export-run';

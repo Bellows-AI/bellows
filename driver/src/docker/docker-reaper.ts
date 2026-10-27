@@ -1,5 +1,6 @@
 import { type BoardJob, UUID_SHAPE } from '../board/board.js';
 import { containerName } from './docker.js';
+import { createDockerVolumeExporter, type DockerVolumeExporting } from './docker-volume-export.js';
 import { BOARD_LABEL, JOB_LABEL, LEASE_LABEL, ROLE_LABEL, SERVICE_LABEL } from '../labels.js';
 import { CONTAINER_ID, DOCKER_NAME, type ExecDocker, noSuchObject, readDocker } from './docker-runner-support.js';
 import { Inconclusive } from '../runner.js';
@@ -357,8 +358,13 @@ const reapTaskVolumes = async (
 };
 
 /** The docker arm of the orphan reaper: every group piece of `board` (`boardIdentity`) it finds by label, reaped on the lease lookup. */
-export function createDockerReaper(execDocker: ExecDocker, board: string): ReaperArm {
+export function createDockerReaper(
+    execDocker: ExecDocker,
+    board: string,
+    exporting?: DockerVolumeExporting
+): ReaperArm {
     return {
+        ...(exporting ? { exportVolume: createDockerVolumeExporter(execDocker, board, exporting) } : {}),
         scan: () => scan(execDocker, board),
         reap: (group) => reap(execDocker, group),
         scanVolumes: () => scanTaskVolumes(execDocker, board),

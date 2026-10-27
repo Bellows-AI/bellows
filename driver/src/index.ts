@@ -12,6 +12,7 @@ import { createKubernetesRunner } from './k8s/k8s-runner.js';
 import { inClusterRequest } from './k8s/k8s-transport.js';
 import { createStepBroker, type SupervisorEndpoint } from './step-control.js';
 import { createLoop } from './loop/loop.js';
+import { createVolumeExportOpener } from './loop/loop-export.js';
 import { createMetricsServer } from './metrics-server.js';
 import type { GateStack } from './loop/loop-types.js';
 import { createReaper } from './reaper.js';
@@ -100,15 +101,20 @@ const loop = createLoop({
 // attempt, whose own teardown never ran. Independent of any claim: its deletes are board-gated
 // and attempt-scoped, so it can share the executor with the fence without ever racing it, and
 // it is idempotent, so every replica may run one. Zero interval is the off switch.
+// A not-whole thread's volume is exported before it is deleted (issue #938): the arms run the one-shot
+// exporter, and this opener hands it a relay through the gate server on the board's behalf.
+const exporting = { open: createVolumeExportOpener({ board, gates, log: (m) => console.log(`[driver] ${m}`) }) };
 const reaper = createReaper({
     board,
     arm:
         config.executor === 'kubernetes'
-            ? createKubernetesReaper({ config, request: metrics.k8s(request!, 'reaper') })
+            ? createKubernetesReaper({ config, request: metrics.k8s(request!, 'reaper'), exporting })
             : createDockerReaper(
                   metrics.docker((args, options) => run('docker', args, { ...options, encoding: 'utf8' }), 'reaper'),
-                  boardIdentity(config)
+                  boardIdentity(config),
+                  { config, ...exporting }
               ),
+    exportAttempts: config.taskVolumeExportAttempts,
     intervalMs: config.reapIntervalMs,
     graceMs: config.reapGraceMs,
     volumePolicy: { ttlMs: config.taskVolumeTtlMs, boundMs: config.taskVolumeBoundMs },

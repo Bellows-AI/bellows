@@ -357,3 +357,96 @@ scenario('the reaper on a superseded lease with an unread runner (D-RP1)', { bui
 scenario('the reaper on a gone job inside its grace (D-RP2)', { build: reaperGone, writes: [] }, {});
 
 scenario('the dead-service probe of a running service (D-DS)', { build: deadService, writes: [] }, {});
+
+/** The finished, not-whole thread D-VX sweeps: past its bound, its artifacts incomplete. */
+const notWholeThread = (root: string) => ({
+    id: root,
+    status: 'succeeded' as const,
+    leaseToken: null,
+    thread: {
+        live: false,
+        lastFinalizedAt: '2020-01-01T00:00:00.000Z',
+        artifactsComplete: false,
+        checkpoint: 'complete' as const,
+        checkpointFinalizedAt: '2020-01-01T00:00:00.000Z',
+        lastJobId: root,
+        lastClaimSeq: 1,
+    },
+});
+
+/**
+ * D-VX (issue #938): the reaper's export of a not-whole thread's volume, then its delete. A faulted read of
+ * the export (the volume presence, the container's end, its state) must end in a kept volume, never a delete.
+ */
+const volumeExportOf =
+    (drained: boolean): Build<ExecDocker> =>
+    async (tap, alias) => {
+        const root = randomUUID();
+        alias(root, 'root');
+        const volume = `factory-task-${root}-1`;
+        const labels = `factory.task-root=${root},factory.task-generation=1,factory.task-board=${BOARD}`;
+        const { exec } = routedDocker(
+            either(writes, (args) => {
+                if (is(args, 'ps') || is(args, 'create') || is(args, 'start')) return ok();
+                if (is(args, 'volume', 'ls')) {
+                    return ok(
+                        has(args, 'label=factory.task-root')
+                            ? `${JSON.stringify({ Name: volume, Labels: labels })}\n`
+                            : ''
+                    );
+                }
+                if (is(args, 'volume', 'inspect'))
+                    return ok(has(args, '{{.Name}}') ? `${volume}\n` : '2020-01-01T00:00:00Z\n');
+                if (is(args, 'wait')) return ok('0\n');
+                if (is(args, 'inspect')) return ok('exited\n');
+            })
+        );
+        const reaper = createReaper({
+            board: { leases: async () => [notWholeThread(root)] },
+            arm: createDockerReaper(tap(exec), BOARD, {
+                config: loadDriverConfig({}),
+                open: async () => ({
+                    url: 'http://driver:1/',
+                    token: 't',
+                    proof: () => (drained ? { drained: true } : { drained: false, why: 'a chunk was refused' }),
+                    close: () => {},
+                }),
+                drainMs: 4_000,
+            }),
+            intervalMs: 0,
+            graceMs: 0,
+            volumePolicy: { ttlMs: 1, boundMs: 2 },
+            log: () => undefined,
+        });
+        return async () => {
+            await reaper.sweep();
+            return [];
+        };
+    };
+
+scenario(
+    'the reaper exporting a not-whole thread’s volume that the relay did not prove drained (D-VX)',
+    {
+        build: volumeExportOf(false),
+        writes: [
+            expect.stringMatching(/^create .* --name factory-export-<root> .* -e <script>$/),
+            'start factory-export-<root>',
+            'rm -f factory-export-<root>',
+        ],
+    },
+    {}
+);
+
+scenario(
+    'the reaper exporting a not-whole thread’s volume before its delete (D-VX2)',
+    {
+        build: volumeExportOf(true),
+        writes: [
+            expect.stringMatching(/^create .* --name factory-export-<root> .* -e <script>$/),
+            'start factory-export-<root>',
+            'rm -f factory-export-<root>',
+            'volume rm factory-task-<root>-1',
+        ],
+    },
+    {}
+);

@@ -295,6 +295,8 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
         {
             id: string;
             live: boolean;
+            claimed_id: string | null;
+            claimed_seq: string | null;
             last_status: JobStatus | null;
             last_finished_at: Date | null;
             pending: boolean | null;
@@ -307,7 +309,7 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
         select r.id, r.checkpoint_truncated, r.checkpoint_finalized_at,
                exists (select 1 from job t where t.org_id = r.org_id and t.root_job_id = r.id
                        and t.status in ('queued', 'running')) as live,
-               last.status as last_status, last.finished_at as last_finished_at,
+               claimed.id::text as claimed_id, claimed.claim_seq as claimed_seq, last.status as last_status, last.finished_at as last_finished_at,
                (select max(m.created_at) from artifact_manifest m
                 where m.org_id = r.org_id and m.job_id = last.id::text and m.claim_seq = last.claim_seq) as last_manifest_at,
                (r.checkpoint_job_id = last.id::text and r.checkpoint_claim_seq = last.claim_seq) as on_last,
@@ -329,6 +331,11 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
             where t.org_id = r.org_id and t.root_job_id = r.id
             order by t.created_at desc, t.id desc limit 1
         ) last on true
+        left join lateral (
+            select t.id, t.claim_seq from job t
+            where t.org_id = r.org_id and t.root_job_id = r.id and t.claim_seq >= 1
+            order by t.created_at desc, t.id desc limit 1
+        ) claimed on true
         where r.org_id = ${orgId} and r.id = any(${[...ids]}::uuid[]) and r.root_job_id = r.id
     `;
     // The thread is idle from its newest finalize: the attempt, its checkpoint, or a manifest that landed late.
@@ -354,6 +361,8 @@ async function threadFactsOf(ctx: JobStoreContext, ids: readonly string[]): Prom
                     artifactsComplete: row.pending === false,
                     checkpoint,
                     checkpointFinalizedAt: row.checkpoint_finalized_at?.toISOString() ?? null,
+                    lastJobId: row.claimed_id,
+                    lastClaimSeq: row.claimed_seq === null ? null : Number(row.claimed_seq),
                 },
             ];
         })

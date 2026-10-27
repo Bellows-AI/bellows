@@ -1,10 +1,24 @@
 import { LEASE_BATCH_MAX, type Board, type BoardLease, type BoardThreadFacts, UUID_SHAPE } from './board/board.js';
 import { secondsSince } from './prometheus.js';
+import {
+    createVolumeExportGate,
+    isWhole,
+    type VolumeExport,
+    type VolumeExportAttempt,
+    type VolumeExportResult,
+} from './reaper-export.js';
+
+export type { VolumeExport, VolumeExportAttempt, VolumeExportResult };
 
 /** What the reaper reports about each sweep (issue #831). */
 export interface ReaperObserver {
     sweep(outcome: 'ok' | 'aborted' | 'error', seconds: number): void;
     scanned(what: 'groups' | 'objects' | 'volume_threads', count: number): void;
+    /**
+     * One thread's volume export finished (issue #938): `lost` is the volume deleted after its last
+     * attempt failed, bytes the board never got.
+     */
+    volumeExport?(result: VolumeExportResult | 'lost'): void;
 }
 
 /**
@@ -86,6 +100,12 @@ export interface ReaperArm {
     scanVolumes?(): Promise<VolumeListing | null>;
     /** Deletes every generation of one thread, answering a line per volume actually removed. */
     reapVolumes?(thread: VolumeThread): Promise<readonly string[] | ReapInconclusive>;
+    /**
+     * Uploads the transcript bytes the thread's newest generation still holds unacknowledged (issue #938):
+     * the one-shot exporter over that volume, under `attempt`'s identity, ended and removed on every exit
+     * path, killed when `signal` aborts. Only `drained` licenses the delete; anything else keeps the volume.
+     */
+    exportVolume?(thread: VolumeThread, attempt: VolumeExportAttempt, signal: AbortSignal): Promise<VolumeExport>;
 }
 
 /** A reap that could not confirm its cleanup: what it did remove, and the read that proved nothing. */
@@ -168,8 +188,7 @@ export function volumeDecision(
     if (facts === undefined || facts.live || facts.lastFinalizedAt === null) return 'keep';
     const idleMs = nowMs - Date.parse(facts.lastFinalizedAt);
     if (Number.isNaN(idleMs) || idleMs < 0) return 'keep';
-    const whole = facts.artifactsComplete && facts.checkpoint === 'complete';
-    return idleMs >= (whole ? policy.ttlMs : Math.max(policy.ttlMs, policy.boundMs)) ? 'delete' : 'keep';
+    return idleMs >= (isWhole(facts) ? policy.ttlMs : Math.max(policy.ttlMs, policy.boundMs)) ? 'delete' : 'keep';
 }
 
 /**
@@ -259,6 +278,52 @@ const reapOne = async (
     }
 };
 
+/** Deletes every generation of one thread, logging a line per volume actually removed. */
+const reapThread = async (
+    arm: ReaperArm,
+    thread: VolumeThread,
+    ctx: { log: (message: string) => void; onUnproven: () => void; exporter: { deleted(root: string): void } }
+): Promise<void> => {
+    const { log, onUnproven, exporter } = ctx;
+    const result = await arm.reapVolumes!(thread);
+    for (const removed of settleReap(result, `thread ${thread.root}`, { log, onUnproven }))
+        log(`reaper: thread ${thread.root} — removed ${removed}`);
+    // An unconfirmed delete leaves the volume: its export attempts still count.
+    if (Array.isArray(result)) exporter.deleted(thread.root);
+};
+
+/** The task volume threads and the board's answer for their roots, or null when either proved nothing. */
+const proveVolumes = async (
+    arm: ReaperArm,
+    ctx: {
+        board: Pick<Board, 'leases'>;
+        log: (message: string) => void;
+        observe: ReaperObserver | undefined;
+        onUnproven: () => void;
+    }
+): Promise<{ threads: VolumeThread[]; leases: Map<string, BoardLease> } | null> => {
+    const { board, log, observe, onUnproven } = ctx;
+    const listed = await arm.scanVolumes!();
+    if (listed === null) {
+        onUnproven();
+        log('reaper: the task volumes could not be listed — deleting none this round');
+        return null;
+    }
+    const threads = threadsOfVolumes(listed, log);
+    for (const line of listed.inconclusive ?? []) {
+        onUnproven();
+        log(`reaper: ${line}`);
+    }
+    observe?.scanned('volume_threads', threads.length);
+    const roots = [...new Set(threads.map((thread) => thread.root))];
+    const leases = await lookupAll(board, roots, log, { withThreads: true });
+    if (leases === null) {
+        onUnproven();
+        return null;
+    }
+    return { threads, leases };
+};
+
 /**
  * The sweep loop. One round: scan → ask the board in batches → decide → reap → log. Failures are
  * logged, never thrown: this runs out of a timer, and a refused delete is the next round's
@@ -275,6 +340,11 @@ export function createReaper(deps: {
     volumePolicy?: VolumePolicy;
     /** Reports each sweep (issue #831): its outcome and duration, and what it scanned. */
     observe?: ReaperObserver;
+    /**
+     * How many failed re-exports of a not-whole thread (issue #938) the reaper tolerates before it deletes
+     * the volume and logs the loss; counted in memory per thread root, so a driver restart starts over.
+     */
+    exportAttempts?: number;
 }): {
     sweep(): Promise<void>;
     start(): void;
@@ -290,6 +360,16 @@ export function createReaper(deps: {
     const onUnproven = () => {
         unproven = true;
     };
+    /** One root read alone, right now; null when the board could not answer. */
+    const readRoot = (root: string) =>
+        lookupAll(deps.board, [root], log, { withThreads: true, consequence: `keeping thread ${root} this round` });
+    const exporter = createVolumeExportGate({
+        attempts: deps.exportAttempts,
+        log,
+        observe: deps.observe,
+        onUnproven,
+        reread: async (root) => (await readRoot(root))?.get(root)?.thread,
+    });
 
     /** The orphan groups: scan → ask the board in batches → decide → reap. */
     const sweepGroups = async (): Promise<void> => {
@@ -330,63 +410,50 @@ export function createReaper(deps: {
         }
     };
 
-    /** The task volume threads and the board's answer for their roots, or null when either proved nothing. */
-    const proveVolumes = async (
-        arm: ReaperArm
-    ): Promise<{ threads: VolumeThread[]; leases: Map<string, BoardLease> } | null> => {
-        const listed = await arm.scanVolumes!();
-        if (listed === null) {
-            onUnproven();
-            log('reaper: the task volumes could not be listed — deleting none this round');
-            return null;
-        }
-        const threads = threadsOfVolumes(listed, log);
-        for (const line of listed.inconclusive ?? []) {
-            onUnproven();
-            log(`reaper: ${line}`);
-        }
-        deps.observe?.scanned('volume_threads', threads.length);
-        const roots = [...new Set(threads.map((thread) => thread.root))];
-        const leases = await lookupAll(deps.board, roots, log, { withThreads: true });
-        if (leases === null) {
-            onUnproven();
-            return null;
-        }
-        return { threads, leases };
-    };
-
-    /** The task volumes: list → ask the board about each root → decide → delete every generation of the deletable. */
+    /** The task volumes: list → ask the board about each root → decide → export what is not whole → delete every generation. */
     const sweepVolumes = async (): Promise<void> => {
         const { arm, volumePolicy } = deps;
         if (volumePolicy === undefined || !arm.scanVolumes || !arm.reapVolumes) return;
-        const proven = await proveVolumes(arm);
+        const proven = await proveVolumes(arm, { board: deps.board, log, observe: deps.observe, onUnproven });
         if (proven === null) return;
+        const round = exporter.begin(proven.threads.map((thread) => thread.root));
         for (const thread of proven.threads) {
-            if (!(await deletable(thread, proven.leases, volumePolicy))) continue;
-            const ctx = { log, onUnproven };
-            for (const removed of settleReap(await arm.reapVolumes(thread), `thread ${thread.root}`, ctx))
-                log(`reaper: thread ${thread.root} — removed ${removed}`);
+            const verdict = await verdictOf(thread, proven.leases, volumePolicy, round);
+            if (verdict === 'abort') return;
+            if (verdict === 'delete') await reapThread(deps.arm, thread, { log, onUnproven, exporter });
         }
+    };
+
+    /** Whether a thread's volumes go now: the board's verdict on it, then — if it is not whole — its export's. */
+    const verdictOf = async (
+        thread: VolumeThread,
+        leases: ReadonlyMap<string, BoardLease>,
+        policy: VolumePolicy,
+        round: { exported: boolean }
+    ): Promise<'delete' | 'keep' | 'abort'> => {
+        exporter.seen(thread.root, leases.get(thread.root)?.thread);
+        const row = await deletable(thread, leases, policy);
+        return row === null ? 'keep' : exporter.beforeDelete(thread, row.facts, deps.arm, round);
     };
 
     /**
      * The batch answer is minutes old by the time a thread's turn comes: a follow-up may have been queued
      * and claimed since, and a volume deleted under it is recreated empty by its mount. So a thread the
      * batch condemns is decided again on a read of its root alone, right before the delete; an
-     * unconfirmed read keeps it.
+     * unconfirmed read keeps it. The facts that confirmed it, or null.
      */
     const deletable = async (
         thread: VolumeThread,
         leases: ReadonlyMap<string, BoardLease>,
         policy: VolumePolicy
-    ): Promise<boolean> => {
-        if (volumeVerdict(leases.get(thread.root), thread.volumes, now(), policy) === 'keep') return false;
-        const fresh = await lookupAll(deps.board, [thread.root], log, {
-            withThreads: true,
-            consequence: `keeping thread ${thread.root} this round`,
-        });
+    ): Promise<{ facts: BoardThreadFacts | undefined } | null> => {
+        if (volumeVerdict(leases.get(thread.root), thread.volumes, now(), policy) === 'keep') return null;
+        const fresh = await readRoot(thread.root);
         if (fresh === null) unproven = true;
-        return fresh !== null && volumeVerdict(fresh.get(thread.root), thread.volumes, now(), policy) === 'delete';
+        const row = fresh?.get(thread.root);
+        return fresh !== null && volumeVerdict(row, thread.volumes, now(), policy) === 'delete'
+            ? { facts: row?.thread }
+            : null;
     };
 
     const sweep = async (): Promise<void> => {
@@ -419,6 +486,7 @@ export function createReaper(deps: {
             timer.unref();
         },
         stop() {
+            exporter.abort();
             if (timer !== null) {
                 clearInterval(timer);
                 timer = null;

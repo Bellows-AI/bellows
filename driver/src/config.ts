@@ -51,6 +51,11 @@ export interface DriverConfig {
      */
     taskVolumeTtlMs: number;
     taskVolumeBoundMs: number;
+    /**
+     * How many sweep rounds the reaper tries to upload a not-whole thread's unacknowledged transcript
+     * bytes before it deletes the volume anyway and logs the loss (issue #938).
+     */
+    taskVolumeExportAttempts: number;
     /** Where a task's checkout is cloned from: `<cloneBase>/<owner>/<name>.git`. */
     cloneBase: string;
     /**
@@ -334,6 +339,10 @@ const MAX_CACHE_WATCH_POLL_MS = 300_000;
 const DEFAULT_REAP_INTERVAL_MS = 300_000;
 /** The default DRIVER_REAP_GRACE_MS: ten minutes, comfortably longer than an attempt's own teardown. */
 const DEFAULT_REAP_GRACE_MS = 600_000;
+/** The default TASK_VOLUME_EXPORT_ATTEMPTS: three rounds, then the volume goes and the loss is logged. */
+export const DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS = 3;
+/** The upper bound on TASK_VOLUME_EXPORT_ATTEMPTS. */
+const MAX_TASK_VOLUME_EXPORT_ATTEMPTS = 100;
 /** The default TASK_VOLUME_TTL_MS: a day of idleness after a whole thread's last finalize. */
 const DEFAULT_TASK_VOLUME_TTL_MS = MS_PER_DAY;
 /** The default TASK_VOLUME_BOUND_MS: a week, the bound on keeping a thread whose checkpoint is not whole. */
@@ -780,6 +789,12 @@ export function loadDriverConfig(env: NodeJS.ProcessEnv): DriverConfig {
             min: 0,
             max: MAX_TASK_VOLUME_MS,
         }),
+        taskVolumeExportAttempts: int(
+            env.TASK_VOLUME_EXPORT_ATTEMPTS,
+            'TASK_VOLUME_EXPORT_ATTEMPTS',
+            DEFAULT_TASK_VOLUME_EXPORT_ATTEMPTS,
+            { min: 1, max: MAX_TASK_VOLUME_EXPORT_ATTEMPTS }
+        ),
         reapIntervalMs: int(env.DRIVER_REAP_INTERVAL_MS, 'DRIVER_REAP_INTERVAL_MS', DEFAULT_REAP_INTERVAL_MS, {
             min: 0,
             max: 24 * MS_PER_HOUR,

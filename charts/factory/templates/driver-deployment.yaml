@@ -137,6 +137,8 @@ spec:
                         value: {{ $.Values.taskVolume.ttlMs | quote }}
                       - name: TASK_VOLUME_BOUND_MS
                         value: {{ $.Values.taskVolume.boundMs | quote }}
+                      - name: TASK_VOLUME_EXPORT_ATTEMPTS
+                        value: {{ $.Values.taskVolume.exportAttempts | quote }}
                       {{- with $.Values.driver.repoCloneBase }}
                       - name: REPO_CLONE_BASE
                         value: {{ . | quote }}

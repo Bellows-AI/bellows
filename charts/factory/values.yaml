@@ -137,6 +137,9 @@ taskVolume:
     # longer) when a checkpoint is truncated or an artifact is still pending. Milliseconds, quoted.
     ttlMs: '86400000'
     boundMs: '604800000'
+    # Before the reaper deletes a volume whose thread is not whole it uploads the transcript records its
+    # exporter never had acknowledged; after this many failed rounds it deletes anyway and logs the loss.
+    exportAttempts: '3'
 
 # A namespace LimitRange (issue #454): a pod created WITHOUT limits — by anything, not only the
 # driver — inherits these instead of running unbounded. A container's own limits win. It applies

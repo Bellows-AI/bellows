@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { type ChildProcess, spawn } from 'node:child_process';
 import {
     appendFileSync,
@@ -58,6 +59,8 @@ interface Harness {
     manifests: ExportManifestRequest[];
     reports: ExportReport[];
     board: { down: boolean; delayMs: number; replyDelayMs: number };
+    /** Chunks the board already holds by offset: an exporter killed mid-PUT left them stored and unacknowledged. */
+    preStored: Map<number, Buffer>;
     drain: (state: 'complete' | 'partial', cause: string | null) => void;
     /** The directory shared with the supervisor, and what the exporter wrote there last. */
     exportDir: string;
@@ -127,12 +130,18 @@ async function harness(): Promise<Harness> {
     const manifests: ExportManifestRequest[] = [];
     const reports: ExportReport[] = [];
     const board = { down: false, delayMs: 0, replyDelayMs: 0 };
+    const preStored = new Map<number, Buffer>();
     channel.open(SUPERVISOR);
     channel.grantExporter(SUPERVISOR, TOKEN);
     channel.attachExporter(SUPERVISOR, {
         putChunk: async (session, offset, bytes) => {
             if (board.down) throw new Error('the board is down');
             await new Promise((resolve) => setTimeout(resolve, board.delayMs));
+            const held = preStored.get(offset);
+            if (held && !held.equals(bytes)) {
+                const recorded = { length: held.length, sha256: createHash('sha256').update(held).digest('hex') };
+                return { result: 'conflict', recorded };
+            }
             chunks.push({ session, offset, body: Buffer.from(bytes) });
             // The chunk is stored; the exporter learns of it, and saves its acknowledged offset, only after this.
             await new Promise((resolve) => setTimeout(resolve, board.replyDelayMs));
@@ -165,6 +174,7 @@ async function harness(): Promise<Harness> {
         manifests,
         reports,
         board,
+        preStored,
         // The supervisor's drain order: a file in the directory only it and the exporter mount.
         drain: (state, cause) => writeFileSync(join(exportDir, 'drain.json'), JSON.stringify({ state, cause })),
         exportDir,
@@ -644,6 +654,46 @@ describe('the continuous claude-code exporter', () => {
         expect(h.stored(SESSION).toString()).toBe(records(3));
         expect(h.manifests).toHaveLength(1);
         expect(h.manifests[0]).toMatchObject({ state: 'partial', terminalCause: 'review_failed' });
+    });
+
+    describe('a chunk the board holds at the offset, stored by an exporter killed before its ack (issue #938)', () => {
+        const cutDifferently = (h: Harness, held: Buffer): void => {
+            h.preStored.set(0, held);
+            h.chunks.push({ session: SESSION, offset: 0, body: held });
+        };
+
+        it('acknowledges the recorded prefix of what it holds and uploads the rest after it', async () => {
+            const h = await harness();
+            writeFileSync(fileOf(h), records(5));
+            cutDifferently(h, Buffer.from(records(2)));
+            h.start({ FACTORY_EXPORT_DIR: '', EXPORT_ONCE: 'partial', EXPORT_ONCE_CAUSE: 'reaper_export' });
+            expect(await h.exited()).toBe(0);
+            expect(h.stored(SESSION).toString()).toBe(records(5));
+            expect(savedAck(h)).toMatchObject({ acked: Buffer.byteLength(records(5)), stopCause: null });
+            expect(h.manifests[0]).toMatchObject({ state: 'partial', terminalCause: 'reaper_export' });
+        });
+
+        it('stops the stream when the recorded chunk is not a prefix of what it holds', async () => {
+            const h = await harness();
+            writeFileSync(fileOf(h), records(5));
+            h.preStored.set(0, Buffer.from(records(2, 100)));
+            h.start({ FACTORY_EXPORT_DIR: '', EXPORT_ONCE: 'partial', EXPORT_ONCE_CAUSE: 'reaper_export' });
+            expect(await h.exited()).toBe(0);
+            expect(h.chunks).toHaveLength(0);
+            expect(savedAck(h)?.stopCause).toBe('upload_rejected');
+        });
+    });
+
+    it('saves its state under a name of its own, so another exporter over the same volume cannot collide with it (issue #938)', async () => {
+        const h = await harness();
+        writeFileSync(fileOf(h), records(3));
+        // What a second exporter mid-save leaves behind: a file at the old shared tmp name, here one
+        // that cannot be written over at all.
+        mkdirSync(join(h.dir, 'export-state', `${SESSION}.json.tmp`), { recursive: true });
+        h.start({ FACTORY_EXPORT_DIR: '', EXPORT_ONCE: 'partial', EXPORT_ONCE_CAUSE: 'reaper_export' });
+        expect(await h.exited()).toBe(0);
+        expect(h.stored(SESSION).toString()).toBe(records(3));
+        expect(savedAck(h)?.acked).toBe(Buffer.byteLength(records(3)));
     });
 
     it('in one-shot mode closes a finished review complete', async () => {
