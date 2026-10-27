@@ -67,13 +67,20 @@ const twoRepoPlan = () =>
     });
 
 /** A repo source whose installation listing carries default branches, as the real one does. */
-function reposWithDefaults(entries: { owner: string; name: string; defaultBranch: string | null }[]) {
-    const base = staticRepoSource(entries.map(({ owner, name }) => ({ owner, name })));
+function reposWithDefaults(
+    entries: { owner: string; name: string; defaultBranch: string | null }[],
+    error: string | null = null
+) {
+    const base = staticRepoSource(
+        entries.map(({ owner, name }) => ({ owner, name })),
+        { error }
+    );
     return {
         ...base,
         detail: async () => ({
             repos: entries.map((entry) => ({ ...entry, private: false, pushedAt: null })),
             installation: null,
+            error,
         }),
     };
 }
@@ -103,15 +110,13 @@ async function setup(
         },
     });
     const config = testConfig({ auth: githubAuth() });
-    const repos = {
-        ...reposWithDefaults(
-            options.repos ?? [
-                { ...WEB, defaultBranch: 'main' },
-                { ...API, defaultBranch: 'main' },
-            ]
-        ),
-        ...(options.listError !== undefined ? { lastError: () => options.listError as string } : {}),
-    };
+    const repos = reposWithDefaults(
+        options.repos ?? [
+            { ...WEB, defaultBranch: 'main' },
+            { ...API, defaultBranch: 'main' },
+        ],
+        options.listError ?? null
+    );
     const app = await buildApp({
         config,
         orgs: staticRegistry({

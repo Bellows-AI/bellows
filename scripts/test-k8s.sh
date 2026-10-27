@@ -598,11 +598,14 @@ esac
 expect_contains 'pods roll on a Secret change'        "$gh" 'checksum/secret:'
 expect_contains 'the collector rolls on a config change' "$gh" 'checksum/config:'
 
-# One dashboard, replaced not rolled: a per-process facts cache, the filesystem artifact backend, an
-# RWO claim that cannot attach twice, and no mixed-version rollout coverage (deployment.yaml).
+# One dashboard by default, replaced not rolled at any count: no mixed-version rollout coverage
+# (deployment.yaml). Above one, the filesystem artifact backend (one pod's /tmp) is refused.
 gh_dashboard="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$gh")"
-expect_contains 'the dashboard runs exactly one replica' "$gh_dashboard" 'replicas: 1'
+expect_contains 'the dashboard runs one replica by default' "$gh_dashboard" 'replicas: 1'
 expect_contains 'the dashboard is recreated, never rolled' "$gh_dashboard" 'type: Recreate'
+gh_dashboard_two="$(awk '/^# Source: factory\/templates\/deployment.yaml/,/^---/' <<<"$(gh_render --set dashboard.replicas=2)")"
+expect_contains 'dashboard.replicas sets the dashboard replica count' "$gh_dashboard_two" 'replicas: 2'
+expect_contains 'two dashboards are still recreated, never rolled' "$gh_dashboard_two" 'type: Recreate'
 # Readiness is the migrations; liveness is the process. A database outage must not restart-loop.
 expect_contains 'the dashboard starts on /api/ready'  "$gh_dashboard" 'startupProbe:'
 expect_contains 'readiness reads the migrations'      "$gh_dashboard" 'path: /api/ready'
@@ -683,6 +686,15 @@ refuses 'an s3 backend with no bucket is refused' 'artifacts.s3.bucket is requir
     "${GH_SETS[@]}" --set artifacts.s3.bucket=
 refuses 'an unknown artifacts backend is refused' 'artifacts.backend must be' \
     "${GH_SETS[@]}" --set artifacts.backend=gcs
+refuses 'the filesystem backend is refused above one dashboard replica' \
+    'dashboard.replicas above 1 requires artifacts.backend=s3' \
+    "${GH_SETS[@]}" --set artifacts.backend=filesystem --set dashboard.replicas=2
+refuses 'zero dashboard replicas are refused' 'dashboard.replicas must be a whole number of at least 1' \
+    "${GH_SETS[@]}" --set dashboard.replicas=0
+refuses 'a fractional dashboard replica count is refused' 'dashboard.replicas must be a whole number of at least 1' \
+    "${GH_SETS[@]}" --set dashboard.replicas=1.5
+expect_contains 'the filesystem backend renders at one dashboard replica' \
+    "$(gh_render --set artifacts.backend=filesystem)" 'kind: Deployment'
 refuses 'a missing OAuth client id is refused' 'auth.oauthClientId is required' \
     "${GH_SETS[@]}" --set auth.oauthClientId=
 refuses 'a missing OAuth client secret is refused' 'secret.oauthClientSecret is required' \
@@ -4180,7 +4192,7 @@ begin_phase capacity
 # `<timings>.capacity.tsv`), and the driver pod holding the first heavy task is deleted hard: its row
 # keeps its slot, so no queued task is admitted, until the surviving replica takes the running agent
 # over. Draining the barriers hands the freed slots on in turn, and every task succeeds. Two dashboard
-# replicas are not covered here: the chart pins one (docs/kubernetes.md); the docker lane runs two boards.
+# replicas are not covered here: the chart defaults to one (docs/kubernetes.md); the docker lane runs two boards.
 
 echo
 echo '# capacity'
@@ -4605,7 +4617,7 @@ begin_phase bench
 # --- Throughput and recovery on one laptop's kind cluster (issue #831) ----------------------------
 #
 # Cells of N tasks (1, 4, 8, 16) against R driver replicas (1, 2) at the chart's production poll, lease
-# and reaper values, one dashboard replica (the chart pins it, docs/kubernetes.md), tasks that hold a
+# and reaper values, one dashboard replica (the chart default, docs/kubernetes.md), tasks that hold a
 # slot for a minute and write no barrier (`factory-stub-sleep-60`, scripts/k8s-stub.sh). Beside the
 # timings it writes `<timings>.bench/<cell>.*` (scripts/bench-summary.mjs documents the files) and
 # `<timings>.bench.tsv`. A recovery cell kills the driver that holds the tasks and reads seconds until

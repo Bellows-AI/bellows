@@ -28,6 +28,16 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if not (has .Values.artifacts.backend (list "s3" "filesystem")) }}
 {{- fail "artifacts.backend must be s3 or filesystem" }}
 {{- end }}
+{{- $replicas := .Values.dashboard.replicas }}
+{{- if not (or (kindIs "int64" $replicas) (kindIs "float64" $replicas)) }}
+{{- fail "dashboard.replicas must be a whole number of at least 1" }}
+{{- end }}
+{{- if or (lt (float64 $replicas) 1.0) (ne (float64 (int64 $replicas)) (float64 $replicas)) }}
+{{- fail "dashboard.replicas must be a whole number of at least 1" }}
+{{- end }}
+{{- if and (gt (int64 $replicas) 1) (eq .Values.artifacts.backend "filesystem") }}
+{{- fail (printf "dashboard.replicas above 1 requires artifacts.backend=s3: the filesystem backend is one pod's /tmp (dashboard.replicas=%v, artifacts.backend=filesystem)" $replicas) }}
+{{- end }}
 {{- if eq .Values.artifacts.backend "s3" }}
 {{- if not .Values.artifacts.s3.bucket }}
 {{- fail "artifacts.s3.bucket is required when artifacts.backend is s3 (set artifacts.backend=filesystem for a single-replica development install)" }}

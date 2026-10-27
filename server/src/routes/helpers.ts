@@ -75,18 +75,20 @@ export async function checkReposVisible(
     selection: readonly Repo[],
     { subject }: { subject: string }
 ): Promise<{ ok: true } | { ok: false; status?: number; code: string; message: string }> {
-    const available = new Set((await repos.list()).map(fullName));
+    // This read's own error, not lastError(): a concurrent read may have cleared it already.
+    const read = await repos.detail();
+    const available = new Set(read.repos.map(fullName));
     // The list is empty (or lacks the repo) in two very different situations — nothing is tracked,
     // or the source could not be asked — and only the first makes "no repository matches" true.
-    const unconfirmed = (): { ok: false; status: number; code: string; message: string } => ({
+    const unconfirmed = (error: string): { ok: false; status: number; code: string; message: string } => ({
         ok: false,
         status: HTTP_UNAVAILABLE,
         code: ERROR_CODES.UNAVAILABLE,
-        message: `Cannot check ${subject} against the tracked repositories: ${repos.lastError()}`,
+        message: `Cannot check ${subject} against the tracked repositories: ${error}`,
     });
     for (const repo of selection) {
         if (available.has(`${repo.owner}/${repo.name}`)) continue;
-        if (repos.lastError()) return unconfirmed();
+        if (read.error) return unconfirmed(read.error);
         return {
             ok: false,
             code: ERROR_CODES.UNKNOWN_REPO,

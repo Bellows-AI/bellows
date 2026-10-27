@@ -3,7 +3,7 @@ PodDisruptionBudgets (issue #362) — the voluntary-disruption policy for the ch
 complementing the driver-specced pods' RUNNER_DO_NOT_DISRUPT opt-in.
 
 The dashboard allows one unavailable (maxUnavailable: 1), deliberately NOT minAvailable: 1: this
-Deployment runs exactly one replica with strategy Recreate — deployment.yaml says why — and its
+Deployment runs one replica by default with strategy Recreate — deployment.yaml says why — and its
 upgrades already accept seconds of downtime, so a drain evicts the pod, it reschedules, and the
 board is back; that is "survives the drain". minAvailable: 1 on replicas: 1 can never be
 satisfied during an eviction and would wedge every drain and managed-nodegroup update in this

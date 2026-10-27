@@ -710,7 +710,7 @@ describe('POST /api/jobs', () => {
 
     it('answers 503, never UNKNOWN_REPO, while the repo list read has failed and the list is empty', async () => {
         const store = stubStore();
-        const repos = { ...staticRepoSource([]), lastError: () => 'database down' };
+        const repos = staticRepoSource([], { error: 'database down' });
         const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
 
         const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/web' });
@@ -722,7 +722,7 @@ describe('POST /api/jobs', () => {
 
     it('answers 503, not UNKNOWN_REPO, for a repo missing from a stale list while lastError is set', async () => {
         const store = stubStore();
-        const repos = { ...staticRepoSource([TRACKED]), lastError: () => 'refresh failed' };
+        const repos = staticRepoSource([TRACKED], { error: 'refresh failed' });
         const instance = await harnessWith(store, undefined, stubTelemetryClient(), repos);
 
         const response = await post(instance, '/api/jobs', { command: 'echo hi', repo: 'acme/other' });
@@ -742,7 +742,11 @@ describe('POST /api/jobs', () => {
         ];
         const repos: StaticRepoSource = {
             ...base,
-            list: async () => (fresh ? visible : base.snapshot()),
+            detail: async () => ({
+                repos: fresh ? visible : (await base.detail()).repos,
+                installation: null,
+                error: null,
+            }),
             invalidate: () => {
                 fresh = true;
                 base.invalidate();
