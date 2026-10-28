@@ -42,6 +42,8 @@ const heavyEnv = (state: string, slots = 1) => ({
     FACTORY_HEAVY_DIR: state,
     FACTORY_HEAVY_SLOTS: String(slots),
     FACTORY_HEAVY_POLL: '0.1',
+    // The host guard reads this machine's real load; the tests that exercise it fake the probe.
+    FACTORY_HEAVY_GUARD: '0',
 });
 const startHeavy = (env: NodeJS.ProcessEnv, args: string[]) => {
     const child = spawn('sh', [HEAVY, ...args], { env, stdio: 'ignore' });
@@ -144,6 +146,12 @@ describe('the fix skills', () => {
         expect(codex()).not.toContain('re-spawn the fix-planner');
     });
 
+    it("count heavy.sh's host-kill rerun as the one environmental rerun", () => {
+        expect(readFileSync(join(skill, 'SKILL.md'), 'utf8')).toContain(
+            'That rerun is the one an environmental verdict allows — a second failure is real.'
+        );
+    });
+
     it('schedule no model check-ins on background agents', () => {
         // A 20-minute tick woke a 250-520K-token conversation ~100 times a week to report nothing.
         expect(readFileSync(join(skill, 'SKILL.md'), 'utf8')).not.toMatch(/send_later|every 20 minutes/);
@@ -210,6 +218,119 @@ describe('heavy.sh', () => {
         expect(await run.done).toBe(143);
         expect(existsSync(join(state, 'slot-1'))).toBe(false);
     });
+});
+
+describe('heavy.sh host guard', () => {
+    // <load> <cores> <free %>, read by the probe on every check.
+    const guarded = (dir: string, host: string, extra: NodeJS.ProcessEnv = {}) => {
+        const probe = join(dir, 'host');
+        writeFileSync(probe, host);
+        return {
+            probe,
+            env: {
+                ...heavyEnv(join(dir, 'state')),
+                FACTORY_HEAVY_GUARD: '1',
+                FACTORY_HEAVY_PROBE: `cat ${probe}`,
+                FACTORY_HEAVY_SWEEP_UNDER: join(dir, 'checkouts/'),
+                ...extra,
+            },
+        };
+    };
+    const runHeavy = (env: NodeJS.ProcessEnv, args: string[]) => {
+        const child = spawn('sh', [HEAVY, ...args], { env, stdio: ['ignore', 'ignore', 'pipe'] });
+        children.push(child);
+        let stderr = '';
+        child.stderr.on('data', (chunk: Buffer) => {
+            stderr += chunk.toString();
+        });
+        const done = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
+        return { child, done, stderr: () => stderr };
+    };
+    const lines = (path: string) => (existsSync(path) ? readFileSync(path, 'utf8').split('\n').filter(Boolean) : []);
+
+    it.each([
+        ['load over twice the cores', '40 8 50', 'load 40 over 16'],
+        ['low free memory', '1 8 5', 'free memory 5% under 15%'],
+    ])('holds the slot while the host shows %s, then runs', async (_label, busy, reason) => {
+        const dir = scratch();
+        const log = join(dir, 'log');
+        const { env, probe } = guarded(dir, busy);
+        const run = runHeavy(env, ['sh', '-c', `echo ran >> ${log}`]);
+        await until(() => run.stderr().includes(`holding the slot until the host settles (${reason})`));
+        await sleep(300);
+        expect(existsSync(log)).toBe(false);
+        writeFileSync(probe, '1 8 50');
+        expect(await run.done).toBe(0);
+        expect(lines(log)).toEqual(['ran']);
+    });
+
+    it('runs anyway once the host wait is spent', async () => {
+        const dir = scratch();
+        const { env } = guarded(dir, '40 8 50', { FACTORY_HEAVY_HOST_WAIT: '0' });
+        const run = runHeavy(env, ['true']);
+        expect(await run.done).toBe(0);
+        expect(run.stderr()).toContain('host still busy (load 40 over 16) after 0s; running anyway');
+    });
+
+    it.each([
+        ['KILL', 137],
+        ['TERM', 143],
+    ])('reruns once a command the host killed with SIG%s', async (signal, code) => {
+        const dir = scratch();
+        const log = join(dir, 'log');
+        const { env } = guarded(dir, '1 8 50');
+        const run = runHeavy(env, ['sh', '-c', `echo ran >> ${log}; kill -${signal} $$`]);
+        expect(await run.done).toBe(code);
+        expect(lines(log)).toEqual(['ran', 'ran']);
+        expect(run.stderr()).toContain(`exit ${code} and nobody signalled heavy.sh`);
+    });
+
+    it('never reruns an ordinary failure, a signalled run, or with the guard off', async () => {
+        const dir = scratch();
+        const log = join(dir, 'log');
+        const { env } = guarded(dir, '1 8 50');
+        expect(await runHeavy(env, ['sh', '-c', `echo fail >> ${log}; exit 1`]).done).toBe(1);
+        expect(
+            await runHeavy({ ...env, FACTORY_HEAVY_GUARD: '0' }, ['sh', '-c', `echo off >> ${log}; kill -KILL $$`]).done
+        ).toBe(137);
+        const signalled = runHeavy(env, ['sh', '-c', `echo signalled >> ${log}; sleep 30`]);
+        await until(() => lines(log).includes('signalled'));
+        signalled.child.kill('SIGTERM');
+        expect(await signalled.done).toBe(143);
+        await sleep(300);
+        expect(lines(log)).toEqual(['fail', 'off', 'signalled']);
+    });
+
+    it('kills orphaned test runners before it claims, and spares ones with a live parent', async (ctx) => {
+        const dir = scratch();
+        const runner = join(dir, 'checkouts/repo/node_modules/vitest/runner.js');
+        mkdirSync(join(dir, 'checkouts/repo/node_modules/vitest'), { recursive: true });
+        writeFileSync(runner, 'setInterval(() => {}, 1000);\n');
+        const titled = `process.title = 'node (vitest 99)'; setInterval(() => {}, 1000);`;
+        // Started from a shell that exits at once, so each is reparented: an orphan.
+        const orphan = (cmd: string) =>
+            Number(spawnSync('sh', ['-c', `${cmd} >/dev/null 2>&1 & echo $!`], { encoding: 'utf8' }).stdout.trim());
+        const orphans = [orphan(`node -e "${titled}"`), orphan(`node ${runner}`)];
+        const parented = spawn('node', ['-e', titled], { stdio: 'ignore' });
+        children.push(parented);
+        const ppid = (pid: number) =>
+            spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+        const alive = (pid: number) => spawnSync('kill', ['-0', String(pid)]).status === 0;
+        for (let i = 0; i < 40 && !orphans.every((pid) => ppid(pid) === '1'); i++) await sleep(50);
+        if (!orphans.every((pid) => ppid(pid) === '1')) {
+            // A subreaper (some CI containers) adopts orphans instead of PID 1: not this host's shape.
+            for (const pid of orphans) spawnSync('kill', ['-KILL', String(pid)]);
+            ctx.skip();
+        }
+        await sleep(200);
+
+        const { env } = guarded(dir, '1 8 50');
+        const run = runHeavy(env, ['true']);
+        expect(await run.done).toBe(0);
+        expect(run.stderr()).toContain('killing orphaned test runners');
+        await until(() => orphans.every((pid) => !alive(pid)));
+        expect(alive(parented.pid!)).toBe(true);
+    }, 15_000);
 });
 
 describe('cleanup.sh', () => {

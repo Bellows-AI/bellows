@@ -53,6 +53,9 @@ cover every command this skill names below.
   failed, timed-out or empty read is inconclusive.
 - HEAVY waits for a free slot (2 per host, `FACTORY_HEAVY_SLOTS`) and prints who holds them. The wait
   is the point: never bypass it, never kill a holder. Launch long ones with `run_in_background`.
+  Before claiming it kills orphaned vitest runners; holding the slot it waits for the host's load
+  and free memory to settle, and reruns once a command the host killed (exit 137/143 that nobody
+  signalled). That rerun is the one an environmental verdict allows — a second failure is real.
 - Name everything the run creates outside the worktree `fix<N>` or `fix<N>-<what>` — kind clusters
   (`make cluster CLUSTER=fix<N>`), compose projects, containers (`fix<N>-pg`), volumes, networks.
   CLEANUP finds them by that name and nothing else.
