@@ -121,6 +121,11 @@ describe('the fix skills', () => {
         expect(fix).toContain('**A failed lane is not rerun to find its cause.**');
         expect(fix).toContain('The same case failing twice is never environmental: reproduce it.');
     });
+
+    it('schedule no model check-ins on background agents', () => {
+        // A 20-minute tick woke a 250-520K-token conversation ~100 times a week to report nothing.
+        expect(readFileSync(join(skill, 'SKILL.md'), 'utf8')).not.toMatch(/send_later|every 20 minutes/);
+    });
 });
 
 describe('heavy.sh', () => {
