@@ -19,6 +19,7 @@ import {
     boundedBy,
     HTTP_TOO_MANY_REQUESTS,
     isMalformedRequest400,
+    isRefused,
     isRecord,
     livePodOfItems,
     LOG_TAIL_LINES,
@@ -30,7 +31,7 @@ import {
     waitOf,
     withSignal,
 } from './k8s-transport.js';
-import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse } from './k8s-transport.js';
+import type { K8sDeps, K8sJobStatus, K8sPod, K8sResponse, Refused } from './k8s-transport.js';
 import { heldWords, startupCauseOf, StartupRefused } from '../startup-cause.js';
 import { type HeldImage, heldOf, heldUnpullable } from './k8s-held.js';
 import {
@@ -136,7 +137,7 @@ export async function readTyped<T>(
     deps: K8sDeps,
     path: string,
     what: string,
-    { shape, once = false }: { shape: (value: unknown) => T | null; once?: boolean }
+    { shape, once = false }: { shape: (value: unknown) => T | null | Refused; once?: boolean }
 ): Promise<Read<T>> {
     let response: K8sResponse;
     try {
@@ -147,13 +148,28 @@ export async function readTyped<T>(
     return readAnswer(response, what, shape);
 }
 
-/** The list shape: every entry `entry` accepts, or null for a body with no list or any entry it refuses. */
+/** What names a refused list entry: its position, its name when it has one, and the field `refused` says. */
+const refusedEntry = (raw: unknown, i: number, field: string | null): Refused => {
+    const name = isRecord(raw) && isRecord(raw.metadata) ? raw.metadata.name : undefined;
+    const label = `items[${i}]${typeof name === 'string' ? ` (${name})` : ''}`;
+    return { refused: field === null ? label : `${label}: ${field}` };
+};
+
+/**
+ * The list shape: every entry `entry` accepts, or null for a body with no list; the first entry it
+ * refuses is named by position and name, and by the field when `entry` says which.
+ */
 const listOf =
-    <T>(entry: (value: unknown) => T | null) =>
-    (body: unknown): T[] | null => {
+    <T>(entry: (value: unknown) => T | null | Refused) =>
+    (body: unknown): T[] | Refused | null => {
         if (!isRecord(body) || !Array.isArray(body.items)) return null;
-        const items = body.items.map(entry);
-        return items.every((item) => item !== null) ? (items as T[]) : null;
+        const items: T[] = [];
+        for (const [i, raw] of body.items.entries()) {
+            const item = entry(raw);
+            if (item !== null && !isRefused(item)) items.push(item);
+            else return refusedEntry(raw, i, isRefused(item) ? item.refused : null);
+        }
+        return items;
     };
 
 /** `readTyped` of a list: every entry `entry` accepts, or inconclusive for a body with no list or any entry it refuses. */
@@ -161,21 +177,24 @@ export function readTypedList<T>(
     deps: K8sDeps,
     path: string,
     what: string,
-    { entry, once = false }: { entry: (value: unknown) => T | null; once?: boolean }
+    { entry, once = false }: { entry: (value: unknown) => T | null | Refused; once?: boolean }
 ): Promise<Read<T[]>> {
     return readTyped(deps, path, what, { shape: listOf(entry), once });
 }
 
 /** A pod list already fetched, read as a typed answer (#869): the pods `entry` accepts, else absent or inconclusive. */
-export const podsOf = (response: K8sResponse, what: string, entry: (value: unknown) => K8sPod | null = asPod) =>
-    readAnswer(response, what, listOf(entry));
+export const podsOf = (
+    response: K8sResponse,
+    what: string,
+    entry: (value: unknown) => K8sPod | Refused | null = asPod
+) => readAnswer(response, what, listOf(entry));
 
 /** `readTyped` on the throwing channel (#824): `ABSENT` on a 404, an `Inconclusive` throw for a read that proves nothing. */
 export async function readObject<T>(
     deps: K8sDeps,
     path: string,
     what: string,
-    options: { shape: (value: unknown) => T | null; once?: boolean }
+    options: { shape: (value: unknown) => T | null | Refused; once?: boolean }
 ): Promise<T | typeof ABSENT> {
     const read = await readTyped(deps, path, what, options);
     if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);
@@ -187,7 +206,7 @@ export async function readList<T>(
     deps: K8sDeps,
     path: string,
     what: string,
-    options: { entry: (value: unknown) => T | null; once?: boolean }
+    options: { entry: (value: unknown) => T | null | Refused; once?: boolean }
 ): Promise<T[] | typeof ABSENT> {
     const read = await readTypedList(deps, path, what, options);
     if (read.kind === 'inconclusive') throw new Inconclusive(read.reason);

@@ -256,6 +256,44 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
     });
 
+    // BEL-127: a node-killed pod keeps ContainerStatusUnknown statuses whose times are null; that is a
+    // readable pod, never a shape refusal that blocks the adoption.
+    it('takes away, rather than blocks on, a killed pod whose container times are null', async () => {
+        const unknown = {
+            terminated: { exitCode: 137, reason: 'ContainerStatusUnknown', startedAt: null, finishedAt: null },
+        };
+        const { request, calls } = withRunners([priorItem({ failed: 1 })], {
+            job: jobAnswer({ failed: 1 }),
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName, creationTimestamp: null, deletionTimestamp: null },
+                            status: {
+                                phase: 'Failed',
+                                containerStatuses: [
+                                    { name: AGENT_CONTAINER, state: unknown },
+                                    { name: SUPERVISOR_CONTAINER, state: unknown },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+
+        const adopted = await runner(request).adopt(adopter);
+
+        // The supervisor's ContainerStatusUnknown end is an infrastructure loss: the earlier run is taken
+        // away (given back to the sweep and redone), never adopted as a verdict and never blocked.
+        expect(adopted).toBeNull();
+        expect(
+            calls.some((call) => call.method === 'DELETE' && call.path.startsWith(jobPath(namespace, priorName)))
+        ).toBe(false);
+        expect((await request('GET', claimPathFor(job.id))).status).toBe(404);
+    });
+
     /** A listed runner Job carrying the reasons its driver recorded for ending it. */
     const recorded = (item: ReturnType<typeof priorItem>, marks: Record<string, string>) => ({
         ...item,

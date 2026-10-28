@@ -1881,6 +1881,37 @@ describe('the kubernetes runner', () => {
         expect(outcome).not.toHaveProperty('infraLoss');
     });
 
+    // BEL-127: a node-killed pod's statuses are ContainerStatusUnknown with null times; the run reads
+    // it as the supervisor's loss (an infrastructure loss), not as an unreadable pod list.
+    it('ends a run whose killed pod left null container times as an infrastructure loss', async () => {
+        const unknown = {
+            terminated: { exitCode: 137, reason: 'ContainerStatusUnknown', startedAt: null, finishedAt: null },
+        };
+        const { request } = fakeRequest({
+            job: { status: 200, body: JSON.stringify({ status: { failed: 1 } }) },
+            pods: {
+                status: 200,
+                body: JSON.stringify({
+                    items: [
+                        {
+                            metadata: { name: podName, creationTimestamp: null, deletionTimestamp: null },
+                            status: {
+                                phase: 'Failed',
+                                containerStatuses: [
+                                    { name: AGENT_CONTAINER, state: unknown },
+                                    { name: 'supervisor', state: unknown },
+                                ],
+                            },
+                        },
+                    ],
+                }),
+            },
+        });
+        const outcome = await runner(request).run(job, { id: SESSION, resume: false });
+
+        expect(outcome).toMatchObject({ started: true, infraLoss: expect.stringMatching(/ContainerStatusUnknown/) });
+    });
+
     // The deadline is enforced by the kubelet, so the Job reports failed with the reason attached;
     // the driver maps that onto the same verdict `docker kill` after DRIVER_JOB_TIMEOUT_MS gets.
     // A current cluster marks the deadline `FailureTarget` first and `Failed` only once the pod is

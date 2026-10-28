@@ -159,6 +159,8 @@ describe('the kubernetes reaper arm: scan', () => {
             { metadata: { name: 'x', labels: { [JOB_LABEL]: JOB, [LEASE_LABEL]: LEASE } } },
         ],
         ['an in-scope Job with an unparsable creationTimestamp', auxJob('x', JOB, LEASE, 'not-a-date')],
+        // BEL-127: null is an unset time on a pod, and an in-scope Job with no date is no group to age.
+        ['an in-scope Job with a null creationTimestamp', auxJob('x', JOB, LEASE, null as unknown as string)],
         ['an in-scope Job dated "0"', auxJob('x', JOB, LEASE, '0')],
         ['an in-scope Job dated on a day the calendar lacks', auxJob('x', JOB, LEASE, '2026-02-31T00:00:00Z')],
         ['an in-scope Job dated with no time', auxJob('x', JOB, LEASE, '2026-09-01')],
@@ -822,6 +824,16 @@ describe('the kubernetes reaper arm: task volumes (issue #775)', () => {
     it('leaves a claim that is already terminating to its deletion', async () => {
         const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: '2026-10-01T00:00:00Z' })])]);
         expect(await arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
+    });
+
+    it('leaves a claim whose deletion time is not a time to its deletion, never reading it as live', async () => {
+        const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: 42 as unknown as string })])]);
+        expect(await arm.scanVolumes!()).toEqual({ threads: [], skipped: [] });
+    });
+
+    it('reads a null deletion time as unset: the claim is listed, not terminating', async () => {
+        const { arm } = armOver([listing([claim(ROOT, 1, { deletionTimestamp: null as unknown as string })])]);
+        expect((await arm.scanVolumes!())!.threads.map((thread) => thread.root)).toEqual([ROOT]);
     });
 
     it.each([

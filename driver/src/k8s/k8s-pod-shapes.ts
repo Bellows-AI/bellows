@@ -3,14 +3,14 @@ import {
     optionalStrings,
     optionalTimestamp,
     stringsOnly,
-    validContainerStatuses,
-    validImage,
+    containerStatusesFault,
+    imageFault,
+    sidecarFault,
     validPodConditions,
-    validSidecar,
     isCount,
 } from './k8s-shapes.js';
 import { isRecord } from './k8s-transport.js';
-import type { K8sPod } from './k8s-transport.js';
+import type { K8sPod, Refused } from './k8s-transport.js';
 
 /**
  * A listed or read object that names itself, as far as a decision on it reads (#869): a `metadata`
@@ -46,18 +46,21 @@ export function asIdentified<T>(value: unknown): T | null {
  * reads as "nothing seen".
  */
 const podWith =
-    (containers: (status: NonNullable<K8sPod['status']>, pod: K8sPod) => boolean) =>
-    (value: unknown): K8sPod | null => {
+    (containers: (status: NonNullable<K8sPod['status']>, pod: K8sPod) => string | null) =>
+    (value: unknown): K8sPod | Refused => {
         const pod = asNamed<K8sPod & { metadata: { deletionTimestamp?: unknown } }>(value);
-        if (pod === null || !optionalTimestamp(pod.metadata.deletionTimestamp)) return null;
+        if (pod === null) return { refused: 'metadata' };
+        if (!optionalTimestamp(pod.metadata.deletionTimestamp)) return { refused: 'metadata.deletionTimestamp' };
         const { status } = pod;
         if (status === undefined) return pod;
         const { phase, reason, message, conditions } = status;
-        if (!optionalStrings(phase, reason, message) || !validPodConditions(conditions)) return null;
-        return containers(status, pod) ? pod : null;
+        if (!optionalStrings(phase, reason, message)) return { refused: 'status' };
+        if (!validPodConditions(conditions)) return { refused: 'status.conditions' };
+        const fault = containers(status, pod);
+        return fault === null ? pod : { refused: `status.${fault}` };
     };
 
-export const asPod = podWith((status) => validContainerStatuses(status.containerStatuses));
+export const asPod = podWith((status) => containerStatusesFault(status.containerStatuses, 'containerStatuses'));
 
 /**
  * A pod as the group start reads it (#869): `asPod`, and also every field `heldOf`, `startRefusalOf`
@@ -67,14 +70,15 @@ export const asPod = podWith((status) => validContainerStatuses(status.container
 export const asStartupPod = podWith(({ containerStatuses, initContainerStatuses }, pod) => {
     const spec: unknown = pod.spec;
     const specInit = isRecord(spec) ? spec.initContainers : undefined;
+    const specReadable =
+        spec === undefined ||
+        (isRecord(spec) &&
+            (specInit === undefined ||
+                (Array.isArray(specInit) && specInit.every((c) => isRecord(c) && optionalStrings(c.name, c.image)))));
     return (
-        (spec === undefined ||
-            (isRecord(spec) &&
-                (specInit === undefined ||
-                    (Array.isArray(specInit) &&
-                        specInit.every((c) => isRecord(c) && optionalStrings(c.name, c.image)))))) &&
-        validContainerStatuses(containerStatuses, validImage) &&
-        validContainerStatuses(initContainerStatuses, validImage)
+        (specReadable ? null : 'spec.initContainers') ??
+        containerStatusesFault(containerStatuses, 'containerStatuses', imageFault) ??
+        containerStatusesFault(initContainerStatuses, 'initContainerStatuses', imageFault)
     );
 });
 
@@ -84,7 +88,7 @@ export const asStartupPod = podWith(({ containerStatuses, initContainerStatuses 
  * field `sidecarStatuses` and its endings consume.
  */
 export const asServicePod = podWith(({ initContainerStatuses }) =>
-    validContainerStatuses(initContainerStatuses, validSidecar)
+    containerStatusesFault(initContainerStatuses, 'initContainerStatuses', sidecarFault)
 );
 
 /**
