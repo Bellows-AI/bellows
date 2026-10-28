@@ -181,7 +181,7 @@ export interface PostgresHarnessOptions {
 
 /**
  * A call a case holds at a fault step spends its own absolute deadline while held, so the default must outlast
- * the longest hold a conformance case needs (BEL-152); cases that test expiry pass their own `deadlineMs`.
+ * the longest hold a conformance case needs; cases that test expiry pass their own `deadlineMs`.
  */
 const HELD_CALL_DEADLINE_MS = 3000;
 

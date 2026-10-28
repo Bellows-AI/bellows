@@ -374,7 +374,7 @@ describe.skipIf(!enabled)('database faults', () => {
 });
 
 describe.skipIf(!enabled)('the conformance harness deadline', () => {
-    // BEL-152: a case that holds a call at a fault step spends the call's own absolute deadline; the default
+    // A case that holds a call at a fault step spends the call's own absolute deadline; the default
     // deadline must outlast any pause a case needs, so only a real store fault can expire a held call.
     it('a call held at a fault step for longer than the old 200 ms default still completes', async () => {
         const h = createPostgresHarness(db.sql);
