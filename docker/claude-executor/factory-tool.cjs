@@ -147,7 +147,7 @@ const MAKE_SHARED_TMP = '[ -d "$1" ] || mkdir -p -m "$2" -- "$1" 2>/dev/null; ch
  * anyone outside node's group, and nothing outside this directory is touched.
  */
 const SWEEP_SHARED_TMP =
-    '[ -d "$1" ] || mkdir -p -m "$3" -- "$1"; ' +
+    '[ -d "$1" ] || { mkdir -p -m "$3" -- "$1" && chmod -- "$3" "$1"; }; ' +
     'find "$1" -xdev -user "$2" -gid "$4" \\( -type d ! -perm -070 -o -type f ! -perm -060 \\) -exec chmod g+rwX {} + 2>/dev/null; exit 0';
 
 /**
