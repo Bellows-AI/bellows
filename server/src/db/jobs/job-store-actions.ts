@@ -5,6 +5,7 @@
 
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import { lockThreadRootInTx } from '../connection-bindings.js';
 import { addFollowUpBindings, type BindConnectionResult, bindOnCreate } from './job-store-connections.js';
 import {
     backsBatchTask,
@@ -410,6 +411,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     // eligibility check and the insert must be atomic with a racing done on ANY member —
     // not only on the parent row the CTE below locks — or a done could commit between the
     // check and the insert and leave queued work in a thread the user closed.
+    // A follow-up naming connections binds under the root row, which the claim's acquire holds before the
+    // advisory lock: lock them in that order (`lockThreadRootInTx`). Without connections: unchanged.
+    if (connectionIds.length > 0) await lockThreadRootInTx(tx, orgId, label.root_job_id);
     await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
     const rows = await tx<{ id: string }[]>`
             with parent as (

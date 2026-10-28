@@ -141,6 +141,7 @@ export async function revokeGrantIfOrphaned(
     return rows.length > 0;
 }
 
+// Lock order: never lock a connection row before its grant (the thread root and advisory locks come before both).
 const UNIQUE_VIOLATION = '23505';
 const isUniqueViolation = (error: unknown): boolean =>
     typeof error === 'object' && error !== null && (error as { code?: string }).code === UNIQUE_VIOLATION;

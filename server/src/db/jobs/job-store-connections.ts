@@ -125,6 +125,8 @@ export async function recordUnboundRequirements(
     rootJobId: string
 ): Promise<boolean> {
     // Under the thread lock the bind route also takes: the unbound read and the requirement write are one step.
+    // The acquire holds its candidate row already and must never lock the root row here: the requirement
+    // insert needs only KEY SHARE on it, which a bind's `no key update` leaves free.
     await lockThreadInTx(tx, rootJobId);
     const [root] = await tx<
         { skills: string[] }[]

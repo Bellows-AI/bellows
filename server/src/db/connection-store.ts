@@ -1,5 +1,5 @@
 import type { Sql, TransactionSql } from 'postgres';
-import { lockThreadInTx, projectJiraConnectionInTx } from './connection-bindings.js';
+import { lockThreadRootInTx, projectJiraConnectionInTx } from './connection-bindings.js';
 import { revokeGrantIfOrphaned } from './connection-grants.js';
 
 const DISCONNECT_ATTEMPTS = 5;
@@ -92,7 +92,7 @@ async function disconnectOnce(
             `
         ).map((row) => row.root_job_id);
     const roots = await rootsOf();
-    for (const root of roots) await lockThreadInTx(tx, root);
+    for (const root of roots) await lockThreadRootInTx(tx, orgId, root);
     await tx`
         select g.id from integration_grant g
         join connector_connection c on c.grant_id = g.id
@@ -169,8 +169,8 @@ export function createConnectionStore({
         },
         async disconnect(connectionId, { userId, admin }) {
             await gate();
-            // Lock order everywhere: thread advisory lock(s) in sorted root order, then the grant, then the
-            // connection (a bind share-locks it after its thread lock and never takes a grant lock). A bind that commits a new root between the root read and the
+            // Lock order (see `lockThreadRootInTx`): each bound root's row then advisory lock in ascending root
+            // order, then the grant, then the connection (a bind share-locks it after its thread lock). A bind that commits a new root between the root read and the
             // update is seen after it and the transaction retries with that root locked too.
             for (let attempt = 0; attempt < DISCONNECT_ATTEMPTS; attempt += 1) {
                 try {
