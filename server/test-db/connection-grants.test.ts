@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
+import { createConnectionStore } from '../src/db/connection-store.js';
+import { waitForLockWaiters } from './lock-wait.js';
 import { createConnectionGrants, grantSecretIdentity, type ConnectionGrants } from '../src/db/connection-grants.js';
 import { createSecretRef } from '../src/secrets/secret-input.js';
 import { useTestDb } from './harness.js';
@@ -193,5 +195,73 @@ describe.skipIf(!enabled)('connection grants', () => {
             purpose: 'connection-grant',
             owningRecord: { type: 'integration-grant', id: first.grant.id },
         });
+    });
+
+    it('two concurrent disconnects of the last two connections serialize on the grant lock and revoke it', async () => {
+        const store = createConnectionStore({ sql, orgId: ORG });
+        const first = await mustAttach(grants, ALICE.id, account());
+        const second = await attach(grants, ALICE.id, first.grant.externalAccountId);
+        if (!second.ok) throw new Error(`attach refused: ${second.reason}`);
+        const done = { a: false, b: false };
+        // The grant row lock is held by a third transaction: both disconnects must queue behind it.
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let locked!: () => void;
+        const lockTaken = new Promise<void>((resolve) => {
+            locked = resolve;
+        });
+        const holder = sql.begin(async (tx) => {
+            await tx`select id from integration_grant where id = ${first.grant.id} for update`;
+            locked();
+            await held;
+        });
+        await lockTaken;
+        const a = store.disconnect(first.connectionId, { userId: ALICE.id, admin: false }).then((r) => {
+            done.a = true;
+            return r;
+        });
+        const b = store.disconnect(second.connectionId, { userId: ALICE.id, admin: false }).then((r) => {
+            done.b = true;
+            return r;
+        });
+        const state = await waitForLockWaiters(sql, 2, () => done.a || done.b);
+        release();
+        await holder;
+        expect(await Promise.all([a, b])).toEqual([true, true]);
+        expect(state).toBe('blocked');
+        const [grant] = await sql<
+            { status: string }[]
+        >`select status from integration_grant where id = ${first.grant.id}`;
+        expect(grant!.status).toBe('revoked');
+    });
+
+    it('revokeIfOrphaned takes the grant lock before it looks for active connections', async () => {
+        const attached = await mustAttach(grants, ALICE.id, account());
+        await sql`update connector_connection set status = 'disconnected' where id = ${attached.connectionId}`;
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let locked!: () => void;
+        const lockTaken = new Promise<void>((resolve) => {
+            locked = resolve;
+        });
+        const holder = sql.begin(async (tx) => {
+            await tx`select id from integration_grant where id = ${attached.grant.id} for update`;
+            locked();
+            await held;
+        });
+        await lockTaken;
+        let settled = false;
+        const revoked = grants.revokeIfOrphaned(attached.grant.id).then((r) => {
+            settled = true;
+            return r;
+        });
+        expect(await waitForLockWaiters(sql, 1, () => settled)).toBe('blocked');
+        release();
+        await holder;
+        expect(await revoked).toBe(true);
     });
 });

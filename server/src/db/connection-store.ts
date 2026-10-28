@@ -124,6 +124,15 @@ export function createConnectionStore({
         async disconnect(connectionId, { userId, admin }) {
             await gate();
             return sql.begin(async (tx) => {
+                // Lock the grant BEFORE the status change: two last-connection disconnects serialize here, so the
+                // later one's orphan check (a fresh statement) sees the earlier one's committed disconnect.
+                // `grant_id` never changes after insert, so reading it unlocked is safe.
+                await tx`
+                    select g.id from integration_grant g
+                    join connector_connection c on c.grant_id = g.id
+                    where c.id = ${connectionId} and c.org_id = ${orgId} and g.org_id = ${orgId}
+                    for update of g
+                `;
                 const rows = await tx<{ grant_id: string | null }[]>`
                     update connector_connection
                     set status = 'disconnected', disconnected_at = now(), api_token = null

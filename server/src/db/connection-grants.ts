@@ -128,6 +128,8 @@ export async function revokeGrantIfOrphaned(
     orgId: string,
     grantId: string
 ): Promise<boolean> {
+    // Row lock first, orphan check in a LATER statement: READ COMMITTED gives that statement a fresh snapshot.
+    await tx`select id from integration_grant where id = ${grantId} and org_id = ${orgId} for update`;
     const rows = await tx<{ id: string }[]>`
         update integration_grant set status = 'revoked', revoked_at = now(), updated_at = now()
         where id = ${grantId} and org_id = ${orgId} and status <> 'revoked'
@@ -263,7 +265,7 @@ export function createConnectionGrants({
 
         async revokeIfOrphaned(grantId) {
             await gate();
-            return revokeGrantIfOrphaned(sql, orgId, grantId);
+            return sql.begin((tx) => revokeGrantIfOrphaned(tx, orgId, grantId));
         },
     };
 }

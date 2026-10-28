@@ -1,12 +1,21 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { addBindingsInTx, bindingsOf, ConnectionRefusedError, requirementsOf } from '../src/db/connection-bindings.js';
+import {
+    addBindingsInTx,
+    bindingsOf,
+    ConnectionRefusedError,
+    recordMissingInTx,
+    requirementsOf,
+    unboundProvidersInTx,
+} from '../src/db/connection-bindings.js';
 import { createConnectionStore, type ConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
+import { bindConnectionRow } from '../src/db/jobs/job-store-connections.js';
 import { insertWorkflowSuccessor } from '../src/db/jobs/job-store-rows.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { waitForLockWaiters } from './lock-wait.js';
 import { expireLease, testOrg, testUser } from './fixtures.js';
 
 /**
@@ -270,5 +279,111 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
         );
         expect(result).toEqual({ ok: true, revision: revision + 1 });
         expect((await claimNext())?.id).toBe(id);
+    });
+
+    it('the bind route waits for an acquire that read "unbound", then satisfies the requirement it recorded', async () => {
+        const first = await connect(ALICE.id);
+        const root = await create(ALICE.id, { skills: ['jira'] });
+        await connections.disconnect(first, { userId: ALICE.id, admin: false });
+        const replacement = await connect(ALICE.id);
+        const revision = (await jobRow(root)).rev;
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        let read!: () => void;
+        const readDone = new Promise<void>((resolve) => {
+            read = resolve;
+        });
+        // The claim's acquire: the thread's advisory lock, then the read that says "unbound".
+        const acquire = sql.begin(async (tx) => {
+            await tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`;
+            expect(await unboundProvidersInTx(tx, { orgId: ORG, rootJobId: root, required: ['jira'] })).toEqual([
+                'jira',
+            ]);
+            read();
+            await held;
+            await recordMissingInTx(tx, { orgId: ORG, rootJobId: root, providers: ['jira'] });
+        });
+        await readDone;
+        let settled = false;
+        const bind = bindConnectionRow(sql, {
+            orgId: ORG,
+            id: root,
+            connectionId: replacement,
+            bindingRevision: revision,
+            userId: ALICE.id,
+        }).then((r) => {
+            settled = true;
+            return r;
+        });
+        const state = await waitForLockWaiters(sql, 1, () => settled);
+        release();
+        await acquire;
+        expect(await bind).toEqual({ ok: true, revision: revision + 1 });
+        expect(state).toBe('blocked');
+        expect(await requirementsOf(sql, ORG, root)).toEqual([]);
+        expect((await claimNext())?.id).toBe(root);
+    });
+
+    it('binding an already-bound live connection while a requirement is open for it satisfies the requirement', async () => {
+        const mine = await connect(ALICE.id);
+        const root = await create(ALICE.id, { skills: ['jira'] });
+        await sql`insert into job_integration_requirement (org_id, root_job_id, provider, reason)
+                  values (${ORG}, ${root}, 'jira', 'missing')`;
+        const revision = (await jobRow(root)).rev;
+        const result = await bindConnectionRow(sql, {
+            orgId: ORG,
+            id: root,
+            connectionId: mine,
+            bindingRevision: revision,
+            userId: ALICE.id,
+        });
+        expect(result).toEqual({ ok: true, revision });
+        expect(await requirementsOf(sql, ORG, root)).toEqual([]);
+        expect((await claimNext())?.id).toBe(root);
+    });
+
+    describe('jira_connection_id projection for old pods (dropped with the column)', () => {
+        const projection = async (id: string): Promise<string | null> =>
+            (await sql<{ c: string | null }[]>`select jira_connection_id as c from job where id = ${id}`)[0]!.c;
+
+        it('create with one explicit jira binding projects it, with exactly one binding', async () => {
+            const mine = await connect(ALICE.id);
+            const root = await create(ALICE.id, { connectionIds: [mine] });
+            expect(await projection(root)).toBe(mine);
+            expect((await bindingsOf(sql, ORG, root)).map((b) => b.connectionId)).toEqual([mine]);
+        });
+
+        it('the default bind projects the lone personal connection', async () => {
+            const mine = await connect(ALICE.id);
+            const root = await create(ALICE.id);
+            expect(await projection(root)).toBe(mine);
+            expect(await bindingsOf(sql, ORG, root)).toHaveLength(1);
+        });
+
+        it('two live jira bindings project null (ambiguous fails closed); none project null', async () => {
+            const one = await connect(ALICE.id);
+            const two = await connect(ALICE.id);
+            expect(await projection(await create(ALICE.id, { connectionIds: [one, two] }))).toBeNull();
+            expect(await projection(await create(BOB.id))).toBeNull();
+        });
+
+        it('a follow-up adding the first jira binding projects it, a second one makes it null', async () => {
+            const root = await create(ALICE.id);
+            const claim = (await claimNext())!;
+            await finish(claim);
+            expect(await projection(root)).toBeNull();
+            const one = await connect(ALICE.id);
+            const followUp = await store.createFollowUp(root, 'add one', ALICE.id, undefined, [one]);
+            if (typeof followUp === 'string') throw new Error(followUp);
+            expect(await projection(root)).toBe(one);
+            const claimed = (await claimNext())!;
+            await finish(claimed);
+            const two = await connect(ALICE.id);
+            const second = await store.createFollowUp(root, 'add two', ALICE.id, undefined, [two]);
+            if (typeof second === 'string') throw new Error(second);
+            expect(await projection(root)).toBeNull();
+        });
     });
 });

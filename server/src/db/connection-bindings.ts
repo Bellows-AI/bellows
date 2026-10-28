@@ -154,6 +154,29 @@ async function insertBindings(
 }
 
 /**
+ * Rollout projection, dropped with `job.jira_connection_id` by the contract release: an old pod reads the root's
+ * column, so new code keeps it equal to the connection of the root's ONE live jira binding, and null when there
+ * are none or several (fail closed). An UPDATE, so the `job_binding_mirror_rollout_094` insert trigger never
+ * mirrors it into a second `migrated` binding.
+ */
+export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId: string): Promise<void> {
+    await db`
+        update job set jira_connection_id = (
+            select case when count(*) = 1 then (array_agg(b.connection_id))[1] end
+            from job_connection_binding b
+            join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id and c.status = 'active'
+            where b.org_id = ${orgId} and b.root_job_id = ${rootJobId} and b.provider = 'jira'
+        )
+        where org_id = ${orgId} and id = ${rootJobId}
+    `;
+}
+
+/** The per-thread advisory lock the claim, follow-up, remove and done take; re-entrant within a transaction. */
+export async function lockThreadInTx(db: Db, rootJobId: string): Promise<void> {
+    await db`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+}
+
+/**
  * Persists a create-time resolution for a root job already inserted in `db`: bindings at revision 1 (the root's
  * `binding_revision` follows) and one open requirement per recorded provider.
  */
@@ -165,6 +188,7 @@ export async function applyResolutionInTx(
     if (resolution.bindings.length > 0) {
         await insertBindings(db, { orgId, rootJobId, revision: 1, addedBy, bindings: resolution.bindings });
         await db`update job set binding_revision = 1 where org_id = ${orgId} and id = ${rootJobId}`;
+        await projectJiraConnectionInTx(db, orgId, rootJobId);
     }
     for (const r of resolution.requirements) {
         await db`
@@ -196,6 +220,9 @@ export type AddBindingsResult =
  */
 export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<AddBindingsResult> {
     const { orgId, rootJobId, expectedRevision, connectionIds, actor, source } = input;
+    // The thread's advisory lock first (the claim's acquire holds it while it reads bindings and records
+    // requirements), then the row lock: a bind and an acquire on one thread never interleave.
+    await lockThreadInTx(db, rootJobId);
     const [root] = await db<{ execution_user_id: string | null; binding_revision: number }[]>`
         select execution_user_id, binding_revision from job
         where org_id = ${orgId} and id = ${rootJobId} and root_job_id = id
@@ -214,7 +241,15 @@ export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<
         select connection_id from job_connection_binding
         where org_id = ${orgId} and root_job_id = ${rootJobId} and connection_id in ${db(connectionIds)}
     `;
-    if (bound.length > 0) return { ok: false, reason: 'duplicate' };
+    if (bound.length > 0) {
+        // The owner answering a requirement with a connection the thread already holds must not strand the task:
+        // the requirement is satisfied by the live binding, at the current revision, nothing new is written.
+        if (source === 'requirement' && bound.length === connectionIds.length) {
+            await satisfyRequirements(db, { orgId, rootJobId, chosen, revision: root.binding_revision });
+            return { ok: true, revision: root.binding_revision };
+        }
+        return { ok: false, reason: 'duplicate' };
+    }
 
     const revision = root.binding_revision + 1;
     const byId = new Map(chosen.map((row) => [row.id, row]));
@@ -226,13 +261,26 @@ export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<
         bindings: connectionIds.map((id) => ({ ...toResolved(byId.get(id)!, 'default'), source })),
     });
     await db`update job set binding_revision = ${revision} where org_id = ${orgId} and id = ${rootJobId}`;
+    await projectJiraConnectionInTx(db, orgId, rootJobId);
+    await satisfyRequirements(db, { orgId, rootJobId, chosen, revision });
+    return { ok: true, revision };
+}
+
+async function satisfyRequirements(
+    db: Db,
+    {
+        orgId,
+        rootJobId,
+        chosen,
+        revision,
+    }: { orgId: string; rootJobId: string; chosen: BindableRow[]; revision: number }
+): Promise<void> {
     const providers = [...new Set(chosen.map((row) => row.provider))];
     await db`
         update job_integration_requirement set satisfied_at = now(), satisfied_revision = ${revision}
         where org_id = ${orgId} and root_job_id = ${rootJobId} and satisfied_at is null
           and provider in ${db(providers)}
     `;
-    return { ok: true, revision };
 }
 
 export interface BindingRecord {

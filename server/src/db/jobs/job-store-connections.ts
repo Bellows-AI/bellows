@@ -12,6 +12,7 @@ import {
     applyResolutionInTx,
     BINDABLE_PROVIDERS,
     ConnectionRefusedError,
+    lockThreadInTx,
     recordMissingInTx,
     resolveBindingsInTx,
     unboundProvidersInTx,
@@ -123,6 +124,8 @@ export async function recordUnboundRequirements(
     orgId: string,
     rootJobId: string
 ): Promise<boolean> {
+    // Under the thread lock the bind route also takes: the unbound read and the requirement write are one step.
+    await lockThreadInTx(tx, rootJobId);
     const [root] = await tx<
         { skills: string[] }[]
     >`select skills from job where org_id = ${orgId} and id = ${rootJobId}`;

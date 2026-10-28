@@ -37,6 +37,10 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
   root's. A personal connection binds by default only when it is the lone candidate; a legacy org one binds only
   when named. A provider a selected skill requires with no live binding is an open requirement: the claim never
   offers the queued root and spends no attempt. `server/test-db/job-store.connection-bindings.test.ts`.
+- **Bindings, requirements and grant revocation serialize on locks, never on a read**: the bind route, the claim's
+  acquire and follow-ups take the thread's advisory lock; disconnect and orphan revocation lock the grant row first.
+  Until the contract release `job.jira_connection_id` is a projection of the root's one live jira binding (null
+  otherwise) for old pods. `server/src/db/connection-bindings.ts`, `server/test-db/connection-grants.test.ts`.
 - **Org-wide connections are admin-created; personal ones are the owner's.** The proxy forwards GET and HEAD
   only, reaches `rest/api/3/*` on the connection's cloud id, and `site` must be `*.atlassian.net`.
   `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts`.
