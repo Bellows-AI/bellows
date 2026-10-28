@@ -46,6 +46,11 @@ cover every command this skill names below.
   or an environmental verdict quoting its evidence (exit 137/143, `fork: Resource temporarily
   unavailable`, an out-of-memory kill, host load far above the core count), which allows one rerun.
   The same case failing twice is never environmental: reproduce it.
+- **Gate evidence names what it ran on.** Every suite, gate and lane result you record carries the
+  commit sha it ran on, and a lane's also the runner image id with its build time. A result from
+  another commit, or from an image built before that commit, does not count. A check that something
+  is gone — deleted, reaped, stopped — passes only on a successful read that shows it absent; a
+  failed, timed-out or empty read is inconclusive.
 - HEAVY waits for a free slot (2 per host, `FACTORY_HEAVY_SLOTS`) and prints who holds them. The wait
   is the point: never bypass it, never kill a holder. Launch long ones with `run_in_background`.
 - Name everything the run creates outside the worktree `fix<N>` or `fix<N>-<what>` — kind clusters
@@ -75,9 +80,23 @@ every agent it spawns — copy them into each brief.
   one Agent call per message, never a second launch while one runs, never two agents on the same
   commit or tree. The brief points at files (the plan, the issue JSON) instead of pasting them; the
   agent returns under 200 words plus the commit sha.
+- **Brief contract.** Every implementer brief states: WORKTREE and its base sha; the files it owns,
+  and that it touches nothing else; the path and section of ONE authoritative spec for its commit,
+  with plan amendments, decisions and accepted review findings already folded in by you — never a
+  stack of plan, amendments and reviews for the agent to reconcile; the acceptance tests and the
+  command that verifies them; where it writes its notes. Its return, under 200 words, says which of
+  implemented, committed (sha), verified (command and exit code), blocked or interrupted it is.
 - **Implementers are fresh agents, never forks.** A fork starts with this whole conversation.
-  Each review round's fixes go to a new agent briefed with the round's findings file — never
-  `SendMessage` into an agent that already ran a round.
+  A review round's fixes go back to the implementer that wrote the commit, by `SendMessage` with
+  the findings file's path, while its completion notice reports under ~100 tool uses. Past that,
+  they go to a fresh agent briefed with the findings file and the implementer's handoff.
+- **Retire an agent at a boundary, never mid-task.** An implementer past ~150 turns or ~200K tokens
+  stops at its next green commit, writes `<scratchpad>/handoff-<N>-<slice>.md` (done, next step,
+  open failures) and returns; the next agent starts from that file. Unfinished work is never cut
+  off to meet the limit.
+- **Keep this conversation resumable.** At each slice boundary write `<scratchpad>/progress-<N>.md`
+  — merged PRs, the slice in progress, open decisions, the next step — so a compaction loses
+  nothing. Hold no suite log, diff or full report here; read agent results from their files.
 
 ## Phase 0 — Fetch the issue
 
@@ -119,8 +138,17 @@ task branch strands the run: the board's resume gate refuses a follow-up whose c
 - Gather context: AGENTS.md and the docs file covering the area the issue concerns, read from
   WORKTREE.
 - Spawn the `fix-planner` subagent (task tool) with the issue JSON and that context, and tell it
-  the repository root is WORKTREE. Trust its analysis and work with its output; do not re-plan
-  unless it is demonstrably wrong, in which case say why.
+  the repository root is WORKTREE and its plan path is PLAN=`<scratchpad>/plan-<N>.md`. It writes
+  the plan there and returns under 200 words: root cause, blockers, design forks, the path (a
+  planner that cannot write returns the plan, and you write it to PLAN). Trust
+  its analysis and work with its output; do not re-plan unless it is demonstrably wrong, in which
+  case say why.
+- **Revise, never re-plan from scratch.** A change to the plan — a decision, a review finding —
+  goes back to the same planner by `SendMessage`: the delta in, only the affected sections of PLAN
+  rewritten, the assumptions it invalidated out. A fresh planner only when the first one is gone.
+- **Slices stay small.** One commit touches at most ~30 files; a step larger than that is split
+  before anyone implements it. Several slices go into one epic branch they squash-merge into
+  rather than a deep stack of PRs.
 - Turn its plan into your todo list, one todo per approach step, each with the test or command
   that verifies it.
 - If the plan marks anything `BLOCKER` in Risks / ambiguity, STOP: present the ambiguity and the
@@ -176,7 +204,10 @@ In order:
 2. GREEN: write the minimum implementation that makes it pass. No features beyond the issue, no
    speculative abstractions.
 3. Run the focused suite plus `npm run typecheck`. If existing tests break, fix them before
-   proceeding — never delete or skip a test to get green.
+   proceeding — never delete or skip a test to get green. Never weaken one either without asking
+   the user first: an assertion made conditional, a looser threshold, excused cases or seeds, a
+   longer timeout so it passes. An agent that needs it stops and reports instead. Telling the user
+   after a merge is not asking.
 4. Tests must be isolated from each other and never hardcode database ids or environment-specific
    values.
 
@@ -200,7 +231,8 @@ For each round, up to 3:
      taken as empty, a signal that never reaches a delete, a missing counterpart, …) and fix every
      instance of it in the code the change adds or calls — search for them; the line the reviewer
      named is one instance. A later round that finds the same class again means this fix was
-     incomplete.
+     incomplete. **A class found in two rounds needs a redesign, not a third patch:** take it
+     back to the planner (Phase 2, revise) for that part of the design before the next round.
    - A defect in pre-existing code the change does not call is not this PR's blocker: file it as
      an issue with the issue source's **File a follow-up** and record it as `deferred: <ref>`.
    - Nitpicks/style: fix only if trivial; do not loop on them.

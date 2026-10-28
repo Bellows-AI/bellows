@@ -122,6 +122,28 @@ describe('the fix skills', () => {
         expect(fix).toContain('The same case failing twice is never environmental: reproduce it.');
     });
 
+    it('brief agents with one spec, keep plans on disk, revise them, and retire agents at a boundary', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        for (const rule of [
+            '**Brief contract.**',
+            '**Retire an agent at a boundary, never mid-task.**',
+            '**Keep this conversation resumable.**',
+            '**Revise, never re-plan from scratch.**',
+            '**Slices stay small.**',
+            '**A class found in two rounds needs a redesign, not a third patch:**',
+            '**Gate evidence names what it ran on.**',
+            'Telling the user\n   after a merge is not asking.',
+            'PLAN=`<scratchpad>/plan-<N>.md`',
+        ])
+            expect(fix).toContain(rule);
+        expect(fix).toContain('Unfinished work is never cut\n  off to meet the limit.');
+        const planner = readFileSync(join(skill, '../../agents/fix-planner.md'), 'utf8');
+        expect(planner).toContain('tools: Read, Grep, Glob, Write');
+        expect(planner).toContain('You write exactly one file: the plan path your brief names.');
+        expect(codex()).toContain('The plan: read <PLAN, the plan file');
+        expect(codex()).not.toContain('re-spawn the fix-planner');
+    });
+
     it('schedule no model check-ins on background agents', () => {
         // A 20-minute tick woke a 250-520K-token conversation ~100 times a week to report nothing.
         expect(readFileSync(join(skill, 'SKILL.md'), 'utf8')).not.toMatch(/send_later|every 20 minutes/);
