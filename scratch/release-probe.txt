@@ -1,1 +1,2 @@
+beta: release probe
 alpha: release probe
