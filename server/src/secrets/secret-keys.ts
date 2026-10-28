@@ -8,16 +8,23 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 const KEY_BYTES = 32;
 const KEY_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
-export interface SecretKeys {
-    /** key id -> 32 bytes; decrypts any envelope whose header names one of them. */
-    readonly dataKeys: ReadonlyMap<string, Buffer>;
-    /** Encrypts new versions; always a member of `dataKeys`. */
-    readonly activeKeyId: string;
+/** The keys every backend needs: operation ids and the operation-record fingerprint. */
+export interface OperationKeys {
     /** MACs operation ids. Separate from every data key. */
     readonly operationKey: Buffer;
     /** Keys the payload fingerprint of an operation record. Separate from every other key. */
     readonly fingerprintKey: Buffer;
 }
+
+/** The AES key ring of the database backend. */
+export interface DataKeys {
+    /** key id -> 32 bytes; decrypts any envelope whose header names one of them. */
+    readonly dataKeys: ReadonlyMap<string, Buffer>;
+    /** Encrypts new versions; always a member of `dataKeys`. */
+    readonly activeKeyId: string;
+}
+
+export interface SecretKeys extends OperationKeys, DataKeys {}
 
 export class SecretKeyConfigError extends Error {}
 
@@ -45,7 +52,16 @@ function decodeKey(encoded: string, label: string): Buffer {
 
 const same = (a: Buffer, b: Buffer) => a.length === b.length && timingSafeEqual(a, b);
 
-export function loadSecretKeys(env: Env): SecretKeys {
+export function loadOperationKeys(env: Env): OperationKeys {
+    const operationKey = decodeKey(required(env, 'SECRETS_OPERATION_KEY'), 'SECRETS_OPERATION_KEY');
+    const fingerprintKey = decodeKey(required(env, 'SECRETS_FINGERPRINT_KEY'), 'SECRETS_FINGERPRINT_KEY');
+    if (same(operationKey, fingerprintKey)) {
+        throw new SecretKeyConfigError('SECRETS_FINGERPRINT_KEY must differ from SECRETS_OPERATION_KEY');
+    }
+    return { operationKey, fingerprintKey };
+}
+
+export function loadDataKeys(env: Env): DataKeys {
     const ring = new Map<string, Buffer>();
     for (const entry of required(env, 'SECRETS_DATA_KEYS').split(',')) {
         const at = entry.indexOf(':');
@@ -62,30 +78,36 @@ export function loadSecretKeys(env: Env): SecretKeys {
     if (!ring.has(activeKeyId)) {
         throw new SecretKeyConfigError('SECRETS_ACTIVE_KEY_ID is not a key id in SECRETS_DATA_KEYS');
     }
-    const operationKey = decodeKey(required(env, 'SECRETS_OPERATION_KEY'), 'SECRETS_OPERATION_KEY');
-    const fingerprintKey = decodeKey(required(env, 'SECRETS_FINGERPRINT_KEY'), 'SECRETS_FINGERPRINT_KEY');
-    if (same(operationKey, fingerprintKey)) {
-        throw new SecretKeyConfigError('SECRETS_FINGERPRINT_KEY must differ from SECRETS_OPERATION_KEY');
-    }
-    for (const [id, data] of ring) {
-        if (same(data, operationKey)) {
+    return { dataKeys: ring, activeKeyId };
+}
+
+/** Refuses a data key that equals one of the operation keys. */
+function assertDistinct(data: DataKeys, operation: OperationKeys): void {
+    for (const [id, key] of data.dataKeys) {
+        if (same(key, operation.operationKey)) {
             throw new SecretKeyConfigError(`SECRETS_OPERATION_KEY must differ from data key ${id}`);
         }
-        if (same(data, fingerprintKey)) {
+        if (same(key, operation.fingerprintKey)) {
             throw new SecretKeyConfigError(`SECRETS_FINGERPRINT_KEY must differ from data key ${id}`);
         }
     }
-    return { dataKeys: ring, activeKeyId, operationKey, fingerprintKey };
+}
+
+export function loadSecretKeys(env: Env): SecretKeys {
+    const data = loadDataKeys(env);
+    const operation = loadOperationKeys(env);
+    assertDistinct(data, operation);
+    return { ...data, ...operation };
 }
 
 /** The MAC of an operation id's `<issuedAt>.<nonce>` part. */
-export function operationMac(keys: Pick<SecretKeys, 'operationKey'>, data: string): string {
+export function operationMac(keys: Pick<OperationKeys, 'operationKey'>, data: string): string {
     return createHmac('sha256', keys.operationKey).update(data).digest('hex');
 }
 
 /** HMAC of what an operation asked for; never a bare hash of the payload. */
 export function payloadFingerprint(
-    keys: Pick<SecretKeys, 'fingerprintKey'>,
+    keys: Pick<OperationKeys, 'fingerprintKey'>,
     request: { kind: string; ref: string; expectedVersion: string | null; payload: Uint8Array }
 ): string {
     return createHmac('sha256', keys.fingerprintKey)

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { NewOperation, OperationKind, OperationRow, VersionRow } from './postgres-secret-repo.js';
+import type { NewOperation, OperationKind, OperationRow } from './postgres-secret-repo.js';
 import {
     type Resolution,
     type StoreContext,
@@ -9,17 +9,19 @@ import {
     failWith,
     integrityFailure,
     issueExpired,
-    open,
+    misconfigured,
     operationExpired,
     parseOperationId,
     readFailure,
+    readPayload,
+    removeVersion,
     resolutionOf,
-    sameBytes,
-    seal,
     terminal,
     unavailable,
 } from './postgres-secret-support.js';
+import { sameBytes } from './database-payloads.js';
 import { type Call, attempt, whenReady } from './secret-call.js';
+import type { StoredPayload } from './secret-payloads.js';
 import { isSecretRef, secretError, validateIdentity, validatePayload, identityKey } from './secret-input.js';
 import { payloadFingerprint } from './secret-keys.js';
 import type {
@@ -122,13 +124,34 @@ const unknownOutcome = async (ctx: StoreContext, rec: OperationRow): Promise<Res
     return failWith('outcome-unknown', 'provider-timeout');
 };
 
-function holdsPayload(ctx: StoreContext, stored: VersionRow, rec: OperationRow, payload: Uint8Array): boolean {
-    const aad = { identityKey: rec.identityKey, ref: rec.ref, logicalVersion: rec.newVersion ?? '' };
-    const plaintext = open(ctx, stored, aad);
-    return plaintext !== null && sameBytes(plaintext, payload);
+/** The provider write that follows staging; `exists` is believed only once the object reads back as ours. */
+async function writePayload(
+    ctx: StoreContext,
+    call: Call,
+    rec: OperationRow,
+    staged: { row: StoredPayload; payload: Uint8Array }
+): Promise<Resolution | null> {
+    const { row, payload } = staged;
+    const written = await attempt(call, (b) => ctx.payloads.write(row, payload, b, call.signal), 'write');
+    if (written.kind === 'ambiguous') {
+        return unknownOutcome(ctx, rec);
+    }
+    if (written.kind !== 'ok') {
+        ctx.log({ event: 'provider-error', kind: rec.kind, ref: rec.ref as SecretRef });
+        return readFailure(written);
+    }
+    if (written.value === 'written') {
+        return null;
+    }
+    const aad = { identityKey: rec.identityKey, ref: rec.ref, logicalVersion: row.logicalVersion };
+    const stored = await readPayload(ctx, call, row, aad);
+    if (stored.kind !== 'ok') {
+        return readFailure(stored);
+    }
+    return stored.value instanceof Uint8Array && sameBytes(stored.value, payload) ? null : integrityFailure();
 }
 
-/** The "provider write": encrypt and insert the version. A final answer when it did not land, else null. */
+/** Stage the version row, then write its payload. A final answer when it did not land, else null. */
 async function stage(
     ctx: StoreContext,
     call: Call,
@@ -142,24 +165,29 @@ async function stage(
     if (!versionId || !newVersion) {
         return integrityFailure();
     }
-    const sealed = seal(ctx, { identityKey: rec.identityKey, ref: rec.ref, logicalVersion: newVersion }, payload);
-    if (!sealed) {
-        return failWith('invalid-configuration', 'configuration-invalid');
+    const aad = { identityKey: rec.identityKey, ref: rec.ref, logicalVersion: newVersion };
+    const prepared = ctx.payloads.prepare(aad, versionId, payload);
+    if (!prepared) {
+        return misconfigured();
     }
     const version = {
         id: versionId,
         ref: rec.ref,
         logicalVersion: newVersion,
-        keyId: sealed.keyId,
-        envelope: sealed.envelope,
+        ...prepared,
         operationId: rec.operationId,
         createdAtMs: ctx.clock.now(),
     };
     const staged = await attempt(call, (b) => ctx.repo.stageVersion(version, b), 'write');
     if (staged.kind === 'ok') {
         // A finished operation stages nothing: activation answers from its record. Any row that was
-        // already there is not ours until it authenticates and holds this request's payload.
-        return staged.value === 'closed' || holdsPayload(ctx, staged.value, rec, payload) ? null : integrityFailure();
+        // already there is not ours until it holds this request's payload.
+        if (staged.value === 'closed') {
+            return null;
+        }
+        return ctx.payloads.holds(staged.value, aad, payload)
+            ? writePayload(ctx, call, rec, { row: staged.value, payload })
+            : integrityFailure();
     }
     if (staged.kind === 'ambiguous') {
         return unknownOutcome(ctx, rec);
@@ -170,14 +198,14 @@ async function stage(
 
 /** After a delete activated: remove its versions now; a failure is logged and never changes a read. */
 async function cleanupAfterDelete(ctx: StoreContext, call: Call, ref: string): Promise<void> {
-    const listed = await attempt(call, (b) => ctx.repo.listPendingCleanup(ref, b), 'once');
+    const listed = await attempt(call, (b) => ctx.repo.listPendingCleanup(ref, ctx.payloads.storage, b), 'once');
     if (listed.kind !== 'ok') {
         ctx.log({ event: 'cleanup-failed' });
         return;
     }
     for (const id of listed.value) {
-        const deleted = await attempt(call, (b) => ctx.repo.deleteVersion(id, b), 'once');
-        ctx.log({ event: deleted.kind === 'ok' ? 'collected' : 'cleanup-failed' });
+        const removed = await removeVersion(ctx, call, id);
+        ctx.log({ event: removed === 'failed' ? 'cleanup-failed' : 'collected' });
     }
 }
 

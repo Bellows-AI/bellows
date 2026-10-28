@@ -136,7 +136,7 @@ describe.skipIf(!enabled)('two replicas over one database', () => {
         >`select id, state from secret_version where ref = ${s.ref}`;
         expect(rows.map((r) => r.state).sort()).toEqual(['active', 'staged']);
         for (const row of rows) {
-            expect(await a.realRepo.deleteVersion(row.id, 1000), row.state).toBe(false);
+            expect(await a.realRepo.retireVersion(row.id, 'database', 1000), row.state).toBeNull();
         }
         expect(await versionCount(s.ref)).toBe(2);
     });

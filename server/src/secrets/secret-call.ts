@@ -2,12 +2,15 @@
  * One absolute deadline per public store call, and what a database error means for the statement that raised
  * it (docs/secrets.md). A server SQLSTATE means the statement did not apply: transient classes retry, the
  * rest is a definitive `unavailable`. A connection lost after dispatch, or the deadline expiring mid-write, is
- * ambiguous and never retried by a write. Anything else is a bug and rethrows.
+ * ambiguous and never retried by a write. A payload store's `ProviderFault` carries its own verdict; a
+ * `misconfigured` one is a single try. Anything else is a bug and rethrows.
  */
+
+import { ProviderFault } from './secret-payloads.js';
 
 export class DeadlineError extends Error {}
 
-export type Verdict = 'retry' | 'definitive' | 'ambiguous' | 'rethrow';
+export type Verdict = 'retry' | 'definitive' | 'ambiguous' | 'misconfigured' | 'rethrow';
 
 const BEFORE_DISPATCH = new Set(['CONNECT_TIMEOUT', 'ECONNREFUSED', 'ENOTFOUND']);
 const AFTER_DISPATCH = new Set([
@@ -42,6 +45,9 @@ export function classify(error: unknown): Verdict {
     if (error instanceof DeadlineError) {
         return 'ambiguous';
     }
+    if (error instanceof ProviderFault) {
+        return error.verdict;
+    }
     const code = codeOf(error);
     return typeof code === 'string' ? classifyCode(code) : 'rethrow';
 }
@@ -61,6 +67,7 @@ export type Attempt<T> =
     | { kind: 'ok'; value: T }
     | { kind: 'unavailable' }
     | { kind: 'ambiguous' }
+    | { kind: 'misconfigured' }
     | { kind: 'aborted' };
 
 /**
@@ -104,10 +111,13 @@ const BACKOFF_BASE_MS = 25;
 const BACKOFF_CAP_MS = 250;
 
 /** What to do after a failed try: stop with a result, or retry after the backoff. */
-function afterFailure(error: unknown, mode: Mode): 'retry' | 'unavailable' | 'ambiguous' {
+function afterFailure(error: unknown, mode: Mode): 'retry' | 'unavailable' | 'ambiguous' | 'misconfigured' {
     const verdict = classify(error);
     if (verdict === 'rethrow') {
         throw error;
+    }
+    if (verdict === 'misconfigured') {
+        return 'misconfigured';
     }
     if (mode === 'once' || verdict === 'definitive' || error instanceof DeadlineError) {
         return verdict === 'ambiguous' && mode === 'write' ? 'ambiguous' : 'unavailable';

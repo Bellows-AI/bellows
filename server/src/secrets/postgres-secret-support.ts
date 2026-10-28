@@ -1,15 +1,17 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { OperationRow, SecretRepo } from './postgres-secret-repo.js';
-import { type Call, newCall } from './secret-call.js';
-import { type EnvelopeContext, decryptEnvelope, encryptEnvelope, envelopeKeyId } from './secret-envelope.js';
-import { type SecretKeys, operationMac } from './secret-keys.js';
+import { type Attempt, type Call, attempt, newCall } from './secret-call.js';
+import { type OperationKeys, operationMac } from './secret-keys.js';
+import type { PayloadAad, PayloadStore, StoredPayload } from './secret-payloads.js';
 import { OPERATION_RETENTION_MS, secretError } from './secret-input.js';
 import type { SecretDiagnostic, SecretError } from './secret-store.js';
 
 /** What every part of the PostgreSQL store shares: its collaborators and the small result helpers. */
 export interface StoreContext {
     repo: SecretRepo;
-    keys: SecretKeys;
+    keys: OperationKeys;
+    /** Where payload bytes live: the database envelope, or an external provider (`secret-payloads.ts`). */
+    payloads: PayloadStore;
     clock: { now(): number };
     log: (diagnostic: SecretDiagnostic) => void;
     deadlineMs: number;
@@ -25,8 +27,15 @@ export const aborted = () => failWith('unavailable', 'aborted');
 export const integrityFailure = () => failWith('integrity-failure', 'integrity-check-failed');
 export const terminal = (op: OperationRow) => op.state === 'succeeded' || op.state === 'failed';
 
+export const misconfigured = () => failWith('invalid-configuration', 'configuration-invalid');
+
 /** A failed read or best-effort step: never `not-found`, never a negative verdict. */
-export const readFailure = (a: { kind: string }) => (a.kind === 'aborted' ? aborted() : unavailable());
+export const readFailure = (a: { kind: string }) => {
+    if (a.kind === 'misconfigured') {
+        return misconfigured();
+    }
+    return a.kind === 'aborted' ? aborted() : unavailable();
+};
 
 export const callFor = (ctx: StoreContext, signal: AbortSignal | undefined, ms = ctx.deadlineMs): Call =>
     newCall(signal, ms);
@@ -64,23 +73,49 @@ export const operationExpired = (ctx: StoreContext, op: OperationRow) =>
 export const issueExpired = (ctx: StoreContext, issuedAt: number) =>
     ctx.clock.now() - issuedAt > OPERATION_RETENTION_MS;
 
-/** Encrypts under the active key; null when the active key is not in the ring. */
-export function seal(ctx: StoreContext, aad: EnvelopeContext, payload: Uint8Array) {
-    const keyId = ctx.keys.activeKeyId;
-    const key = ctx.keys.dataKeys.get(keyId);
-    return key ? { keyId, envelope: encryptEnvelope(keyId, key, payload, aad) } : null;
-}
-
-/** The plaintext of a stored envelope, or null when anything about it does not check out. */
-export function open(ctx: StoreContext, row: { keyId: string; envelope: Buffer }, aad: EnvelopeContext) {
-    if (envelopeKeyId(row.envelope) !== row.keyId) {
-        return null;
+/**
+ * The plaintext of a stored version through the payload store, retried like any read. A row of another
+ * storage than the store's own is a configuration fault, never an absence.
+ */
+export function readPayload(
+    ctx: StoreContext,
+    call: Call,
+    row: StoredPayload,
+    aad: PayloadAad
+): Promise<Attempt<Uint8Array | 'absent' | null>> {
+    if (row.storage !== ctx.payloads.storage) {
+        return Promise.resolve({ kind: 'misconfigured' });
     }
-    const out = decryptEnvelope(ctx.keys.dataKeys, row.envelope, aad);
-    return out.ok ? out.plaintext : null;
+    return attempt(call, (b) => ctx.payloads.read(row, aad, b, call.signal), 'read');
 }
 
-/** Constant-time equality of two byte strings of any length. */
-export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-    return a.length === b.length && timingSafeEqual(a, b);
+/**
+ * Removes one version (docs/secrets.md). A payload that is its row goes in one guarded delete. Otherwise in
+ * two phases: retire the row to `deleting` under the repo's guard,
+ * remove the payload, drop the row. The row stays until its payload is confirmed gone, so a failed removal
+ * is retried by the next collection instead of leaking. `refused`: the guard held it back.
+ */
+export async function removeVersion(
+    ctx: StoreContext,
+    call: Call,
+    id: string
+): Promise<'removed' | 'refused' | 'failed'> {
+    if (!ctx.payloads.twoPhase) {
+        const removed = await attempt(call, (b) => ctx.repo.removeInPlace(id, ctx.payloads.storage, b), 'once');
+        return removed.kind !== 'ok' ? 'failed' : removed.value ? 'removed' : 'refused';
+    }
+    const retired = await attempt(call, (b) => ctx.repo.retireVersion(id, ctx.payloads.storage, b), 'once');
+    if (retired.kind !== 'ok') {
+        return 'failed';
+    }
+    const row = retired.value;
+    if (!row) {
+        return 'refused';
+    }
+    const removed = await attempt(call, (b) => ctx.payloads.remove(row, b, call.signal), 'once');
+    if (removed.kind !== 'ok') {
+        return 'failed';
+    }
+    const dropped = await attempt(call, (b) => ctx.repo.dropVersion(id, b), 'once');
+    return dropped.kind === 'ok' && dropped.value ? 'removed' : 'failed';
 }
