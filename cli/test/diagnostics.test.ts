@@ -52,7 +52,7 @@ const skills = [
     {
         name: 'jira',
         description: 'Work Jira items',
-        requires: { tools: [], connections: [{ name: 'jira', env: [], selectedBy: 'jiraConnection' }] },
+        requires: { tools: [], connections: [{ name: 'jira', env: [], selectedBy: 'connections' }] },
     },
     {
         name: 'gh',
@@ -65,11 +65,14 @@ const CONNECTION = '3f2b6c1e-0000-4000-8000-000000000001';
 const connections = [
     {
         id: CONNECTION,
-        kind: 'jira',
+        provider: 'jira',
+        credential: 'legacy_api_token',
+        ownership: 'legacy-org',
+        principal: null,
         site: 'acme.atlassian.net',
-        email: 'a@acme.test',
+        account: 'a@acme.test',
         access: 'read',
-        scope: 'org',
+        status: 'active',
         createdAt: '',
     },
 ];
@@ -283,6 +286,25 @@ describe('bellows job preflight', () => {
         expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(['GET /api/workspace', 'GET /api/repos']);
     });
 
+    it('checks every --connection id against the connection list', async () => {
+        const { code, result } = await preflight([
+            '--repo',
+            'acme/api',
+            '--executor',
+            'mine',
+            '--connection',
+            CONNECTION,
+            '--connection',
+            'other',
+        ]);
+        const checks = result.data.checks.filter((check: { subject: string }) => check.subject === 'connection');
+        expect(checks.map((check: { name: string; status: string }) => [check.name, check.status])).toEqual([
+            [CONNECTION, 'ok'],
+            ['other', 'blocked'],
+        ]);
+        expect(code).toBe(1);
+    });
+
     it('reads skills and connections only when they are selected, and never writes', async () => {
         const { code, calls } = await preflight([
             '--repo',
@@ -295,7 +317,7 @@ describe('bellows job preflight', () => {
             'plain',
             '--skill',
             'jira',
-            '--jira-connection',
+            '--connection',
             CONNECTION,
         ]);
         expect(code).toBe(0);
@@ -328,13 +350,13 @@ describe('bellows job preflight', () => {
             'a Jira skill with no connection',
             ['--repo', 'acme/api', '--executor', 'mine', '--skill', 'jira'],
             'skill',
-            /pass --jira-connection/,
+            /pass --connection/,
         ],
         [
             'a connection not available to you',
-            ['--repo', 'acme/api', '--executor', 'mine', '--jira-connection', 'other'],
+            ['--repo', 'acme/api', '--executor', 'mine', '--connection', 'other'],
             'connection',
-            /no such Jira connection/,
+            /no such connection/,
         ],
     ])('blocks %s, exit 1, naming why', async (_label, args, subject, detail) => {
         const { code, result } = await preflight(args);

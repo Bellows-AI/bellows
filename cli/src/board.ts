@@ -310,8 +310,8 @@ export interface BoardClient extends BatchRoutes {
         skills?: string[] | undefined;
         /** Names this logical attempt; a repeat under the same key never makes a second task. */
         idempotencyKey?: string | undefined;
-        /** The managed Jira connection the task selects; the board authorizes it against the author. */
-        jiraConnection?: string | undefined;
+        /** The managed connections the task selects; the board authorizes each against the author. */
+        connections?: string[] | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -408,11 +408,15 @@ export interface SkillView {
 
 export interface ConnectionView {
     id: string;
-    kind: string;
+    provider: string;
+    credential: string;
+    /** `personal` or `legacy-org`. */
+    ownership: string;
+    principal: string | null;
     site: string;
-    email: string;
+    account: string;
     access: string;
-    scope: string;
+    status: string;
     createdAt: string;
 }
 
@@ -570,7 +574,7 @@ export function createBoardClient({
                 ...(input.executor !== undefined ? { executor: input.executor } : {}),
                 ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
                 ...(input.skills !== undefined ? { skills: input.skills } : {}),
-                ...(input.jiraConnection !== undefined ? { jiraConnection: input.jiraConnection } : {}),
+                ...(input.connections !== undefined ? { connections: input.connections } : {}),
             };
             return created('/api/jobs', {
                 method: 'POST',
