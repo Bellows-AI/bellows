@@ -393,6 +393,22 @@ describe('with github auth configured', () => {
 });
 
 describe('the two credentials are disjoint: claim and job-scoped routes', () => {
+    it('refuses a session cookie on the claim route spelled with percent-encoding', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const cookie = await signedIn(store, caller);
+        for (const url of ['/api/jobs/cl%61im', '/api/%6Aobs/claim', '/api/jobs/%63laim']) {
+            const response = await server.inject({
+                method: 'POST',
+                url,
+                payload: { worker: 'w', leaseSeconds: 60 },
+                headers: { cookie },
+            });
+            expect(response.statusCode, url).toBe(HTTP_UNAUTHORIZED);
+        }
+    });
+
     it('refuses a session cookie on the claim route', async () => {
         const store = memoryAuthStore();
         const server = await build(githubAuth(), store);

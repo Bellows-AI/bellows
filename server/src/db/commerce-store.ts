@@ -12,6 +12,10 @@ import type { Sql } from 'postgres';
 const RETRY_BASE_MS = 30_000;
 const RETRY_CAP_MS = 3_600_000;
 const MS_PER_SECOND = 1000;
+/** Doubling past this exponent is already beyond the cap; clamping before `power` keeps the arithmetic finite. */
+const MAX_BACKOFF_EXPONENT = 20;
+/** The counter is an integer column; it stops counting long before it could wrap. */
+const MAX_FAILURES = 1_000_000;
 
 export interface UsageKey {
     jobId: string;
@@ -164,9 +168,9 @@ export function createCommerceStore({ sql, orgId, ready, now = () => new Date() 
                 }
                 await tx`
                     update commerce_usage_report
-                    set failures = failures + 1,
+                    set failures = least(failures + 1, ${MAX_FAILURES}),
                         next_attempt_at = ${at}::timestamptz
-                            + least(${RETRY_CAP_MS}::double precision, ${RETRY_BASE_MS}::double precision * power(2, failures))
+                            + least(${RETRY_CAP_MS}::double precision, ${RETRY_BASE_MS}::double precision * power(2, least(failures, ${MAX_BACKOFF_EXPONENT})))
                               * interval '1 millisecond',
                         error_code = ${errorCode}, claim_token = null, claimed_until = null
                     where org_id = ${orgId} and claim_token = ${token}::uuid and reported_at is null

@@ -279,6 +279,35 @@ describe('PUT /api/commerce/orgs/:orgId/plan', () => {
     });
 });
 
+describe('the credential follows the path the router matches', () => {
+    const VARIANTS = [
+        `/api/commerce/orgs/${ORG}/pl%61n`,
+        `/api/%63ommerce/orgs/${ORG}/plan`,
+        `/api/commerce/%6Frgs/${ORG}/plan`,
+        `/api/commerce/orgs/%74est-org/plan`,
+    ];
+    it.each(VARIANTS)('a session cookie cannot push a plan through %s', async (url) => {
+        const { writer, calls } = fakeWriter();
+        const { app, cookie } = await boot({ writer });
+        const response = await app.inject({ method: 'PUT', url, payload: BODY, headers: { cookie } });
+        expect(response.statusCode).toBe(HTTP_UNAUTHORIZED);
+        expect(calls).toHaveLength(0);
+    });
+
+    it('a malformed percent-encoding never reaches a weaker credential', async () => {
+        const { writer, calls } = fakeWriter();
+        const { app, cookie } = await boot({ writer });
+        const response = await app.inject({
+            method: 'PUT',
+            url: `/api/commerce/orgs/${ORG}/plan%ZZ`,
+            payload: BODY,
+            headers: { cookie },
+        });
+        expect(response.statusCode).toBeGreaterThanOrEqual(HTTP_BAD_REQUEST);
+        expect(calls).toHaveLength(0);
+    });
+});
+
 describe('with commerce disabled', () => {
     it('neither route is registered', async () => {
         const { app, cookie } = await boot({ enabled: false });

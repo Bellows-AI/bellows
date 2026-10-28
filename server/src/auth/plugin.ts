@@ -162,9 +162,21 @@ export function requirementFor(path: string): Requirement {
     return 'user';
 }
 
+/**
+ * The path the router matches, not the one the client spelled: find-my-way percent-decodes the static
+ * segments (`/api/%63ommerce` reaches `/api/commerce`), so the credential class must be chosen on the decoded
+ * form or an encoded spelling slips past every pattern below. `decodeURI` leaves the reserved escapes
+ * (`%2F`...) encoded, as the router does. A malformed encoding stays as written: the router cannot match it
+ * either, so it can never reach a route under a weaker class.
+ */
 const pathOf = (url: string): string => {
     const cut = url.indexOf('?');
-    return cut === -1 ? url : url.slice(0, cut);
+    const raw = cut === -1 ? url : url.slice(0, cut);
+    try {
+        return decodeURI(raw);
+    } catch {
+        return raw;
+    }
 };
 
 /** Constant-time equality for two secrets that arrived as strings. */

@@ -172,6 +172,25 @@ describe.skipIf(!enabled)('commerce store — database', () => {
         expect(await store.leaseDueUsage(10, LEASE_MS)).toBeNull();
     });
 
+    it('a row that failed a thousand times still settles, capped at the longest backoff', async () => {
+        const a = await claim();
+        const b = await claim();
+        await store.enqueueUsage();
+        await sql`update commerce_usage_report set failures = 1010 where job_id = ${b.job}`;
+        const lease = await store.leaseDueUsage(10, LEASE_MS);
+        const before = Date.now();
+        await store.settleUsage(lease?.token as string, [{ jobId: a.job, claimSeq: a.seq }], 'not_acknowledged');
+
+        const rows = await outbox();
+        // The ack in the same call is not lost to an arithmetic error on the other row.
+        expect(rows.find((r) => r.job_id === a.job)?.reported_at).not.toBeNull();
+        const failed = rows.find((r) => r.job_id === b.job);
+        expect(failed?.failures).toBe(1011);
+        const waitMs = (failed?.next_attempt_at.getTime() ?? 0) - before;
+        expect(waitMs).toBeGreaterThan(3_000_000);
+        expect(waitMs).toBeLessThanOrEqual(3_600_000 + 5_000);
+    });
+
     it('an acknowledged row is never leased again', async () => {
         const a = await claim();
         await store.enqueueUsage();
