@@ -1,11 +1,15 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
-import type { SecretStore } from '../secrets/secret-store.js';
+import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 import {
+    createEnvSecrets,
     EnvSecretError,
     envSecretIdentity,
     readSecretValues,
+    releaseEnvSecrets,
+    retireEnvSecrets,
     type EncryptedEnvRow,
     type EnvSecretScope,
+    type RetiredEnvSecret,
 } from './env-secrets.js';
 
 /**
@@ -141,6 +145,68 @@ const scopeWhere = (exec: Sql | TransactionSql, scope: Scope): Fragment => {
     }
 };
 
+interface DeletedRow {
+    name: string;
+    secret_ref: string | null;
+    secret_version: string | null;
+}
+
+/** Deletes the scope's rows except the kept secrets, answering what each deleted row referenced. */
+const deleteScope = (tx: TransactionSql, orgId: string, scope: Scope, keep: readonly string[]) =>
+    keep.length
+        ? tx<DeletedRow[]>`
+            delete from env_var
+            where org_id = ${orgId} ${scopeWhere(tx, scope)}
+              and name not in ${tx(keep)}
+            returning name, secret_ref, secret_version
+        `
+        : tx<DeletedRow[]>`
+            delete from env_var where org_id = ${orgId} ${scopeWhere(tx, scope)}
+            returning name, secret_ref, secret_version
+        `;
+
+/** The stored records the deleted rows named; they are deleted from the store once the PUT commits. */
+const retiredOf = (orgId: string, scope: Scope, deleted: readonly DeletedRow[]): RetiredEnvSecret[] =>
+    deleted.flatMap((row) =>
+        row.secret_ref === null || row.secret_version === null
+            ? []
+            : [
+                  {
+                      ref: row.secret_ref as SecretRef,
+                      version: row.secret_version as SecretVersion,
+                      identity: envSecretIdentity(orgId, scope, row.name),
+                  },
+              ]
+    );
+
+/**
+ * The rows a PUT inserts. The scope columns ride on every row: null for the scopes a row is not in, the scope
+ * check enforcing exactly one set. A secret carries its reference and no value; a non-secret its value and no
+ * reference.
+ */
+const rowsToInsert = (
+    orgId: string,
+    scope: Scope,
+    vars: readonly EnvVarEntry[],
+    created: ReadonlyMap<string, { ref: SecretRef; version: SecretVersion }>
+) =>
+    vars
+        .filter((v) => v.value !== null)
+        .map((v) => {
+            const stored = v.isSecret ? created.get(v.name) : undefined;
+            return {
+                org_id: orgId,
+                user_id: scope.kind === 'workspace' ? scope.userId : null,
+                repo_owner: scope.kind === 'repo' ? scope.owner : null,
+                repo_name: scope.kind === 'repo' ? scope.name : null,
+                name: v.name,
+                value: v.isSecret ? null : (v.value as string),
+                is_secret: v.isSecret,
+                secret_ref: stored?.ref ?? null,
+                secret_version: stored?.version ?? null,
+            };
+        });
+
 /**
  * The organization is bound at construction: it is a constant for the life of the process, and a
  * per-call parameter is one more thing a write path can forget.
@@ -154,12 +220,20 @@ export function createEnvVarStore({
     orgId,
     ready,
     secrets,
+    secretLog,
+    writeDeadlineMs = 30_000,
+    cleanupDeadlineMs = 10_000,
 }: {
     sql: Sql;
     orgId: string;
     /** Holds every secret's value; the claim's resolve reads it (docs/env.md). */
     secrets: SecretStore;
+    /** The secret store's diagnostic sink: a compensation that could not finish is reported here. */
+    secretLog: (diagnostic: SecretDiagnostic) => void;
     ready?: Promise<unknown>;
+    /** Bounds a PUT's creates; compensation runs under its own `cleanupDeadlineMs`. */
+    writeDeadlineMs?: number;
+    cleanupDeadlineMs?: number;
 }): EnvVarStore {
     const gate = async () => {
         if (ready) await ready;
@@ -183,46 +257,56 @@ export function createEnvVarStore({
     };
 
     /**
-     * The one replace, parameterised by scope — delete-then-insert inside a transaction, the
-     * user-executor-store shape. The difference is the keep set: a whole-list PUT must not force
-     * the client to re-send secret values it can never read, so a secret whose incoming entry
-     * carries `value: null` survives the delete and is NOT re-inserted. Omitted names still
-     * delete; non-secret rows never survive (their value is readable, so a client editing the
-     * scope always has it to send back).
+     * The one replace, parameterised by scope. Every secret with a value is written to the store first,
+     * under no transaction; then one delete-then-insert transaction (the user-executor-store shape)
+     * stores only its reference and version. Non-secrets never reach the store: plaintext value, null
+     * reference. The keep set: a secret whose incoming entry carries `value: null` survives the delete
+     * and is NOT re-inserted, so a client never re-sends values it can never read. Omitted names delete;
+     * non-secret rows never survive. A changed value gets a new reference and the old one is deleted
+     * after the commit. A write that does not commit deletes the records it created, but only those a
+     * fresh read of this scope shows no row naming (docs/env.md).
      */
     const replaceScoped = async (scope: Scope, vars: readonly EnvVarEntry[]): Promise<void> => {
         await gate();
-        await sql.begin(async (tx) => {
-            const keep = vars.filter((v) => v.isSecret && v.value === null).map((v) => v.name);
-            if (keep.length) {
-                await tx`
-                    delete from env_var
-                    where org_id = ${orgId} ${scopeWhere(tx, scope)}
-                      and name not in ${tx(keep)}
-                `;
-            } else {
-                await tx`
-                    delete from env_var where org_id = ${orgId} ${scopeWhere(tx, scope)}
-                `;
-            }
-            const insert = vars.filter((v) => v.value !== null);
-            if (insert.length) {
-                // The scope columns ride on every row: null for the scopes a row is not in, the
-                // scope check enforcing exactly one set.
-                const rows = insert.map((v) => ({
-                    org_id: orgId,
-                    user_id: scope.kind === 'workspace' ? scope.userId : null,
-                    repo_owner: scope.kind === 'repo' ? scope.owner : null,
-                    repo_name: scope.kind === 'repo' ? scope.name : null,
-                    name: v.name,
-                    value: v.value as string,
-                    is_secret: v.isSecret,
-                }));
-                await tx`
-                    insert into env_var ${tx(rows, 'org_id', 'user_id', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret')}
-                `;
-            }
-        });
+        const referencedInScope = () =>
+            sql<{ secret_ref: string | null }[]>`
+                select secret_ref from env_var where org_id = ${orgId} ${scopeWhere(sql, scope)}
+            `;
+        const cleanup = () => ({ signal: AbortSignal.timeout(cleanupDeadlineMs), diagnose: secretLog });
+
+        const writes = vars.filter((v) => v.isSecret && v.value !== null);
+        const { created, unknown, failure } = await createEnvSecrets(
+            secrets,
+            writes.map((v) => ({
+                name: v.name,
+                identity: envSecretIdentity(orgId, scope, v.name),
+                value: v.value as string,
+            })),
+            { signal: AbortSignal.timeout(writeDeadlineMs) }
+        );
+        if (failure) {
+            await releaseEnvSecrets(secrets, [...created, ...unknown], { ...cleanup(), referencedInScope });
+            throw failure;
+        }
+        const createdByName = new Map(created.map((c) => [c.name, c]));
+
+        let retired: RetiredEnvSecret[] = [];
+        try {
+            await sql.begin(async (tx) => {
+                const keep = vars.filter((v) => v.isSecret && v.value === null).map((v) => v.name);
+                retired = retiredOf(orgId, scope, await deleteScope(tx, orgId, scope, keep));
+                const rows = rowsToInsert(orgId, scope, vars, createdByName);
+                if (rows.length) {
+                    await tx`
+                        insert into env_var ${tx(rows, 'org_id', 'user_id', 'repo_owner', 'repo_name', 'name', 'value', 'is_secret', 'secret_ref', 'secret_version')}
+                    `;
+                }
+            });
+        } catch (error) {
+            await releaseEnvSecrets(secrets, [...created, ...retired], { ...cleanup(), referencedInScope });
+            throw error;
+        }
+        await retireEnvSecrets(secrets, retired, cleanup());
     };
 
     /**

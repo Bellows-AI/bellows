@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { EnvSecretError } from '../src/db/env-secrets.js';
 import type { RepoSource } from '../src/github/repo-source.js';
 import {
     githubAuth,
@@ -394,5 +395,50 @@ describe('a broken store', () => {
             payload: { vars: [{ name: 'X', value: '1', isSecret: false }] },
         });
         expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+    });
+});
+
+describe('a secret larger than the store accepts', () => {
+    // 16 385 two-byte characters: under the character limit, over MAX_SECRET_BYTES.
+    const wide = 'é'.repeat(16_385);
+
+    it('is refused as BAD_ENV_VALUE, measured in bytes', async () => {
+        const { app, memberCookie } = await boot();
+        const response = await app.inject({
+            method: 'PUT',
+            url: '/api/env/workspace',
+            headers: { cookie: memberCookie },
+            payload: { vars: [{ name: 'WIDE', value: wide, isSecret: true }] },
+        });
+        expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(response.json().code).toBe('BAD_ENV_VALUE');
+        expect(response.body).not.toContain(wide);
+    });
+
+    it('is accepted as a non-secret', async () => {
+        const { app, memberCookie } = await boot();
+        const response = await app.inject({
+            method: 'PUT',
+            url: '/api/env/workspace',
+            headers: { cookie: memberCookie },
+            payload: { vars: [{ name: 'WIDE', value: wide, isSecret: false }] },
+        });
+        expect(response.statusCode).toBe(HTTP_OK);
+    });
+
+    it('answers 503 without the value when the secret store fails the write', async () => {
+        const failing = memoryEnvVarStore();
+        failing.replaceWorkspace = async () => {
+            throw new EnvSecretError('TOKEN', 'unavailable', 'provider-unavailable');
+        };
+        const { app, memberCookie } = await boot({ envVars: failing });
+        const response = await app.inject({
+            method: 'PUT',
+            url: '/api/env/workspace',
+            headers: { cookie: memberCookie },
+            payload: { vars: [{ name: 'TOKEN', value: 'hunter2-value', isSecret: true }] },
+        });
+        expect(response.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(response.body).not.toContain('hunter2-value');
     });
 });

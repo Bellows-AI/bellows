@@ -2,7 +2,7 @@ import type { Sql } from 'postgres';
 import { encodeEnvSecret, envSecretIdentity, type EnvSecretScope } from '../src/db/env-secrets.js';
 import { createPostgresSecretStore } from '../src/secrets/postgres-secret-store.js';
 import { createSecretRef } from '../src/secrets/secret-input.js';
-import type { SecretStore } from '../src/secrets/secret-store.js';
+import type { SecretDiagnostic, SecretStore } from '../src/secrets/secret-store.js';
 import { MutableKeys } from './secrets-postgres-harness.js';
 
 /** The real PostgreSQL secret store over the test database, with a short deadline so a hang fails fast. */
@@ -60,4 +60,84 @@ export async function seedEncryptedRow(
         )
     `;
     return { ref, version: created.version };
+}
+
+/** A row written the old way: the value in `env_var.value`, no reference. A secret only until the conversion reaches it. */
+export async function seedPlaintextRow(sql: Sql, slot: EnvSlot, value: string, isSecret: boolean): Promise<void> {
+    const { scope } = slot;
+    await sql`
+        insert into env_var (org_id, user_id, repo_owner, repo_name, name, value, is_secret)
+        values (
+            ${slot.orgId},
+            ${scope.kind === 'workspace' ? scope.userId : null},
+            ${scope.kind === 'repo' ? scope.owner : null},
+            ${scope.kind === 'repo' ? scope.name : null},
+            ${slot.name}, ${value}, ${isSecret}
+        )
+    `;
+}
+
+export interface SecretCalls {
+    creates: { ref: string; name: string }[];
+    deletes: { ref: string; name: string }[];
+    reconciles: { ref: string; name: string }[];
+    replaces: number;
+}
+
+/** The store, recording every create, delete and reconcile by reference and variable name. */
+export function spySecrets(
+    store: SecretStore,
+    overrides: Partial<SecretStore> = {}
+): { store: SecretStore; calls: SecretCalls } {
+    const calls: SecretCalls = { creates: [], deletes: [], reconciles: [], replaces: 0 };
+    const at = (input: { ref: string; identity: { owningRecord: { id: string } } }) => ({
+        ref: input.ref,
+        name: input.identity.owningRecord.id,
+    });
+    const spied = faultySecrets(store, {
+        create: (input) => {
+            calls.creates.push(at(input));
+            return store.create(input);
+        },
+        delete: (input) => {
+            calls.deletes.push(at(input));
+            return store.delete(input);
+        },
+        reconcileOperation: (input) => {
+            calls.reconciles.push(at(input));
+            return store.reconcileOperation(input);
+        },
+        replace: (input) => {
+            calls.replaces += 1;
+            return store.replace(input);
+        },
+        ...overrides,
+    });
+    return { store: spied, calls };
+}
+
+/**
+ * The pool with the tagged queries whose joined text contains `match` rejecting. `begin` and fragments pass
+ * through: the transaction and the scope predicates are the real ones.
+ */
+export function failingPoolQuery(sql: Sql, match: string): Sql {
+    return new Proxy(sql, {
+        apply(target, thisArg, args: unknown[]) {
+            const strings = args[0];
+            if (Array.isArray(strings) && strings.join('?').includes(match)) {
+                return Promise.reject(new Error('simulated pool query failure'));
+            }
+            return Reflect.apply(target, thisArg, args);
+        },
+        get(target, prop) {
+            const member = Reflect.get(target, prop);
+            return typeof member === 'function' ? member.bind(target) : member;
+        },
+    });
+}
+
+/** A diagnostic sink that keeps what it was given. */
+export function captureDiagnostics() {
+    const events: SecretDiagnostic[] = [];
+    return { events, log: (d: SecretDiagnostic) => void events.push(d) };
 }

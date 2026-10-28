@@ -10,6 +10,7 @@ import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
+import { MAX_SECRET_BYTES } from '../secrets/secret-input.js';
 import type { AppConfig, Repo } from '../config.js';
 import type { OrgRegistry, OrgRuntime } from '../orgs.js';
 
@@ -69,6 +70,10 @@ function parseVarEntry(entry: unknown): EnvVarEntry | string {
     }
     if (item.value !== null && (item.value.length > ENV_VALUE_LIMIT || /[\r\n]/.test(item.value))) {
         return `value for "${item.name}" exceeds the limit or contains a newline`;
+    }
+    // The store refuses a larger payload; measured here in bytes so the answer is a 400, not a 503.
+    if (item.isSecret && item.value !== null && Buffer.byteLength(item.value, 'utf8') > MAX_SECRET_BYTES) {
+        return `secret value for "${item.name}" exceeds ${MAX_SECRET_BYTES} bytes`;
     }
     // A null value is the keep-it marker, and only a secret can keep: a readable value always
     // arrives with the body that owns it.
@@ -275,6 +280,7 @@ export const envRoutes =
 function varsCode(reason: string): string {
     if (reason.startsWith('at most')) return ERROR_CODES.TOO_MANY_ENV_VARS;
     if (reason.includes('exceeds the limit or contains a newline')) return ERROR_CODES.BAD_ENV_VALUE;
+    if (reason.startsWith('secret value for')) return ERROR_CODES.BAD_ENV_VALUE;
     if (reason.includes('exceeds 255 characters')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is not a legal environment variable name')) return ERROR_CODES.BAD_ENV_NAME;
     if (reason.endsWith('is reserved by the runner')) return ERROR_CODES.RESERVED_ENV_NAME;

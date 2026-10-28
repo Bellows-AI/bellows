@@ -5,7 +5,7 @@ import { createEnvVarStore, stackEnv, type EnvVarStore } from '../src/db/env-var
 import { EnvSecretError } from '../src/db/env-secrets.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
-import { faultySecrets, seedEncryptedRow, testSecretStore } from './env-secrets-harness.js';
+import { faultySecrets, seedEncryptedRow, seedPlaintextRow, testSecretStore } from './env-secrets-harness.js';
 import { MutableKeys } from './secrets-postgres-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -30,7 +30,7 @@ beforeAll(async () => {
     sql = db.sql;
     keys = new MutableKeys();
     secrets = testSecretStore(sql, keys);
-    store = createEnvVarStore({ sql, orgId: ORG, secrets });
+    store = createEnvVarStore({ sql, orgId: ORG, secrets, secretLog: () => {} });
 });
 
 describe.skipIf(!enabled)('the env var store', () => {
@@ -203,10 +203,8 @@ describe.skipIf(!enabled)('encrypted environment secrets (reader for both format
     });
 
     it('resolves a mix of old-format and encrypted rows', async () => {
-        await store.replaceOrg([
-            { name: 'OLD_SECRET', value: 'plain-secret', isSecret: true },
-            { name: 'PLAIN', value: 'p', isSecret: false },
-        ]);
+        await store.replaceOrg([{ name: 'PLAIN', value: 'p', isSecret: false }]);
+        await seedPlaintextRow(sql, { orgId: ORG, scope: ORG_SCOPE, name: 'OLD_SECRET' }, 'plain-secret', true);
         await seedEncryptedRow(sql, secrets, { orgId: ORG, scope: ORG_SCOPE, name: 'NEW_SECRET' }, 'enc');
 
         expect(await store.resolveFor({ userId: null, repo: null })).toEqual({
@@ -262,6 +260,7 @@ describe.skipIf(!enabled)('encrypted environment secrets (reader for both format
             sql,
             orgId: ORG,
             secrets: testSecretStore(sql, new MutableKeys({ keys, only: [] })),
+            secretLog: () => {},
         });
         await rejection(keyless.resolveFor({ userId: null, repo: null }));
     });
@@ -275,6 +274,7 @@ describe.skipIf(!enabled)('encrypted environment secrets (reader for both format
             secrets: faultySecrets(secrets, {
                 readActive: async () => ({ ok: false, error: { code, reason: 'provider-unavailable' } }),
             }),
+            secretLog: () => {},
         });
         expect(await rejection(faulty.resolveFor({ userId: null, repo: null }))).toMatchObject({ code });
     });

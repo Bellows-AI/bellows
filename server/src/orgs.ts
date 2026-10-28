@@ -9,7 +9,7 @@ import { createBatchStore } from './db/batches/batch-store.js';
 import type { BatchStore } from './db/batches/batch-store-types.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
-import type { SecretStore } from './secrets/secret-store.js';
+import type { SecretDiagnostic, SecretStore } from './secrets/secret-store.js';
 import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
@@ -98,6 +98,8 @@ export type OrgRegistryDeps = {
           withStores: true;
           /** Holds every environment secret; the env store's claim-time resolve reads it (docs/env.md). */
           secrets: SecretStore;
+          /** Where the env store reports a compensation it could not finish: the secret store's sink. */
+          secretLog: (diagnostic: SecretDiagnostic) => void;
       }
     | {
           /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
@@ -128,9 +130,11 @@ function buildOrgStores({
     client,
     claimMetrics,
     secrets,
+    secretLog,
 }: {
     claimMetrics: ClaimObserver | undefined;
     secrets: SecretStore;
+    secretLog: (diagnostic: SecretDiagnostic) => void;
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
@@ -149,7 +153,7 @@ function buildOrgStores({
     jobs: JobStore;
     workflows: WorkflowStore;
 } {
-    const envVars = createEnvVarStore({ sql, orgId, ready, secrets });
+    const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
@@ -336,6 +340,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                 client,
                 claimMetrics,
                 secrets: deps.secrets,
+                secretLog: deps.secretLog,
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
