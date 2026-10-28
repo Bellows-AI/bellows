@@ -9,6 +9,7 @@ import { createBatchStore } from './db/batches/batch-store.js';
 import type { BatchStore } from './db/batches/batch-store-types.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
+import type { SecretStore } from './secrets/secret-store.js';
 import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
@@ -84,17 +85,26 @@ export interface OrgRegistry {
     observeBatchPrs(): Promise<void>;
 }
 
-export interface OrgRegistryDeps {
+export type OrgRegistryDeps = {
     sql: Sql;
     ready: Promise<unknown>;
     config: AppConfig;
-    /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
-    withStores: boolean;
     /** The object store behind each org's artifact index; absent (route tests), no org has one. */
     artifacts?: ArtifactBackend;
     /** What each org's job store reports about its claims (issue #831). */
     claimMetrics?: ClaimObserver;
-}
+} & (
+    | {
+          withStores: true;
+          /** Holds every environment secret; the env store's claim-time resolve reads it (docs/env.md). */
+          secrets: SecretStore;
+      }
+    | {
+          /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
+          withStores: false;
+          secrets?: SecretStore;
+      }
+);
 
 /**
  * The execution-plan source: the App installation's API read, else (code-only `none` arm) a git
@@ -117,8 +127,10 @@ function buildOrgStores({
     tokens,
     client,
     claimMetrics,
+    secrets,
 }: {
     claimMetrics: ClaimObserver | undefined;
+    secrets: SecretStore;
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
@@ -137,7 +149,7 @@ function buildOrgStores({
     jobs: JobStore;
     workflows: WorkflowStore;
 } {
-    const envVars = createEnvVarStore({ sql, orgId, ready });
+    const envVars = createEnvVarStore({ sql, orgId, ready, secrets });
     const connections = createConnectionStore({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
@@ -267,14 +279,8 @@ function artifactStoreOf({
     });
 }
 
-export function createOrgRegistry({
-    sql,
-    ready,
-    config,
-    withStores,
-    artifacts,
-    claimMetrics,
-}: OrgRegistryDeps): OrgRegistry {
+export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
+    const { sql, ready, config, artifacts, claimMetrics } = deps;
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
 
     const build = async (orgId: string): Promise<OrgRuntime | null> => {
@@ -320,8 +326,17 @@ export function createOrgRegistry({
             githubToken: tokens,
         };
 
-        if (withStores) {
-            const stores = buildOrgStores({ sql, orgId, ready, config, tokens, client, claimMetrics });
+        if (deps.withStores) {
+            const stores = buildOrgStores({
+                sql,
+                orgId,
+                ready,
+                config,
+                tokens,
+                client,
+                claimMetrics,
+                secrets: deps.secrets,
+            });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
         }

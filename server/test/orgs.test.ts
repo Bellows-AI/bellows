@@ -3,6 +3,7 @@ import type postgres from 'postgres';
 import type { AppConfig } from '../src/config.js';
 import { LOCAL_ORG_ID } from '../src/identifiers.js';
 import { createOrgRegistry, planReaderOf, type OrgRegistry } from '../src/orgs.js';
+import { createReferenceSecretStore, createReferenceState } from './secrets-reference-store.js';
 import { testConfig } from './helpers.js';
 
 /**
@@ -13,6 +14,7 @@ import { testConfig } from './helpers.js';
  */
 
 const config: AppConfig = testConfig();
+const secrets = createReferenceSecretStore({ state: createReferenceState(), clock: { now: () => Date.now() } });
 
 /** A callable sql fake: records the queries, answers from a queue, throws from a failure slot. */
 function fakeSql(responses: { rows?: unknown[]; fail?: Error }[]) {
@@ -77,7 +79,7 @@ describe('createOrgRegistry', () => {
             orgRows([{ id: LOCAL_ORG_ID, installation_id: null }]),
         ]);
         const bare = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: false });
-        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true });
+        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true, secrets });
 
         const bareRuntime = await bare.for(LOCAL_ORG_ID);
         expect(bareRuntime?.jobs).toBeUndefined();
@@ -90,7 +92,7 @@ describe('createOrgRegistry', () => {
 
     it('builds no checkout machinery: the runtime has no userRepos, cloneQueue, purger or facts', async () => {
         const { sql } = fakeSql([orgRows([{ id: LOCAL_ORG_ID, installation_id: null }])]);
-        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true });
+        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true, secrets });
 
         const runtime = await full.for(LOCAL_ORG_ID);
 
