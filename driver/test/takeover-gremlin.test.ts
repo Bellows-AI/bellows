@@ -21,8 +21,11 @@ const report = (v: Verdict) =>
 /** Nothing happens in this plan but the run: the faults only keep it going past the stalls. */
 const hold: Fault = { at: 6_000, kind: 'glitch', ops: ['none'], mode: 'throw', forMs: 10 };
 
-/** Excusing is for a stalled host: a run set that is mostly excused says the check hides what it should find. */
-const MAX_EXCUSED = 0.5;
+/**
+ * Excusing is for a stalled host: a run set with many excused runs says the check hides what it should find. A calm
+ * host excuses none of 200 seeds; the worst seen under load 100-300 was 18%.
+ */
+const MAX_EXCUSED = 0.25;
 function expectFewExcused(verdicts: Verdict[]) {
     const excused = verdicts.filter((v) => v.excused.length > 0);
     if (excused.length > 0)
@@ -106,20 +109,29 @@ describe('takeover gremlins', () => {
 
     // A stall excuses the lease it cost and nothing after it: a later lapse with the loop turning is a product bug
     // and is still reported (the run-wide excuse of before hid it).
+    // A real stall of a loaded host can land in the lapse's short silence and rightly excuse it; such a run proves
+    // nothing about the check, so it is played again. A pass always means the lapse was caught.
     it('a lease that lapses with no stall in its silence is still a violation in a run that had a stall', async () => {
-        const verdict = await runGremlin(5, {
-            faults: [{ ...hold, at: 12_000 }],
-            hostStall: { claimSeq: 1, afterMs: 300, ms: 3_500 },
-            leaseLapse: { claimSeq: 2, afterMs: 1_500 },
-            publishAtMs: 11_000,
-            agentMs: 100,
-        });
-        expect(verdict.excused.join('\n')).toMatch(/interruption of claim 1 /);
-        // A real stall of the loaded host landing in the lapse's short silence is a genuine excuse, not a miss.
-        if (!verdict.excused.some((m) => m.includes('claim 2 ')))
+        const attempts = 3;
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+            const verdict = await runGremlin(5, {
+                faults: [{ ...hold, at: 12_000 }],
+                hostStall: { claimSeq: 1, afterMs: 300, ms: 3_500 },
+                leaseLapse: { claimSeq: 2, afterMs: 1_500 },
+                publishAtMs: 11_000,
+                agentMs: 100,
+            });
+            expect(verdict.excused.join('\n')).toMatch(/interruption of claim 1 /);
+            expect(verdict.violations.join('\n')).not.toMatch(/claim 1 that no injected/);
+            if (verdict.excused.some((m) => m.includes('claim 2 '))) continue;
             expect(verdict.violations.join('\n')).toMatch(/interruption of claim 2 that no injected fault hit/);
-        expect(verdict.violations.join('\n')).not.toMatch(/claim 1 that no injected/);
-    }, 60_000);
+            return;
+        }
+        throw new Error(
+            `the lapse was excused in all ${attempts} runs, so the check never proved it catches one: ` +
+                'the stall excuse matches too much, or the host is too loaded to run this proof'
+        );
+    }, 150_000);
 
     // The rule itself, with no timing in it: a stall explains an interruption only inside that interruption's silence.
     it("a stall outside an interruption's silence does not explain it", () => {
