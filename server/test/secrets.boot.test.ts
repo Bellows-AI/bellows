@@ -7,9 +7,17 @@ afterEach(() => {
 
 const SENTINEL = 'sentinel-not-a-key-value';
 
+/** What the process itself needs; everything else in the ambient environment is blanked before a boot. */
+const PROCESS_BASICS = /^(PATH|HOME|TMPDIR|TMP|TEMP|USER|LOGNAME|SHELL|LANG|LC_[A-Z_]+|TZ|NODE_[A-Z_]+|VITEST[A-Z_]*)$/;
+
 /** Boot refuses before it opens a pool or a port; the message names the variable and never its value. */
 describe('start() without secret-store keys', () => {
     function bootEnv(overrides: Record<string, string>) {
+        // A runner's gate environment carries variables boot refuses first (a retired GITHUB_TOKEN or
+        // BASE_BRANCH), which would win over the refusal under test. Empty is unset for config.
+        for (const name of Object.keys(process.env)) {
+            if (!PROCESS_BASICS.test(name)) vi.stubEnv(name, '');
+        }
         vi.stubEnv('DATABASE_URL', 'postgres://nobody:nothing@127.0.0.1:1/never_connected_test');
         vi.stubEnv('AUTH_MODE', 'none');
         vi.stubEnv('PORT', '18999');
