@@ -36,6 +36,7 @@ row.
   start. Guarded by `server/test-db/telemetry.sql.test.ts`.
 - **`ORG_ID`, `ORG_NAME`, `GITHUB_REPOS`, `ORG_REPOS` and the auto-join variables are fatal, not
   ignored** — see [configuration.md](configuration.md).
-- **`createAuthStore` is the one store that takes an
-  organization per call** — it is what decides whether a caller belongs to one, so its lookups
-  cannot start from an org. Every other store binds `orgId` at construction in `orgs.ts`.
+- **`createAuthStore` and `createCommercePlanWriter` are the stores that take an
+  organization per call** — the first decides whether a caller belongs to an org, the second
+  whether the org a push names exists, so neither can start from `orgs.for()` (null on a database
+  failure too). Every other store binds `orgId` at construction in `orgs.ts`.

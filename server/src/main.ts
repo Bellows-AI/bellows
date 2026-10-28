@@ -18,6 +18,8 @@ import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
+import { startCommerceDelivery } from './commerce/commerce-loop.js';
+import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 
 /**
@@ -157,6 +159,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         connectionOfLease: createConnectionOfLease({ sql, ready }),
         githubCredentialOfLease: createGithubCredentialOfLease({ sql, ready }),
         githubMint: options.githubMint,
+        commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         metrics,
@@ -184,6 +187,9 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     void ready.then(() =>
         startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
     );
+
+    // Closed claims are reported to the commerce service on every replica; off by default (docs/commerce.md).
+    startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready });
 
     await app.listen({ port: config.port, host: config.host });
 }

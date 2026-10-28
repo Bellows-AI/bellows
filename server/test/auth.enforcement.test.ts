@@ -265,6 +265,12 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/connections', 'user'],
     [`/api/connections/${JOB_ID}`, 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
+    // BEL-146: a member reads their org's plan; the commerce service's push has its own credential class,
+    // and the anchored pattern gives nothing else under /api/commerce that class.
+    ['/api/commerce', 'user'],
+    [`/api/commerce/orgs/${JOB_ID}/plan`, 'commerce'],
+    [`/api/commerce/orgs/${JOB_ID}/plan/x`, 'user'],
+    [`/api/commerce/orgs/${JOB_ID}`, 'user'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,
     // between worker and ingest — the pair is the attempt's, the bearer a member's.

@@ -142,13 +142,20 @@ const OPEN_ROUTES: readonly RegExp[] = [
     /^\/api\/github\/webhook$/,
 ];
 
-type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector';
+/**
+ * The commerce service's plan push (BEL-146; docs/commerce.md): answered to `COMMERCE_TOKEN`, in both auth
+ * modes. Anchored so no other `/api/commerce/...` path inherits the class.
+ */
+const COMMERCE_ROUTES: readonly RegExp[] = [/^\/api\/commerce\/orgs\/[^/]+\/plan$/];
+
+type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
 export function requirementFor(path: string): Requirement {
     if (!path.startsWith('/api/')) return 'open';
     if (OPEN_ROUTES.some((route) => route.test(path))) return 'open';
     if (CONNECTOR_ROUTES.some((route) => route.test(path))) return 'connector';
+    if (COMMERCE_ROUTES.some((route) => route.test(path))) return 'commerce';
     if (WORKER_ROUTES.some((route) => route.test(path))) return 'worker';
     if (BRANCH_ROUTES.some((route) => route.test(path))) return 'branch';
     if (INGEST_ROUTES.some((route) => route.test(path))) return 'ingest';
@@ -342,6 +349,28 @@ async function enforceConnector(request: FastifyRequest, reply: FastifyReply): P
     });
 }
 
+/**
+ * One shared secret, the board's `COMMERCE_TOKEN` and the commerce service's bearer. Enforced in BOTH auth
+ * modes, unlike the worker routes: `none` mode's loopback stance does not cover a billing writer. Disabled,
+ * the route does not exist (404) before any compare. No session, personal token or worker secret is accepted.
+ */
+async function enforceCommerce(
+    commerce: AppConfig['commerce'],
+    request: FastifyRequest,
+    reply: FastifyReply
+): Promise<void> {
+    if (!commerce.enabled) {
+        await reply.code(HTTP_NOT_FOUND).send({ error: 'Not found', code: ERROR_CODES.NOT_FOUND });
+        return;
+    }
+    const token = bearer(request);
+    if (!token || !secretsMatch(token, commerce.token)) {
+        await reply
+            .code(HTTP_UNAUTHORIZED)
+            .send({ error: 'Invalid commerce token', code: ERROR_CODES.UNAUTHENTICATED });
+    }
+}
+
 interface WorkerAuthDeps {
     auth: AuthConfig;
     jobOrgOf: (jobId: string) => Promise<string | null>;
@@ -445,6 +474,7 @@ export async function registerAuth(
         if (requirement === 'open') return Promise.resolve();
         if (requirement === 'ingest') return enforceIngest(auth, request, reply);
         if (requirement === 'connector') return enforceConnector(request, reply);
+        if (requirement === 'commerce') return enforceCommerce(config.commerce, request, reply);
         if (requirement === 'branch') return enforceBranch({ auth, store, leaseOrgOf }, request, reply);
         if (requirement === 'worker') return enforceWorker({ auth, jobOrgOf, reclaimOrgOf }, request, reply);
         return enforceUser({ auth, store, resolveUser }, request, reply);
