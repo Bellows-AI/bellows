@@ -130,6 +130,20 @@ export interface ThreadJob {
     publication: ThreadPublication | null;
     /** The run's agent questions, `asked_at` order; empty on every fixture that asked none. */
     questions: ThreadQuestion[];
+    /** The thread root's connection bindings (094); empty on every fixture that bound none. */
+    connections: {
+        connectionId: string | null;
+        provider: string;
+        account: string | null;
+        site: string | null;
+        revision: number;
+        source: string;
+        live: boolean;
+    }[];
+    /** The thread root's `binding_revision`; 0 until a connection is bound. */
+    bindingRevision: number;
+    /** The providers a selected skill requires that no live binding covers; empty on every fixture here. */
+    integrationRequirements: { provider: string; reason: 'missing' | 'ambiguous' }[];
 }
 
 type Wait = Pick<ThreadJob, 'waitReason' | 'waitingSince' | 'waitTerminalReason'>;
@@ -227,6 +241,9 @@ function run(fields: RunFields): ThreadJob {
         taskWallClockMs: null,
         publication: null,
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
         ...NO_WAIT,
         ...fields,
         author,

@@ -3,25 +3,37 @@ import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /**
- * The Jira connections' client half: the list, the create and the delete of `/api/connections`.
+ * The Jira connections' client half: the list, the create and the disconnect (a `DELETE`) of `/api/connections`.
  * The token goes out on create and is in no response, so no type here has a field for it.
  */
 
 export const CONNECTION_ACCESS = ['read', 'write'] as const;
 export type ConnectionAccess = (typeof CONNECTION_ACCESS)[number];
 
-/** `org` is every member's task's; `user` only its owner's. The wire value of `scope` both ways. */
+/** The create's `scope` (wire value, both ways): `org` makes a legacy shared connection, `user` a personal one. */
 export const ORG_CONNECTION_SCOPE = 'org';
 export const USER_CONNECTION_SCOPE = 'user';
 export type ConnectionScope = typeof ORG_CONNECTION_SCOPE | typeof USER_CONNECTION_SCOPE;
 
-/** One row of `GET /api/connections`: the org's connections plus the caller's own, newest first. */
+export const CONNECTION_CREDENTIALS = ['legacy_api_token', 'oauth_grant'] as const;
+export type ConnectionCredential = (typeof CONNECTION_CREDENTIALS)[number];
+export const CONNECTION_OWNERSHIPS = ['personal', 'legacy-org'] as const;
+export type ConnectionOwnership = (typeof CONNECTION_OWNERSHIPS)[number];
+
+/**
+ * One row of `GET /api/connections`: the caller's own active connections plus the org's legacy ones,
+ * newest first. `principal` is `self` for the caller's own row and null for a legacy org one.
+ */
 export interface ConnectionView {
     id: string;
+    provider: string;
+    credential: ConnectionCredential;
+    ownership: ConnectionOwnership;
+    principal: 'self' | null;
     site: string;
-    email: string;
+    account: string;
     access: ConnectionAccess;
-    scope: ConnectionScope;
+    status: 'active' | 'disconnected';
     createdAt: string;
 }
 
@@ -39,9 +51,13 @@ const isConnectionView = (row: unknown): row is ConnectionView => {
     return (
         typeof view.id === 'string' &&
         typeof view.site === 'string' &&
-        typeof view.email === 'string' &&
+        typeof view.provider === 'string' &&
+        typeof view.account === 'string' &&
+        CONNECTION_CREDENTIALS.includes(view.credential) &&
+        CONNECTION_OWNERSHIPS.includes(view.ownership) &&
+        (view.principal === 'self' || view.principal === null) &&
         CONNECTION_ACCESS.includes(view.access) &&
-        (view.scope === ORG_CONNECTION_SCOPE || view.scope === USER_CONNECTION_SCOPE) &&
+        (view.status === 'active' || view.status === 'disconnected') &&
         typeof view.createdAt === 'string'
     );
 };
@@ -90,7 +106,7 @@ export const createConnection = async (input: NewConnectionInput): Promise<strin
     }
 };
 
-/** Returns the refusal's message, or null when the connection is gone. */
+/** Returns the refusal's message, or null when the connection is disconnected. */
 export const deleteConnection = async (id: string): Promise<string | null> => {
     try {
         const response = await fetch(`/api/connections/${id}`, { method: 'DELETE' });
@@ -98,7 +114,7 @@ export const deleteConnection = async (id: string): Promise<string | null> => {
             reportUnauthenticated();
             return SESSION_EXPIRED;
         }
-        if (!response.ok) return (await refusalOf(response, 'Could not delete the connection')).error;
+        if (!response.ok) return (await refusalOf(response, 'Could not disconnect the connection')).error;
         return null;
     } catch (e) {
         return (e as Error).message;

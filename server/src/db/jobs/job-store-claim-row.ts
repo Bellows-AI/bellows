@@ -21,8 +21,8 @@ export interface ClaimCandidateRow {
     root_command: string;
     /** The thread ROOT's selected skills (055), read in the claim's RETURNING. */
     skills: string[];
-    /** Whether the thread ROOT selected a managed Jira connection (054), read in the same RETURNING. */
-    has_jira_connection: boolean;
+    /** The providers the thread ROOT holds a live binding for (094), read in the same RETURNING. */
+    live_providers: string[];
     /** The frozen target branch of the batch task the thread works (059), read in the same RETURNING; null outside a batch. */
     base_branch: string | null;
     /** Whether this attempt's loss retires the job: attempts and interruption budget spent (issue #822). */

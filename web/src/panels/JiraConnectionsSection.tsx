@@ -13,8 +13,15 @@ import type { Session } from '../api/useSession.js';
 import { JiraConnectionsPanel } from './JiraConnectionsPanel.js';
 
 const ORG_HINT =
-    'Tasks that name no connection get the newest one here, unless their author has a personal one. Only an admin adds or removes these.';
-const PERSONAL_HINT = 'Your own connections. A personal connection overrides the organization’s for your own tasks.';
+    'Legacy shared API-token connections. A task uses one only when it names it; none is bound by default. Only an admin adds or disconnects these.';
+const PERSONAL_HINT =
+    'Your own connections. A lone personal connection is bound to your tasks by default; with several, a task names the one it uses.';
+
+/** The scope's own rows: the org's legacy ones, or the caller's personal ones (`self`, never another member's). */
+const inScope = (scope: ConnectionScope, c: ConnectionView) =>
+    scope === ORG_CONNECTION_SCOPE
+        ? c.ownership === 'legacy-org'
+        : c.ownership === 'personal' && c.principal === 'self';
 
 /**
  * One scope of Jira connections bound to its data (`MembersSection`'s shape): the section owns the
@@ -76,7 +83,7 @@ export function JiraConnectionsSection({ scope, session }: { scope: ConnectionSc
                 <JiraConnectionsPanel
                     scope={scope}
                     hint={scope === ORG_CONNECTION_SCOPE ? ORG_HINT : PERSONAL_HINT}
-                    connections={connections.filter((c) => c.scope === scope)}
+                    connections={connections.filter((c) => inScope(scope, c))}
                     canManage={scope === ORG_CONNECTION_SCOPE ? session.role === ADMIN_ROLE : true}
                     saving={saving}
                     onCreate={create}

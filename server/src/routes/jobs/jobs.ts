@@ -16,6 +16,7 @@ import {
     handleCompleteJob,
     handleDone,
     handleEditJob,
+    handleBindConnection,
     handleFollowUp,
     handleGetJob,
     handleJobActivity,
@@ -114,6 +115,9 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/follow-up', { bodyLimit: BODY_LIMIT }, (request, reply) =>
             handleFollowUp(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/connections', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleBindConnection(orgs, request, reply)
         );
         app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRetry(orgs, request, reply)

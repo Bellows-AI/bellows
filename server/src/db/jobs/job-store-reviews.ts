@@ -324,7 +324,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
             follow_up: false,
             root_command: row!.command,
             skills: [],
-            has_jira_connection: false,
+            live_providers: [],
             base_branch: null,
             last_attempt: false,
             own_session: row!.session_id !== null,

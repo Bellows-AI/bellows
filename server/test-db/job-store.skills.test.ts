@@ -5,7 +5,8 @@ import { createConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { expireLease, testOrg } from './fixtures.js';
+import { requirementsOf } from '../src/db/connection-bindings.js';
+import { expireLease, testOrg, testUser } from './fixtures.js';
 
 /**
  * Issue 545: a task selects skills at creation; the selection lives on the root row, every claim of
@@ -17,7 +18,8 @@ const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const WORKER = 'worker-1';
 const LEASE_SECONDS = 60;
-const db = useTestDb({ orgs: [ORG], max: 8 });
+const USER = testUser('skills-user');
+const db = useTestDb({ orgs: [ORG], users: [USER], max: 8 });
 
 const PLAIN_ENV = { PLAIN: 'plain-sentinel' };
 
@@ -37,10 +39,10 @@ beforeAll(() => {
     plain = createJobStore({ sql, orgId: ORG });
 });
 
-/** An org-owned managed Jira connection (054) the route would have authorized; its id is the selection. */
+/** The author's own managed Jira connection (054); its id is the explicit selection (BEL-59: a binding). */
 async function jiraConnection(): Promise<string> {
     const created = await createConnectionStore({ sql, orgId: ORG }).create({
-        ownerUserId: null,
+        ownerUserId: USER.id,
         site: 'example.atlassian.net',
         cloudId: 'cloud-1',
         email: 'agent@example.com',
@@ -50,12 +52,12 @@ async function jiraConnection(): Promise<string> {
     return created.id;
 }
 
-async function queue(store: JobStore, skills?: string[], jiraConnectionId?: string): Promise<string> {
-    const created = await store.create('do the work', null, {
+async function queue(store: JobStore, skills?: string[], connectionId?: string): Promise<string> {
+    const created = await store.create('do the work', connectionId ? USER.id : null, {
         repo: null,
         executor: null,
         ...(skills ? { skills } : {}),
-        ...(jiraConnectionId ? { jiraConnectionId } : {}),
+        ...(connectionId ? { connectionIds: [connectionId] } : {}),
     });
     if (typeof created === 'string') throw new Error(created);
     return created.id;
@@ -86,15 +88,21 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(claimed.masterPrompt).not.toContain('Selected skills');
     });
 
-    it('refuses a Jira skill on a task that selected no connection, even with ATLASSIAN_* in the env', async () => {
+    it('a Jira skill with a live binding has no refusal', async () => {
         const store = storeWithEnv({ ATLASSIAN_SITE: 'site-sentinel' });
-        await queue(store, ['jira']);
-
+        await queue(store, ['jira'], await jiraConnection());
         const claimed = await claim(store);
-        expect(claimed.skillRefusal).toContain('skill "jira" needs the jira connection');
-        expect(claimed.skillRefusal).toContain('select one (jiraConnection)');
-        expect(claimed.skillRefusal).toContain('retry the task');
-        expect(claimed.skillRefusal).not.toContain('site-sentinel');
+        expect(claimed.skillRefusal).toBeNull();
+    });
+
+    it('a Jira skill on a task with no connection is not claimed: a missing requirement, no refusal text', async () => {
+        // ATLASSIAN_* env never stands in for a connection (BEL-59: the claim excludes it, spending no attempt).
+        const store = storeWithEnv({ ATLASSIAN_SITE: 'site-sentinel' });
+        const id = await queue(store, ['jira']);
+        expect(await store.claim(WORKER, LEASE_SECONDS)).toBeNull();
+        expect((await requirementsOf(sql, ORG, id)).map((r) => [r.provider, r.reason])).toEqual([['jira', 'missing']]);
+        const [row] = await sql<{ attempts: number }[]>`select attempts from job where id = ${id}`;
+        expect(row?.attempts).toBe(0);
     });
 
     it('refuses the github connection on an org with no App installation, naming no value', async () => {
@@ -118,7 +126,7 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         await queue(store);
         const without = (await claim(store)).env;
         await sql`delete from job`;
-        await queue(store, ['jira', 'github', 'gates']);
+        await queue(store, ['jira', 'github', 'gates'], await jiraConnection());
         const withSkills = (await claim(store)).env;
         expect(withSkills).toEqual(without);
         expect(withSkills).toEqual(PLAIN_ENV);
@@ -177,12 +185,12 @@ describe.skipIf(!enabled)('skill selection — database', () => {
         expect(first.skillRefusal).toBeNull();
         await store.complete(first.id, first.leaseToken, { status: 'failed', exitCode: 1, output: 'red' });
 
-        const retry = await store.createRetry(root, null);
+        const retry = await store.createRetry(root, USER.id);
         if (typeof retry === 'string') throw new Error(`retry refused: ${retry}`);
-        const [retryRow] = await sql<{ jira_connection_id: string | null }[]>`
-            select jira_connection_id from job where id = ${retry.id}`;
-        // Only the root carries the selection; the retry's claim reads it from there.
-        expect(retryRow?.jira_connection_id).toBeNull();
+        const [counted] = await sql<{ n: number }[]>`
+            select count(*)::int as n from job_connection_binding where root_job_id = ${retry.id}`;
+        // Only the root carries the bindings; the retry's claim reads them from there.
+        expect(counted?.n).toBe(0);
         expect((await claim(store)).skillRefusal).toBeNull();
     });
 

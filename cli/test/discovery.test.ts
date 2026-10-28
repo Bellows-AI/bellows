@@ -108,7 +108,7 @@ describe('bellows skill list', () => {
         {
             name: 'jira',
             description: 'Work Jira items',
-            requires: { tools: ['curl'], connections: [{ name: 'jira', env: [], selectedBy: 'jiraConnection' }] },
+            requires: { tools: ['curl'], connections: [{ name: 'jira', env: [], selectedBy: 'connections' }] },
         },
     ];
 
@@ -118,7 +118,7 @@ describe('bellows skill list', () => {
         expect(await run(['skill', 'list'], io)).toBe(0);
 
         expect(out.join('')).toBe(
-            'jira  Work Jira items  [requires tool:curl, connection:jira (select jiraConnection)]\n'
+            'jira  Work Jira items  [requires tool:curl, connection:jira (select connections)]\n'
         );
     });
 
@@ -136,24 +136,30 @@ describe('bellows skill list', () => {
 describe('bellows connection list', () => {
     const connection = {
         id: '3f2b6c1e-0000-4000-8000-000000000001',
-        kind: 'jira',
+        provider: 'jira',
+        credential: 'legacy_api_token',
+        ownership: 'legacy-org',
+        principal: null,
         site: 'acme.atlassian.net',
-        email: 'a@acme.test',
+        account: 'a@acme.test',
         access: 'read',
-        scope: 'org',
+        status: 'active',
         createdAt: '2026-10-01T00:00:00.000Z',
     };
 
     it('lists the org and personal connections the caller may select, without a token', async () => {
         const { out, io } = harness({
-            '/api/connections': () => json({ connections: [connection, { ...connection, scope: 'user', id: 'u' }] }),
+            '/api/connections': () =>
+                json({
+                    connections: [connection, { ...connection, ownership: 'personal', principal: 'self', id: 'u' }],
+                }),
         });
 
         expect(await run(['connection', 'list'], io)).toBe(0);
 
         const text = out.join('');
-        expect(text).toContain(`${connection.id}  jira  org  read  acme.atlassian.net  a@acme.test`);
-        expect(text).toContain('u  jira  user');
+        expect(text).toContain(`${connection.id}  jira  legacy-org  legacy  read  acme.atlassian.net  a@acme.test`);
+        expect(text).toContain('u  jira  personal  legacy');
         expect(text).not.toMatch(/token/i);
     });
 
@@ -164,16 +170,24 @@ describe('bellows connection list', () => {
     });
 });
 
-describe('bellows job create --jira-connection', () => {
+describe('bellows job create --connection', () => {
     const ID = '3f2b6c1e-0000-4000-8000-000000000001';
+    const OTHER = '3f2b6c1e-0000-4000-8000-000000000002';
 
-    it('sends the selected connection id in the create body, and nothing when absent', async () => {
+    it('sends the selected connection ids in the create body, and nothing when absent', async () => {
         const { calls, io } = harness({ '/api/jobs': () => json({ id: 'job-1', status: 'queued' }, 201) });
 
-        expect(await run(['job', 'create', '--jira-connection', ID, '--', 'npm test'], io)).toBe(0);
+        expect(await run(['job', 'create', '--connection', ID, '--connection', OTHER, '--', 'npm test'], io)).toBe(0);
         expect(await run(['job', 'create', '--', 'npm test'], io)).toBe(0);
 
-        expect(calls[0]!.body).toEqual({ command: 'npm test', jiraConnection: ID });
+        expect(calls[0]!.body).toEqual({ command: 'npm test', connections: [ID, OTHER] });
         expect(calls[1]!.body).toEqual({ command: 'npm test' });
+    });
+
+    it('has no --jira-connection flag', async () => {
+        const { calls, io } = harness({ '/api/jobs': () => json({ id: 'job-1', status: 'queued' }, 201) });
+
+        expect(await run(['job', 'create', '--jira-connection', ID, '--', 'npm test'], io)).not.toBe(0);
+        expect(calls).toEqual([]);
     });
 });

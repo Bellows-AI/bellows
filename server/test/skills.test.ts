@@ -69,7 +69,7 @@ describe('GET /api/skills', () => {
         const jira = skills.find((skill) => skill.name === 'jira');
         expect(jira?.requires).toEqual({
             tools: ['curl'],
-            connections: [{ name: 'jira', env: [], selectedBy: 'jiraConnection' }],
+            connections: [{ name: 'jira', env: [], selectedBy: 'connections' }],
         });
         // github is the App's: no env names and no body field selects it.
         expect(skills.find((skill) => skill.name === 'github')?.requires).toEqual({

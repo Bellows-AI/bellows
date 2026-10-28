@@ -42,7 +42,7 @@ export interface PreflightSelection {
     executor?: string | undefined;
     executorScope?: 'user' | 'org' | undefined;
     skills?: string[] | undefined;
-    jiraConnection?: string | undefined;
+    connections?: string[] | undefined;
 }
 
 export interface PreflightCheck {
@@ -58,8 +58,8 @@ export interface Preflight {
     checks: PreflightCheck[];
 }
 
-/** The board's selector for a managed Jira connection on a skill requirement (`GET /api/skills`). */
-const JIRA_SELECTOR = 'jiraConnection';
+/** The board's selector for a managed connection on a skill requirement (`GET /api/skills`). */
+const CONNECTIONS_SELECTOR = 'connections';
 
 /** `visible` is null when the board's tracked list could not be read: the repo is then unverified, never blocked. */
 function repoCheck(repo: string | undefined, visible: VisibleRepos | null): PreflightCheck {
@@ -119,12 +119,12 @@ function skillChecks(selection: PreflightSelection, skills: readonly SkillView[]
         const skill = skills.find((candidate) => candidate.name === name);
         if (!skill) return [{ subject: 'skill', name, status: 'blocked', detail: 'not installed on this board' }];
         const needs = skill.requires.connections.map((connection): PreflightCheck => {
-            if (connection.selectedBy === JIRA_SELECTOR && selection.jiraConnection === undefined) {
+            if (connection.selectedBy === CONNECTIONS_SELECTOR && selection.connections === undefined) {
                 return {
                     subject: 'skill',
                     name,
                     status: 'blocked',
-                    detail: `needs a ${connection.name} connection: pass --jira-connection`,
+                    detail: `needs a ${connection.name} connection: pass --connection <id>`,
                 };
             }
             if (connection.selectedBy === null) {
@@ -142,10 +142,10 @@ function skillChecks(selection: PreflightSelection, skills: readonly SkillView[]
 }
 
 function connectionCheck(id: string, connections: readonly ConnectionView[]): PreflightCheck {
-    const found = connections.find((connection) => connection.id === id && connection.kind === 'jira');
+    const found = connections.find((connection) => connection.id === id);
     return found
-        ? { subject: 'connection', name: id, status: 'ok', detail: `${found.scope} ${found.site}` }
-        : { subject: 'connection', name: id, status: 'blocked', detail: 'no such Jira connection available to you' };
+        ? { subject: 'connection', name: id, status: 'ok', detail: `${found.ownership} ${found.site}` }
+        : { subject: 'connection', name: id, status: 'blocked', detail: 'no such connection available to you' };
 }
 
 export function preflightChecks(
@@ -162,9 +162,7 @@ export function preflightChecks(
         repoCheck(selection.repo, reads.repos),
         executorCheck(selection, reads.workspace),
         ...skillChecks(selection, reads.skills),
-        ...(selection.jiraConnection === undefined
-            ? []
-            : [connectionCheck(selection.jiraConnection, reads.connections)]),
+        ...(selection.connections ?? []).map((id) => connectionCheck(id, reads.connections)),
     ];
     return { ready: checks.every((check) => check.status !== 'blocked'), checks };
 }

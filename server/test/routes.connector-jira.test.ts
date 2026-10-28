@@ -63,6 +63,8 @@ async function boot(answer: LiveConnection, mode: 'github' | 'none' = 'github') 
     return { instance: app, calls, lookups };
 }
 
+const HTTP_SERVER_ERROR = 500;
+
 describe('the Jira connector proxy', () => {
     it('forwards a GET with the connection credential added on the board, to the connection cloud id', async () => {
         const { instance, calls } = await boot(live());
@@ -122,6 +124,7 @@ describe('the Jira connector proxy', () => {
     it.each([
         ['unselected', 'No Jira connection is selected'],
         ['revoked', 'no longer authorized'],
+        ['ambiguous', 'More than one'],
     ] as const)('refuses a %s connection and tells the member what to fix', async (reason, message) => {
         const { instance, calls } = await boot({ ok: false, reason });
         const res = await instance.inject({ method: 'GET', url: `${BASE}/myself`, headers: PAIR });
@@ -185,5 +188,44 @@ describe('the Jira connector proxy', () => {
         const res = await app.inject({ method: 'GET', url: `${BASE}/myself`, headers: PAIR });
         expect(res.statusCode).toBe(HTTP_BAD_GATEWAY);
         expect(res.body).not.toContain(API_TOKEN);
+    });
+
+    it('ambiguous refusal sentence names connections', async () => {
+        const { instance } = await boot({ ok: false, reason: 'ambiguous' });
+        const res = await instance.inject({ method: 'GET', url: `${BASE}/myself`, headers: PAIR });
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(res.json().error).toMatch(/connections/);
+    });
+
+    it('a header or query naming another connection is ignored', async () => {
+        const { instance, calls, lookups } = await boot(live());
+        const other = '55555555-5555-4555-8555-555555555555';
+        const res = await instance.inject({
+            method: 'GET',
+            url: `${BASE}/myself?connection=${other}&connectionId=${other}`,
+            headers: { ...PAIR, 'x-factory-connection-id': other, 'x-factory-connection': other },
+        });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(lookups).toEqual([[JOB_ID, LEASE]]);
+        expect(calls[0]!.url).toContain(`/${CLOUD_ID}/`);
+        expect(JSON.stringify(calls[0]!.init.headers)).not.toContain(other);
+    });
+
+    it('a store throw answers 5xx, never a revocation sentence', async () => {
+        const config = testConfig({ auth: githubAuth() });
+        const app = await buildApp({
+            config,
+            orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
+            auth: memoryAuthStore(),
+            connectionOfLease: async () => {
+                throw new Error('connection reset');
+            },
+            fetchFn: (async () => new Response('{}')) as unknown as typeof fetch,
+        });
+        track(app);
+        const res = await app.inject({ method: 'GET', url: `${BASE}/myself`, headers: PAIR });
+        expect(res.statusCode).toBeGreaterThanOrEqual(HTTP_SERVER_ERROR);
+        expect(res.body).not.toContain('CONNECTION_NOT_AUTHORIZED');
+        expect(res.body).not.toContain('no longer authorized');
     });
 });

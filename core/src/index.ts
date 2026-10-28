@@ -234,7 +234,9 @@ export { COMMAND_LIMIT } from './limits.js';
 export type { Skill, SkillRequirements } from './skills.js';
 export {
     connectionEnvNames,
-    MANAGED_CONNECTIONS,
+    INTEGRATION_PROVIDERS,
+    requiredProviders,
+    selectedBy,
     MAX_TASK_SKILLS,
     parseSkillFrontmatter,
     RUNNER_TOOLS,

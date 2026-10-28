@@ -1,6 +1,6 @@
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--jira-connection <id>] [--idempotency-key <key>] [--json]
+                          [--skill name]... [--connection <id>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
@@ -22,9 +22,9 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows repo list [--json]          repositories the board tracks
        bellows executor list [--json]      executor profiles by scope (--executor-scope)
        bellows skill list [--json]         skills a task may select (--skill)
-       bellows connection list [--json]    managed connections you may select (--jira-connection)
+       bellows connection list [--json]    managed connections you may select (--connection)
        bellows job preflight [--repo owner/name] [--executor name] [--executor-scope user|org]
-                             [--skill name]... [--jira-connection <id>] [--json]
+                             [--skill name]... [--connection <id>]... [--json]
        bellows batch import (--file <path> | --stdin) [--idempotency-key <key>] [--json]
        bellows batch update <id> --version <n> (--file <path> | --stdin) [--json]
        bellows batch validate <id> [--json]
