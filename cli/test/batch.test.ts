@@ -468,7 +468,7 @@ describe('batch wait', () => {
     it('exits 0 once every task succeeded, polling until then', async () => {
         const result = await wait([
             record('running', [task('a', 'running')]),
-            record('running', [task('a', 'succeeded')]),
+            record('completed', [task('a', 'succeeded')], { completedAt: 'done' }),
         ]);
         expect(result.code).toBe(0);
         expect(result.sent.filter((sent) => !isReport(sent))).toHaveLength(2);
@@ -537,6 +537,13 @@ describe('batch wait', () => {
         expect((await wait([verifying], ['--timeout', '12'])).code).toBe(3);
     });
 
+    it('keeps waiting while every task is done but the board has not completed the batch', async () => {
+        // Right after the last merge the stage's verification row is not written yet: an empty list
+        // is not a verified stage.
+        const unread = record('running', [task('a', 'succeeded', { gate: 'passed' })], { verification: [] });
+        expect((await wait([unread], ['--timeout', '12'])).code).toBe(3);
+    });
+
     it('exits 3 when the budget ends with the batch still moving, leaving it running', async () => {
         const result = await wait([record('running', [task('a', 'running')])], ['--timeout', '12']);
         expect(result.code).toBe(3);
@@ -546,7 +553,7 @@ describe('batch wait', () => {
     });
 
     it('carries the report in what it ends with, whatever the ending', async () => {
-        const settled = await wait([record('running', [task('a', 'succeeded')])]);
+        const settled = await wait([record('completed', [task('a', 'succeeded')], { completedAt: 'done' })]);
         const timedOut = await wait([record('running', [task('a', 'running')])], ['--timeout', '12']);
         expect(JSON.parse(settled.out).data.report).toEqual(REPORT());
         expect(JSON.parse(timedOut.out).data.report).toEqual(REPORT());

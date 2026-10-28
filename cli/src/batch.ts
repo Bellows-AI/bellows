@@ -227,6 +227,9 @@ export function batchVerdict(batch: BatchRecord, report?: BatchNextOf): BatchVer
     if (batch.tasks.some((task) => task.execution === TASK_CANCELLED && !settledByPerson(task))) return 'cancelled';
     // The last automerge stage's tasks are all done while its verification is still being read.
     if (batch.verification.some((stage) => stage.state !== VERIFY_PASSED)) return 'running';
+    // Before the board writes that verification the list is empty: only the board's own
+    // `completed` says every stage was verified.
+    if (batch.status !== BATCH_COMPLETED) return 'running';
     return 'succeeded';
 }
 
