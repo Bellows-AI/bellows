@@ -10,8 +10,8 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}
-{{- if not (has .Values.secretStore.backend (list "database" "aws")) }}
-{{- fail "secretStore.backend is required: database (AES envelopes in PostgreSQL) or aws (AWS Secrets Manager)" }}
+{{- if not (has .Values.secretStore.backend (list "database" "aws" "vault")) }}
+{{- fail "secretStore.backend is required: database (AES envelopes in PostgreSQL), aws (AWS Secrets Manager) or vault (HashiCorp Vault KV v2)" }}
 {{- end }}
 {{- if eq .Values.secretStore.backend "database" }}
 {{- if not .Values.secretStore.activeKeyId }}
@@ -23,6 +23,9 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if or .Values.secretStore.aws.region .Values.secretStore.aws.prefix }}
 {{- fail "secretStore.aws.region and secretStore.aws.prefix are for secretStore.backend aws, not database" }}
 {{- end }}
+{{- if or .Values.secretStore.vault.addr .Values.secretStore.vault.mount .Values.secretStore.vault.prefix .Values.secretStore.vault.role }}
+{{- fail "secretStore.vault.* is for secretStore.backend vault, not database" }}
+{{- end }}
 {{- end }}
 {{- if eq .Values.secretStore.backend "aws" }}
 {{- if not .Values.secretStore.aws.region }}
@@ -33,6 +36,32 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- end }}
 {{- if or .Values.secretStore.dataKeys .Values.secretStore.activeKeyId }}
 {{- fail "secretStore.dataKeys and secretStore.activeKeyId are for secretStore.backend database: an aws store keeps no data key" }}
+{{- end }}
+{{- if or .Values.secretStore.vault.addr .Values.secretStore.vault.mount .Values.secretStore.vault.prefix .Values.secretStore.vault.role }}
+{{- fail "secretStore.vault.* is for secretStore.backend vault, not aws" }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.secretStore.backend "vault" }}
+{{- if not .Values.secretStore.vault.addr }}
+{{- fail "secretStore.vault.addr is required with secretStore.backend vault: the Vault origin (for example https://vault.example.com:8200)" }}
+{{- end }}
+{{- if not .Values.secretStore.vault.mount }}
+{{- fail "secretStore.vault.mount is required with secretStore.backend vault: the KV v2 mount path (for example secret)" }}
+{{- end }}
+{{- if not .Values.secretStore.vault.prefix }}
+{{- fail "secretStore.vault.prefix is required with secretStore.backend vault: the deployment's namespace in the mount (for example factory/prod)" }}
+{{- end }}
+{{- if not .Values.secretStore.vault.role }}
+{{- fail "secretStore.vault.role is required with secretStore.backend vault: the Vault Kubernetes-auth role bound to the dashboard service account" }}
+{{- end }}
+{{- if not .Values.secretStore.vault.audience }}
+{{- fail "secretStore.vault.audience is required with secretStore.backend vault: the audience of the projected service-account token" }}
+{{- end }}
+{{- if or .Values.secretStore.dataKeys .Values.secretStore.activeKeyId }}
+{{- fail "secretStore.dataKeys and secretStore.activeKeyId are for secretStore.backend database: a vault store keeps no data key" }}
+{{- end }}
+{{- if or .Values.secretStore.aws.region .Values.secretStore.aws.prefix }}
+{{- fail "secretStore.aws.region and secretStore.aws.prefix are for secretStore.backend aws, not vault" }}
 {{- end }}
 {{- end }}
 {{- if and .Values.secret.create (not .Values.secretStore.existingSecret) }}

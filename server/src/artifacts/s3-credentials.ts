@@ -101,11 +101,13 @@ export function createCredentialProvider(sources: CredentialSources): Credential
     const webIdentityTokenFile = env.AWS_WEB_IDENTITY_TOKEN_FILE?.trim();
     const roleArn = env.AWS_ROLE_ARN?.trim();
 
-    async function podIdentity(uri: string, tokenFile: string): Promise<Credentials> {
+    async function podIdentity(uri: string, tokenFile: string, abandoned: AbortSignal): Promise<Credentials> {
         try {
+            const authorization = (await read(tokenFile)).trim();
+            abandoned.throwIfAborted();
             const response = await doFetch(uri, {
-                headers: { authorization: (await read(tokenFile)).trim() },
-                signal: AbortSignal.timeout(timeoutMs),
+                headers: { authorization },
+                signal: AbortSignal.any([abandoned, AbortSignal.timeout(timeoutMs)]),
             });
             if (!response.ok) return await failed('EKS Pod Identity', response);
             return fromExpiring((await response.json()) as ExpiringKeys);
@@ -114,7 +116,7 @@ export function createCredentialProvider(sources: CredentialSources): Credential
         }
     }
 
-    async function webIdentity(tokenFile: string, arn: string): Promise<Credentials> {
+    async function webIdentity(tokenFile: string, arn: string, abandoned: AbortSignal): Promise<Credentials> {
         const endpoint = env.AWS_ENDPOINT_URL_STS?.trim() || `https://sts.${region}.amazonaws.com`;
         try {
             const body = new URLSearchParams({
@@ -124,11 +126,12 @@ export function createCredentialProvider(sources: CredentialSources): Credential
                 RoleSessionName: env.AWS_ROLE_SESSION_NAME?.trim() || 'factory-dashboard',
                 WebIdentityToken: (await read(tokenFile)).trim(),
             });
+            abandoned.throwIfAborted();
             const response = await doFetch(endpoint, {
                 method: 'POST',
                 headers: { accept: JSON_CONTENT_TYPE, [CONTENT_TYPE_HEADER]: 'application/x-www-form-urlencoded' },
                 body,
-                signal: AbortSignal.timeout(timeoutMs),
+                signal: AbortSignal.any([abandoned, AbortSignal.timeout(timeoutMs)]),
             });
             if (!response.ok) return await failed('STS AssumeRoleWithWebIdentity', response);
             const parsed = (await response.json()) as {
@@ -143,9 +146,11 @@ export function createCredentialProvider(sources: CredentialSources): Credential
     const { static: staticKeys } = sources;
     if (staticKeys) return async () => ({ ...staticKeys });
 
-    let fetchKeys: () => Promise<Credentials>;
-    if (podIdentityUri && podIdentityTokenFile) fetchKeys = () => podIdentity(podIdentityUri, podIdentityTokenFile);
-    else if (webIdentityTokenFile && roleArn) fetchKeys = () => webIdentity(webIdentityTokenFile, roleArn);
+    let fetchKeys: (abandoned: AbortSignal) => Promise<Credentials>;
+    if (podIdentityUri && podIdentityTokenFile)
+        fetchKeys = (abandoned) => podIdentity(podIdentityUri, podIdentityTokenFile, abandoned);
+    else if (webIdentityTokenFile && roleArn)
+        fetchKeys = (abandoned) => webIdentity(webIdentityTokenFile, roleArn, abandoned);
     else {
         return async () => {
             throw new CredentialError(
@@ -155,16 +160,33 @@ export function createCredentialProvider(sources: CredentialSources): Credential
         };
     }
 
+    /** The fetch raced against its own timeout across every step (token file included); the loser is abandoned. */
+    const bounded = () =>
+        new Promise<Credentials>((resolve, reject) => {
+            const abandon = new AbortController();
+            const timer = setTimeout(() => {
+                abandon.abort();
+                reject(new CredentialError('credential fetch did not answer in time', 'unavailable'));
+            }, timeoutMs);
+            fetchKeys(abandon.signal)
+                .then(resolve, reject)
+                .finally(() => clearTimeout(timer));
+        });
+
     let cached: Credentials | null = null;
     let pending: Promise<Credentials> | null = null;
     return async (options) => {
         if (!options?.fresh && cached && (cached.expiresAt ?? Infinity) - REFRESH_MARGIN_MS > now()) return cached;
-        // One refresh at a time: concurrent chunk writes share a single credential fetch.
-        pending ??= fetchKeys()
-            .then((keys) => (cached = keys))
-            .finally(() => {
-                pending = null;
-            });
+        // One refresh at a time: concurrent chunk writes share a single credential fetch. An attempt that timed out
+        // has settled, so its slot is free and its late keys never reach `cached`.
+        if (!pending) {
+            const attempt: Promise<Credentials> = bounded()
+                .then((keys) => (cached = keys))
+                .finally(() => {
+                    if (pending === attempt) pending = null;
+                });
+            pending = attempt;
+        }
         return pending;
     };
 }

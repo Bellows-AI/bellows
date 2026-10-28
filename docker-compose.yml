@@ -306,6 +306,29 @@ services:
             - '127.0.0.1:5099:5000'
         restart: unless-stopped
 
+    # HashiCorp Vault in dev mode (in-memory, unsealed, a KV v2 mount at `secret`) for developing against the vault
+    # secret-store backend (docs/secrets.md); opt-in, so a plain `docker compose up` never starts it:
+    # `docker compose --profile secrets-vault up -d vault`. Configure the dashboard's secret-store env file (its
+    # example file lists the vault variables) with the address http://vault:8200, the mount `secret`, token auth
+    # and the root token below. The root token is a development value on a loopback
+    # bind, never a deployment credential. `npm run test:db` reaches it on the published port, with the test
+    # address http://127.0.0.1:8200 and that token. core/test/ci-workflows.test.ts keeps this pin and the CI
+    # mirror (mirror-images.yml) identical.
+    vault:
+        image: mirror.gcr.io/hashicorp/vault:1.20.4
+        profiles:
+            - secrets-vault
+        environment:
+            VAULT_DEV_ROOT_TOKEN_ID: factory-dev-root
+        ports:
+            - '127.0.0.1:8200:8200'
+        restart: unless-stopped
+        healthcheck:
+            test: ['CMD-SHELL', 'VAULT_ADDR=http://127.0.0.1:8200 vault status >/dev/null']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+
     # S3-compatible object store for task artifacts (#764). RustFS: Apache-2.0, enforces
     # `If-None-Match: *` create-only writes, and runs as a non-root uid from env alone. MinIO
     # publishes no community images any more. Buckets are created by their consumer, not here.

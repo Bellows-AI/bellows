@@ -211,6 +211,10 @@ secret:
 #             Credentials come from workload identity only: annotate `dashboard.serviceAccount` with the IRSA role
 #             (or bind it with an EKS Pod Identity association). The role needs secretsmanager
 #             Create/Get/Describe/DeleteSecret on arn:aws:secretsmanager:<region>:<account>:secret:<prefix>/*.
+#   vault     the plaintext in a HashiCorp Vault KV v2 mount under `vault.prefix`; PostgreSQL keeps a reference and
+#             a MAC. The dashboard logs in with Vault's Kubernetes auth, presenting a service-account token
+#             projected into the dashboard container alone (audience `vault.audience`). The role's policy needs
+#             create/read on <mount>/data/<prefix>/* and delete on <mount>/metadata/<prefix>/*.
 # With existingSecret set (and secret.create false or true) the chart creates nothing and references that
 # one, which must hold `operation-key` and `fingerprint-key` (and `data-keys` with backend database);
 # activeKeyId is not secret and always comes from here.
@@ -233,6 +237,20 @@ secretStore:
         # The deployment's namespace in the account, slash-separated, no leading or trailing slash:
         # every object is named <prefix>/<reference>/<version>. Scope the role to it.
         prefix: ''
+    # vault only. Kubernetes auth is the only method the chart renders; a fixed token is for development and tests.
+    vault:
+        # The Vault origin, no path: https://vault.example.com:8200. A private CA is the pod's to trust
+        # (NODE_EXTRA_CA_CERTS, docs/secrets.md).
+        addr: ''
+        # The KV v2 mount path, for example `secret`.
+        mount: ''
+        # The deployment's namespace in the mount, slash-separated, no leading or trailing slash:
+        # every object is <mount>/data/<prefix>/<reference>/<version>. Scope the role's policy to it.
+        prefix: ''
+        # The Vault role (auth/kubernetes/role/<role>) bound to the dashboard service account.
+        role: ''
+        # The audience the projected token carries; the Vault role's `audience` must match it.
+        audience: vault
 
 driver:
     # Built from docker/driver.Dockerfile:

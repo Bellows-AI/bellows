@@ -10,7 +10,7 @@ import { type FaultVerdict, ProviderFault } from './secret-payloads.js';
  * Every response body is consumed or cancelled exactly once, on every path out.
  */
 
-const DEFAULT_REQUEST_MS = 5000;
+export const DEFAULT_REQUEST_MS = 5000;
 const BYTES_PER_KIB = 1024;
 const DEFAULT_MAX_BODY_KIB = 256;
 const DEFAULT_MAX_BODY_BYTES = DEFAULT_MAX_BODY_KIB * BYTES_PER_KIB;
@@ -19,7 +19,7 @@ const DEFAULT_MAX_BODY_BYTES = DEFAULT_MAX_BODY_KIB * BYTES_PER_KIB;
  * left (a refused connection) into an unknown outcome. The caller's loop sleeps out the rest and reports
  * the provider unavailable.
  */
-const MIN_DISPATCH_MS = 25;
+export const MIN_DISPATCH_MS = 25;
 const HTTP_OK = 200;
 const HTTP_REDIRECT = 300;
 const HTTP_BAD_REQUEST = 400;
@@ -49,12 +49,18 @@ export interface ProviderHttpOptions {
     requestMs?: number | undefined;
     /** Largest body read; a bigger one is cancelled and fails the request. */
     maxBodyBytes?: number | undefined;
+    /**
+     * Resolve every HTTP status, 401/403/429/5xx included, with its body read under the cap, and leave the
+     * verdict to the adapter's own classifier. For a provider whose refusals carry the evidence (Vault).
+     */
+    rawStatuses?: boolean | undefined;
 }
 
 export interface ProviderHttp {
     /**
      * Sends one request. Resolves for a 2xx answer, and for a 4xx other than 401/403/429, whose body the
-     * adapter reads to tell what the provider refused. Rejects with a `ProviderFault` for everything else.
+     * adapter reads to tell what the provider refused (every status, with `rawStatuses`). Rejects with a
+     * `ProviderFault` for everything else.
      */
     send(
         url: string | URL,
@@ -139,6 +145,7 @@ export function createProviderHttp(options: ProviderHttpOptions = {}): ProviderH
     const doFetch = options.fetch ?? fetch;
     const requestMs = options.requestMs ?? DEFAULT_REQUEST_MS;
     const cap = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+    const raw = options.rawStatuses === true;
     return {
         async send(url, init, budgetMs, signal) {
             if (signal?.aborted || budgetMs < MIN_DISPATCH_MS) {
@@ -147,7 +154,7 @@ export function createProviderHttp(options: ProviderHttpOptions = {}): ProviderH
             const bound = AbortSignal.timeout(Math.min(requestMs, budgetMs));
             const combined = signal ? AbortSignal.any([signal, bound]) : bound;
             const response = await dispatch(doFetch, url, { ...init, signal: combined });
-            const refusal = refusalOf(response.status);
+            const refusal = raw ? null : refusalOf(response.status);
             if (refusal) {
                 await cancel(response);
                 throw new ProviderFault(refusal);
@@ -155,4 +162,38 @@ export function createProviderHttp(options: ProviderHttpOptions = {}): ProviderH
             return { status: response.status, body: await readCapped(response, cap) };
         },
     };
+}
+
+/**
+ * `pending`, or a `retry` fault once the absolute deadline or the caller's abort comes first: a waiter never waits
+ * past its own deadline, and a late answer is dropped without an unhandled rejection. Only for work that sent
+ * nothing of the caller's yet (a credential, a login), so running out of time is a retry, never ambiguous. A
+ * rejection of `pending` itself passes through for the caller to map.
+ */
+export async function awaitWithin<T>(
+    pending: Promise<T>,
+    deadlineAt: number,
+    signal: AbortSignal | undefined
+): Promise<T> {
+    pending.catch(() => undefined);
+    let timer: NodeJS.Timeout | undefined;
+    let onAbort: (() => void) | undefined;
+    const stop = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new ProviderFault('retry')), Math.max(0, deadlineAt - Date.now()));
+        onAbort = () => reject(new ProviderFault('retry'));
+        if (signal?.aborted) {
+            onAbort();
+        } else {
+            signal?.addEventListener('abort', onAbort, { once: true });
+        }
+    });
+    stop.catch(() => undefined);
+    try {
+        return await Promise.race([pending, stop]);
+    } finally {
+        clearTimeout(timer);
+        if (onAbort) {
+            signal?.removeEventListener('abort', onAbort);
+        }
+    }
 }

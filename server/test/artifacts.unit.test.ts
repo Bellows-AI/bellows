@@ -422,3 +422,63 @@ describe('credential provider hardening', () => {
         });
     });
 });
+
+describe('credential provider: one shared fetch bounded on its own', () => {
+    const POD = { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://pod/c', AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/t' };
+    const keysOf = (id: string) =>
+        JSON.stringify({
+            AccessKeyId: id,
+            SecretAccessKey: 'S',
+            Expiration: new Date(Date.now() + 3_600_000).toISOString(),
+        });
+
+    it('bounds a stalled token-file read, and a later call fetches with a readable file', async () => {
+        let reads = 0;
+        let fetches = 0;
+        const provider = createCredentialProvider({
+            static: null,
+            env: POD,
+            region: 'us-east-1',
+            fetchTimeoutMs: 40,
+            readFile: () => {
+                reads += 1;
+                return reads === 1 ? new Promise<string>(() => undefined) : Promise.resolve('t');
+            },
+            fetch: (async () => {
+                fetches += 1;
+                return new Response(keysOf('FRESH'), { status: 200 });
+            }) as typeof fetch,
+        });
+        const started = Date.now();
+        await expect(provider()).rejects.toMatchObject({ kind: 'unavailable' });
+        expect(Date.now() - started).toBeLessThan(500);
+        expect(await provider()).toMatchObject({ accessKeyId: 'FRESH' });
+        expect(fetches).toBe(1);
+    });
+
+    it('drops the stale attempt when its read resolves late', async () => {
+        let release: (value: string) => void = () => undefined;
+        let reads = 0;
+        let fetches = 0;
+        const provider = createCredentialProvider({
+            static: null,
+            env: POD,
+            region: 'us-east-1',
+            fetchTimeoutMs: 40,
+            readFile: () => {
+                reads += 1;
+                return reads === 1 ? new Promise<string>((resolve) => (release = resolve)) : Promise.resolve('t');
+            },
+            fetch: (async () => {
+                fetches += 1;
+                return new Response(keysOf(`K${fetches}`), { status: 200 });
+            }) as typeof fetch,
+        });
+        await expect(provider()).rejects.toMatchObject({ kind: 'unavailable' });
+        expect(await provider()).toMatchObject({ accessKeyId: 'K1' });
+        release('t');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(await provider()).toMatchObject({ accessKeyId: 'K1' });
+        expect(fetches).toBe(1);
+    });
+});

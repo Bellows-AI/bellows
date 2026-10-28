@@ -2,7 +2,7 @@ import { CONTENT_TYPE_HEADER } from '@factory-ai/core';
 import { CredentialError, type CredentialProvider } from '../artifacts/s3-credentials.js';
 import { type Credentials, sha256Hex, signRequest } from '../artifacts/sigv4.js';
 import type { ObjectClient, ObjectRead } from './external-payloads.js';
-import { createProviderHttp } from './provider-http.js';
+import { awaitWithin, createProviderHttp } from './provider-http.js';
 import { type FaultVerdict, ProviderFault } from './secret-payloads.js';
 
 /**
@@ -211,21 +211,8 @@ async function withinDeadline(
     deadlineAt: number,
     signal: AbortSignal | undefined
 ): Promise<Credentials> {
-    pending.catch(() => undefined);
-    let timer: NodeJS.Timeout | undefined;
-    let onAbort: (() => void) | undefined;
-    const stop = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new ProviderFault('retry')), Math.max(0, deadlineAt - Date.now()));
-        onAbort = () => reject(new ProviderFault('retry'));
-        if (signal?.aborted) {
-            onAbort();
-        } else {
-            signal?.addEventListener('abort', onAbort, { once: true });
-        }
-    });
-    stop.catch(() => undefined);
     try {
-        return await Promise.race([pending, stop]);
+        return await awaitWithin(pending, deadlineAt, signal);
     } catch (error) {
         if (error instanceof ProviderFault) {
             throw error;
@@ -233,11 +220,6 @@ async function withinDeadline(
         throw new ProviderFault(
             error instanceof CredentialError && error.kind === 'misconfigured' ? 'misconfigured' : 'retry'
         );
-    } finally {
-        clearTimeout(timer);
-        if (onAbort) {
-            signal?.removeEventListener('abort', onAbort);
-        }
     }
 }
 
@@ -341,8 +323,8 @@ export function createAwsObjectClient(options: AwsObjectClientOptions): AwsObjec
         async get(name, versionId, budgetMs, signal): Promise<ObjectRead> {
             const result = await call('GetSecretValue', { SecretId: name, VersionId: versionId }, budgetMs, signal);
             const { answer } = result;
-            if (answer.kind === 'unrecognized' && result.status < HTTP_BAD_REQUEST) {
-                // A 2xx that is no readable secret is a wrong answer, not an unavailable provider.
+            if (answer.kind === 'unrecognized' && result.status >= HTTP_OK && result.status < HTTP_REDIRECT) {
+                // Only a 2xx that is no readable secret is a wrong answer; any other status says nothing about it.
                 return 'malformed';
             }
             if (answer.kind === 'ok') {
