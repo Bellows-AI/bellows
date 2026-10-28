@@ -142,7 +142,7 @@ describe('connection routes', () => {
             payload: SITE,
         });
         expect(res.statusCode).toBe(HTTP_CREATED);
-        expect(res.json()).toMatchObject({ site: 'example.atlassian.net', access: 'read', scope: 'user' });
+        expect(res.json()).toMatchObject({ site: 'example.atlassian.net', access: 'read', ownership: 'personal' });
         expect(res.body).not.toContain(API_TOKEN);
         expect(connections.rows[0]).toMatchObject({ cloudId: CLOUD_ID, apiToken: API_TOKEN });
         const list = await instance.inject({
@@ -170,7 +170,7 @@ describe('connection routes', () => {
             payload: { ...SITE, scope: 'org', access: 'write' },
         });
         expect(allowed.statusCode).toBe(HTTP_CREATED);
-        expect(allowed.json()).toMatchObject({ scope: 'org', access: 'write' });
+        expect(allowed.json()).toMatchObject({ ownership: 'legacy-org', access: 'write' });
     });
 
     it.each([
@@ -235,6 +235,57 @@ describe('connection routes', () => {
         });
         expect(mine.statusCode).toBe(HTTP_NO_CONTENT);
         expect(connections.rows).toHaveLength(0);
+    });
+
+    it('DELETE disconnects and answers 204; another member id answers 404', async () => {
+        const { instance, cookie, connections } = await boot();
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+            payload: SITE,
+        });
+        const { id } = created.json() as { id: string };
+        const foreign = await instance.inject({
+            method: 'DELETE',
+            url: `/api/connections/${id}`,
+            headers: { cookie: cookie.other },
+        });
+        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(connections.rows).toHaveLength(1);
+        const mine = await instance.inject({
+            method: 'DELETE',
+            url: `/api/connections/${id}`,
+            headers: { cookie: cookie.member },
+        });
+        expect(mine.statusCode).toBe(HTTP_NO_CONTENT);
+        expect(mine.body).toBe('');
+    });
+
+    it('list carries ownership and credential and no token', async () => {
+        const { instance, cookie } = await boot();
+        await instance.inject({
+            method: 'POST',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+            payload: SITE,
+        });
+        const list = await instance.inject({
+            method: 'GET',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+        });
+        const [row] = list.json().connections as Record<string, unknown>[];
+        expect(row).toMatchObject({
+            provider: 'jira',
+            credential: 'legacy_api_token',
+            ownership: 'personal',
+            principal: 'self',
+            account: 'agent@example.com',
+            status: 'active',
+        });
+        expect(Object.keys(row!).join()).not.toMatch(/token|secret/i);
+        expect(list.body).not.toContain(API_TOKEN);
     });
 });
 

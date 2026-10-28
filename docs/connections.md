@@ -5,8 +5,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The table, the proxy's per-call SQL check, `job.jira_connection_id` | `server/migrations/054_connections.sql`, `server/src/db/connection-store.ts` | `server/test-db/connection-store.test.ts` |
-| Create, list, delete; who may own an org-wide one; site and credential shape | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
+| The table, the proxy's per-call SQL check over the thread's `job_connection_binding` rows | `server/migrations/054_connections.sql`, `server/migrations/094_integration_connections.sql`, `server/src/db/connection-store.ts` (`createConnectionOfLease`) | `server/test-db/connection-store.test.ts` |
+| Create, list (the generic view), disconnect; who may own an org-wide one; site and credential shape | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
 | Task selection: `jiraConnection` on `POST /api/jobs` | `server/src/routes/connections.ts` (`resolveJiraConnection`), `server/src/db/connection-store.ts` (`defaultFor`), `server/src/db/jobs/job-store-actions.ts` | `server/test/routes.connections.test.ts`, `server/test-db/connection-store.test.ts` |
 | The settings panels (Organization, Workspace) | `web/src/panels/JiraConnectionsPanel.tsx`, `JiraConnectionsSection.tsx`, `web/src/components/JiraConnectionDialog.tsx`, `web/src/api/connections.ts` | `web/test/jira-connections-panel.render.test.tsx`, `web/test/jira-connections.dom.test.tsx`, `e2e/jira-connections.spec.ts` |
 | CLI: `connection list`, `job create --jira-connection`, `job preflight` | `cli/src/run.ts`, `cli/src/selection.ts`, `cli/src/diagnostics.ts`, `cli/src/board.ts` | `cli/test/discovery.test.ts`, `cli/test/diagnostics.test.ts` |
@@ -28,11 +28,13 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 ## Invariants
 
 - **The Jira credential never leaves the board.** The runner holds the attempt pair; the proxy adds the
-  connection's Basic auth, and revocation is a `DELETE` the next call sees. `server/test/routes.connector-jira.test.ts`.
+  connection's Basic auth, and revocation is a `DELETE` (a soft disconnect) the next call sees. `server/test/routes.connector-jira.test.ts`.
 - **Every call re-checks the live attempt**, with no tail grace: job unfinished, lease unexpired, no stop
-  requested. `server/test-db/connection-store.test.ts`.
-- **Selection is the root task's, stamped at create**; follow-ups, retries and workflow nodes read the root's
-  `jira_connection_id`. `server/src/db/connection-store.ts`.
+  requested, not a reviewer row. The thread's one live jira binding must still match its connection's account,
+  and the root's execution user must still be a member (and the owner of a personal one); two live bindings
+  refuse `ambiguous`, and nothing in the request names a connection. `server/test-db/connection-store.test.ts`.
+- **Selection is the root task's bindings, stamped at create**; follow-ups, retries and workflow nodes read the
+  root's. `server/src/db/connection-store.ts`.
 - **Org-wide connections are admin-created; personal ones are the owner's.** The proxy forwards GET and HEAD
   only, reaches `rest/api/3/*` on the connection's cloud id, and `site` must be `*.atlassian.net`.
   `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts`.
@@ -44,7 +46,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 ## Stated limits
 
-- Connection tokens are plaintext at rest, the `env_var` rule ([env.md](env.md)).
+- Legacy API tokens are plaintext at rest, the `env_var` rule ([env.md](env.md)); a disconnect scrubs one.
+  OAuth grants hold their secret in the SecretStore only.
 - Jira is scoped API-token auth: a classic token is stored untried and answers 401 on every call.
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past

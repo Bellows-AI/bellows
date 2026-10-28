@@ -9,7 +9,7 @@ import { bad } from './helpers.js';
  * The connection's credential is added here and never leaves — so there is nothing to renew,
  * nothing in a runner's env or logs to leak, and every call re-checks the live attempt, the
  * selected connection and its access level. A reclaim or retry rotates the lease token, a cancel
- * or settle clears the lease, and deleting the connection (or its owner leaving the org) ends
+ * or settle clears the lease, and disconnecting the connection (or its owner leaving the org) ends
  * access on the next call. The check is `createConnectionOfLease`'s; this file forwards.
  */
 
@@ -32,7 +32,9 @@ const REFUSALS: Record<ConnectionRefusal, string> = {
     unselected:
         'No Jira connection is selected for this task, or it was deleted. Start the task with an authorized Jira connection (jiraConnection) and stop here.',
     revoked:
-        "The task's Jira connection is no longer authorized (its owner left the organization). Ask an admin for an authorized connection and stop here.",
+        "The task's Jira connection is no longer authorized (it was disconnected, its account changed, or its owner left the organization). Ask an admin for an authorized connection and stop here.",
+    ambiguous:
+        'More than one Jira connection is bound to this task, so no single connection can be chosen. Ask the task owner to leave one of the Jira connections bound and stop here.',
 };
 
 const READ_ONLY_MESSAGE =

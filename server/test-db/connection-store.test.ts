@@ -273,6 +273,18 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
     });
 });
 
+/** Binds `connectionId` to the thread of `rootId` as the next revision, frozen from the connection row. */
+async function bind(rootId: string, connectionId: string, source: 'migrated' | 'explicit' = 'explicit') {
+    await sql`
+        insert into job_connection_binding
+            (org_id, root_job_id, revision, connection_id, provider, credential, external_account_id, resource,
+             access, source)
+        select c.org_id, ${rootId}, coalesce((select max(revision) from job_connection_binding
+                                              where org_id = c.org_id and root_job_id = ${rootId}), 0) + 1,
+               c.id, c.provider, c.credential, c.external_account_id, c.cloud_id, c.access, ${source}
+        from connector_connection c where c.id = ${connectionId}`;
+}
+
 describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
     it('resolves the root selection for a live attempt, with the credential', async () => {
         const connection = await newConnection(null, 'write');
@@ -355,5 +367,88 @@ describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
         await join(STRANGER);
         const other = await running(strangers.id);
         expect(await check(other.id, other.claim.leaseToken)).toEqual({ ok: false, reason: 'revoked' });
+    });
+
+    it("live check serves the thread's migrated binding", async () => {
+        const connection = await newConnection(null, 'write');
+        const { id, claim } = await running(null);
+        await bind(id, connection.id, 'migrated');
+        expect(await check(id, claim.leaseToken)).toEqual({
+            ok: true,
+            cloudId: 'cloud-1',
+            email: 'agent@example.com',
+            apiToken: API_TOKEN,
+            access: 'write',
+        });
+    });
+
+    it('a disconnected connection is refused revoked on the next call', async () => {
+        const connection = await newConnection(OWNER.id);
+        const { id, claim } = await running(null);
+        await bind(id, connection.id);
+        expect((await check(id, claim.leaseToken)).ok).toBe(true);
+        await store.disconnect(connection.id, { userId: OWNER.id, admin: false });
+        expect(await check(id, claim.leaseToken)).toEqual({ ok: false, reason: 'revoked' });
+    });
+
+    it('a hard-deleted connection is a confirmed absence: revoked, not unselected', async () => {
+        const connection = await newConnection(null);
+        const { id, claim } = await running(null);
+        await bind(id, connection.id);
+        await sql`delete from connector_connection where id = ${connection.id}`;
+        expect(await check(id, claim.leaseToken)).toEqual({ ok: false, reason: 'revoked' });
+    });
+
+    it('an account mismatch between binding and connection is refused', async () => {
+        const connection = await newConnection(null);
+        const { id, claim } = await running(null);
+        await bind(id, connection.id);
+        await sql`update connector_connection set external_account_id = 'someone-else@example.com'
+                  where id = ${connection.id}`;
+        expect(await check(id, claim.leaseToken)).toEqual({ ok: false, reason: 'revoked' });
+    });
+
+    it('an execution user no longer a member is refused', async () => {
+        const connection = await newConnection(null);
+        const { id, claim } = await running(null);
+        await bind(id, connection.id);
+        expect((await check(id, claim.leaseToken)).ok).toBe(true);
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${OWNER.id}`;
+        expect(await check(id, claim.leaseToken)).toEqual({ ok: false, reason: 'revoked' });
+    });
+
+    it('two live jira bindings on one thread are refused ambiguous; a disconnected one does not count', async () => {
+        const first = await newConnection(OWNER.id);
+        const second = await newConnection(OWNER.id);
+        const { id, claim } = await running(null);
+        await bind(id, first.id);
+        await bind(id, second.id);
+        expect(await check(id, claim.leaseToken)).toEqual({ ok: false, reason: 'ambiguous' });
+        await store.disconnect(first.id, { userId: OWNER.id, admin: false });
+        expect((await check(id, claim.leaseToken)).ok).toBe(true);
+    });
+
+    it("a reviewer row's lease gets nothing even if its root had bindings", async () => {
+        const connection = await newConnection(null);
+        const { id, claim } = await running(null);
+        await bind(id, connection.id);
+        await sql`
+            update job set review_of = ${crypto.randomUUID()}, review_key = 'k', review_profile = 'security',
+                           review_spec = ${sql.json({ name: 'security' })}, review_revision = 'abc',
+                           review_ref = 'refs/factory/review/x'
+            where id = ${id}`;
+        expect(await check(id, claim.leaseToken)).toEqual({ ok: false, reason: 'lease' });
+    });
+
+    // Regression pin: the lease predicate already refuses a superseded attempt; the binding join must not loosen it.
+    it('a superseded lease resolves nothing, even with a live binding', async () => {
+        const connection = await newConnection(null);
+        const { id, claim: first } = await running(null);
+        await bind(id, connection.id);
+        await expireLease(sql, id);
+        const second = (await jobs.claim('w3', LEASE_SECONDS)) as Claim;
+        expect(second.id).toBe(id);
+        expect(await check(id, first.leaseToken)).toEqual({ ok: false, reason: 'lease' });
+        expect((await check(id, second.leaseToken)).ok).toBe(true);
     });
 });

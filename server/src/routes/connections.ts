@@ -2,7 +2,7 @@ import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import { UUID } from '../identifiers.js';
-import type { ConnectionAccess, ConnectionView } from '../db/connection-store.js';
+import type { ConnectionAccess } from '../db/connection-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
 
@@ -121,20 +121,6 @@ export async function resolveJiraConnection(
     return { handled: false, id: raw };
 }
 
-/**
- * The settings pages still read the 054 wire shape; slice 2 of BEL-59 moves the list to the generic view.
- * Until then the store's view is projected back, so no wire field changes with the schema.
- */
-const toWire = (view: ConnectionView) => ({
-    id: view.id,
-    kind: view.provider,
-    site: view.site,
-    email: view.account,
-    access: view.access,
-    scope: view.ownership === 'legacy-org' ? 'org' : 'user',
-    createdAt: view.createdAt,
-});
-
 export interface ConnectionRoutesDeps {
     orgs: OrgRegistry;
     lookupCloudId?: CloudIdLookup;
@@ -211,7 +197,7 @@ export function connectionRoutes({
                 })
         );
         if (!created.ok) return reply;
-        return reply.code(HTTP_CREATED).send(toWire(created.value));
+        return reply.code(HTTP_CREATED).send(created.value);
     };
 
     const remove = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -243,7 +229,7 @@ export function connectionRoutes({
                 () => ctx.store.list(ctx.caller.user.id)
             );
             if (!listed.ok) return reply;
-            return reply.code(HTTP_OK).send({ connections: listed.value.map(toWire) });
+            return reply.code(HTTP_OK).send({ connections: listed.value });
         });
         app.post('/api/connections', { bodyLimit: CONTROL_BODY_LIMIT }, create);
         app.delete('/api/connections/:id', remove);

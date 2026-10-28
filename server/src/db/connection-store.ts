@@ -165,7 +165,7 @@ export function createConnectionStore({
 }
 
 /** Why the proxy refused a call — each one names what the member fixes. */
-export type ConnectionRefusal = 'lease' | 'unselected' | 'revoked';
+export type ConnectionRefusal = 'lease' | 'unselected' | 'revoked' | 'ambiguous';
 
 export type LiveConnection =
     | { ok: true; cloudId: string; email: string; apiToken: string; access: ConnectionAccess }
@@ -173,25 +173,47 @@ export type LiveConnection =
 
 export type ConnectionOfLease = (jobId: string, leaseToken: string) => Promise<LiveConnection>;
 
+/** One binding of the thread, with its connection's current row (all null once the connection is hard-deleted). */
 interface LiveRow {
-    selected: string | null;
-    owner_user_id: string | null;
-    author: string | null;
+    binding_id: string | null;
+    frozen_account: string | null;
+    connection_id: string | null;
+    status: ConnectionStatus | null;
+    principal_user_id: string | null;
+    account: string | null;
+    execution_user_id: string | null;
     cloud_id: string | null;
     email: string | null;
     api_token: string | null;
     access: ConnectionAccess | null;
-    author_is_member: boolean | null;
+    executor_is_member: boolean;
+}
+
+type LiveRowOf = LiveRow & { cloud_id: string; email: string; api_token: string; access: ConnectionAccess };
+
+/** Fail closed: a present row with any field the credential needs missing sends nothing. */
+function servable(row: LiveRow): row is LiveRowOf {
+    if (row.cloud_id === null || row.email === null || row.api_token === null || row.access === null) return false;
+    // The execution user must still be a member, whichever way the connection is owned, and a personal
+    // connection must be theirs.
+    if (row.execution_user_id === null || !row.executor_is_member) return false;
+    if (row.principal_user_id !== null && row.principal_user_id !== row.execution_user_id) return false;
+    // The identity frozen at bind time must still be the connection's.
+    return row.frozen_account !== null && row.frozen_account === row.account;
 }
 
 /**
  * The proxy's per-call check, org-less like `createOrgOfLease` (the pair names the org) but
  * deliberately WITHOUT its tail grace: a connector call is live work, so the attempt must be
  * unfinished, unexpired and not asked to stop. A reclaim or retry rotates the lease token, so a
- * superseded attempt's pair resolves nothing. The connection is the thread ROOT's selection,
- * re-authorized now: the root's author must still be a member of the org, and a personal
- * connection must be theirs — deleting the connection or removing the author ends access on the
- * next call.
+ * superseded attempt's pair resolves nothing, and a reviewer row's lease gets nothing (as in
+ * `github-credential.ts`). The connection is the thread ROOT's live jira binding, re-authorized now:
+ * the root's execution user must still be a member, a personal connection must be theirs, and the
+ * account frozen at bind time must still be the connection's. Disconnecting the connection or
+ * removing the user ends access on the next call. Nothing in the request names a connection.
+ *
+ * A SQL throw propagates (the route answers 5xx); "no binding" is `unselected` only when the lease
+ * predicate held and the thread has no jira binding at all.
  */
 export function createConnectionOfLease({
     sql,
@@ -203,29 +225,28 @@ export function createConnectionOfLease({
     return async (jobId, leaseToken) => {
         if (ready) await ready;
         const rows = await sql<LiveRow[]>`
-            select root.jira_connection_id as selected, c.owner_user_id, root.created_by as author,
+            select b.id as binding_id, b.external_account_id as frozen_account, c.id as connection_id, c.status,
+                   c.principal_user_id, c.external_account_id as account, root.execution_user_id,
                    c.cloud_id, c.email, c.api_token, c.access,
                    exists (
                        select 1 from org_membership m
-                       where m.org_id = j.org_id and m.user_id = root.created_by
-                   ) as author_is_member
+                       where m.org_id = j.org_id and m.user_id = root.execution_user_id
+                   ) as executor_is_member
             from job j
             join job root on root.org_id = j.org_id and root.id = j.root_job_id
-            left join connector_connection c on c.id = root.jira_connection_id and c.org_id = j.org_id
-                                              and c.status = 'active'
-            where j.id = ${jobId} and j.lease_token = ${leaseToken}
+            left join job_connection_binding b on b.org_id = j.org_id and b.root_job_id = j.root_job_id
+                                              and b.provider = 'jira' and b.credential = 'legacy_api_token'
+            left join connector_connection c on c.id = b.connection_id and c.org_id = j.org_id
+            where j.id = ${jobId} and j.lease_token = ${leaseToken} and j.review_of is null
               and j.finished_at is null and j.lease_expires_at > now() and j.cancel_requested_at is null
         `;
-        const row = rows[0];
-        if (!row) return { ok: false, reason: 'lease' };
-        if (row.selected === null && row.cloud_id === null) return { ok: false, reason: 'unselected' };
-        if (row.cloud_id === null || row.email === null || row.api_token === null || row.access === null) {
-            return { ok: false, reason: 'revoked' };
-        }
-        // The task's author must still be a member whichever way the connection is owned, and a
-        // personal connection must be the author's own.
-        const ownedByAuthor = row.owner_user_id === null || row.owner_user_id === row.author;
-        if (!ownedByAuthor || !row.author_is_member) return { ok: false, reason: 'revoked' };
+        if (rows.length === 0) return { ok: false, reason: 'lease' };
+        const bound = rows.filter((row) => row.binding_id !== null);
+        if (bound.length === 0) return { ok: false, reason: 'unselected' };
+        const live = bound.filter((row) => row.connection_id !== null && row.status === 'active');
+        if (live.length > 1) return { ok: false, reason: 'ambiguous' };
+        const row = live[0];
+        if (!row || !servable(row)) return { ok: false, reason: 'revoked' };
         return { ok: true, cloudId: row.cloud_id, email: row.email, apiToken: row.api_token, access: row.access };
     };
 }
