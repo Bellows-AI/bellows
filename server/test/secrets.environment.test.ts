@@ -50,7 +50,7 @@ describe('the secret-store keys stay in the dashboard process', () => {
     it('only the dashboard launchers load secrets.env', () => {
         const root = scripts('package.json');
         const mentions = (s: Record<string, string>) => Object.keys(s).filter((k) => s[k]?.includes('secrets.env'));
-        expect(mentions(root).sort()).toEqual(['secrets:rotate', 'start']);
+        expect(mentions(root).sort()).toEqual(['secrets:convert-env', 'secrets:rotate', 'start']);
         expect(scripts('server/package.json').dev).toContain('--env-file-if-exists=../secrets.env');
         expect(mentions(scripts('server/package.json'))).toEqual(['dev']);
         expect(mentions(scripts('driver/package.json'))).toEqual([]);

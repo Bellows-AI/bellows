@@ -43,6 +43,11 @@ both the route and the web editors render from. The driver keeps its own copy in
   may have written is reconciled once; a changed value gets a new reference and the old one is deleted after the commit.
   An inconclusive read deletes nothing and reports the refs as `cleanup-failed` diagnostics (`server/src/main.ts`).
   `server/test-db/env-secrets.writes.test.ts`.
+- **Old-format secrets move with one operator step**: run `npm run secrets:convert-env` (Kubernetes: `kubectl exec
+  deploy/<release>-factory -c dashboard -- node server/dist/secrets/convert-env-cli.js`) after the v0.0.13 rollout
+  completes, and rerun until it exits 0. It selects and updates `is_secret` rows only, never a non-secret row. Oversized
+  rows are listed and must be re-entered by a member. A run killed mid-row leaves at most one unreferenced record, and
+  the row stays plaintext (`server/src/db/env-secret-conversion.ts`, `server/test-db/env-secret-conversion.test.ts`).
 - **A secret entry carrying `value: null` on a whole-list PUT SURVIVES untouched**; an omitted name
   deletes. This is the one exception to "the body is the whole truth", and it is why a non-secret
   may never carry a null value. Same test, plus `server/test/routes.env.test.ts`.
