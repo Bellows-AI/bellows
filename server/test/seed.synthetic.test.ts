@@ -31,7 +31,7 @@ function unmeasuredWeeks(sessions: readonly SyntheticSession[]): string[] {
 }
 
 describe('synthetic seed: the unmeasured bucket the e2e usage chart asserts on', () => {
-    it.each([...Array(WEEKDAYS).keys()])(
+    it.each(Array.from({ length: WEEKDAYS }, (_, day) => day))(
         'holds a week with sessions and no token reading when now is day +%i',
         (offset) => {
             const now = new Date(WEDNESDAY + offset * DAY_MS);
