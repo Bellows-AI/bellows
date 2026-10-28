@@ -40,6 +40,12 @@ cover every command this skill names below.
   `--phase a,b` for a hand-picked pair); it prints the phases it chose and why, and runs the full lane
   itself when a shared file changed. The full default `npm run test:jobs` runs once at the end of a PR
   series and on `main`, not per PR.
+- **A failed lane is not rerun to find its cause.** After `test:jobs`, `test:k8s` or `verify:ui`
+  fails, that lane runs again only once the plan file records one of two things. Either a test
+  outside the lane that reproduces the failure — red before the fix, green after (Phase 3, RED) —
+  or an environmental verdict quoting its evidence (exit 137/143, `fork: Resource temporarily
+  unavailable`, an out-of-memory kill, host load far above the core count), which allows one rerun.
+  The same case failing twice is never environmental: reproduce it.
 - HEAVY waits for a free slot (2 per host, `FACTORY_HEAVY_SLOTS`) and prints who holds them. The wait
   is the point: never bypass it, never kill a holder. Launch long ones with `run_in_background`.
 - Name everything the run creates outside the worktree `fix<N>` or `fix<N>-<what>` — kind clusters

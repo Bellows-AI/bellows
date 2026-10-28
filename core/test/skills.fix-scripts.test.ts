@@ -115,6 +115,12 @@ describe('the fix skills', () => {
         expect(fix).toContain('`<scratchpad>/diff-<N>-r<round>.patch`');
         expect(fix).toContain('`gh pr checks <PR_NUMBER> --watch');
     });
+
+    it('rerun a failed lane only after a reproducing test or an environmental verdict', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        expect(fix).toContain('**A failed lane is not rerun to find its cause.**');
+        expect(fix).toContain('The same case failing twice is never environmental: reproduce it.');
+    });
 });
 
 describe('heavy.sh', () => {
