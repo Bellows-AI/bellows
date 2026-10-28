@@ -37,7 +37,8 @@ After the fix-planner returns and before its plan becomes the todo list, review 
 the plan brief below.
 
 - A blocker the code confirms amends the plan: fix it yourself when it is local to a step;
-  re-spawn the fix-planner with the finding when it disputes the root cause or the approach.
+  send it back to the fix-planner (`fix` Phase 2, revise) when it disputes the root cause or the
+  approach.
 - A finding that exposes ambiguity in the issue itself is a `BLOCKER` under `fix` Phase 2: STOP and
   ask the user. A design fork it exposes takes the recommended default per `fix` Phase 2.
 - Before this review, run `fix` Phase 2's hazard check on the plan, so Codex spends its round on new
@@ -65,8 +66,7 @@ run read-only commands only.
 Issue <REF>: <title>
 <body, then each comment>
 
-The plan:
-<the fix-planner's output, verbatim>
+The plan: read <PLAN, the plan file's absolute path>
 
 Read the docs/ file that AGENTS.md's "Read before you touch" table maps to the area, then check:
 - Root cause: is the cause the plan names the real one, or a symptom?
