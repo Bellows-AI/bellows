@@ -239,6 +239,20 @@ spec:
                       - name: SECRETS_AWS_PREFIX
                         value: {{ .Values.secretStore.aws.prefix | quote }}
                       {{- end }}
+                      {{- if eq .Values.secretStore.backend "vault" }}
+                      - name: SECRETS_VAULT_ADDR
+                        value: {{ .Values.secretStore.vault.addr | quote }}
+                      - name: SECRETS_VAULT_MOUNT
+                        value: {{ .Values.secretStore.vault.mount | quote }}
+                      - name: SECRETS_VAULT_PREFIX
+                        value: {{ .Values.secretStore.vault.prefix | quote }}
+                      - name: SECRETS_VAULT_AUTH
+                        value: kubernetes
+                      - name: SECRETS_VAULT_ROLE
+                        value: {{ .Values.secretStore.vault.role | quote }}
+                      - name: SECRETS_VAULT_TOKEN_FILE
+                        value: /var/run/secrets/vault/token
+                      {{- end }}
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}
@@ -276,6 +290,25 @@ spec:
                   volumeMounts:
                       - name: tmp
                         mountPath: /tmp
+                      {{- if eq .Values.secretStore.backend "vault" }}
+                      # The Vault login token: this container only, never `wait-for-database`.
+                      - name: vault-token
+                        mountPath: /var/run/secrets/vault
+                        readOnly: true
+                      {{- end }}
             volumes:
                 - name: tmp
                   emptyDir: {}
+                {{- if eq .Values.secretStore.backend "vault" }}
+                # A service-account token minted for Vault alone (audience secretStore.vault.audience), rotated by
+                # the kubelet; the server re-reads it on every login. Mode 0444: the container runs as uid 1000
+                # and this pod sets no group ownership, so the default root-only mode would leave it unreadable.
+                - name: vault-token
+                  projected:
+                      defaultMode: 292
+                      sources:
+                          - serviceAccountToken:
+                                audience: {{ .Values.secretStore.vault.audience | quote }}
+                                expirationSeconds: 3600
+                                path: token
+                {{- end }}

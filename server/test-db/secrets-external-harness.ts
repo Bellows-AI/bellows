@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { type AwsObjectClient, createAwsObjectClient } from '../src/secrets/aws-secrets-manager.js';
-import { createExternalPayloads } from '../src/secrets/external-payloads.js';
+import { type ObjectClient, createExternalPayloads } from '../src/secrets/external-payloads.js';
 import type { PayloadStore } from '../src/secrets/secret-payloads.js';
 import { type SecretRepo, createSecretRepo } from '../src/secrets/postgres-secret-repo.js';
 import { type CoordinatedSecretStore, createSecretStoreOver } from '../src/secrets/postgres-secret-store.js';
@@ -59,11 +59,11 @@ export function faultyFetch(faults: SecretStoreFaults, real: typeof fetch = fetc
     }) as typeof fetch;
 }
 
-export interface ExternalHarness extends SecretStoreHarness {
+export interface ExternalHarness<C extends ObjectClient = AwsObjectClient> extends SecretStoreHarness {
     open(): CoordinatedSecretStore;
     reopen(): CoordinatedSecretStore;
     /** The provider client with no fault injection, for inspecting and tampering with the provider directly. */
-    provider: AwsObjectClient;
+    provider: C;
     prefix: string;
     keys: OperationKeys;
     realRepo: SecretRepo;
@@ -73,8 +73,10 @@ export interface ExternalHarness extends SecretStoreHarness {
 export interface ExternalHarnessOptions {
     deadlineMs?: number;
     ready?: Promise<unknown>;
-    /** Credentials the adapter signs with; a test of wrong credentials passes others. */
+    /** AWS only: credentials the adapter signs with; a test of wrong credentials passes others. */
     credentials?: () => Promise<{ accessKeyId: string; secretAccessKey: string }>;
+    /** Vault only: the client token the adapter presents; a test of a refused or a policy-limited token passes another. */
+    token?: string;
     /** Where the adapter sends requests; a test of an outage passes a closed port. */
     endpoint?: string;
     /** Wraps the faulty fetch the store talks through, to script an answer the real provider would not give. */
@@ -84,7 +86,29 @@ export interface ExternalHarnessOptions {
     keys?: OperationKeys;
 }
 
+/** What differs between external providers in the harness: the client, the fault seam and the direct provider access. */
+export interface ProviderKit<C extends ObjectClient> {
+    /** Where the provider listens unless a test points the adapter elsewhere. */
+    endpoint: string;
+    client(config: { prefix: string; endpoint: string; fetch?: typeof fetch }, options: ExternalHarnessOptions): C;
+    faultyFetch(faults: SecretStoreFaults, real?: typeof fetch): typeof fetch;
+    /** Every object the provider holds under the prefix. */
+    names(provider: C, prefix: string): Promise<string[]>;
+    /** The provider moves the same bytes to a new provider version; returns that version. */
+    rekey(provider: C, row: { provider_ref: string; provider_version: string }): Promise<string>;
+    /** The provider's bytes change under the same name and version. */
+    tamper(provider: C, row: { provider_ref: string; provider_version: string }): Promise<void>;
+}
+
 export function createExternalHarness(sql: Sql, options: ExternalHarnessOptions = {}): ExternalHarness {
+    return createHarnessOver(awsKit, sql, options);
+}
+
+export function createHarnessOver<C extends ObjectClient>(
+    kit: ProviderKit<C>,
+    sql: Sql,
+    options: ExternalHarnessOptions = {}
+): ExternalHarness<C> {
     const keys: OperationKeys = options.keys ?? { operationKey: randomBytes(32), fingerprintKey: randomBytes(32) };
     const prefix = options.prefix ?? `factory-test/${randomUUID()}`;
     let now = Date.UTC(2026, 0, 1);
@@ -92,15 +116,10 @@ export function createExternalHarness(sql: Sql, options: ExternalHarnessOptions 
     const faults = createFaults();
     const diagnostics: unknown[] = [];
     const log = (d: SecretDiagnostic) => diagnostics.push(d);
-    const common = {
-        region: AWS_TEST_REGION,
-        prefix,
-        endpoint: options.endpoint ?? AWS_TEST_ENDPOINT,
-        credentials: options.credentials ?? (async () => AWS_TEST_KEYS),
-    };
-    const provider = createAwsObjectClient(common);
-    const stored = faultyFetch(faults);
-    const faulty = createAwsObjectClient({ ...common, fetch: options.wrapFetch ? options.wrapFetch(stored) : stored });
+    const config = { prefix, endpoint: options.endpoint ?? kit.endpoint };
+    const provider = kit.client(config, options);
+    const stored = kit.faultyFetch(faults);
+    const faulty = kit.client({ ...config, fetch: options.wrapFetch ? options.wrapFetch(stored) : stored }, options);
     const realRepo = createSecretRepo(sql);
     // The conformance suite's `after-stage` is "the payload is durable, the pointer has not moved". For an
     // external store that is after the provider write, not after the row insert, so this harness fires it there.
@@ -137,30 +156,6 @@ export function createExternalHarness(sql: Sql, options: ExternalHarnessOptions 
             deadlineMs: options.deadlineMs ?? 1500,
             ready: options.ready,
         });
-    // Every object the provider holds under this harness's prefix: what stands in for payload storage.
-    const providerNames = async (): Promise<string[]> => {
-        const names: string[] = [];
-        let token: string | undefined;
-        do {
-            const { json } = await provider.call('ListSecrets', {
-                Filters: [{ Key: 'name', Values: [prefix] }],
-                MaxResults: 100,
-                ...(token ? { NextToken: token } : {}),
-            });
-            const page = json as { SecretList?: { Name: string }[]; NextToken?: string };
-            names.push(...(page.SecretList ?? []).map((secret) => secret.Name));
-            token = page.NextToken;
-        } while (token);
-        return names.sort();
-    };
-    // The provider's stored bytes for a version exactly as it holds them (framing included), base64.
-    const storedBinary = async (row: { provider_ref: string; provider_version: string }): Promise<string> => {
-        const { json } = await provider.call('GetSecretValue', {
-            SecretId: row.provider_ref,
-            VersionId: row.provider_version,
-        });
-        return (json as { SecretBinary: string }).SecretBinary;
-    };
     const activeRow = async (ref: SecretRef) => {
         const rows = await sql<{ id: string; provider_ref: string; provider_version: string }[]>`
             select v.id, v.provider_ref, v.provider_version
@@ -189,12 +184,7 @@ export function createExternalHarness(sql: Sql, options: ExternalHarnessOptions 
         // provider version; the row follows it (docs/secrets.md).
         async rekey(_identity: SecretIdentity, ref: SecretRef) {
             const row = await activeRow(ref);
-            const version = randomUUID();
-            await provider.call('PutSecretValue', {
-                SecretId: row.provider_ref,
-                ClientRequestToken: version,
-                SecretBinary: await storedBinary(row),
-            });
+            const version = await kit.rekey(provider, row);
             await sql`update secret_version set provider_version = ${version} where id = ${row.id}`;
         },
         async collect() {
@@ -202,19 +192,71 @@ export function createExternalHarness(sql: Sql, options: ExternalHarnessOptions 
         },
         // The provider's bytes change under the same name and version: the MAC in the row no longer verifies.
         async tamper(ref: SecretRef) {
-            const row = await activeRow(ref);
-            const bytes = Buffer.from(await storedBinary(row), 'base64');
-            bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
-            await provider.call('DeleteSecret', { SecretId: row.provider_ref, ForceDeleteWithoutRecovery: true });
-            await provider.call('CreateSecret', {
-                Name: row.provider_ref,
-                ClientRequestToken: row.provider_version,
-                SecretBinary: bytes.toString('base64'),
-            });
+            await kit.tamper(provider, await activeRow(ref));
         },
         async durableSnapshot() {
-            return { db: await databaseSnapshot(sql), provider: await providerNames() };
+            return { db: await databaseSnapshot(sql), provider: await kit.names(provider, prefix) };
         },
         diagnostics: () => structuredClone(diagnostics),
     };
+}
+
+/** The AWS Secrets Manager provider; every call goes through the adapter's `call`, so the real wire code runs. */
+const awsKit: ProviderKit<AwsObjectClient> = {
+    endpoint: AWS_TEST_ENDPOINT,
+    client: ({ prefix, endpoint, fetch: inner }, options) =>
+        createAwsObjectClient({
+            region: AWS_TEST_REGION,
+            prefix,
+            endpoint,
+            credentials: options.credentials ?? (async () => AWS_TEST_KEYS),
+            fetch: inner,
+        }),
+    faultyFetch,
+    async names(provider, prefix) {
+        const names: string[] = [];
+        let token: string | undefined;
+        do {
+            const { json } = await provider.call('ListSecrets', {
+                Filters: [{ Key: 'name', Values: [prefix] }],
+                MaxResults: 100,
+                ...(token ? { NextToken: token } : {}),
+            });
+            const page = json as { SecretList?: { Name: string }[]; NextToken?: string };
+            names.push(...(page.SecretList ?? []).map((secret) => secret.Name));
+            token = page.NextToken;
+        } while (token);
+        return names.sort();
+    },
+    async rekey(provider, row) {
+        const version = randomUUID();
+        await provider.call('PutSecretValue', {
+            SecretId: row.provider_ref,
+            ClientRequestToken: version,
+            SecretBinary: await storedBinary(provider, row),
+        });
+        return version;
+    },
+    async tamper(provider, row) {
+        const bytes = Buffer.from(await storedBinary(provider, row), 'base64');
+        bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff;
+        await provider.call('DeleteSecret', { SecretId: row.provider_ref, ForceDeleteWithoutRecovery: true });
+        await provider.call('CreateSecret', {
+            Name: row.provider_ref,
+            ClientRequestToken: row.provider_version,
+            SecretBinary: bytes.toString('base64'),
+        });
+    },
+};
+
+// The provider's stored bytes for a version exactly as it holds them (framing included), base64.
+async function storedBinary(
+    provider: AwsObjectClient,
+    row: { provider_ref: string; provider_version: string }
+): Promise<string> {
+    const { json } = await provider.call('GetSecretValue', {
+        SecretId: row.provider_ref,
+        VersionId: row.provider_version,
+    });
+    return (json as { SecretBinary: string }).SecretBinary;
 }

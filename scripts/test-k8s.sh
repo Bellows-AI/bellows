@@ -755,7 +755,7 @@ refuses 'offline still refuses a missing board token' 'secret.jobBoardToken of a
 refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false
 # The secret store's keys are required on every render, the no-fetch entry included.
 refuses 'a missing backend is refused' 'secretStore.backend is required' "${GH_SETS[@]}" --set secretStore.backend=
-refuses 'an unknown backend is refused' 'secretStore.backend is required' "${GH_SETS[@]}" --set secretStore.backend=vault
+refuses 'an unknown backend is refused' 'secretStore.backend is required' "${GH_SETS[@]}" --set secretStore.backend=nonsense
 refuses 'offline still refuses a missing backend' 'secretStore.backend is required' \
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secretStore.backend=
 refuses 'aws settings under the database backend are refused' 'are for secretStore.backend aws' \
@@ -819,6 +819,67 @@ refuses 'an aws store without an operation key is refused' 'secretStore.operatio
     "${GH_SETS[@]}" "${AWS_SETS[@]}" --set-string secretStore.operationKey=
 aws_byo="$(gh_render "${AWS_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
 expect_contains 'a managed secret-store Secret serves the aws backend too' "$aws_byo" 'name: managed-keys'
+
+# The vault backend (docs/secrets.md): the provider settings and the projected Vault token reach the dashboard
+# container alone, the Secret holds no data key, and no AWS role is involved.
+VAULT_SETS=(
+    --set secretStore.backend=vault --set secretStore.vault.addr=https://vault.example.test:8200
+    --set secretStore.vault.mount=secret --set secretStore.vault.prefix=factory/test --set secretStore.vault.role=factory
+    --set-string secretStore.dataKeys= --set secretStore.activeKeyId=
+)
+vault_render="$(gh_render "${VAULT_SETS[@]}")"
+vault_doc="$(awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep' <<<"$vault_render")"
+vault_dashboard="$(awk '/^ +containers:$/ { on = 1 } on' <<<"$vault_doc" | awk '/^ +- name: dashboard$/ { on = 1 } /^ +volumes:$/ { on = 0 } on')"
+expect_contains 'the vault backend is selected explicitly' "$vault_dashboard" 'value: "vault"'
+expect_contains 'the dashboard container gets the vault address' "$vault_dashboard" 'value: "https://vault.example.test:8200"'
+expect_contains 'the dashboard container gets the vault mount' "$vault_dashboard" 'value: "secret"'
+expect_contains 'the dashboard container gets the vault prefix' "$vault_dashboard" 'value: "factory/test"'
+expect_contains 'the dashboard container logs in with Kubernetes auth' "$vault_dashboard" 'value: kubernetes'
+expect_contains 'the dashboard container gets the vault role' "$vault_dashboard" 'value: "factory"'
+expect_contains 'the dashboard container reads the projected token file' "$vault_dashboard" 'value: /var/run/secrets/vault/token'
+[ "$(grep -c 'SECRETS_' <<<"$vault_render")" = 9 ] && [ "$(grep -c 'SECRETS_' <<<"$vault_dashboard")" = 9 ] &&
+    ok 'every vault-mode SECRETS_ variable is in the dashboard container alone' ||
+    bad 'every vault-mode SECRETS_ variable is in the dashboard container alone' \
+        "whole render: $(grep -c 'SECRETS_' <<<"$vault_render"), dashboard container: $(grep -c 'SECRETS_' <<<"$vault_dashboard")"
+expect_not_contains 'a vault store renders no data-key variable' "$vault_render" 'SECRETS_DATA_KEYS'
+expect_not_contains 'a vault store renders no active-key-id variable' "$vault_render" 'SECRETS_ACTIVE_KEY_ID'
+expect_not_contains 'a vault store references no data-keys entry' "$vault_render" 'data-keys'
+expect_not_contains 'a vault store renders no AWS setting' "$vault_render" 'SECRETS_AWS_'
+expect_contains 'a vault store still holds the operation and fingerprint keys' "$vault_render" 'fingerprint-key:'
+[ "$(grep -c 'serviceAccountToken:' <<<"$vault_render")" = 1 ] && ok 'one projected service-account token in the whole render' ||
+    bad 'one projected service-account token in the whole render' "found $(grep -c 'serviceAccountToken:' <<<"$vault_render")"
+expect_contains 'the projected token carries the vault audience' "$vault_doc" 'audience: "vault"'
+[ "$(grep -c 'name: vault-token' <<<"$vault_dashboard")" = 1 ] && [ "$(grep -c 'vault-token' <<<"$vault_render")" = 2 ] &&
+    ok 'the Vault token volume is mounted in the dashboard container alone' ||
+    bad 'the Vault token volume is mounted in the dashboard container alone' \
+        "dashboard container: $(grep -c 'name: vault-token' <<<"$vault_dashboard"), whole render: $(grep -c 'vault-token' <<<"$vault_render")"
+expect_not_contains 'no init container mounts the Vault token or carries a provider setting' \
+    "$(awk '/^ +containers:$/ { exit } { print }' <<<"$vault_doc")" 'vault-token'
+expect_not_contains 'no init container carries a vault setting' "$(awk '/^ +containers:$/ { exit } { print }' <<<"$vault_doc")" 'SECRETS_'
+expect_not_contains 'no ConfigMap or collector config carries a provider setting' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' <<<"$vault_render")" 'SECRETS_'
+vault_driver="$(awk '/^# Source:/ { keep = ($0 ~ /driver-deployment.yaml$/) } keep' <<<"$vault_render")"
+expect_not_contains 'the driver deployment carries no vault setting' "$vault_driver" 'SECRETS_'
+expect_not_contains 'the driver deployment mounts no Vault token' "$vault_driver" 'vault-token'
+expect_not_contains 'the driver deployment projects no service-account token' "$vault_driver" 'serviceAccountToken'
+vault_custom="$(gh_render "${VAULT_SETS[@]}" --set secretStore.vault.audience=https://vault.internal)"
+expect_contains 'the projected token audience follows secretStore.vault.audience' "$vault_custom" 'audience: "https://vault.internal"'
+for field in addr mount prefix role audience; do
+    refuses "a vault store without ${field} is refused" "secretStore.vault.${field} is required" \
+        "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set "secretStore.vault.${field}="
+done
+refuses 'data keys under the vault backend are refused' 'are for secretStore.backend database' \
+    "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set-string secretStore.dataKeys=k1:AAAA
+refuses 'aws settings under the vault backend are refused' 'are for secretStore.backend aws, not vault' \
+    "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set secretStore.aws.region=eu-west-1
+refuses 'vault settings under the database backend are refused' 'secretStore.vault.* is for secretStore.backend vault, not database' \
+    "${GH_SETS[@]}" --set secretStore.vault.addr=https://vault.example.test
+refuses 'vault settings under the aws backend are refused' 'secretStore.vault.* is for secretStore.backend vault, not aws' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set secretStore.vault.role=factory
+refuses 'a vault store without an operation key is refused' 'secretStore.operationKey is required' \
+    "${GH_SETS[@]}" "${VAULT_SETS[@]}" --set-string secretStore.operationKey=
+vault_byo="$(gh_render "${VAULT_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
+expect_contains 'a managed secret-store Secret serves the vault backend too' "$vault_byo" 'name: managed-keys'
 
 # --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
 

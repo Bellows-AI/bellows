@@ -59,6 +59,10 @@ const postgresMirror = () => `ghcr.io/bellows-ai/${composePostgres().split('/').
 const composeMoto = () =>
     load<{ services: Record<string, { image: string; profiles?: string[] }> }>('docker-compose.yml').services.moto!;
 const motoMirror = () => `ghcr.io/bellows-ai/${composeMoto().image.split('/').pop()}`;
+// The Vault the external secret-store suites run against, pinned and mirrored the same way.
+const composeVault = () =>
+    load<{ services: Record<string, { image: string; profiles?: string[] }> }>('docker-compose.yml').services.vault!;
+const vaultMirror = () => `ghcr.io/bellows-ai/${composeVault().image.split('/').pop()}`;
 
 describe('ci workflows', () => {
     it('validates every pull request to main and every push to main', () => {
@@ -198,7 +202,7 @@ describe('ci workflows', () => {
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
-        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto']);
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto', 'vault']);
         expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
@@ -231,6 +235,45 @@ describe('ci workflows', () => {
         expect(commands).toContain('grep -q toomanyrequests');
         expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
         expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
+    });
+
+    it('pins Vault to an exact release, opt-in under the secrets-vault compose profile', () => {
+        const vault = composeVault();
+        expect(vault.image).toMatch(/^mirror\.gcr\.io\/hashicorp\/vault:1\.20\.\d+$/);
+        expect(vault.profiles).toEqual(['secrets-vault']);
+    });
+
+    it('mirrors the compose vault from mirror.gcr.io into GHCR the way postgres is mirrored', () => {
+        const job = workflow(MIRROR).jobs.vault!;
+        expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
+        expect(job.env!.SOURCE).toBe(composeVault().image);
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('docker login ghcr.io');
+        expect(commands).toContain(
+            ['docker buildx imagetools create -t "$REGISTRY/vault:$', '{SOURCE##*:}" "$SOURCE"'].join('')
+        );
+        expect(commands).toContain('grep -q toomanyrequests');
+        expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
+        expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
+    });
+
+    it('runs the vault secret-store suites in the db job against the GHCR vault mirror, failing when it is down', () => {
+        const job = workflow(CI).jobs['test-db']!;
+        const vault = job.services!.vault! as unknown as {
+            image: string;
+            ports: string[];
+            env: Record<string, string>;
+            credentials: Record<string, string>;
+        };
+        expect(vault.image).toBe(vaultMirror());
+        expect(vault.credentials.username).toMatch(/^\$\{\{ github\.actor \}\}$/);
+        expect(vault.credentials.password).toMatch(/^\$\{\{ github\.token \}\}$/);
+        expect(vault.ports).toEqual(['8200:8200']);
+        expect(job.env!.SECRETS_TEST_VAULT_ADDR).toBe('http://127.0.0.1:8200');
+        expect(job.env!.SECRETS_TEST_VAULT_TOKEN).toBe(vault.env.VAULT_DEV_ROOT_TOKEN_ID);
+        expect(String(job.env!.SECRETS_TEST_REQUIRE_VAULT)).toBe('1');
+        // A throwaway dev-mode root token for a service that lives for one job, never a configured secret.
+        expect(read(CI)).not.toMatch(/secrets\./);
     });
 
     // An unreachable provider must fail the db job, never skip the external-store suites silently.

@@ -608,6 +608,31 @@ describe('the AWS Secrets Manager adapter: a status no one documents proves noth
     });
 });
 
+describe('the AWS Secrets Manager adapter: only a 2xx is read as a provider body', () => {
+    const odd = (status: number) =>
+        (async () => ({ status, body: null, headers: new Headers() })) as unknown as typeof fetch;
+    const GET_ARGS = [NAME, VERSION_ID, 1000, undefined] as const;
+
+    it.each([100, 301, 302, 304, 307, 308])(
+        'never turns a read answered %i into malformed or absent',
+        async (status) => {
+            const { aws } = client(() => json(200, {}), { fetch: odd(status) });
+            const fault = await faultOf(aws.get(...GET_ARGS));
+            expect(['retry', 'ambiguous']).toContain(fault.verdict);
+        }
+    );
+
+    it.each([100, 301, 302, 307, 308])('does not confirm a delete answered %i', async (status) => {
+        const { aws } = client(() => json(200, {}), { fetch: odd(status) });
+        await faultOf(aws.remove(NAME, 1000, undefined));
+    });
+
+    it('still reads a 2xx that is no secret as malformed', async () => {
+        const { aws } = client(() => json(200, {}));
+        expect(await aws.get(...GET_ARGS)).toBe('malformed');
+    });
+});
+
 describe('classifyAnswer: the one classifier of a provider answer', () => {
     const DOCUMENTED_400 = [
         ['ResourceNotFoundException', 'notFound'],

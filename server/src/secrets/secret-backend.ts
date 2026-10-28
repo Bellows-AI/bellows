@@ -16,6 +16,8 @@ import {
     loadSecretKeys,
 } from './secret-keys.js';
 import type { SecretDiagnostic } from './secret-store.js';
+import { createVaultObjectClient } from './vault-kv.js';
+import type { VaultAuth } from './vault-token.js';
 
 /**
  * Which backend holds the secret payloads (docs/secrets.md): `SECRETS_BACKEND=database|aws|vault`, required on
@@ -38,6 +40,7 @@ const DATA_KEY_VARIABLES = ['SECRETS_DATA_KEYS', 'SECRETS_ACTIVE_KEY_ID'];
 const REGION = /^[a-z]{2}(?:-[a-z]+)+-\d$/;
 const PREFIX_SEGMENT = /^[A-Za-z0-9_+=.@-]+$/;
 const MAX_PREFIX_CHARS = 200;
+const VAULT_SEGMENT = /^[A-Za-z0-9_+=@-][A-Za-z0-9_+=.@-]*$/;
 
 export interface AwsBackendConfig {
     region: string;
@@ -48,9 +51,21 @@ export interface AwsBackendConfig {
     staticCredentials: { accessKeyId: string; secretAccessKey: string } | null;
 }
 
+export interface VaultBackendConfig {
+    /** The Vault origin, no path and no trailing slash. */
+    addr: string;
+    /** The KV v2 mount path. */
+    mount: string;
+    /** The namespace in the mount every object lives under: no leading or trailing slash. */
+    prefix: string;
+    /** Kubernetes login in a cluster; a fixed token for development and tests only. */
+    auth: VaultAuth;
+}
+
 export type SecretBackendConfig =
     | { kind: 'database'; keys: SecretKeys }
-    | { kind: 'aws'; keys: OperationKeys; aws: AwsBackendConfig };
+    | { kind: 'aws'; keys: OperationKeys; aws: AwsBackendConfig }
+    | { kind: 'vault'; keys: OperationKeys; vault: VaultBackendConfig };
 
 type Env = Record<string, string | undefined>;
 
@@ -93,6 +108,32 @@ function awsPrefix(raw: string): string {
         );
     }
     return raw;
+}
+
+/** A Vault path of slash-separated names that cannot start with a dot, so none is `.` or `..` for a URL to resolve. */
+function vaultPath(name: string, raw: string): string {
+    const segments = raw.split('/');
+    if (raw.length > MAX_PREFIX_CHARS || !segments.every((segment) => VAULT_SEGMENT.test(segment))) {
+        throw new SecretKeyConfigError(
+            `${name} must be slash-separated names of letters, digits and _+=.@- that do not start with a dot (at most ${MAX_PREFIX_CHARS} characters), with no leading or trailing slash`
+        );
+    }
+    return raw;
+}
+
+function vaultAddr(raw: string): string {
+    try {
+        const url = new URL(raw);
+        const bare = url.pathname === '/' && url.search === '' && url.hash === '' && !url.username && !url.password;
+        if ((url.protocol === 'http:' || url.protocol === 'https:') && bare) {
+            return raw.replace(/\/$/, '');
+        }
+    } catch {
+        // Falls through to the one refusal below.
+    }
+    throw new SecretKeyConfigError(
+        'SECRETS_VAULT_ADDR must be an http or https origin with no path, credentials or query'
+    );
 }
 
 function awsEndpoint(raw: string | undefined): string | null {
@@ -146,6 +187,44 @@ function loadAws(env: Env): AwsBackendConfig {
     };
 }
 
+const VAULT_AUTH_METHODS = ['kubernetes', 'token'] as const;
+/** Variables that belong to one auth method; set under the other they are refused, as a foreign backend's are. */
+const VAULT_AUTH_VARIABLES: Record<(typeof VAULT_AUTH_METHODS)[number], string[]> = {
+    kubernetes: ['SECRETS_VAULT_ROLE', 'SECRETS_VAULT_TOKEN_FILE'],
+    token: ['SECRETS_VAULT_TOKEN'],
+};
+
+function vaultAuth(env: Env): VaultAuth {
+    const raw = required(env, 'SECRETS_VAULT_AUTH');
+    const method = VAULT_AUTH_METHODS.find((name) => name === raw);
+    if (method === undefined) {
+        throw new SecretKeyConfigError(`SECRETS_VAULT_AUTH must be one of ${VAULT_AUTH_METHODS.join(', ')}`);
+    }
+    const other = VAULT_AUTH_METHODS.find((name) => name !== method) ?? method;
+    for (const name of VAULT_AUTH_VARIABLES[other]) {
+        if (trimmed(env, name) !== undefined) {
+            throw new SecretKeyConfigError(`${name} is only valid with SECRETS_VAULT_AUTH=${other}`);
+        }
+    }
+    if (method === 'token') {
+        return { kind: 'token', token: required(env, 'SECRETS_VAULT_TOKEN') };
+    }
+    return {
+        kind: 'kubernetes',
+        role: required(env, 'SECRETS_VAULT_ROLE'),
+        tokenFile: required(env, 'SECRETS_VAULT_TOKEN_FILE'),
+    };
+}
+
+function loadVault(env: Env): VaultBackendConfig {
+    return {
+        addr: vaultAddr(required(env, 'SECRETS_VAULT_ADDR')),
+        mount: vaultPath('SECRETS_VAULT_MOUNT', required(env, 'SECRETS_VAULT_MOUNT')),
+        prefix: vaultPath('SECRETS_VAULT_PREFIX', required(env, 'SECRETS_VAULT_PREFIX')),
+        auth: vaultAuth(env),
+    };
+}
+
 export function loadSecretBackend(env: Env): SecretBackendConfig {
     const raw = trimmed(env, 'SECRETS_BACKEND');
     if (raw === undefined) {
@@ -157,12 +236,12 @@ export function loadSecretBackend(env: Env): SecretBackendConfig {
     if (mode === undefined) {
         throw new SecretKeyConfigError(`SECRETS_BACKEND must be one of ${BACKENDS.join(', ')}`);
     }
-    if (mode === 'vault') {
-        throw new SecretKeyConfigError('SECRETS_BACKEND=vault is not supported by this release');
-    }
     refuseForeign(env, mode);
     if (mode === 'database') {
         return { kind: 'database', keys: loadSecretKeys(env) };
+    }
+    if (mode === 'vault') {
+        return { kind: 'vault', keys: loadOperationKeys(env), vault: loadVault(env) };
     }
     return { kind: 'aws', keys: loadOperationKeys(env), aws: loadAws(env) };
 }
@@ -193,22 +272,24 @@ export function createSecretStore(options: SecretStoreOptions): CoordinatedSecre
     if (backend.kind === 'database') {
         return createPostgresSecretStore({ sql, ready, keys: backend.keys, log });
     }
-    const { aws } = backend;
-    const client = createAwsObjectClient({
-        region: aws.region,
-        prefix: aws.prefix,
-        endpoint: aws.endpoint ?? undefined,
-        credentials: createCredentialProvider({
-            static: aws.staticCredentials,
-            env: options.env ?? process.env,
-            region: aws.region,
-        }),
-    });
+    const client =
+        backend.kind === 'vault'
+            ? createVaultObjectClient(backend.vault)
+            : createAwsClient(backend.aws, options.env ?? process.env);
     return createSecretStoreOver({
         repo: createSecretRepo(sql),
         keys: backend.keys,
         payloads: createExternalPayloads(client, backend.keys),
         ready,
         log,
+    });
+}
+
+function createAwsClient(aws: AwsBackendConfig, env: NodeJS.ProcessEnv) {
+    return createAwsObjectClient({
+        region: aws.region,
+        prefix: aws.prefix,
+        endpoint: aws.endpoint ?? undefined,
+        credentials: createCredentialProvider({ static: aws.staticCredentials, env, region: aws.region }),
     });
 }

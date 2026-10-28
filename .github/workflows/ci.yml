@@ -88,11 +88,29 @@ jobs:
                 options: >-
                     --health-cmd "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/moto-api/')\""
                     --health-interval 5s --health-timeout 5s --health-retries 10
+            # The Vault the vault secret-store suites (server/test-db/secrets-vault.*) run against: dev mode, an
+            # unsealed in-memory server with a KV v2 mount at `secret`, for the life of this job only. GHCR copy of
+            # the compose pin (mirror-images.yml); the suites fail, never skip, if it is down.
+            vault:
+                image: ghcr.io/bellows-ai/vault:1.20.4
+                credentials:
+                    username: ${{ github.actor }}
+                    password: ${{ github.token }}
+                env:
+                    VAULT_DEV_ROOT_TOKEN_ID: ci-dev-root-token
+                ports:
+                    - 8200:8200
+                options: >-
+                    --health-cmd "VAULT_ADDR=http://127.0.0.1:8200 vault status"
+                    --health-interval 5s --health-timeout 5s --health-retries 10
         env:
             DATABASE_URL: postgres://factory:factory@127.0.0.1:5432/factory_test
             SECRETS_TEST_AWS_ENDPOINT: http://127.0.0.1:5099
+            SECRETS_TEST_VAULT_ADDR: http://127.0.0.1:8200
+            SECRETS_TEST_VAULT_TOKEN: ci-dev-root-token
             # An unreachable provider fails the job instead of skipping the suites.
             SECRETS_TEST_REQUIRE_AWS: '1'
+            SECRETS_TEST_REQUIRE_VAULT: '1'
         steps:
             - uses: actions/checkout@v4
             - uses: actions/setup-node@v4

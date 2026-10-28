@@ -21,6 +21,13 @@ describe('start() without secret-store keys', () => {
             'SECRETS_FINGERPRINT_KEY',
             'SECRETS_AWS_REGION',
             'SECRETS_AWS_PREFIX',
+            'SECRETS_VAULT_ADDR',
+            'SECRETS_VAULT_MOUNT',
+            'SECRETS_VAULT_PREFIX',
+            'SECRETS_VAULT_AUTH',
+            'SECRETS_VAULT_ROLE',
+            'SECRETS_VAULT_TOKEN_FILE',
+            'SECRETS_VAULT_TOKEN',
         ]) {
             vi.stubEnv(name, overrides[name] ?? '');
         }
@@ -50,6 +57,30 @@ describe('start() without secret-store keys', () => {
         );
         expect(refusal.message).toContain('SECRETS_OPERATION_KEY is required');
     });
+
+    it.each(['SECRETS_VAULT_ADDR', 'SECRETS_VAULT_MOUNT', 'SECRETS_VAULT_PREFIX', 'SECRETS_VAULT_AUTH'])(
+        'refuses a vault backend that lacks %s, naming it',
+        async (missing) => {
+            const env: Record<string, string> = {
+                SECRETS_BACKEND: 'vault',
+                SECRETS_OPERATION_KEY: Buffer.alloc(32, 7).toString('base64'),
+                SECRETS_FINGERPRINT_KEY: Buffer.alloc(32, 8).toString('base64'),
+                SECRETS_VAULT_ADDR: 'http://127.0.0.1:8200',
+                SECRETS_VAULT_MOUNT: 'secret',
+                SECRETS_VAULT_PREFIX: 'factory/test',
+                SECRETS_VAULT_AUTH: 'token',
+                SECRETS_VAULT_TOKEN: SENTINEL,
+            };
+            delete env[missing];
+            bootEnv(env);
+            const refusal = await start({ github: { mode: 'none' } }).then(
+                () => new Error('booted'),
+                (e: Error) => e
+            );
+            expect(refusal.message).toContain(`${missing} is required`);
+            expect(refusal.message).not.toContain(SENTINEL);
+        }
+    );
 
     it('refuses when the keys are missing, even offline', async () => {
         bootEnv({ SECRETS_BACKEND: 'database' });
