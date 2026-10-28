@@ -38,8 +38,12 @@ export function envSecretIdentity(orgId: string, scope: EnvSecretScope, name: st
 
 export const encodeEnvSecret = (value: string): Uint8Array => new TextEncoder().encode(value);
 
-/** Strict: bytes that are not valid UTF-8 are an error, never replacement characters. */
-export const decodeEnvSecret = (bytes: Uint8Array): string => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+/**
+ * Strict: bytes that are not valid UTF-8 are an error, never replacement characters. A leading
+ * byte-order mark is part of the value, not stripped.
+ */
+export const decodeEnvSecret = (bytes: Uint8Array): string =>
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
 
 type RowFault = 'malformed-row' | 'version-mismatch' | 'invalid-encoding';
 
@@ -98,8 +102,16 @@ export async function readSecretValues(
         }
     };
 
+    // A store that finishes a read after the signal fired must not stretch the claim transaction: no
+    // read starts past the deadline, and the batch rejects at it whatever the reads in flight do.
+    const expired = () =>
+        new EnvSecretError(rows[next]?.name ?? rows[0]?.name ?? '', 'unavailable', 'provider-timeout');
     const worker = async (): Promise<void> => {
         while (!failure && next < rows.length) {
+            if (signal.aborted) {
+                failure ??= expired();
+                return;
+            }
             const index = next++;
             try {
                 values[index] = await readOne(rows[index] as EncryptedEnvRow);
@@ -110,7 +122,16 @@ export async function readSecretValues(
         }
     };
 
-    await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, worker));
+    let onAbort: (() => void) | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+        onAbort = () => reject(expired());
+        signal.addEventListener('abort', onAbort, { once: true });
+    });
+    try {
+        await Promise.race([Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, worker)), deadline]);
+    } finally {
+        if (onAbort) signal.removeEventListener('abort', onAbort);
+    }
     if (failure) throw failure;
     return values;
 }
