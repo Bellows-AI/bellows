@@ -41,11 +41,14 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
     const rows: (NewConnection & { id: string })[] = [];
     const view = (row: NewConnection & { id: string }): ConnectionView => ({
         id: row.id,
-        kind: 'jira',
+        provider: 'jira',
+        credential: 'legacy_api_token',
+        ownership: row.ownerUserId === null ? 'legacy-org' : 'personal',
+        principal: row.ownerUserId === null ? null : 'self',
         site: row.site,
-        email: row.email,
+        account: row.email,
         access: row.access,
-        scope: row.ownerUserId === null ? 'org' : 'user',
+        status: 'active',
         createdAt: '2026-10-08T00:00:00.000Z',
     });
     return {
@@ -58,6 +61,12 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
             rows.push(row);
             return view(row);
         },
+        async candidates(userId, provider) {
+            return rows
+                .filter((r) => r.ownerUserId === userId && provider === 'jira')
+                .map(view)
+                .reverse();
+        },
         async authorizedFor(userId, id) {
             return rows.some((r) => r.id === id && (r.ownerUserId === null || r.ownerUserId === userId));
         },
@@ -65,7 +74,7 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
             const newest = (owner: string | null) => rows.findLast((r) => r.ownerUserId === owner)?.id;
             return newest(userId) ?? newest(null) ?? null;
         },
-        async remove(id, { userId, admin }) {
+        async disconnect(id, { userId, admin }) {
             const at = rows.findIndex(
                 (r) => r.id === id && (r.ownerUserId === userId || (r.ownerUserId === null && admin))
             );

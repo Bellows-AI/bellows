@@ -15,7 +15,7 @@ export const SECRET_SCOPE_TYPES = [
     'organization',
     'workspace',
     'repository',
-    'connection',
+    'integration-grant',
     'executor-profile',
 ] as const;
 export type SecretScopeType = (typeof SECRET_SCOPE_TYPES)[number];
