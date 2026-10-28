@@ -1,7 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createSecretRepo, type NewVersion, type SecretRepo } from '../src/secrets/postgres-secret-repo.js';
-import { createSecretStoreOver, type PostgresSecretStore } from '../src/secrets/postgres-secret-store.js';
+import { createDatabaseSecretStoreOver, type PostgresSecretStore } from '../src/secrets/postgres-secret-store.js';
+import type { PayloadStore } from '../src/secrets/secret-payloads.js';
+import type { DatabasePayloads } from '../src/secrets/database-payloads.js';
 import type { SecretKeys } from '../src/secrets/secret-keys.js';
 import type { SecretDiagnostic, SecretIdentity, SecretRef } from '../src/secrets/secret-store.js';
 import {
@@ -103,11 +105,18 @@ export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults): SecretR
             }
             return real.readActive(ref, budgetMs);
         },
-        async deleteVersion(id, budgetMs) {
+        // The first step of a removal: a failure leaves the version exactly where it was.
+        async retireVersion(id, storage, budgetMs) {
             if (faults.providerDelete === 'fail') {
                 throw dbError('08006');
             }
-            return real.deleteVersion(id, budgetMs);
+            return real.retireVersion(id, storage, budgetMs);
+        },
+        async removeInPlace(id, storage, budgetMs) {
+            if (faults.providerDelete === 'fail') {
+                throw dbError('08006');
+            }
+            return real.removeInPlace(id, storage, budgetMs);
         },
     };
 }
@@ -122,8 +131,11 @@ const ORDER: Record<(typeof TABLES)[number], string> = {
 
 export interface PostgresHarness extends SecretStoreHarness {
     keys: MutableKeys;
-    /** The store the conformance suite drives, built over `repo` instead of the default faulty one. */
-    openWith(repo: SecretRepo): PostgresSecretStore;
+    /**
+     * The store the conformance suite drives, built over `repo` instead of the default faulty one, and
+     * optionally over a payload store that wraps the database one.
+     */
+    openWith(repo: SecretRepo, payloads?: (database: DatabasePayloads) => PayloadStore): PostgresSecretStore;
     realRepo: SecretRepo;
     faultyRepo: SecretRepo;
     now(): number;
@@ -148,8 +160,16 @@ export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions 
     const realRepo = createSecretRepo(options.sql ?? sql);
     const wrapped = faultyRepo(realRepo, faults);
     const log = (d: SecretDiagnostic) => diagnostics.push(d);
-    const openWith = (repo: SecretRepo) =>
-        createSecretStoreOver({ repo, keys, clock, log, deadlineMs: options.deadlineMs ?? 200, ready: options.ready });
+    const openWith = (repo: SecretRepo, payloads?: (database: DatabasePayloads) => PayloadStore) =>
+        createDatabaseSecretStoreOver({
+            repo,
+            keys,
+            payloads,
+            clock,
+            log,
+            deadlineMs: options.deadlineMs ?? 200,
+            ready: options.ready,
+        });
     const open = () => openWith(wrapped);
     return {
         keys,
@@ -209,6 +229,39 @@ export function testIdentity(): SecretIdentity {
         purpose: 'environment-secret',
         owningRecord: { type: 'env_var', id: unique('row') },
     };
+}
+
+/**
+ * A two-phase payload store standing in for an external provider (`aws`): the plaintext lives in `objects`,
+ * the row keeps a reference and a MAC. `over` replaces calls to script a fault between two steps.
+ */
+export function externalPayloads(over: Partial<PayloadStore> = {}) {
+    const objects = new Map<string, Uint8Array>();
+    const build = (): PayloadStore => ({
+        storage: 'aws',
+        twoPhase: true,
+        prepare: (_aad, versionId) => ({
+            storage: 'aws',
+            keyId: null,
+            envelope: null,
+            providerRef: `obj/${versionId}`,
+            providerVersion: null,
+            payloadMac: 'mac',
+        }),
+        holds: () => true,
+        async write(row, payload) {
+            objects.set(row.providerRef as string, payload);
+            return 'written';
+        },
+        async read(row) {
+            return objects.get(row.providerRef as string) ?? 'absent';
+        },
+        async remove(row) {
+            objects.delete(row.providerRef as string);
+        },
+        ...over,
+    });
+    return { objects, factory: (_database: DatabasePayloads): PayloadStore => build() };
 }
 
 export const utf8 = (value: string) => new TextEncoder().encode(value);

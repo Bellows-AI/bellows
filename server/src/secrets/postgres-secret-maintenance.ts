@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { RotationRow } from './postgres-secret-repo.js';
-import { type StoreContext, callFor, open, sameBytes, seal } from './postgres-secret-support.js';
+import { type DatabasePayloads, sameBytes } from './database-payloads.js';
+import { type StoreContext, callFor, removeVersion } from './postgres-secret-support.js';
 import { type Attempt, attempt, newCall, remaining } from './secret-call.js';
 import { OPERATION_RETENTION_MS, identityKey } from './secret-input.js';
 import type { SecretIdentity, SecretRef } from './secret-store.js';
@@ -29,13 +30,11 @@ export interface CollectSummary {
 }
 
 async function deleteOne(ctx: StoreContext, id: string): Promise<boolean> {
-    const call = callFor(ctx, undefined);
-    const result = await attempt(call, (b) => ctx.repo.deleteVersion(id, b), 'once');
-    const removed = result.kind === 'ok' && result.value;
-    if (removed || result.kind !== 'ok') {
-        ctx.log({ event: removed ? 'collected' : 'cleanup-failed' });
+    const result = await removeVersion(ctx, callFor(ctx, undefined), id);
+    if (result !== 'refused') {
+        ctx.log({ event: result === 'removed' ? 'collected' : 'cleanup-failed' });
     }
-    return removed;
+    return result === 'removed';
 }
 
 /** Deletes one page of collectable versions; false when the pass ran out of time. */
@@ -59,7 +58,7 @@ export async function collect(ctx: StoreContext): Promise<CollectSummary> {
         const cursor: string | null = after;
         const page: Attempt<string[]> = await attempt(
             pass,
-            (b): Promise<string[]> => ctx.repo.listCollectable(cursor, COLLECT_PAGE, b),
+            (b): Promise<string[]> => ctx.repo.listCollectable(cursor, COLLECT_PAGE, ctx.payloads.storage, b),
             'read'
         );
         if (page.kind !== 'ok') {
@@ -83,11 +82,15 @@ export async function collect(ctx: StoreContext): Promise<CollectSummary> {
 }
 
 /** Decrypt, re-encrypt under the active key, prove the new envelope, swap if still current. */
-async function rekeyRow(ctx: StoreContext, row: RotationRow): Promise<'rekeyed' | 'skipped' | 'failed'> {
+async function rekeyRow(
+    ctx: StoreContext,
+    database: DatabasePayloads,
+    row: RotationRow
+): Promise<'rekeyed' | 'skipped' | 'failed'> {
     const aad = { identityKey: row.identityKey, ref: row.ref, logicalVersion: row.logicalVersion };
-    const plaintext = open(ctx, row, aad);
-    const sealed = plaintext ? seal(ctx, aad, plaintext) : null;
-    const proof = plaintext && sealed ? open(ctx, sealed, aad) : null;
+    const plaintext = database.open(row, aad);
+    const sealed = plaintext ? database.seal(aad, plaintext) : null;
+    const proof = plaintext && sealed ? database.open(sealed, aad) : null;
     if (!plaintext || !sealed || !proof || !sameBytes(proof, plaintext)) {
         return 'failed';
     }
@@ -95,8 +98,12 @@ async function rekeyRow(ctx: StoreContext, row: RotationRow): Promise<'rekeyed' 
         id: randomUUID(),
         ref: row.ref,
         logicalVersion: row.logicalVersion,
+        storage: 'database' as const,
         keyId: sealed.keyId,
         envelope: sealed.envelope,
+        providerRef: null,
+        providerVersion: null,
+        payloadMac: null,
         operationId: null,
         createdAtMs: ctx.clock.now(),
     };
@@ -111,20 +118,26 @@ async function rekeyRow(ctx: StoreContext, row: RotationRow): Promise<'rekeyed' 
     return swapped.value ? 'rekeyed' : 'skipped';
 }
 
-export async function rekey(ctx: StoreContext, identity: SecretIdentity, ref: SecretRef): Promise<void> {
+export async function rekey(
+    ctx: StoreContext,
+    database: DatabasePayloads,
+    identity: SecretIdentity,
+    ref: SecretRef
+): Promise<void> {
     const key = identityKey(identity);
     const read = await attempt(callFor(ctx, undefined), (b) => ctx.repo.readActive(ref, b), 'read');
     const row = read.kind === 'ok' ? read.value : null;
-    if (!row || row.identityKey !== key || row.state !== 'active' || !row.version) {
+    const version = row?.version;
+    if (!row || row.identityKey !== key || row.state !== 'active' || !version?.keyId || !version.envelope) {
         throw new Error('rekey: no active secret for that identity');
     }
-    const outcome = await rekeyRow(ctx, {
+    const outcome = await rekeyRow(ctx, database, {
         ref,
         identityKey: key,
-        versionId: row.version.id,
-        logicalVersion: row.version.logicalVersion,
-        keyId: row.version.keyId,
-        envelope: row.version.envelope,
+        versionId: version.id,
+        logicalVersion: version.logicalVersion,
+        keyId: version.keyId,
+        envelope: version.envelope,
     });
     if (outcome === 'failed') {
         throw new Error('rekey: the active version could not be re-encrypted');
@@ -133,6 +146,7 @@ export async function rekey(ctx: StoreContext, identity: SecretIdentity, ref: Se
 
 export async function rotate(
     ctx: StoreContext,
+    database: DatabasePayloads,
     options: { batchSize?: number; signal?: AbortSignal | undefined }
 ): Promise<RotationSummary> {
     const batch = options.batchSize ?? DEFAULT_ROTATION_BATCH;
@@ -142,7 +156,7 @@ export async function rotate(
         const cursor: string | null = after;
         const page: Attempt<RotationRow[]> = await attempt(
             callFor(ctx, options.signal),
-            (b): Promise<RotationRow[]> => ctx.repo.listForRotation(ctx.keys.activeKeyId, cursor, batch, b),
+            (b): Promise<RotationRow[]> => ctx.repo.listForRotation(database.activeKeyId, cursor, batch, b),
             'read'
         );
         if (page.kind !== 'ok') {
@@ -153,7 +167,7 @@ export async function rotate(
             if (options.signal?.aborted) {
                 return summary;
             }
-            summary[await rekeyRow(ctx, row)] += 1;
+            summary[await rekeyRow(ctx, database, row)] += 1;
         }
         if (page.value.length < batch) {
             break;

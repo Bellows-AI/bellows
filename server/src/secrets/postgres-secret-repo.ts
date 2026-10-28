@@ -1,9 +1,10 @@
 import type { Sql } from 'postgres';
 import * as q from './postgres-secret-sql.js';
+import type { PayloadStorage, StoredPayload } from './secret-payloads.js';
 import type { SecretErrorCode, SecretErrorReason } from './secret-store.js';
 
 /**
- * The SQL of the PostgreSQL secret store (`091_secret_store.sql`, docs/secrets.md). Each method is one
+ * The SQL of the PostgreSQL secret store (`091_secret_store.sql`, `092_secret_external.sql`, docs/secrets.md). Each method is one
  * transaction or one statement and each is a fault boundary: the store (`postgres-secret-store.ts`) only
  * sees this interface, so a test wraps it to inject a crash or a database error between any two methods
  * (`server/test-db/secrets-postgres-harness.ts`). Nothing here decides a policy: the store decides what an
@@ -13,7 +14,7 @@ import type { SecretErrorCode, SecretErrorReason } from './secret-store.js';
 
 export type OperationKind = 'create' | 'replace' | 'delete';
 export type OperationState = 'pending' | 'unknown' | 'succeeded' | 'failed';
-export type VersionState = 'staged' | 'active' | 'collectable' | 'cleanup-pending';
+export type VersionState = 'staged' | 'active' | 'collectable' | 'cleanup-pending' | 'deleting';
 
 export interface OperationRow {
     operationId: string;
@@ -39,12 +40,7 @@ export interface SecretSummary {
     activeVersion: string | null;
 }
 
-export interface VersionRow {
-    id: string;
-    ref: string;
-    logicalVersion: string;
-    keyId: string;
-    envelope: Buffer;
+export interface VersionRow extends StoredPayload {
     state: VersionState;
     operationId: string | null;
     createdAtMs: number;
@@ -54,7 +50,7 @@ export interface VersionRow {
 export interface ActiveRead {
     identityKey: string;
     state: 'active' | 'tombstoned';
-    version: { id: string; logicalVersion: string; keyId: string; envelope: Buffer } | null;
+    version: StoredPayload | null;
 }
 
 export interface RotationRow {
@@ -66,12 +62,7 @@ export interface RotationRow {
     envelope: Buffer;
 }
 
-export interface NewVersion {
-    id: string;
-    ref: string;
-    logicalVersion: string;
-    keyId: string;
-    envelope: Buffer;
+export interface NewVersion extends StoredPayload {
     operationId: string | null;
     createdAtMs: number;
 }
@@ -95,7 +86,8 @@ export interface SecretRepo {
         budgetMs: number
     ): Promise<OperationRow>;
     /**
-     * The "provider write": insert the encrypted version once, under the operation's row lock. Returns the
+     * Stage the version row once, under the operation's row lock; for the database store the row is the
+     * payload, for an external provider the provider write follows (`secret-payloads.ts`). Returns the
      * stored row (a repeat with the same id changes nothing and may find a row that is not ours), or
      * `'closed'` when the operation already finished: nothing was staged.
      */
@@ -111,11 +103,26 @@ export interface SecretRepo {
         nowMs: number,
         budgetMs: number
     ): Promise<OperationRow | 'missing'>;
-    /** Versions of a reference waiting for cleanup after a delete. */
-    listPendingCleanup(ref: string, budgetMs: number): Promise<string[]>;
-    listCollectable(afterId: string | null, limit: number, budgetMs: number): Promise<string[]>;
-    /** One guarded statement; false when the guard refused (active, pointed at, or an unresolved operation). */
-    deleteVersion(id: string, budgetMs: number): Promise<boolean>;
+    /** Versions of a reference waiting for cleanup after a delete, of one storage. */
+    listPendingCleanup(ref: string, storage: PayloadStorage, budgetMs: number): Promise<string[]>;
+    listCollectable(
+        afterId: string | null,
+        limit: number,
+        storage: PayloadStorage,
+        budgetMs: number
+    ): Promise<string[]>;
+    /**
+     * Removal, phase one: one guarded statement that moves the version to `deleting` and returns it; null
+     * when the guard refused (active, pointed at, or an unresolved operation). Idempotent on a `deleting` row.
+     */
+    retireVersion(id: string, storage: PayloadStorage, budgetMs: number): Promise<VersionRow | null>;
+    /**
+     * Removal of a version whose payload is its row (`PayloadStore.twoPhase` false): the same guard as
+     * `retireVersion`, one delete. The row is never `deleting`. Null when the guard refused.
+     */
+    removeInPlace(id: string, storage: PayloadStorage, budgetMs: number): Promise<VersionRow | null>;
+    /** Removal, phase two, after the payload store confirmed its payload gone: drops a `deleting` row. */
+    dropVersion(id: string, budgetMs: number): Promise<boolean>;
     pruneOperations(cutoffMs: number, budgetMs: number): Promise<number>;
     listForRotation(
         activeKeyId: string,
@@ -143,9 +150,11 @@ export function createSecretRepo(sql: Sql): SecretRepo {
         stageVersion: (version, b) => run(b, (tx) => q.stageVersion(tx, version)),
         markUnknown: (id, b) => run(b, (tx) => q.markUnknown(tx, id)),
         activate: (id, _origin, nowMs, b) => run(b, (tx) => q.activate(tx, id, nowMs)),
-        listPendingCleanup: (ref, b) => run(b, (tx) => q.listPendingCleanup(tx, ref)),
-        listCollectable: (after, limit, b) => run(b, (tx) => q.listCollectable(tx, after, limit)),
-        deleteVersion: (id, b) => run(b, (tx) => q.deleteVersion(tx, id)),
+        listPendingCleanup: (ref, storage, b) => run(b, (tx) => q.listPendingCleanup(tx, ref, storage)),
+        listCollectable: (after, limit, storage, b) => run(b, (tx) => q.listCollectable(tx, after, limit, storage)),
+        retireVersion: (id, storage, b) => run(b, (tx) => q.retireVersion(tx, id, storage)),
+        removeInPlace: (id, storage, b) => run(b, (tx) => q.removeInPlace(tx, id, storage)),
+        dropVersion: (id, b) => run(b, (tx) => q.dropVersion(tx, id)),
         pruneOperations: (cutoffMs, b) => run(b, (tx) => q.pruneOperations(tx, cutoffMs)),
         listForRotation: (activeKeyId, after, limit, b) =>
             run(b, (tx) => q.listForRotation(tx, activeKeyId, after, limit)),

@@ -1,4 +1,4 @@
-import type { OperationRow, VersionRow } from './postgres-secret-repo.js';
+import type { OperationRow } from './postgres-secret-repo.js';
 import {
     type StoreContext,
     callFor,
@@ -7,10 +7,10 @@ import {
     failWith,
     integrityFailure,
     issueExpired,
-    open,
     operationExpired,
     parseOperationId,
     readFailure,
+    readPayload,
     terminal,
     unavailable,
 } from './postgres-secret-support.js';
@@ -59,10 +59,17 @@ export async function readActive(ctx: StoreContext, input: ReadSecretInput): Pro
         return failWith('not-found', 'reference-not-found');
     }
     // Active without a pointed-at version is a broken store: inconclusive, never `not-found`.
-    const value =
-        row.version && open(ctx, row.version, { identityKey: key, ref, logicalVersion: row.version.logicalVersion });
-    return row.version && value
-        ? { ok: true, value, version: row.version.logicalVersion as SecretVersion }
+    if (!row.version) {
+        return integrityFailure();
+    }
+    const aad = { identityKey: key, ref, logicalVersion: row.version.logicalVersion };
+    const stored = await readPayload(ctx, call, row.version, aad);
+    if (stored.kind !== 'ok') {
+        return readFailure(stored);
+    }
+    // The active version's payload missing or not verifying is a broken store too, whatever the provider said.
+    return stored.value instanceof Uint8Array
+        ? { ok: true, value: stored.value, version: row.version.logicalVersion as SecretVersion }
         : integrityFailure();
 }
 
@@ -99,12 +106,20 @@ async function checkStaged(ctx: StoreContext, call: Call, rec: OperationRow): Pr
     if (found && found.kind !== 'ok') {
         return { kind: 'stop', result: readFailure(found) };
     }
-    const version: VersionRow | null = found?.kind === 'ok' ? found.value : null;
+    const version = found?.kind === 'ok' ? found.value : null;
     if (!version) {
         return { kind: 'wait' };
     }
     const aad = { identityKey: rec.identityKey, ref: rec.ref, logicalVersion: rec.newVersion ?? '' };
-    return open(ctx, version, aad) ? { kind: 'ready' } : { kind: 'stop', result: integrityFailure() };
+    const stored = await readPayload(ctx, call, version, aad);
+    if (stored.kind !== 'ok') {
+        return { kind: 'stop', result: readFailure(stored) };
+    }
+    if (stored.value === 'absent') {
+        // Only a payload store that confirmed there is none says so: the write may not have landed yet.
+        return { kind: 'wait' };
+    }
+    return stored.value ? { kind: 'ready' } : { kind: 'stop', result: integrityFailure() };
 }
 
 /** Roll an unresolved operation forward (or fail it, if it lost) and return the settled row. */

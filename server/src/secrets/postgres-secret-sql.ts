@@ -11,6 +11,7 @@ import type {
     VersionRow,
     VersionState,
 } from './postgres-secret-repo.js';
+import type { PayloadColumns, PayloadStorage } from './secret-payloads.js';
 import type { SecretErrorCode, SecretErrorReason } from './secret-store.js';
 
 /**
@@ -51,13 +52,23 @@ function operationOf(row: Row): OperationRow {
     };
 }
 
+function payloadOf(row: Row): PayloadColumns {
+    return {
+        storage: row.storage as PayloadStorage,
+        keyId: textOrNull(row.key_id),
+        envelope: (row.envelope ?? null) as Buffer | null,
+        providerRef: textOrNull(row.provider_ref),
+        providerVersion: textOrNull(row.provider_version),
+        payloadMac: textOrNull(row.payload_mac),
+    };
+}
+
 function versionOf(row: Row): VersionRow {
     return {
         id: text(row.id),
         ref: text(row.ref),
         logicalVersion: text(row.logical_version),
-        keyId: text(row.key_id),
-        envelope: row.envelope as Buffer,
+        ...payloadOf(row),
         state: row.state as VersionState,
         operationId: textOrNull(row.operation_id),
         createdAtMs: Number(row.created_at_ms),
@@ -126,7 +137,8 @@ export async function findVersion(tx: Sql, id: string): Promise<VersionRow | nul
 
 export async function readActive(tx: Sql, ref: string): Promise<ActiveRead | null> {
     const rows: Row[] = await tx`
-        select s.identity_key, s.state, v.id as version_id, v.logical_version, v.key_id, v.envelope
+        select s.identity_key, s.state, v.id as version_id, v.ref as version_ref, v.logical_version,
+               v.storage, v.key_id, v.envelope, v.provider_ref, v.provider_version, v.payload_mac
           from secret s
           left join secret_active a on a.ref = s.ref
           left join secret_version v on v.id = a.version_id
@@ -140,9 +152,9 @@ export async function readActive(tx: Sql, ref: string): Promise<ActiveRead | nul
             ? null
             : {
                   id: text(row.version_id),
+                  ref: text(row.version_ref),
                   logicalVersion: text(row.logical_version),
-                  keyId: text(row.key_id),
-                  envelope: row.envelope as Buffer,
+                  ...payloadOf(row),
               };
     return { identityKey: text(row.identity_key), state: row.state as ActiveRead['state'], version };
 }
@@ -158,8 +170,11 @@ export async function stageVersion(tx: Sql, version: NewVersion): Promise<Versio
         return 'closed';
     }
     await tx`
-        insert into secret_version (id, ref, logical_version, key_id, envelope, state, operation_id, created_at_ms)
-        values (${version.id}, ${version.ref}, ${version.logicalVersion}, ${version.keyId}, ${version.envelope},
+        insert into secret_version
+            (id, ref, logical_version, storage, key_id, envelope, provider_ref, provider_version, payload_mac,
+             state, operation_id, created_at_ms)
+        values (${version.id}, ${version.ref}, ${version.logicalVersion}, ${version.storage}, ${version.keyId},
+                ${version.envelope}, ${version.providerRef}, ${version.providerVersion}, ${version.payloadMac},
                 'staged', ${version.operationId}, ${version.createdAtMs})
         on conflict (id) do nothing`;
     const stored = await findVersion(tx, version.id);
@@ -254,15 +269,23 @@ export async function activate(tx: Sql, operationId: string, nowMs: number): Pro
     return op.kind === 'create' ? activateCreate(tx, op, nowMs) : activateChange(tx, op, nowMs);
 }
 
-export async function listPendingCleanup(tx: Sql, ref: string): Promise<string[]> {
-    const rows: Row[] = await tx`select id from secret_version where ref = ${ref} and state = 'cleanup-pending'`;
+export async function listPendingCleanup(tx: Sql, ref: string, storage: PayloadStorage): Promise<string[]> {
+    const rows: Row[] = await tx`
+        select id from secret_version
+         where ref = ${ref} and state = 'cleanup-pending' and storage = ${storage}`;
     return rows.map((row) => text(row.id));
 }
 
-export async function listCollectable(tx: Sql, afterId: string | null, limit: number): Promise<string[]> {
+export async function listCollectable(
+    tx: Sql,
+    afterId: string | null,
+    limit: number,
+    storage: PayloadStorage
+): Promise<string[]> {
     const rows: Row[] = await tx`
         select id from secret_version
-         where (state in ('collectable', 'cleanup-pending')
+         where storage = ${storage}
+           and (state in ('collectable', 'cleanup-pending', 'deleting')
                 or (state = 'staged' and not exists (select 1 from secret_operation o
                                                       where o.version_id = secret_version.id
                                                         and o.state in ('pending', 'unknown'))))
@@ -271,15 +294,47 @@ export async function listCollectable(tx: Sql, afterId: string | null, limit: nu
     return rows.map((row) => text(row.id));
 }
 
-/** One guarded statement: never an active version, a pointed-at one or one an unresolved operation names. */
-export async function deleteVersion(tx: Sql, id: string): Promise<boolean> {
+/**
+ * Removal, phase one: never an active version, a pointed-at one or one an unresolved operation names. The
+ * row stays (as `deleting`) until its payload is confirmed gone; `activate` only takes `staged`, so a
+ * `deleting` version can never become active.
+ */
+export async function retireVersion(tx: Sql, id: string, storage: PayloadStorage): Promise<VersionRow | null> {
     const rows: Row[] = await tx`
-        delete from secret_version v
+        update secret_version v set state = 'deleting'
          where v.id = ${id}
+           and v.storage = ${storage}
+           and v.storage <> 'database'
            and v.state <> 'active'
            and not exists (select 1 from secret_active a where a.version_id = v.id)
            and not exists (select 1 from secret_operation o
                             where o.version_id = v.id and o.state in ('pending', 'unknown'))
+     returning v.*`;
+    return rows[0] ? versionOf(rows[0]) : null;
+}
+
+/** Removal of a database version: 091's own guarded delete, so no `deleting` row ever exists to strand. */
+export async function removeInPlace(tx: Sql, id: string, storage: PayloadStorage): Promise<VersionRow | null> {
+    const rows: Row[] = await tx`
+        delete from secret_version v
+         where v.id = ${id}
+           and v.storage = ${storage}
+           and v.storage = 'database'
+           and v.state <> 'active'
+           and not exists (select 1 from secret_active a where a.version_id = v.id)
+           and not exists (select 1 from secret_operation o
+                            where o.version_id = v.id and o.state in ('pending', 'unknown'))
+     returning v.*`;
+    return rows[0] ? versionOf(rows[0]) : null;
+}
+
+/** Removal, phase two: only a `deleting` row, re-checked here, is ever dropped. */
+export async function dropVersion(tx: Sql, id: string): Promise<boolean> {
+    const rows: Row[] = await tx`
+        delete from secret_version v
+         where v.id = ${id}
+           and v.state = 'deleting'
+           and not exists (select 1 from secret_active a where a.version_id = v.id)
      returning v.id`;
     return rows.length > 0;
 }
@@ -303,7 +358,7 @@ export async function listForRotation(
           from secret_active a
           join secret s on s.ref = a.ref
           join secret_version v on v.id = a.version_id
-         where s.state = 'active' and v.key_id <> ${activeKeyId}
+         where s.state = 'active' and v.storage = 'database' and v.key_id <> ${activeKeyId}
            and (${afterRef}::text is null or s.ref > ${afterRef})
          order by s.ref limit ${limit}`;
     return rows.map((row) => ({
@@ -325,14 +380,16 @@ export async function rekeySwap(tx: Sql, ref: string, expectedVersionId: string,
     }
     await tx`update secret_version set state = 'collectable' where id = ${expectedVersionId}`;
     await tx`
-        insert into secret_version (id, ref, logical_version, key_id, envelope, state, operation_id, created_at_ms)
-        values (${next.id}, ${next.ref}, ${next.logicalVersion}, ${next.keyId}, ${next.envelope},
+        insert into secret_version
+            (id, ref, logical_version, storage, key_id, envelope, state, operation_id, created_at_ms)
+        values (${next.id}, ${next.ref}, ${next.logicalVersion}, 'database', ${next.keyId}, ${next.envelope},
                 'active', null, ${next.createdAtMs})`;
     await tx`update secret_active set version_id = ${next.id} where ref = ${ref}`;
     return true;
 }
 
 export async function countByKey(tx: Sql, keyId: string): Promise<number> {
-    const rows: Row[] = await tx`select count(*)::int as n from secret_version where key_id = ${keyId}`;
+    const rows: Row[] =
+        await tx`select count(*)::int as n from secret_version where storage = 'database' and key_id = ${keyId}`;
     return Number((rows[0] as Row).n);
 }
