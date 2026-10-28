@@ -44,6 +44,19 @@ RUN apt-get update \
 # file, so the image does not change under a rebuild of the same commit.
 ARG NPM_VERSION=11.21.1
 RUN npm install -g npm@${NPM_VERSION} && npm cache clean --force
+# npm ${NPM_VERSION} bundles undici 6.29.0 (two HIGH findings fixed in 6.29.1) and no npm release
+# ships the fix yet. Its only user is node-gyp (`^6.25.0`), so the patch release replaces it in
+# place. Drop this step once NPM_VERSION bundles a fixed undici.
+ARG NPM_UNDICI_VERSION=6.29.1
+RUN cd /tmp \
+    && npm pack --silent undici@${NPM_UNDICI_VERSION} \
+    && rm -rf /usr/local/lib/node_modules/npm/node_modules/undici \
+    && mkdir /usr/local/lib/node_modules/npm/node_modules/undici \
+    && tar -xzf undici-${NPM_UNDICI_VERSION}.tgz --strip-components=1 \
+        -C /usr/local/lib/node_modules/npm/node_modules/undici \
+    && rm undici-${NPM_UNDICI_VERSION}.tgz \
+    && npm cache clean --force \
+    && npm --version
 
 # acli and gh sit ABOVE each image's CLI install, and the two files spell this whole block — ARG
 # order included — identically. BuildKit keys a layer on the command string it was built from,

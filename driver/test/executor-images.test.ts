@@ -1998,3 +1998,26 @@ describe('the executor image tools (issue #1022)', () => {
         expect(read('docker/claude-executor/Dockerfile')).not.toMatch(/install[^\n]*ripgrep/);
     });
 });
+
+// npm's bundled undici is replaced in place until an npm release ships the fixed version: the
+// release scan gates both runner images on it.
+describe("the runner images' npm undici", () => {
+    const undiciStep = (file: string) => {
+        const dockerfile = read(file);
+        const start = dockerfile.indexOf('ARG NPM_UNDICI_VERSION=');
+        const end = dockerfile.indexOf('&& npm --version\n', start);
+        return { dockerfile, start, step: start < 0 || end < 0 ? null : dockerfile.slice(start, end) };
+    };
+
+    it('replaces it with a pinned fixed release right after npm is installed, byte-identical in both images', () => {
+        const claude = undiciStep('docker/claude-executor/Dockerfile');
+        const opencode = undiciStep('docker/opencode-executor/Dockerfile');
+        expect(claude.step).toContain('ARG NPM_UNDICI_VERSION=6.29.1\n');
+        expect(claude.step).toContain('rm -rf /usr/local/lib/node_modules/npm/node_modules/undici');
+        expect(opencode.step).toBe(claude.step);
+        for (const { dockerfile, start } of [claude, opencode]) {
+            expect(start).toBeGreaterThan(dockerfile.indexOf('RUN npm install -g npm@'));
+            expect(start).toBeLessThan(dockerfile.indexOf('ARG GH_VERSION='));
+        }
+    });
+});
