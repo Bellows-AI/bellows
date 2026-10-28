@@ -9,11 +9,22 @@
 # first field the holder pid, changed only under the mkdir mutex. A slot whose holder died is
 # reclaimed; a queued --exclusive blocks new shared claims so it cannot starve. stdin reaches the
 # command, signals are forwarded to it, and the exit status is the command's.
+#
+# Host guard, because a slot count cannot see load from outside the queue (another session, a
+# leaked process): before claiming, it kills orphaned test runners — vitest processes whose parent
+# is gone. Holding the slot, it waits until the 1-minute load is at most FACTORY_HEAVY_MAX_LOAD
+# (default 2 x cores) and free memory at least FACTORY_HEAVY_MIN_FREE percent (default 15), for at
+# most FACTORY_HEAVY_HOST_WAIT seconds (default 900), then runs anyway with a warning. A command
+# that ends with 137 or 143 although nobody signalled heavy.sh was killed by the host (OOM, a
+# reaper): it runs once more, after the same wait. FACTORY_HEAVY_GUARD=0 turns all of this off.
 set -u
 
 dir="${FACTORY_HEAVY_DIR:-$HOME/.cache/factory-heavy}"
 slots="${FACTORY_HEAVY_SLOTS:-2}"
 poll="${FACTORY_HEAVY_POLL:-5}"
+guard="${FACTORY_HEAVY_GUARD:-1}"
+min_free="${FACTORY_HEAVY_MIN_FREE:-15}"
+host_wait="${FACTORY_HEAVY_HOST_WAIT:-900}"
 usage() {
     echo 'usage: heavy.sh [--exclusive] <command> [args...]' >&2
     exit 2
@@ -87,6 +98,65 @@ trap release EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
+host_load() {
+    if [ -r /proc/loadavg ]; then cut -d' ' -f1 /proc/loadavg; else sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}'; fi
+}
+host_cores() { getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null; }
+host_free() {
+    if [ -r /proc/meminfo ]; then
+        awk '/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) printf "%d\n", a * 100 / t}' /proc/meminfo
+    elif command -v memory_pressure >/dev/null 2>&1; then
+        memory_pressure -Q 2>/dev/null | awk '/free percentage/ {gsub("%", "", $NF); print $NF}'
+    fi
+}
+# host_reason: why the host is too busy to start, or nothing. FACTORY_HEAVY_PROBE replaces the
+# probes with one command printing "<load> <cores> <free %>". A value it cannot read is skipped.
+host_reason() {
+    if [ -n "${FACTORY_HEAVY_PROBE:-}" ]; then
+        # shellcheck disable=SC2046
+        set -- $(sh -c "$FACTORY_HEAVY_PROBE" 2>/dev/null)
+    else
+        set -- "$(host_load)" "$(host_cores)" "$(host_free)"
+    fi
+    max="${FACTORY_HEAVY_MAX_LOAD:-}"
+    [ -n "$max" ] || case "${2:-}" in '' | *[!0-9]*) ;; *) max=$(($2 * 2)) ;; esac
+    awk -v l="${1:-}" -v m="$max" -v f="${3:-}" -v mf="$min_free" 'BEGIN {
+        if (l != "" && m != "" && l + 0 > m + 0) { printf "load %s over %s", l, m; exit }
+        if (f != "" && f + 0 < mf + 0) printf "free memory %s%% under %s%%", f, mf
+    }'
+}
+wait_for_host() {
+    [ "$guard" = 0 ] && return 0
+    since="$(date +%s)"
+    told=0
+    while reason="$(host_reason)" && [ -n "$reason" ]; do
+        if [ $(($(date +%s) - since)) -ge "$host_wait" ]; then
+            echo "heavy.sh: host still busy ($reason) after ${host_wait}s; running anyway" >&2
+            return 0
+        fi
+        [ "$told" -eq 1 ] || echo "heavy.sh: holding the slot until the host settles ($reason)" >&2
+        told=1
+        sleep "$poll"
+    done
+}
+# Kills test runners whose parent is gone: vitest workers (they retitle themselves `node (vitest
+# N)`), and anything naming vitest under the directory that holds this checkout and its worktrees.
+sweep_orphans() {
+    [ "$guard" = 0 ] && return 0
+    under="${FACTORY_HEAVY_SWEEP_UNDER:-$(cd "$(dirname "$0")/../../../.." && pwd -P)/}"
+    victims="$(ps -wwAo pid=,ppid=,command= | awk -v under="$under" '
+        $2 != 1 { next }
+        { cmd = $0; sub(/^ *[0-9]+ +[0-9]+ +/, "", cmd) }
+        cmd ~ /^node \(vitest/ || (index(cmd, under) && cmd ~ /vitest/) { print $1 }
+    ' | tr '\n' ' ')"
+    [ -n "$victims" ] || return 0
+    echo "heavy.sh: killing orphaned test runners: $victims" >&2
+    # shellcheck disable=SC2086
+    kill -TERM $victims 2>/dev/null
+    return 0
+}
+
+sweep_orphans
 announced=0
 while :; do
     lock
@@ -104,15 +174,29 @@ done
 
 # An asynchronous command reads /dev/null unless given stdin explicitly: hand it ours through fd 3.
 exec 3<&0
-"$@" <&3 3<&- &
-child=$!
-exec 3<&-
-trap 'kill -TERM "$child" 2>/dev/null' INT TERM HUP
-wait "$child"
-status=$?
-# A trapped signal interrupts wait while the child is still exiting: wait for its real status.
-while kill -0 "$child" 2>/dev/null; do
+signalled=0
+attempt=1
+while :; do
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    wait_for_host
+    "$@" <&3 3<&- &
+    child=$!
+    trap 'signalled=1; kill -TERM "$child" 2>/dev/null' INT TERM HUP
     wait "$child"
     status=$?
+    # A trapped signal interrupts wait while the child is still exiting: wait for its real status.
+    while kill -0 "$child" 2>/dev/null; do
+        wait "$child"
+        status=$?
+    done
+    if [ "$guard" != 0 ] && [ "$signalled" -eq 0 ] && [ "$attempt" -eq 1 ] &&
+        { [ "$status" -eq 137 ] || [ "$status" -eq 143 ]; }; then
+        echo "heavy.sh: exit $status and nobody signalled heavy.sh: the host killed it; running once more" >&2
+        attempt=2
+        continue
+    fi
+    break
 done
+exec 3<&-
 exit "$status"
