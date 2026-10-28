@@ -33,6 +33,7 @@ const required = {
     JOB_BOARD_TOKEN: env.JOB_BOARD_TOKEN?.trim(),
 };
 const secretStoreRequired = {
+    SECRETS_BACKEND: env.SECRETS_BACKEND?.trim(),
     SECRETS_DATA_KEYS: env.SECRETS_DATA_KEYS?.trim(),
     SECRETS_ACTIVE_KEY_ID: env.SECRETS_ACTIVE_KEY_ID?.trim(),
     SECRETS_OPERATION_KEY: env.SECRETS_OPERATION_KEY?.trim(),
@@ -53,6 +54,12 @@ if (missingKeys.length > 0) {
     process.exit(1);
 }
 
+// The local cluster has no cloud identity to give an external provider, so it runs the database backend.
+if (secretStoreRequired.SECRETS_BACKEND !== 'database') {
+    process.stderr.write('k8s-local-values: the local cluster runs SECRETS_BACKEND=database only\n');
+    process.exit(1);
+}
+
 const values = {
     auth: {
         publicUrl: env.K8S_PUBLIC_URL?.trim() || `http://127.0.0.1:${env.K8S_PORT?.trim() || '8081'}`,
@@ -69,6 +76,7 @@ const values = {
         githubWebhookSecret: env.GITHUB_WEBHOOK_SECRET?.trim() ?? '',
     },
     secretStore: {
+        backend: secretStoreRequired.SECRETS_BACKEND,
         dataKeys: secretStoreRequired.SECRETS_DATA_KEYS,
         activeKeyId: secretStoreRequired.SECRETS_ACTIVE_KEY_ID,
         operationKey: secretStoreRequired.SECRETS_OPERATION_KEY,

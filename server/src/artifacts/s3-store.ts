@@ -80,6 +80,7 @@ export function createS3Store(options: S3Options): S3Store {
             headers,
             payloadHash: body ? sha256Hex(body) : EMPTY_PAYLOAD_HASH,
             region,
+            service: 's3',
             credentials: await options.credentials(),
             now: now(),
         });

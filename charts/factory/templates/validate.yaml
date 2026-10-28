@@ -10,13 +10,32 @@ the server's own message, never as an opaque CreateContainerConfigError.
 {{- if and (not .Values.secret.create) (not .Values.secret.existingSecret) }}
 {{- fail "secret.create is false but secret.existingSecret is empty: the pods would reference a Secret nothing creates" }}
 {{- end }}
+{{- if not (has .Values.secretStore.backend (list "database" "aws")) }}
+{{- fail "secretStore.backend is required: database (AES envelopes in PostgreSQL) or aws (AWS Secrets Manager)" }}
+{{- end }}
+{{- if eq .Values.secretStore.backend "database" }}
 {{- if not .Values.secretStore.activeKeyId }}
 {{- fail "secretStore.activeKeyId is required: the key id new secrets are encrypted under (one of secretStore.dataKeys)" }}
 {{- end }}
-{{- if and .Values.secret.create (not .Values.secretStore.existingSecret) }}
-{{- if not .Values.secretStore.dataKeys }}
+{{- if and .Values.secret.create (not .Values.secretStore.existingSecret) (not .Values.secretStore.dataKeys) }}
 {{- fail "secretStore.dataKeys is required (echo \"k1:$(openssl rand -base64 32)\") unless secretStore.existingSecret names a Secret that holds it" }}
 {{- end }}
+{{- if or .Values.secretStore.aws.region .Values.secretStore.aws.prefix }}
+{{- fail "secretStore.aws.region and secretStore.aws.prefix are for secretStore.backend aws, not database" }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.secretStore.backend "aws" }}
+{{- if not .Values.secretStore.aws.region }}
+{{- fail "secretStore.aws.region is required with secretStore.backend aws (for example eu-west-1)" }}
+{{- end }}
+{{- if not .Values.secretStore.aws.prefix }}
+{{- fail "secretStore.aws.prefix is required with secretStore.backend aws: the deployment's namespace in Secrets Manager (for example factory/prod)" }}
+{{- end }}
+{{- if or .Values.secretStore.dataKeys .Values.secretStore.activeKeyId }}
+{{- fail "secretStore.dataKeys and secretStore.activeKeyId are for secretStore.backend database: an aws store keeps no data key" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.secret.create (not .Values.secretStore.existingSecret) }}
 {{- if not .Values.secretStore.operationKey }}
 {{- fail "secretStore.operationKey is required (openssl rand -base64 32) unless secretStore.existingSecret names a Secret that holds it" }}
 {{- end }}

@@ -76,8 +76,23 @@ jobs:
                 options: >-
                     --health-cmd "pg_isready -U factory -d factory_test"
                     --health-interval 5s --health-timeout 5s --health-retries 10
+            # The AWS emulator the external secret-store suites (server/test-db/secrets-aws.*) run against.
+            # GHCR copy of the compose pin (mirror-images.yml); the suites fail, never skip, if it is down.
+            moto:
+                image: ghcr.io/bellows-ai/moto:5.2.4
+                credentials:
+                    username: ${{ github.actor }}
+                    password: ${{ github.token }}
+                ports:
+                    - 5099:5000
+                options: >-
+                    --health-cmd "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/moto-api/')\""
+                    --health-interval 5s --health-timeout 5s --health-retries 10
         env:
             DATABASE_URL: postgres://factory:factory@127.0.0.1:5432/factory_test
+            SECRETS_TEST_AWS_ENDPOINT: http://127.0.0.1:5099
+            # An unreachable provider fails the job instead of skipping the suites.
+            SECRETS_TEST_REQUIRE_AWS: '1'
         steps:
             - uses: actions/checkout@v4
             - uses: actions/setup-node@v4

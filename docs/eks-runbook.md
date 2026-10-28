@@ -73,6 +73,10 @@ is a bug in one of them.
 - `driver.runnerDoNotDisrupt` — off by default; an undisruptable pod pins its node for up to
   `driver.jobTimeoutMs`.
 - `auth.publicUrl` — the real public origin, with `auth.cookieSecure: 'true'`.
+- `secretStore.backend` (`database`, or `aws` with `secretStore.aws.{region,prefix}` and an IRSA role on
+  `dashboard.serviceAccount.annotations` allowing Secrets Manager `Create`/`Get`/`Describe`/`DeleteSecret` on
+  `<prefix>/*`). Under `aws`, create, read and delete one secret through the dashboard: it is the first check of
+  the signed Secrets Manager requests against real AWS (the emulator ignores signatures).
 - `secret.existingSecret` or the chart-created Secret, carrying `database-url` and
   `job-board-token`. On the External Secrets path: a remote path outside the controller's IAM
   scope fails with `could not get secret data from provider` and the `AccessDeniedException` is in

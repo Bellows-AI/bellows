@@ -1,7 +1,8 @@
 import { createHash, createHmac } from 'node:crypto';
 
 /**
- * AWS Signature Version 4 for S3, header-signed, over the headers a request actually carries.
+ * AWS Signature Version 4, header-signed, over the headers a request actually carries, for the AWS service the
+ * caller names (`s3` for artifacts, `secretsmanager` for the secret store).
  * Pinned by AWS's own published GET-object vector in `server/test/artifacts.sigv4.test.ts`.
  */
 
@@ -34,13 +35,15 @@ export interface SignInput {
     headers?: Record<string, string>;
     payloadHash: string;
     region: string;
+    /** The service in the credential scope: `s3`, `secretsmanager`. */
+    service: string;
     credentials: Credentials;
     now: Date;
 }
 
 /** Every header to put on the wire, `authorization` included. */
 export function signRequest(input: SignInput): Record<string, string> {
-    const { method, url, payloadHash, region, credentials, now } = input;
+    const { method, url, payloadHash, region, service, credentials, now } = input;
     const date = amzDate(now);
     const day = date.slice(0, DATE_STAMP_LENGTH);
     const headers: Record<string, string> = {};
@@ -66,9 +69,12 @@ export function signRequest(input: SignInput): Record<string, string> {
         payloadHash,
     ].join('\n');
 
-    const scope = `${day}/${region}/s3/aws4_request`;
+    const scope = `${day}/${region}/${service}/aws4_request`;
     const toSign = ['AWS4-HMAC-SHA256', date, scope, sha256Hex(canonical)].join('\n');
-    const signingKey = hmac(hmac(hmac(hmac(`AWS4${credentials.secretAccessKey}`, day), region), 's3'), 'aws4_request');
+    const signingKey = hmac(
+        hmac(hmac(hmac(`AWS4${credentials.secretAccessKey}`, day), region), service),
+        'aws4_request'
+    );
     const signature = createHmac('sha256', signingKey).update(toSign).digest('hex');
     headers.authorization = `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`;
     return headers;

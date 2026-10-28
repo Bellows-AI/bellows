@@ -203,22 +203,36 @@ secret:
     # `openssl rand -hex 32`. REQUIRED, at least 32 characters.
     jobBoardToken: ''
 
-# The secret store's encryption keys (docs/secrets.md). REQUIRED on every boot, `dashboard.offline`
-# included, and mounted into the dashboard container only: no driver, collector or runner pod ever
-# references the Secret this renders. With existingSecret set (and secret.create false or true) the
-# chart creates nothing and references that one, which must hold the keys `data-keys`,
-# `operation-key` and `fingerprint-key`; activeKeyId is not secret and always comes from here.
+# The secret store (docs/secrets.md). REQUIRED on every boot, `dashboard.offline` included, and wired into the
+# dashboard container only: no driver, collector or runner pod ever references the Secret this renders or
+# carries a provider setting. `backend` selects where secret payloads live and has no default:
+#   database  AES-256-GCM envelopes in PostgreSQL, under dataKeys.
+#   aws       the plaintext in AWS Secrets Manager under `aws.prefix`; PostgreSQL keeps a reference and a MAC.
+#             Credentials come from workload identity only: annotate `dashboard.serviceAccount` with the IRSA role
+#             (or bind it with an EKS Pod Identity association). The role needs secretsmanager
+#             Create/Get/Describe/DeleteSecret on arn:aws:secretsmanager:<region>:<account>:secret:<prefix>/*.
+# With existingSecret set (and secret.create false or true) the chart creates nothing and references that
+# one, which must hold `operation-key` and `fingerprint-key` (and `data-keys` with backend database);
+# activeKeyId is not secret and always comes from here.
 secretStore:
+    backend: ''
     existingSecret: ''
-    # `<keyId>:<base64 of 32 bytes>[,...]` — `echo "k1:$(openssl rand -base64 32)"`. A key leaves
+    # database only. `<keyId>:<base64 of 32 bytes>[,...]` — `echo "k1:$(openssl rand -base64 32)"`. A key leaves
     # the list only after `rotate-cli --verify-retired <keyId>` reports 0 (docs/kubernetes.md).
     dataKeys: ''
-    # The key id new versions are encrypted under; it must be one of dataKeys.
+    # database only. The key id new versions are encrypted under; it must be one of dataKeys.
     activeKeyId: ''
-    # `openssl rand -base64 32`, each distinct. They cannot be rotated: changing either invalidates
-    # outstanding operation ids.
+    # `openssl rand -base64 32`, each distinct, in every backend. They cannot be rotated: changing either
+    # invalidates outstanding operation ids.
     operationKey: ''
     fingerprintKey: ''
+    # aws only. Switching a deployment's backend with secrets already stored is not supported: rows of the
+    # other backend read as a configuration fault and are never collected.
+    aws:
+        region: ''
+        # The deployment's namespace in the account, slash-separated, no leading or trailing slash:
+        # every object is named <prefix>/<reference>/<version>. Scope the role to it.
+        prefix: ''
 
 driver:
     # Built from docker/driver.Dockerfile:
