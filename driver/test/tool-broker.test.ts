@@ -397,6 +397,24 @@ describe('the tool broker', () => {
             expect(modeOf(sharedTmp)).toBe(0o2770);
         });
 
+        it('recreates it setgid even where `mkdir -m` drops the special bits', async () => {
+            // uutils coreutils (ubuntu 26.04) creates `mkdir -m 2770` as 0770; the shim does the same.
+            const shim = scratch();
+            fs.writeFileSync(
+                join(shim, 'mkdir'),
+                '#!/bin/sh\n/bin/mkdir "$@" || exit\nfor last; do :; done\nchmod u-s,g-s,o-t "$last"\n',
+                { mode: 0o755 }
+            );
+            const helper = ((file: string, args: string[], opts: { env?: Record<string, string> }) =>
+                spawn(file, args, {
+                    ...opts,
+                    env: { ...opts.env, PATH: `${shim}:${opts.env?.PATH ?? ''}` },
+                })) as unknown as typeof spawn;
+            const { socket, sharedTmp } = await startBroker({ helper });
+            expect((await settled(client(socket, ['-c', 'rm -rf "$TMPDIR"']))).status.code).toBe(0);
+            expect(modeOf(sharedTmp)).toBe(0o2770);
+        });
+
         it('leaves the tool its own TMPDIR when the shared one cannot be made', async () => {
             const blocker = join(scratch(), 'a-file');
             fs.writeFileSync(blocker, 'x');
