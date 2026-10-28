@@ -369,6 +369,62 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
             expect(await projection(await create(BOB.id))).toBeNull();
         });
 
+        const disconnect = (id: string) => connections.disconnect(id, { userId: ALICE.id, admin: false });
+
+        it('disconnecting one of two bindings projects the survivor; disconnecting the only one projects null', async () => {
+            const one = await connect(ALICE.id);
+            const two = await connect(ALICE.id);
+            const pair = await create(ALICE.id, { connectionIds: [one, two] });
+            expect(await projection(pair)).toBeNull();
+            expect(await disconnect(one)).toBe(true);
+            expect(await projection(pair)).toBe(two);
+            expect(await disconnect(two)).toBe(true);
+            expect(await projection(pair)).toBeNull();
+        });
+
+        it('a bind in flight on another thread is waited for, then recomputed: no stale projection, no deadlock', async () => {
+            const one = await connect(ALICE.id);
+            const two = await connect(ALICE.id);
+            const first = await create(ALICE.id, { connectionIds: [one, two] });
+            const other = await create(ALICE.id);
+            const revision = (await jobRow(other)).rev;
+            let release!: () => void;
+            const held = new Promise<void>((resolve) => {
+                release = resolve;
+            });
+            let bound!: () => void;
+            const boundDone = new Promise<void>((resolve) => {
+                bound = resolve;
+            });
+            // The other thread's bind holds its thread lock and a share lock on `one`, uncommitted.
+            const binding = sql.begin(async (tx) => {
+                const result = await addBindingsInTx(tx, {
+                    orgId: ORG,
+                    rootJobId: other,
+                    expectedRevision: revision,
+                    connectionIds: [one],
+                    actor: { userId: ALICE.id },
+                    source: 'follow_up',
+                });
+                bound();
+                await held;
+                return result;
+            });
+            await boundDone;
+            let settled = false;
+            const disconnected = disconnect(one).then((r) => {
+                settled = true;
+                return r;
+            });
+            const state = await waitForLockWaiters(sql, 1, () => settled);
+            release();
+            expect(await binding).toMatchObject({ ok: true });
+            expect(await disconnected).toBe(true);
+            expect(state).toBe('blocked');
+            expect(await projection(first)).toBe(two);
+            expect(await projection(other)).toBeNull();
+        });
+
         it('a follow-up adding the first jira binding projects it, a second one makes it null', async () => {
             const root = await create(ALICE.id);
             const claim = (await claimNext())!;

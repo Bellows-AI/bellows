@@ -1,5 +1,8 @@
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
+import { lockThreadInTx, projectJiraConnectionInTx } from './connection-bindings.js';
 import { revokeGrantIfOrphaned } from './connection-grants.js';
+
+const DISCONNECT_ATTEMPTS = 5;
 
 /** What a list or create answers: the connection without its credential, which no read ever returns. */
 export interface ConnectionView {
@@ -70,6 +73,49 @@ const toView = (row: Row): ConnectionView => ({
     createdAt: row.created_at.toISOString(),
 });
 
+/** Thrown inside the disconnect transaction (rolling it back) when a bind added a root after the roots were locked. */
+class RetryDisconnect extends Error {}
+
+/** One disconnect attempt. */
+async function disconnectOnce(
+    tx: TransactionSql,
+    orgId: string,
+    connectionId: string,
+    { userId, admin }: { userId: string; admin: boolean }
+): Promise<boolean> {
+    const rootsOf = async (): Promise<string[]> =>
+        (
+            await tx<{ root_job_id: string }[]>`
+                select distinct root_job_id from job_connection_binding
+                where org_id = ${orgId} and connection_id = ${connectionId}
+                order by root_job_id
+            `
+        ).map((row) => row.root_job_id);
+    const roots = await rootsOf();
+    for (const root of roots) await lockThreadInTx(tx, root);
+    await tx`
+        select g.id from integration_grant g
+        join connector_connection c on c.grant_id = g.id
+        where c.id = ${connectionId} and c.org_id = ${orgId} and g.org_id = ${orgId}
+        for update of g
+    `;
+    const rows = await tx<{ grant_id: string | null }[]>`
+        update connector_connection
+        set status = 'disconnected', disconnected_at = now(), api_token = null
+        where id = ${connectionId} and org_id = ${orgId} and status = 'active'
+          and (principal_user_id = ${userId}
+               or (principal_user_id is null and credential = 'legacy_api_token' and ${admin}))
+        returning grant_id
+    `;
+    if (rows.length === 0) return false;
+    if ((await rootsOf()).some((root) => !roots.includes(root))) throw new RetryDisconnect();
+    const grantId = rows[0]!.grant_id;
+    if (grantId !== null) await revokeGrantIfOrphaned(tx, orgId, grantId);
+    // Old pods read the root's projection: recompute it wherever this connection was bound.
+    for (const root of roots) await projectJiraConnectionInTx(tx, orgId, root);
+    return true;
+}
+
 export function createConnectionStore({
     sql,
     orgId,
@@ -123,29 +169,17 @@ export function createConnectionStore({
         },
         async disconnect(connectionId, { userId, admin }) {
             await gate();
-            return sql.begin(async (tx) => {
-                // Lock the grant BEFORE the status change: two last-connection disconnects serialize here, so the
-                // later one's orphan check (a fresh statement) sees the earlier one's committed disconnect.
-                // `grant_id` never changes after insert, so reading it unlocked is safe.
-                await tx`
-                    select g.id from integration_grant g
-                    join connector_connection c on c.grant_id = g.id
-                    where c.id = ${connectionId} and c.org_id = ${orgId} and g.org_id = ${orgId}
-                    for update of g
-                `;
-                const rows = await tx<{ grant_id: string | null }[]>`
-                    update connector_connection
-                    set status = 'disconnected', disconnected_at = now(), api_token = null
-                    where id = ${connectionId} and org_id = ${orgId} and status = 'active'
-                      and (principal_user_id = ${userId}
-                           or (principal_user_id is null and credential = 'legacy_api_token' and ${admin}))
-                    returning grant_id
-                `;
-                if (rows.length === 0) return false;
-                const grantId = rows[0]!.grant_id;
-                if (grantId !== null) await revokeGrantIfOrphaned(tx, orgId, grantId);
-                return true;
-            });
+            // Lock order everywhere: thread advisory lock(s) in sorted root order, then the grant, then the
+            // connection (a bind share-locks it after its thread lock and never takes a grant lock). A bind that commits a new root between the root read and the
+            // update is seen after it and the transaction retries with that root locked too.
+            for (let attempt = 0; attempt < DISCONNECT_ATTEMPTS; attempt += 1) {
+                try {
+                    return await sql.begin((tx) => disconnectOnce(tx, orgId, connectionId, { userId, admin }));
+                } catch (error) {
+                    if (!(error instanceof RetryDisconnect)) throw error;
+                }
+            }
+            throw new Error('disconnect: bindings kept changing');
         },
     };
 }

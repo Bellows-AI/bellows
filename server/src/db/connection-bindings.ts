@@ -86,7 +86,8 @@ const toResolved = (row: BindableRow, source: 'explicit' | 'default'): ResolvedB
 });
 
 /**
- * The connections `userId` may bind in `orgId`: active, theirs, or a legacy org one (explicit only), and for an
+ * The connections `userId` may bind in `orgId`, share-locked so a concurrent disconnect waits for this bind's
+ * commit (and recomputes the projection with it) or is seen by it first: active, theirs, or a legacy org one (explicit only), and for an
  * OAuth connection an active grant. Anything else (another member's, another org's, disconnected) is absent.
  */
 async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[]): Promise<BindableRow[]> {
@@ -99,6 +100,7 @@ async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[
         where c.org_id = ${orgId} and c.id in ${db(ids)} and c.status = 'active'
           and (c.principal_user_id = ${userId} or (c.principal_user_id is null and c.credential = 'legacy_api_token'))
           and (c.grant_id is null or g.status = 'active')
+        for share of c
     `;
 }
 
@@ -126,6 +128,7 @@ export async function resolveBindingsInTx(db: Db, input: ResolveInput): Promise<
               and c.principal_user_id = ${executionUser} and (c.grant_id is null or g.status = 'active')
             order by c.created_at desc, c.id
             limit 2
+            for share of c
         `;
         if (candidates.length === 1) bindings.push(toResolved(candidates[0]!, 'default'));
         else if (required.has(provider)) {
