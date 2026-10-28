@@ -12,6 +12,7 @@ both the route and the web editors render from. The driver keeps its own copy in
 | Concern | Code | Test |
 | --- | --- | --- |
 | The three scopes, the scope check, `stackEnv`, the write-only secret echo | `server/src/db/env-var-store.ts`, `server/migrations/017_env_vars.sql` | `server/test-db/env-var-store.test.ts` |
+| Where a secret's value lives: the row's reference, its identity, the batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql` | `server/test-db/env-var-store.test.ts`, `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
 | Whole-list PUT, validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
 | Claim-time resolution, with `GITHUB_TOKEN`/`GH_TOKEN` dropped from it (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
 | `claimEnv`: the driver's filter and the synthesized executor-config names | `driver/src/claim.ts` | `driver/test/docker/`, `k8s/` |
@@ -28,10 +29,13 @@ both the route and the web editors render from. The driver keeps its own copy in
 
 ## Invariants
 
-- **Values sit in plaintext and must, so read access to the database is equivalent to holding every
-  runner credential.** They have to be retrieved to be injected; rotation is a re-PUT. The
-  write-only rule buys the browser, not the database: every list read nulls a secret's value in the
-  SELECT (`env-var-store.ts`, pinned by `server/test-db/env-var-store.test.ts`).
+- **A secret's value lives in the secret store, not in `env_var`**: the row keeps `secret_ref` and `secret_version`
+  (`093_env_var_secret_ref.sql`), the identity is rebuilt from the row's slot on every read, so a copied
+  reference is `identity-mismatch` (`server/src/db/env-secrets.ts`). The claim reads both formats until the
+  contract follow-up removes the plaintext one; a row that is neither, an inconclusive or failed read, a version
+  other than the stored one, or bytes that are not UTF-8 throws and rolls the claim back, a secret is never
+  dropped (`server/test-db/env-var-store.test.ts`, `server/test-db/env-secrets.claim.test.ts`). Old-format
+  secrets stay plaintext until rewritten, and every list read nulls a secret's value in the SELECT.
 - **A secret entry carrying `value: null` on a whole-list PUT SURVIVES untouched**; an omitted name
   deletes. This is the one exception to "the body is the whole truth", and it is why a non-secret
   may never carry a null value. Same test, plus `server/test/routes.env.test.ts`.

@@ -13,6 +13,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import { markExecutionsRemoved } from '../src/db/jobs/job-store-provenance.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createOrgRegistry } from '../src/orgs.js';
+import { testSecretStore } from './env-secrets-harness.js';
 import { testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { expireLease, startRow, testOrg, testUser } from './fixtures.js';
@@ -729,7 +730,13 @@ describe.skipIf(!enabled)('force-closing a live batch’s thread', () => {
 
     it('is wired to the job store’s Done on the board’s own org runtime', async () => {
         const config = testConfig();
-        const registry = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true });
+        const registry = createOrgRegistry({
+            sql,
+            ready: Promise.resolve(),
+            config,
+            withStores: true,
+            secrets: testSecretStore(sql),
+        });
         const runtime = (await registry.for(ORG))!;
         const board = runtime.batches!;
         const id = await frozen(plan([{ key: 'only', tasks: [task('a')] }]), board);

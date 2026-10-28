@@ -1,4 +1,12 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
+import type { SecretStore } from '../secrets/secret-store.js';
+import {
+    EnvSecretError,
+    envSecretIdentity,
+    readSecretValues,
+    type EncryptedEnvRow,
+    type EnvSecretScope,
+} from './env-secrets.js';
 
 /**
  * One entry in a PUT body. `value: null` is legal ONLY for a secret, and means "keep whatever is
@@ -48,6 +56,47 @@ interface Row {
     updated_at: Date;
 }
 
+interface ResolveRow {
+    name: string;
+    value: string | null;
+    is_secret: boolean;
+    secret_ref: string | null;
+    secret_version: string | null;
+    user_id: string | null;
+    repo_owner: string | null;
+    repo_name: string | null;
+    scope: 'org' | 'workspace' | 'repo';
+}
+
+const scopeOfRow = (row: ResolveRow): Scope => {
+    if (row.scope === 'workspace') return { kind: 'workspace', userId: row.user_id as string };
+    if (row.scope === 'repo') return { kind: 'repo', owner: row.repo_owner as string, name: row.repo_name as string };
+    return { kind: 'org' };
+};
+
+/**
+ * Which of the two stored formats a row is in; anything else throws. Old format: a value and no
+ * reference (a non-secret, or a secret written before 093). New: a secret with a reference and
+ * version and no value.
+ */
+const storedForm = (
+    orgId: string,
+    row: ResolveRow
+): { plaintext: string; encrypted?: undefined } | { plaintext?: undefined; encrypted: EncryptedEnvRow } => {
+    if (row.secret_ref === null && row.value !== null) return { plaintext: row.value };
+    if (row.is_secret && row.secret_ref !== null && row.value === null && row.secret_version !== null) {
+        return {
+            encrypted: {
+                name: row.name,
+                ref: row.secret_ref,
+                version: row.secret_version,
+                identity: envSecretIdentity(orgId, scopeOfRow(row), row.name),
+            },
+        };
+    }
+    throw new EnvSecretError(row.name, 'malformed-row', 'malformed-row');
+};
+
 const toRow = (row: Row): EnvVarRow => ({
     name: row.name,
     value: row.value,
@@ -74,7 +123,7 @@ export function stackEnv(
  * share their where-clauses instead of restating them — and so a fourth scope, if one ever lands,
  * is a case here and not a search for every query in the file.
  */
-type Scope = { kind: 'org' } | { kind: 'workspace'; userId: string } | { kind: 'repo'; owner: string; name: string };
+type Scope = EnvSecretScope;
 
 /**
  * The scope's predicate, built off whichever executor (pool or transaction) will run it — a
@@ -104,9 +153,12 @@ export function createEnvVarStore({
     sql,
     orgId,
     ready,
+    secrets,
 }: {
     sql: Sql;
     orgId: string;
+    /** Holds every secret's value; the claim's resolve reads it (docs/env.md). */
+    secrets: SecretStore;
     ready?: Promise<unknown>;
 }): EnvVarStore {
     const gate = async () => {
@@ -173,6 +225,27 @@ export function createEnvVarStore({
         });
     };
 
+    /**
+     * Every row's real value, in the rows' order. Two stored formats exist until the contract
+     * follow-up (docs/env.md): a secret's reference, decrypted here, or the old plaintext. A row
+     * that is neither, a failed or inconclusive read, a version other than the stored one, or bytes
+     * that are not UTF-8 throws: a secret is never dropped from an environment.
+     */
+    const valuesOf = async (rows: readonly ResolveRow[]): Promise<string[]> => {
+        const values: string[] = new Array(rows.length);
+        const encrypted: (EncryptedEnvRow & { index: number })[] = [];
+        rows.forEach((row, index) => {
+            const stored = storedForm(orgId, row);
+            if (stored.plaintext !== undefined) values[index] = stored.plaintext;
+            else encrypted.push({ ...stored.encrypted, index });
+        });
+        const read = await readSecretValues(secrets, encrypted);
+        encrypted.forEach(({ index }, i) => {
+            values[index] = read[i] as string;
+        });
+        return values;
+    };
+
     return {
         async listOrg() {
             await gate();
@@ -230,8 +303,8 @@ export function createEnvVarStore({
             // userId makes `user_id = null` never true, so an unattributed job reads no workspace
             // level — the same for a null repo. The scope check guarantees a row matched by the
             // workspace arm is a workspace row, so the case below can label it.
-            const rows = await (exec as Sql)<{ name: string; value: string; scope: 'org' | 'workspace' | 'repo' }[]>`
-                select name, value,
+            const rows = await (exec as Sql)<ResolveRow[]>`
+                select name, value, is_secret, secret_ref, secret_version, user_id, repo_owner, repo_name,
                        case
                            when user_id is not null then 'workspace'
                            when repo_owner is not null then 'repo'
@@ -245,8 +318,11 @@ export function createEnvVarStore({
                       or (repo_owner = ${owner} and repo_name = ${name})
                   )
             `;
+            const values = await valuesOf(rows);
             const pick = (scope: string): Record<string, string> =>
-                Object.fromEntries(rows.filter((row) => row.scope === scope).map((row) => [row.name, row.value]));
+                Object.fromEntries(
+                    rows.flatMap((row, i) => (row.scope === scope ? [[row.name, values[i] as string]] : []))
+                );
             return stackEnv(pick('org'), pick('workspace'), pick('repo'));
         },
     };

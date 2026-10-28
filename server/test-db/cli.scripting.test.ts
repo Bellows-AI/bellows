@@ -12,6 +12,7 @@ import { hashToken } from '../src/auth/session.js';
 import { createAuthStore } from '../src/auth/store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createOrgRegistry } from '../src/orgs.js';
+import { testSecretStore } from './env-secrets-harness.js';
 import { githubAuth, testConfig, TEST_JOB_BOARD_TOKEN } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { randomGithubId, testOrg } from './fixtures.js';
@@ -76,7 +77,7 @@ beforeEach(async () => {
     const config = testConfig({ auth: githubAuth() });
     app = await buildApp({
         config,
-        orgs: createOrgRegistry({ sql, ready, config, withStores: true }),
+        orgs: createOrgRegistry({ sql, ready, config, withStores: true, secrets: testSecretStore(sql) }),
         auth,
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),

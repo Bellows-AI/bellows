@@ -31,17 +31,21 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
   nothing. Owner is an organization (`orgId`) or a user (`userId`, `orgId` or `null` for a personal executor
   profile); a different owner, org, scope, purpose or owning record is `identity-mismatch`. Changing any of
   them needs a new secret and reference. `server/src/secrets/secret-input.ts`, `server/test/secrets.input.test.ts`.
-- **Proposed consumer mappings** (the consumer issue confirms each; `server/src/db/env-var-store.ts`, `server/src/db/connection-store.ts`, `server/migrations/054_connections.sql`):
+- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/src/db/connection-store.ts`, `server/migrations/054_connections.sql`):
 
   | Consumer | Owner | Scope | Purpose | Owning record |
   | --- | --- | --- | --- | --- |
-  | BEL-54 org env secret | organization(orgId) | organization/orgId | environment-secret | env_var row |
-  | BEL-54 workspace env secret | user(userId, orgId) | workspace/userId | environment-secret | env_var row |
-  | BEL-54 repository env secret | organization(orgId) | repository/owner/name | environment-secret | env_var row |
+  | BEL-54 org env secret | organization(orgId) | organization/orgId | environment-secret | env-var (name) |
+  | BEL-54 workspace env secret | user(userId, orgId) | workspace/userId | environment-secret | env-var (name) |
+  | BEL-54 repository env secret | organization(orgId) | repository/owner/name | environment-secret | env-var (name) |
   | BEL-59..61 org connection | organization(orgId) | connection/id | connection-grant | connection |
   | BEL-59..61 personal connection | user(owner_user_id, orgId) | connection/id | connection-grant | connection |
   | BEL-35 executor credential | user(userId, null) personal, organization(orgId) org | executor-profile/id | executor-credential | profile |
 
+- **The store owns a pool of its own**: `main.ts` builds it on a second pool, never the claim's, because the claim reads
+  environment secrets while holding a pooled connection and a store call opens its own transaction; a shared pool
+  deadlocks at `DB_POOL_MAX` concurrent claims. A consumer may call the store inside its own transaction, never with a
+  borrowed one. `server/src/main.ts`, `server/test-db/env-secrets.claim.test.ts`.
 - **The keys and the provider settings reach the dashboard process alone**, and every boot requires them (`AUTH_MODE=none` and `dashboard.offline` included): they live in
   the gitignored `secrets.env`, never `.env`, which the driver and CLIs load; only the dashboard's launchers read it, the driver deletes any
   `SECRETS_*` it is handed (the AWS and Vault settings and the static development keys and token included), and `scripts/test-jobs.sh` puts them on board launches only. Provider credentials in Kubernetes are the dashboard ServiceAccount's workload identity (IRSA, Pod Identity, or a Vault-audience projected token mounted into the dashboard container alone), never a chart value. Docker development bind-mounts the tree, so the file is

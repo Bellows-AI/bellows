@@ -3,8 +3,10 @@ import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { CreateJobStoreDeps, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createEnvVarStore } from '../src/db/env-var-store.js';
+import { EnvSecretError } from '../src/db/env-secrets.js';
 import { createUserExecutorStore } from '../src/db/user-executor-store.js';
 import { useTestDb } from './harness.js';
+import { seedEncryptedRow, testSecretStore } from './env-secrets-harness.js';
 import { account, lapseDeferral, mustCreate, randomGithubId, startRow, testOrg } from './fixtures.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -89,7 +91,7 @@ describe.runIf(enabled)('attribution', () => {
     it('carries the stacked environment on the claim, resolved for the author and repo label', async () => {
         const ENV_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, ENV_CAT_GITHUB_ID, 'env-cat');
-        const envStore = createEnvVarStore({ sql, orgId: ORG });
+        const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql) });
         await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
         await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
         await envStore.replaceRepo('Bellows-AI', 'bellows.ai', [
@@ -108,6 +110,36 @@ describe.runIf(enabled)('attribution', () => {
         await mustCreate(envAware.create('echo hi', userId, { repo: null, executor: null }));
         const second = await envAware.claim('driver-2', LEASE_SECONDS);
         expect(second?.env).toEqual({ CORE: 'workspace-value' });
+    });
+
+    it('an undecryptable secret rolls the claim back: the job stays queued and the next claim succeeds', async () => {
+        const secrets = testSecretStore(sql);
+        const envAware = createJobStore({
+            sql,
+            orgId: ORG,
+            env: createEnvVarStore({ sql, orgId: ORG, secrets }),
+        });
+        const { ref } = await seedEncryptedRow(
+            sql,
+            secrets,
+            { orgId: ORG, scope: { kind: 'org' }, name: 'LOCKED' },
+            'v'
+        );
+        await sql`update secret_version set envelope = set_byte(envelope, length(envelope) - 1,
+                  get_byte(envelope, length(envelope) - 1) # 1) where ref = ${ref}`;
+        const created = await mustCreate(envAware.create('echo hi', null, { repo: null, executor: null }));
+
+        await expect(envAware.claim('driver-1', LEASE_SECONDS)).rejects.toBeInstanceOf(EnvSecretError);
+
+        const [queued] = await sql<{ status: string; attempts: number; claimed_by: string | null }[]>`
+            select status, attempts, claimed_by from job where org_id = ${ORG} and id = ${created.id}
+        `;
+        expect(queued).toEqual({ status: 'queued', attempts: 0, claimed_by: null });
+
+        // The failed preparation leaves its reservation (issue #822); waiting it out is the lapse.
+        await lapseDeferral(sql, created.id);
+        await sql`delete from env_var where org_id = ${ORG} and name = 'LOCKED'`;
+        expect(await envAware.claim('driver-1', LEASE_SECONDS)).toMatchObject({ id: created.id, env: {} });
     });
 
     it('carries no environment when the board was built without a resolver', async () => {
@@ -185,7 +217,7 @@ describe.runIf(enabled)('attribution', () => {
         // endpoint (docs/connections.md), so neither name reaches the claim env, whatever scope
         // holds it — the PUT refuses both, and this is the claim's own guarantee.
         const userId = await account(sql, randomGithubId(), 'no-pat-cat');
-        const envStore = createEnvVarStore({ sql, orgId: ORG });
+        const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql) });
         await envStore.replaceOrg([
             { name: 'CORE', value: 'org-value', isSecret: true },
             { name: 'GITHUB_TOKEN', value: 'ghp_member', isSecret: true },
@@ -304,7 +336,7 @@ describe.runIf(enabled)('attribution', () => {
             // predates the reservation. The executor config is the member's deliberate choice for
             // the run — it must not lose to a scope that exists for other things.
             const userId = await account(sql, executorAccountId(), 'executor-owl');
-            const envStore = createEnvVarStore({ sql, orgId: ORG });
+            const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql) });
             await envStore.replaceWorkspace(userId, [
                 { name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"stale"}', isSecret: false },
             ]);

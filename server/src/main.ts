@@ -69,8 +69,13 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     });
     ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
 
+    // The store opens its own transactions, and the claim resolves environment secrets while holding one
+    // pooled connection of its own: on a shared pool, `dbPoolMax` concurrent claims would each hold the
+    // connection another's store call is waiting for. A pool of its own (connections open lazily, so an
+    // idle one costs nothing) means a store call never borrows a claim's pool (docs/secrets.md).
+    const secretSql = postgres(config.databaseUrl, { max: config.dbPoolMax });
     const secrets = createSecretStore({
-        sql,
+        sql: secretSql,
         ready,
         backend: secretBackend,
         log: (d) => console.log(`[secrets] ${JSON.stringify(d)}`),
@@ -96,7 +101,15 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         admission: config.admission,
         occupancy: (signal) => admissionOccupancy(sql, { signal }),
     });
-    const orgs = createOrgRegistry({ sql, ready, config, withStores: true, artifacts, claimMetrics: metrics.claim });
+    const orgs = createOrgRegistry({
+        sql,
+        ready,
+        config,
+        withStores: true,
+        secrets,
+        artifacts,
+        claimMetrics: metrics.claim,
+    });
 
     // Unconditional, for the same reason the job store is: the database is mandatory, so there is
     // always somewhere for accounts to live. buildApp's optional `auth` is for the route tests.
