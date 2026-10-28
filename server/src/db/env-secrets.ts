@@ -338,7 +338,10 @@ export async function releaseEnvSecrets(
     if (candidates.length === 0) return;
     let referenced: Set<string>;
     try {
-        const rows: unknown = await referencedInScope();
+        // The read is raced like every store call: a blocked scope read must not outlast the cleanup deadline.
+        const answer = await untilAborted(referencedInScope(), signal);
+        if (answer.lost) throw new Error('aborted');
+        const rows: unknown = answer.value;
         if (!Array.isArray(rows)) throw new Error('malformed');
         referenced = new Set();
         for (const row of rows as { secret_ref?: unknown }[]) {

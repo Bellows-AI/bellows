@@ -304,6 +304,34 @@ describe.skipIf(!enabled)('env secret writes go through the secret store', () =>
         expect(text).not.toContain('"D"');
     });
 
+    it('a scope re-read that never answers is cut off by the cleanup deadline and reports every candidate', async () => {
+        const spy = spySecrets(healthy);
+        const diag = captureDiagnostics();
+        const store = createEnvVarStore({
+            sql: failingPoolQuery(sql, 'select secret_ref from env_var', 'hang'),
+            orgId: ORG,
+            secrets: spy.store,
+            secretLog: diag.log,
+            writeDeadlineMs: 500,
+            cleanupDeadlineMs: 200,
+        });
+
+        const started = Date.now();
+        await rejection(
+            store.replaceOrg([
+                { name: 'D', value: 'plain-h1', isSecret: true },
+                { name: 'D', value: 'plain-h2', isSecret: true },
+            ])
+        );
+
+        expect(Date.now() - started).toBeLessThan(500 + 200 + 250);
+        expect(spy.calls.deletes).toEqual([]);
+        const reported = diag.events.filter((e) => e.event === 'cleanup-failed' && e.kind === 'delete');
+        expect(reported.map((e) => e.ref).sort()).toEqual(spy.calls.creates.map((c) => c.ref).sort());
+        expect(reported).toHaveLength(2);
+        expect(JSON.stringify(diag.events)).not.toContain('plain-h');
+    });
+
     it("a scope re-read ignores another scope's rows", async () => {
         await seedEncryptedRow(sql, healthy, { orgId: ORG, scope: REPO_SCOPE, name: 'R' }, 'repo-secret');
         const repoRef = (await storedRows()).R?.secret_ref ?? null;

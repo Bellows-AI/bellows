@@ -117,15 +117,17 @@ export function spySecrets(
 }
 
 /**
- * The pool with the tagged queries whose joined text contains `match` rejecting. `begin` and fragments pass
+ * The pool with the tagged queries whose joined text contains `match` rejecting (or never answering, in `hang` mode). `begin` and fragments pass
  * through: the transaction and the scope predicates are the real ones.
  */
-export function failingPoolQuery(sql: Sql, match: string): Sql {
+export function failingPoolQuery(sql: Sql, match: string, mode: 'reject' | 'hang' = 'reject'): Sql {
     return new Proxy(sql, {
         apply(target, thisArg, args: unknown[]) {
             const strings = args[0];
             if (Array.isArray(strings) && strings.join('?').includes(match)) {
-                return Promise.reject(new Error('simulated pool query failure'));
+                return mode === 'hang'
+                    ? new Promise(() => {})
+                    : Promise.reject(new Error('simulated pool query failure'));
             }
             return Reflect.apply(target, thisArg, args);
         },
