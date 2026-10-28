@@ -153,7 +153,7 @@ export function createHarnessOver<C extends ObjectClient>(
             payloads,
             clock,
             log,
-            deadlineMs: options.deadlineMs ?? 1500,
+            deadlineMs: options.deadlineMs ?? 3000,
             ready: options.ready,
         });
     const activeRow = async (ref: SecretRef) => {

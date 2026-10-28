@@ -179,6 +179,12 @@ export interface PostgresHarnessOptions {
     sql?: Sql;
 }
 
+/**
+ * A call a case holds at a fault step spends its own absolute deadline while held, so the default must outlast
+ * the longest hold a conformance case needs; cases that test expiry pass their own `deadlineMs`.
+ */
+const HELD_CALL_DEADLINE_MS = 3000;
+
 export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions = {}): PostgresHarness {
     const keys = options.keys ?? new MutableKeys();
     let now = Date.UTC(2026, 0, 1);
@@ -195,7 +201,7 @@ export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions 
             payloads,
             clock,
             log,
-            deadlineMs: options.deadlineMs ?? 200,
+            deadlineMs: options.deadlineMs ?? HELD_CALL_DEADLINE_MS,
             ready: options.ready,
         });
     const open = () => openWith(wrapped);

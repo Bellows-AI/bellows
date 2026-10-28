@@ -372,3 +372,38 @@ describe.skipIf(!enabled)('database faults', () => {
         }
     });
 });
+
+describe.skipIf(!enabled)('the conformance harness deadline', () => {
+    // A case that holds a call at a fault step spends the call's own absolute deadline; the default
+    // deadline must outlast any pause a case needs, so only a real store fault can expire a held call.
+    it('a call held at a fault step for longer than the old 200 ms default still completes', async () => {
+        const h = createPostgresHarness(db.sql);
+        const identity = testIdentity();
+        const store = h.open();
+        const operationId = await store.issueOperationId();
+        let release!: () => void;
+        let arrive!: () => void;
+        const gate = new Promise<void>((resolve) => {
+            release = resolve;
+        });
+        const arrived = new Promise<void>((resolve) => {
+            arrive = resolve;
+        });
+        h.faults.onStep = async (event) => {
+            if (event.step === 'after-intent' && event.operationId === operationId) {
+                arrive();
+                await gate;
+            }
+        };
+        const held = store.create({
+            identity,
+            ref: `sec_${randomUUID()}` as never,
+            operationId,
+            payload: utf8('v'),
+        });
+        await arrived;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        release();
+        expect((await held).ok).toBe(true);
+    });
+});
