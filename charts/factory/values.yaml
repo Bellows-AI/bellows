@@ -57,6 +57,11 @@ dashboard:
         maxRunning: ''
         maxRunningPerOrg: ''
         maxRunningPerRepo: ''
+    # The optional commerce service (docs/configuration.md). Off, the board opens no connection and
+    # registers no route. On, `url` and `secret.commerceToken` (at least 32 characters) are required.
+    commerce:
+        enabled: false
+        url: ''
     # The dashboard's own ServiceAccount (it ran as `default`). It carries the cloud role binding the
     # artifact store's credentials come from: annotate it with the IRSA role ARN, or bind it to a role
     # with an EKS Pod Identity association. The pod still mounts no API token (templates/deployment.yaml).
@@ -202,6 +207,9 @@ secret:
     # routes against it and the driver presents it. One value, both sides — generate with
     # `openssl rand -hex 32`. REQUIRED, at least 32 characters.
     jobBoardToken: ''
+    # The bearer secret shared with the commerce service (COMMERCE_TOKEN); read only when
+    # `dashboard.commerce.enabled`. At least 32 characters then.
+    commerceToken: ''
 
 # The secret store (docs/secrets.md). REQUIRED on every boot, `dashboard.offline` included, and wired into the
 # dashboard container only: no driver, collector or runner pod ever references the Secret this renders or
