@@ -357,6 +357,26 @@ export interface Job {
      * `get()` and `thread()`; the per-run lists answer an empty array.
      */
     questions: JobQuestion[];
+    /**
+     * The thread root's connection bindings (094), oldest first, including ones whose connection was since
+     * disconnected (`live: false`). Served by `get()` and `thread()`; the per-run lists answer an empty array.
+     */
+    connections: JobConnection[];
+    /** The thread root's `binding_revision`: what `POST /api/jobs/:id/connections` must echo. `get()`/`thread()` only, else 0. */
+    bindingRevision: number;
+    /** The providers a selected skill requires that no live binding covers, so the claim waits. `get()`/`thread()` only. */
+    integrationRequirements: { provider: string; reason: 'missing' | 'ambiguous' }[];
+}
+
+/** One bound connection as the job view shows it: ids and labels only, never a credential. */
+export interface JobConnection {
+    connectionId: string | null;
+    provider: string;
+    account: string | null;
+    site: string | null;
+    revision: number;
+    source: string;
+    live: boolean;
 }
 
 /** One question the agent asked, as validated at the door (`POST /api/jobs/:id/question`). */

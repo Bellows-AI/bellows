@@ -1,8 +1,11 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
+    INTEGRATION_PROVIDERS,
     parseSkillFrontmatter,
+    requiredProviders,
     RUNNER_TOOLS,
+    selectedBy,
     SKILL_CONNECTIONS,
     skillSelectionProblems,
     type Skill,
@@ -95,7 +98,7 @@ describe('skillSelectionProblems', () => {
     it('asks for the managed connection by its body field when the task selected none', () => {
         const [problem] = skillSelectionProblems(catalog, ['jira'], {});
         expect(problem).toBe(
-            'skill "jira" needs the jira connection: select one (jiraConnection) when creating the task'
+            'skill "jira" needs the jira connection: select one with `connections` when creating the task'
         );
     });
 
@@ -125,5 +128,31 @@ describe('skillSelectionProblems', () => {
                 .flat()
                 .every((key) => /^[A-Z][A-Z0-9_]*$/.test(key))
         ).toBe(true);
+    });
+});
+
+describe('integration providers', () => {
+    const skill = (name: string, connections: string[]): Skill => ({
+        name,
+        description: 'd',
+        requires: { tools: [], connections },
+    });
+    const catalog = [skill('jira', ['jira']), skill('github', ['github']), skill('gates', [])];
+
+    it('github is a legacy repository capability and never selectable', () => {
+        expect(INTEGRATION_PROVIDERS.github.kind).toBe('legacy-repository-capability');
+        expect(selectedBy('github')).toBeNull();
+    });
+
+    it('jira is selected by connections', () => {
+        expect(INTEGRATION_PROVIDERS.jira.kind).toBe('connection');
+        expect(selectedBy('jira')).toBe('connections');
+        expect(selectedBy('nope')).toBeNull();
+    });
+
+    it('requiredProviders lists the bindable providers the selected skills need, github never', () => {
+        expect(requiredProviders(catalog, ['jira', 'github', 'gates'])).toEqual(['jira']);
+        expect(requiredProviders(catalog, ['github', 'gates'])).toEqual([]);
+        expect(requiredProviders(catalog, ['jira', 'jira', 'unknown'])).toEqual(['jira']);
     });
 });

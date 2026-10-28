@@ -58,7 +58,7 @@ async function running(connectionId: string | null): Promise<{ id: string; claim
     const ref = await jobs.create('look at ABC-1', OWNER.id, {
         repo: null,
         executor: null,
-        jiraConnectionId: connectionId,
+        connectionIds: connectionId ? [connectionId] : [],
     });
     if (typeof ref === 'string') throw new Error(`create refused: ${ref}`);
     const claim = (await jobs.claim('w1', LEASE_SECONDS)) as Claim;
@@ -85,47 +85,6 @@ describe.skipIf(!enabled)('connection store — scoping', () => {
         expect(ids).not.toContain(theirs.id);
         expect(ids).not.toContain(foreign.id);
         expect(JSON.stringify(await store.list(OWNER.id))).not.toContain(API_TOKEN);
-    });
-
-    it('authorizes org-owned for anyone, personal only for its owner, and nothing across orgs', async () => {
-        const orgOwned = await newConnection(null);
-        const mine = await newConnection(OWNER.id);
-        expect(await store.authorizedFor(STRANGER.id, orgOwned.id)).toBe(true);
-        expect(await store.authorizedFor(OWNER.id, mine.id)).toBe(true);
-        expect(await store.authorizedFor(STRANGER.id, mine.id)).toBe(false);
-        expect(await otherOrgStore.authorizedFor(OWNER.id, orgOwned.id)).toBe(false);
-    });
-
-    it("defaults to the user's newest own connection, else the org's newest, never another member's or org's", async () => {
-        const [row] = await sql<{ id: string }[]>`
-            insert into app_user (github_user_id, github_login)
-            values (${Math.floor(Math.random() * 1e9) + 1e6}, ${`conn-newcomer-${crypto.randomUUID()}`})
-            returning id
-        `;
-        const newcomer = row!.id;
-        await otherOrgStore.create({
-            ownerUserId: newcomer,
-            site: 'other.atlassian.net',
-            cloudId: 'cloud-2',
-            email: 'x@example.com',
-            apiToken: API_TOKEN,
-            access: 'read',
-        });
-        await newConnection(STRANGER.id);
-        const olderOrg = await newConnection(null);
-        const newerOrg = await newConnection(null);
-        expect(await store.defaultFor(newcomer)).toBe(newerOrg.id);
-        expect(olderOrg.id).not.toBe(newerOrg.id);
-        const own = await store.create({
-            ownerUserId: newcomer,
-            site: 'example.atlassian.net',
-            cloudId: 'cloud-1',
-            email: 'agent@example.com',
-            apiToken: API_TOKEN,
-            access: 'read',
-        });
-        await newConnection(null);
-        expect(await store.defaultFor(newcomer)).toBe(own.id);
     });
 
     it('disconnects personal for its owner and org-owned only for an admin', async () => {
@@ -201,10 +160,9 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
         expect(await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).toBe(false);
     });
 
-    it('a migrated binding keeps its frozen account after the connection is disconnected', async () => {
+    it('a binding keeps its frozen account after the connection is disconnected', async () => {
         await join(OWNER);
         const mine = await newConnection(OWNER.id);
-        // `running` creates through the legacy jira_connection_id path, which the 094 rollout trigger mirrors.
         const bound = await running(mine.id);
         await store.disconnect(mine.id, { userId: OWNER.id, admin: false });
         const [binding] = await sql<{ connection_id: string; external_account_id: string; source: string }[]>`
@@ -213,7 +171,7 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
         expect(binding).toEqual({
             connection_id: mine.id,
             external_account_id: 'agent@example.com',
-            source: 'migrated',
+            source: 'explicit',
         });
     });
 
@@ -365,7 +323,10 @@ describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
         await join(OWNER);
         const strangers = await newConnection(STRANGER.id);
         await join(STRANGER);
-        const other = await running(strangers.id);
+        // The create would refuse another member's connection; a binding written around it must still not serve.
+        await store.disconnect(mine.id, { userId: OWNER.id, admin: false });
+        const other = await running(null);
+        await bind(other.id, strangers.id);
         expect(await check(other.id, other.claim.leaseToken)).toEqual({ ok: false, reason: 'revoked' });
     });
 
@@ -383,8 +344,9 @@ describe.skipIf(!enabled)('connection of lease — the proxy check', () => {
     });
 
     it('a disconnected connection is refused revoked on the next call', async () => {
-        const connection = await newConnection(OWNER.id);
+        // The task is created first: with a personal connection already there it would bind that one by default.
         const { id, claim } = await running(null);
+        const connection = await newConnection(OWNER.id);
         await bind(id, connection.id);
         expect((await check(id, claim.leaseToken)).ok).toBe(true);
         await store.disconnect(connection.id, { userId: OWNER.id, admin: false });

@@ -148,11 +148,12 @@ where id = root_job_id
       where b.org_id = job.org_id and b.root_job_id = job.id and b.source = 'migrated'
   );
 
--- The frozen execution identity: an old pod never writes the column, so this rejects only new-code bugs.
+-- The frozen execution identity: an old pod never writes the column, so this rejects only new-code bugs. The
+-- one change allowed is to null: deleting the account nulls the column through its foreign key.
 create or replace function job_execution_user_immutable() returns trigger
 language plpgsql as $$
 begin
-    if new.execution_user_id is distinct from old.execution_user_id then
+    if new.execution_user_id is not null and new.execution_user_id is distinct from old.execution_user_id then
         raise exception 'job.execution_user_id is immutable once set' using errcode = '23514';
     end if;
     return new;

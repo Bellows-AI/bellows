@@ -16,6 +16,7 @@ import {
 import { bad, body, guard } from '../helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
+import { parseConnectionIds } from '../connections.js';
 import type { Job, SettleOutcome } from '../../db/jobs/job-store-types.js';
 import {
     HTTP_ACCEPTED,
@@ -55,17 +56,67 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     // impersonation applies word for word here.
     const createdBy = callerOf(request)?.user.id ?? null;
 
-    const idempotency = idempotencyOf(request, reply, 'follow-up', { id, command: commandResult.value });
+    const connectionIds = parseConnectionIds(fields.connections);
+    if (typeof connectionIds === 'string') return bad(reply, ERROR_CODES.BAD_CONNECTION, connectionIds);
+
+    const idempotency = idempotencyOf(request, reply, 'follow-up', {
+        id,
+        command: commandResult.value,
+        connections: fields.connections,
+    });
     if (!idempotency.ok) return reply;
 
     const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job follow-up failed'),
-        () => store.createFollowUp(id, commandResult.value, createdBy, idempotency.value)
+        () => store.createFollowUp(id, commandResult.value, createdBy, idempotency.value, connectionIds)
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return followUpRefusal(reply, created.value);
     return sendQueued(reply, created.value);
+}
+
+// BEL-59: the owner's answer to an open integration requirement — bind one of their own connections to the
+// thread. The store decides who owns the thread (anyone else is a 404) and the revision race (409).
+export async function handleBindConnection(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
+    const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
+    if (!route) return reply;
+    const { store, id } = route;
+    const userId = callerOf(request)?.user.id ?? null;
+    if (userId === null) return notFoundJob(reply);
+
+    const { connectionId, bindingRevision } = body(request.body);
+    if (typeof connectionId !== 'string' || !UUID.test(connectionId)) {
+        return bad(reply, ERROR_CODES.BAD_CONNECTION, 'connectionId must be a connection id');
+    }
+    if (typeof bindingRevision !== 'number' || !Number.isInteger(bindingRevision) || bindingRevision < 0) {
+        return bad(reply, ERROR_CODES.BAD_CONNECTION, 'bindingRevision must be a non-negative integer');
+    }
+
+    const bound = await guard(
+        reply,
+        (e) => request.log.error({ err: e }, 'job connection bind failed'),
+        () => store.bindConnection(id, { connectionId, bindingRevision }, userId)
+    );
+    if (!bound.ok) return reply;
+    if (bound.value.ok) return reply.code(HTTP_OK).send({ bindingRevision: bound.value.revision });
+    switch (bound.value.reason) {
+        case 'missing':
+            return notFoundJob(reply);
+        case 'stale-revision':
+            return reply
+                .code(HTTP_CONFLICT)
+                .send({ error: 'The task bindings changed; reload it', code: ERROR_CODES.BINDING_REVISION_STALE });
+        case 'duplicate':
+            return bad(reply, ERROR_CODES.BAD_CONNECTION, 'That connection is already bound to this task');
+        case 'not-authorized':
+            return bad(
+                reply,
+                ERROR_CODES.CONNECTION_NOT_AUTHORIZED,
+                'That connection does not exist or is not available to you. Pick one from GET /api/connections.',
+                HTTP_FORBIDDEN
+            );
+    }
 }
 
 // Retry (issue #326): re-run the thread head's command as a FRESH attempt in the same thread — no

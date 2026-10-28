@@ -1,4 +1,5 @@
 import type { Sql, TransactionSql } from 'postgres';
+import { INTEGRATION_PROVIDERS, selectedBy } from '@factory-ai/core';
 
 /**
  * Which connections a task thread uses (094). The bindings belong to the thread ROOT and are append-only: each
@@ -10,7 +11,17 @@ import type { Sql, TransactionSql } from 'postgres';
 type Db = Sql | TransactionSql;
 
 /** Providers a task can bind a connection for. GitHub is a repository capability, never bindable. */
-export const BINDABLE_PROVIDERS: readonly string[] = ['jira'];
+export const BINDABLE_PROVIDERS: readonly string[] = Object.keys(INTEGRATION_PROVIDERS).filter(
+    (provider) => selectedBy(provider) !== null
+);
+
+/** A create or follow-up named connections its author may not bind: the store's refusal, rolling the transaction back. */
+export class ConnectionRefusedError extends Error {
+    constructor(readonly reason: 'not-authorized' | 'duplicate') {
+        super(`connections refused: ${reason}`);
+        this.name = 'ConnectionRefusedError';
+    }
+}
 
 export type BindingSource = 'explicit' | 'default' | 'follow_up' | 'requirement' | 'migrated';
 
@@ -230,6 +241,8 @@ export interface BindingRecord {
     credential: string;
     externalAccountId: string | null;
     resource: string | null;
+    /** The connection's site while its row exists; the history keeps the frozen account and resource only. */
+    site: string | null;
     revision: number;
     source: BindingSource;
     /** The connection still exists and is active: a deleted or disconnected one stays in the history. */
@@ -244,12 +257,13 @@ export async function bindingsOf(db: Db, orgId: string, rootJobId: string): Prom
             credential: string;
             external_account_id: string | null;
             resource: string | null;
+            site: string | null;
             revision: number;
             source: BindingSource;
             live: boolean;
         }[]
     >`
-        select b.connection_id, b.provider, b.credential, b.external_account_id, b.resource, b.revision, b.source,
+        select b.connection_id, b.provider, b.credential, b.external_account_id, b.resource, c.site, b.revision, b.source,
                (c.id is not null and c.status = 'active') as live
         from job_connection_binding b
         left join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id
@@ -262,6 +276,7 @@ export async function bindingsOf(db: Db, orgId: string, rootJobId: string): Prom
         credential: r.credential,
         externalAccountId: r.external_account_id,
         resource: r.resource,
+        site: r.site,
         revision: r.revision,
         source: r.source,
         live: r.live,
@@ -282,4 +297,33 @@ export async function requirementsOf(db: Db, orgId: string, rootJobId: string): 
         order by created_at, id
     `;
     return rows.map((r) => ({ provider: r.provider, reason: r.reason, createdAt: r.created_at.toISOString() }));
+}
+
+/**
+ * The required providers (of `required`) the root has no live binding for. A read that throws propagates:
+ * only a confirmed answer inside the caller's locked transaction licenses recording a requirement.
+ */
+export async function unboundProvidersInTx(
+    db: Db,
+    args: { orgId: string; rootJobId: string; required: readonly string[] }
+): Promise<string[]> {
+    if (args.required.length === 0) return [];
+    const live = new Set(
+        (await bindingsOf(db, args.orgId, args.rootJobId)).filter((b) => b.live).map((b) => b.provider)
+    );
+    return args.required.filter((provider) => !live.has(provider));
+}
+
+/** Records an open `missing` requirement per provider; one already open stays as it is. */
+export async function recordMissingInTx(
+    db: Db,
+    args: { orgId: string; rootJobId: string; providers: readonly string[] }
+): Promise<void> {
+    for (const provider of args.providers) {
+        await db`
+            insert into job_integration_requirement (org_id, root_job_id, provider, reason)
+            values (${args.orgId}, ${args.rootJobId}, ${provider}, 'missing')
+            on conflict do nothing
+        `;
+    }
 }

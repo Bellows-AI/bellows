@@ -88,37 +88,22 @@ function parseConnection(fields: Record<string, unknown>): ParsedConnection | st
 const signInRequired = (reply: FastifyReply) =>
     reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
 
+/** The most connections one create or follow-up may name. */
+export const MAX_TASK_CONNECTIONS = 8;
+
 /**
- * The task-create check (issue #546): the connection a task selects must be one its author may
- * use now — org-owned in this org, or the author's own. A task that names none gets the author's
- * default injected (`defaultFor`); a skill never names a connection. `handled` means a refusal
- * already landed on `reply`.
+ * A body's `connections`: an array of at most `MAX_TASK_CONNECTIONS` distinct connection ids (absent or null is
+ * none), or the sentence it is refused with. Who may bind each id is the store's (`resolveBindingsInTx`); a
+ * skill never names a connection.
  */
-export async function resolveJiraConnection(
-    orgs: OrgRegistry,
-    ctx: { request: FastifyRequest; reply: FastifyReply; createdBy: string | null },
-    raw: unknown
-): Promise<{ handled: true } | { handled: false; id: string | null }> {
-    const { request, reply, createdBy } = ctx;
-    const store = (await orgs.for(orgOf(request)))?.connections;
-    if (raw === undefined || raw === null) {
-        if (!store || createdBy === null) return { handled: false, id: null };
-        return { handled: false, id: await store.defaultFor(createdBy) };
+export function parseConnectionIds(raw: unknown): string[] | string {
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw) || !raw.every((id) => typeof id === 'string' && UUID.test(id))) {
+        return 'connections must be an array of connection ids';
     }
-    if (typeof raw !== 'string' || !UUID.test(raw)) {
-        bad(reply, ERROR_CODES.BAD_CONNECTION, 'jiraConnection must be a connection id');
-        return { handled: true };
-    }
-    if (!store || createdBy === null || !(await store.authorizedFor(createdBy, raw))) {
-        bad(
-            reply,
-            ERROR_CODES.CONNECTION_NOT_AUTHORIZED,
-            'That Jira connection does not exist or is not available to you. Pick one from GET /api/connections.',
-            HTTP_FORBIDDEN
-        );
-        return { handled: true };
-    }
-    return { handled: false, id: raw };
+    if (raw.length > MAX_TASK_CONNECTIONS) return `connections takes at most ${MAX_TASK_CONNECTIONS} ids`;
+    if (new Set(raw).size !== raw.length) return 'connections must not repeat an id';
+    return raw as string[];
 }
 
 export interface ConnectionRoutesDeps {

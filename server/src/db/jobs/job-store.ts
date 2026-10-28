@@ -20,6 +20,7 @@
  * of them: the decisions here look simplifiable and mostly are not.
  */
 
+import { bindConnectionRow } from './job-store-connections.js';
 import {
     createJobRow,
     createFollowUpRow,
@@ -263,9 +264,24 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return createJobRow(ctx, command, createdBy, target);
         },
 
-        async createFollowUp(parentId, command, createdBy, idempotency) {
+        // The rest tuple keeps the interface's five parameters (the params ceiling is for hand-written signatures).
+        async createFollowUp(
+            ...[parentId, command, createdBy, idempotency, connectionIds]: Parameters<JobStore['createFollowUp']>
+        ) {
             await gate();
-            return createFollowUpRow(ctx.sql, { orgId: ctx.orgId, parentId, command, createdBy, idempotency });
+            return createFollowUpRow(ctx.sql, {
+                orgId: ctx.orgId,
+                parentId,
+                command,
+                createdBy,
+                idempotency,
+                connectionIds,
+            });
+        },
+
+        async bindConnection(id, input, userId) {
+            await gate();
+            return bindConnectionRow(ctx.sql, { orgId: ctx.orgId, id, userId, ...input });
         },
 
         async createRetry(id, createdBy, idempotency) {

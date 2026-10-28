@@ -7,7 +7,7 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | --- | --- | --- |
 | The table, the proxy's per-call SQL check over the thread's `job_connection_binding` rows | `server/migrations/054_connections.sql`, `server/migrations/094_integration_connections.sql`, `server/src/db/connection-store.ts` (`createConnectionOfLease`) | `server/test-db/connection-store.test.ts` |
 | Create, list (the generic view), disconnect; who may own an org-wide one; site and credential shape | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
-| Task selection: `jiraConnection` on `POST /api/jobs` | `server/src/routes/connections.ts` (`resolveJiraConnection`), `server/src/db/connection-store.ts` (`defaultFor`), `server/src/db/jobs/job-store-actions.ts` | `server/test/routes.connections.test.ts`, `server/test-db/connection-store.test.ts` |
+| Task selection: `connections` on `POST /api/jobs` and `/:id/follow-up`, the owner's `POST /api/jobs/:id/connections` | `server/src/routes/connections.ts` (`parseConnectionIds`), `server/src/db/connection-bindings.ts`, `server/src/db/jobs/job-store-actions.ts` | `server/test/routes.jobs-connections.test.ts`, `server/test-db/job-store.connection-bindings.test.ts` |
 | The settings panels (Organization, Workspace) | `web/src/panels/JiraConnectionsPanel.tsx`, `JiraConnectionsSection.tsx`, `web/src/components/JiraConnectionDialog.tsx`, `web/src/api/connections.ts` | `web/test/jira-connections-panel.render.test.tsx`, `web/test/jira-connections.dom.test.tsx`, `e2e/jira-connections.spec.ts` |
 | CLI: `connection list`, `job create --jira-connection`, `job preflight` | `cli/src/run.ts`, `cli/src/selection.ts`, `cli/src/diagnostics.ts`, `cli/src/board.ts` | `cli/test/discovery.test.ts`, `cli/test/diagnostics.test.ts` |
 | The Jira proxy | `server/src/routes/connector-jira.ts` | `server/test/routes.connector-jira.test.ts` |
@@ -34,7 +34,9 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
   and the root's execution user must still be a member (and the owner of a personal one); two live bindings
   refuse `ambiguous`, and nothing in the request names a connection. `server/test-db/connection-store.test.ts`.
 - **Selection is the root task's bindings, stamped at create**; follow-ups, retries and workflow nodes read the
-  root's. `server/src/db/connection-store.ts`.
+  root's. A personal connection binds by default only when it is the lone candidate; a legacy org one binds only
+  when named. A provider a selected skill requires with no live binding is an open requirement: the claim never
+  offers the queued root and spends no attempt. `server/test-db/job-store.connection-bindings.test.ts`.
 - **Org-wide connections are admin-created; personal ones are the owner's.** The proxy forwards GET and HEAD
   only, reaches `rest/api/3/*` on the connection's cloud id, and `site` must be `*.atlassian.net`.
   `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts`.

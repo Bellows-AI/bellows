@@ -230,6 +230,16 @@ describe.skipIf(!enabled)('094_integration_connections', () => {
         expect(row!.execution_user_id).toBe(author);
     });
 
+    it('deleting the account nulls execution_user_id through its foreign key and keeps the job', async () => {
+        const leaver = await insertUser();
+        const id = await oldJob(org, leaver);
+        await pool`delete from app_user where id = ${leaver}`;
+        const [row] = await pool<{ execution_user_id: string | null }[]>`
+            select execution_user_id from job where org_id = ${org} and id = ${id}
+        `;
+        expect(row!.execution_user_id).toBeNull();
+    });
+
     it('an old-pod hard delete of a bound connection keeps the binding row with connection_id null', async () => {
         await pool`delete from connector_connection where id = ${personal}`;
         const [row] = await pool<{ connection_id: string | null; external_account_id: string }[]>`
