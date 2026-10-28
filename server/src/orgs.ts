@@ -7,6 +7,7 @@ import { createBatchPrObserver, createReadPause, type BatchPrObserver } from './
 import { createPrFollower, type PrFollower } from './pr-follower.js';
 import { createBatchStore } from './db/batches/batch-store.js';
 import type { BatchStore } from './db/batches/batch-store-types.js';
+import { createConnectionGrants, type ConnectionGrants } from './db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
 import type { SecretStore } from './secrets/secret-store.js';
@@ -68,6 +69,8 @@ export interface OrgRuntime {
     artifacts?: ArtifactStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
+    /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
+    connectionGrants?: ConnectionGrants | undefined;
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
@@ -147,6 +150,7 @@ function buildOrgStores({
     prFollower: PrFollower;
     batchMerger: BatchMerger | undefined;
     connections: ConnectionStore;
+    connectionGrants: ConnectionGrants;
     userExecutors: UserExecutorStore;
     prs: PrLifecycleStore;
     jobs: JobStore;
@@ -155,6 +159,7 @@ function buildOrgStores({
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets });
     const connections = createConnectionStore({ sql, orgId, ready });
+    const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
@@ -237,6 +242,7 @@ function buildOrgStores({
         prFollower,
         batchMerger,
         connections,
+        connectionGrants,
         userExecutors,
         prs,
         jobs,
@@ -253,6 +259,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.prFollower = stores.prFollower;
     runtime.batchMerger = stores.batchMerger;
     runtime.connections = stores.connections;
+    runtime.connectionGrants = stores.connectionGrants;
     runtime.userExecutors = stores.userExecutors;
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;

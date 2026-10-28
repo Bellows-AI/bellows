@@ -12,7 +12,7 @@ import type { OrgRegistry } from '../orgs.js';
 import { bad, body, guard } from './helpers.js';
 
 /**
- * The commerce surface (094; docs/commerce.md), registered only when COMMERCE_ENABLED. `GET` is a member's
+ * The commerce surface (095; docs/commerce.md), registered only when COMMERCE_ENABLED. `GET` is a member's
  * read of their own org's pushed plan; `PUT` is the commerce service's push, behind its own credential
  * (`enforceCommerce`). A 200 on the push means the plan committed; a lost 200 is safe because the
  * service's retry answers 200 too.

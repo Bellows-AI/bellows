@@ -1,4 +1,4 @@
-import { connectionEnvNames, MANAGED_CONNECTIONS, type Skill } from '@factory-ai/core';
+import { connectionEnvNames, selectedBy, type Skill } from '@factory-ai/core';
 import type { FastifyPluginAsync } from 'fastify';
 
 /**
@@ -18,9 +18,7 @@ export const skillRoutes =
                     name,
                     env: connectionEnvNames(name),
                     // A managed connection holds no env: the task selects it by this body field.
-                    selectedBy: Object.hasOwn(MANAGED_CONNECTIONS, name)
-                        ? MANAGED_CONNECTIONS[name as keyof typeof MANAGED_CONNECTIONS]
-                        : null,
+                    selectedBy: selectedBy(name),
                 })),
             },
         }));

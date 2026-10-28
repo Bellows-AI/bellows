@@ -199,6 +199,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // hand — and all fall through to 'user'.
     ['/api/jobs/:id/follow-up', 'user'],
     ['/api/jobs/:id/retry', 'user'],
+    // The owner binds a connection of their own to the thread (BEL-59): a person's action, never a worker's.
+    ['/api/jobs/:id/connections', 'user'],
     ['/api/jobs/:id/done', 'user'],
     // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
     // token un-closing tasks it never held would move audit rows for no run it owns.

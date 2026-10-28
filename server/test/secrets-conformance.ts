@@ -166,7 +166,13 @@ function identityVariants(base: SecretIdentity): Array<[string, SecretIdentity]>
     const variants: Array<[string, SecretIdentity]> = [
         [
             'scope type',
-            { ...base, scope: { ...base.scope, type: base.scope.type === 'connection' ? 'repository' : 'connection' } },
+            {
+                ...base,
+                scope: {
+                    ...base.scope,
+                    type: base.scope.type === 'integration-grant' ? 'repository' : 'integration-grant',
+                },
+            },
         ],
         ['scope id', { ...base, scope: { ...base.scope, id: `${base.scope.id}-x` } }],
         [

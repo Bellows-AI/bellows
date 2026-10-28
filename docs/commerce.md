@@ -7,7 +7,7 @@ Optional link to an external commerce service, off by default: the service pushe
 | Concern | Code | Test |
 | --- | --- | --- |
 | `COMMERCE_ENABLED`, `COMMERCE_URL`, `COMMERCE_TOKEN` ([configuration.md](configuration.md)) | `server/src/config-commerce.ts` | `server/test/config.commerce.test.ts` |
-| `org_plan` and the usage outbox `commerce_usage_report` | `server/migrations/094_commerce.sql` | `server/test-db/commerce-store.test.ts` |
+| `org_plan` and the usage outbox `commerce_usage_report` | `server/migrations/095_commerce.sql` | `server/test-db/commerce-store.test.ts` |
 | Outbox: enqueue closed claims, token-checked lease and settle, member read | `server/src/db/commerce-store.ts` | `server/test-db/commerce-store.test.ts` |
 | Plan push write: one guarded upsert, org existence decided by the write | `server/src/db/commerce-plan-writer.ts` | `server/test-db/commerce-plan-writer.test.ts` |
 | Outbound `POST {COMMERCE_URL}/v1/orgs/{orgId}/usage` | `server/src/commerce/commerce-client.ts` | `server/test/commerce-client.test.ts` |

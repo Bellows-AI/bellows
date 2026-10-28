@@ -89,7 +89,7 @@ export interface AppDeps {
     githubCredentialOfLease?: GithubCredentialOfLease | undefined;
     githubMint?: GithubMint | undefined;
     fetchFn?: typeof fetch | undefined;
-    /** The commerce service's plan push (094); the routes exist exactly when COMMERCE_ENABLED and this is present. */
+    /** The commerce service's plan push (095); the routes exist exactly when COMMERCE_ENABLED and this is present. */
     commercePlanWriter?: CommercePlanWriter | undefined;
     cloudIdLookup?: CloudIdLookup | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */

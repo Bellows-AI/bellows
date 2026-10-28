@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import { ConnectionRefusedError } from '../src/db/connection-bindings.js';
 import type { ConnectionStore, ConnectionView, NewConnection } from '../src/db/connection-store.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
@@ -41,11 +42,14 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
     const rows: (NewConnection & { id: string })[] = [];
     const view = (row: NewConnection & { id: string }): ConnectionView => ({
         id: row.id,
-        kind: 'jira',
+        provider: 'jira',
+        credential: 'legacy_api_token',
+        ownership: row.ownerUserId === null ? 'legacy-org' : 'personal',
+        principal: row.ownerUserId === null ? null : 'self',
         site: row.site,
-        email: row.email,
+        account: row.email,
         access: row.access,
-        scope: row.ownerUserId === null ? 'org' : 'user',
+        status: 'active',
         createdAt: '2026-10-08T00:00:00.000Z',
     });
     return {
@@ -58,14 +62,13 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
             rows.push(row);
             return view(row);
         },
-        async authorizedFor(userId, id) {
-            return rows.some((r) => r.id === id && (r.ownerUserId === null || r.ownerUserId === userId));
+        async candidates(userId, provider) {
+            return rows
+                .filter((r) => r.ownerUserId === userId && provider === 'jira')
+                .map(view)
+                .reverse();
         },
-        async defaultFor(userId) {
-            const newest = (owner: string | null) => rows.findLast((r) => r.ownerUserId === owner)?.id;
-            return newest(userId) ?? newest(null) ?? null;
-        },
-        async remove(id, { userId, admin }) {
+        async disconnect(id, { userId, admin }) {
             const at = rows.findIndex(
                 (r) => r.id === id && (r.ownerUserId === userId || (r.ownerUserId === null && admin))
             );
@@ -82,10 +85,17 @@ async function boot() {
     const member = auth.seedMember('test-org', 'octocat');
     const other = auth.seedMember('test-org', 'hubot');
     const connections = memoryConnections();
-    const created: { connection: string | null | undefined }[] = [];
+    const created: { connections: string[] | undefined }[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
-        async create(_command: string, _by: string | null, target: { jiraConnectionId?: string | null }) {
-            created.push({ connection: target.jiraConnectionId });
+        // The store resolves and authorizes; the double refuses what no row of this fake grants `by`.
+        async create(_command: string, by: string | null, target: { connectionIds?: string[] }) {
+            for (const id of target.connectionIds ?? []) {
+                const row = connections.rows.find((r) => r.id === id);
+                if (!row || (row.ownerUserId !== null && row.ownerUserId !== by)) {
+                    throw new ConnectionRefusedError('not-authorized');
+                }
+            }
+            created.push({ connections: target.connectionIds });
             return { id: crypto.randomUUID() };
         },
     });
@@ -133,7 +143,7 @@ describe('connection routes', () => {
             payload: SITE,
         });
         expect(res.statusCode).toBe(HTTP_CREATED);
-        expect(res.json()).toMatchObject({ site: 'example.atlassian.net', access: 'read', scope: 'user' });
+        expect(res.json()).toMatchObject({ site: 'example.atlassian.net', access: 'read', ownership: 'personal' });
         expect(res.body).not.toContain(API_TOKEN);
         expect(connections.rows[0]).toMatchObject({ cloudId: CLOUD_ID, apiToken: API_TOKEN });
         const list = await instance.inject({
@@ -161,7 +171,7 @@ describe('connection routes', () => {
             payload: { ...SITE, scope: 'org', access: 'write' },
         });
         expect(allowed.statusCode).toBe(HTTP_CREATED);
-        expect(allowed.json()).toMatchObject({ scope: 'org', access: 'write' });
+        expect(allowed.json()).toMatchObject({ ownership: 'legacy-org', access: 'write' });
     });
 
     it.each([
@@ -227,10 +237,61 @@ describe('connection routes', () => {
         expect(mine.statusCode).toBe(HTTP_NO_CONTENT);
         expect(connections.rows).toHaveLength(0);
     });
+
+    it('DELETE disconnects and answers 204; another member id answers 404', async () => {
+        const { instance, cookie, connections } = await boot();
+        const created = await instance.inject({
+            method: 'POST',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+            payload: SITE,
+        });
+        const { id } = created.json() as { id: string };
+        const foreign = await instance.inject({
+            method: 'DELETE',
+            url: `/api/connections/${id}`,
+            headers: { cookie: cookie.other },
+        });
+        expect(foreign.statusCode).toBe(HTTP_NOT_FOUND);
+        expect(connections.rows).toHaveLength(1);
+        const mine = await instance.inject({
+            method: 'DELETE',
+            url: `/api/connections/${id}`,
+            headers: { cookie: cookie.member },
+        });
+        expect(mine.statusCode).toBe(HTTP_NO_CONTENT);
+        expect(mine.body).toBe('');
+    });
+
+    it('list carries ownership and credential and no token', async () => {
+        const { instance, cookie } = await boot();
+        await instance.inject({
+            method: 'POST',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+            payload: SITE,
+        });
+        const list = await instance.inject({
+            method: 'GET',
+            url: '/api/connections',
+            headers: { cookie: cookie.member },
+        });
+        const [row] = list.json().connections as Record<string, unknown>[];
+        expect(row).toMatchObject({
+            provider: 'jira',
+            credential: 'legacy_api_token',
+            ownership: 'personal',
+            principal: 'self',
+            account: 'agent@example.com',
+            status: 'active',
+        });
+        expect(Object.keys(row!).join()).not.toMatch(/token|secret/i);
+        expect(list.body).not.toContain(API_TOKEN);
+    });
 });
 
-describe('selecting a connection for a task', () => {
-    const create = (instance: FastifyInstance, cookie: string, jiraConnection?: unknown) =>
+describe('selecting connections for a task', () => {
+    const create = (instance: FastifyInstance, cookie: string, connections?: unknown) =>
         instance.inject({
             method: 'POST',
             url: '/api/jobs',
@@ -238,11 +299,11 @@ describe('selecting a connection for a task', () => {
             payload: {
                 repo: 'Bellows-AI/bellows.ai',
                 command: 'look at ABC-1',
-                ...(jiraConnection === undefined ? {} : { jiraConnection }),
+                ...(connections === undefined ? {} : { connections }),
             },
         });
 
-    it('stamps an authorized connection on the created task', async () => {
+    it('hands the store the named connection ids', async () => {
         const { instance, cookie, created } = await boot();
         const made = await instance.inject({
             method: 'POST',
@@ -250,12 +311,12 @@ describe('selecting a connection for a task', () => {
             headers: { cookie: cookie.member },
             payload: SITE,
         });
-        const res = await create(instance, cookie.member, made.json().id);
+        const res = await create(instance, cookie.member, [made.json().id]);
         expect(res.statusCode).toBe(HTTP_CREATED);
-        expect(created).toEqual([{ connection: made.json().id }]);
+        expect(created).toEqual([{ connections: [made.json().id] }]);
     });
 
-    it("refuses another member's connection and an unknown id, creating nothing", async () => {
+    it("answers the store's refusal of another member's or an unknown connection as 403, creating nothing", async () => {
         const { instance, cookie, created } = await boot();
         const made = await instance.inject({
             method: 'POST',
@@ -264,14 +325,14 @@ describe('selecting a connection for a task', () => {
             payload: SITE,
         });
         for (const id of [made.json().id, crypto.randomUUID()]) {
-            const res = await create(instance, cookie.other, id);
+            const res = await create(instance, cookie.other, [id]);
             expect(res.statusCode).toBe(HTTP_FORBIDDEN);
             expect(res.json()).toMatchObject({ code: 'CONNECTION_NOT_AUTHORIZED' });
         }
         expect(created).toEqual([]);
     });
 
-    it('lets every member select an org-owned connection, and refuses a malformed id', async () => {
+    it('lets a member name a legacy org connection, and refuses a malformed id', async () => {
         const { instance, cookie, created } = await boot();
         const org = await instance.inject({
             method: 'POST',
@@ -279,53 +340,16 @@ describe('selecting a connection for a task', () => {
             headers: { cookie: cookie.admin },
             payload: { ...SITE, scope: 'org' },
         });
-        expect((await create(instance, cookie.other, org.json().id)).statusCode).toBe(HTTP_CREATED);
+        expect((await create(instance, cookie.other, [org.json().id])).statusCode).toBe(HTTP_CREATED);
         expect(created).toHaveLength(1);
-        const bad = await create(instance, cookie.other, 'not-a-uuid');
+        const bad = await create(instance, cookie.other, ['not-a-uuid']);
         expect(bad.statusCode).toBe(HTTP_BAD_REQUEST);
         expect(bad.json()).toMatchObject({ code: 'BAD_CONNECTION' });
     });
 
-    it('creates a task with no connection when none is named and none exists', async () => {
+    it('creates a task with no connections when none is named: the store, not the route, picks a default', async () => {
         const { instance, cookie, created } = await boot();
         expect((await create(instance, cookie.member)).statusCode).toBe(HTTP_CREATED);
-        expect(created).toEqual([{ connection: null }]);
-    });
-
-    it("injects the author's own connection, else the org-wide one, when none is named", async () => {
-        const { instance, cookie, created } = await boot();
-        const add = async (who: 'admin' | 'member', scope: 'org' | 'user') =>
-            (
-                await instance.inject({
-                    method: 'POST',
-                    url: '/api/connections',
-                    headers: { cookie: cookie[who] },
-                    payload: { ...SITE, scope },
-                })
-            ).json().id as string;
-        const org = await add('admin', 'org');
-        const own = await add('member', 'user');
-        await create(instance, cookie.member);
-        await create(instance, cookie.other);
-        await create(instance, cookie.other, null);
-        expect(created).toEqual([{ connection: own }, { connection: org }, { connection: org }]);
-    });
-
-    it('keeps a named connection over the injected default', async () => {
-        const { instance, cookie, created } = await boot();
-        const org = await instance.inject({
-            method: 'POST',
-            url: '/api/connections',
-            headers: { cookie: cookie.admin },
-            payload: { ...SITE, scope: 'org' },
-        });
-        await instance.inject({
-            method: 'POST',
-            url: '/api/connections',
-            headers: { cookie: cookie.member },
-            payload: SITE,
-        });
-        await create(instance, cookie.member, org.json().id);
-        expect(created).toEqual([{ connection: org.json().id }]);
+        expect(created).toEqual([{ connections: [] }]);
     });
 });

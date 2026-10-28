@@ -56,7 +56,11 @@ test('a member reads the list with no controls, and a forced org create is a 403
     await setRole(MEMBER_ROLE);
     await page.goto('/settings/organization');
 
-    await expect(panel(page).getByRole('row').filter({ hasText: SITE })).toBeVisible();
+    const row = panel(page).getByRole('row').filter({ hasText: SITE });
+    await expect(row).toBeVisible();
+    await expect(row).toContainText('Legacy API token');
+    await expect(row).toContainText('Shared (legacy)');
+    await expect(row).not.toContainText('OAuth');
     await expect(panel(page).getByRole('button')).toHaveCount(0);
     await expect(panel(page).getByRole('textbox')).toHaveCount(0);
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-member.png`, fullPage: true });

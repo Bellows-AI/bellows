@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 
 /**
- * One org's commerce state (094; docs/commerce.md): the outbox of closed claims owed to the commerce
+ * One org's commerce state (095; docs/commerce.md): the outbox of closed claims owed to the commerce
  * service, and the member read of the plan it pushed. The minutes are read from `job_execution` when a row
  * is leased, never stored again; the outbox records only delivery. A leased row carries a token and a
  * deadline, and a settle applies only while its token still stands, so a replica whose lease lapsed

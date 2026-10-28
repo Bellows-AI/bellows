@@ -18,7 +18,7 @@ export const RUNNER_TOOLS = ['acli', 'curl', 'gh', 'git'] as const;
  * A connection is a named integration; the env names the board must hold for it in the task's
  * resolved env (org, workspace, repository scopes — docs/env.md). Presence is checked, never value.
  * A MANAGED connection (docs/connections.md) holds no env names: the board keeps the credential, so
- * it is listed in `MANAGED_CONNECTIONS` instead.
+ * it is listed in `INTEGRATION_PROVIDERS` instead.
  */
 export const SKILL_CONNECTIONS = {
     github: [],
@@ -26,13 +26,22 @@ export const SKILL_CONNECTIONS = {
 } as const satisfies Record<string, readonly string[]>;
 
 /**
- * Managed connections, each to the `POST /api/jobs` body field that selects it for a task — or null
- * for `github`, which the task never selects: the org's GitHub App installation provides it.
+ * The integrations a skill may require. A `connection` provider is bound to a task through the
+ * `connections` field of `POST /api/jobs`; `github` is a legacy repository capability the task never
+ * selects: the org's GitHub App installation provides it.
  */
-export const MANAGED_CONNECTIONS = { github: null, jira: 'jiraConnection' } as const satisfies Record<
-    keyof typeof SKILL_CONNECTIONS,
-    string | null
->;
+export const INTEGRATION_PROVIDERS = {
+    github: { kind: 'legacy-repository-capability' },
+    jira: { kind: 'connection' },
+} as const satisfies Record<keyof typeof SKILL_CONNECTIONS, { kind: 'connection' | 'legacy-repository-capability' }>;
+
+/** The field that selects a provider for a task, or null for a provider the task never selects. */
+export function selectedBy(provider: string): 'connections' | null {
+    return Object.hasOwn(INTEGRATION_PROVIDERS, provider) &&
+        INTEGRATION_PROVIDERS[provider as keyof typeof INTEGRATION_PROVIDERS].kind === 'connection'
+        ? 'connections'
+        : null;
+}
 
 export interface SkillRequirements {
     tools: string[];
@@ -134,10 +143,20 @@ export function connectionEnvNames(connection: string): readonly string[] {
 
 /** What a task lacking a managed connection must do: select it, or (github) install the App. */
 function managedProblem(skill: string, connection: string): string {
-    const field = MANAGED_CONNECTIONS[connection as keyof typeof MANAGED_CONNECTIONS];
-    return field === null
+    return selectedBy(connection) === null
         ? `skill "${skill}" needs the ${connection} connection: install the GitHub App on this organization`
-        : `skill "${skill}" needs the ${connection} connection: select one (${field}) when creating the task`;
+        : `skill "${skill}" needs the ${connection} connection: select one with \`connections\` when creating the task`;
+}
+
+/** The bindable providers the selected skills require, in first-seen order; github is never one. */
+export function requiredProviders(catalog: readonly Skill[], selected: readonly string[]): string[] {
+    const providers: string[] = [];
+    for (const name of selected) {
+        for (const connection of catalog.find((skill) => skill.name === name)?.requires.connections ?? []) {
+            if (selectedBy(connection) !== null && !providers.includes(connection)) providers.push(connection);
+        }
+    }
+    return providers;
 }
 
 /**
@@ -160,7 +179,7 @@ export function skillSelectionProblems(
             continue;
         }
         for (const connection of skill.requires.connections) {
-            if (Object.hasOwn(MANAGED_CONNECTIONS, connection)) {
+            if (Object.hasOwn(INTEGRATION_PROVIDERS, connection)) {
                 if (!managed.includes(connection)) problems.push(managedProblem(name, connection));
                 continue;
             }

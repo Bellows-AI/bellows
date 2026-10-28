@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 
 /**
- * The inbound plan push (094; docs/commerce.md). It takes the org per call, like `createAuthStore`: deciding
+ * The inbound plan push (095; docs/commerce.md). It takes the org per call, like `createAuthStore`: deciding
  * whether the org exists is its job, and `orgs.for()` answers null on a database failure too, so a null
  * runtime must never be read as "unknown org". One guarded upsert, then a classifying re-read in the same
  * transaction; two replicas taking the same or different versions converge on the newest, decided once.
