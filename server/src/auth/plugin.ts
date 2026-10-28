@@ -151,6 +151,7 @@ const COMMERCE_ROUTES: readonly RegExp[] = [/^\/api\/commerce\/orgs\/[^/]+\/plan
 type Requirement = 'open' | 'user' | 'worker' | 'branch' | 'ingest' | 'connector' | 'commerce';
 
 /** Exported so the enforcement test can drive the table rather than re-deriving it. */
+/** `path` is a registered route pattern (`/api/jobs/:id/heartbeat`), not a request URL. */
 export function requirementFor(path: string): Requirement {
     if (!path.startsWith('/api/')) return 'open';
     if (OPEN_ROUTES.some((route) => route.test(path))) return 'open';
@@ -163,20 +164,37 @@ export function requirementFor(path: string): Requirement {
 }
 
 /**
- * The path the router matches, not the one the client spelled: find-my-way percent-decodes the static
- * segments (`/api/%63ommerce` reaches `/api/commerce`), so the credential class must be chosen on the decoded
- * form or an encoded spelling slips past every pattern below. `decodeURI` leaves the reserved escapes
- * (`%2F`...) encoded, as the router does. A malformed encoding stays as written: the router cannot match it
- * either, so it can never reach a route under a weaker class.
+ * The class of a request no API handler serves (unmatched, or a document route): the raw URL, normalised as
+ * far as is cheap (no query or fragment, decoded, one slash, lower case), through the same table. No handler
+ * sits behind it, so a misjudged spelling can wall or open a 404, never a route. Unmatched `/api/...` walls
+ * as `user`; a disabled route's spelling still meets its own answer (`commerce` -> 404, the webhook -> 404).
  */
-const pathOf = (url: string): string => {
-    const cut = url.indexOf('?');
+const fallbackFor = (url: string): Requirement => {
+    const cut = url.search(/[?#]/);
     const raw = cut === -1 ? url : url.slice(0, cut);
+    let path = raw;
     try {
-        return decodeURI(raw);
+        path = decodeURI(raw);
     } catch {
-        return raw;
+        // A malformed encoding stays as written: no handler is behind it.
     }
+    const normal = path.replace(/\/{2,}/g, '/').toLowerCase();
+    return normal === '/api' ? 'user' : requirementFor(normal);
+};
+
+/**
+ * The credential class of the route the router matched, never of a re-parse of `request.url`: the pattern is
+ * source text, with no encoding, `#`, `?`, case or slash variants, so the class and the handler come from one
+ * parse. Routing runs before `onRequest`; `routeOptions.url` is the registered pattern.
+ */
+const patternOf = (request: FastifyRequest): string | undefined => {
+    const pattern = request.is404 ? undefined : request.routeOptions.url;
+    return pattern?.startsWith('/api/') ? pattern : undefined;
+};
+
+const requirementOf = (request: FastifyRequest): Requirement => {
+    const pattern = patternOf(request);
+    return pattern === undefined ? fallbackFor(request.url) : requirementFor(pattern);
 };
 
 /** Constant-time equality for two secrets that arrived as strings. */
@@ -186,6 +204,9 @@ function secretsMatch(provided: string, expected: string): boolean {
     if (a.length !== b.length) return false;
     return timingSafeEqual(a, b);
 }
+
+/** A worker pattern that names its row: the job or reclaim id is the router's `:id` param. */
+const ROW_PATTERN = /^\/api\/(jobs|reclaims)\/:id\//;
 
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_FORBIDDEN = 403;
@@ -280,8 +301,8 @@ export async function resolveBearer(request: FastifyRequest, reply: FastifyReply
                 .send({ error: 'Invalid access token', code: ERROR_CODES.UNAUTHENTICATED });
             return true;
         }
-        const path = pathOf(request.url);
-        if (!orgTokenAllowed(request.method, path)) {
+        const pattern = patternOf(request);
+        if (pattern === undefined || !orgTokenAllowed(request.method, pattern)) {
             await reply
                 .code(HTTP_FORBIDDEN)
                 .send({ error: 'Organization tokens can only read', code: ERROR_CODES.FORBIDDEN });
@@ -351,7 +372,7 @@ async function enforceBranch(deps: BranchAuthDeps, request: FastifyRequest, repl
 }
 
 async function enforceConnector(request: FastifyRequest, reply: FastifyReply): Promise<void> {
-    const urlJobId = pathOf(request.url).match(/^\/api\/jobs\/([^/]+)\//)?.[1];
+    const urlJobId = (request.params as { id?: string }).id;
     const jobId = request.headers[JOB_ID_HEADER];
     const leaseToken = request.headers[LEASE_TOKEN_HEADER];
     if (typeof jobId === 'string' && jobId === urlJobId && typeof leaseToken === 'string' && leaseToken) return;
@@ -418,11 +439,11 @@ async function enforceWorker(deps: WorkerAuthDeps, request: FastifyRequest, repl
     // the same terms instead of slipping through with a null org — which the route's storeOf()
     // would turn into a 503 before its own id validation ran — and so a resolver is never handed a
     // string postgres would refuse to cast.
-    const path = pathOf(request.url);
-    const rowId = path.match(/^\/api\/jobs\/([^/]+)\//)?.[1] ?? path.match(/^\/api\/reclaims\/([^/]+)\//)?.[1];
+    const pattern = patternOf(request) ?? '';
+    const rowId = ROW_PATTERN.test(pattern) ? (request.params as { id?: string }).id : undefined;
     let orgId: string | null = null;
     if (rowId && UUID.test(rowId)) {
-        orgId = path.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
+        orgId = pattern.startsWith('/api/reclaims/') ? await reclaimOrgOf(rowId) : await jobOrgOf(rowId);
     }
     if (rowId && !orgId) {
         await reply.code(HTTP_NOT_FOUND).send({ error: 'No such job', code: ERROR_CODES.NOT_FOUND });
@@ -482,7 +503,7 @@ export async function registerAuth(
     app.decorateRequest('auth', null);
 
     const enforce = (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
-        const requirement = requirementFor(pathOf(request.url));
+        const requirement = requirementOf(request);
         if (requirement === 'open') return Promise.resolve();
         if (requirement === 'ingest') return enforceIngest(auth, request, reply);
         if (requirement === 'connector') return enforceConnector(request, reply);
