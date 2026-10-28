@@ -31,9 +31,9 @@ spec:
                 app.kubernetes.io/component: dashboard
             annotations:
                 {{- include "factory.secretChecksum" . | nindent 16 }}
-                {{- with .Values.podAnnotations }}
-                {{- toYaml . | nindent 16 }}
-                {{- end }}
+                {{- /* The IRSA webhook injects the role's token and AWS_* variables into every container, init
+                containers included; the init container needs none of it, and a pod annotation cannot widen this. */}}
+                {{- toYaml (set (deepCopy (.Values.podAnnotations | default dict)) "eks.amazonaws.com/skip-containers" "wait-for-database") | nindent 16 }}
         spec:
             serviceAccountName: {{ include "factory.fullname" . }}-dashboard
             # The dashboard calls no Kubernetes API; a mounted token would only be something to steal.
@@ -208,9 +208,13 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: job-board-token
                                 optional: true
-                      # The secret store's keys (docs/secrets.md): this container only, none optional
-                      # — a dashboard that cannot decrypt must not come up. The active key id is not
-                      # secret. Required on `dashboard.offline` too.
+                      # The secret store (docs/secrets.md): this container only, none optional — a
+                      # dashboard that cannot decrypt must not come up. The backend, the active key id
+                      # and the provider settings are not secret. Required on `dashboard.offline` too.
+                      # The data keys exist in database mode alone; an external backend has none.
+                      - name: SECRETS_BACKEND
+                        value: {{ .Values.secretStore.backend | quote }}
+                      {{- if eq .Values.secretStore.backend "database" }}
                       - name: SECRETS_DATA_KEYS
                         valueFrom:
                             secretKeyRef:
@@ -218,6 +222,7 @@ spec:
                                 key: data-keys
                       - name: SECRETS_ACTIVE_KEY_ID
                         value: {{ .Values.secretStore.activeKeyId | quote }}
+                      {{- end }}
                       - name: SECRETS_OPERATION_KEY
                         valueFrom:
                             secretKeyRef:
@@ -228,6 +233,12 @@ spec:
                             secretKeyRef:
                                 name: {{ include "factory.secretStoreSecretName" . }}
                                 key: fingerprint-key
+                      {{- if eq .Values.secretStore.backend "aws" }}
+                      - name: SECRETS_AWS_REGION
+                        value: {{ .Values.secretStore.aws.region | quote }}
+                      - name: SECRETS_AWS_PREFIX
+                        value: {{ .Values.secretStore.aws.prefix | quote }}
+                      {{- end }}
                   {{- with .Values.dashboard.resources }}
                   resources:
                       {{- toYaml . | nindent 22 }}

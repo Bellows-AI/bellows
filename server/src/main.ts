@@ -17,9 +17,8 @@ import { createOrgRegistry } from './orgs.js';
 import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
-import { createPostgresSecretStore } from './secrets/postgres-secret-store.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
-import { loadSecretKeys } from './secrets/secret-keys.js';
+import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
@@ -50,9 +49,10 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     }
 
     // Required on every boot, offline included: a dashboard that cannot decrypt must not come up and
-    // look healthy. Throws a message naming the variable, never its value. Read here and handed to
-    // the store only, so the keys never ride the config into the routes (docs/secrets.md).
-    const secretKeys = loadSecretKeys(process.env);
+    // look healthy. The backend (database, aws) is chosen by SECRETS_BACKEND, which has no default. Throws a
+    // message naming the variable, never its value. Read here and handed to the store only, so the keys
+    // and provider settings never ride the config into the routes (docs/secrets.md).
+    const secretBackend = loadSecretBackend(process.env);
 
     // One pool, and one `migrate()`, for every feature sharing the schema. Two runners would
     // race each other.
@@ -69,10 +69,10 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     });
     ready.catch((e: Error) => console.error(`[migrate] giving up: ${e.message}`));
 
-    const secrets = createPostgresSecretStore({
+    const secrets = createSecretStore({
         sql,
         ready,
-        keys: secretKeys,
+        backend: secretBackend,
         log: (d) => console.log(`[secrets] ${JSON.stringify(d)}`),
     });
 

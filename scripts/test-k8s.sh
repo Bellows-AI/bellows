@@ -72,6 +72,7 @@ SECRET32="$(printf '%032d' 0)"
 # fixed throwaway keys of the right shape; the cluster phase refills them per run.
 secret_store_sets() { # secret_store_sets <dataKey> <operationKey> <fingerprintKey> (base64, 32 bytes each) — (re)fills SECRET_STORE_SETS
     SECRET_STORE_SETS=(
+        --set secretStore.backend=database
         --set-string "secretStore.dataKeys=k1:$1"
         --set secretStore.activeKeyId=k1
         --set-string "secretStore.operationKey=$2"
@@ -345,11 +346,12 @@ init_pod="$(awk '/^ +containers:$/ { exit } { print }' <<<"$secret_store_doc")"
     ok 'the secret-store Secret is referenced by the dashboard container alone' ||
     bad 'the secret-store Secret is referenced by the dashboard container alone' \
         "dashboard container: $(grep -c -- "-secret-store" <<<"$dashboard_pod"), whole render: $(grep -c -- "-secret-store" "$work/rendered.yaml")"
-[ "$(grep -c 'SECRETS_' "$work/rendered.yaml")" = 4 ] && [ "$(grep -c 'SECRETS_' <<<"$dashboard_pod")" = 4 ] &&
+[ "$(grep -c 'SECRETS_' "$work/rendered.yaml")" = 5 ] && [ "$(grep -c 'SECRETS_' <<<"$dashboard_pod")" = 5 ] &&
     ok 'no SECRETS_ variable is rendered outside the dashboard container' ||
     bad 'no SECRETS_ variable is rendered outside the dashboard container' \
         "whole render: $(grep -c 'SECRETS_' "$work/rendered.yaml"), dashboard container: $(grep -c 'SECRETS_' <<<"$dashboard_pod")"
 expect_not_contains 'the wait-db init container carries no secret-store key' "$init_pod" 'SECRETS_'
+expect_contains 'the database backend is selected explicitly' "$dashboard_pod" 'value: "database"'
 expect_not_contains 'the secret-store keys are not in a ConfigMap or the collector config' \
     "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' "$work/rendered.yaml")" 'SECRETS_'
 
@@ -687,7 +689,7 @@ expect_not_contains 'selectors carry no managed-by'     "$selectors" 'managed-by
 byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set secret.existingSecret=mine \
     --set auth.publicUrl=https://f.example --set auth.oauthClientId=c --set github.appId=1 \
     --set artifacts.s3.bucket=factory-artifacts --set artifacts.s3.region=us-east-1 \
-    --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
+    --set secretStore.backend=database --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
 expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
     'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
@@ -752,6 +754,12 @@ refuses 'offline still refuses a missing board token' 'secret.jobBoardToken of a
     "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secret.jobBoardToken=
 refuses 'no Secret at all is refused' 'secret.existingSecret is empty' "${GH_SETS[@]}" --set secret.create=false
 # The secret store's keys are required on every render, the no-fetch entry included.
+refuses 'a missing backend is refused' 'secretStore.backend is required' "${GH_SETS[@]}" --set secretStore.backend=
+refuses 'an unknown backend is refused' 'secretStore.backend is required' "${GH_SETS[@]}" --set secretStore.backend=vault
+refuses 'offline still refuses a missing backend' 'secretStore.backend is required' \
+    "${LOCAL_SETS[@]}" "${AUTH_SETS[@]}" --set secretStore.backend=
+refuses 'aws settings under the database backend are refused' 'are for secretStore.backend aws' \
+    "${GH_SETS[@]}" --set secretStore.aws.region=eu-west-1
 refuses 'a missing data key is refused' 'secretStore.dataKeys is required' "${GH_SETS[@]}" --set-string secretStore.dataKeys=
 refuses 'a missing active key id is refused' 'secretStore.activeKeyId is required' "${GH_SETS[@]}" --set secretStore.activeKeyId=
 refuses 'a missing operation key is refused' 'secretStore.operationKey is required' "${GH_SETS[@]}" --set-string secretStore.operationKey=
@@ -763,6 +771,54 @@ refuses 'a managed dashboard Secret alone does not cover the secret-store keys' 
 byo_store="$(gh_render --set secretStore.existingSecret=managed-keys --set-string secretStore.dataKeys= --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
 expect_contains 'a managed secret-store Secret is the one the dashboard references' "$byo_store" 'name: managed-keys'
 expect_not_contains 'a managed secret-store Secret is not also created' "$byo_store" "name: $RELEASE-factory-secret-store"
+
+# The aws backend (docs/secrets.md): the provider settings reach the dashboard container alone, the Secret
+# holds no data key, and workload identity comes from the dashboard ServiceAccount's annotations.
+AWS_SETS=(
+    --set secretStore.backend=aws --set secretStore.aws.region=eu-west-1 --set secretStore.aws.prefix=factory/test
+    --set-string secretStore.dataKeys= --set secretStore.activeKeyId=
+)
+aws_render="$(gh_render "${AWS_SETS[@]}" --set 'dashboard.serviceAccount.annotations.eks\.amazonaws\.com/role-arn=arn:aws:iam::000000000000:role/example')"
+aws_doc="$(awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep' <<<"$aws_render")"
+aws_dashboard="$(awk '/^ +containers:$/ { on = 1 } on' <<<"$aws_doc" | awk '/^ +- name: dashboard$/ { on = 1 } /^ +volumes:$/ { on = 0 } on')"
+expect_contains 'the aws backend is selected explicitly' "$aws_dashboard" 'value: "aws"'
+expect_contains 'the dashboard container gets the aws region' "$aws_dashboard" 'value: "eu-west-1"'
+expect_contains 'the dashboard container gets the aws prefix' "$aws_dashboard" 'value: "factory/test"'
+[ "$(grep -c 'SECRETS_' <<<"$aws_render")" = 5 ] && [ "$(grep -c 'SECRETS_' <<<"$aws_dashboard")" = 5 ] &&
+    ok 'every aws-mode SECRETS_ variable is in the dashboard container alone' ||
+    bad 'every aws-mode SECRETS_ variable is in the dashboard container alone' \
+        "whole render: $(grep -c 'SECRETS_' <<<"$aws_render"), dashboard container: $(grep -c 'SECRETS_' <<<"$aws_dashboard")"
+expect_not_contains 'an aws store renders no data-key variable' "$aws_render" 'SECRETS_DATA_KEYS'
+expect_not_contains 'an aws store renders no active-key-id variable' "$aws_render" 'SECRETS_ACTIVE_KEY_ID'
+expect_not_contains 'an aws store references no data-keys entry' "$aws_render" 'data-keys'
+expect_contains 'an aws store still holds the operation and fingerprint keys' "$aws_render" 'fingerprint-key:'
+expect_not_contains 'no init container carries a provider setting' "$(awk '/^ +containers:$/ { exit } { print }' <<<"$aws_doc")" 'SECRETS_'
+expect_not_contains 'no ConfigMap or collector config carries a provider setting' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /configmap|collector/) } keep' <<<"$aws_render")" 'SECRETS_'
+expect_not_contains 'the driver deployment carries no provider setting' \
+    "$(awk '/^# Source:/ { keep = ($0 ~ /driver-deployment.yaml$/) } keep' <<<"$aws_render")" 'SECRETS_'
+aws_pod_annotations="$(awk '/^ +template:$/ { on = 1 } /^ +spec:$/ { on = 0 } on' <<<"$aws_doc")"
+expect_contains 'the IRSA webhook skips the wait-for-database init container, so the role token reaches the dashboard container only' \
+    "$aws_pod_annotations" 'eks.amazonaws.com/skip-containers: wait-for-database'
+skip_override="$(gh_render "${AWS_SETS[@]}" --set 'podAnnotations.eks\.amazonaws\.com/skip-containers=dashboard' |
+    awk '/^# Source:/ { keep = ($0 ~ /templates\/deployment.yaml$/) } keep')"
+[ "$(grep -c 'eks.amazonaws.com/skip-containers' <<<"$skip_override")" = 1 ] &&
+    expect_contains 'a user pod annotation cannot widen the container exclusion' "$skip_override" 'skip-containers: wait-for-database' ||
+    bad 'a user pod annotation cannot widen the container exclusion' 'the key is rendered more than once'
+aws_account="$(awk '/^# Source:.*dashboard-serviceaccount.yaml$/ { keep = 1; next } /^# Source:/ { keep = 0 } keep' <<<"$aws_render")"
+expect_contains 'the IRSA role rides the dashboard ServiceAccount' "$aws_account" 'eks.amazonaws.com/role-arn'
+[ "$(grep -c 'eks.amazonaws.com/role-arn' <<<"$aws_render")" = 1 ] && ok 'the IRSA role is on one ServiceAccount only' ||
+    bad 'the IRSA role is on one ServiceAccount only' "found $(grep -c 'eks.amazonaws.com/role-arn' <<<"$aws_render")"
+refuses 'an aws store without a region is refused' 'secretStore.aws.region is required' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set secretStore.aws.region=
+refuses 'an aws store without a prefix is refused' 'secretStore.aws.prefix is required' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set secretStore.aws.prefix=
+refuses 'data keys under the aws backend are refused' 'are for secretStore.backend database' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set-string secretStore.dataKeys=k1:AAAA
+refuses 'an aws store without an operation key is refused' 'secretStore.operationKey is required' \
+    "${GH_SETS[@]}" "${AWS_SETS[@]}" --set-string secretStore.operationKey=
+aws_byo="$(gh_render "${AWS_SETS[@]}" --set secretStore.existingSecret=managed-keys --set-string secretStore.operationKey= --set-string secretStore.fingerprintKey=)"
+expect_contains 'a managed secret-store Secret serves the aws backend too' "$aws_byo" 'name: managed-keys'
 
 # --- The optional ingress (#359): off by default, never disagreeing with auth.publicUrl --------
 
@@ -1623,11 +1679,11 @@ kubectl wait --for=condition=available \
     ok 'the dashboard, driver, database and collector come up' || \
     bad 'the dashboard, driver, database and collector come up' \
         "$(kubectl get pods -n "$NAMESPACE" | tail -5)"
-# Key isolation, live (docs/secrets.md): the dashboard container holds all four secret-store variables and
-# no container of the driver pod holds one.
+# Key isolation, live (docs/secrets.md): the dashboard container holds all five secret-store variables (the
+# backend and four keys) and no container of the driver pod holds one.
 dash_vars="$(kubectl exec "deploy/$RELEASE-factory" -c dashboard -n "$NAMESPACE" --request-timeout=20s -- env 2>/dev/null | grep -c '^SECRETS_')"
-[ "$dash_vars" = 4 ] && ok 'the dashboard pod has the four secret-store variables' ||
-    bad 'the dashboard pod has the four secret-store variables' "found $dash_vars"
+[ "$dash_vars" = 5 ] && ok 'the dashboard pod has the five secret-store variables' ||
+    bad 'the dashboard pod has the five secret-store variables' "found $dash_vars"
 driver_vars=0
 for container in $(kubectl get "deploy/$RELEASE-factory-driver" -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[*].name}'); do
     driver_vars=$((driver_vars + $(kubectl exec "deploy/$RELEASE-factory-driver" -c "$container" -n "$NAMESPACE" --request-timeout=20s -- env 2>/dev/null | grep -c '^SECRETS_')))

@@ -2,14 +2,16 @@ import postgres from 'postgres';
 import { resolveConfig } from '../config.js';
 import { parseRotateArgs } from './rotate-args.js';
 import { createPostgresSecretStore } from './postgres-secret-store.js';
-import { loadSecretKeys, type SecretKeys } from './secret-keys.js';
+import { rotationKeys } from './secret-backend.js';
+import type { SecretKeys } from './secret-keys.js';
 
 /*
  * The key-rotation maintenance command (docs/secrets.md). It reads the same key environment as the
  * dashboard, so it runs where that environment already is: `npm run secrets:rotate` on a checkout,
  * `kubectl exec deploy/<release>-factory -c dashboard -- node server/dist/secrets/rotate-cli.js` on
- * Kubernetes. Exit 0: rotation finished, or the retired key names no stored version. Exit 1: rows
- * remain or a write failed (a rerun resumes). Exit 2: usage or configuration.
+ * Kubernetes. It applies to SECRETS_BACKEND=database only: an external backend has no data keys, so it exits 2
+ * there. Exit 0: rotation finished, or the retired key names no stored version. Exit 1: rows remain or a write
+ * failed (a rerun resumes). Exit 2: usage or configuration.
  */
 const USAGE = 'usage: rotate-cli [--batch <n>] | --verify-retired <keyId>';
 
@@ -22,7 +24,7 @@ async function main(): Promise<number> {
     let keys: SecretKeys;
     let databaseUrl: string;
     try {
-        keys = loadSecretKeys(process.env);
+        keys = rotationKeys(process.env);
         databaseUrl = resolveConfig({ env: process.env, github: { mode: 'none' } }).config.databaseUrl;
     } catch (e) {
         console.error((e as Error).message);

@@ -49,6 +49,7 @@ const e2eKey = (fill: string) => Buffer.alloc(E2E_KEY_BYTES, fill).toString('bas
 const shared = {
     WEB_ROOT: `${root}web/dist`,
     TELEMETRY_SOURCE: 'postgres',
+    SECRETS_BACKEND: 'database',
     SECRETS_DATA_KEYS: `e2e:${e2eKey('a')}`,
     SECRETS_ACTIVE_KEY_ID: 'e2e',
     SECRETS_OPERATION_KEY: e2eKey('b'),

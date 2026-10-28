@@ -3,10 +3,11 @@ import { CONTENT_TYPE_HEADER, JSON_CONTENT_TYPE } from '@factory-ai/core';
 import type { Credentials } from './sigv4.js';
 
 /**
- * Where the S3 backend gets credentials, in order: static keys from a Secret, then EKS Pod
+ * Where the S3 backend and the secret store get credentials, in order: static keys, then EKS Pod
  * Identity, then IRSA web identity. The first source that is configured wins; a configured source
  * that fails is an error, never a fall-through to the next, so a broken role binding is not
- * mistaken for "no credentials needed".
+ * mistaken for "no credentials needed". Every fetch is bounded, and a failure is a `CredentialError`
+ * that names the source and the status and never carries a response body.
  */
 
 export interface CredentialSources {
@@ -18,15 +19,39 @@ export interface CredentialSources {
     fetch?: typeof fetch;
     readFile?: (path: string) => Promise<string>;
     now?: () => number;
+    /** Bounds each credential fetch, body included; a hung endpoint must not pin the refresh forever. */
+    fetchTimeoutMs?: number;
 }
 
-export type CredentialProvider = () => Promise<Credentials>;
+/**
+ * `fresh` skips the cache: the caller learned the cached credentials were refused (an expired token), so a
+ * refetch cannot wait for the stated expiry. Concurrent callers still share one fetch.
+ */
+export type CredentialProvider = (options?: { fresh?: boolean }) => Promise<Credentials>;
+
+/**
+ * `misconfigured`: the source is absent or refused (a status the caller cannot fix by waiting, a missing token
+ * file); `unavailable`: it did not answer in time or answered with a server error.
+ */
+export class CredentialError extends Error {
+    constructor(
+        message: string,
+        readonly kind: 'misconfigured' | 'unavailable'
+    ) {
+        super(message);
+    }
+}
 
 /** Refetch this long before the stated expiry, so a request never signs with a key about to lapse. */
 const MS_PER_MINUTE = 60_000;
 const REFRESH_MARGIN_MINUTES = 5;
 const REFRESH_MARGIN_MS = REFRESH_MARGIN_MINUTES * MS_PER_MINUTE;
-const ERROR_DETAIL_CHARS = 200;
+const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
+const HTTP_REQUEST_TIMEOUT = 408;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_CLIENT_ERROR = 400;
+const HTTP_SERVER_ERROR = 500;
+const UNREADABLE_TOKEN_FILE = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR']);
 
 interface ExpiringKeys {
     AccessKeyId: string;
@@ -46,7 +71,22 @@ function fromExpiring(keys: ExpiringKeys): Credentials {
 }
 
 async function failed(what: string, response: Response): Promise<never> {
-    throw new Error(`${what} answered ${response.status}: ${(await response.text()).slice(0, ERROR_DETAIL_CHARS)}`);
+    await response.body?.cancel().catch(() => undefined);
+    const status = response.status;
+    const refused = status >= HTTP_CLIENT_ERROR && status < HTTP_SERVER_ERROR;
+    const retryable = status === HTTP_REQUEST_TIMEOUT || status === HTTP_TOO_MANY_REQUESTS;
+    throw new CredentialError(`${what} answered ${status}`, refused && !retryable ? 'misconfigured' : 'unavailable');
+}
+
+/** Anything a source throws that is not already typed: a missing token file is configuration, the rest is transient. */
+function typed(what: string, error: unknown): CredentialError {
+    if (error instanceof CredentialError) {
+        return error;
+    }
+    const code = (error as { code?: unknown } | null)?.code;
+    return typeof code === 'string' && UNREADABLE_TOKEN_FILE.has(code)
+        ? new CredentialError(`${what} token file is unreadable`, 'misconfigured')
+        : new CredentialError(`${what} did not answer`, 'unavailable');
 }
 
 export function createCredentialProvider(sources: CredentialSources): CredentialProvider {
@@ -54,6 +94,7 @@ export function createCredentialProvider(sources: CredentialSources): Credential
     const doFetch = sources.fetch ?? fetch;
     const read = sources.readFile ?? ((path: string) => readFile(path, 'utf8'));
     const now = sources.now ?? Date.now;
+    const timeoutMs = sources.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
 
     const podIdentityUri = env.AWS_CONTAINER_CREDENTIALS_FULL_URI?.trim();
     const podIdentityTokenFile = env.AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE?.trim();
@@ -61,30 +102,42 @@ export function createCredentialProvider(sources: CredentialSources): Credential
     const roleArn = env.AWS_ROLE_ARN?.trim();
 
     async function podIdentity(uri: string, tokenFile: string): Promise<Credentials> {
-        const response = await doFetch(uri, { headers: { authorization: (await read(tokenFile)).trim() } });
-        if (!response.ok) return failed('EKS Pod Identity', response);
-        return fromExpiring((await response.json()) as ExpiringKeys);
+        try {
+            const response = await doFetch(uri, {
+                headers: { authorization: (await read(tokenFile)).trim() },
+                signal: AbortSignal.timeout(timeoutMs),
+            });
+            if (!response.ok) return await failed('EKS Pod Identity', response);
+            return fromExpiring((await response.json()) as ExpiringKeys);
+        } catch (error) {
+            throw typed('EKS Pod Identity', error);
+        }
     }
 
     async function webIdentity(tokenFile: string, arn: string): Promise<Credentials> {
         const endpoint = env.AWS_ENDPOINT_URL_STS?.trim() || `https://sts.${region}.amazonaws.com`;
-        const body = new URLSearchParams({
-            Action: 'AssumeRoleWithWebIdentity',
-            Version: '2011-06-15',
-            RoleArn: arn,
-            RoleSessionName: env.AWS_ROLE_SESSION_NAME?.trim() || 'factory-dashboard',
-            WebIdentityToken: (await read(tokenFile)).trim(),
-        });
-        const response = await doFetch(endpoint, {
-            method: 'POST',
-            headers: { accept: JSON_CONTENT_TYPE, [CONTENT_TYPE_HEADER]: 'application/x-www-form-urlencoded' },
-            body,
-        });
-        if (!response.ok) return failed('STS AssumeRoleWithWebIdentity', response);
-        const parsed = (await response.json()) as {
-            AssumeRoleWithWebIdentityResponse: { AssumeRoleWithWebIdentityResult: { Credentials: ExpiringKeys } };
-        };
-        return fromExpiring(parsed.AssumeRoleWithWebIdentityResponse.AssumeRoleWithWebIdentityResult.Credentials);
+        try {
+            const body = new URLSearchParams({
+                Action: 'AssumeRoleWithWebIdentity',
+                Version: '2011-06-15',
+                RoleArn: arn,
+                RoleSessionName: env.AWS_ROLE_SESSION_NAME?.trim() || 'factory-dashboard',
+                WebIdentityToken: (await read(tokenFile)).trim(),
+            });
+            const response = await doFetch(endpoint, {
+                method: 'POST',
+                headers: { accept: JSON_CONTENT_TYPE, [CONTENT_TYPE_HEADER]: 'application/x-www-form-urlencoded' },
+                body,
+                signal: AbortSignal.timeout(timeoutMs),
+            });
+            if (!response.ok) return await failed('STS AssumeRoleWithWebIdentity', response);
+            const parsed = (await response.json()) as {
+                AssumeRoleWithWebIdentityResponse: { AssumeRoleWithWebIdentityResult: { Credentials: ExpiringKeys } };
+            };
+            return fromExpiring(parsed.AssumeRoleWithWebIdentityResponse.AssumeRoleWithWebIdentityResult.Credentials);
+        } catch (error) {
+            throw typed('STS AssumeRoleWithWebIdentity', error);
+        }
     }
 
     const { static: staticKeys } = sources;
@@ -95,16 +148,17 @@ export function createCredentialProvider(sources: CredentialSources): Credential
     else if (webIdentityTokenFile && roleArn) fetchKeys = () => webIdentity(webIdentityTokenFile, roleArn);
     else {
         return async () => {
-            throw new Error(
-                'no S3 credentials: set ARTIFACTS_ACCESS_KEY_ID and ARTIFACTS_SECRET_ACCESS_KEY, or run with EKS Pod Identity or an IRSA role'
+            throw new CredentialError(
+                'no S3 credentials: set ARTIFACTS_ACCESS_KEY_ID and ARTIFACTS_SECRET_ACCESS_KEY, or run with EKS Pod Identity or an IRSA role',
+                'misconfigured'
             );
         };
     }
 
     let cached: Credentials | null = null;
     let pending: Promise<Credentials> | null = null;
-    return async () => {
-        if (cached && (cached.expiresAt ?? Infinity) - REFRESH_MARGIN_MS > now()) return cached;
+    return async (options) => {
+        if (!options?.fresh && cached && (cached.expiresAt ?? Infinity) - REFRESH_MARGIN_MS > now()) return cached;
         // One refresh at a time: concurrent chunk writes share a single credential fetch.
         pending ??= fetchKeys()
             .then((keys) => (cached = keys))

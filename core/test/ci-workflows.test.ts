@@ -55,6 +55,10 @@ const runs = (job: Job) => runSteps(job).map((step) => step.run.trim());
 const composePostgres = () =>
     load<{ services: Record<string, { image: string }> }>('docker-compose.yml').services.postgres!.image;
 const postgresMirror = () => `ghcr.io/bellows-ai/${composePostgres().split('/').pop()}`;
+// The AWS emulator the external secret-store suites run against: compose pins it, the mirror copies the pin.
+const composeMoto = () =>
+    load<{ services: Record<string, { image: string; profiles?: string[] }> }>('docker-compose.yml').services.moto!;
+const motoMirror = () => `ghcr.io/bellows-ai/${composeMoto().image.split('/').pop()}`;
 
 describe('ci workflows', () => {
     it('validates every pull request to main and every push to main', () => {
@@ -194,7 +198,7 @@ describe('ci workflows', () => {
         expect(mirror.permissions).toEqual({});
         const job = mirror.jobs.postgres!;
         expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
-        expect(Object.keys(mirror.jobs)).toEqual(['postgres']);
+        expect(Object.keys(mirror.jobs)).toEqual(['postgres', 'moto']);
         expect(job.env!.SOURCE).toBe(composePostgres());
         expect(job.env!.SOURCE).not.toContain('public.ecr.aws');
         const commands = runs(job).join('\n');
@@ -206,6 +210,43 @@ describe('ci workflows', () => {
         expect(commands).toContain("tr 'A-Z' 'a-z'");
         expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
         expect(read(MIRROR)).not.toMatch(/secrets\./);
+    });
+
+    it('pins the moto emulator to an exact release, opt-in under the secrets-aws compose profile', () => {
+        const moto = composeMoto();
+        expect(moto.image).toMatch(/^mirror\.gcr\.io\/motoserver\/moto:\d+\.\d+\.\d+$/);
+        expect(moto.profiles).toEqual(['secrets-aws']);
+    });
+
+    it('mirrors the compose moto from mirror.gcr.io into GHCR the way postgres is mirrored', () => {
+        const job = workflow(MIRROR).jobs.moto!;
+        expect(job.permissions).toEqual({ contents: 'read', packages: 'write' });
+        expect(job.env!.SOURCE).toBe(composeMoto().image);
+        const commands = runs(job).join('\n');
+        expect(commands).toContain('docker login ghcr.io');
+        // The tag is derived from SOURCE in the shell; split so the template-literal lint does not read it as one.
+        expect(commands).toContain(
+            ['docker buildx imagetools create -t "$REGISTRY/moto:$', '{SOURCE##*:}" "$SOURCE"'].join('')
+        );
+        expect(commands).toContain('grep -q toomanyrequests');
+        expect(commands).toMatch(/for attempt[\s\S]*sleep[\s\S]*imagetools create/);
+        expect(job.steps!.every((step) => step.uses === undefined)).toBe(true);
+    });
+
+    // An unreachable provider must fail the db job, never skip the external-store suites silently.
+    it('runs the external secret-store suites in the db job against the GHCR moto mirror, failing when it is down', () => {
+        const job = workflow(CI).jobs['test-db']!;
+        const moto = job.services!.moto! as unknown as {
+            image: string;
+            ports: string[];
+            credentials: Record<string, string>;
+        };
+        expect(moto.image).toBe(motoMirror());
+        expect(moto.credentials.username).toMatch(/^\$\{\{ github\.actor \}\}$/);
+        expect(moto.credentials.password).toMatch(/^\$\{\{ github\.token \}\}$/);
+        expect(moto.ports).toEqual(['5099:5000']);
+        expect(job.env!.SECRETS_TEST_AWS_ENDPOINT).toBe('http://127.0.0.1:5099');
+        expect(String(job.env!.SECRETS_TEST_REQUIRE_AWS)).toBe('1');
     });
 
     it.each([

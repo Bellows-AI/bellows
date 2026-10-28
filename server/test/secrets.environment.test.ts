@@ -32,10 +32,11 @@ describe('the secret-store keys stay in the dashboard process', () => {
         expect(read('.dockerignore')).toMatch(/^\/?secrets\.env$/m);
     });
 
-    it('secrets:init writes all four variables and never overwrites an existing file', () => {
+    it('secrets:init writes every variable and never overwrites the keys of an existing file', () => {
         expect(scripts('package.json')['secrets:init']).toBe('node scripts/secrets-init.mjs');
         const init = read('scripts/secrets-init.mjs');
         for (const name of [
+            'SECRETS_BACKEND',
             'SECRETS_DATA_KEYS',
             'SECRETS_ACTIVE_KEY_ID',
             'SECRETS_OPERATION_KEY',
@@ -95,6 +96,11 @@ describe('the secret-store keys stay in the dashboard process', () => {
             }
         });
 
+        it('selects the database backend in the env every board launch carries', () => {
+            const start = script.indexOf('SECRET_STORE_ENV=(');
+            expect(script.slice(start, script.indexOf('\n)', start))).toContain('SECRETS_BACKEND=database');
+        });
+
         it('hands every board launch the keys and no driver launch anything', () => {
             for (const [i, line] of lines.entries()) {
                 if (/node server\/dist\/offline(-mint)?\.js/.test(line)) {
@@ -120,6 +126,7 @@ describe('the secret-store keys stay in the dashboard process', () => {
             config.indexOf('};', config.indexOf('const shared = {'))
         );
         for (const name of [
+            'SECRETS_BACKEND',
             'SECRETS_DATA_KEYS',
             'SECRETS_ACTIVE_KEY_ID',
             'SECRETS_OPERATION_KEY',
@@ -128,6 +135,6 @@ describe('the secret-store keys stay in the dashboard process', () => {
             expect(shared).toContain(name);
         }
         expect(config.match(/\.\.\.shared,/g)).toHaveLength(2);
-        expect(config.match(/SECRETS_/g)).toHaveLength(4);
+        expect(config.match(/SECRETS_/g)).toHaveLength(5);
     });
 });

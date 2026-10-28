@@ -5,7 +5,7 @@ import { createDatabaseSecretStoreOver, type PostgresSecretStore } from '../src/
 import type { PayloadStore } from '../src/secrets/secret-payloads.js';
 import type { DatabasePayloads } from '../src/secrets/database-payloads.js';
 import type { SecretKeys } from '../src/secrets/secret-keys.js';
-import type { SecretDiagnostic, SecretIdentity, SecretRef } from '../src/secrets/secret-store.js';
+import type { SecretDiagnostic, SecretIdentity, SecretRef, SecretStore } from '../src/secrets/secret-store.js';
 import {
     type FaultStep,
     type SecretStoreFaults,
@@ -61,8 +61,12 @@ export function dbError(code: string, message = 'simulated database error'): Err
 
 type StepHook = (step: FaultStep, operationId: string) => Promise<void>;
 
-/** Wraps a repo with the harness faults (docs/secrets.md); every other method passes straight through. */
-export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults): SecretRepo {
+/**
+ * Wraps a repo so the harness can stop an operation between two steps (`faults.onStep`); nothing else changes.
+ * `after-stage` fires once the version row is staged, which for the database store is also when its payload is
+ * durable; a store whose payload is written afterwards fires that step itself (`afterStage: false`).
+ */
+export function steppedRepo(real: SecretRepo, faults: SecretStoreFaults, afterStage = true): SecretRepo {
     const step: StepHook = async (name, operationId) => {
         await faults.onStep?.({ step: name, operationId: operationId as never });
     };
@@ -74,18 +78,8 @@ export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults): SecretR
             return row;
         },
         async stageVersion(version: NewVersion, budgetMs) {
-            faults.providerWriteCount += 1;
-            if (faults.providerWrite === 'timeout-lost') {
-                throw dbError('CONNECTION_CLOSED');
-            }
-            if (faults.providerWrite === 'unavailable-with-body') {
-                throw dbError('53300', faults.providerErrorBody);
-            }
             const stored = await real.stageVersion(version, budgetMs);
-            if (faults.providerWrite === 'timeout-applied') {
-                throw dbError('CONNECTION_CLOSED');
-            }
-            if (version.operationId) {
+            if (afterStage && version.operationId) {
                 await step('after-stage', version.operationId);
             }
             return stored;
@@ -99,26 +93,50 @@ export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults): SecretR
             await step('after-activate', operationId);
             return result;
         },
-        async readActive(ref, budgetMs) {
-            if (faults.providerRead === 'unavailable') {
-                throw dbError('08006');
-            }
-            return real.readActive(ref, budgetMs);
-        },
-        // The first step of a removal: a failure leaves the version exactly where it was.
-        async retireVersion(id, storage, budgetMs) {
-            if (faults.providerDelete === 'fail') {
-                throw dbError('08006');
-            }
-            return real.retireVersion(id, storage, budgetMs);
-        },
-        async removeInPlace(id, storage, budgetMs) {
-            if (faults.providerDelete === 'fail') {
-                throw dbError('08006');
-            }
-            return real.removeInPlace(id, storage, budgetMs);
-        },
     };
+}
+
+/** Wraps a repo with the harness faults (docs/secrets.md); every other method passes straight through. */
+export function faultyRepo(real: SecretRepo, faults: SecretStoreFaults): SecretRepo {
+    return steppedRepo(
+        {
+            ...real,
+            async stageVersion(version: NewVersion, budgetMs) {
+                faults.providerWriteCount += 1;
+                if (faults.providerWrite === 'timeout-lost') {
+                    throw dbError('CONNECTION_CLOSED');
+                }
+                if (faults.providerWrite === 'unavailable-with-body') {
+                    throw dbError('53300', faults.providerErrorBody);
+                }
+                const stored = await real.stageVersion(version, budgetMs);
+                if (faults.providerWrite === 'timeout-applied') {
+                    throw dbError('CONNECTION_CLOSED');
+                }
+                return stored;
+            },
+            async readActive(ref, budgetMs) {
+                if (faults.providerRead === 'unavailable') {
+                    throw dbError('08006');
+                }
+                return real.readActive(ref, budgetMs);
+            },
+            // The first step of a removal: a failure leaves the version exactly where it was.
+            async retireVersion(id, storage, budgetMs) {
+                if (faults.providerDelete === 'fail') {
+                    throw dbError('08006');
+                }
+                return real.retireVersion(id, storage, budgetMs);
+            },
+            async removeInPlace(id, storage, budgetMs) {
+                if (faults.providerDelete === 'fail') {
+                    throw dbError('08006');
+                }
+                return real.removeInPlace(id, storage, budgetMs);
+            },
+        },
+        faults
+    );
 }
 
 const TABLES = ['secret', 'secret_version', 'secret_active', 'secret_operation'] as const;
@@ -128,6 +146,16 @@ const ORDER: Record<(typeof TABLES)[number], string> = {
     secret_active: 'ref',
     secret_operation: 'operation_id',
 };
+
+/** What PostgreSQL holds of the secret store, table by table, in a stable order. */
+export async function databaseSnapshot(sql: Sql): Promise<Record<string, unknown[]>> {
+    const db: Record<string, unknown[]> = {};
+    for (const table of TABLES) {
+        const rows = await sql.unsafe(`select to_jsonb(t) as j from ${table} t order by ${ORDER[table]}`);
+        db[table] = rows.map((r) => r.j);
+    }
+    return db;
+}
 
 export interface PostgresHarness extends SecretStoreHarness {
     keys: MutableKeys;
@@ -208,12 +236,7 @@ export function createPostgresHarness(sql: Sql, options: PostgresHarnessOptions 
             await sql`update secret_version set envelope = ${flipped} where id = ${row.id}`;
         },
         async durableSnapshot() {
-            const db: Record<string, unknown[]> = {};
-            for (const table of TABLES) {
-                const rows = await sql.unsafe(`select to_jsonb(t) as j from ${table} t order by ${ORDER[table]}`);
-                db[table] = rows.map((r) => r.j);
-            }
-            return { db };
+            return { db: await databaseSnapshot(sql) };
         },
         diagnostics: () => structuredClone(diagnostics),
     };
@@ -268,7 +291,7 @@ export const utf8 = (value: string) => new TextEncoder().encode(value);
 
 /** Creates a secret through the store, failing the test on any refusal. */
 export async function createSecret(
-    store: PostgresSecretStore,
+    store: SecretStore,
     identity: SecretIdentity,
     payload: Uint8Array,
     ref = `sec_${randomUUID()}` as SecretRef

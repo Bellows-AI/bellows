@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { loadArtifactsConfig, normalizePrefix } from '../src/config-artifacts.js';
 import { chunkKey, InvalidKeyError, parseChunkKey, type StreamRef } from '../src/artifacts/keys.js';
-import { createCredentialProvider } from '../src/artifacts/s3-credentials.js';
+import { CredentialError, createCredentialProvider } from '../src/artifacts/s3-credentials.js';
 import { createS3Store } from '../src/artifacts/s3-store.js';
 import { sha256Hex, signRequest } from '../src/artifacts/sigv4.js';
 
@@ -20,6 +20,7 @@ describe('SigV4', () => {
             headers: { Range: 'bytes=0-9' },
             payloadHash: sha256Hex(''),
             region: 'us-east-1',
+            service: 's3',
             credentials: EXAMPLE_KEYS,
             now: EXAMPLE_TIME,
         });
@@ -37,6 +38,7 @@ describe('SigV4', () => {
             headers: { Date: 'Fri, 24 May 2013 00:00:00 GMT', 'x-amz-storage-class': 'REDUCED_REDUNDANCY' },
             payloadHash: sha256Hex('Welcome to Amazon S3.'),
             region: 'us-east-1',
+            service: 's3',
             credentials: EXAMPLE_KEYS,
             now: EXAMPLE_TIME,
         });
@@ -51,11 +53,28 @@ describe('SigV4', () => {
             url: new URL('https://b.s3.amazonaws.com/k'),
             payloadHash: sha256Hex(''),
             region: 'us-east-1',
+            service: 's3',
             credentials: { ...EXAMPLE_KEYS, sessionToken: 'tok' },
             now: EXAMPLE_TIME,
         });
         expect(headers['x-amz-security-token']).toBe('tok');
         expect(headers.authorization).toContain('x-amz-security-token');
+    });
+
+    it('scopes the signature to the service it is asked for, not to s3', () => {
+        const sign = (service: string) =>
+            signRequest({
+                method: 'POST',
+                url: new URL('https://secretsmanager.us-east-1.amazonaws.com/'),
+                headers: { 'x-amz-target': 'secretsmanager.GetSecretValue' },
+                payloadHash: sha256Hex('{}'),
+                region: 'us-east-1',
+                service,
+                credentials: EXAMPLE_KEYS,
+                now: EXAMPLE_TIME,
+            }).authorization;
+        expect(sign('secretsmanager')).toContain('/20130524/us-east-1/secretsmanager/aws4_request,');
+        expect(sign('secretsmanager')).not.toBe(sign('s3'));
     });
 });
 
@@ -338,5 +357,68 @@ describe('artifacts config', () => {
         ['a negative quota', { ARTIFACTS_ORG_QUOTA_BYTES: '-1' }, /QUOTA/],
     ])('refuses %s', (_name, env, message) => {
         expect(() => loadArtifactsConfig(env)).toThrow(message);
+    });
+});
+
+describe('credential provider hardening', () => {
+    const POD = { AWS_CONTAINER_CREDENTIALS_FULL_URI: 'http://pod/c', AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: '/t' };
+    const keys = { AccessKeyId: 'A', SecretAccessKey: 'S', Expiration: new Date(Date.now() + 3_600_000).toISOString() };
+
+    it('never puts a response body in the error, and types a refusal as misconfigured', async () => {
+        const provider = createCredentialProvider({
+            static: null,
+            env: POD,
+            region: 'us-east-1',
+            readFile: async () => 't',
+            fetch: (async () => new Response('sentinel-body-text', { status: 403 })) as typeof fetch,
+        });
+        const error = await provider().then(
+            () => new Error('resolved'),
+            (e: unknown) => e
+        );
+        expect(error).toBeInstanceOf(CredentialError);
+        expect((error as CredentialError).kind).toBe('misconfigured');
+        expect((error as Error).message).toMatch(/Pod Identity answered 403/);
+        expect((error as Error).message).not.toContain('sentinel-body-text');
+    });
+
+    it('types a server failure as unavailable', async () => {
+        const provider = createCredentialProvider({
+            static: null,
+            env: POD,
+            region: 'us-east-1',
+            readFile: async () => 't',
+            fetch: (async () => new Response('', { status: 503 })) as typeof fetch,
+        });
+        await expect(provider()).rejects.toMatchObject({ kind: 'unavailable' });
+    });
+
+    it('times out a hung credential fetch, and the next call fetches again', async () => {
+        let calls = 0;
+        const provider = createCredentialProvider({
+            static: null,
+            env: POD,
+            region: 'us-east-1',
+            readFile: async () => 't',
+            fetchTimeoutMs: 30,
+            fetch: ((_url: unknown, init?: RequestInit) => {
+                calls += 1;
+                if (calls === 1) {
+                    return new Promise((_resolve, reject) => {
+                        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+                    });
+                }
+                return Promise.resolve(new Response(JSON.stringify(keys), { status: 200 }));
+            }) as typeof fetch,
+        });
+        await expect(provider()).rejects.toMatchObject({ kind: 'unavailable' });
+        expect(await provider()).toMatchObject({ accessKeyId: 'A' });
+        expect(calls).toBe(2);
+    });
+
+    it('types a missing source as misconfigured', async () => {
+        await expect(createCredentialProvider({ static: null, env: {}, region: 'us-east-1' })()).rejects.toMatchObject({
+            kind: 'misconfigured',
+        });
     });
 });

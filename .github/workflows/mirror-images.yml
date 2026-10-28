@@ -1,6 +1,6 @@
 name: Mirror images
 
-# The postgres every CI job service runs, copied into GHCR. A job service is pulled by the runner
+# The postgres and the moto AWS emulator every CI job service runs, copied into GHCR. A job service is pulled by the runner
 # before any step, so it can neither log in nor retry, and ECR Public's per-IP data limit fails it on
 # a shared runner IP however often it is re-run. That limit refuses this copy too, so the source is
 # Google's Docker Hub cache, which serves the same official image. Weekly picks up 17.x patches.
@@ -42,6 +42,41 @@ jobs:
                   for attempt in 1 2 3; do
                       [ "$attempt" -eq 1 ] || sleep $((attempt * 30))
                       if docker buildx imagetools create -t "$REGISTRY/postgres:17" "$SOURCE" 2>/tmp/err; then
+                          cat /tmp/err >&2
+                          exit 0
+                      fi
+                      cat /tmp/err >&2
+                      grep -q toomanyrequests /tmp/err || exit 1
+                  done
+                  exit 1
+
+    moto:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            packages: write
+        env:
+            # docker-compose.yml's pin (the AWS emulator the external secret-store suites run against);
+            # core/test/ci-workflows.test.ts keeps the two identical.
+            SOURCE: mirror.gcr.io/motoserver/moto:5.2.4
+        steps:
+            - name: docker login ghcr.io
+              env:
+                  TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+            - name: docker buildx imagetools create moto
+              env:
+                  OWNER: ${{ github.repository_owner }}
+              run: |
+                  # GHCR paths are lowercase even where the org's login is not.
+                  REGISTRY="ghcr.io/$(printf '%s' "$OWNER" | tr 'A-Z' 'a-z')"
+                  # Retried only on a throttle; anything else is a real failure and fails now.
+                  # imagetools copies the manifest list, so both arches come along.
+                  for attempt in 1 2 3; do
+                      [ "$attempt" -eq 1 ] || sleep $((attempt * 30))
+                      if docker buildx imagetools create -t "$REGISTRY/moto:${SOURCE##*:}" "$SOURCE" 2>/tmp/err; then
                           cat /tmp/err >&2
                           exit 0
                       fi

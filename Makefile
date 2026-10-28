@@ -21,6 +21,7 @@ baked-build:
 
 # Run the existing image. Does not build — `make baked` for build + run. Reads ORG_ID/ORG_NAME
 # from the repo-root .env, the same file compose reads, because those two key every stored row.
+# secrets.env carries SECRETS_BACKEND; one written by an older release gets it from `npm run secrets:init`.
 baked-run:
 	docker compose up -d postgres
 	if [ -f .env ]; then set -a; . ./.env; set +a; fi; \

@@ -147,6 +147,7 @@ COMPOSE_TOKEN="${JOB_BOARD_TOKEN:-test-jobs-compose-interpolation-only}"
 # no driver, CLI or runner this script starts can inherit one. server/test/secrets.environment.test.ts pins that.
 secret_key() { head -c 32 /dev/urandom | base64; }
 SECRET_STORE_ENV=(
+    SECRETS_BACKEND=database
     "SECRETS_DATA_KEYS=jobs:$(secret_key)"
     SECRETS_ACTIVE_KEY_ID=jobs
     "SECRETS_OPERATION_KEY=$(secret_key)"

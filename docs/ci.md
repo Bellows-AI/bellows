@@ -19,7 +19,9 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
 - **`npm run build` precedes `npm test`**, so a broken `core/dist` reports as a build failure; `npm run typecheck`
   follows, covering every `*/tsconfig.test.json` and `e2e/`. `core/test/typecheck-coverage.test.ts`.
 - **The `test-db` job runs `npm run test:db` on every pull request**, beside `validate`, against a `postgres:17`
-  service whose database ends `_test` — the only coverage the SQL and the migrations have.
+  service whose database ends `_test` — the only coverage the SQL and the migrations have. It also runs a `moto`
+  AWS emulator (a GHCR mirror of the compose pin, `mirror-images.yml`) with `SECRETS_TEST_REQUIRE_AWS=1`, so an
+  unreachable provider fails the job instead of skipping the external-store suites.
   `.github/workflows/ci.yml`, `core/test/ci-workflows.test.ts`.
 - **The `e2e` job runs only on a push to `main`**, with a `postgres:17` service, `factory_e2e` and
   `factory_auth_e2e` created by hand (`e2e/reset-db.mjs` truncates but never creates), and chromium.

@@ -291,6 +291,21 @@ services:
             retries: 10
             start_period: 10s
 
+    # An AWS-compatible emulator (moto server) for developing against the aws secret-store backend (docs/secrets.md);
+    # opt-in, so a plain `docker compose up` never starts it: `docker compose --profile secrets-aws up -d moto`.
+    # Configure the dashboard's secret-store env file (its example file lists the aws variables) with the
+    # endpoint http://moto:5000, the region us-east-1 and any static key pair. Moto accepts any credential, so
+    # this checks the wire protocol, never IAM. `npm run test:db` reaches it on the published port, with the
+    # test endpoint set to http://127.0.0.1:5099. core/test/ci-workflows.test.ts keeps this pin and the CI
+    # mirror (mirror-images.yml) identical.
+    moto:
+        image: mirror.gcr.io/motoserver/moto:5.2.4
+        profiles:
+            - secrets-aws
+        ports:
+            - '127.0.0.1:5099:5000'
+        restart: unless-stopped
+
     # S3-compatible object store for task artifacts (#764). RustFS: Apache-2.0, enforces
     # `If-None-Match: *` create-only writes, and runs as a non-root uid from env alone. MinIO
     # publishes no community images any more. Buckets are created by their consumer, not here.
