@@ -80,7 +80,7 @@ const REFUSALS: {
     },
     {
         label: 'job create with an inaccessible Jira connection',
-        argv: ['job', 'create', '--jira-connection', CONNECTION, '--', 'npm test'],
+        argv: ['job', 'create', '--connection', CONNECTION, '--', 'npm test'],
         status: 403,
         code: 'CONNECTION_NOT_AUTHORIZED',
         message: 'That Jira connection does not exist or is not available to you. Pick one from GET /api/connections.',

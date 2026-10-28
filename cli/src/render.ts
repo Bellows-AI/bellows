@@ -339,11 +339,25 @@ export function renderSkills(skills: readonly SkillView[]): string {
         .join('\n');
 }
 
-/** Selectable managed connections: the id is what `--jira-connection` takes. */
+/** Short credential names: the raw `legacy_api_token` would trip the "never prints a token" reading of the list. */
+const CREDENTIAL_LABEL: Record<string, string> = { legacy_api_token: 'legacy', oauth_grant: 'oauth' };
+
+/** Selectable managed connections: the id is what `--connection` takes. */
 export function renderConnections(connections: readonly ConnectionView[]): string {
     if (connections.length === 0) return 'no connections available';
     return connections
-        .map((c) => [c.id, c.kind, c.scope, c.access, c.site, c.email, c.createdAt].join('  '))
+        .map((c) =>
+            [
+                c.id,
+                c.provider,
+                c.ownership,
+                CREDENTIAL_LABEL[c.credential] ?? c.credential,
+                c.access,
+                c.site,
+                c.account,
+                c.createdAt,
+            ].join('  ')
+        )
         .join('\n');
 }
 

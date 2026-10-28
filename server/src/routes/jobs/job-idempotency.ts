@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { ConnectionRefusedError } from '../../db/connection-bindings.js';
 import { canonical, IdempotencyKeyReusedError } from '../../db/jobs/job-store-idempotency.js';
 import type { IdempotentOperation } from '../../db/jobs/job-store-idempotency.js';
 import { bad, guard } from '../helpers.js';
-import { HTTP_CONFLICT, HTTP_CREATED } from './job-limits.js';
+import { HTTP_CONFLICT, HTTP_CREATED, HTTP_FORBIDDEN } from './job-limits.js';
 
 /**
  * The request side of durable mutation idempotency (issue #589; docs/jobs.md): the key header,
@@ -49,7 +50,7 @@ export function idempotencyOf<Operation extends string = IdempotentOperation>(
 
 /** The create's idempotency input: every body field the create acts on, as the client spelled it. */
 export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply, fields: Record<string, unknown>) {
-    const { command, repo, executor, executorScope, skills, workflow, workflowParams, jiraConnection } = fields;
+    const { command, repo, executor, executorScope, skills, workflow, workflowParams, connections } = fields;
     return idempotencyOf(request, reply, 'create', {
         command,
         repo,
@@ -58,7 +59,7 @@ export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply
         skills,
         workflow,
         workflowParams,
-        jiraConnection,
+        connections,
     });
 }
 
@@ -76,10 +77,15 @@ export async function guardKeyed<T>(
             return { value: await run() };
         } catch (error) {
             if (error instanceof IdempotencyKeyReusedError) return null;
+            if (error instanceof ConnectionRefusedError) return error;
             throw error;
         }
     });
     if (!result.ok) return { ok: false };
+    if (result.value instanceof ConnectionRefusedError) {
+        await refuseConnections(reply, result.value);
+        return { ok: false };
+    }
     if (result.value === null) {
         await reply.code(HTTP_CONFLICT).send({
             error: 'This Idempotency-Key was already used for a different request',
@@ -88,6 +94,19 @@ export async function guardKeyed<T>(
         return { ok: false };
     }
     return { ok: true, value: result.value.value };
+}
+
+/** The store refused the `connections` a create or follow-up named: the reply is sent. */
+async function refuseConnections(reply: FastifyReply, refusal: ConnectionRefusedError) {
+    if (refusal.reason === 'duplicate') {
+        return bad(reply, ERROR_CODES.BAD_CONNECTION, 'connections must not repeat an id');
+    }
+    return bad(
+        reply,
+        ERROR_CODES.CONNECTION_NOT_AUTHORIZED,
+        'A connection does not exist or is not available to you. Pick one from GET /api/connections.',
+        HTTP_FORBIDDEN
+    );
 }
 
 /** The 201 a create-shaped mutation answers; a replay is the same body, marked. */

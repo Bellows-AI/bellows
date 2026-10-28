@@ -28,8 +28,14 @@ const dialog = () => screen.getByRole('dialog', { name: CONNECTION_DIALOG_TITLE 
 const closed = (name: string) => waitFor(() => expect(screen.queryByRole('dialog', { name })).toBeNull());
 
 describe('the organization Jira connections, as an admin', () => {
-    it('marks the default, carries the refusal into the dialog, guards typed fields, and deletes', async () => {
-        const board = settingsBoard({ connections: [connection(SITE)] });
+    it('labels the legacy row, carries the refusal into the dialog, guards typed fields, and disconnects', async () => {
+        const board = settingsBoard({
+            connections: [
+                connection(SITE),
+                connection('mine.atlassian.net', { ownership: 'personal', principal: 'self' }),
+                connection('theirs.atlassian.net', { ownership: 'personal', principal: null }),
+            ],
+        });
         const calls = stubFetch(
             boardHandler(board, ({ method, url }) =>
                 method === 'POST' && url === '/api/connections' ? { status: 502, body: { error: REFUSAL } } : undefined
@@ -40,8 +46,13 @@ describe('the organization Jira connections, as an admin', () => {
 
         const panel = await screen.findByRole('region', { name: 'Organization Jira connections' });
         const row = await within(panel).findByRole('row', { name: new RegExp(SITE) });
-        expect(row.textContent).toContain(DEFAULT_CONNECTION_CAPTION);
+        expect(row.textContent).toContain('Legacy API token');
+        expect(row.textContent).toContain('Shared (legacy)');
         expect(row.textContent).toContain('bot@example.com');
+        expect(row.textContent).not.toContain(DEFAULT_CONNECTION_CAPTION);
+        // Personal rows belong to the workspace page, never the organization's list.
+        expect(within(panel).queryByRole('row', { name: /mine\.atlassian\.net/ })).toBeNull();
+        expect(within(panel).queryByRole('row', { name: /theirs\.atlassian\.net/ })).toBeNull();
         expect(within(panel).queryAllByRole('textbox')).toHaveLength(0);
 
         const add = within(panel).getByRole<HTMLButtonElement>('button', { name: ADD_CONNECTION_LABEL });
@@ -81,19 +92,40 @@ describe('the organization Jira connections, as an admin', () => {
         await closed(CONNECTION_DIALOG_TITLE);
         expect(screen.queryByRole('dialog', { name: unsavedDialogTitle() })).toBeNull();
 
-        await user.click(within(row).getByRole('button', { name: /^Delete/ }));
+        await user.click(within(row).getByRole('button', { name: /^Disconnect/ }));
         await waitFor(() => expect(within(panel).queryByRole('row', { name: new RegExp(SITE) })).toBeNull());
         expect(calls.some((call) => call.method === 'DELETE' && call.url.startsWith('/api/connections/'))).toBe(true);
     });
 });
 
 describe('the personal Jira connections', () => {
+    it("list only the caller's own rows, never the organization's or another member's", async () => {
+        stubFetch(
+            boardHandler(
+                settingsBoard({
+                    role: MEMBER_ROLE,
+                    connections: [
+                        connection('shared.atlassian.net'),
+                        connection('mine.atlassian.net', { ownership: 'personal', principal: 'self' }),
+                        connection('theirs.atlassian.net', { ownership: 'personal', principal: null }),
+                    ],
+                })
+            )
+        );
+        renderApp('/settings/workspace');
+
+        const personal = await screen.findByRole('region', { name: 'Personal Jira connections' });
+        await within(personal).findByRole('row', { name: /mine\.atlassian\.net/ });
+        expect(within(personal).queryByRole('row', { name: /shared\.atlassian\.net/ })).toBeNull();
+        expect(within(personal).queryByRole('row', { name: /theirs\.atlassian\.net/ })).toBeNull();
+    });
+
     it('sit on the workspace page with their override note and an add button, for a member too', async () => {
         stubFetch(boardHandler(settingsBoard({ role: MEMBER_ROLE })));
         renderApp('/settings/workspace');
 
         const personal = await screen.findByRole('region', { name: 'Personal Jira connections' });
-        expect(personal.textContent).toContain('overrides the organization');
+        expect(personal.textContent).toContain('bound to your tasks by default');
         expect(within(personal).getByRole('button', { name: ADD_CONNECTION_LABEL })).toBeTruthy();
     });
 });

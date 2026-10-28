@@ -30,7 +30,7 @@ export async function preflightCommand(args: readonly string[], boardFor: () => 
     // Advisory like the rest: a list that cannot be read leaves the repo unverified, the board decides at create.
     const repos = selection.repo === undefined ? null : await client.listRepos().catch(() => null);
     const skills = selection.skills ? await client.listSkills() : [];
-    const connections = selection.jiraConnection === undefined ? [] : await client.listConnections();
+    const connections = selection.connections === undefined ? [] : await client.listConnections();
     const preflight = preflightChecks(selection, { workspace, repos, skills, connections });
     const stdout = `${renderPreflight(preflight)}\n`;
     const blocked = preflight.checks.find((check) => check.status === 'blocked');

@@ -5,6 +5,8 @@
 
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
+import { lockThreadRootInTx } from '../connection-bindings.js';
+import { addFollowUpBindings, type BindConnectionResult, bindOnCreate } from './job-store-connections.js';
 import {
     backsBatchTask,
     batchThreadState,
@@ -74,11 +76,13 @@ export interface JobActionStore {
              */
             skills?: readonly string[];
             /**
-             * The managed Jira connection (054, issue #546) the task selected, already authorized
-             * by the route. Stamped on the ROOT row only; every later row of the thread reads its
-             * root's choice at use time, so nothing is copied and revoking is a delete.
+             * The connections (054, 094) the task names, bound on the ROOT in the create
+             * transaction: each must be bindable by the author or the create is refused with
+             * `ConnectionRefusedError`. A bindable provider the author has exactly one personal
+             * connection for binds by default; a provider a selected skill requires with none
+             * becomes an open requirement the claim waits on. Absent is none named.
              */
-            jiraConnectionId?: string | null;
+            connectionIds?: readonly string[];
             /**
              * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
              * the root row as workflow_name, the ENTRY node the thread's first run walks, the
@@ -124,8 +128,21 @@ export interface JobActionStore {
         parentId: string,
         command: string,
         createdBy: string | null,
-        idempotency?: IdempotencyInput
+        idempotency?: IdempotencyInput,
+        /** Connections to append to the thread's bindings; `ConnectionRefusedError` when any is not the author's to bind. */
+        connectionIds?: readonly string[]
     ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal>;
+
+    /**
+     * The owner's answer to an open requirement: appends `connectionId` to the thread root's bindings
+     * when `bindingRevision` is still current, and satisfies the requirement for its provider. `id` may
+     * be any member of the thread; anyone but the execution user, or an unknown job, is `missing`.
+     */
+    bindConnection(
+        id: string,
+        input: { connectionId: string; bindingRevision: number },
+        userId: string
+    ): Promise<BindConnectionResult>;
 
     /**
      * Queues a fresh attempt of the thread head's command (issue #326): a new job in the SAME
@@ -322,7 +339,7 @@ export async function insertJobInTx(
             insert into job (
                 org_id, command, created_by, repo, executor, executor_scope, id, root_job_id,
                 workflow_id, workflow_name, workflow_node, workflow_snapshot, workflow_params, mode,
-                jira_connection_id, skills
+                execution_user_id, skills
             )
             select ${orgId}, ${command}, ${createdBy}, ${target.repo}, ${target.executor}, ${target.executorScope ?? USER_SCOPE}, x, x,
                    ${target.workflow?.id ?? null},
@@ -331,11 +348,12 @@ export async function insertJobInTx(
                    ${jsonOrNull(sql, target.workflow?.snapshot)},
                    ${jsonOrNull(sql, target.workflow?.params)},
                    ${mode},
-                   ${target.jiraConnectionId ?? null},
+                   ${createdBy},
                    ${sql.array([...(target.skills ?? [])])}::text[]
             from (select gen_random_uuid() as x) s
             returning id
         `;
+    await bindOnCreate(tx, { orgId, rootJobId: rows[0]!.id, createdBy, target });
     await stampKey(tx, orgId, rows[0]!.id, idem);
     return { id: rows[0]!.id };
 }
@@ -365,6 +383,7 @@ export async function insertJobInTx(
  * its claim delivers a recap of the earlier turns ahead of the command (`job-store-claim.ts`).
  */
 export interface FollowUpRowInput {
+    connectionIds?: readonly string[] | undefined;
     orgId: string;
     parentId: string;
     command: string;
@@ -380,7 +399,7 @@ export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Prom
 
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
-    const { orgId, parentId, command, createdBy, idempotency: idem } = input;
+    const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [] } = input;
     // The read resolves the thread root the advisory lock below is keyed by.
     const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
@@ -392,6 +411,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     // eligibility check and the insert must be atomic with a racing done on ANY member —
     // not only on the parent row the CTE below locks — or a done could commit between the
     // check and the insert and leave queued work in a thread the user closed.
+    // A follow-up naming connections binds under the root row, which the claim's acquire holds before the
+    // advisory lock: lock them in that order (`lockThreadRootInTx`). Without connections: unchanged.
+    if (connectionIds.length > 0) await lockThreadRootInTx(tx, orgId, label.root_job_id);
     await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
     const rows = await tx<{ id: string }[]>`
             with parent as (
@@ -450,6 +472,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
             returning id
         `;
     if (rows[0]) {
+        await addFollowUpBindings(tx, { orgId, rootJobId: label.root_job_id, createdBy, connectionIds });
         await stampKey(tx, orgId, rows[0].id, idem);
         return { id: rows[0].id };
     }

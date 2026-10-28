@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import {
     ORG_CONNECTION_SCOPE,
+    type ConnectionCredential,
     type ConnectionScope,
     type ConnectionView,
     type NewConnectionInput,
@@ -19,6 +20,12 @@ export const ADD_CONNECTION_LABEL = 'Add Jira connection';
 export const DEFAULT_CONNECTION_CAPTION = 'default for tasks';
 export const NO_CONNECTIONS_NOTE = 'No Jira connections yet.';
 
+const CREDENTIAL_LABEL: Record<ConnectionCredential, string> = {
+    legacy_api_token: 'Legacy API token',
+    oauth_grant: 'OAuth',
+};
+export const LEGACY_ORG_LABEL = 'Shared (legacy)';
+
 export function JiraConnectionsPanel({
     scope,
     hint,
@@ -30,7 +37,7 @@ export function JiraConnectionsPanel({
 }: {
     scope: ConnectionScope;
     hint: string;
-    /** Only this scope's rows, newest first; the first is the one a task gets by default. */
+    /** Only this scope's rows, newest first; a lone personal one is bound to the author's tasks by default. */
     connections: readonly ConnectionView[];
     /** Admin for the org scope, always for the personal one; the server's 403 is the real gate. */
     canManage: boolean;
@@ -67,26 +74,33 @@ export function JiraConnectionsPanel({
                         <thead>
                             <tr>
                                 <th scope="col">Site</th>
-                                <th scope="col">Email</th>
+                                <th scope="col">Account</th>
+                                <th scope="col">Credential</th>
                                 <th scope="col">Access</th>
                                 <th scope="col">Created</th>
                                 {canManage ? (
                                     <th scope="col">
-                                        <span className="visually-hidden">Delete</span>
+                                        <span className="visually-hidden">Disconnect</span>
                                     </th>
                                 ) : null}
                             </tr>
                         </thead>
                         <tbody>
-                            {connections.map((connection, index) => (
+                            {connections.map((connection) => (
                                 <tr key={connection.id}>
                                     <td data-label="Site">
                                         {connection.site}
-                                        {index === 0 ? (
+                                        {scope !== ORG_CONNECTION_SCOPE && connections.length === 1 ? (
                                             <span className="muted"> · {DEFAULT_CONNECTION_CAPTION}</span>
                                         ) : null}
                                     </td>
-                                    <td data-label="Email">{connection.email}</td>
+                                    <td data-label="Account">{connection.account}</td>
+                                    <td data-label="Credential">
+                                        {CREDENTIAL_LABEL[connection.credential]}
+                                        {connection.ownership === 'legacy-org' ? (
+                                            <span className="muted"> · {LEGACY_ORG_LABEL}</span>
+                                        ) : null}
+                                    </td>
                                     <td data-label="Access">{connection.access}</td>
                                     <td data-label="Created">{commitDate(connection.createdAt)}</td>
                                     {canManage ? (
@@ -94,10 +108,10 @@ export function JiraConnectionsPanel({
                                             <button
                                                 type="button"
                                                 disabled={saving}
-                                                aria-label={`Delete ${connection.site} connection for ${connection.email}`}
+                                                aria-label={`Disconnect ${connection.site} connection for ${connection.account}`}
                                                 onClick={() => onDelete(connection)}
                                             >
-                                                Delete
+                                                Disconnect
                                             </button>
                                         </td>
                                     ) : null}

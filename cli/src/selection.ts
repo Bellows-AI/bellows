@@ -21,7 +21,7 @@ export const SELECTION_OPTIONS = {
     executor: { type: 'string' },
     'executor-scope': { type: 'string' },
     skill: { type: 'string', multiple: true },
-    'jira-connection': { type: 'string' },
+    connection: { type: 'string', multiple: true },
 } as const;
 
 export function selectionOf(values: {
@@ -29,14 +29,14 @@ export function selectionOf(values: {
     executor?: string | undefined;
     'executor-scope'?: string | undefined;
     skill?: string[] | undefined;
-    'jira-connection'?: string | undefined;
+    connection?: string[] | undefined;
 }): PreflightSelection {
     return {
         repo: values.repo,
         executor: values.executor,
         executorScope: parseExecutorScope(values['executor-scope']),
         skills: values.skill,
-        // The board authorizes it against the author; a connection that is not theirs is its 403.
-        jiraConnection: values['jira-connection'],
+        // The board authorizes each against the author; a connection that is not theirs is its 403.
+        connections: values.connection,
     };
 }

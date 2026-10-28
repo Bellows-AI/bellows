@@ -11,7 +11,7 @@ import { UnsavedChangesDialog } from './UnsavedChangesDialog.js';
 export const CONNECTION_DIALOG_TITLE = 'Add Jira connection';
 export const SAVE_CONNECTION_LABEL = 'Add connection';
 export const SCOPED_TOKEN_HINT =
-    'The API token must be a scoped (service-account) token. A classic token is stored without being tried and then answers 401 on every call.';
+    'The API token must be a scoped (service-account) token. A classic token is stored without being tried and then answers 401 on every call. This adds a legacy API-token connection.';
 export const SITE_HELP = 'Your Atlassian site, without https://.';
 export const EMAIL_HELP = 'The account the API token belongs to.';
 export const ACCESS_HELP = 'read lets tasks only look Jira up; write also lets them change it.';

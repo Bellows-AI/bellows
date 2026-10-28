@@ -233,6 +233,9 @@ export function toJob(orgId: string, row: JobRow): Job {
                   },
         // The detail reads (get/thread) attach the stored questions; every other read has none.
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
     };
 }
 

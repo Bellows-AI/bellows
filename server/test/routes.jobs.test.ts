@@ -300,6 +300,10 @@ function stubStore(
             reuse();
             return options.followUp ?? { id: FOLLOW_UP_ID, ...(options.replayed ? { replayed: true } : {}) };
         },
+        async bindConnection() {
+            boom();
+            return { ok: true as const, revision: 1 };
+        },
         async createRetry(id, createdBy, idempotency) {
             boom();
             stub.retries.push({ id, createdBy: createdBy ?? null });
@@ -2957,6 +2961,9 @@ describe('GET /api/jobs', () => {
         waitTerminalReason: null,
         publication: null,
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
     };
 
     const author = {
@@ -3130,6 +3137,9 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         interruptions: [],
         publication: null,
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
     };
 
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -3349,6 +3359,9 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         waitTerminalReason: null,
         publication: null,
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
     };
 
     const jobOf = (id: string, rootJobId: string, over: Partial<Job> = {}): Job => ({

@@ -4,6 +4,7 @@
  */
 
 import type { Sql, Fragment } from 'postgres';
+import { bindingsOf, requirementsOf } from '../connection-bindings.js';
 import { type JobRow, toJobRow, type TaskRow, toTask } from './job-store-rows.js';
 import type {
     Job,
@@ -154,7 +155,34 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         ctx,
         rows.map((row) => row.id)
     );
-    return rows.map((row) => ({ ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [] }));
+    const integrations = await integrationsOf(ctx, first.root_job_id);
+    return rows.map((row) => ({ ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [], ...integrations }));
+}
+
+/** The thread root's bindings, revision and open requirements: the detail reads attach them to every row. */
+async function integrationsOf(
+    ctx: JobStoreContext,
+    rootJobId: string
+): Promise<Pick<Job, 'connections' | 'bindingRevision' | 'integrationRequirements'>> {
+    const { sql, orgId } = ctx;
+    const [root] = await sql<{ binding_revision: number }[]>`
+        select binding_revision from job where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    const bound = await bindingsOf(sql, orgId, rootJobId);
+    const open = await requirementsOf(sql, orgId, rootJobId);
+    return {
+        connections: bound.map((b) => ({
+            connectionId: b.connectionId,
+            provider: b.provider,
+            account: b.externalAccountId,
+            site: b.site,
+            revision: b.revision,
+            source: b.source,
+            live: b.live,
+        })),
+        bindingRevision: root?.binding_revision ?? 0,
+        integrationRequirements: open.map((r) => ({ provider: r.provider, reason: r.reason })),
+    };
 }
 
 export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | null> {
@@ -177,7 +205,8 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     const row = rows[0];
     if (!row) return null;
     const questions = await questionsOfJobs(ctx, [row.id]);
-    return { ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [] };
+    const integrations = await integrationsOf(ctx, row.root_job_id);
+    return { ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [], ...integrations };
 }
 
 /**
