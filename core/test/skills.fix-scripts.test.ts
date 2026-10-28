@@ -115,6 +115,16 @@ describe('the fix skills', () => {
         expect(fix).toContain('`<scratchpad>/diff-<N>-r<round>.patch`');
         expect(fix).toContain('`gh pr checks <PR_NUMBER> --watch');
     });
+
+    it('watch agents with watchdog.sh, never a scheduled model tick, and rerun a lane only on evidence', () => {
+        const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
+        expect(fix).toContain('`<root>/.claude/skills/fix/watchdog.sh`');
+        expect(fix).toContain('Never a scheduled model tick to check\n  on agents.');
+        expect(fix).not.toContain('send_later');
+        expect(fix).toContain('a `Monitor` around a\n  `sleep`, an `echo` to pass a turn');
+        expect(fix).toContain('**A failed lane is not rerun to find its cause.**');
+        expect(fix).toContain('The same case failing twice is never environmental: reproduce it.');
+    });
 });
 
 describe('heavy.sh', () => {
@@ -177,6 +187,83 @@ describe('heavy.sh', () => {
         expect(await run.done).toBe(143);
         expect(existsSync(join(state, 'slot-1'))).toBe(false);
     });
+});
+
+describe('watchdog.sh', () => {
+    const WATCHDOG = join(skill, 'watchdog.sh');
+    const repo = () => {
+        const dir = scratch();
+        const git = (...args: string[]) =>
+            spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: dir });
+        git('init', '-q');
+        writeFileSync(join(dir, 'a.txt'), 'a\n');
+        git('add', '.');
+        git('commit', '-qm', 'init');
+        return { dir, git };
+    };
+    const watch = (args: string[]) => {
+        const child = spawn('sh', [WATCHDOG, '--interval', '1', ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+        children.push(child);
+        let out = '';
+        child.stdout.on('data', (chunk: Buffer) => {
+            out += chunk.toString();
+        });
+        return new Promise<{ code: number | null; out: string }>((resolve) =>
+            child.on('exit', (code) => resolve({ code, out }))
+        );
+    };
+    // Changes `path` every 300 ms until stopped.
+    const keepChanging = (path: string) => {
+        let n = 0;
+        const timer = setInterval(() => writeFileSync(path, `${n++}\n`), 300);
+        return () => clearInterval(timer);
+    };
+
+    it.each([[[]], [['--stall', 'soon', '/tmp']], [['--bogus', '/tmp']]])('refuses %j', (args) => {
+        expect(spawnSync('sh', [WATCHDOG, ...args]).status).toBe(2);
+    });
+
+    it('reports a worktree that stops changing and exits 3', async () => {
+        const { dir } = repo();
+        const run = await watch(['--stall', '2', dir]);
+        expect(run.code).toBe(3);
+        expect(run.out).toBe(`stale: ${dir} — no change for 0 min\n`);
+    }, 15_000);
+
+    it('stays silent while the worktree changes, then exits 0 to be re-armed', async () => {
+        const { dir } = repo();
+        const stop = keepChanging(join(dir, 'untracked.txt'));
+        const run = await watch(['--stall', '2', '--max-run', '4', dir]);
+        stop();
+        expect(run.code).toBe(0);
+        expect(run.out).toMatch(/^watchdog: 1 agent\(s\) progressing after \d+ min — re-arm\n$/);
+    }, 15_000);
+
+    it('counts a log the agent writes as progress', async () => {
+        const { dir } = repo();
+        const log = join(scratch(), 'lane.log');
+        writeFileSync(log, '');
+        const stop = keepChanging(log);
+        const run = await watch(['--stall', '3', '--max-run', '5', `${dir}:${log}`]);
+        stop();
+        expect(run.code).toBe(0);
+    }, 15_000);
+
+    it('reports a worktree that changes but never commits', async () => {
+        const { dir } = repo();
+        const stop = keepChanging(join(dir, 'a.txt'));
+        const run = await watch(['--stall', '30', '--no-commit', '2', dir]);
+        stop();
+        expect(run.code).toBe(3);
+        expect(run.out).toContain(`stale: ${dir} — no commit for`);
+    }, 15_000);
+
+    it('exits 0 once every watched path is gone', async () => {
+        const { dir } = repo();
+        const run = watch(['--stall', '30', dir]);
+        rmSync(dir, { recursive: true, force: true });
+        expect(await run).toEqual({ code: 0, out: 'watchdog: every watched path is gone\n' });
+    }, 15_000);
 });
 
 describe('cleanup.sh', () => {

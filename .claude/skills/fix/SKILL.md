@@ -40,6 +40,12 @@ cover every command this skill names below.
   `--phase a,b` for a hand-picked pair); it prints the phases it chose and why, and runs the full lane
   itself when a shared file changed. The full default `npm run test:jobs` runs once at the end of a PR
   series and on `main`, not per PR.
+- **A failed lane is not rerun to find its cause.** After `test:jobs`, `test:k8s` or `verify:ui`
+  fails, that lane runs again only once the plan file records one of two things. Either a test
+  outside the lane that reproduces the failure — red before the fix, green after (Phase 3, RED) —
+  or an environmental verdict quoting its evidence (exit 137/143, `fork: Resource temporarily
+  unavailable`, an out-of-memory kill, host load far above the core count), which allows one rerun.
+  The same case failing twice is never environmental: reproduce it.
 - HEAVY waits for a free slot (2 per host, `FACTORY_HEAVY_SLOTS`) and prints who holds them. The wait
   is the point: never bypass it, never kill a holder. Launch long ones with `run_in_background`.
 - Name everything the run creates outside the worktree `fix<N>` or `fix<N>-<what>` — kind clusters
@@ -62,8 +68,11 @@ every agent it spawns — copy them into each brief.
 - **Suite output stays on disk.** Run every suite to a log (`> <scratchpad>/<what>.log 2>&1`) and
   read only the verdict and the failures (`tail -n 30`, `grep -n -E 'FAIL|Error'`). A green run
   needs nothing beyond its exit code.
-- **Wait in one call.** A background command or `Monitor` wakes the run once, when it ends — never
-  a loop of sleeps or repeated status checks.
+- **Wait in one call.** This conversation launches a long command with `run_in_background` and
+  ends its turn; the exit notification wakes it. An agent cannot end its turn to wait, so it waits
+  in one foreground call that ends when the job does — `until <done-check>; do sleep 15; done` with
+  the Bash timeout at 600000, repeated only on timeout. Never a loop of sleeps, a `Monitor` around a
+  `sleep`, an `echo` to pass a turn, or repeated status checks.
 - **One implementer per commit, in sequence.** Implementation stays in this conversation by
   default. When the plan spans several commits and you delegate them, spawn one agent per commit:
   one Agent call per message, never a second launch while one runs, never two agents on the same
@@ -72,15 +81,15 @@ every agent it spawns — copy them into each brief.
 - **Implementers are fresh agents, never forks.** A fork starts with this whole conversation.
   Each review round's fixes go to a new agent briefed with the round's findings file — never
   `SendMessage` into an agent that already ran a round.
-- **Watch every background agent.** When the first one launches, arm a watchdog: a scheduled
-  message back into this conversation every 20 minutes (the host's wake tool — `send_later`,
-  `ScheduleWakeup` or a cron), re-armed on each tick until the run ends or blocks on the user. A
-  tick reads each agent's progress — `git log -1` in its tree, a hash of its tree's content
-  (`git diff HEAD` plus untracked files) compared with the last tick's, its transcript and log
-  mtimes, its live suite processes — and reports one line. No commit, content change, transcript
-  or log advance for 45
-  minutes, or 90 minutes on one task, is stuck: stop the agent, have it or you write
-  `<scratchpad>/handoff-<N>.md`, and resume with a fresh agent or in this conversation.
+- **Watch every background agent.** When the first one launches, start WATCHDOG
+  (`<root>/.claude/skills/fix/watchdog.sh`) with `run_in_background`:
+  `sh WATCHDOG <worktree>[:<log>...] ...`, one argument per agent — its worktree, then the logs it
+  writes. It spends no turns while the agents progress, and exits — the one notification — when an
+  agent shows no change for 45 minutes or no commit for 90 (exit 3, one `stale:` line each), when
+  every watched path is gone, or after 110 healthy minutes (exit 0: start it again for the agents
+  still running). Restart it when the set of agents changes. Never a scheduled model tick to check
+  on agents. A stale agent: stop it, have it or you write `<scratchpad>/handoff-<N>.md`, and resume
+  with a fresh agent or in this conversation.
 
 ## Phase 0 — Fetch the issue
 
