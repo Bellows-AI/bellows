@@ -200,8 +200,32 @@ export function generate(options: SeedOptions): SyntheticData {
 
     sessions.push(timedOutSession({ repo, now }));
     jobs.push(timedOutJob({ repo, now }));
+    sessions.push(tokenlessSession({ repo, now, weeks }));
 
     return { sessions, jobs };
+}
+
+/** The tokenless session starts this many weeks before the bulk window, in a week of its own. */
+const TOKENLESS_LEAD_WEEKS = 3;
+
+/**
+ * One session that reported lines and time but no token figure, in a calendar week no other
+ * session touches. The weekly usage chart then always holds a bucket nothing measured, which the
+ * e2e spec asserts reads as dashes. The bulk window's own quiet week is not enough: whether one
+ * lines up with a calendar week depends on the weekday the seed ran on (BEL-151).
+ */
+function tokenlessSession({ repo, now, weeks }: { repo: string; now: Date; weeks: number }): SyntheticSession {
+    const firstSeen = new Date(now.getTime() - (weeks + TOKENLESS_LEAD_WEEKS) * DAYS_PER_WEEK * DAY);
+    const lastSeen = new Date(firstSeen.getTime() + HOUR);
+    return {
+        sessionId: sha(`${repo}:tokenless`).slice(0, ID_LENGTH),
+        repo,
+        branch: 'chore/tokenless-session',
+        firstSeen: firstSeen.toISOString(),
+        lastSeen: lastSeen.toISOString(),
+        samples: 1,
+        fields: { lines_added: 12, active_seconds: 600 },
+    };
 }
 
 /** The timed-out thread's wall clock: two hours, ending one hour before the dataset cutoff. */
