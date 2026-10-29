@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Sql } from 'postgres';
 import { buildApp } from '../src/app.js';
 import { createAuthStore } from '../src/auth/store.js';
-import { createGithubCredentialOfLease, type GithubCredentialOfLease } from '../src/db/github-credential.js';
+import { type AttemptOfLease, createAttemptOfLease } from '../src/db/attempt-of-lease.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import type { MintedToken } from '../src/github/app-token.js';
@@ -23,23 +23,24 @@ const ORG = testOrg();
 const OTHER_ORG = testOrg();
 const LEASE_SECONDS = 300;
 const AUTHOR = testUser('gh-author');
+const OTHER_AUTHOR = testUser('gh-other-author');
 const REPO = 'acme/widgets';
 const HTTP_OK = 200;
 const HTTP_FORBIDDEN = 403;
 
-const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [AUTHOR] });
+const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [AUTHOR, OTHER_AUTHOR] });
 
 let sql: Sql;
 let jobs: JobStore;
 let otherJobs: JobStore;
-let check: GithubCredentialOfLease;
+let check: AttemptOfLease;
 
 beforeAll(() => {
     if (!enabled) return;
     sql = db.sql;
     jobs = createJobStore({ sql, orgId: ORG });
     otherJobs = createJobStore({ sql, orgId: OTHER_ORG });
-    check = createGithubCredentialOfLease({ sql });
+    check = createAttemptOfLease({ sql });
 });
 
 const join = (org: string) =>
@@ -59,13 +60,26 @@ async function running(store: JobStore = jobs, org: string = ORG): Promise<{ id:
 describe.skipIf(!enabled)('github credential of lease — the per-call check', () => {
     it("resolves a live attempt to its org and the task's repo", async () => {
         const { id, claim } = await running();
-        expect(await check(id, claim.leaseToken)).toEqual({ ok: true, orgId: ORG, repo: REPO });
+        expect(await check(id, claim.leaseToken)).toEqual({
+            ok: true,
+            orgId: ORG,
+            jobId: id,
+            rootJobId: id,
+            repo: REPO,
+            rootRepo: REPO,
+            executionUserId: AUTHOR.id,
+            claimSeq: 1,
+        });
     });
 
     it("resolves another org's attempt to that org, never the caller's", async () => {
         const mine = await running();
         const theirs = await running(otherJobs, OTHER_ORG);
-        expect(await check(theirs.id, theirs.claim.leaseToken)).toEqual({ ok: true, orgId: OTHER_ORG, repo: REPO });
+        expect(await check(theirs.id, theirs.claim.leaseToken)).toMatchObject({
+            ok: true,
+            orgId: OTHER_ORG,
+            repo: REPO,
+        });
         // A pair is the attempt's own: crossing the halves resolves nothing.
         expect(await check(theirs.id, mine.claim.leaseToken)).toEqual({ ok: false });
         expect(await check(mine.id, theirs.claim.leaseToken)).toEqual({ ok: false });
@@ -102,13 +116,6 @@ describe.skipIf(!enabled)('github credential of lease — the per-call check', (
             settle: () => sql`delete from org_membership where org_id = ${ORG} and user_id = ${AUTHOR.id}`,
         },
         {
-            name: 'refuses an attempt not working its thread root’s repository',
-            settle: async (id) => {
-                const root = await craftJob({ sql, org: ORG, author: AUTHOR.id }, { repo: 'acme/elsewhere' });
-                await sql`update job set root_job_id = ${root} where id = ${id}`;
-            },
-        },
-        {
             name: 'refuses a reviewer row, which never gets a GitHub token',
             settle: (id) => sql`
                 update job set review_of = ${crypto.randomUUID()}, review_key = 'k', review_profile = 'security',
@@ -120,6 +127,31 @@ describe.skipIf(!enabled)('github credential of lease — the per-call check', (
         const attempt = await running();
         expect((await check(attempt.id, attempt.claim.leaseToken)).ok).toBe(true);
         await settle(attempt.id);
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false });
+    });
+});
+
+describe.skipIf(!enabled)('attempt of lease — whose membership decides', () => {
+    // The stable execution principal (094) is the thread's identity, not `created_by`, which a later
+    // writer could differ from.
+    it('authorizes against the execution user, not created_by', async () => {
+        const attempt = await running();
+        await join(ORG);
+        await sql`update job set created_by = ${OTHER_AUTHOR.id} where id = ${attempt.id}`;
+        // created_by (OTHER_AUTHOR) is no member; the execution user (AUTHOR) is.
+        expect((await check(attempt.id, attempt.claim.leaseToken)).ok).toBe(true);
+
+        await sql`insert into org_membership (org_id, github_login, user_id) values (${ORG}, ${OTHER_AUTHOR.login}, ${OTHER_AUTHOR.id}) on conflict do nothing`;
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${AUTHOR.id}`;
+        // Now created_by is a member and the execution user is not: the execution user decides.
+        expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false });
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${OTHER_AUTHOR.id}`;
+    });
+
+    it('refuses a thread root with no execution user', async () => {
+        const attempt = await running();
+        // Deleting the account nulls the column through its foreign key; the trigger allows that one change.
+        await sql`update job set execution_user_id = null where id = ${attempt.id}`;
         expect(await check(attempt.id, attempt.claim.leaseToken)).toEqual({ ok: false });
     });
 });
@@ -139,7 +171,7 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
             config,
             orgs: createOrgRegistry({ sql, ready, config, withStores: false }),
             auth: createAuthStore({ sql, ready }),
-            githubCredentialOfLease: check,
+            attemptOfLease: check,
             githubMint: mint,
             ready,
             version: '0.0.0',
@@ -175,6 +207,35 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
             [OTHER_ORG, REPO],
         ]);
         expect(lines.join('\n')).not.toContain('_secret');
+    });
+
+    it('refuses an attempt not working its thread root’s repository, and mints nothing', async () => {
+        const minted: string[] = [];
+        const { app: instance } = await boot(async (orgId) => {
+            minted.push(orgId);
+            return { token: 'ghs_never', expiresAt: '2026-10-16T13:00:00.000Z' };
+        });
+        const attempt = await running();
+        const root = await craftJob({ sql, org: ORG, author: AUTHOR.id }, { repo: 'acme/elsewhere' });
+        await sql`update job set root_job_id = ${root} where id = ${attempt.id}`;
+        const res = await ask(instance, attempt.id, attempt.claim.leaseToken);
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(minted).toEqual([]);
+    });
+
+    // F1 (docs/connections.md): post-agent phases ask under the running lease, with no grace after settle.
+    // Already green on the previous check: a pin, not a RED case.
+    it('honours a publish ask while the attempt runs and refuses it the moment it settles', async () => {
+        const { app: instance } = await boot(async () => ({
+            token: 'ghs_db_publish_secret',
+            expiresAt: '2026-10-16T13:00:00.000Z',
+        }));
+        const attempt = await running();
+        expect((await ask(instance, attempt.id, attempt.claim.leaseToken)).statusCode).toBe(HTTP_OK);
+        await sql`update job set status = 'succeeded', finished_at = now() where id = ${attempt.id}`;
+        const after = await ask(instance, attempt.id, attempt.claim.leaseToken);
+        expect(after.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(after.body).not.toContain('ghs_db_publish_secret');
     });
 
     it('withholds the token when the attempt is cancelled while the GitHub exchange is blocked', async () => {

@@ -16,7 +16,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | The agent's skill | `docker/skills/jira/SKILL.md` | `driver/test/executor-images.test.ts` |
 | Docker and Kubernetes carry no Jira credential, only the pair and the board URL | `driver/src/claim.ts`, `driver/src/k8s/k8s-podspec.ts` | `driver/test/docker/`, `driver/test/k8s/` |
 | `ATLASSIAN_*` reserved env names | `core/src/env.ts`, `driver/src/claim.ts` | `server/test/routes.env.test.ts` |
-| GitHub: `POST /api/jobs/:id/credentials/github` (attempt pair only, `no-store`) | `server/src/routes/github-credential.ts`, `server/src/db/github-credential.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
+| GitHub: `POST /api/jobs/:id/credentials/github` (attempt pair only, `no-store`) | `server/src/routes/github-credential.ts`, `server/src/db/attempt-of-lease.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
+| Managed-connection broker: `POST /api/jobs/:id/credentials/connections/:connectionId` (attempt pair only, `no-store`; closed outcomes, `409 INTEGRATION_REQUIRED`; the token is rechecked against the lease before it leaves) | `server/src/routes/connection-credential.ts`, `server/src/db/attempt-of-lease.ts` (the shared lease check, keyed on the root's execution user), `server/src/integrations/integration-recovery.ts` (`resolverOf`) | `server/test-db/connection-credential.test.ts`, `server/test/routes.connection-credential.test.ts` |
 | GitHub: one mint per ask, narrowed to the task's repo and `RUNNER_TOKEN_PERMISSIONS` | `server/src/github/app-token.ts` (`fresh`) | `server/test/github.app-token.test.ts` |
 | GitHub, runner side: the image helper behind git's `credential.helper` and the `gh` wrapper; byte-identical in both images | `docker/claude-executor/github-credential.cjs`, `gh-wrapper.sh`, `entrypoint.sh`, `docker/opencode-executor/entrypoint.sh` | `driver/test/github-credential.test.ts`, `driver/test/executor-images.test.ts` |
 | The attempt pair on an adopted runner: the supervisor answers the lease it follows on `GET /attempt`; every helper (Jira recipes, GitHub helper, branch reporter) reads it through `attempt-pair.cjs`, byte-identical in both images | `driver/src/scripts/supervisor.cjs` (`relayRequest`), `docker/claude-executor/control-proxy.cjs`, `docker/claude-executor/attempt-pair.cjs`, `driver/src/supervisor-contract.ts` (`SupervisorBinding.leaseToken`) | `driver/test/supervisor.test.ts`, `driver/test/attempt-pair.test.ts`, `driver/test/takeover-sim.test.ts` |
@@ -54,6 +55,9 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - **GitHub's token is the attempt's, never the claim's.** No GitHub value rides the claim, the runner's env or
   Secret; a reviewer row and a superseded, cancelled or finished attempt get none.
   `server/test-db/github-credential.test.ts`, `driver/test/github-credential.test.ts`.
+- **Post-agent driver phases (gates, post-helpers, publish) ask under the attempt's running lease, with no grace after
+  settle; the agent's helper lives only in the agent container and ends with it, and aux containers carry no attempt
+  pair.** `server/test-db/connection-credential.test.ts`, `server/test-db/github-credential.test.ts`.
 - **A reconnect claims the grant's lineage before it exchanges the code; a new grant's secret is created before
   its connection is visible.** The callback's return path is the one stored at start. `server/test-db/integration-authorization.test.ts`.
 - **A recorded operation is released only after its ID is durably fenced at the store.** A `not-found` reconcile is

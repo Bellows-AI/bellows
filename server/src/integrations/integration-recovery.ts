@@ -2,6 +2,7 @@ import type { Sql } from 'postgres';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { type AuthorizationFlow, createAuthorizationFlow } from './authorization-flow.js';
 import type { AuthorizationFlowDeps } from './authorization-types.js';
+import { type CredentialResolver, createCredentialResolver } from './credential-resolver.js';
 import { createGrantLineage, type DestroyResult, type GrantLineage, type LineageTiming } from './grant-lineage.js';
 import type { OAuthProviderLookup } from './oauth-provider.js';
 
@@ -32,6 +33,8 @@ export interface IntegrationRuntime {
     readonly log: (line: Record<string, unknown>) => void;
     lineageOf(orgId: string): GrantLineage;
     flowOf(orgId: string): AuthorizationFlow;
+    /** The org's credential resolver, over its lineage: what a lease-authenticated broker spends through. */
+    resolverOf(orgId: string): CredentialResolver;
     /** Destroys the secret of a revoked grant; a refusal is an answer, a throw is the store's. */
     destroyRevokedSecret(orgId: string, grantId: string): Promise<DestroyResult>;
 }
@@ -41,6 +44,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
     const log = deps.log ?? (() => undefined);
     const lineages = new Map<string, GrantLineage>();
     const flows = new Map<string, AuthorizationFlow>();
+    const resolvers = new Map<string, CredentialResolver>();
     const lineageOf = (orgId: string): GrantLineage => {
         let lineage = lineages.get(orgId);
         if (!lineage) {
@@ -73,11 +77,26 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
         }
         return flow;
     };
+    const resolverOf = (orgId: string): CredentialResolver => {
+        let resolver = resolvers.get(orgId);
+        if (!resolver) {
+            resolver = createCredentialResolver({
+                sql: deps.sql,
+                orgId,
+                secrets: deps.secrets,
+                lineage: lineageOf(orgId),
+                providers: deps.providers,
+            });
+            resolvers.set(orgId, resolver);
+        }
+        return resolver;
+    };
     return {
         sql: deps.sql,
         log,
         lineageOf,
         flowOf,
+        resolverOf,
         destroyRevokedSecret: (orgId, grantId) => lineageOf(orgId).destroyRevokedSecret(grantId),
     };
 }

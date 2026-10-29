@@ -5,7 +5,7 @@ import { createAuthStore } from './auth/store.js';
 import { resolveConfig, type GitHubConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createConnectionOfLease } from './db/connection-store.js';
-import { createGithubCredentialOfLease } from './db/github-credential.js';
+import { createAttemptOfLease } from './db/attempt-of-lease.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
@@ -166,7 +166,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         ready,
         store,
         secrets,
-        destroyRevokedSecret: integrations.destroyRevokedSecret,
+        integrations,
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
@@ -177,7 +177,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
         connectionOfLease: createConnectionOfLease({ sql, ready }),
-        githubCredentialOfLease: createGithubCredentialOfLease({ sql, ready }),
+        attemptOfLease: createAttemptOfLease({ sql, ready }),
         githubMint: options.githubMint,
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,

@@ -277,6 +277,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
     // every mode, asked by the runner's helper and the driver's supervised steps alike.
     ['/api/jobs/:id/credentials/github', 'connector'],
+    // The managed-connection broker (BEL-60): the same class, one segment deeper.
+    ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
     // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
@@ -346,6 +348,16 @@ describe('the route table', () => {
                 store: telemetryStoreStub(),
                 auth: store,
                 commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
+                // The runner credential routes exist exactly when their per-call check does.
+                attemptOfLease: async () => ({ ok: false }),
+                integrations: {
+                    resolverOf: () => ({
+                        resolveCredential: async () => ({
+                            ok: false as const,
+                            outcome: { outcome: 'forbidden' as const, reason: 'principal-mismatch' as const },
+                        }),
+                    }),
+                },
             })
         );
         await app.ready();
