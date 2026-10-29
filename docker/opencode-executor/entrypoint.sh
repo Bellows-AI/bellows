@@ -70,16 +70,8 @@ fi
 
 # The baked policy is root-owned (issue #452): the global copy under $HOME/.config/opencode
 # fixes the key order, the managed copy under /etc/opencode restores every baked value. The per-run
-# allows below therefore ride OPENCODE_CONFIG_CONTENT — the inline layer, merged after the global
+# allow below therefore rides OPENCODE_CONFIG_CONTENT — the inline layer, merged after the global
 # copy, so its new keys land after the baked deny globs (last-match-wins) — never a file edit.
-#
-# The baked bash table allows merging only `origin/main`, by exact match — a glob allow would
-# bless compounds. A repo whose default is another name gets the same three exact allows for
-# its own default, read from origin/HEAD — or, for a batch task, the base the driver hands it
-# (BASE_BRANCH). No origin/HEAD, or a default of main: nothing to add.
-DEFAULT_BRANCH="${BASE_BRANCH:-$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)}"
-DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
-if [ "$DEFAULT_BRANCH" = main ]; then DEFAULT_BRANCH=''; fi
 
 # The driver points XDG_DATA_HOME at a per-task directory on the task volume so the
 # session database outlives the container — that persistence is what makes a follow-up's
@@ -146,10 +138,10 @@ if [ -z "${BELLOWS_SESSION_ID:-}" ]; then
     fi
 fi
 
-if [ -n "$DEFAULT_BRANCH$MEMBER_ROOT" ]; then
+if [ -n "$MEMBER_ROOT" ]; then
     # Single-quoted: the shell expands nothing in the script. A value the merge cannot extend is
     # named in one line on stderr and passed through untouched.
-    if amended="$(DEFAULT_BRANCH="$DEFAULT_BRANCH" MEMBER_ROOT="$MEMBER_ROOT" node -e '
+    if amended="$(MEMBER_ROOT="$MEMBER_ROOT" node -e '
         let c;
         try {
             c = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
@@ -162,14 +154,6 @@ if [ -n "$DEFAULT_BRANCH$MEMBER_ROOT" ]; then
             process.exit(1);
         }
         c.permission ??= {};
-        const branch = process.env.DEFAULT_BRANCH;
-        if (branch) {
-            const ref = "origin/" + branch;
-            c.permission.bash ??= {};
-            for (const rule of ["git merge " + ref, "git merge --no-edit " + ref, "git merge " + ref + " --no-edit"]) {
-                c.permission.bash[rule] = "allow";
-            }
-        }
         const root = process.env.MEMBER_ROOT;
         if (root) {
             c.permission.external_directory ??= {};
@@ -180,7 +164,7 @@ if [ -n "$DEFAULT_BRANCH$MEMBER_ROOT" ]; then
         OPENCODE_CONFIG_CONTENT="$amended"
         export OPENCODE_CONFIG_CONTENT
     else
-        echo "opencode-executor: could not add the per-run allows to OPENCODE_CONFIG_CONTENT" >&2
+        echo "opencode-executor: could not add the per-run allow to OPENCODE_CONFIG_CONTENT" >&2
     fi
 fi
 

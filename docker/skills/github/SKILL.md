@@ -44,7 +44,7 @@ reason. If `/run/factory-control/control.sock` does not exist this environment c
 
 A PR that already exists is yours to read — reviews, checks, diffs — and to fix on request.
 Read a PR's diff with `gh pr diff`, never by checking the branch out:
-`gh pr checkout` moves HEAD off the task branch and is denied for the same reason.
+`gh pr checkout` moves HEAD off the task branch the driver publishes from.
 
 ## Addressing review feedback
 
