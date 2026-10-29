@@ -3,12 +3,17 @@ import type { FastifyInstance } from 'fastify';
 import type { Sql } from 'postgres';
 import { buildApp } from '../src/app.js';
 import { createAuthStore } from '../src/auth/store.js';
-import { type AttemptOfLease, createAttemptOfLease } from '../src/db/attempt-of-lease.js';
+import {
+    type AttemptOfLease,
+    createAttemptOfLease,
+    createPairMatches,
+    type PairMatches,
+} from '../src/db/attempt-of-lease.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
-import type { MintedToken } from '../src/github/app-token.js';
+import type { MintedToken, RevokeOutcome } from '../src/github/app-token.js';
 import { createOrgRegistry } from '../src/orgs.js';
-import type { GithubMint } from '../src/routes/github-credential.js';
+import type { GithubMint, GithubRevoke } from '../src/routes/github-credential.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
 import { useTestDb } from './harness.js';
 import { craftJob, expireLease, testOrg, testUser } from './fixtures.js';
@@ -26,6 +31,8 @@ const AUTHOR = testUser('gh-author');
 const OTHER_AUTHOR = testUser('gh-other-author');
 const REPO = 'acme/widgets';
 const HTTP_OK = 200;
+const HTTP_NO_CONTENT = 204;
+const CEILING = { permissions: { contents: 'write' }, repositories: ['widgets'] };
 const HTTP_FORBIDDEN = 403;
 
 const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [AUTHOR, OTHER_AUTHOR] });
@@ -34,6 +41,7 @@ let sql: Sql;
 let jobs: JobStore;
 let otherJobs: JobStore;
 let check: AttemptOfLease;
+let pairMatches: PairMatches;
 
 beforeAll(() => {
     if (!enabled) return;
@@ -41,6 +49,7 @@ beforeAll(() => {
     jobs = createJobStore({ sql, orgId: ORG });
     otherJobs = createJobStore({ sql, orgId: OTHER_ORG });
     check = createAttemptOfLease({ sql });
+    pairMatches = createPairMatches({ sql });
 });
 
 const join = (org: string) =>
@@ -163,7 +172,10 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         app = undefined;
     });
 
-    async function boot(mint: GithubMint): Promise<{ app: FastifyInstance; lines: string[] }> {
+    async function boot(
+        mint: GithubMint,
+        revoke: GithubRevoke = async () => 'revoked'
+    ): Promise<{ app: FastifyInstance; lines: string[] }> {
         const lines: string[] = [];
         const ready = Promise.resolve();
         const config = testConfig({ auth: githubAuth() });
@@ -172,7 +184,9 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
             orgs: createOrgRegistry({ sql, ready, config, withStores: false }),
             auth: createAuthStore({ sql, ready }),
             attemptOfLease: check,
+            pairMatches,
             githubMint: mint,
+            githubRevoke: revoke,
             ready,
             version: '0.0.0',
             logger: { level: 'trace', stream: { write: (line: string) => lines.push(line) } },
@@ -192,7 +206,7 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         let serial = 0;
         const { app: instance, lines } = await boot(async (orgId, repo) => {
             asked.push([orgId, repo]);
-            return { token: `ghs_db_route_${++serial}_secret`, expiresAt: '2026-10-16T13:00:00.000Z' };
+            return { token: `ghs_db_route_${++serial}_secret`, expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING };
         });
         const mine = await running();
         const theirs = await running(otherJobs, OTHER_ORG);
@@ -213,7 +227,7 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         const minted: string[] = [];
         const { app: instance } = await boot(async (orgId) => {
             minted.push(orgId);
-            return { token: 'ghs_never', expiresAt: '2026-10-16T13:00:00.000Z' };
+            return { token: 'ghs_never', expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING };
         });
         const attempt = await running();
         const root = await craftJob({ sql, org: ORG, author: AUTHOR.id }, { repo: 'acme/elsewhere' });
@@ -229,6 +243,7 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         const { app: instance } = await boot(async () => ({
             token: 'ghs_db_publish_secret',
             expiresAt: '2026-10-16T13:00:00.000Z',
+            ...CEILING,
         }));
         const attempt = await running();
         expect((await ask(instance, attempt.id, attempt.claim.leaseToken)).statusCode).toBe(HTTP_OK);
@@ -256,11 +271,72 @@ describe.skipIf(!enabled)('the runner GitHub credential route — on a real atte
         const pending = ask(instance, attempt.id, attempt.claim.leaseToken);
         await inMint;
         await sql`update job set cancel_requested_at = now() where id = ${attempt.id}`;
-        release({ token: 'ghs_blocked_secret_token', expiresAt: '2026-10-16T13:00:00.000Z' });
+        release({ token: 'ghs_blocked_secret_token', expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING });
 
         const res = await pending;
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.body).not.toContain('ghs_blocked_secret_token');
         expect(lines.join('\n')).not.toContain('ghs_blocked_secret_token');
+    });
+
+    // BEL-60: Stop revokes the stopped attempt's token only. Possession of a token is the authority to revoke it
+    // (the pair names the attempt, GitHub's own check says whether the token is real), so the route never
+    // revokes anything it was not handed, and never needs the lease to be live.
+    it('revokes the token an attempt hands it even after Stop, and nobody else’s', async () => {
+        const revoked: [string, string][] = [];
+        let serial = 0;
+        const { app: instance } = await boot(
+            async () => ({
+                token: `ghs_db_revoke_${++serial}_secret`,
+                expiresAt: '2026-10-16T13:00:00.000Z',
+                ...CEILING,
+            }),
+            async (orgId, token): Promise<RevokeOutcome> => {
+                revoked.push([orgId, token]);
+                return 'revoked';
+            }
+        );
+        const a = await running();
+        const b = await running();
+        const tokenA = (await ask(instance, a.id, a.claim.leaseToken)).json().token as string;
+        await sql`update job set cancel_requested_at = now() where id = ${a.id}`;
+
+        const stopped = await instance.inject({
+            method: 'POST',
+            url: `/api/jobs/${a.id}/credentials/github/revoke`,
+            headers: { 'x-factory-job-id': a.id, 'x-factory-job-lease-token': a.claim.leaseToken },
+            payload: { token: tokenA },
+        });
+        expect(stopped.statusCode).toBe(HTTP_NO_CONTENT);
+        expect(revoked).toEqual([[ORG, tokenA]]);
+        // The other attempt is untouched and still asks.
+        expect((await ask(instance, b.id, b.claim.leaseToken)).statusCode).toBe(HTTP_OK);
+        expect(revoked).toHaveLength(1);
+    });
+
+    it('refuses a revoke from a superseded pair and calls GitHub for it', async () => {
+        const revoked: string[] = [];
+        const { app: instance } = await boot(
+            async () => ({ token: 'ghs_never', expiresAt: '2026-10-16T13:00:00.000Z', ...CEILING }),
+            async (_org, token) => {
+                revoked.push(token);
+                return 'revoked';
+            }
+        );
+        const first = await running();
+        await expireLease(sql, first.id);
+        const second = (await jobs.claim('w2', LEASE_SECONDS)) as Claim;
+        expect(second.id).toBe(first.id);
+        const revokeWith = (id: string, leaseToken: string) =>
+            instance.inject({
+                method: 'POST',
+                url: `/api/jobs/${id}/credentials/github/revoke`,
+                headers: { 'x-factory-job-id': id, 'x-factory-job-lease-token': leaseToken },
+                payload: { token: 'ghs_x' },
+            });
+        expect((await revokeWith(first.id, first.claim.leaseToken)).statusCode).toBe(HTTP_FORBIDDEN);
+        expect(revoked).toEqual([]);
+        expect((await revokeWith(second.id, second.leaseToken)).statusCode).toBe(HTTP_NO_CONTENT);
+        expect(revoked).toEqual(['ghs_x']);
     });
 });

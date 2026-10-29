@@ -75,3 +75,24 @@ export function createAttemptOfLease({
         };
     };
 }
+
+export type PairCheck = { ok: true; orgId: string } | { ok: false };
+
+export type PairMatches = (jobId: string, leaseToken: string) => Promise<PairCheck>;
+
+/**
+ * Whether the pair names an attempt row, and which org, with NO liveness: the revoke route's check. A Stop
+ * (`cancel_requested_at`) or a settle must not stop a runner revoking the token it holds; a reclaim rotates the
+ * lease token, so a superseded pair still matches nothing. A reviewer row never matches. A throw is the
+ * caller's to answer as unavailable.
+ */
+export function createPairMatches({ sql, ready }: { sql: Sql; ready?: Promise<unknown> | undefined }): PairMatches {
+    return async (jobId, leaseToken) => {
+        if (ready) await ready;
+        const rows = await sql<{ org_id: string }[]>`
+            select org_id from job where id = ${jobId} and lease_token = ${leaseToken} and review_of is null
+        `;
+        const row = rows[0];
+        return row ? { ok: true, orgId: row.org_id } : { ok: false };
+    };
+}

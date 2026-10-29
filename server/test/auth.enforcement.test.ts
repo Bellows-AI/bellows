@@ -277,6 +277,8 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
     // every mode, asked by the runner's helper and the driver's supervised steps alike.
     ['/api/jobs/:id/credentials/github', 'connector'],
+    // Revoking that token at the end of the attempt: the same class, and a pair-only match on the board.
+    ['/api/jobs/:id/credentials/github/revoke', 'connector'],
     // The managed-connection broker (BEL-60): the same class, one segment deeper.
     ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
     // Managing connections is a person's settings act; it falls through to 'user'.
@@ -350,6 +352,7 @@ describe('the route table', () => {
                 commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
                 // The runner credential routes exist exactly when their per-call check does.
                 attemptOfLease: async () => ({ ok: false }),
+                pairMatches: async () => ({ ok: false }),
                 integrations: {
                     resolverOf: () => ({
                         resolveCredential: async () => ({

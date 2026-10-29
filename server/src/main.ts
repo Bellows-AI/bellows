@@ -1,11 +1,11 @@
-import postgres from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { resolveConfig, type GitHubConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createConnectionOfLease } from './db/connection-store.js';
-import { createAttemptOfLease } from './db/attempt-of-lease.js';
+import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
@@ -14,7 +14,7 @@ import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backe
 import { admissionOccupancy } from './db/jobs/job-store-admission.js';
 import { createServerMetrics } from './metrics.js';
 import { createOrgRegistry } from './orgs.js';
-import type { GithubMint } from './routes/github-credential.js';
+import type { GithubMint, GithubRevoke } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
 import {
@@ -28,13 +28,27 @@ import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 import type { SecretDiagnostic } from './secrets/secret-store.js';
 
+/** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
+const runnerCredentialDeps = (db: { sql: Sql; ready: Promise<unknown> }, options: StartOptions) => ({
+    attemptOfLease: createAttemptOfLease(db),
+    pairMatches: createPairMatches(db),
+    githubMint: options.githubMint,
+    githubRevoke: options.githubRevoke,
+});
+
+interface StartOptions {
+    github?: GitHubConfig;
+    githubMint?: GithubMint;
+    githubRevoke?: GithubRevoke;
+}
+
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
  * GitHub: `index.ts` reads the environment, which can only ever produce the App; `offline.ts`
  * passes the code-only `none` arm for the harnesses that run with no credential and no network, and
  * `offline-mint.ts` adds the lanes' stand-in runner-token mint to it.
  */
-export async function start(options: { github?: GitHubConfig; githubMint?: GithubMint } = {}): Promise<void> {
+export async function start(options: StartOptions = {}): Promise<void> {
     const { config } = resolveConfig({ env: process.env, ...(options.github ? { github: options.github } : {}) });
     // The orgs are the App's installations now (#99) — the process is bound to none of them, which
     // is the point. The mode is what a boot should say out loud.
@@ -177,8 +191,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
         connectionOfLease: createConnectionOfLease({ sql, ready }),
-        attemptOfLease: createAttemptOfLease({ sql, ready }),
-        githubMint: options.githubMint,
+        ...runnerCredentialDeps({ sql, ready }, options),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,

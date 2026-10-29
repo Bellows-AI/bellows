@@ -53,7 +53,16 @@ interface Call {
 
 /** Records every request and answers the token endpoint. No network, no timers. */
 function stubFetch(
-    options: { expiresAt?: () => string; token?: () => string; installations?: unknown; app?: unknown } = {}
+    options: {
+        expiresAt?: () => string;
+        token?: () => string;
+        installations?: unknown;
+        app?: unknown;
+        /** What GitHub answers beside the token, given the requested body; the default echoes the request. */
+        grant?: (requested: Record<string, unknown> | undefined) => Record<string, unknown>;
+        /** The answer to DELETE /installation/token; a throw is a network failure. */
+        revoke?: () => Response | Promise<Response>;
+    } = {}
 ) {
     const calls: Call[] = [];
     const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -64,11 +73,25 @@ function stubFetch(
             authorization: String((init?.headers as Record<string, string>)?.authorization ?? ''),
             body: typeof init?.body === 'string' ? JSON.parse(init.body) : undefined,
         });
+        if (url.endsWith('/installation/token') && init?.method === 'DELETE') {
+            return (await options.revoke?.()) ?? new Response(null, { status: 204 });
+        }
         if (url.includes('/access_tokens')) {
+            const requested =
+                typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
+            const echoed = requested
+                ? {
+                      permissions: requested.permissions,
+                      ...(requested.repositories
+                          ? { repositories: (requested.repositories as string[]).map((name) => ({ name })) }
+                          : {}),
+                  }
+                : {};
             return new Response(
                 JSON.stringify({
                     token: options.token?.() ?? 'ghs_installation_token',
                     expires_at: options.expiresAt?.() ?? new Date(Date.now() + HOUR_MS).toISOString(),
+                    ...(options.grant ? options.grant(requested) : echoed),
                 }),
                 { status: 201 }
             );
@@ -230,6 +253,8 @@ describe('the installation token', () => {
         await expect(provider({ fetchFn }).fresh('acme/widgets')).resolves.toEqual({
             token: 'ghs_installation_token',
             expiresAt: expiry,
+            permissions: RUNNER_TOKEN_PERMISSIONS,
+            repositories: ['widgets'],
         });
     });
 
@@ -359,6 +384,121 @@ describe('the installation token', () => {
             { repositories: ['b'], permissions: RUNNER_TOKEN_PERMISSIONS },
             { repositories: ['a'], permissions: RUNNER_TOKEN_PERMISSIONS },
         ]);
+    });
+});
+
+describe('the ceiling of a narrowed mint, and its revocation', () => {
+    const revokes = (calls: Call[]) => calls.filter((call) => call.method === 'DELETE');
+    const refusal = (run: Promise<unknown>) =>
+        run.then(
+            () => null,
+            (error: unknown) => error as Error
+        );
+
+    it('refuses a token broader than RUNNER_TOKEN_PERMISSIONS and revokes it at the configured host', async () => {
+        const { calls, fetchFn } = stubFetch({
+            token: () => 'ghs_too_broad',
+            grant: () => ({
+                permissions: { ...RUNNER_TOKEN_PERMISSIONS, administration: 'write' },
+                repositories: [{ name: 'widgets' }],
+            }),
+        });
+        const failure = await refusal(provider({ fetchFn }).fresh('acme/widgets'));
+        expect(failure?.message).toMatch(/broader than requested/);
+        expect(failure?.message).not.toContain('ghs_too_broad');
+        expect(revokes(calls)).toEqual([
+            expect.objectContaining({ url: `${API}/installation/token`, authorization: 'Bearer ghs_too_broad' }),
+        ]);
+    });
+
+    it('refuses a permission answered at a higher access than asked', async () => {
+        const { calls, fetchFn } = stubFetch({
+            grant: () => ({
+                permissions: { ...RUNNER_TOKEN_PERMISSIONS, checks: 'write' },
+                repositories: [{ name: 'widgets' }],
+            }),
+        });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).rejects.toThrow(/broader than requested/);
+        expect(revokes(calls)).toHaveLength(1);
+    });
+
+    it('accepts the read-only metadata permission GitHub adds to every installation token', async () => {
+        const { calls, fetchFn } = stubFetch({
+            grant: () => ({
+                permissions: { ...RUNNER_TOKEN_PERMISSIONS, metadata: 'read' },
+                repositories: [{ name: 'widgets' }],
+            }),
+        });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).resolves.toMatchObject({ repositories: ['widgets'] });
+        expect(revokes(calls)).toHaveLength(0);
+    });
+
+    it('refuses a token for more repositories than the one asked, and revokes it', async () => {
+        const { calls, fetchFn } = stubFetch({
+            grant: () => ({
+                permissions: RUNNER_TOKEN_PERMISSIONS,
+                repositories: [{ name: 'widgets' }, { name: 'gadgets' }],
+            }),
+        });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).rejects.toThrow(/broader than requested/);
+        expect(revokes(calls)).toHaveLength(1);
+    });
+
+    it('refuses a token for a different repository than the one asked', async () => {
+        const { calls, fetchFn } = stubFetch({
+            grant: () => ({ permissions: RUNNER_TOKEN_PERMISSIONS, repositories: [{ name: 'gadgets' }] }),
+        });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).rejects.toThrow(/broader than requested/);
+        expect(revokes(calls)).toHaveLength(1);
+    });
+
+    it.each([
+        ['no permissions field', () => ({ repositories: [{ name: 'widgets' }] })],
+        ['a malformed permissions field', () => ({ permissions: 'all', repositories: [{ name: 'widgets' }] })],
+        ['no repositories field for a repository ask', () => ({ permissions: RUNNER_TOKEN_PERMISSIONS })],
+    ])('refuses an answer with %s: unverified is refused', async (_name, grant) => {
+        const { calls, fetchFn } = stubFetch({ grant });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).rejects.toThrow(/broader than requested/);
+        expect(revokes(calls)).toHaveLength(1);
+    });
+
+    it('still refuses when the revoke of a rejected token fails', async () => {
+        const { fetchFn } = stubFetch({
+            grant: () => ({ permissions: { administration: 'write' } }),
+            revoke: () => {
+                throw new Error('network down');
+            },
+        });
+        await expect(provider({ fetchFn }).fresh('acme/widgets')).rejects.toThrow(/broader than requested/);
+    });
+
+    it.each([
+        [204, 'revoked'],
+        [401, 'revoked'],
+        [403, 'failed'],
+        [500, 'failed'],
+    ] as const)('maps a revoke answered %s to %s, once, at the configured host', async (status, outcome) => {
+        const { calls, fetchFn } = stubFetch({ revoke: () => new Response(null, { status }) });
+        await expect(provider({ fetchFn }).revoke('ghs_to_revoke')).resolves.toBe(outcome);
+        expect(revokes(calls)).toEqual([
+            expect.objectContaining({ url: `${API}/installation/token`, authorization: 'Bearer ghs_to_revoke' }),
+        ]);
+    });
+
+    it('maps a revoke that throws or times out to failed, never retried', async () => {
+        const thrown = stubFetch({
+            revoke: () => {
+                throw new Error('reset');
+            },
+        });
+        await expect(provider({ fetchFn: thrown.fetchFn }).revoke('ghs_x')).resolves.toBe('failed');
+        expect(revokes(thrown.calls)).toHaveLength(1);
+
+        const hung = (async (_url: string | URL | Request, init?: RequestInit) =>
+            new Promise<Response>((_resolve, reject) => {
+                init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+            })) as typeof fetch;
+        await expect(provider({ fetchFn: hung, mintTimeoutMs: 10 }).revoke('ghs_x')).resolves.toBe('failed');
     });
 });
 

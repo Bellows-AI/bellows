@@ -8,13 +8,13 @@ import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
 import type { ConnectionOfLease } from './db/connection-store.js';
-import type { AttemptOfLease } from './db/attempt-of-lease.js';
+import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
 import { connectionRoutes, type CloudIdLookup, type DestroyRevokedSecret } from './routes/connections.js';
 import { connectorJiraRoutes } from './routes/connector-jira.js';
 import { connectionCredentialRoutes } from './routes/connection-credential.js';
-import { githubCredentialRoutes, type GithubMint } from './routes/github-credential.js';
+import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
 import { orgMemberRoutes } from './routes/org-members.js';
@@ -90,11 +90,15 @@ export interface AppDeps {
      * stand-in (`offline-mint.ts`) and the tests' seam; absent, each org's App installation mints.
      */
     attemptOfLease?: AttemptOfLease | undefined;
+    /** The revoke route's pair-only match (`createPairMatches`, no liveness); the route exists when it does. */
+    pairMatches?: PairMatches | undefined;
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
     integrations?:
         | (Pick<IntegrationRuntime, 'resolverOf'> & Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret'>>)
         | undefined;
     githubMint?: GithubMint | undefined;
+    /** Replaces the org's installation revoke, like `githubMint` (the lanes' stand-in, the tests' seam). */
+    githubRevoke?: GithubRevoke | undefined;
     fetchFn?: typeof fetch | undefined;
     /** The commerce service's plan push (095); the routes exist exactly when COMMERCE_ENABLED and this is present. */
     commercePlanWriter?: CommercePlanWriter | undefined;
@@ -153,20 +157,46 @@ const orgMint =
         return tokens ? tokens.fresh(repo) : null;
     };
 
+/** Each org's own installation revokes its runners' tokens; null when the org holds none. */
+const orgRevoke =
+    (orgs: OrgRegistry): GithubRevoke =>
+    async (orgId, token) => {
+        const tokens = (await orgs.for(orgId))?.githubToken;
+        return tokens ? tokens.revoke(token) : null;
+    };
+
 /**
  * The routes a runner spends through with its attempt pair: the Jira proxy and the GitHub
  * credential, each existing exactly when its per-call check does.
  */
 async function registerRunnerCredentialRoutes(
     app: FastifyInstance,
-    deps: Pick<AppDeps, 'orgs' | 'connectionOfLease' | 'attemptOfLease' | 'integrations' | 'githubMint' | 'fetchFn'>
+    deps: Pick<
+        AppDeps,
+        | 'orgs'
+        | 'connectionOfLease'
+        | 'attemptOfLease'
+        | 'pairMatches'
+        | 'integrations'
+        | 'githubMint'
+        | 'githubRevoke'
+        | 'fetchFn'
+    >
 ): Promise<void> {
-    const { orgs, connectionOfLease, attemptOfLease, integrations, githubMint, fetchFn } = deps;
+    const { orgs, connectionOfLease, attemptOfLease, pairMatches, integrations, githubMint, githubRevoke, fetchFn } =
+        deps;
     if (connectionOfLease) {
         await app.register(connectorJiraRoutes({ connectionOfLease, ...(fetchFn ? { fetchFn } : {}) }));
     }
     if (attemptOfLease) {
-        await app.register(githubCredentialRoutes({ attemptOfLease, mint: githubMint ?? orgMint(orgs) }));
+        await app.register(
+            githubCredentialRoutes({
+                attemptOfLease,
+                mint: githubMint ?? orgMint(orgs),
+                pairMatches,
+                revoke: githubRevoke ?? orgRevoke(orgs),
+            })
+        );
         if (integrations) await app.register(connectionCredentialRoutes({ attemptOfLease, integrations }));
     }
 }
@@ -193,6 +223,8 @@ export async function buildApp({
     attemptOfLease,
     integrations,
     githubMint,
+    githubRevoke,
+    pairMatches,
     fetchFn,
     cloudIdLookup,
     destroyRevokedSecret,
@@ -277,8 +309,10 @@ export async function buildApp({
         orgs,
         connectionOfLease,
         attemptOfLease,
+        pairMatches,
         integrations,
         githubMint,
+        githubRevoke,
         fetchFn,
     });
     await app.register(workspaceRoutes({ orgs }));

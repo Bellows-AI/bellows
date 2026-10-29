@@ -2,8 +2,8 @@ import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
 import { UUID } from '../identifiers.js';
-import type { AttemptCheck, AttemptOfLease } from '../db/attempt-of-lease.js';
-import type { MintedToken } from '../github/app-token.js';
+import type { AttemptCheck, AttemptOfLease, PairMatches } from '../db/attempt-of-lease.js';
+import type { MintedToken, RevokeOutcome } from '../github/app-token.js';
 import { bad } from './helpers.js';
 
 /**
@@ -18,13 +18,21 @@ import { bad } from './helpers.js';
 /** The org's mint, or null when the org holds no GitHub App installation (the offline board). */
 export type GithubMint = (orgId: string, repo: string | null) => Promise<MintedToken | null>;
 
+/** The org's revoke of one token; null when the org holds no GitHub App installation. */
+export type GithubRevoke = (orgId: string, token: string) => Promise<RevokeOutcome | null>;
+
 export interface GithubCredentialDeps {
     attemptOfLease: AttemptOfLease;
     mint: GithubMint;
+    /** The revoke route exists exactly when the pair-only match and the revoke are present. */
+    pairMatches?: PairMatches | undefined;
+    revoke?: GithubRevoke | undefined;
 }
 
+const HTTP_BAD_REQUEST = 400;
 const HTTP_FORBIDDEN = 403;
 const HTTP_CONFLICT = 409;
+const HTTP_NO_CONTENT = 204;
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_SERVICE_UNAVAILABLE = 503;
 /** The request carries nothing; the pair is in the headers. */
@@ -37,6 +45,9 @@ const NO_APP = 'This board holds no GitHub App installation for the organization
 /** The lease could not be read: not a verdict, so the helper may retry. */
 const LEASE_UNREADABLE = 'The attempt could not be checked just now. Retry shortly.';
 const NO_TOKEN = 'GitHub did not issue a token. Retry shortly.';
+const NOT_REVOKED = 'GitHub did not confirm the revoke. The token stays usable until it expires.';
+/** Far longer than any installation token; a bound on what is forwarded to GitHub, not a format check. */
+const MAX_TOKEN_LENGTH = 512;
 /** A command-only task: with no repository to narrow to, its mint would reach every repository of the installation. */
 const NO_REPO = 'This task names no repository, so it has no GitHub token: a token is narrowed to one. Do not retry.';
 
@@ -74,7 +85,61 @@ async function attemptOf(
     return { jobId, leaseToken, orgId: attempt.orgId, repo: attempt.repo };
 }
 
-export function githubCredentialRoutes({ attemptOfLease, mint }: GithubCredentialDeps): FastifyPluginAsync {
+/** Permissions as `name:access`, sorted: the answer's `scopes`. */
+const scopesOf = (permissions: Record<string, string>): string[] =>
+    Object.entries(permissions)
+        .map(([name, access]) => `${name}:${access}`)
+        .sort();
+
+/** The org the pair names, or why it names none. No liveness: a Stop or a settle still lets a runner revoke. */
+async function pairOrgOf(request: FastifyRequest, pairMatches: PairMatches): Promise<{ orgId: string } | Refusal> {
+    const jobId = (request.params as { id: string }).id;
+    const leaseToken = request.headers[LEASE_TOKEN_HEADER];
+    if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') {
+        return {
+            code: ERROR_CODES.UNAUTHENTICATED,
+            message: 'Job id and lease token required',
+            status: HTTP_FORBIDDEN,
+        };
+    }
+    const refused = { code: ERROR_CODES.CONNECTION_NOT_AUTHORIZED, message: ATTEMPT_REFUSED, status: HTTP_FORBIDDEN };
+    if (!UUID.test(jobId) || !UUID.test(leaseToken)) return refused;
+    try {
+        const pair = await pairMatches(jobId, leaseToken);
+        return pair.ok ? { orgId: pair.orgId } : refused;
+    } catch {
+        return { code: ERROR_CODES.UNAVAILABLE, message: LEASE_UNREADABLE, status: HTTP_SERVICE_UNAVAILABLE };
+    }
+}
+
+/**
+ * The runner's `clear` at the end of the attempt: revokes the ONE token it presents. The pair only names the
+ * attempt (no liveness, so a Stop still revokes); possession of the token is the authority, and nothing the
+ * body does not hand over is ever revoked. The token is in no log line and no answer.
+ */
+const revokeHandler =
+    (pairMatches: PairMatches, revoke: GithubRevoke) => async (request: FastifyRequest, reply: FastifyReply) => {
+        reply.header('cache-control', 'no-store');
+        const pair = await pairOrgOf(request, pairMatches);
+        if ('code' in pair) return bad(reply, pair.code, pair.message, pair.status);
+        const token = (request.body as { token?: unknown } | null)?.token;
+        if (typeof token !== 'string' || token === '' || token.length > MAX_TOKEN_LENGTH) {
+            return bad(reply, ERROR_CODES.BAD_BODY, 'A token to revoke is required', HTTP_BAD_REQUEST);
+        }
+        const outcome = await revoke(pair.orgId, token).catch(() => {
+            request.log.warn({ jobId: (request.params as { id: string }).id }, 'github credential revoke failed');
+            return 'failed';
+        });
+        if (outcome !== 'revoked') return bad(reply, ERROR_CODES.UNAVAILABLE, NOT_REVOKED, HTTP_BAD_GATEWAY);
+        return reply.code(HTTP_NO_CONTENT).send();
+    };
+
+export function githubCredentialRoutes({
+    attemptOfLease,
+    mint,
+    pairMatches,
+    revoke,
+}: GithubCredentialDeps): FastifyPluginAsync {
     const handle = async (request: FastifyRequest, reply: FastifyReply) => {
         reply.header('cache-control', 'no-store');
         const attempt = await attemptOf(request, attemptOfLease);
@@ -100,10 +165,25 @@ export function githubCredentialRoutes({ attemptOfLease, mint }: GithubCredentia
         if (!still.ok || still.orgId !== attempt.orgId) {
             return bad(reply, ERROR_CODES.CONNECTION_NOT_AUTHORIZED, ATTEMPT_REFUSED, HTTP_FORBIDDEN);
         }
-        return reply.send({ token: minted.token, expiresAt: minted.expiresAt });
+        // Attempt-isolated (minted for this attempt alone), so it is revocable and never refreshed in place.
+        return reply.send({
+            token: minted.token,
+            expiresAt: minted.expiresAt,
+            scopes: scopesOf(minted.permissions),
+            resources: minted.repositories,
+            refreshable: false,
+            revocable: true,
+        });
     };
 
     return async (app) => {
         app.post('/api/jobs/:id/credentials/github', { bodyLimit: BODY_LIMIT }, handle);
+        if (pairMatches && revoke) {
+            app.post(
+                '/api/jobs/:id/credentials/github/revoke',
+                { bodyLimit: BODY_LIMIT },
+                revokeHandler(pairMatches, revoke)
+            );
+        }
     };
 }
