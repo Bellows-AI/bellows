@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { requirementsOf } from '../src/db/connection-bindings.js';
-import { expireLease, testOrg, testUser } from './fixtures.js';
+import { expireLease, oauthConnection, testOrg, testUser } from './fixtures.js';
 
 /**
  * Issue 545: a task selects skills at creation; the selection lives on the root row, every claim of
@@ -39,17 +38,9 @@ beforeAll(() => {
     plain = createJobStore({ sql, orgId: ORG });
 });
 
-/** The author's own managed Jira connection (054); its id is the explicit selection (BEL-59: a binding). */
+/** The author's own managed Jira connection (097); its id is the explicit selection (BEL-59: a binding). */
 async function jiraConnection(): Promise<string> {
-    const created = await createConnectionStore({ sql, orgId: ORG }).create({
-        ownerUserId: USER.id,
-        site: 'example.atlassian.net',
-        cloudId: 'cloud-1',
-        email: 'agent@example.com',
-        apiToken: 'never-in-a-refusal',
-        access: 'read',
-    });
-    return created.id;
+    return (await oauthConnection(sql, ORG, USER.id, { account: 'agent@example.com' })).id;
 }
 
 async function queue(store: JobStore, skills?: string[], connectionId?: string): Promise<string> {

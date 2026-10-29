@@ -72,7 +72,7 @@ const INGEST_ROUTES: readonly RegExp[] = [/^\/api\/otlp\//];
 const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
 
 /**
- * The connector proxy (issue #546) and the runner's GitHub credential: a runner's calls through a
+ * The runner's credential routes (GitHub, the managed-connection broker, operation receipts): a runner's calls through a
  * managed connection. The credential is the attempt's job id + lease token pair, in EVERY
  * `AUTH_MODE` — a connection's secret is the thing the route protects, so `none` does not open it —
  * and nothing else is accepted: no cookie, bearer, worker secret or ingest token. The route resolves
@@ -80,9 +80,11 @@ const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
  * names the job in the URL.
  */
 const CONNECTOR_ROUTES: readonly RegExp[] = [
-    /^\/api\/jobs\/[^/]+\/connectors\//,
     /^\/api\/jobs\/[^/]+\/credentials\/github(\/revoke)?$/,
     /^\/api\/jobs\/[^/]+\/credentials\/connections\/[^/]+$/,
+    // The runner seam (BEL-61): the helper's connection list and its operation receipts.
+    /^\/api\/jobs\/[^/]+\/credentials\/connections$/,
+    /^\/api\/jobs\/[^/]+\/operations(\/[^/]+)?$/,
 ];
 
 export const JOB_ID_HEADER = 'x-factory-job-id';

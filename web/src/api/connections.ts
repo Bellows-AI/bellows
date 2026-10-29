@@ -3,46 +3,31 @@ import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /**
- * The Jira connections' client half: the list, the create and the disconnect (a `DELETE`) of `/api/connections`.
- * The token goes out on create and is in no response, so no type here has a field for it.
+ * The Jira connections' client half: the caller's own list and the disconnect (a `DELETE`) of
+ * `/api/connections`, and the OAuth start of `POST /api/integrations/jira/authorizations`. No
+ * credential is ever in a response, so no type here has a field for one.
  */
 
 export const CONNECTION_ACCESS = ['read', 'write'] as const;
 export type ConnectionAccess = (typeof CONNECTION_ACCESS)[number];
 
-/** The create's `scope` (wire value, both ways): `org` makes a legacy shared connection, `user` a personal one. */
-export const ORG_CONNECTION_SCOPE = 'org';
-export const USER_CONNECTION_SCOPE = 'user';
-export type ConnectionScope = typeof ORG_CONNECTION_SCOPE | typeof USER_CONNECTION_SCOPE;
-
-export const CONNECTION_CREDENTIALS = ['legacy_api_token', 'oauth_grant'] as const;
-export type ConnectionCredential = (typeof CONNECTION_CREDENTIALS)[number];
-export const CONNECTION_OWNERSHIPS = ['personal', 'legacy-org'] as const;
-export type ConnectionOwnership = (typeof CONNECTION_OWNERSHIPS)[number];
-
-/**
- * One row of `GET /api/connections`: the caller's own active connections plus the org's legacy ones,
- * newest first. `principal` is `self` for the caller's own row and null for a legacy org one.
- */
+/** One row of `GET /api/connections`: the caller's own active OAuth connection, newest first. */
 export interface ConnectionView {
     id: string;
     provider: string;
-    credential: ConnectionCredential;
-    ownership: ConnectionOwnership;
-    principal: 'self' | null;
     site: string;
+    /** The connected Atlassian account's label (its email, else its display name). */
     account: string;
     access: ConnectionAccess;
     status: 'active' | 'disconnected';
     createdAt: string;
 }
 
-export interface NewConnectionInput {
-    scope: ConnectionScope;
-    site: string;
-    email: string;
-    apiToken: string;
+/** What the start sends: `connectionId` reconnects that connection, `site` narrows a new connect to one site. */
+export interface StartAuthorizationInput {
     access: ConnectionAccess;
+    site?: string;
+    connectionId?: string;
 }
 
 const isConnectionView = (row: unknown): row is ConnectionView => {
@@ -53,9 +38,6 @@ const isConnectionView = (row: unknown): row is ConnectionView => {
         typeof view.site === 'string' &&
         typeof view.provider === 'string' &&
         typeof view.account === 'string' &&
-        CONNECTION_CREDENTIALS.includes(view.credential) &&
-        CONNECTION_OWNERSHIPS.includes(view.ownership) &&
-        (view.principal === 'self' || view.principal === null) &&
         CONNECTION_ACCESS.includes(view.access) &&
         (view.status === 'active' || view.status === 'disconnected') &&
         typeof view.createdAt === 'string'
@@ -87,22 +69,34 @@ export const listConnections = async (): Promise<
     }
 };
 
-/** Returns the route's refusal message as-is, or null when the connection was saved. */
-export const createConnection = async (input: NewConnectionInput): Promise<string | null> => {
+/** Where the consent returns the browser to: this settings page, which then reads the result off the URL. */
+export const CONNECTIONS_RETURN_PATH = '/settings/workspace';
+
+/**
+ * Starts a Jira authorization. Resolves to the provider's consent URL, or the route's refusal
+ * message as sent (the 503 names the operator's missing configuration).
+ */
+export const startAuthorization = async (
+    input: StartAuthorizationInput
+): Promise<{ ok: true; authorizeUrl: string } | { ok: false; error: string }> => {
     try {
-        const response = await fetch('/api/connections', {
+        const response = await fetch('/api/integrations/jira/authorizations', {
             method: 'POST',
             headers: JSON_HEADERS,
-            body: JSON.stringify(input),
+            body: JSON.stringify({ ...input, returnTo: CONNECTIONS_RETURN_PATH }),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
-            return SESSION_EXPIRED;
+            return { ok: false, error: SESSION_EXPIRED };
         }
-        if (!response.ok) return (await refusalOf(response, 'Could not save the connection')).error;
-        return null;
+        if (!response.ok)
+            return { ok: false, error: (await refusalOf(response, 'Could not start the connection')).error };
+        const { authorizeUrl } = (await response.json()) as { authorizeUrl?: unknown };
+        if (typeof authorizeUrl !== 'string')
+            return { ok: false, error: 'Could not start the connection: unexpected response.' };
+        return { ok: true, authorizeUrl };
     } catch (e) {
-        return (e as Error).message;
+        return { ok: false, error: (e as Error).message };
     }
 };
 

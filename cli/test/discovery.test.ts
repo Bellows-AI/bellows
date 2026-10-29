@@ -137,9 +137,9 @@ describe('bellows connection list', () => {
     const connection = {
         id: '3f2b6c1e-0000-4000-8000-000000000001',
         provider: 'jira',
-        credential: 'legacy_api_token',
-        ownership: 'legacy-org',
-        principal: null,
+        credential: 'oauth_grant',
+        ownership: 'personal',
+        principal: 'self',
         site: 'acme.atlassian.net',
         account: 'a@acme.test',
         access: 'read',
@@ -147,20 +147,17 @@ describe('bellows connection list', () => {
         createdAt: '2026-10-01T00:00:00.000Z',
     };
 
-    it('lists the org and personal connections the caller may select, without a token', async () => {
+    it('lists the OAuth connections the caller may select, with no legacy label and no token', async () => {
         const { out, io } = harness({
-            '/api/connections': () =>
-                json({
-                    connections: [connection, { ...connection, ownership: 'personal', principal: 'self', id: 'u' }],
-                }),
+            '/api/connections': () => json({ connections: [connection, { ...connection, id: 'u' }] }),
         });
 
         expect(await run(['connection', 'list'], io)).toBe(0);
 
         const text = out.join('');
-        expect(text).toContain(`${connection.id}  jira  legacy-org  legacy  read  acme.atlassian.net  a@acme.test`);
-        expect(text).toContain('u  jira  personal  legacy');
-        expect(text).not.toMatch(/token/i);
+        expect(text).toContain(`${connection.id}  jira  personal  oauth  read  acme.atlassian.net  a@acme.test`);
+        expect(text).toContain('u  jira  personal  oauth');
+        expect(text).not.toMatch(/legacy|token/i);
     });
 
     it('is empty without error when the caller has none', async () => {

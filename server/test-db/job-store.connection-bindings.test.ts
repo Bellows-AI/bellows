@@ -16,7 +16,7 @@ import { insertWorkflowSuccessor } from '../src/db/jobs/job-store-rows.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { waitForLockWaiters } from './lock-wait.js';
-import { expireLease, testOrg, testUser } from './fixtures.js';
+import { expireLease, legacyConnection, oauthConnection, testOrg, testUser } from './fixtures.js';
 
 /**
  * BEL-59 slice 3: a task's connections are bindings on its thread root. Create resolves them (explicit
@@ -42,17 +42,7 @@ beforeAll(() => {
     connections = createConnectionStore({ sql, orgId: ORG });
 });
 
-const connect = async (ownerUserId: string | null): Promise<string> =>
-    (
-        await connections.create({
-            ownerUserId,
-            site: 'example.atlassian.net',
-            cloudId: `cloud-${randomUUID()}`,
-            email: `a-${randomUUID()}@example.com`,
-            apiToken: 'tok',
-            access: 'read',
-        })
-    ).id;
+const connect = async (ownerUserId: string): Promise<string> => (await oauthConnection(sql, ORG, ownerUserId)).id;
 
 const create = async (
     by: string | null,
@@ -97,11 +87,22 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
         expect(bound.every((b) => b.source === 'explicit')).toBe(true);
     });
 
-    it('a legacy org connection is never a default; a jira skill then records a missing requirement', async () => {
-        await connect(null);
+    it('a legacy API-token connection is never a default; a jira skill then records a missing requirement', async () => {
+        await legacyConnection(sql, ORG, null);
+        await legacyConnection(sql, ORG, BOB.id);
         const id = await create(BOB.id, { skills: ['jira'] });
         expect(await bindingsOf(sql, ORG, id)).toEqual([]);
         expect((await requirementsOf(sql, ORG, id)).map((r) => [r.provider, r.reason])).toEqual([['jira', 'missing']]);
+    });
+
+    it('naming a legacy API-token connection on create is refused not-authorized, org-wide or personal', async () => {
+        const orgWide = await legacyConnection(sql, ORG, null);
+        const personal = await legacyConnection(sql, ORG, BOB.id);
+        for (const named of [orgWide, personal]) {
+            await expect(create(BOB.id, { connectionIds: [named] })).rejects.toMatchObject({
+                reason: 'not-authorized',
+            });
+        }
     });
 
     it('two personal candidates bind nothing and record an ambiguous requirement for a jira skill', async () => {
@@ -242,7 +243,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
         const mine = await connect(ALICE.id);
         const queued = await create(ALICE.id, { skills: ['jira'] });
         expect(await requirementsOf(sql, ORG, queued)).toEqual([]);
-        await connections.disconnect(mine, { userId: ALICE.id, admin: false });
+        await connections.disconnect(mine, { userId: ALICE.id });
 
         expect(await claimNext()).toBeNull();
         expect((await requirementsOf(sql, ORG, queued)).map((r) => [r.provider, r.reason])).toEqual([
@@ -284,7 +285,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
     it('the bind route waits for an acquire that read "unbound", then satisfies the requirement it recorded', async () => {
         const first = await connect(ALICE.id);
         const root = await create(ALICE.id, { skills: ['jira'] });
-        await connections.disconnect(first, { userId: ALICE.id, admin: false });
+        await connections.disconnect(first, { userId: ALICE.id });
         const replacement = await connect(ALICE.id);
         const revision = (await jobRow(root)).rev;
         let release!: () => void;
@@ -369,8 +370,7 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
             expect(await projection(await create(BOB.id))).toBeNull();
         });
 
-        const disconnect = async (id: string) =>
-            (await connections.disconnect(id, { userId: ALICE.id, admin: false })).disconnected;
+        const disconnect = async (id: string) => (await connections.disconnect(id, { userId: ALICE.id })).disconnected;
 
         it('disconnecting one of two bindings projects the survivor; disconnecting the only one projects null', async () => {
             const one = await connect(ALICE.id);

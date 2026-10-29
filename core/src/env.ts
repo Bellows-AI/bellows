@@ -70,10 +70,6 @@ export const RESERVED_ENV_NAMES: readonly string[] = [
     'BELLOWS_RESUME_MAY_BE_UNWRITTEN',
     'OPENCODE_CONFIG_CONTENT',
     'CLAUDE_CODE_CONFIG_CONTENT',
-    // Jira credentials are a managed connection now (docs/connections.md), never member env.
-    'ATLASSIAN_SITE',
-    'ATLASSIAN_EMAIL',
-    'ATLASSIAN_API_TOKEN',
     ...GITHUB_ENV_NAMES,
     ...LOADER_ENV_NAMES,
 ];

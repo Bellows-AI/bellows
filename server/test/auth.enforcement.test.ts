@@ -271,9 +271,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/activity', 'user'],
     ['/api/jobs/:id/artifacts', 'user'],
     ['/api/jobs/:id/artifacts/read', 'user'],
-    // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
-    // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
-    ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'connector'],
+    // The Jira proxy is gone (BEL-61): nothing under /connectors/ takes the attempt pair any more, so the path is an
+    // unmatched person-side URL like any other and answers 404 unauthenticated-or-not.
+    ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'user'],
     // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
     // every mode, asked by the runner's helper and the driver's supervised steps alike.
     ['/api/jobs/:id/credentials/github', 'connector'],
@@ -281,9 +281,16 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/github/revoke', 'connector'],
     // The managed-connection broker (BEL-60): the same class, one segment deeper.
     ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
+    // The runner seam (BEL-61): the helper's connection list and its durable operation receipts, the same class.
+    ['/api/jobs/:id/credentials/connections', 'connector'],
+    ['/api/jobs/:id/operations', 'connector'],
+    ['/api/jobs/:id/operations/:receiptId', 'connector'],
     // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
+    // Starting and finishing an outbound OAuth connect is a person's act in their own browser session.
+    ['/api/integrations/:provider/authorizations', 'user'],
+    ['/api/integrations/:provider/callback', 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
     // BEL-146: a member reads their org's plan; the commerce service's push has its own credential class,
     // and the anchored pattern gives nothing else under /api/commerce that class.
@@ -354,6 +361,15 @@ describe('the route table', () => {
                 attemptOfLease: async () => ({ ok: false }),
                 pairMatches: async () => ({ ok: false }),
                 integrations: {
+                    flowOf: () => ({
+                        startAuthorization: async () => ({ ok: false as const, reason: 'unknown-provider' as const }),
+                        completeAuthorization: async () => ({
+                            ok: false as const,
+                            returnTo: '/',
+                            failure: 'state-mismatch' as const,
+                        }),
+                        recoverAuthorization: async () => 'idle' as const,
+                    }),
                     resolverOf: () => ({
                         resolveCredential: async () => ({
                             ok: false as const,

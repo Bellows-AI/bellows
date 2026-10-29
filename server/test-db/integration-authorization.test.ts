@@ -79,7 +79,8 @@ function rig(options: RigOptions = {}) {
             secrets: over.secrets ?? secrets,
             lineage,
             providers: (provider) => (provider === 'jira' || provider === 'noclient' ? hooks : undefined),
-            clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+            clients: (provider) =>
+                provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
             callbackOrigin: over.callbackOrigin === undefined ? 'https://board.example.test' : over.callbackOrigin,
             log: (event) => flowEvents.push(event),
         });
@@ -294,7 +295,6 @@ describe.skipIf(!enabled)('start: the trusted context binds the transaction', ()
         });
         await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(mine.connectionId, {
             userId: ALICE.id,
-            admin: false,
         });
         expect(
             await r.flow.startAuthorization(asAlice(), { provider: 'jira', connectionId: mine.connectionId })
@@ -570,7 +570,12 @@ describe.skipIf(!enabled)('complete: one lineage, claimed before the exchange', 
 describe.skipIf(!enabled)('complete: a new grant is created secret first, connection last', () => {
     const newAccount = (r: Rig, resources = [{ id: 'acme', label: 'acme.fake.test' }]) => {
         const account = acctId();
-        r.fake.identity = { externalAccountId: account, resources, authority: { scopes: ['fake:read'] } };
+        r.fake.identity = {
+            externalAccountId: account,
+            label: `${account}@example.test`,
+            resources,
+            authority: { scopes: ['fake:read'] },
+        };
         return account;
     };
 
@@ -867,7 +872,7 @@ describe.skipIf(!enabled)('complete: activation is idempotent over connected res
         const [a] = await connectionsOfAccount(seeded.account);
         const b = await second(seeded.account, 'site-b');
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        expect((await store.disconnect(b.connectionId, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(b.connectionId, { userId: ALICE.id })).disconnected).toBe(true);
         r.fake.identity = {
             ...r.fake.identity!,
             resources: [
@@ -889,7 +894,7 @@ describe.skipIf(!enabled)('complete: activation is idempotent over connected res
         const seeded = await seedConnected(r);
         const b = await second(seeded.account, 'site-b');
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        expect((await store.disconnect(b.connectionId, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(b.connectionId, { userId: ALICE.id })).disconnected).toBe(true);
         r.fake.identity = { ...r.fake.identity!, resources: [{ id: 'site-b', label: 'b.fake.test' }] };
         const started = await begin(r);
         expect(await complete(r, { state: started.state, code: CODE })).toMatchObject({
@@ -905,6 +910,7 @@ describe.skipIf(!enabled)('complete: review r2, a create paused before or after 
         const account = acctId();
         r.fake.identity = {
             externalAccountId: account,
+            label: `${account}@example.test`,
             resources: [{ id: 'acme', label: 'acme.fake.test' }],
             authority: { scopes: ['fake:read'] },
         };
@@ -926,7 +932,8 @@ describe.skipIf(!enabled)('complete: review r2, a create paused before or after 
             secrets,
             lineage,
             providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
-            clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+            clients: (provider) =>
+                provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
             callbackOrigin: 'https://board.example.test',
         });
     };
@@ -1067,6 +1074,7 @@ describe.skipIf(!enabled)('complete: recovery of a stuck transaction and cancell
         const account = acctId();
         r.fake.identity = {
             externalAccountId: account,
+            label: `${account}@example.test`,
             resources: [{ id: 'acme', label: 'a' }],
             authority: { scopes: ['fake:read'] },
         };
@@ -1101,6 +1109,7 @@ describe.skipIf(!enabled)('redaction', () => {
         const account = acctId();
         r.fake.identity = {
             externalAccountId: account,
+            label: `${account}@example.test`,
             resources: [{ id: 'acme', label: 'a' }],
             authority: { scopes: ['fake:read'] },
         };

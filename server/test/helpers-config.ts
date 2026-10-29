@@ -50,7 +50,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
             orgQuotaBytes: 0,
         },
         admission: {},
-        integrations: { callbackOrigin: null },
+        integrations: { callbackOrigin: null, jira: null },
         commerce: { enabled: false },
         ...overrides,
     };

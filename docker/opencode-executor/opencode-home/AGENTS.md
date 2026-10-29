@@ -75,7 +75,7 @@ anything you could not do.
 ## Tooling
 
 - Reach for `gh` for GitHub (pull requests, reviews, checks) rather than raw API calls.
-- Reach for `curl` on `$JIRA_API` for Jira work items, as the `jira` skill spells it; not `acli`.
+- Reach for the jira helper, `node /usr/local/share/factory-skills/jira/jira.cjs`, for Jira work items, as the `jira` skill spells it; not `acli`.
 - Both start unauthenticated; they read credentials from the environment or config the caller
   provides. If a credential is missing, say so instead of working around it.
 

@@ -255,6 +255,34 @@ describe('runOperation', () => {
         });
     });
 
+    it('request receives the handle resource', async () => {
+        const op: IntegrationOperation<string> = {
+            ...read,
+            request: (key, resource) => ({ method: 'GET', path: `/api/${resource.id}/${key}` }),
+        };
+        const f = fetcher(() => respond(200, { ok: true }));
+        await run(op, 'k1', f);
+        expect(f.calls[0]?.url).toBe('https://acme.example.test/api/acme/k1');
+    });
+
+    it('next receives the previous page path', async () => {
+        const op: IntegrationOperation<string> = {
+            ...read,
+            paginate: {
+                maxPages: 3,
+                maxItems: 100,
+                items: (j) => (j as { items: unknown[] }).items,
+                next: (_json, previousPath) => (previousPath.includes('&p=') ? null : `${previousPath}&p=2`),
+            },
+        };
+        const f = fetcher((_u, n) => respond(200, { items: [n] }));
+        await run(op, '/api/first?a=1', f);
+        expect(f.calls.map((c) => c.url)).toEqual([
+            'https://acme.example.test/api/first?a=1',
+            'https://acme.example.test/api/first?a=1&p=2',
+        ]);
+    });
+
     it('pagination stops at maxPages', async () => {
         const paged: IntegrationOperation<string> = {
             ...read,

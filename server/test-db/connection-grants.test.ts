@@ -255,11 +255,11 @@ describe.skipIf(!enabled)('connection grants', () => {
             await held;
         });
         await lockTaken;
-        const a = store.disconnect(first.connectionId, { userId: ALICE.id, admin: false }).then((r) => {
+        const a = store.disconnect(first.connectionId, { userId: ALICE.id }).then((r) => {
             done.a = true;
             return r;
         });
-        const b = store.disconnect(second.connectionId, { userId: ALICE.id, admin: false }).then((r) => {
+        const b = store.disconnect(second.connectionId, { userId: ALICE.id }).then((r) => {
             done.b = true;
             return r;
         });

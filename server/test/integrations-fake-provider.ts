@@ -119,6 +119,7 @@ export function createFakeOAuth(
         authorizeCalls: [],
         identity: {
             externalAccountId: 'acct-fake',
+            label: 'acct-fake@example.test',
             resources: [{ id: 'acme', label: 'acme.fake.test' }],
             authority: { scopes: ['fake:read'] },
         },

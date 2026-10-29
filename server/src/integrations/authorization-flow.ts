@@ -7,6 +7,7 @@ import {
     requireTrusted,
 } from './authorization-complete.js';
 import { connectionTarget, insertAuthorization } from './authorization-store.js';
+import { jiraSiteHost } from './providers/jira.js';
 import {
     type AuthorizationFlowDeps,
     type CompleteAuthorizationInput,
@@ -21,8 +22,8 @@ import {
 import type { TrustedIntegrationContext } from './trusted-context.js';
 
 /**
- * The route-ready API of an outbound OAuth authorization: BEL-61's handlers parse a request, call these and send
- * the answer. There is no HTTP route in this change. The inputs carry no principal: the user and the organization
+ * The route-ready API of an outbound OAuth authorization: `routes/integrations.ts` parses a request, calls these and
+ * sends the answer. The inputs carry no principal: the user and the organization
  * come from the trusted context alone, and the return path of a completion is always the one stored at the start.
  */
 
@@ -62,6 +63,16 @@ export interface AuthorizationFlow {
     recoverAuthorization(id: string): Promise<RecoverAuthorizationResult>;
 }
 
+/** The consent and the named site a start asks for, or null when any input is malformed. */
+function askedOf(input: StartAuthorizationInput): { access: 'read' | 'write'; site: string | null } | null {
+    if (input.interactionId !== undefined && !UUID.test(input.interactionId)) return null;
+    const access = input.access ?? 'read';
+    if (access !== 'read' && access !== 'write') return null;
+    if (input.site === undefined) return { access, site: null };
+    const site = jiraSiteHost(input.site);
+    return site === null ? null : { access, site };
+}
+
 async function start(
     fc: FlowCtx,
     ctx: TrustedIntegrationContext,
@@ -75,9 +86,13 @@ async function start(
     const client = fc.clients(input.provider);
     const redirectUri = redirectUriOf(fc, input.provider);
     if (!client || !redirectUri) return refuse('not-configured');
-    if (input.interactionId !== undefined && !UUID.test(input.interactionId)) return refuse('bad-input');
+    const asked = askedOf(input);
+    if (!asked) return refuse('bad-input');
+    const { access, site } = asked;
 
     let reconnect: { connectionId: string; accountId: string } | null = null;
+    // A reconnect never asks for less than the grant already holds: its write scopes ride along.
+    let held: readonly string[] = [];
     if (input.connectionId !== undefined) {
         if (!UUID.test(input.connectionId)) return refuse('bad-input');
         const target = await connectionTarget(fc.sql, {
@@ -88,7 +103,10 @@ async function start(
         });
         if (!target) return refuse('not-found');
         reconnect = { connectionId: input.connectionId, accountId: target.accountId };
+        const writable = new Set(client.scopesFor('write'));
+        held = target.scopes.filter((scope) => writable.has(scope));
     }
+    const scopes = [...new Set([...client.scopesFor(access), ...held])];
 
     const state = randomBytes(RANDOM_BYTES).toString('base64url');
     const verifier = hooks.supportsPkce ? randomBytes(RANDOM_BYTES).toString('base64url') : null;
@@ -100,6 +118,8 @@ async function start(
         verifier,
         returnTo: safeReturnPath(input.returnTo),
         interactionId: input.interactionId ?? null,
+        requestedAccess: access,
+        expectedSite: site,
         ttlMs: fc.ttlMs,
         reconnect,
     });
@@ -107,7 +127,7 @@ async function start(
     const authorizeUrl = hooks.authorizeUrl({
         clientId: client.clientId,
         redirectUri,
-        scopes: client.scopes,
+        scopes,
         state,
         ...(verifier ? { codeChallenge: createHash('sha256').update(verifier).digest('base64url') } : {}),
     });

@@ -9,7 +9,7 @@ this repo's application.
 | `ENTRYPOINT` (`/usr/local/bin/factory-launch`): as root, the tool broker, then the drop to `node` | `factory-launch.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | The tool shell: each command as `factory-tool` (1001) through the broker; the run-control proxy | `factory-tool.cjs`, `tool-bash.sh`, `control-proxy.cjs` | `driver/test/tool-broker.test.ts`, `driver/test/control-proxy.test.ts`, `test.sh` |
 | The gate server and run-control calls the skills make: `factory-gate`, `factory-control`, fixed destinations, root-owned (the claude allowlist names exactly these) | `factory-gate.cjs`, `factory-control.cjs` | `driver/test/factory-wrappers.test.ts`, `driver/test/executor-images.test.ts` |
-| `/usr/local/bin/claude-executor`: `$WORKDIR`, `safe.directory`, `JIRA_API` export, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
+| `/usr/local/bin/claude-executor`: `$WORKDIR`, `safe.directory`, no Jira variable, transcript redirect | `entrypoint.sh` | `driver/test/executor-images.test.ts`, `test.sh` |
 | Sidecars: branch reporting to `/api/sessions/branch`; progress over the CLI's `stream-json` | `branch-reporter.cjs`, `claude-progress.cjs` | `driver/test/executor-images.test.ts`, `test.sh` |
 | The CLI launcher: `-p` rewritten to stream-json, `AskUserQuestion` relayed through the supervisor's mailbox | `claude-bridge.cjs` | `driver/test/claude-bridge.test.ts` |
 | Cooperative Stop: the supervisor-mailbox agent and the `PostToolUse` step-boundary hook | `ctl-agent.cjs`, `stop-hook.cjs` | `driver/test/supervisor.test.ts`, `driver/test/run-control.test.ts` |

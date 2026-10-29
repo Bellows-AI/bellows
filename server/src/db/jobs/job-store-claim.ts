@@ -671,7 +671,7 @@ export async function claimJob(
  * The sentence that stops a claim whose selected skills cannot run, or null (issue #545): a
  * selection the catalog lacks, a skill whose connection has no env names in the claim's resolved
  * env, or a managed connection the task never selected (`managed`; whether it is still authorized
- * is the proxy's per-call check, docs/connections.md). Config-kind and recoverable — the member fixes the settings and retries.
+ * is the broker's per-call check, docs/connections.md). Config-kind and recoverable — the member fixes the settings and retries.
  */
 export function resolveClaimSkills(
     skills: readonly string[],

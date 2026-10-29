@@ -42,7 +42,8 @@ function runtimeOver(
         sql: db.sql,
         secrets,
         providers: (provider) => (provider === 'jira' ? fake.hooks : undefined),
-        clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+        clients: (provider) =>
+            provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
         callbackOrigin: 'https://board.example.test',
         timing,
     });
@@ -86,7 +87,6 @@ async function seedGrant(h: PostgresHarness, fake = createFakeOAuth({ rotates: t
 const revoke = async (connectionId: string) => {
     const done = await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(connectionId, {
         userId: ALICE.id,
-        admin: false,
     });
     if (!done.revokedGrantId) throw new Error('the disconnect revoked no grant');
     return done.revokedGrantId;

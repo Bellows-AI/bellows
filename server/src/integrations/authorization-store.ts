@@ -17,6 +17,8 @@ export interface AuthorizationRow {
     grantId: string | null;
     grantClaim: string | null;
     expectedAccountId: string | null;
+    /** The one site (lowercase host) the person narrowed the connect to, or null for every accessible site. */
+    expectedSite: string | null;
     interactionId: string | null;
     returnTo: string;
     status: 'pending' | 'exchanging' | 'persisting' | 'completed' | 'failed' | 'expired';
@@ -36,8 +38,12 @@ export interface AuthorizationRow {
 /** The non-secret facts a completion needs after the holder is gone. */
 export interface StoredFacts {
     account: string;
+    /** What a person calls the account (an email, else a display name): shown on every connection of it. */
+    label: string;
     resources: { id: string; label: string }[];
     authority: { scopes: string[] };
+    /** `write` exactly when the token's own scope holds every write scope of the client. */
+    access: 'read' | 'write';
     interactionId: string | null;
     connectionIds?: string[];
 }
@@ -51,6 +57,7 @@ interface Raw {
     grant_id: string | null;
     grant_claim: string | null;
     expected_account_id: string | null;
+    expected_site: string | null;
     interaction_id: string | null;
     return_to: string;
     status: AuthorizationRow['status'];
@@ -64,7 +71,7 @@ interface Raw {
 }
 
 const COLUMNS = `id, user_id, provider, intent, connection_id, grant_id, grant_claim, expected_account_id,
-    interaction_id, return_to, status, pending_grant_id, secret_ref, secret_operation_id, result`;
+    expected_site, interaction_id, return_to, status, pending_grant_id, secret_ref, secret_operation_id, result`;
 
 const toRow = (raw: Raw): AuthorizationRow => ({
     id: raw.id,
@@ -75,6 +82,7 @@ const toRow = (raw: Raw): AuthorizationRow => ({
     grantId: raw.grant_id,
     grantClaim: raw.grant_claim,
     expectedAccountId: raw.expected_account_id,
+    expectedSite: raw.expected_site,
     interactionId: raw.interaction_id,
     returnTo: raw.return_to,
     status: raw.status,
@@ -96,6 +104,8 @@ export interface NewAuthorization {
     verifier: string | null;
     returnTo: string;
     interactionId: string | null;
+    requestedAccess: 'read' | 'write';
+    expectedSite: string | null;
     ttlMs: number;
     reconnect: { connectionId: string; accountId: string } | null;
 }
@@ -107,11 +117,11 @@ export async function insertAuthorization(
     const [row] = await sql<{ id: string; expires_at: Date }[]>`
         insert into integration_authorization
             (org_id, user_id, provider, intent, connection_id, expected_account_id, interaction_id, state_hash,
-             pkce_verifier, return_to, expires_at)
+             pkce_verifier, return_to, requested_access, expected_site, expires_at)
         values (${input.orgId}, ${input.userId}, ${input.provider},
                 ${input.reconnect ? 'reconnect' : 'connect'}, ${input.reconnect?.connectionId ?? null},
                 ${input.reconnect?.accountId ?? null}, ${input.interactionId}, ${input.stateHash},
-                ${input.verifier}, ${input.returnTo},
+                ${input.verifier}, ${input.returnTo}, ${input.requestedAccess}, ${input.expectedSite},
                 now() + (${input.ttlMs}::double precision * interval '1 millisecond'))
         returning id, expires_at
     `;
@@ -233,14 +243,16 @@ export async function recordPersisting(
 export async function connectionTarget(
     sql: Sql,
     input: { orgId: string; userId: string; provider: string; connectionId: string }
-): Promise<{ grantId: string; accountId: string } | null> {
-    const rows = await sql<{ grant_id: string; external_account_id: string }[]>`
-        select c.grant_id, g.external_account_id
+): Promise<{ grantId: string; accountId: string; scopes: string[] } | null> {
+    const rows = await sql<{ grant_id: string; external_account_id: string; authority: { scopes: string[] } }[]>`
+        select c.grant_id, g.external_account_id, g.authority
         from connector_connection c join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
         where c.id = ${input.connectionId} and c.org_id = ${input.orgId} and c.status = 'active'
           and c.credential = 'oauth_grant' and c.principal_user_id = ${input.userId} and c.provider = ${input.provider}
     `;
-    return rows[0] ? { grantId: rows[0].grant_id, accountId: rows[0].external_account_id } : null;
+    return rows[0]
+        ? { grantId: rows[0].grant_id, accountId: rows[0].external_account_id, scopes: rows[0].authority.scopes }
+        : null;
 }
 
 /** The live grant of an external account, whoever owns it. */
@@ -267,6 +279,11 @@ export interface Activation {
     id: string;
     provider: string;
     facts: StoredFacts;
+    /**
+     * The one site (lowercase host) the person asked for by name, or null. A site named here that was disconnected
+     * earlier is connected again; without it a disconnected site stays disconnected.
+     */
+    expectedSite: string | null;
     /** A NEW grant: the pre-allocated identity and the secret already stored under it. */
     newGrant: { grantId: string; secretRef: string; secretVersion: string; operationId: string } | null;
 }
@@ -301,12 +318,29 @@ async function existingConnections(tx: TransactionSql, input: Activation): Promi
 }
 
 /**
+ * A consent replaces the grant's authority, so every ACTIVE connection of the grant follows it: a write consent
+ * through any one connection makes them all write, a read-only one makes them all read. The grant row is already
+ * locked, so the order stays authorization row -> grant -> connections.
+ */
+async function followGrantAccess(tx: TransactionSql, input: Activation): Promise<void> {
+    await tx`
+        update connector_connection c set access = ${input.facts.access}
+        from integration_grant g
+        where c.grant_id = g.id and c.org_id = g.org_id and c.status = 'active' and c.access <> ${input.facts.access}
+          and g.provider = ${input.provider} and g.external_account_id = ${input.facts.account}
+          and g.status <> 'revoked' and g.org_id = ${input.orgId} and g.principal_user_id = ${input.userId}
+    `;
+}
+
+/**
  * Activation is idempotent over what is already there: a resource with an ACTIVE connection under the grant keeps it
- * (same id), a resource the person disconnected earlier stays disconnected, and only unseen resources are inserted.
+ * (same id), a resource the person disconnected earlier stays disconnected unless the consent names exactly that site
+ * (`expectedSite`), and only unseen resources, or that named one, are inserted.
  * Nothing left to activate is a `duplicate-connection`: the consent changed nothing.
  */
 async function attachResources(tx: TransactionSql, input: Activation): Promise<string[]> {
     const known: Known = input.newGrant ? new Map() : await existingConnections(tx, input);
+    if (!input.newGrant) await followGrantAccess(tx, input);
     const connectionIds: string[] = [];
     let inserted = 0;
     for (const resource of input.facts.resources) {
@@ -315,14 +349,16 @@ async function attachResources(tx: TransactionSql, input: Activation): Promise<s
             connectionIds.push(present.id);
             continue;
         }
-        if (present) continue;
+        // Only an explicit consent for this very site brings a disconnected one back, as a new connection.
+        if (present && resource.label !== input.expectedSite) continue;
         const attach: AttachGrantConnection = {
             principal: { kind: 'user', userId: input.userId },
             provider: input.provider,
             externalAccountId: input.facts.account,
             authority: input.facts.authority,
             resource,
-            access: 'read',
+            access: input.facts.access,
+            email: input.facts.label,
             // Only the first insert can create the grant; the rest find it.
             ...(input.newGrant && inserted === 0 ? input.newGrant : {}),
         };

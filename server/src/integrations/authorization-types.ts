@@ -16,7 +16,8 @@ export type AuthorizationFailure =
     | 'storage-failed'
     | 'busy'
     | 'expired'
-    | 'interrupted';
+    | 'interrupted'
+    | 'site-mismatch';
 
 /** What a callback can be refused for: the stored list, plus a state that was already consumed. */
 export type CompleteFailure = AuthorizationFailure | 'replayed';
@@ -29,7 +30,13 @@ export interface StartAuthorizationInput {
     returnTo?: string | undefined;
     /** Opaque until BEL-140: echoed in the result, never used for authorization. */
     interactionId?: string | undefined;
+    /** The consent asked for; absent is `read`. What was GRANTED is the token's scope, never this. */
+    access?: AuthorizationAccess | undefined;
+    /** One site (a bare host or an https URL) the connection is narrowed to; absent takes every accessible site. */
+    site?: string | undefined;
 }
+
+export type AuthorizationAccess = 'read' | 'write';
 
 export type StartAuthorizationResult =
     | { ok: true; authorizationId: string; authorizeUrl: string; expiresAt: string }
@@ -58,7 +65,7 @@ export type RecoverAuthorizationResult =
 /** The client the board is registered as at a provider. The client SECRET lives inside the provider hooks. */
 export interface AuthorizationClient {
     clientId: string;
-    scopes: readonly string[];
+    scopesFor(access: AuthorizationAccess): readonly string[];
 }
 
 /** Closed diagnostics: an event name, an authorization ID and a failure code, never a code, state or token. */
@@ -97,7 +104,7 @@ export interface FlowCtx {
 /** Ten minutes. */
 export const DEFAULT_AUTHORIZATION_TTL_MS = 600_000;
 
-/** The path BEL-61's callback route will serve; the redirect URI a provider is told is built from it. */
+/** The path `routes/integrations.ts` serves; the redirect URI a provider is told is built from it. */
 export const callbackPath = (provider: string): string => `/api/integrations/${encodeURIComponent(provider)}/callback`;
 
 export function redirectUriOf(fc: Pick<FlowCtx, 'callbackOrigin'>, provider: string): string | null {

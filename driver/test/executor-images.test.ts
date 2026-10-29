@@ -567,47 +567,30 @@ describe('the entrypoint as PID 1, run locally under /bin/sh', () => {
 });
 
 /*
- * Jira: the board's connector proxy (docs/connections.md). The entrypoint derives JIRA_API from the
- * board URL and the attempt's own job id — the credential never reaches the runner, so there is no
- * lookup and no token to leak. Derived, never inherited.
+ * Jira (docs/connections.md): the credential is a managed OAuth connection the runner's helper asks the
+ * broker for. The entrypoint exports no Jira variable at all, whatever the claim env carried in.
  */
-describe('the entrypoint Jira connector', () => {
-    const CONNECTOR_ENV = {
+describe('the entrypoint Jira variables', () => {
+    const PAIR_ENV = {
         FACTORY_STATS_URL: 'http://board.test:8080/',
         RUNNER_JOB_ID: 'b0a3c1e2-0000-4000-8000-000000000001',
         RUNNER_LEASE_TOKEN: 'b0a3c1e2-0000-4000-8000-000000000002',
     };
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
-    /** A JIRA_API the claim env carried in: the entrypoint derives the name, never inherits it. */
-    const STALE_JIRA_API = 'https://stale.example/rest/api/3';
 
     it.each(ENTRYPOINTS)(
-        "%s points JIRA_API at this attempt's board connector and never looks Jira up",
+        '75: %s exports no JIRA_API, whatever the claim env carried',
         async (entrypoint) => {
             const sandbox = makeSandbox();
             try {
-                const child = runEntrypoint(entrypoint, sandbox, { ...CONNECTOR_ENV, JIRA_API: STALE_JIRA_API });
-                expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
-                expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe(
-                    `http://board.test:8080/api/jobs/${CONNECTOR_ENV.RUNNER_JOB_ID}/connectors/jira/rest/api/3`
-                );
-                expect(existsSync(join(sandbox.bin, 'curl-argv'))).toBe(false);
-            } finally {
-                sandbox.cleanup();
-            }
-        },
-        CASE_TIMEOUT_MS
-    );
-
-    it.each(ENTRYPOINTS)(
-        '%s leaves JIRA_API unset without the attempt pair',
-        async (entrypoint) => {
-            const sandbox = makeSandbox();
-            try {
-                const { RUNNER_LEASE_TOKEN: _omitted, ...partial } = CONNECTOR_ENV;
-                const child = runEntrypoint(entrypoint, sandbox, { ...partial, JIRA_API: STALE_JIRA_API });
+                const child = runEntrypoint(entrypoint, sandbox, {
+                    ...PAIR_ENV,
+                    JIRA_API: 'https://stale.example/rest/api/3',
+                });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
                 expect(readFileSync(join(sandbox.bin, 'jira-api'), 'utf8')).toBe('unset');
+                expect(existsSync(join(sandbox.bin, 'curl-argv'))).toBe(false);
+                expect(read(entrypoint)).not.toMatch(/export JIRA_API|connectors\/jira/);
             } finally {
                 sandbox.cleanup();
             }
@@ -1213,21 +1196,24 @@ describe('the shared executor skills', () => {
         expect(builds).toBeGreaterThan(0);
     });
 
-    // An argv is world-readable in a process listing, so the attempt's lease token reaches curl as
-    // header lines in a config on stdin from printf, a shell builtin that never execs. The skill
-    // holds no Jira credential at all (docs/connections.md).
-    it('the jira skill keeps the lease token out of every curl argv and names no Jira credential', () => {
+    // The skill runs the helper, which asks the broker; the lease token and any Jira credential never ride an argv.
+    it('76: the jira skill names the helper at its fixed path and no $JIRA_API, curl or Jira credential', () => {
         const text = read(`${SKILLS}/jira/SKILL.md`);
-        const fences = text.match(/^```bash\n[\s\S]*?^```$/gm)?.join('\n') ?? '';
-        const curls = fences.match(/^.*\bcurl\b.*$/gm) ?? [];
-        expect(curls.length).toBeGreaterThan(0);
-        for (const line of curls) {
-            expect(line).toMatch(/^node \/usr\/local\/bin\/attempt-pair\.cjs \| curl -K - /);
-        }
-        expect(text).not.toMatch(/ATLASSIAN_/);
-        // The pair is read on every call from the one baked helper: an adopted runner's env is stale (#1045).
-        expect(fences).not.toContain('$RUNNER_LEASE_TOKEN');
+        expect(text).toContain('node /usr/local/share/factory-skills/jira/jira.cjs');
+        expect(text).not.toMatch(/JIRA_API|\bcurl\b|ATLASSIAN_|RUNNER_LEASE_TOKEN|Basic auth/);
+        expect(text).toMatch(/Do not use an Atlassian MCP server or `acli`/);
+        expect(existsSync(join(ROOT, `${SKILLS}/jira/jira.cjs`))).toBe(true);
     });
+
+    it.each(['docker/claude-executor/claude-home/CLAUDE.md', 'docker/opencode-executor/opencode-home/AGENTS.md'])(
+        '77: %s names the jira helper, not $JIRA_API, and keeps acli forbidden',
+        (guide) => {
+            const text = read(guide).replace(/\s+/g, ' ');
+            expect(text).toContain('jira.cjs');
+            expect(text).not.toMatch(/JIRA_API|\bcurl\b/);
+            expect(text).toMatch(/not `acli`|Do not use an Atlassian MCP server or `acli`/);
+        }
+    );
 
     it('ships the attempt pair helper byte-identical, root-owned and executable, in both images (#1045)', () => {
         expect(read('docker/opencode-executor/attempt-pair.cjs')).toBe(read('docker/claude-executor/attempt-pair.cjs'));

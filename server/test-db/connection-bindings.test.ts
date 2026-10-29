@@ -10,7 +10,7 @@ import {
 } from '../src/db/connection-bindings.js';
 import { createConnectionStore, type ConnectionStore } from '../src/db/connection-store.js';
 import { useTestDb } from './harness.js';
-import { testOrg, testUser } from './fixtures.js';
+import { legacyConnection, oauthConnection, testOrg, testUser } from './fixtures.js';
 
 /** BEL-59: how a task's connections are chosen (explicit, personal default, requirement) and how they grow. */
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -23,24 +23,15 @@ const db = useTestDb({ orgs: [ORG, OTHER_ORG], users: [ALICE, BOB] });
 
 let sql: Sql;
 let store: ConnectionStore;
-let otherOrgStore: ConnectionStore;
 
 beforeAll(() => {
     if (!enabled) return;
     sql = db.sql;
     store = createConnectionStore({ sql, orgId: ORG });
-    otherOrgStore = createConnectionStore({ sql, orgId: OTHER_ORG });
 });
 
-const connect = (s: ConnectionStore, ownerUserId: string | null, email = `a-${randomUUID()}@example.com`) =>
-    s.create({
-        ownerUserId,
-        site: 'example.atlassian.net',
-        cloudId: `cloud-${randomUUID()}`,
-        email,
-        apiToken: 'tok',
-        access: 'read',
-    });
+const connect = (orgId: string, ownerUserId: string, account = `a-${randomUUID()}@example.com`) =>
+    oauthConnection(sql, orgId, ownerUserId, { account });
 
 /** A root thread row authored by `userId`; the 094 trigger stamps its execution user. */
 async function root(userId: string, orgId = ORG): Promise<string> {
@@ -86,8 +77,8 @@ const add = ({ rootJobId, actor, expectedRevision, connectionIds, source = 'foll
 
 describe.skipIf(!enabled)('resolving a task connections', () => {
     it('an explicit binding wins over the default', async () => {
-        const dflt = await connect(store, ALICE.id);
-        const explicit = await connect(store, ALICE.id);
+        const dflt = await connect(ORG, ALICE.id);
+        const explicit = await connect(ORG, ALICE.id);
         const result = await resolve(ALICE.id, [explicit.id]);
         expect(result).toMatchObject({ ok: true, requirements: [] });
         if (!result.ok) return;
@@ -97,7 +88,7 @@ describe.skipIf(!enabled)('resolving a task connections', () => {
 
     it('a single own candidate binds as the default', async () => {
         const lonely = await newUser('lonely');
-        const mine = await connect(store, lonely);
+        const mine = await connect(ORG, lonely);
         const result = await resolve(lonely);
         expect(result).toMatchObject({ ok: true, requirements: [] });
         if (!result.ok) return;
@@ -106,15 +97,15 @@ describe.skipIf(!enabled)('resolving a task connections', () => {
                 connectionId: mine.id,
                 source: 'default',
                 provider: 'jira',
-                credential: 'legacy_api_token',
+                credential: 'oauth_grant',
             }),
         ]);
     });
 
     it('two own candidates bind nothing and record an ambiguous requirement', async () => {
         const user = await newUser('two');
-        await connect(store, user);
-        await connect(store, user);
+        await connect(ORG, user);
+        await connect(ORG, user);
         expect(await resolve(user)).toEqual({
             ok: true,
             bindings: [],
@@ -135,45 +126,44 @@ describe.skipIf(!enabled)('resolving a task connections', () => {
         const none = await newUser('optional');
         expect(await resolve(none, [], { required: [] })).toEqual({ ok: true, bindings: [], requirements: [] });
         const some = await newUser('optional-bound');
-        const mine = await connect(store, some);
+        const mine = await connect(ORG, some);
         const result = await resolve(some, [], { required: [] });
         expect(result).toMatchObject({ ok: true, requirements: [] });
         if (result.ok) expect(result.bindings.map((b) => b.connectionId)).toEqual([mine.id]);
     });
 
     it('an explicit id owned by another member is refused not-authorized, a disconnected one too', async () => {
-        const theirs = await connect(store, BOB.id);
+        const theirs = await connect(ORG, BOB.id);
         expect(await resolve(ALICE.id, [theirs.id])).toEqual({ ok: false, reason: 'not-authorized' });
-        const mine = await connect(store, ALICE.id);
-        await store.disconnect(mine.id, { userId: ALICE.id, admin: false });
+        const mine = await connect(ORG, ALICE.id);
+        await store.disconnect(mine.id, { userId: ALICE.id });
         expect(await resolve(ALICE.id, [mine.id])).toEqual({ ok: false, reason: 'not-authorized' });
     });
 
     it('an explicit id from another org is refused', async () => {
-        const foreign = await connect(otherOrgStore, ALICE.id);
+        const foreign = await connect(OTHER_ORG, ALICE.id);
         expect(await resolve(ALICE.id, [foreign.id])).toEqual({ ok: false, reason: 'not-authorized' });
         expect(await resolve(ALICE.id, [randomUUID()])).toEqual({ ok: false, reason: 'not-authorized' });
     });
 
-    it('a legacy org connection binds only explicitly, never as the default', async () => {
+    it('a legacy API-token connection is never bound or defaulted, org-wide or personal', async () => {
         const user = await newUser('legacy');
-        const shared = await connect(store, null);
+        const orgWide = await legacyConnection(sql, ORG, null);
+        const personal = await legacyConnection(sql, ORG, user);
         expect(await resolve(user)).toMatchObject({ ok: true, bindings: [], requirements: [{ reason: 'missing' }] });
-        const explicit = await resolve(user, [shared.id]);
-        expect(explicit).toMatchObject({ ok: true, requirements: [] });
-        if (explicit.ok)
-            expect(explicit.bindings.map((b) => [b.connectionId, b.source])).toEqual([[shared.id, 'explicit']]);
+        expect(await resolve(user, [orgWide])).toEqual({ ok: false, reason: 'not-authorized' });
+        expect(await resolve(user, [personal])).toEqual({ ok: false, reason: 'not-authorized' });
     });
 
     it('two connections for one provider are both bindable explicitly and addressable by id', async () => {
-        const a = await connect(store, ALICE.id);
-        const b = await connect(store, ALICE.id);
+        const a = await connect(ORG, ALICE.id);
+        const b = await connect(ORG, ALICE.id);
         const result = await resolve(ALICE.id, [a.id, b.id]);
         expect(result.ok && result.bindings.map((x) => x.connectionId).sort()).toEqual([a.id, b.id].sort());
     });
 
     it('refuses duplicate ids and unknown providers', async () => {
-        const a = await connect(store, ALICE.id);
+        const a = await connect(ORG, ALICE.id);
         expect(await resolve(ALICE.id, [a.id, a.id])).toEqual({ ok: false, reason: 'duplicate' });
         expect(await resolve(ALICE.id, [], { providers: ['github'] })).toEqual({
             ok: false,
@@ -191,7 +181,7 @@ async function newUser(label: string): Promise<string> {
 describe.skipIf(!enabled)('adding bindings to a thread', () => {
     it('applying a resolution freezes the bindings at revision 1 and stores the requirements', async () => {
         const user = await newUser('apply');
-        const mine = await connect(store, user);
+        const mine = await connect(ORG, user);
         const rootId = await root(user);
         const resolved = await resolve(user, [mine.id]);
         if (!resolved.ok) throw new Error('resolve refused');
@@ -229,7 +219,7 @@ describe.skipIf(!enabled)('adding bindings to a thread', () => {
     it('a stale expected revision answers stale-revision and writes nothing', async () => {
         const user = await newUser('stale');
         const rootId = await root(user);
-        const mine = await connect(store, user);
+        const mine = await connect(ORG, user);
         expect(await add({ rootJobId: rootId, actor: user, expectedRevision: 7, connectionIds: [mine.id] })).toEqual({
             ok: false,
             reason: 'stale-revision',
@@ -242,8 +232,8 @@ describe.skipIf(!enabled)('adding bindings to a thread', () => {
     it('never removes or replaces earlier bindings: history is append-only and the revision increments', async () => {
         const user = await newUser('append');
         const rootId = await root(user);
-        const first = await connect(store, user);
-        const second = await connect(store, user);
+        const first = await connect(ORG, user);
+        const second = await connect(ORG, user);
         expect(await add({ rootJobId: rootId, actor: user, expectedRevision: 0, connectionIds: [first.id] })).toEqual({
             ok: true,
             revision: 1,
@@ -266,7 +256,7 @@ describe.skipIf(!enabled)('adding bindings to a thread', () => {
     it('an actor who is not the execution user is refused', async () => {
         const user = await newUser('owner');
         const rootId = await root(user);
-        const bobs = await connect(store, BOB.id);
+        const bobs = await connect(ORG, BOB.id);
         expect(await add({ rootJobId: rootId, actor: BOB.id, expectedRevision: 0, connectionIds: [bobs.id] })).toEqual({
             ok: false,
             reason: 'not-execution-user',
@@ -277,7 +267,7 @@ describe.skipIf(!enabled)('adding bindings to a thread', () => {
     it('refuses a connection the execution user may not bind, and an unknown root', async () => {
         const user = await newUser('authz');
         const rootId = await root(user);
-        const bobs = await connect(store, BOB.id);
+        const bobs = await connect(ORG, BOB.id);
         expect(await add({ rootJobId: rootId, actor: user, expectedRevision: 0, connectionIds: [bobs.id] })).toEqual({
             ok: false,
             reason: 'not-authorized',
@@ -299,7 +289,7 @@ describe.skipIf(!enabled)('adding bindings to a thread', () => {
             })
         );
         expect(await requirementsOf(sql, ORG, rootId)).toHaveLength(1);
-        const mine = await connect(store, user);
+        const mine = await connect(ORG, user);
         expect(
             await add({
                 rootJobId: rootId,
@@ -319,9 +309,9 @@ describe.skipIf(!enabled)('adding bindings to a thread', () => {
     it('a disconnected connection stays in the history as not live, with its frozen account', async () => {
         const user = await newUser('history');
         const rootId = await root(user);
-        const mine = await connect(store, user, 'frozen@example.com');
+        const mine = await connect(ORG, user, 'frozen@example.com');
         await add({ rootJobId: rootId, actor: user, expectedRevision: 0, connectionIds: [mine.id] });
-        await store.disconnect(mine.id, { userId: user, admin: false });
+        await store.disconnect(mine.id, { userId: user });
         expect(await bindingsOf(sql, ORG, rootId)).toEqual([
             expect.objectContaining({ connectionId: mine.id, externalAccountId: 'frozen@example.com', live: false }),
         ]);

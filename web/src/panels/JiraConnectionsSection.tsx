@@ -1,41 +1,40 @@
-import { ADMIN_ROLE } from '@factory-ai/core';
 import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
-    createConnection,
     deleteConnection,
     listConnections,
-    ORG_CONNECTION_SCOPE,
-    type ConnectionScope,
+    startAuthorization,
     type ConnectionView,
-    type NewConnectionInput,
+    type StartAuthorizationInput,
 } from '../api/connections.js';
 import type { Session } from '../api/useSession.js';
-import { JiraConnectionsPanel } from './JiraConnectionsPanel.js';
-
-const ORG_HINT =
-    'Legacy shared API-token connections. A task uses one only when it names it; none is bound by default. Only an admin adds or disconnects these.';
-const PERSONAL_HINT =
-    'Your own connections. A lone personal connection is bound to your tasks by default; with several, a task names the one it uses.';
-
-/** The scope's own rows: the org's legacy ones, or the caller's personal ones (`self`, never another member's). */
-const inScope = (scope: ConnectionScope, c: ConnectionView) =>
-    scope === ORG_CONNECTION_SCOPE
-        ? c.ownership === 'legacy-org'
-        : c.ownership === 'personal' && c.principal === 'self';
+import { integrationNotice, JiraConnectionsPanel, type IntegrationNotice } from './JiraConnectionsPanel.js';
 
 /**
- * One scope of Jira connections bound to its data (`MembersSection`'s shape): the section owns the
- * list and the writes, the panel the markup. A create's refusals — `BAD_CONNECTION`, the 502 for
- * an unresolvable cloud id, `FORBIDDEN` — land in the add dialog as sent; a list or delete failure
- * on this section's own error line.
- *
- * A member sees the org list read-only; the personal scope is always the member's to manage. The
- * server is the gate either way (a forced org create answers 403).
+ * The member's Jira connections bound to their data (`MembersSection`'s shape): the section owns
+ * the list, the start and the disconnect, the panel the markup. A start's refusal lands beside
+ * the control that made it; a list or disconnect failure in the panel's alert. The
+ * callback returns here with `?integration=jira&result=…`, which the panel shows once as a toned banner and the URL then drops.
+ * The start navigates away on success and leaves `saving` set: the page is gone.
  */
-export function JiraConnectionsSection({ scope, session }: { scope: ConnectionScope; session: Session | null }) {
+export function JiraConnectionsSection({ session }: { session: Session | null }) {
     const [connections, setConnections] = useState<ConnectionView[] | null>(null);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<IntegrationNotice | null>(null);
+    const [params, setParams] = useSearchParams();
+
+    // The callback's `?integration=&result=` is consumed once: kept as state, taken off the URL, so a
+    // reload or a bookmark does not bring the sentence back.
+    useEffect(() => {
+        const found = integrationNotice(params.get('integration'), params.get('result'));
+        if (!found) return;
+        setNotice(found);
+        const next = new URLSearchParams(params);
+        next.delete('integration');
+        next.delete('result');
+        setParams(next, { replace: true });
+    }, [params, setParams]);
 
     const refresh = useCallback(async () => {
         const result = await listConnections();
@@ -50,18 +49,22 @@ export function JiraConnectionsSection({ scope, session }: { scope: ConnectionSc
         void refresh();
     }, [refresh]);
 
-    // A refusal is the dialog's to show beside its fields, not this section's error line.
-    const create = async (input: NewConnectionInput): Promise<string | null> => {
+    const start = async (input: StartAuthorizationInput): Promise<string | null> => {
         setError(null);
+        setNotice(null);
         setSaving(true);
-        const message = await createConnection(input);
-        if (!message) await refresh();
+        const started = await startAuthorization(input);
+        if (started.ok) {
+            window.location.assign(started.authorizeUrl);
+            return null;
+        }
         setSaving(false);
-        return message;
+        return started.error;
     };
 
     const remove = async (connection: ConnectionView) => {
         setError(null);
+        setNotice(null);
         setSaving(true);
         const message = await deleteConnection(connection.id);
         if (message) setError(message);
@@ -73,21 +76,25 @@ export function JiraConnectionsSection({ scope, session }: { scope: ConnectionSc
 
     return (
         <>
-            {error ? <p className="status">{error}</p> : null}
             {connections === null ? (
                 <section className="panel">
-                    <h2>Jira connection</h2>
-                    <p className="status">{error ? 'Connections unavailable.' : 'Loading connections…'}</p>
+                    <h2>Jira connections</h2>
+                    {error ? (
+                        <p className="status" role="alert">
+                            {error}
+                        </p>
+                    ) : (
+                        <p className="status">Loading connections…</p>
+                    )}
                 </section>
             ) : (
                 <JiraConnectionsPanel
-                    scope={scope}
-                    hint={scope === ORG_CONNECTION_SCOPE ? ORG_HINT : PERSONAL_HINT}
-                    connections={connections.filter((c) => inScope(scope, c))}
-                    canManage={scope === ORG_CONNECTION_SCOPE ? session.role === ADMIN_ROLE : true}
+                    connections={connections}
                     saving={saving}
-                    onCreate={create}
-                    onDelete={(connection) => void remove(connection)}
+                    notice={notice}
+                    error={error}
+                    onStart={start}
+                    onDisconnect={(connection) => void remove(connection)}
                 />
             )}
         </>

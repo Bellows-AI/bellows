@@ -23,6 +23,8 @@ export type ExchangeResult = { ok: true; tokens: IssuedTokens } | { ok: false; f
 
 export interface DiscoveredIdentity {
     externalAccountId: string;
+    /** What a person calls the account (an email, else a display name); shown on the connection. */
+    label: string;
     resources: { id: string; label: string }[];
     authority: GrantAuthority;
 }

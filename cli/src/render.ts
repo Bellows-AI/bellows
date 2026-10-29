@@ -339,8 +339,8 @@ export function renderSkills(skills: readonly SkillView[]): string {
         .join('\n');
 }
 
-/** Short credential names: the raw `legacy_api_token` would trip the "never prints a token" reading of the list. */
-const CREDENTIAL_LABEL: Record<string, string> = { legacy_api_token: 'legacy', oauth_grant: 'oauth' };
+/** Short credential names for the list. */
+const CREDENTIAL_LABEL: Record<string, string> = { oauth_grant: 'oauth' };
 
 /** Selectable managed connections: the id is what `--connection` takes. */
 export function renderConnections(connections: readonly ConnectionView[]): string {

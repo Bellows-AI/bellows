@@ -410,7 +410,7 @@ export interface ConnectionView {
     id: string;
     provider: string;
     credential: string;
-    /** `personal` or `legacy-org`. */
+    /** `personal`: a connection belongs to the member who authorized it. */
     ownership: string;
     principal: string | null;
     site: string;

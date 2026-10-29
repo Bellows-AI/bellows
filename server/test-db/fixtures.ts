@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { expect } from 'vitest';
+import { createConnectionGrants } from '../src/db/connection-grants.js';
 import { INTERRUPTION_BUDGET } from '../src/db/jobs/job-store.js';
 import type { TestUser } from './harness.js';
 
@@ -226,4 +227,49 @@ export const craftJob = async (
         )
     `;
     return id;
+};
+
+/**
+ * An OAuth Jira connection the way the authorization flow leaves one: a grant and its connection, owned by `userId`.
+ * `account` is the Atlassian account id (and the connection's account label); a fresh one per call unless named.
+ */
+export const oauthConnection = async (
+    sql: Sql,
+    orgId: string,
+    userId: string,
+    options: { account?: string; cloudId?: string; access?: 'read' | 'write' } = {}
+): Promise<{ id: string; grantId: string }> => {
+    const result = await createConnectionGrants({ sql, orgId }).attachGrantConnection({
+        principal: { kind: 'user', userId },
+        provider: 'jira',
+        externalAccountId: options.account ?? `acct-${randomUUID()}`,
+        authority: { scopes: ['read:jira-work'] },
+        resource: { id: options.cloudId ?? `cloud-${randomUUID()}`, label: 'example.atlassian.net' },
+        access: options.access ?? 'read',
+    });
+    if (!result.ok) throw new Error(`oauth connection refused: ${result.reason}`);
+    return { id: result.connectionId, grantId: result.grant.id };
+};
+
+/**
+ * A legacy API-token Jira connection as migrations 051/094 left them (`ownerUserId` null is an org-wide one). Written
+ * by SQL: no code path creates one any more, and no code path may list, bind or serve one.
+ */
+export const legacyConnection = async (
+    sql: Sql,
+    orgId: string,
+    ownerUserId: string | null,
+    options: { status?: 'active' | 'disconnected'; email?: string } = {}
+): Promise<string> => {
+    const email = options.email ?? `legacy-${randomUUID()}@example.com`;
+    const [row] = await sql<{ id: string }[]>`
+        insert into connector_connection
+            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider, credential,
+             principal_user_id, external_account_id, status)
+        values (${orgId}, ${ownerUserId}, 'jira', 'example.atlassian.net', ${`cloud-${randomUUID()}`}, ${email},
+                'legacy-secret-token', 'read', 'jira', 'legacy_api_token', ${ownerUserId}, ${email},
+                ${options.status ?? 'active'})
+        returning id
+    `;
+    return row!.id;
 };

@@ -250,13 +250,19 @@ const fetchPage = async (
 };
 
 /** Fold one page into the collected items; the next page's path, or null when collection is done. */
-const collect = (pagination: Pagination, collected: unknown[], json: unknown, page: number): string | null => {
-    collected.push(...pagination.items(json).slice(0, pagination.maxItems - collected.length));
-    return collected.length >= pagination.maxItems || page >= pagination.maxPages ? null : pagination.next(json);
+const collect = (
+    pagination: Pagination,
+    collected: unknown[],
+    read: { json: unknown; page: number; path: string }
+): string | null => {
+    collected.push(...pagination.items(read.json).slice(0, pagination.maxItems - collected.length));
+    return collected.length >= pagination.maxItems || read.page >= pagination.maxPages
+        ? null
+        : pagination.next(read.json, read.path);
 };
 
 const execute = async <R>(run: Run, credential: Credential, input: never): Promise<OperationResult<R>> => {
-    const request = run.op.request(input);
+    const request = run.op.request(input, run.ctx.handle.resource);
     const pagination = run.op.paginate;
     const collected: unknown[] = [];
     let path: string | null = request.path;
@@ -266,7 +272,7 @@ const execute = async <R>(run: Run, credential: Credential, input: never): Promi
         if ('ok' in got) return got;
         if (!pagination) return { ok: true, value: got.json as R };
         try {
-            path = collect(pagination, collected, got.json, page);
+            path = collect(pagination, collected, { json: got.json, page, path });
         } catch {
             return afterDispatch(run, 'malformed-response');
         }

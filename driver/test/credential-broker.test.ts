@@ -35,6 +35,7 @@ interface Deps {
     sleep: (ms: number) => Promise<void>;
     signal: (ms: number) => AbortSignal;
     stderr: (line: string) => void;
+    deadlineMs?: number;
     pair: (env: Record<string, string | undefined>) => Promise<Pair>;
 }
 type Result = {
@@ -259,6 +260,16 @@ describe('one wall-clock deadline', () => {
         expect(await broker.obtain(r.deps, broker.GITHUB_KEY)).toMatchObject({ ok: false, reason: 'unreachable' });
         expect(r.calls.length).toBeGreaterThan(3);
         expect(r.elapsed()).toBeLessThanOrEqual(broker.DEADLINE_MS);
+    });
+
+    it('takes the budget a helper passes, never a fresh one (BEL-61)', async () => {
+        const r = rig(() => 'hang');
+        const budget = 4000;
+        expect(await broker.connectionCredential(CONNECTION, { ...r.deps, deadlineMs: budget })).toMatchObject({
+            ok: false,
+            reason: 'unreachable',
+        });
+        expect(r.elapsed()).toBeLessThanOrEqual(budget);
     });
 
     it('caps each request at what is left of the deadline', async () => {

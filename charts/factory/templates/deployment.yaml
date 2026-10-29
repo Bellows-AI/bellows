@@ -125,6 +125,15 @@ spec:
                                 name: {{ include "factory.secretName" . }}
                                 key: commerce-token
                                 optional: true
+                      # Jira Cloud OAuth (docs/connections.md); both empty, Jira is unconfigured.
+                      - name: ATLASSIAN_CLIENT_ID
+                        value: {{ .Values.integrations.jira.clientId | quote }}
+                      - name: ATLASSIAN_CLIENT_SECRET
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: atlassian-client-secret
+                                optional: true
                       {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
                       # The offline entry reads each repo's .bellows.yaml from this origin.
                       - name: REPO_CLONE_BASE

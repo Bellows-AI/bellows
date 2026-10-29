@@ -3,7 +3,6 @@ import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { JiraConnectionsSection } from '../panels/JiraConnectionsSection.js';
-import { USER_CONNECTION_SCOPE } from '../api/connections.js';
 import type { UseEnv } from '../api/useEnv.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -36,7 +35,7 @@ export function SettingsWorkspacePage() {
             <PageHeader eyebrow="Settings" title="Workspace" />
             <DraftReturnBanner />
 
-            <JiraConnectionsSection scope={USER_CONNECTION_SCOPE} session={session} />
+            <JiraConnectionsSection session={session} />
 
             <ConfigurationScope scope="workspace" />
 

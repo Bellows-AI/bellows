@@ -128,15 +128,9 @@ CLAUDE_JSON="$CLAUDE_CONFIG_DIR/.claude.json" node -e "
     fs.writeFileSync(f, JSON.stringify(c, null, 2));
 " "$WORKDIR" "$TRUST_MAIN" || echo "claude-executor: could not record workspace trust in .claude.json" >&2
 
-# Jira (docs/connections.md): JIRA_API is the board's connector proxy for THIS attempt, never
-# Atlassian itself — the credential stays on the board, which checks the attempt's lease and the
-# task's selected connection on every call. Derived here, never inherited: a stale value would
-# send the lease pair wherever it points. The jira skill passes the pair as headers and tells the
-# agent to stop and report when the board refuses.
+# Jira (docs/connections.md): no Jira variable rides this container. The jira skill's helper asks the
+# board's credential broker for the task's managed connection; a JIRA_API the claim env carried is dropped.
 unset JIRA_API
-if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUNNER_LEASE_TOKEN:-}" ]; then
-    export JIRA_API="${FACTORY_STATS_URL%/}/api/jobs/$RUNNER_JOB_ID/connectors/jira/rest/api/3"
-fi
 
 # The member's own executor config — model, env vars, permission allowlist — synthesized by the
 # board from their `claude-code` executor row (server/src/db/jobs/job-store.ts) and delivered as

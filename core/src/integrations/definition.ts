@@ -14,8 +14,8 @@ export interface Pagination {
     maxPages: number;
     maxItems: number;
     items(json: unknown): readonly unknown[];
-    /** The next page's path, or null when this was the last. Validated like any other path. */
-    next(json: unknown): string | null;
+    /** The next page's path (given the path just read), or null when this was the last. Validated like any other path. */
+    next(json: unknown, previousPath: string): string | null;
 }
 
 export interface IntegrationOperation<I = unknown> {
@@ -23,7 +23,8 @@ export interface IntegrationOperation<I = unknown> {
     /** A write that fails after dispatch is `outcome_unknown`; a read is `unavailable`. */
     effect: 'read' | 'write';
     requiredScopes: readonly string[];
-    request(input: I): OperationRequest;
+    /** The connection's resource is the only place a provider-side site or tenant ID may come from. */
+    request(input: I, resource: IntegrationResource): OperationRequest;
     /** Absent: the parsed body is the value. With `paginate`: the value is the collected items. */
     paginate?: Pagination;
 }
