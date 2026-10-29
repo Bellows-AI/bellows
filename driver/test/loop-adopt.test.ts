@@ -9,7 +9,7 @@ import type { BoardJob } from '../src/board/board.js';
 import { newJobState } from '../src/loop/loop-attempt.js';
 import { adoptStep, recordAdopted } from '../src/loop/loop-adopt.js';
 import { type AttemptCtx, STOOD_DOWN } from '../src/loop/loop-types.js';
-import { type AdoptedRun, AdoptionBlocked, type LiveRun, type Read } from '../src/runner.js';
+import { type AdoptedRun, AdoptionBlocked, LeftoverTerminating, type LiveRun, type Read } from '../src/runner.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../src/supervisor-contract.js';
 import { runJob } from '../src/loop/loop-run.js';
 import { createStepBroker } from '../src/step-control.js';
@@ -85,6 +85,24 @@ describe('adoptStep', () => {
         const answer = await adoptStep(s.ctx);
 
         expect(answer).toMatchObject({ halt: 'leave' });
+        expect(s.ctx.adopted).toBeUndefined();
+    });
+
+    it('answers a blocked interruption, keeping the group, when the adoption meets a terminating leftover', async () => {
+        const s = setup(job(1), async () => {
+            throw new LeftoverTerminating('the leftover pod p on node n is still terminating after its delete');
+        });
+
+        const answer = await adoptStep(s.ctx);
+
+        expect(answer).toEqual({
+            halt: 'interrupt',
+            reason: 'the claim waits for a leftover still terminating: the leftover pod p on node n is still terminating after its delete',
+            refused: true,
+            blocked: true,
+        });
+        expect(s.state.keepGroup).toBe(true);
+        expect(s.released).toEqual([]);
         expect(s.ctx.adopted).toBeUndefined();
     });
 

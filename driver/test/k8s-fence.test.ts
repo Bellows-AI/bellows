@@ -20,11 +20,13 @@ import {
 import { jobsPath, runnerJobName, runnerName, type RunnerJobSpec, secretName } from '../src/k8s/k8s-podspec.js';
 import {
     CLAIM_ROUNDS,
+    POLL_MS,
     REPLACE_WAIT_MS,
     type K8sDeps,
     type K8sRequestOptions,
     type K8sResponse,
 } from '../src/k8s/k8s-transport.js';
+import { LeftoverTerminating } from '../src/runner.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 
@@ -393,6 +395,112 @@ describe('sweepClaimedFleets', () => {
         expect(slow.timeouts.every((t) => t.timeoutMs !== undefined && t.timeoutMs <= REPLACE_WAIT_MS)).toBe(true);
         expect(slow.calls.some((call) => call.path === CLAIM)).toBe(false);
         expect(deletes(slow.calls)).toEqual([]);
+    });
+
+    describe('a leftover still terminating after its delete', () => {
+        const SINCE = '2026-10-29T10:00:00Z';
+        const podOf = (name: string, extra: Record<string, unknown> = {}, spec: Record<string, unknown> = {}) => ({
+            metadata: {
+                name,
+                uid: `uid-${name}`,
+                labels: { 'factory.job': job.id, 'factory.lease': OLD, 'job-name': runnerJobName(earlier) },
+                ...extra,
+            },
+            spec,
+        });
+        const stuck = podOf('pod-stuck', { deletionTimestamp: SINCE }, { nodeName: 'node-a' });
+        const isPodList = (method: string, path: string) =>
+            method === 'GET' && path.startsWith(`${PODS}?`) && decodeURIComponent(path).includes('lease!=');
+        const listing =
+            (pods: unknown[], more: Special = () => undefined): Special =>
+            (method, path, body) =>
+                isPodList(method, path) ? answer(200, { items: pods }) : more(method, path, body);
+        const sweep = async (special: Special, signal = new AbortController().signal) => {
+            const w = world(special);
+            await w.deps.request('POST', CONFIGMAPS, claimBody(job));
+            w.calls.length = 0;
+            return { ...w, outcome: sweepClaimedFleets(w.deps, job, signal) };
+        };
+
+        it('throws LeftoverTerminating naming the pod, its node and the time it began deleting', async () => {
+            const { outcome } = await sweep(listing([stuck]));
+
+            const e = await outcome.catch((error: unknown) => error);
+
+            expect(e).toBeInstanceOf(LeftoverTerminating);
+            expect((e as Error).message).toMatch(/pod-stuck/);
+            expect((e as Error).message).toMatch(/node-a/);
+            expect((e as Error).message).toMatch(new RegExp(SINCE));
+        });
+
+        it('throws the plain bound error when one leftover is terminating and another is not', async () => {
+            const { outcome } = await sweep(listing([stuck, podOf('pod-live', {}, { nodeName: 'node-b' })]));
+
+            const e = await outcome.catch((error: unknown) => error);
+
+            expect(e).not.toBeInstanceOf(LeftoverTerminating);
+            expect((e as Error).message).toMatch(/never disappeared after their delete/);
+        });
+
+        it.each([
+            ['a number', 5],
+            ['a word', 'yesterday'],
+            ['an empty string', ''],
+        ])('reads a deletionTimestamp that is %s as inconclusive, deleting nothing', async (_name, bad) => {
+            const { outcome, calls } = await sweep(
+                listing([podOf('pod-bad', { deletionTimestamp: bad }, { nodeName: 'node-a' })])
+            );
+
+            const e = await outcome.catch((error: unknown) => error);
+
+            expect(e).not.toBeInstanceOf(LeftoverTerminating);
+            expect((e as Error).message).toMatch(/could not confirm the checkout empty/);
+            expect(deletes(calls)).toEqual([]);
+        });
+
+        it('reads a pod whose spec.nodeName is no string as inconclusive', async () => {
+            const { outcome, calls } = await sweep(
+                listing([podOf('pod-bad', { deletionTimestamp: SINCE }, { nodeName: 7 })])
+            );
+
+            const e = await outcome.catch((error: unknown) => error);
+
+            expect(e).not.toBeInstanceOf(LeftoverTerminating);
+            expect((e as Error).message).toMatch(/could not confirm the checkout empty/);
+            expect(deletes(calls)).toEqual([]);
+        });
+
+        it('throws no LeftoverTerminating once its attempt is killed in the final round', async () => {
+            const kill = new AbortController();
+            let lists = 0;
+            const { outcome } = await sweep((method, path) => {
+                if (!isPodList(method, path)) return;
+                lists += 1;
+                if (lists === REPLACE_WAIT_MS / POLL_MS) kill.abort();
+                return answer(200, { items: [stuck] });
+            }, kill.signal);
+
+            const e = await outcome.catch((error: unknown) => error);
+
+            expect(e).toBeInstanceOf(Error);
+            expect(e).not.toBeInstanceOf(LeftoverTerminating);
+        });
+
+        it('throws no LeftoverTerminating when the final round’s claim read is unconfirmed', async () => {
+            let lists = 0;
+            const { outcome } = await sweep((method, path) => {
+                if (isPodList(method, path)) {
+                    lists += 1;
+                    return answer(200, { items: [stuck] });
+                }
+                if (isClaimGet(method, path) && lists >= REPLACE_WAIT_MS / POLL_MS) return answer(503);
+            });
+
+            const e = await outcome.catch((error: unknown) => error);
+
+            expect(e).not.toBeInstanceOf(LeftoverTerminating);
+            expect((e as Error).message).toMatch(/could not be confirmed before fencing/);
+        });
     });
 });
 

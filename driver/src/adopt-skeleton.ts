@@ -5,6 +5,7 @@ import {
     adoptionAbandoned,
     commandMark,
     Inconclusive,
+    LeftoverTerminating,
     type LiveRun,
     type RunOutcome,
 } from './runner.js';
@@ -180,7 +181,7 @@ export async function adoptEarlierRun<F extends EarlierRun>(
         // A rollback that fails must not replace the error being classified, nor run twice. A live
         // group still writes the tree: its claim stays this attempt's for the next claim to order against.
         if (!rolledBack && !first.live) await p.rollback(job).catch(() => undefined);
-        if (signal?.aborted || e instanceof AdoptionBlocked) throw e;
+        if (signal?.aborted || e instanceof AdoptionBlocked || e instanceof LeftoverTerminating) throw e;
         throw blockedUnless(e, 'the earlier run could not be adopted');
     }
 }
