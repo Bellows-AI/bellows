@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
+import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
@@ -164,6 +165,8 @@ export interface AppConfig {
      * `not-configured`.
      */
     readonly integrations: { readonly callbackOrigin: string | null };
+    /** The optional commerce service (COMMERCE_*); off by default. See `config-commerce.ts`. */
+    readonly commerce: CommerceConfig;
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -616,6 +619,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         artifacts: loadArtifactsConfig(env),
         admission: loadAdmission(env),
         integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null },
+        commerce: loadCommerceConfig(env),
     });
 }
 

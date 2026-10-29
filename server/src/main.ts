@@ -23,7 +23,10 @@ import {
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
+import { startCommerceDelivery } from './commerce/commerce-loop.js';
+import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
+import type { SecretDiagnostic } from './secrets/secret-store.js';
 
 /**
  * The whole wiring, from config to `listen`. Every entry is this function plus one decision about
@@ -79,11 +82,12 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     // connection another's store call is waiting for. A pool of its own (connections open lazily, so an
     // idle one costs nothing) means a store call never borrows a claim's pool (docs/secrets.md).
     const secretSql = postgres(config.databaseUrl, { max: config.dbPoolMax });
+    const secretLog = (d: SecretDiagnostic) => console.log(`[secrets] ${JSON.stringify(d)}`);
     const secrets = createSecretStore({
         sql: secretSql,
         ready,
         backend: secretBackend,
-        log: (d) => console.log(`[secrets] ${JSON.stringify(d)}`),
+        log: secretLog,
     });
 
     // The ingest route's write side exists whenever there is somewhere to put an export — which is
@@ -112,6 +116,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         config,
         withStores: true,
         secrets,
+        secretLog,
         artifacts,
         claimMetrics: metrics.claim,
     });
@@ -174,6 +179,7 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         connectionOfLease: createConnectionOfLease({ sql, ready }),
         githubCredentialOfLease: createGithubCredentialOfLease({ sql, ready }),
         githubMint: options.githubMint,
+        commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,
         metrics,
@@ -208,6 +214,9 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
             metrics.timedPass('integration_recover', () => recoverIntegrations(integrations, { signal }))
         )
     );
+
+    // Closed claims are reported to the commerce service on every replica; off by default (docs/commerce.md).
+    startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready });
 
     await app.listen({ port: config.port, host: config.host });
 }

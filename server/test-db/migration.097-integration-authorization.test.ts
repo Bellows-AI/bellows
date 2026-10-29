@@ -5,12 +5,12 @@ import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
-/** BEL-138: 096 adds the authorization transaction table, expand only: nothing that wrote before it changes. */
+/** BEL-138: 097 adds the authorization transaction table, expand only: nothing that wrote before it changes. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '096_integration_authorization.sql';
+const VERSION = '097_integration_authorization.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -58,8 +58,8 @@ const insertUser = async (): Promise<string> => {
     return row!.id;
 };
 
-describe.skipIf(!enabled)('096_integration_authorization', () => {
-    it('upgrades a 095 database: the table appears and no grant or connection row changes', async () => {
+describe.skipIf(!enabled)('097_integration_authorization', () => {
+    it('upgrades a 096 database: the table appears and no grant or connection row changes', async () => {
         await applyAll(versioned(VERSION));
         const org = await insertOrg();
         const user = await insertUser();

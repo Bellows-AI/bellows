@@ -2,7 +2,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { SecretIdentity } from '../secrets/secret-store.js';
 
 /**
- * Integration grants (094, 095): the credential lineage of one external account. A connection is a principal's
+ * Integration grants (094, 096): the credential lineage of one external account. A connection is a principal's
  * usable resource under a grant; the grant owns the refresh chain (`version`) and the SecretStore record named by
  * `secret_ref`. These are store primitives only: no SecretStore call happens here. The lineage module
  * (`integrations/grant-lineage.ts`) takes the claim, talks to the SecretStore and then calls `finalize`, the only

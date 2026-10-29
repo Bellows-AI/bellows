@@ -51,6 +51,7 @@ export function testConfig(overrides: Partial<AppConfig> = {}): AppConfig {
         },
         admission: {},
         integrations: { callbackOrigin: null },
+        commerce: { enabled: false },
         ...overrides,
     };
 }

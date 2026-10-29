@@ -10,7 +10,7 @@ import type { BatchStore } from './db/batches/batch-store-types.js';
 import { createConnectionGrants, type ConnectionGrants } from './db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from './db/connection-store.js';
 import { createEnvVarStore, type EnvVarStore } from './db/env-var-store.js';
-import type { SecretStore } from './secrets/secret-store.js';
+import type { SecretDiagnostic, SecretStore } from './secrets/secret-store.js';
 import { createJobStore } from './db/jobs/job-store.js';
 import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
@@ -20,6 +20,7 @@ import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
 import { trackedRepos } from './db/tracked-repos.js';
+import { type CommerceStore, createCommerceStore } from './db/commerce-store.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflows/workflow-store.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from './db/pr-lifecycle-store.js';
 import { createStatsService, type StatsService } from './stats-service.js';
@@ -73,6 +74,8 @@ export interface OrgRuntime {
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** The usage outbox and the pushed plan (094); present with the other stores, and only when COMMERCE_ENABLED. */
+    commerce?: CommerceStore | undefined;
 }
 
 export interface OrgRegistry {
@@ -101,6 +104,8 @@ export type OrgRegistryDeps = {
           withStores: true;
           /** Holds every environment secret; the env store's claim-time resolve reads it (docs/env.md). */
           secrets: SecretStore;
+          /** Where the env store reports a compensation it could not finish: the secret store's sink. */
+          secretLog: (diagnostic: SecretDiagnostic) => void;
       }
     | {
           /** False in the route-test mode: the stats routes resolve, the stores stay unregistered. */
@@ -131,9 +136,11 @@ function buildOrgStores({
     client,
     claimMetrics,
     secrets,
+    secretLog,
 }: {
     claimMetrics: ClaimObserver | undefined;
     secrets: SecretStore;
+    secretLog: (diagnostic: SecretDiagnostic) => void;
     sql: Sql;
     orgId: string;
     ready: Promise<unknown>;
@@ -152,8 +159,9 @@ function buildOrgStores({
     prs: PrLifecycleStore;
     jobs: JobStore;
     workflows: WorkflowStore;
+    commerce: CommerceStore | undefined;
 } {
-    const envVars = createEnvVarStore({ sql, orgId, ready, secrets });
+    const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
@@ -243,6 +251,7 @@ function buildOrgStores({
         prs,
         jobs,
         workflows,
+        commerce: config.commerce.enabled ? createCommerceStore({ sql, orgId, ready }) : undefined,
     };
 }
 
@@ -259,6 +268,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;
     runtime.workflows = stores.workflows;
+    runtime.commerce = stores.commerce;
 }
 
 /** The org's artifact index over the process's object store, or undefined when none was configured. */
@@ -343,6 +353,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
                 client,
                 claimMetrics,
                 secrets: deps.secrets,
+                secretLog: deps.secretLog,
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });

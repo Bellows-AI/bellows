@@ -114,6 +114,17 @@ spec:
                         value: {{ .Values.dashboard.admission.maxRunningPerOrg | quote }}
                       - name: ADMISSION_MAX_RUNNING_PER_REPO
                         value: {{ .Values.dashboard.admission.maxRunningPerRepo | quote }}
+                      # The optional commerce service (docs/configuration.md); off, the other two are ignored.
+                      - name: COMMERCE_ENABLED
+                        value: {{ .Values.dashboard.commerce.enabled | quote }}
+                      - name: COMMERCE_URL
+                        value: {{ .Values.dashboard.commerce.url | quote }}
+                      - name: COMMERCE_TOKEN
+                        valueFrom:
+                            secretKeyRef:
+                                name: {{ include "factory.secretName" . }}
+                                key: commerce-token
+                                optional: true
                       {{- if and .Values.dashboard.offline .Values.driver.repoCloneBase }}
                       # The offline entry reads each repo's .bellows.yaml from this origin.
                       - name: REPO_CLONE_BASE

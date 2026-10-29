@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import type { DatabasePayloads } from '../src/secrets/database-payloads.js';
 import type { SecretRepo } from '../src/secrets/postgres-secret-repo.js';
-import { type PayloadStore, ProviderFault } from '../src/secrets/secret-payloads.js';
+import { ProviderFault } from '../src/secrets/secret-payloads.js';
 import { useTestDb } from './harness.js';
 import {
     createPostgresHarness,
@@ -11,6 +10,7 @@ import {
     externalPayloads,
     testIdentity,
     utf8,
+    wrappedPayloads,
 } from './secrets-postgres-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
@@ -32,20 +32,6 @@ function scripted(real: SecretRepo, script: (call: number) => Error | null) {
     };
     return { repo, calls };
 }
-
-/** The database payload store with some of its calls replaced: a fault between two payload calls. */
-const wrapped =
-    (over: Partial<PayloadStore>) =>
-    (database: DatabasePayloads): PayloadStore => ({
-        storage: database.storage,
-        twoPhase: database.twoPhase,
-        prepare: (...args) => database.prepare(...args),
-        holds: (...args) => database.holds(...args),
-        write: () => database.write(),
-        read: (row, aad) => database.read(row, aad),
-        remove: () => database.remove(),
-        ...over,
-    });
 
 const versionStates = async (ref: string) =>
     db.sql<{ id: string; state: string; storage: string }[]>`
@@ -172,14 +158,14 @@ describe.skipIf(!enabled)('payload store faults', () => {
     it('a write that answers exists is believed only when the object reads back as this payload', async () => {
         const h = createPostgresHarness(db.sql, { deadlineMs: 3000 });
         const identity = testIdentity();
-        const ours = h.openWith(h.faultyRepo, wrapped({ write: async () => 'exists' }));
+        const ours = h.openWith(h.faultyRepo, wrappedPayloads({ write: async () => 'exists' }));
         const created = await createSecret(ours, identity, utf8('same'));
         const read = await ours.readActive({ identity, ref: created.ref });
         expect(read.ok && new TextDecoder().decode(read.value)).toBe('same');
 
         const foreign = h.openWith(
             h.faultyRepo,
-            wrapped({ write: async () => 'exists', read: async () => utf8('someone else') })
+            wrappedPayloads({ write: async () => 'exists', read: async () => utf8('someone else') })
         );
         const ref = `sec_${randomUUID()}` as never;
         const result = await foreign.create({
@@ -198,7 +184,7 @@ describe.skipIf(!enabled)('payload store faults', () => {
         const invalid = { ok: false, error: { code: 'invalid-configuration', reason: 'configuration-invalid' } };
         const broken = h.openWith(
             h.faultyRepo,
-            wrapped({
+            wrappedPayloads({
                 async write() {
                     throw new ProviderFault('misconfigured');
                 },

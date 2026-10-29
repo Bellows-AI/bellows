@@ -51,7 +51,7 @@ describe('the secret-store test helpers cannot become a production backend', () 
         expect(main).toContain("timedPass('secret_collect'");
     });
 
-    it('only main.ts and the rotation command read the key environment', () => {
+    it('only main.ts, the rotation and the conversion command read the key environment', () => {
         const readers = sourceFiles(SRC)
             .filter((file) =>
                 /load(SecretBackend|SecretKeys|OperationKeys)\(|rotationKeys\(/.test(readFileSync(file, 'utf8'))
@@ -60,6 +60,7 @@ describe('the secret-store test helpers cannot become a production backend', () 
             .sort();
         expect(readers).toEqual([
             'main.ts',
+            'secrets/convert-env-cli.ts',
             'secrets/rotate-cli.ts',
             'secrets/secret-backend.ts',
             'secrets/secret-keys.ts',

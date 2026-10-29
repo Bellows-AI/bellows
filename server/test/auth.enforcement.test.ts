@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import Fastify from 'fastify';
+import { tmpdir } from 'node:os';
+import { describe, expect, it, vi } from 'vitest';
+import Fastify, { type FastifyServerOptions } from 'fastify';
 import { buildApp } from '../src/app.js';
 import { requirementFor } from '../src/auth/plugin.js';
 import { SESSION_COOKIE } from '../src/auth/session.js';
@@ -10,7 +11,6 @@ import type { AppDeps } from '../src/app.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import type { OrgRegistry } from '../src/orgs.js';
 import { batchRoutes } from '../src/routes/batches/batches.js';
-import { jobRoutes } from '../src/routes/jobs/jobs.js';
 import { readVersion } from '../src/version.js';
 import type { MemoryAuthStore } from './helpers.js';
 import {
@@ -36,6 +36,20 @@ import {
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
+
+// Every instance Fastify creates records each route it is handed, so the full app's patterns can be read back.
+const registered = vi.hoisted(() => ({ urls: [] as string[] }));
+vi.mock('fastify', async (importOriginal) => {
+    const original = await importOriginal<typeof import('fastify')>();
+    const wrapped = ((options?: FastifyServerOptions) => {
+        const instance = original.default(options);
+        instance.addHook('onRoute', (route) => {
+            registered.urls.push(route.url);
+        });
+        return instance;
+    }) as typeof original.default;
+    return { ...original, default: wrapped };
+});
 
 const ORG = 'test-org';
 const JOB_ID = '11111111-1111-4111-8111-111111111111';
@@ -179,27 +193,27 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/settings/workspace', 'open'],
     ['/api/stats', 'user'],
     ['/api/jobs', 'user'],
-    [`/api/jobs/${JOB_ID}`, 'user'],
+    ['/api/jobs/:id', 'user'],
     // All three are person's actions on a finished task — a follow-up asks for adjustments,
     // retry re-runs the thread head's command fresh, done declares the task finished by
-    // hand — and all fall through to `user`.
-    [`/api/jobs/${JOB_ID}/follow-up`, 'user'],
-    [`/api/jobs/${JOB_ID}/retry`, 'user'],
+    // hand — and all fall through to 'user'.
+    ['/api/jobs/:id/follow-up', 'user'],
+    ['/api/jobs/:id/retry', 'user'],
     // The owner binds a connection of their own to the thread (BEL-59): a person's action, never a worker's.
-    [`/api/jobs/${JOB_ID}/connections`, 'user'],
-    [`/api/jobs/${JOB_ID}/done`, 'user'],
+    ['/api/jobs/:id/connections', 'user'],
+    ['/api/jobs/:id/done', 'user'],
     // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
     // token un-closing tasks it never held would move audit rows for no run it owns.
-    [`/api/jobs/${JOB_ID}/reopen`, 'user'],
+    ['/api/jobs/:id/reopen', 'user'],
     // Stop and remove are person's actions too. The driver is told to stop through the
     // heartbeat it already holds, never through a stop route of its own; and a worker token
     // removing the audit rows of jobs it never held would be the thread-read hole (#47) again.
-    [`/api/jobs/${JOB_ID}/stop`, 'user'],
-    [`/api/jobs/${JOB_ID}/remove`, 'user'],
+    ['/api/jobs/:id/stop', 'user'],
+    ['/api/jobs/:id/remove', 'user'],
     // Both control a thread parked on a durable PR wait (issue #328) — person's actions on
-    // the wait a worker holds no lease on, so they fall through to `user` like the above.
-    [`/api/jobs/${JOB_ID}/wait/cancel`, 'user'],
-    [`/api/jobs/${JOB_ID}/wait/poke`, 'user'],
+    // the wait a worker holds no lease on, so they fall through to 'user' like the above.
+    ['/api/jobs/:id/wait/cancel', 'user'],
+    ['/api/jobs/:id/wait/poke', 'user'],
     ['/api/jobs/claim', 'worker'],
     // The Prometheus scrape (#831): the shared board secret, never a session.
     ['/api/metrics', 'worker'],
@@ -209,69 +223,75 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // The worktree-reclaim queue POST /remove feeds: the driver polls it and acks each
     // reclaim, so both ends are as worker-only as claim and complete.
     ['/api/reclaims/claim', 'worker'],
-    [`/api/reclaims/${JOB_ID}/ack`, 'worker'],
-    [`/api/reclaims/${JOB_ID}/renew`, 'worker'],
-    [`/api/jobs/${JOB_ID}/heartbeat`, 'worker'],
-    [`/api/jobs/${JOB_ID}/session`, 'worker'],
-    [`/api/jobs/${JOB_ID}/suspend`, 'worker'],
-    [`/api/jobs/${JOB_ID}/interrupt`, 'worker'],
-    [`/api/jobs/${JOB_ID}/complete`, 'worker'],
+    ['/api/reclaims/:id/ack', 'worker'],
+    ['/api/reclaims/:id/renew', 'worker'],
+    ['/api/jobs/:id/heartbeat', 'worker'],
+    ['/api/jobs/:id/session', 'worker'],
+    ['/api/jobs/:id/suspend', 'worker'],
+    ['/api/jobs/:id/interrupt', 'worker'],
+    ['/api/jobs/:id/complete', 'worker'],
     // The staged final envelope (issue #821): the same body as complete, under the same lease.
-    [`/api/jobs/${JOB_ID}/conclusion`, 'worker'],
-    [`/api/jobs/${JOB_ID}/phase-checkpoint`, 'worker'],
-    [`/api/jobs/${JOB_ID}/phase-checkpoints`, 'worker'],
+    ['/api/jobs/:id/conclusion', 'worker'],
+    ['/api/jobs/:id/phase-checkpoint', 'worker'],
+    ['/api/jobs/:id/phase-checkpoints', 'worker'],
     // The gate-run record (issue #983): the driver's own writes and its one read, under the lease.
-    [`/api/jobs/${JOB_ID}/gate-run`, 'worker'],
-    [`/api/jobs/${JOB_ID}/gate-runs`, 'worker'],
+    ['/api/jobs/:id/gate-run', 'worker'],
+    ['/api/jobs/:id/gate-runs', 'worker'],
     // One row per managed PR operation (issue #983), written by the driver under the lease.
-    [`/api/jobs/${JOB_ID}/pr-operation`, 'worker'],
-    [`/api/jobs/${JOB_ID}/output`, 'worker'],
+    ['/api/jobs/:id/pr-operation', 'worker'],
+    ['/api/jobs/:id/output', 'worker'],
     // Both are the driver's gate machinery — the state reports after each gate runs and the
-    // post-sync re-read of `.bellows.yaml`. Missing from this table is what left the last run's
-    // gate state unstored: under AUTH_MODE=github both fell through to `user` and answered the
+    // post-sync re-read of '.bellows.yaml'. Missing from this table is what left the last run's
+    // gate state unstored: under AUTH_MODE=github both fell through to 'user' and answered the
     // worker token 401, while the gates themselves ran and passed unseen.
-    [`/api/jobs/${JOB_ID}/gates`, 'worker'],
+    ['/api/jobs/:id/gates', 'worker'],
     // The agent's questions (050, issue #531): the driver reports a question and expires it under
-    // its lease; the member's answer is a person's act, so it falls through to `user` — and is
+    // its lease; the member's answer is a person's act, so it falls through to 'user' — and is
     // outside the org-token allowlist.
-    [`/api/jobs/${JOB_ID}/question`, 'worker'],
-    [`/api/jobs/${JOB_ID}/questions/${JOB_ID}/answer`, 'user'],
+    ['/api/jobs/:id/question', 'worker'],
+    ['/api/jobs/:id/questions/:questionId/answer', 'user'],
     // A named reviewer's separate run (056, issue #549): the driver's request and its read of the
     // verdict, both under the caller's lease — worker routes, never a person's or an org token's.
-    [`/api/jobs/${JOB_ID}/review`, 'worker'],
-    [`/api/jobs/${JOB_ID}/review-read`, 'worker'],
-    [`/api/jobs/${JOB_ID}/artifact/chunk`, 'worker'],
-    [`/api/jobs/${JOB_ID}/artifact/manifest`, 'worker'],
+    ['/api/jobs/:id/review', 'worker'],
+    ['/api/jobs/:id/review-read', 'worker'],
+    ['/api/jobs/:id/artifact/chunk', 'worker'],
+    ['/api/jobs/:id/artifact/manifest', 'worker'],
     // The restore reads (issue #775): the thread's checkpoint and raw transcripts, under the live lease.
-    [`/api/jobs/${JOB_ID}/checkpoint`, 'worker'],
-    [`/api/jobs/${JOB_ID}/checkpoint/chunk`, 'worker'],
-    [`/api/jobs/${JOB_ID}/transcripts`, 'worker'],
-    [`/api/jobs/${JOB_ID}/transcripts/chunk`, 'worker'],
+    ['/api/jobs/:id/checkpoint', 'worker'],
+    ['/api/jobs/:id/checkpoint/chunk', 'worker'],
+    ['/api/jobs/:id/transcripts', 'worker'],
+    ['/api/jobs/:id/transcripts/chunk', 'worker'],
     // The thread read is a person's again: it carries commands, output and session ids of the
     // WHOLE thread, and a worker token on it could read the audit trail of jobs it never held.
     // The driver's one use for it (the worktree-reclaim terminality, issue #47) rides the
-    // lease-guarded complete response as `threadDone` instead.
-    [`/api/jobs/${JOB_ID}/thread`, 'user'],
+    // lease-guarded complete response as 'threadDone' instead.
+    ['/api/jobs/:id/thread', 'user'],
     // The person-side read of a run: its activity. A worker token reading it would be the
     // thread-read hole again, one route over.
-    [`/api/jobs/${JOB_ID}/activity`, 'user'],
-    [`/api/jobs/${JOB_ID}/artifacts`, 'user'],
-    [`/api/jobs/${JOB_ID}/artifacts/read`, 'user'],
+    ['/api/jobs/:id/activity', 'user'],
+    ['/api/jobs/:id/artifacts', 'user'],
+    ['/api/jobs/:id/artifacts/read', 'user'],
     // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
     // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
-    [`/api/jobs/${JOB_ID}/connectors/jira/rest/api/3/myself`, 'connector'],
+    ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'connector'],
     // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
     // every mode, asked by the runner's helper and the driver's supervised steps alike.
-    [`/api/jobs/${JOB_ID}/credentials/github`, 'connector'],
-    // Managing connections is a person's settings act; it falls through to `user`.
+    ['/api/jobs/:id/credentials/github', 'connector'],
+    // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/connections', 'user'],
-    [`/api/connections/${JOB_ID}`, 'user'],
+    ['/api/connections/:id', 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
+    // BEL-146: a member reads their org's plan; the commerce service's push has its own credential class,
+    // and the anchored pattern gives nothing else under /api/commerce that class.
+    ['/api/commerce', 'user'],
+    ['/api/commerce/orgs/:orgId/plan', 'commerce'],
+    ['/api/commerce/orgs/:orgId/plan/x', 'user'],
+    ['/api/commerce/orgs/:orgId', 'user'],
     // The branch write stopped being an ingest-token route on purpose (CWE-862): the report's
     // repo must never choose the org it lands in, so the credential does. Its own requirement,
     // between worker and ingest — the pair is the attempt's, the bearer a member's.
     ['/api/sessions/branch', 'branch'],
-    // Both fall through to `user` rather than being listed anywhere, which is the point: the
+    // Both fall through to 'user' rather than being listed anywhere, which is the point: the
     // default is the safe one, so a new route is walled unless somebody deliberately opens it.
     ['/api/repos', 'user'],
     ['/api/skills', 'user'],
@@ -279,9 +299,26 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // never a worker token, and an org token is 403'd by the hook (not on its allowlist).
     ['/api/tokens', 'user'],
     ['/api/tokens/org', 'user'],
-    [`/api/tokens/${JOB_ID}/revoke`, 'user'],
+    ['/api/tokens/:id/revoke', 'user'],
     // Batches are a person's: no batch path is a worker route or on the organization-token allowlist.
-    ...BATCH_PATHS.map(([, path]) => [path, 'user'] as [string, string]),
+    ...BATCH_PATHS.map(
+        ([, path]) => [path.replace(JOB_ID, ':id').replace('/tasks/a/', '/tasks/:key/'), 'user'] as [string, string]
+    ),
+    // The person routes, as registered patterns (the concrete PERSON_ROUTES paths below drive inject).
+    ...[
+        '/api/tokens/org/:id/revoke',
+        '/api/workflows/:id',
+        '/api/env/org',
+        '/api/env/repo',
+        '/api/workspace/executors/default',
+        '/api/workspace/executors/:id',
+        '/api/workspace/executors/:id/suspension',
+        '/api/org/executors/:id',
+        '/api/org/executors/:id/suspension',
+        '/api/org/executors/:id/scope',
+        '/api/org/members/:userId/role',
+    ].map((path) => [path, 'user'] as [string, string]),
+    ['/api/otlp/v1/metrics', 'ingest'],
     ...[...new Set(PERSON_ROUTES.map(([, path]) => path))].map((path) => [path, 'user'] as [string, string]),
 ];
 
@@ -294,20 +331,36 @@ describe('the route table', () => {
     // through: a worker-shaped handler, absent from both, failing quietly
     // because its caller treats the answer as best-effort. Every route the job board registers
     // must be a decision recorded above.
-    it('has a row for every route the job board registers', async () => {
-        const board = Fastify();
-        const urls = new Set<string>();
-        board.addHook('onRoute', (route) => {
-            urls.add(route.url);
+    it('has a row for every route the full app registers', async () => {
+        registered.urls.length = 0;
+        const store = memoryAuthStore();
+        const config = testConfig({
+            auth: githubAuth(),
+            webRoot: tmpdir(),
+            commerce: { enabled: true, url: 'https://commerce.example/', token: 'commerce-token-0123456789abcdef-xyz' },
         });
-        await board.register(jobRoutes({ orgs: {} as OrgRegistry }));
-        await board.ready();
-        await board.close();
-
+        const app = track(
+            await buildApp({
+                config,
+                orgs: staticRegistry({ config, telemetry: stubTelemetryClient() }),
+                store: telemetryStoreStub(),
+                auth: store,
+                commercePlanWriter: { put: async () => ({ verdict: 'stored' }) },
+            })
+        );
+        await app.ready();
+        const patterns = new Set(registered.urls);
         const tabled = new Set(ROUTE_TABLE.map(([path]) => path));
-        const missing = [...urls].map((url) => url.replace(/:[^/]+/g, JOB_ID)).filter((path) => !tabled.has(path));
-        expect(urls.size).toBeGreaterThan(0);
+        // A document route (the static handler's wildcard, the SPA root) is open on purpose.
+        const documents = new Set(['/', '/*']);
+        const missing = [...patterns].filter((pattern) => !tabled.has(pattern) && !documents.has(pattern));
+        expect(patterns.size).toBeGreaterThan(0);
         expect(missing).toEqual([]);
+        // Every worker and connector pattern names its row `:id`, which the hook reads from the router's params.
+        const rowed = [...patterns].filter(
+            (p) => ['worker', 'connector'].includes(requirementFor(p)) && /:\w+/.test(p)
+        );
+        expect(rowed.filter((p) => !/^\/api\/(jobs|reclaims)\/:id(\/|$)/.test(p))).toEqual([]);
     });
 });
 
@@ -389,6 +442,22 @@ describe('with github auth configured', () => {
 });
 
 describe('the two credentials are disjoint: claim and job-scoped routes', () => {
+    it('refuses a session cookie on the claim route spelled with percent-encoding', async () => {
+        const store = memoryAuthStore();
+        const server = await build(githubAuth(), store);
+        const caller = store.seedMember(ORG, 'octocat', 'admin');
+        const cookie = await signedIn(store, caller);
+        for (const url of ['/api/jobs/cl%61im', '/api/%6Aobs/claim', '/api/jobs/%63laim']) {
+            const response = await server.inject({
+                method: 'POST',
+                url,
+                payload: { worker: 'w', leaseSeconds: 60 },
+                headers: { cookie },
+            });
+            expect(response.statusCode, url).toBe(HTTP_UNAUTHORIZED);
+        }
+    });
+
     it('refuses a session cookie on the claim route', async () => {
         const store = memoryAuthStore();
         const server = await build(githubAuth(), store);

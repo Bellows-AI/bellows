@@ -20,6 +20,7 @@
         "driver": "npm run dev -w driver",
         "start": "node --env-file-if-exists=.env --env-file-if-exists=secrets.env server/dist/index.js",
         "secrets:init": "node scripts/secrets-init.mjs",
+        "secrets:convert-env": "node --env-file-if-exists=.env --env-file-if-exists=secrets.env server/dist/secrets/convert-env-cli.js",
         "secrets:rotate": "node --env-file-if-exists=.env --env-file-if-exists=secrets.env server/dist/secrets/rotate-cli.js",
         "pretest": "npm run build -w core",
         "test": "vitest run",

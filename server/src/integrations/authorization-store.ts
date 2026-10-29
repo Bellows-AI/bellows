@@ -3,7 +3,7 @@ import { type AttachGrantConnection, attachInTx, attachRefusalOf } from '../db/c
 import type { AuthorizationFailure, CompleteFailure } from './authorization-types.js';
 
 /**
- * SQL for `integration_authorization` (096). Every transition is one guarded statement, so two racers, a late
+ * SQL for `integration_authorization` (097). Every transition is one guarded statement, so two racers, a late
  * recovery and a crashed holder each find the row exactly as the last winner left it. Lock order: the authorization
  * row, then the grant, then the connection (docs/connections.md).
  */

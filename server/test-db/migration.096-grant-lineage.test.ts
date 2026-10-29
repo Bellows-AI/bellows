@@ -5,12 +5,12 @@ import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
-/** BEL-138: 095 adds the grant lineage columns, expand only: an old pod's grant writes still work. */
+/** BEL-138: 096 adds the grant lineage columns, expand only: an old pod's grant writes still work. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '095_grant_lineage.sql';
+const VERSION = '096_grant_lineage.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -78,7 +78,7 @@ const oldGrant = async (org: string, user: string): Promise<string> => {
     return row!.id;
 };
 
-describe.skipIf(!enabled)('095_grant_lineage', () => {
+describe.skipIf(!enabled)('096_grant_lineage', () => {
     it('upgrades a 094 database: a grant written before it keeps every value and gains null lineage columns', async () => {
         await applyAll(versioned(VERSION));
         const org = await insertOrg();

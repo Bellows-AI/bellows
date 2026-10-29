@@ -5,7 +5,7 @@ import type { SecretStore } from '../secrets/secret-store.js';
 
 /** The vocabulary of the authorization transaction; `authorization-flow.ts` is the module API. */
 
-/** The closed list of the 096 `failure` column. */
+/** The closed list of the 097 `failure` column. */
 export type AuthorizationFailure =
     | 'denied'
     | 'state-mismatch'
