@@ -488,9 +488,12 @@ render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep -q 'key: atlassian-cli
     render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep -q 'optional: true' &&
     ok 'the Atlassian client secret is an optional Secret reference' ||
     bad 'the Atlassian client secret is an optional Secret reference' "$(render | grep -A5 ATLASSIAN_CLIENT_SECRET)"
-render --set-string secret.atlassianClientSecret=atl-secret-value | grep -q 'atlassian-client-secret: "atl-secret-value"' &&
+atl_render="$(render --set-string secret.atlassianClientSecret=atl-secret-value 2>&1)"
+atl_status=$?
+[ "$atl_status" -eq 0 ] && grep -q 'atlassian-client-secret: "atl-secret-value"' <<<"$atl_render" &&
     ok 'the generated Secret renders the Atlassian client secret key' ||
-    bad 'the generated Secret renders the Atlassian client secret key' 'no atlassian-client-secret key'
+    bad 'the generated Secret renders the Atlassian client secret key' \
+        "helm exit $atl_status; $(grep -n 'atlassian-client-secret\|Error' <<<"$atl_render" | head -3)"
 render | grep -q 'atlassian-client-secret: ""' &&
     ok 'the generated Secret renders the Atlassian key empty by default' ||
     bad 'the generated Secret renders the Atlassian key empty by default' 'no atlassian-client-secret key'
