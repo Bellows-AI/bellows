@@ -4,7 +4,7 @@ Who a caller is, and which credential each route accepts.
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| Route credentials; question reports accept workers, answers require members; a credential lookup the database cannot answer is a 503 | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.tokens.test.ts` |
+| Route credentials, chosen from the matched route pattern (`requirementOf`); question reports accept workers, answers require members; a credential lookup the database cannot answer is a 503 | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/auth.route-match.test.ts`, `server/test/auth.tokens.test.ts` |
 | `AUTH_MODE`, its boot refusals, `AUTH_ALLOW_PUBLIC_BIND` | `server/src/config.ts` | `server/test/config.auth.test.ts` |
 | Session cookie: signing, flags, expiry | `server/src/auth/session.ts` | `server/test/auth.session.test.ts` |
 | OAuth round trip, state, redirect validation, `/me` (a present bearer is its credential — the CLI's `auth status`) | `server/src/routes/auth.ts`, `auth-shared.ts`, `server/src/auth/github.ts` | `server/test/auth.oauth*.test.ts`, `server/test/auth.github-client.test.ts`, `server/test/auth.tokens.test.ts` |
@@ -12,6 +12,7 @@ Who a caller is, and which credential each route accepts.
 | Accounts, sessions, memberships, roles (SQL) | `server/src/auth/store.ts`, `server/migrations/010_auth.sql` | `server/test-db/auth-store.test.ts` |
 | Personal (`fat_`) and org (`oat_`) access tokens | `server/src/auth/access-token.ts`, `server/src/routes/tokens.ts` | `server/test/auth.tokens.test.ts`, `server/test-db/auth-store.access-tokens.test.ts`, `…lifecycle.test.ts`, `…org.test.ts` |
 | Roster reads and role writes | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
+| Commerce plan push: `commerce` requirement, bearer `COMMERCE_TOKEN`, enforced in both `AUTH_MODE`s (`enforceCommerce`; [commerce.md](commerce.md)) | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts`, `server/test/routes.commerce.test.ts` |
 | GitHub-side removal, signed webhook | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Sign-in in a real browser | `e2e/auth.spec.ts`, `e2e/stub-idp.mjs`, `e2e/signin.ts` | the `auth` Playwright project (`playwright.config.ts`) |
 
@@ -32,6 +33,7 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
 - **Only the sha-256 is stored** (sessions, both token kinds, the pending sign-in row), and the cookie is
   `SameSite=Lax`: the callback is a cross-site top-level GET. `server/src/auth/session.ts`,
   `server/test/auth.session.test.ts`.
+- **The credential class is the matched route's, never a re-parse of the URL.** Every worker and connector pattern names its row `:id`. `server/src/auth/plugin.ts`, `server/test/auth.route-match.test.ts`.
 - **Three credential kinds, one per request, no fall-through.** A bearer on a session route wins over the
   cookie; a worker token is refused on human routes and vice versa; an `oat_` reaches only `ORG_TOKEN_ROUTES`
   and is `403` off it. `server/src/auth/plugin.ts`, `server/test/auth.enforcement.test.ts`.

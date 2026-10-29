@@ -73,6 +73,7 @@ commit message needs a force-push to fix.
 | `server/src/secrets/*`, secret storage, `AppDeps.secrets` | [docs/secrets.md](docs/secrets.md) |
 | Routes, status codes, query parameters | [docs/api.md](docs/api.md) |
 | `.github/workflows/*`, CI triggers, the release image build | [docs/ci.md](docs/ci.md) |
+| `server/src/commerce/*`, `server/src/db/commerce-*.ts`, `095_commerce.sql`, `routes/commerce.ts`, `COMMERCE_*` | [docs/commerce.md](docs/commerce.md) |
 | Bind addresses, container hardening, PAT scopes, `OTEL_LOG_*` | [docs/security.md](docs/security.md) |
 | Reporting a number as measured | [docs/limits.md](docs/limits.md) |
 

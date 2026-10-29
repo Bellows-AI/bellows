@@ -468,6 +468,16 @@ render | grep -A1 'name: ADMISSION_MAX_RUNNING$' | grep -q 'value: ""' && ok 'th
 render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 'name: ADMISSION_MAX_RUNNING_PER_REPO' |
     grep -q 'value: "3"' && ok 'a per-repo admission budget renders' ||
     bad 'a per-repo admission budget renders' "$(render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 ADMISSION_MAX)"
+# The commerce service is off by default; its token is a secretKeyRef, never a plain env value.
+render | grep -A1 'name: COMMERCE_ENABLED$' | grep -q 'value: "false"' && ok 'commerce defaults to off' ||
+    bad 'commerce defaults to off' "$(render | grep -A1 COMMERCE_ENABLED)"
+render --set dashboard.commerce.enabled=true --set-string dashboard.commerce.url=https://commerce.example/ |
+    grep -A1 'name: COMMERCE_URL$' | grep -q 'value: "https://commerce.example/"' && ok 'the commerce URL renders' ||
+    bad 'the commerce URL renders' "$(render --set-string dashboard.commerce.url=https://commerce.example/ | grep -A1 COMMERCE_URL)"
+render | grep -A4 'name: COMMERCE_TOKEN$' | grep -q 'key: commerce-token' && ok 'the commerce token is read from the Secret' ||
+    bad 'the commerce token is read from the Secret' "$(render | grep -A4 COMMERCE_TOKEN)"
+render --set-string secret.commerceToken=commerce-token-value | grep -q 'commerce-token: "commerce-token-value"' &&
+    ok 'the secret renders the commerce token key' || bad 'the secret renders the commerce token key' 'no commerce-token key'
 
 # Runner pod resources (issue #360): requests by default so Karpenter and the Cluster Autoscaler
 # can size for the runner fleet — a zero-request pod schedules onto any free pod slot and

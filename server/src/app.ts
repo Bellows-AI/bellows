@@ -29,6 +29,8 @@ import { taskRoutes } from './routes/tasks.js';
 import { tokenRoutes } from './routes/tokens.js';
 import { versionRoutes } from './routes/version.js';
 import { webhookRoutes } from './routes/webhook.js';
+import { commerceRoutes } from './routes/commerce.js';
+import type { CommercePlanWriter } from './db/commerce-plan-writer.js';
 import { workflowRoutes } from './routes/workflows.js';
 import type { SecretStore } from './secrets/secret-store.js';
 import type { TelemetryStore } from './telemetry/store.js';
@@ -87,6 +89,8 @@ export interface AppDeps {
     githubCredentialOfLease?: GithubCredentialOfLease | undefined;
     githubMint?: GithubMint | undefined;
     fetchFn?: typeof fetch | undefined;
+    /** The commerce service's plan push (095); the routes exist exactly when COMMERCE_ENABLED and this is present. */
+    commercePlanWriter?: CommercePlanWriter | undefined;
     cloudIdLookup?: CloudIdLookup | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
@@ -159,6 +163,15 @@ async function registerRunnerCredentialRoutes(
     }
 }
 
+async function registerCommerce(
+    app: FastifyInstance,
+    config: AppConfig,
+    orgs: OrgRegistry,
+    writer: CommercePlanWriter | undefined
+): Promise<void> {
+    if (config.commerce.enabled && writer) await app.register(commerceRoutes({ orgs, writer }));
+}
+
 /** No `listen` here — that split is what lets the route tests drive the app in-process. */
 export async function buildApp({
     config,
@@ -176,6 +189,7 @@ export async function buildApp({
     identity,
     appSlug,
     installationListing,
+    commercePlanWriter,
     ready,
     version = readVersion(),
     now = Date.now,
@@ -251,6 +265,8 @@ export async function buildApp({
         fetchFn,
     });
     await app.register(workspaceRoutes({ orgs }));
+    // Plans and usage (BEL-146): like the webhook, no route exists unless the deployment turned commerce on.
+    await registerCommerce(app, config, orgs, commercePlanWriter);
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { loadArtifactsConfig, type ArtifactsConfig } from './config-artifacts.js';
+import { loadCommerceConfig, type CommerceConfig } from './config-commerce.js';
 import type { TelemetrySource } from './telemetry/client.js';
 
 export interface Repo {
@@ -158,6 +159,8 @@ export interface AppConfig {
      * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/jobs/job-store-admission.ts`.
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
+    /** The optional commerce service (COMMERCE_*); off by default. See `config-commerce.ts`. */
+    readonly commerce: CommerceConfig;
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -602,6 +605,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         webhookSecret,
         artifacts: loadArtifactsConfig(env),
         admission: loadAdmission(env),
+        commerce: loadCommerceConfig(env),
     });
 }
 

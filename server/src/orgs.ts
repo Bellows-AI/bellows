@@ -20,6 +20,7 @@ import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
 import { trackedRepos } from './db/tracked-repos.js';
+import { type CommerceStore, createCommerceStore } from './db/commerce-store.js';
 import { createWorkflowStore, type WorkflowStore } from './db/workflows/workflow-store.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from './db/pr-lifecycle-store.js';
 import { createStatsService, type StatsService } from './stats-service.js';
@@ -73,6 +74,8 @@ export interface OrgRuntime {
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** The usage outbox and the pushed plan (094); present with the other stores, and only when COMMERCE_ENABLED. */
+    commerce?: CommerceStore | undefined;
 }
 
 export interface OrgRegistry {
@@ -156,6 +159,7 @@ function buildOrgStores({
     prs: PrLifecycleStore;
     jobs: JobStore;
     workflows: WorkflowStore;
+    commerce: CommerceStore | undefined;
 } {
     const envVars = createEnvVarStore({ sql, orgId, ready, secrets, secretLog });
     const connections = createConnectionStore({ sql, orgId, ready });
@@ -247,6 +251,7 @@ function buildOrgStores({
         prs,
         jobs,
         workflows,
+        commerce: config.commerce.enabled ? createCommerceStore({ sql, orgId, ready }) : undefined,
     };
 }
 
@@ -263,6 +268,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;
     runtime.workflows = stores.workflows;
+    runtime.commerce = stores.commerce;
 }
 
 /** The org's artifact index over the process's object store, or undefined when none was configured. */
