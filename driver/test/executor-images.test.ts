@@ -31,6 +31,7 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
 const CLAUDE_REPORTER = 'docker/claude-executor/branch-reporter.cjs';
 const OPENCODE_REPORTER = 'docker/opencode-executor/branch-reporter.cjs';
 const CLAUDE_PROGRESS = 'docker/claude-executor/claude-progress.cjs';
+const requireCjs = createRequire(import.meta.url);
 
 describe('the executor branch reporter', () => {
     // Deliberate copies, like the collector's per-branch blocks: one file per image, byte-equal
@@ -232,7 +233,7 @@ describe('the executor branch reporter', () => {
  * The transcript store redirect (issue #55): when the driver hands the headless run a
  * FACTORY_TRANSCRIPT_DIR, the entrypoint moves CLAUDE_CONFIG_DIR onto the task volume
  * BEFORE the seed block — the settings.json-keyed seed then runs against the thread dir, so the
- * baked git guard and every baked setting ride along (the spec's "baked runner configuration
+ * baked hooks and every baked setting ride along (the spec's "baked runner configuration
  * survives the redirect"). Pinned against drift like every baked script: the block's exact shape,
  * and its position before the seed.
  */
@@ -947,127 +948,6 @@ describe('the claude-executor workspace trust', () => {
     );
 });
 
-/*
- * The git guard (issue #73): the claude-executor's PreToolUse hook that denies the Bash
- * commands which would move HEAD or rewrite refs in the task worktree. The tree standing on
- * `factory/<root>` is the driver's invariant — the restore-mode sync refuses a wrong checkout
- * only after the damage, and the damage strands the thread. The
- * hook is a guardrail, not a security boundary; the sync refusal stays the last line of
- * defense. The canonical case table lives in the script itself and both suites pin it: this
- * one runs decide() offline, the image suite (docker/claude-executor/test.sh) runs --selftest
- * against the baked copy.
- */
-const GIT_GUARD = 'docker/claude-executor/git-guard.cjs';
-const requireCjs = createRequire(import.meta.url);
-
-interface GuardDecision {
-    deny: boolean;
-    reason?: string;
-}
-interface GuardModule {
-    decide: (command: string) => GuardDecision;
-    CASES: Array<['deny' | 'allow', string]>;
-}
-const loadGuard = (): GuardModule => requireCjs(join(ROOT, GIT_GUARD)) as GuardModule;
-
-describe('the claude-executor git guard', () => {
-    // The behavior table, executed (not just re-read): every deny case must deny, every allow
-    // case must stay silent. A deny carries a reason — it is the only instruction the agent
-    // sees at the moment of the block. The rows are narrowed to the command so the test title
-    // names the case it runs — a regression must be diagnosable from the failure list alone.
-    it.each(
-        loadGuard()
-            .CASES.filter(([want]) => want === 'deny')
-            .map(([, command]) => [command])
-    )('denies %s', (command) => {
-        const verdict = loadGuard().decide(command);
-        expect(verdict.deny).toBe(true);
-        expect(typeof verdict.reason).toBe('string');
-    });
-
-    it.each(
-        loadGuard()
-            .CASES.filter(([want]) => want === 'allow')
-            .map(([, command]) => [command])
-    )('allows %s', (command) => {
-        expect(loadGuard().decide(command).deny).toBe(false);
-    });
-
-    it('names the base branch a batch task bases on in the merge hint, else the origin/HEAD default', () => {
-        const hint = () => loadGuard().decide('git merge feature').reason ?? '';
-        const saved = process.env.BASE_BRANCH;
-        try {
-            process.env.BASE_BRANCH = 'batch-sandbox';
-            expect(hint()).toContain('`git merge origin/batch-sandbox`');
-            delete process.env.BASE_BRANCH;
-            expect(hint()).toContain('`git merge origin/<default>`');
-        } finally {
-            if (saved === undefined) delete process.env.BASE_BRANCH;
-            else process.env.BASE_BRANCH = saved;
-        }
-    });
-
-    // The wire contract with Claude Code: JSON on stdin, the deny decision as JSON on stdout,
-    // exit 0 either way — exit 2 would block every Bash call, and silence means "no decision".
-    // Malformed input must fail open: a hook that crashes a run is worse than one that misses.
-    it('speaks the PreToolUse hook protocol', async () => {
-        const runHook = (payload: string): Promise<{ code: number | null; stdout: string }> =>
-            new Promise((resolve, reject) => {
-                const child = spawn('node', [join(ROOT, GIT_GUARD)], { stdio: ['pipe', 'pipe', 'pipe'] });
-                let stdout = '';
-                child.stdout.on('data', (chunk) => {
-                    stdout += chunk;
-                });
-                child.once('error', reject);
-                child.once('exit', (code) => resolve({ code, stdout }));
-                child.stdin.end(payload);
-            });
-
-        const deny = await runHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git switch main' } }));
-        expect(deny.code).toBe(0);
-        const parsed = JSON.parse(deny.stdout);
-        expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-        expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
-        expect(typeof parsed.hookSpecificOutput.permissionDecisionReason).toBe('string');
-
-        const allow = await runHook(JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git status' } }));
-        expect(allow.code).toBe(0);
-        expect(allow.stdout).toBe('');
-
-        const junk = await runHook('not json at all');
-        expect(junk.code).toBe(0);
-        expect(junk.stdout).toBe('');
-    });
-
-    // /usr/local/bin, like the branch reporter: the transcript redirect moves CLAUDE_CONFIG_DIR
-    // off the baked config home — and the settings.json hook command names this exact absolute
-    // path.
-    it('is baked at /usr/local/bin by the Dockerfile, never into a config home', () => {
-        const dockerfile = read('docker/claude-executor/Dockerfile');
-        expect(dockerfile).toMatch(/COPY[^\n]*git-guard\.cjs \/usr\/local\/bin\/git-guard\.cjs/);
-        expect(dockerfile).toMatch(/chmod 0755[^\n]*git-guard\.cjs/);
-        expect(dockerfile).not.toMatch(/git-guard[^\n]*-home\//);
-    });
-
-    it('is wired as a PreToolUse Bash hook in the baked settings.json', () => {
-        const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json'));
-        const group = (settings.hooks?.PreToolUse ?? []).find((g: { matcher?: string }) => g.matcher === 'Bash');
-        expect(group).toBeDefined();
-        const [gitHook, ghHook] = group.hooks;
-        for (const hook of [gitHook, ghHook]) {
-            expect(hook.type).toBe('command');
-            expect(hook.command).toBe('node /usr/local/bin/git-guard.cjs');
-            expect(hook.timeout).toBe(10);
-        }
-        // The `if` filters keep the node boot off every Bash call the guard does not read;
-        // Claude Code checks them per subcommand and runs the hook anyway when it cannot
-        // tell — compounds and substitutions still reach the guard. The gh arm is issue #82:
-        // the guard denies `gh pr create` / `gh pr checkout`, so gh calls must reach it too.
-        expect(gitHook.if).toBe('Bash(git *)');
-        expect(ghHook.if).toBe('Bash(gh *)');
-    });
-});
-
 // Issue #509: the CLI's bundled skills (dataviz, loop, schedule, code-review, …) are interactive
 // tools a headless run cannot use, and each one costs the skill listing on every turn. The env
 // switch, not settings.json: the per-thread settings.json persists and only its hooks are re-laid.
@@ -1084,7 +964,7 @@ describe('the claude-executor bundled skills', () => {
  * runs as uid 1000, never writes the file.
  */
 describe('the claude-executor managed settings', () => {
-    it('are baked root-owned, like the git guard', () => {
+    it('are baked root-owned', () => {
         const dockerfile = read('docker/claude-executor/Dockerfile');
         expect(dockerfile).toContain('COPY managed-settings.json /etc/claude-code/managed-settings.json\n');
         expect(dockerfile).not.toMatch(/--chown[^\n]*managed-settings\.json/);
@@ -1099,13 +979,14 @@ describe('the claude-executor managed settings', () => {
     // entrypoint lets a member's `permissions` key replace the baked settings.json's outright.
     // /task is only ever the thread's own task volume (docker.ts, k8s-podspec.ts).
     // Interpreters and env dumps (`python3 *`, `env`, `printenv`) stay with the auto-mode
-    // classifier. Limit: sed's own `e`/`w` commands can run and write, and the git guard reads no
-    // sed script — like any interpreter, sed is outside what the guardrail sees. npm installs are
+    // classifier. Limit: sed's own `e`/`w` commands can run and write. npm installs are
     // allowed outright because the classifier denied a task's own dependency bump despite the
     // "Task Dependency Changes" autoMode rule; that includes registry flags and install scripts.
     it('allow the routine commands a headless run cannot be asked about', () => {
         const settings = JSON.parse(read('docker/claude-executor/managed-settings.json'));
         expect(settings.permissions).toEqual({
+            // Pinned: a session left to the CLI's default mode denies every command outside this allowlist.
+            defaultMode: 'auto',
             additionalDirectories: ['/task', '/tmp'],
             allow: [
                 'Bash(sed -i *)',
@@ -1367,9 +1248,8 @@ describe('the shared executor skills', () => {
 
 /*
  * The PR boundary (issues #82, #573): an agent may open and update a pull request itself — the
- * driver's publish reuses it — but never check one out, which moves HEAD. The enforcement is
- * the two guards above; these pins keep the INSTRUCTIONS from teaching a publication denial or a
- * green-gate precondition.
+ * driver's publish reuses it. These pins keep the INSTRUCTIONS from teaching a publication denial
+ * or a green-gate precondition.
  */
 describe('the executor PR boundary', () => {
     const GITHUB_SKILL = 'docker/skills/github/SKILL.md';
@@ -1417,81 +1297,26 @@ describe('the executor PR boundary', () => {
         expect(text).not.toMatch(/--auto\b/);
     });
 
-    it('the opencode fence denies gh pr checkout and leaves gh pr create to the agent', () => {
+    it('the opencode fence leaves gh pr create and gh pr checkout to the agent', () => {
         const policy = JSON.parse(read('docker/opencode-executor/opencode-home/opencode.json'));
         const bash: Record<string, string> = policy.permission.bash;
-        for (const rule of ['gh pr checkout', 'gh pr checkout *']) {
-            expect(bash[rule]).toBe('deny');
-        }
-        for (const rule of ['gh pr create', 'gh pr create *']) {
+        for (const rule of ['gh pr create', 'gh pr create *', 'gh pr checkout', 'gh pr checkout *']) {
             expect(bash[rule]).not.toBe('deny');
         }
     });
 });
 
-describe('the opencode-executor git guard policy', () => {
-    // opencode takes no hooks for this: the deny lives in the baked permission.bash table,
-    // evaluated with the LAST MATCHING RULE WINNING — so key order is load-bearing. The
-    // catch-all `*` comes first, the deny globs next, and the exact-match allows last (a
-    // trailing-glob allow could full-string-match a compound like `git checkout -- f && git
-    // switch main` and bless a deny-command; an exact allow cannot). Nothing may resolve to
-    // `ask` — headless, an unanswered ask auto-rejects.
+describe('the opencode-executor permission policy', () => {
+    // Git is the agent's: the bash table is the catch-all allow and nothing else, so no git or gh
+    // command is denied. Nothing may resolve to `ask` — headless, an unanswered ask auto-rejects.
     const PATH = 'docker/opencode-executor/opencode-home/opencode.json';
 
-    it('pins the exact bash rule table, in order', () => {
-        const policy = JSON.parse(read(PATH));
-        expect(Object.keys(policy.permission.bash)).toEqual([
-            '*',
-            'git switch',
-            'git switch *',
-            'git checkout',
-            'git checkout *',
-            'git worktree',
-            'git worktree *',
-            'git branch -d*',
-            'git branch -D*',
-            'git branch -m*',
-            'git branch -M*',
-            'git branch -c*',
-            'git branch -C*',
-            'git branch -f*',
-            'git branch --delete*',
-            'git branch --force*',
-            'git branch --move*',
-            'git branch --copy*',
-            'git reset --hard',
-            'git reset --hard *',
-            'git rebase',
-            'git rebase *',
-            'git merge',
-            'git merge *',
-            'gh pr checkout',
-            'gh pr checkout *',
-            'git worktree list',
-            'git rebase --abort',
-            'git rebase --quit',
-            'git rebase --continue',
-            'git merge --abort',
-            'git merge --quit',
-            'git merge --continue',
-            'git merge origin/main',
-            'git merge --no-edit origin/main',
-            'git merge origin/main --no-edit',
-        ]);
+    it('allows every bash command, git and gh included', () => {
+        expect(JSON.parse(read(PATH)).permission.bash).toEqual({ '*': 'allow' });
     });
 
-    it('allows or denies every rule — never ask — and ranks allows after denies', () => {
-        const policy = JSON.parse(read(PATH));
-        const bash: Record<string, string> = policy.permission.bash;
-        const values = Object.values(bash);
-        expect(values.every((v) => v === 'allow' || v === 'deny')).toBe(true);
-        const lastDeny = Object.keys(bash).reduce((acc, key, i) => (bash[key] === 'deny' ? i : acc), -1);
-        const firstAllow = Object.keys(bash).findIndex((key, i) => i > 0 && bash[key] === 'allow');
-        expect(firstAllow).toBeGreaterThan(lastDeny);
-    });
-
-    // The entrypoint patches only permission.external_directory; this pins that the guard
-    // table sits beside the fence keys it must not disturb.
+    // The entrypoint patches only permission.external_directory; this pins the fence keys it must
+    // not disturb.
     it('leaves the rest of the permission block untouched', () => {
         const policy = JSON.parse(read(PATH));
         expect(policy.permission['*']).toBe('allow');
@@ -1500,15 +1325,6 @@ describe('the opencode-executor git guard policy', () => {
         expect(policy.permission.external_directory['*']).toBe('deny');
         expect(policy.permission.bash['*']).toBe('allow');
     });
-
-    // The baked allows name origin/main only; the entrypoint adds the same exact allows for a
-    // repo whose origin/HEAD names another default. The baked policy is root-owned, so they ride
-    // OPENCODE_CONFIG_CONTENT — the inline layer, whose new keys merge in after the baked ones.
-    const MERGE_ALLOWS = (ref: string) => [
-        `git merge ${ref}`,
-        `git merge --no-edit ${ref}`,
-        `git merge ${ref} --no-edit`,
-    ];
 
     /** What the entrypoint hands opencode as OPENCODE_CONFIG_CONTENT; `unset` when it exports none. */
     const runEntrypoint = async (opts: { defaultBranch?: string | null; env?: NodeJS.ProcessEnv }) => {
@@ -1529,38 +1345,11 @@ describe('the opencode-executor git guard policy', () => {
     };
 
     it(
-        'allows merging the origin/HEAD default when it is not main, through the inline config',
+        'adds nothing without a driver-shaped task directory',
         async () => {
-            const inline = JSON.parse(await runEntrypoint({ defaultBranch: 'develop' }));
-            expect(inline).toEqual({
-                permission: { bash: Object.fromEntries(MERGE_ALLOWS('origin/develop').map((r) => [r, 'allow'])) },
-            });
-        },
-        CASE_TIMEOUT_MS
-    );
-
-    it(
-        'allows merging the claim’s base branch over the origin/HEAD default',
-        async () => {
-            const inline = JSON.parse(
-                await runEntrypoint({ defaultBranch: 'main', env: { BASE_BRANCH: 'batch-sandbox' } })
+            expect(await runEntrypoint({ defaultBranch: 'develop', env: { BASE_BRANCH: 'batch-sandbox' } })).toBe(
+                'unset'
             );
-            expect(inline).toEqual({
-                permission: {
-                    bash: Object.fromEntries(MERGE_ALLOWS('origin/batch-sandbox').map((r) => [r, 'allow'])),
-                },
-            });
-        },
-        CASE_TIMEOUT_MS
-    );
-
-    it.each([
-        ['main', 'main'],
-        ['no origin/HEAD', null],
-    ])(
-        'adds nothing when the default is %s',
-        async (_label, defaultBranch) => {
-            expect(await runEntrypoint({ defaultBranch })).toBe('unset');
         },
         CASE_TIMEOUT_MS
     );
@@ -1599,8 +1388,18 @@ describe('the opencode-executor git guard policy', () => {
     ])(
         'passes %s in OPENCODE_CONFIG_CONTENT through unchanged',
         async (_label, content) => {
-            const got = await runEntrypoint({ defaultBranch: 'develop', env: { OPENCODE_CONFIG_CONTENT: content } });
-            expect(got).toBe(content);
+            const sandboxData = mkdtempSync(join(tmpdir(), 'executor-member-'));
+            try {
+                const got = await runEntrypoint({
+                    env: {
+                        XDG_DATA_HOME: join(sandboxData, 'org', 'uuid', '.factory', 'opencode', 'task'),
+                        OPENCODE_CONFIG_CONTENT: content,
+                    },
+                });
+                expect(got).toBe(content);
+            } finally {
+                rmSync(sandboxData, { recursive: true, force: true });
+            }
         },
         CASE_TIMEOUT_MS
     );

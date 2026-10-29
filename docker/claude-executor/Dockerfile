@@ -126,7 +126,7 @@ COPY --chown=node:node claude-home/ /home/node/.claude/
 # otherwise win inside the runner and export every datapoint into the container's own loopback —
 # silently, since the CLI never reports a failed export. It also outranks a member's executor
 # config, so telemetry cannot be switched off or redirected from there. Root-owned and read-only to
-# the agent's uid, like the git guard: nothing in the container writes it. The driver replaces it,
+# the agent's uid, like the baked hooks: nothing in the container writes it. The driver replaces it,
 # root-owned again, with its endpoint rendered in (driver/src/telemetry-config.ts).
 COPY managed-settings.json /etc/claude-code/managed-settings.json
 
@@ -163,28 +163,26 @@ WORKDIR /workspace
 
 COPY entrypoint.sh /usr/local/bin/claude-executor
 # The branch reporter lives in /usr/local/bin, NOT claude-home/: the transcript store moves
-# CLAUDE_CONFIG_DIR off the baked home, so a script there is not a fixed path. The git guard
-# (settings.json's PreToolUse hook) is in the same boat and for the same reason: its hook
-# command names an absolute path.
+# CLAUDE_CONFIG_DIR off the baked home, so a script there is not a fixed path. The settings.json
+# hooks below are in the same boat and for the same reason: each hook command names an absolute path.
 COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
-COPY git-guard.cjs /usr/local/bin/git-guard.cjs
 COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
 # The AskUserQuestion bridge (issue #226): the entrypoint execs it in place of the bare CLI.
 COPY claude-bridge.cjs /usr/local/bin/claude-bridge.cjs
 # The cooperative Stop (issue #442): the mailbox agent copies the task supervisor's Stop into the
 # stop marker, the PostToolUse hook in settings.json reads it. Absolute paths in /usr/local/bin for
-# the same reason as the git guard.
+# the same reason as the branch reporter.
 COPY ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
 COPY stop-hook.cjs /usr/local/bin/stop-hook.cjs
 # The claim's turn context (issue #509): settings.json's UserPromptSubmit hook answers it from
-# FACTORY_TURN_CONTEXT. Absolute path for the same reason as the git guard.
+# FACTORY_TURN_CONTEXT. Absolute path for the same reason as the branch reporter.
 COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
 # wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
 COPY github-credential.cjs /usr/local/bin/github-credential.cjs
 COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
 COPY gh-wrapper.sh /usr/local/bin/gh
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/git-guard.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in
