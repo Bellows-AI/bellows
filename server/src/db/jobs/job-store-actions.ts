@@ -403,6 +403,22 @@ export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Prom
     return sql.begin((tx) => followUpInTx(tx, input));
 }
 
+/**
+ * Whether any member of the thread is not terminal, read under the thread's advisory lock. A missing row or a
+ * non-boolean answer throws: an unconfirmed read is never "idle".
+ */
+async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
+    const [row] = await tx<{ busy: boolean }[]>`
+        select exists (
+            select 1 from job m
+            where m.org_id = ${orgId} and m.root_job_id = ${rootJobId}
+              and m.status not in ${tx([...TERMINAL_STATUSES])}
+        ) as busy
+    `;
+    if (typeof row?.busy !== 'boolean') throw new Error('the thread busy read returned no answer');
+    return row.busy;
+}
+
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [] } = input;
@@ -421,6 +437,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     // advisory lock: lock them in that order (`lockThreadRootInTx`). Without connections: unchanged.
     if (connectionIds.length > 0) await lockThreadRootInTx(tx, orgId, label.root_job_id);
     await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
+    // A busy thread is answered here, before the insert: the refusal read after it is a later snapshot, and a verdict
+    // committing in between would turn not_finished into forbidden.
+    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
@@ -483,7 +502,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
         return { id: rows[0].id };
     }
     // Nothing inserted — one of the preconditions failed, and which one decides the answer
-    // the route turns into a status code. The parent cannot have moved to deleted since the pre-read above —
+    // the route turns into a status code. A busy thread was answered before the insert, so this read runs only on a
+    // thread that was idle under the lock: nothing can move a member out of terminal, or done in or out, so its
+    // answer agrees with the insert's. The parent cannot have moved to deleted since the pre-read above —
     // remove deletes under this same advisory lock — so missing was decided before the lock.
     return threadRefusalOf(tx, orgId, parentId);
 }
@@ -591,14 +612,7 @@ export async function retryInTx(
     // after it is a later snapshot: a verdict committing in between would turn not_finished into forbidden. Answer
     // from this read instead. Under the thread lock no member leaves terminal or appears (follow-up, retry and
     // reopen take it too), so this and the insert's busy predicate agree.
-    const [busy] = await tx<{ busy: boolean }[]>`
-        select exists (
-            select 1 from job m
-            where m.org_id = ${orgId} and m.root_job_id = ${label.root_job_id}
-              and m.status not in ${tx([...TERMINAL_STATUSES])}
-        ) as busy
-    `;
-    if (busy?.busy) return 'not_finished';
+    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
     const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id
