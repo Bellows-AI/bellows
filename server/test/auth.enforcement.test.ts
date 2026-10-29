@@ -284,6 +284,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
+    // Starting and finishing an outbound OAuth connect is a person's act in their own browser session.
+    ['/api/integrations/:provider/authorizations', 'user'],
+    ['/api/integrations/:provider/callback', 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
     // BEL-146: a member reads their org's plan; the commerce service's push has its own credential class,
     // and the anchored pattern gives nothing else under /api/commerce that class.
@@ -354,6 +357,15 @@ describe('the route table', () => {
                 attemptOfLease: async () => ({ ok: false }),
                 pairMatches: async () => ({ ok: false }),
                 integrations: {
+                    flowOf: () => ({
+                        startAuthorization: async () => ({ ok: false as const, reason: 'unknown-provider' as const }),
+                        completeAuthorization: async () => ({
+                            ok: false as const,
+                            returnTo: '/',
+                            failure: 'state-mismatch' as const,
+                        }),
+                        recoverAuthorization: async () => 'idle' as const,
+                    }),
                     resolverOf: () => ({
                         resolveCredential: async () => ({
                             ok: false as const,

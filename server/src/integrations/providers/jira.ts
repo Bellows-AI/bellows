@@ -137,7 +137,7 @@ export function jiraRegistration(cfg: JiraHooksConfig | null) {
     return {
         providers: (provider: string) => (provider === 'jira' ? hooks : undefined),
         clients: (provider: string) =>
-            provider === 'jira' && cfg ? { clientId: cfg.clientId, scopes: jiraScopesFor('read') } : undefined,
+            provider === 'jira' && cfg ? { clientId: cfg.clientId, scopesFor: jiraScopesFor } : undefined,
     };
 }
 

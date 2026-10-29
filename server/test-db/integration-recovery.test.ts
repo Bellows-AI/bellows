@@ -42,7 +42,8 @@ function runtimeOver(
         sql: db.sql,
         secrets,
         providers: (provider) => (provider === 'jira' ? fake.hooks : undefined),
-        clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+        clients: (provider) =>
+            provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
         callbackOrigin: 'https://board.example.test',
         timing,
     });

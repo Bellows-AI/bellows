@@ -14,6 +14,7 @@ import { batchRoutes } from './routes/batches/batches.js';
 import { connectionRoutes, type CloudIdLookup, type DestroyRevokedSecret } from './routes/connections.js';
 import { connectorJiraRoutes } from './routes/connector-jira.js';
 import { connectionCredentialRoutes } from './routes/connection-credential.js';
+import { integrationRoutes } from './routes/integrations.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
@@ -94,7 +95,8 @@ export interface AppDeps {
     pairMatches?: PairMatches | undefined;
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
     integrations?:
-        | (Pick<IntegrationRuntime, 'resolverOf'> & Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret'>>)
+        | (Pick<IntegrationRuntime, 'resolverOf'> &
+              Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>>)
         | undefined;
     githubMint?: GithubMint | undefined;
     /** Replaces the org's installation revoke, like `githubMint` (the lanes' stand-in, the tests' seam). */
@@ -199,6 +201,8 @@ async function registerRunnerCredentialRoutes(
         );
         if (integrations) await app.register(connectionCredentialRoutes({ attemptOfLease, integrations }));
     }
+    // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
+    if (integrations?.flowOf) await app.register(integrationRoutes({ flowOf: integrations.flowOf }));
 }
 
 async function registerCommerce(

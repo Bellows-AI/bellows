@@ -21,6 +21,7 @@ import {
     type AuthorizationFailure,
     type CompleteAuthorizationInput,
     type CompleteAuthorizationResult,
+    type AuthorizationClient,
     type FlowCtx,
     type RecoverAuthorizationResult,
     redirectUriOf,
@@ -119,12 +120,34 @@ async function exchangeCode(
         .catch((): ExchangeResult => ({ ok: false, failure: 'ambiguous' }));
 }
 
-const factsOf = (row: AuthorizationRow, identity: DiscoveredIdentity): StoredFacts => ({
-    account: identity.externalAccountId,
-    resources: identity.resources.map(({ id, label }) => ({ id, label })),
-    authority: { scopes: [...identity.authority.scopes] },
-    interactionId: row.interactionId,
-});
+/** `write` exactly when the token's own scope holds every scope a write consent adds to a read one. */
+function accessOf(client: AuthorizationClient | undefined, granted: readonly string[]): 'read' | 'write' {
+    if (!client) return 'read';
+    const read = new Set(client.scopesFor('read'));
+    const extra = client.scopesFor('write').filter((scope) => !read.has(scope));
+    return extra.length > 0 && extra.every((scope) => granted.includes(scope)) ? 'write' : 'read';
+}
+
+/** The facts a completion keeps: the token's actual scope wins over what discovery listed, and a named site narrows. */
+function factsOf(
+    fc: FlowCtx,
+    row: AuthorizationRow,
+    found: { identity: DiscoveredIdentity; granted: readonly string[] }
+): StoredFacts | null {
+    const { identity, granted } = found;
+    const resources = identity.resources
+        .filter(({ label }) => row.expectedSite === null || label === row.expectedSite)
+        .map(({ id, label }) => ({ id, label }));
+    if (resources.length === 0) return null;
+    return {
+        account: identity.externalAccountId,
+        label: identity.label,
+        resources,
+        authority: { scopes: [...granted] },
+        access: accessOf(fc.clients(row.provider), granted),
+        interactionId: row.interactionId,
+    };
+}
 
 /** The grant row the credentials land on is the lineage's: commit under the claim, and map what it answers. */
 async function commitUnderClaim(
@@ -278,15 +301,7 @@ async function connectExistingGrant(
     const refusal = await commitUnderClaim(fc, held, step.payload);
     if (refusal === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
     if (refusal) return fail(fc, row, refusal);
-    const activated = await activateAuthorization(fc.sql, {
-        orgId: fc.orgId,
-        userId: row.userId,
-        id: row.id,
-        provider: row.provider,
-        facts: step.facts,
-        newGrant: null,
-    });
-    return finishActivation(fc, row, activated);
+    return finishActivation(fc, row, await activateExistingGrant(fc, row, step.facts));
 }
 
 /** A reconnect: the claim is already held, the account must be the same one, then the lineage commit. */
@@ -302,21 +317,19 @@ async function reconnect(
     const refusal = await commitUnderClaim(fc, step.held, step.payload);
     if (refusal === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
     if (refusal) return fail(fc, row, refusal);
-    const done = await completeRow(fc, row, step.facts);
-    return done ? { ok: true, returnTo: row.returnTo, connectionId: row.connectionId! } : fail(fc, row, 'interrupted');
+    // The same activation as a first connect: access follows the new authority and newly seen sites attach.
+    return finishActivation(fc, row, await activateExistingGrant(fc, row, step.facts));
 }
 
-async function completeRow(fc: FlowCtx, row: AuthorizationRow, facts: StoredFacts): Promise<boolean> {
-    const withConnection: StoredFacts = { ...facts, connectionIds: row.connectionId ? [row.connectionId] : [] };
-    const rows = await fc.sql<{ id: string }[]>`
-        update integration_authorization
-        set status = 'completed', completed_at = now(), pkce_verifier = null, result = ${fc.sql.json(withConnection as never)}
-        where id = ${row.id} and status = 'exchanging'
-        returning id
-    `;
-    if (rows.length > 0) fc.log('completed', row.id);
-    return rows.length > 0;
-}
+const activateExistingGrant = (fc: FlowCtx, row: AuthorizationRow, facts: StoredFacts): Promise<ActivationResult> =>
+    activateAuthorization(fc.sql, {
+        orgId: fc.orgId,
+        userId: row.userId,
+        id: row.id,
+        provider: row.provider,
+        facts,
+        newGrant: null,
+    });
 
 async function afterExchange(
     fc: FlowCtx,
@@ -343,7 +356,12 @@ async function afterExchange(
         await release(fc, held);
         return fail(fc, row, 'interrupted');
     }
-    const facts = factsOf(row, identity);
+    const facts = factsOf(fc, row, { identity, granted: tokens.authority?.scopes ?? identity.authority.scopes });
+    if (!facts) {
+        // A named site this account cannot reach: nothing is stored, a held reconnect claim is released.
+        await release(fc, held);
+        return fail(fc, row, 'site-mismatch');
+    }
     const payload: GrantPayload = {
         accessToken: tokens.accessToken,
         accessExpiresAt: tokens.expiresAt,

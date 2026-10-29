@@ -73,7 +73,8 @@ const toView = (row: Row): ConnectionView => ({
     ownership: row.principal_user_id === null ? 'legacy-org' : 'personal',
     principal: row.principal_user_id === null ? null : 'self',
     site: row.site,
-    account: row.external_account_id ?? row.email,
+    // An OAuth row's email column carries the account label; the external id is an opaque provider id.
+    account: row.credential === 'oauth_grant' ? row.email : (row.external_account_id ?? row.email),
     access: row.access,
     status: row.status,
     createdAt: row.created_at.toISOString(),

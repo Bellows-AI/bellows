@@ -79,7 +79,8 @@ function rig(options: RigOptions = {}) {
             secrets: over.secrets ?? secrets,
             lineage,
             providers: (provider) => (provider === 'jira' || provider === 'noclient' ? hooks : undefined),
-            clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+            clients: (provider) =>
+                provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
             callbackOrigin: over.callbackOrigin === undefined ? 'https://board.example.test' : over.callbackOrigin,
             log: (event) => flowEvents.push(event),
         });
@@ -932,7 +933,8 @@ describe.skipIf(!enabled)('complete: review r2, a create paused before or after 
             secrets,
             lineage,
             providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
-            clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+            clients: (provider) =>
+                provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
             callbackOrigin: 'https://board.example.test',
         });
     };

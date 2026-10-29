@@ -14,4 +14,8 @@ describe('ERROR_CODES', () => {
     it('carries the broker’s typed missing-connection answer, which the runner helper reads', () => {
         expect(ERROR_CODES.INTEGRATION_REQUIRED).toBe('INTEGRATION_REQUIRED');
     });
+
+    it('carries the unconfigured-provider refusal the connect button branches on', () => {
+        expect(ERROR_CODES.INTEGRATION_NOT_CONFIGURED).toBe('INTEGRATION_NOT_CONFIGURED');
+    });
 });
