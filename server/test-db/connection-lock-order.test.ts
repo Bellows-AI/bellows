@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bindingsOf, requirementsOf } from '../src/db/connection-bindings.js';
@@ -9,6 +8,15 @@ import { bindConnectionRow } from '../src/db/jobs/job-store-connections.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
+import {
+    DEADLINE_MS,
+    holder,
+    parkedReader,
+    pool,
+    settledWithin,
+    value,
+    waitForLockWait,
+} from './lock-order-harness.js';
 
 /**
  * BEL-59 lock order: thread root row (no key update) -> thread advisory lock -> grant -> connection -> child
@@ -20,7 +28,6 @@ const ORG = testOrg();
 const ALICE = testUser('lo-alice');
 const WORKER = 'worker-lo';
 const LEASE_SECONDS = 60;
-const DEADLINE_MS = 10_000;
 const REPO = 'acme/app';
 const CLAIMER = 'claim-under-test';
 const BINDER = 'bind-under-test';
@@ -33,8 +40,6 @@ let plain: JobStore;
 let connections: ConnectionStore;
 let binderConnections: ConnectionStore;
 let binderJobs: JobStore;
-
-const pool = (name: string) => postgres(process.env.DATABASE_URL!, { max: 3, connection: { application_name: name } });
 
 beforeAll(() => {
     if (!enabled) return;
@@ -76,85 +81,8 @@ const revisionOf = async (id: string): Promise<number> =>
 const projection = async (id: string): Promise<string | null> =>
     (await sql<{ c: string | null }[]>`select jira_connection_id as c from job where id = ${id}`)[0]!.c;
 
-/** A plan reader that parks the first claim until `release()`; `entered` resolves once it is parked. */
-function parkedReader() {
-    let release!: () => void;
-    let enter!: () => void;
-    const gate = new Promise<void>((resolve) => {
-        release = resolve;
-    });
-    const entered = new Promise<void>((resolve) => {
-        enter = resolve;
-    });
-    return {
-        entered,
-        release,
-        readFor: async () => {
-            enter();
-            await gate;
-            return { config: null, services: [], revision: null, error: null };
-        },
-    };
-}
-
 const claimerStore = (readFor: ReturnType<typeof parkedReader>['readFor']): JobStore =>
     createJobStore({ sql: claimPool, orgId: ORG, plan: { readFor } });
-
-/** Resolves once a backend of `application` waits on a lock; one absolute deadline, no polling count. */
-async function waitForLockWait(application: string, deadline: number): Promise<void> {
-    while (Date.now() < deadline) {
-        const [row] = await sql<{ n: string }[]>`
-            select count(*)::text as n from pg_stat_activity
-            where datname = current_database() and application_name = ${application} and wait_event_type = 'Lock'
-        `;
-        if (Number(row!.n) > 0) return;
-        await new Promise((resolve) => setImmediate(resolve));
-    }
-    throw new Error(`no ${application} backend waited on a lock before the deadline`);
-}
-
-/** A transaction held open on `statement` until `release()`. */
-async function holder(statement: (tx: Sql) => Promise<unknown>) {
-    let release!: () => void;
-    const held = new Promise<void>((resolve) => {
-        release = resolve;
-    });
-    let taken!: () => void;
-    const takenP = new Promise<void>((resolve) => {
-        taken = resolve;
-    });
-    const done = sql.begin(async (tx) => {
-        await statement(tx as unknown as Sql);
-        taken();
-        await held;
-    });
-    await takenP;
-    return { release, done };
-}
-
-const settledWithin = async <T extends unknown[]>(
-    work: readonly [...{ [K in keyof T]: Promise<T[K]> }]
-): Promise<{ [K in keyof T]: PromiseSettledResult<T[K]> }> => {
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error('the transactions did not settle before the deadline')), DEADLINE_MS);
-    });
-    try {
-        const results = await Promise.race([Promise.allSettled(work), timeout]);
-        const deadlocks = results.filter(
-            (r) => r.status === 'rejected' && (r.reason as { code?: string }).code === '40P01'
-        );
-        expect(deadlocks).toEqual([]);
-        return results as { [K in keyof T]: PromiseSettledResult<T[K]> };
-    } finally {
-        clearTimeout(timer);
-    }
-};
-
-const value = <T>(result: PromiseSettledResult<T>): T => {
-    if (result.status === 'rejected') throw result.reason;
-    return result.value;
-};
 
 describe.skipIf(!enabled)('connection lock order — database', () => {
     /** Parks the real claim at its plan read, then makes its acquire wait on the root's tuple behind a share lock. */
@@ -163,9 +91,9 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const claim = claimerStore(reader.readFor).claim(WORKER, LEASE_SECONDS) as Promise<Claim | null>;
         await reader.entered;
         await whileParked?.();
-        const share = await holder((tx) => tx`select id from job where id = ${root} for share`);
+        const share = await holder(sql, (tx) => tx`select id from job where id = ${root} for share`);
         reader.release();
-        await waitForLockWait(CLAIMER, Date.now() + DEADLINE_MS);
+        await waitForLockWait(sql, CLAIMER, Date.now() + DEADLINE_MS);
         return { claim, share };
     }
 
@@ -180,7 +108,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
             bindingRevision: await revisionOf(root),
             userId: ALICE.id,
         });
-        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
+        await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         share.release();
         await share.done;
         const [claimed, bound] = await settledWithin([claim, bind]);
@@ -196,7 +124,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         expect(await projection(root)).toBe(mine);
         const { claim, share } = await claimWaitingOnRoot(root);
         const disconnected = binderConnections.disconnect(mine, { userId: ALICE.id, admin: false });
-        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
+        await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         share.release();
         await share.done;
         const [claimed, gone] = await settledWithin([claim, disconnected]);
@@ -207,7 +135,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         expect(binding).toMatchObject({ connectionId: mine, live: false });
     });
 
-    it('T3: a claim of a follow-up records a requirement while a bind on its root waits on the thread lock', async () => {
+    it('T3: a claim of a follow-up skips a thread whose lock is held, records the requirement next poll, and a bind satisfies it', async () => {
         const first = await connect();
         const root = await create({ skills: ['jira'] });
         const running = (await plain.claim(WORKER, LEASE_SECONDS)) as Claim;
@@ -216,29 +144,41 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const second = await connect();
         const followUp = await plain.createFollowUp(root, 'again', ALICE.id);
         if (typeof followUp === 'string') throw new Error(followUp);
-        const advisory = await holder((tx) => tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`);
+        const queuedFollowUp = { status: 'queued', attempts: 0 };
+        const stateOf = async () =>
+            (
+                await sql<{ status: string; attempts: number }[]>`
+                select status, attempts from job where id = ${followUp.id}`
+            )[0];
+        // A held thread lock stands in for a bind's tail: the claim holds the follow-up's row, only TRIES the lock,
+        // and skips the thread, so it records nothing and spends nothing.
+        const advisory = await holder(
+            sql,
+            (tx) => tx`select pg_advisory_xact_lock(hashtextextended(${root}::text, 0))`
+        );
         const reader = parkedReader();
-        const claim = claimerStore(reader.readFor).claim(WORKER, LEASE_SECONDS) as Promise<Claim | null>;
+        const skipped = claimerStore(reader.readFor).claim(WORKER, LEASE_SECONDS) as Promise<Claim | null>;
         await reader.entered;
         reader.release();
-        await waitForLockWait(CLAIMER, Date.now() + DEADLINE_MS);
-        const bind = bindConnectionRow(binderPool, {
+        const [answer] = await settledWithin([skipped]);
+        expect(value(answer)).toBeNull();
+        expect(await requirementsOf(sql, ORG, root)).toEqual([]);
+        expect(await stateOf()).toEqual(queuedFollowUp);
+        advisory.release();
+        await advisory.done;
+
+        expect(await plain.claim(WORKER, LEASE_SECONDS)).toBeNull();
+        expect(await requirementsOf(sql, ORG, root)).not.toEqual([]);
+        expect(await stateOf()).toEqual(queuedFollowUp);
+        const bound = await bindConnectionRow(binderPool, {
             orgId: ORG,
             id: root,
             connectionId: second,
             bindingRevision: await revisionOf(root),
             userId: ALICE.id,
         });
-        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
-        advisory.release();
-        await advisory.done;
-        const [claimed, bound] = await settledWithin([claim, bind]);
-        expect(value(claimed)).toBeNull();
-        expect(value(bound)).toMatchObject({ ok: true });
+        expect(bound).toMatchObject({ ok: true });
         expect(await requirementsOf(sql, ORG, root)).toEqual([]);
-        const [row] = await sql<{ status: string; attempts: number }[]>`
-            select status, attempts from job where id = ${followUp.id}`;
-        expect(row).toEqual({ status: 'queued', attempts: 0 });
     });
 
     it('T4: a follow-up naming connections and the claim of the thread root do not deadlock', async () => {
@@ -251,7 +191,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const fresh = await connect();
         const { claim, share } = await claimWaitingOnRoot(root, () => plain.stop(root, ALICE.id));
         const followUp = binderJobs.createFollowUp(member!.id, 'more', ALICE.id, undefined, [fresh]);
-        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
+        await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         share.release();
         await share.done;
         const [claimed, created] = await settledWithin([claim, followUp]);
@@ -288,7 +228,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
             bindingRevision: await revisionOf(root),
             userId: ALICE.id,
         });
-        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
+        await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         share.release();
         await share.done;
         const [claimed, bound] = await settledWithin([claim, bind]);

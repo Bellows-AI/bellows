@@ -590,6 +590,9 @@ export async function retryInTx(
                   -- A named-profile review is not a task: a retry of it would run as an ordinary
                   -- job with the author's full env and token, in the reviewer's worktree (#549).
                   and review_of is null
+                  -- A running or queued member answers not_finished: locking it here would wait on a row
+                  -- a claim or a verdict holds while that one waits on the lock above (BEL-157).
+                  and status in ${tx([...TERMINAL_STATUSES])}
                 for update
             ),
             head as (
