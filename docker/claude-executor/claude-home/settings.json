@@ -1,25 +1,6 @@
 {
     "$schema": "https://json.schemastore.org/claude-code-settings.json",
     "hooks": {
-        "PreToolUse": [
-            {
-                "matcher": "Bash",
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": "node /usr/local/bin/git-guard.cjs",
-                        "timeout": 10,
-                        "if": "Bash(git *)"
-                    },
-                    {
-                        "type": "command",
-                        "command": "node /usr/local/bin/git-guard.cjs",
-                        "timeout": 10,
-                        "if": "Bash(gh *)"
-                    }
-                ]
-            }
-        ],
         "PostToolUse": [
             {
                 "hooks": [

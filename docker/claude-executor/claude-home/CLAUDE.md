@@ -85,7 +85,7 @@ every part is allowed, so run each part once on its own, unwrapped: `npm install
 non-destructive equivalent — `git restore`, `git merge --no-ff`, `trash` — or ask.
 
 **Write a multi-line commit message in one command.** `git commit -F - <<'EOF'` … `EOF`, or a
-quoted multi-line `git commit -m "…"`, both pass the git guard; a temp message file is not needed.
+quoted multi-line `git commit -m "…"`, both work; a temp message file is not needed.
 
 **Check auth once, before a batch, not per call.** One probe up front, then re-authenticate, before
 firing the rest.

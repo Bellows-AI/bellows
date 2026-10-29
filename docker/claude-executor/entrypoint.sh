@@ -31,7 +31,7 @@ export WORKDIR
 # The transcript store (issue #55): when the driver hands us a transcript directory, the CLI's
 # config dir moves to it — on the task volume, so transcripts survive this container and a
 # follow-up's --resume finds the thread's earlier sessions in the same directory. The seed below
-# and the patches read CLAUDE_CONFIG_DIR dynamically, so the baked guard and settings ride along
+# and the patches read CLAUDE_CONFIG_DIR dynamically, so the baked hooks and settings ride along
 # unchanged.
 if [ -n "${FACTORY_TRANSCRIPT_DIR:-}" ]; then
     mkdir -p "$FACTORY_TRANSCRIPT_DIR"
@@ -62,10 +62,10 @@ done
 rmdir "$CLAUDE_CONFIG_DIR/skills" 2>/dev/null || true
 
 # The seed above runs once, but the directory outlives the container and the agent can edit its
-# settings.json — stripping the git guard hook there would disarm it for every later run of the
-# thread. So the baked `hooks` block (the fence, and the file's only content) is laid over the
-# persisted file on EVERY start; every other key is left as the thread wrote it. A settings.json
-# that no longer parses is replaced by the baked copy: the guard outranks the unreadable state.
+# settings.json — stripping a baked hook there would disarm it for every later run of the
+# thread. So the baked `hooks` block (the fence) is laid over the persisted file on EVERY start;
+# every other key is left as the thread wrote it. A settings.json that no longer parses is replaced
+# by the baked copy: the baked hooks outrank the unreadable state.
 if [ -f /opt/claude-home/settings.json ] && [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then
     SETTINGS="$CLAUDE_CONFIG_DIR/settings.json" node -e "
         const fs = require('fs');
@@ -145,7 +145,7 @@ fi
 # replacing it outright. Telemetry is not in this file at all: it lives in managed settings, which
 # outrank user settings, so a member cannot disable it or turn on prompt/response/tool-detail
 # logging from here. `hooks`, `enabledPlugins` and `extraKnownMarketplaces` are the
-# runner's fence — the git guard hook, and no plugin the image does not bake — the board
+# runner's fence — the baked hooks, and no plugin the image does not bake — the board
 # already strips them before this env var is set; stripped again here in case a value ever
 # arrives some other way.
 if [ -n "${CLAUDE_CODE_CONFIG_CONTENT:-}" ]; then

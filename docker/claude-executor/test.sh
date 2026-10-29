@@ -115,18 +115,18 @@ check 'the seeded volume carries no copy of the baked skills' 'ok' docker run --
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; test ! -e "$CLAUDE_CONFIG_DIR"/skills/backend-fix && ls /etc/claude-code/.claude/skills | grep -q backend-fix && echo ok'
 check 'seeding is idempotent' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; echo marker > "$CLAUDE_CONFIG_DIR"/keep; claude-executor -p seed >/dev/null 2>&1; [ -f "$CLAUDE_CONFIG_DIR"/keep ] && echo ok'
-# The seed runs once; the hooks block (the guard) is re-laid on every start, so an agent that emptied
-# it in the thread's settings.json cannot disarm the guard for later runs, while an unrelated key
+# The seed runs once; the hooks block is re-laid on every start, so an agent that emptied it in the
+# thread's settings.json cannot disarm the baked hooks for later runs, while an unrelated key
 # the thread wrote survives. An unparseable file is replaced by the baked copy.
 check 'a stripped hooks block is restored, other keys kept' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1
         echo "{\"hooks\":{},\"model\":\"keep-me\"}" > "$CLAUDE_CONFIG_DIR"/settings.json
         claude-executor -p seed >/dev/null 2>&1
-        grep -q git-guard.cjs "$CLAUDE_CONFIG_DIR"/settings.json && grep -q keep-me "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
+        grep -q stop-hook.cjs "$CLAUDE_CONFIG_DIR"/settings.json && grep -q keep-me "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
 check 'an unparseable settings.json is replaced by the baked copy' 'ok' docker run --rm -v "$VOL:/cfg" -e CLAUDE_CONFIG_DIR=/cfg \
     --entrypoint sh "$IMAGE" -c 'echo "{broken" > "$CLAUDE_CONFIG_DIR"/settings.json
         claude-executor -p seed >/dev/null 2>&1
-        grep -q git-guard.cjs "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
+        grep -q stop-hook.cjs "$CLAUDE_CONFIG_DIR"/settings.json && echo ok'
 rm -rf "$VOL"
 
 # A bind mount carries the host uid, so without safe.directory git refuses the repository outright.
@@ -138,22 +138,6 @@ GITMNT="$(mktemp -d)"
 git -C "$GITMNT" init -q
 check 'git reads the mount' 'true' docker run --rm -v "$GITMNT:/workspace" --entrypoint sh "$IMAGE" -c 'claude-executor -p seed >/dev/null 2>&1; git rev-parse --is-inside-work-tree'
 rm -rf "$GITMNT"
-
-# The git guard: the PreToolUse hook that keeps the task worktree's checkout on its branch
-# (issue #73). Its case table lives in the script and is pinned offline by vitest too — here it
-# must hold in the BAKED copy, speak the real stdin/stdout hook protocol, and be wired in the
-# baked settings.json.
-check 'the guard script is executable' 'ok' run --entrypoint sh "$IMAGE" -c 'test -x /usr/local/bin/git-guard.cjs && echo ok'
-check 'the guard case table holds in the image' 'GUARD-TABLE-OK' \
-    run --entrypoint node "$IMAGE" /usr/local/bin/git-guard.cjs --selftest
-check 'the guard denies over the hook protocol' '"permissionDecision":"deny"' \
-    run --entrypoint sh "$IMAGE" -c \
-    'node -e "process.stdout.write(JSON.stringify({tool_name:\"Bash\",tool_input:{command:\"git switch main\"}}))" | node /usr/local/bin/git-guard.cjs'
-check 'the guard allows merging origin tracking refs' '' \
-    run --entrypoint sh "$IMAGE" -c \
-    'node -e "process.stdout.write(JSON.stringify({tool_name:\"Bash\",tool_input:{command:\"git merge --no-edit origin/main\"}}))" | node /usr/local/bin/git-guard.cjs'
-check 'settings.json wires the guard hook' 'git-guard.cjs' \
-    run --entrypoint cat "$IMAGE" /home/node/.claude/settings.json
 
 # The login refusal is an assertion in its own right, and the only one that proves no credential
 # was baked into the image. It runs whether or not a token is available, with the token withheld.
