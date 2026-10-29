@@ -98,7 +98,7 @@ export function createServerMetrics(deps: ServerMetricsDeps): ServerMetrics {
     );
     const lockWait = registry.histogram(
         'factory_claim_lock_wait_seconds',
-        'The claim acquisition taking its row lock and thread-root advisory lock, round trips included.',
+        'The claim acquisition taking its row lock and trying its thread-root advisory lock, round trips included.',
         [],
         DB_BUCKETS
     );

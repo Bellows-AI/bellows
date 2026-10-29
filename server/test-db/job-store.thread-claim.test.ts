@@ -145,51 +145,35 @@ describe.skipIf(!enabled)('thread-serialized claims', () => {
     // The exclusion reads other rows without locking them, so under READ COMMITTED it cannot see
     // a same-thread claim that is mid-commit: two claims can both pass it and both walk out with
     // rows of one thread — two runners into one root-keyed worktree. The claim must therefore
-    // take the thread root's lock BEFORE deciding, and this holds that lock from the outside, on
-    // a connection of its own, with the exact key derivation job-store.ts uses (copied, like the
-    // driver copies its board-side patterns — the suites share no helper for it).
-    it('waits for a held thread-root lock instead of claiming through it', async () => {
+    // take the thread root's lock BEFORE deciding, and never claim through one it cannot take. It
+    // only TRIES the lock (it holds the candidate's row, and every thread-wide writer takes the
+    // lock first and then waits on a row — BEL-157), so a held lock skips the thread for this
+    // poll. This holds that lock from the outside, on a connection of its own, with the exact key
+    // derivation job-store.ts uses (copied, like the driver copies its board-side patterns — the
+    // suites share no helper for it).
+    it('never claims through a held thread-root lock, and takes the thread once it is free', async () => {
         const root = await craft({});
-        await craft({ parent: root });
+        const followUp = await craft({ parent: root });
 
         const blocker = postgres(db.url!, { max: 1 });
         try {
             await blocker`select pg_advisory_lock(hashtextextended(${root}::text, 0))`;
 
-            let settled = false;
-            const pending = store.claim('w1', LEASE_SECONDS).then(
-                (claim) => {
-                    settled = true;
-                    return claim;
-                },
-                (error) => {
-                    settled = true;
-                    throw error;
-                }
-            );
-
-            // The claim needs a few round trips to reach the lock, and the wait must be
-            // observable rather than a sleeping guess: once the claim is parked on an advisory
-            // wait (visible in pg_stat_activity — both connections are the same role), the
-            // window is real on both sides. Pre-fix the claim never parks and settles here.
-            const POLL_ATTEMPTS = 200;
-            for (let waited = 0; waited < POLL_ATTEMPTS && !settled; waited += 1) {
-                const [row] = await blocker<{ n: number }[]>`
-                    select count(*)::int as n from pg_stat_activity
-                    where wait_event_type = 'Lock' and wait_event = 'advisory'
-                `;
-                if ((row?.n ?? 0) > 0) break;
-                await new Promise((resolve) => setTimeout(resolve, 10));
-            }
-
-            expect(settled, 'claim settled while the thread root was locked').toBe(false);
+            expect(await store.claim('w1', LEASE_SECONDS)).toBeNull();
+            const held = await sql<{ id: string; status: string; attempts: number }[]>`
+                select id, status, attempts from job where root_job_id = ${root} order by created_at, id`;
+            expect(held.map((row) => [row.status, row.attempts])).toEqual([
+                ['queued', 0],
+                ['queued', 0],
+            ]);
 
             await blocker`select pg_advisory_unlock(hashtextextended(${root}::text, 0))`;
 
-            // Released, the claim goes through — and hands out the ROOT itself (queued,
+            // Released, the next claim goes through — and hands out the ROOT itself (queued,
             // reclaimable), never the follow-up that would share its worktree.
-            const claim = await pending;
+            const claim = await store.claim('w1', LEASE_SECONDS);
             expect(claim).toMatchObject({ id: root, rootJobId: root });
+            expect(claim?.id).not.toBe(followUp);
         } finally {
             // A session-level advisory lock dies with its connection: nothing leaks past this
             // test into the truncation-shared table.

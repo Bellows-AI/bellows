@@ -176,8 +176,9 @@ export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId
 
 /**
  * Global lock order for everything BEL-59 adds: thread root row (`for no key update`, ascending ids when several)
- * -> that thread's advisory lock -> `integration_grant` row -> `connector_connection` row -> child inserts. It is
- * the claim's order (candidate row, then advisory). `no key` so the child inserts' FK checks (KEY SHARE on the
+ * -> that thread's advisory lock -> `integration_grant` row -> `connector_connection` row -> child inserts. The
+ * claim holds its candidate row and only TRIES the advisory lock (a busy thread is skipped, never waited on), so it
+ * can neither invert this order nor be part of a cycle. `no key` so the child inserts' FK checks (KEY SHARE on the
  * root) of a claim on another member of the thread never wait on it. Returns false when the root is gone.
  */
 export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: string): Promise<boolean> {
@@ -190,8 +191,8 @@ export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: strin
 }
 
 /**
- * The per-thread advisory lock the claim, follow-up, remove and done take; re-entrant within a transaction.
- * Alone it is only for a transaction that already holds (or must never take) the root row: the claim's acquire.
+ * The per-thread advisory lock the follow-up, remove and done take (the claim only tries it); re-entrant within a
+ * transaction. Alone it is only for a transaction that already holds (or must never take) the root row.
  */
 export async function lockThreadInTx(db: Db, rootJobId: string): Promise<void> {
     await db`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
@@ -241,8 +242,8 @@ export type AddBindingsResult =
  */
 export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<AddBindingsResult> {
     const { orgId, rootJobId, expectedRevision, connectionIds, actor, source } = input;
-    // The root row first, then the advisory lock: the claim's acquire holds its candidate row and then takes the
-    // advisory lock, so the opposite order here is a deadlock (see `lockThreadRootInTx`).
+    // The root row first, then the advisory lock (see `lockThreadRootInTx`); the claim's acquire holds its candidate
+    // row and only tries the advisory lock, so it never waits on a bind.
     if (!(await lockThreadRootInTx(db, orgId, rootJobId))) return { ok: false, reason: 'not-found' };
     const [root] = await db<{ execution_user_id: string | null; binding_revision: number }[]>`
         select execution_user_id, binding_revision from job

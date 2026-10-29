@@ -331,18 +331,41 @@ async function slotsFor(
 }
 
 /**
- * The claim's short half: one transaction that takes the candidate's row lock, then its thread
- * root's advisory lock — the order a verdict takes them, so the two never deadlock — and claims it
- * only if nothing moved since the reservation: the whole claimability predicate re-asserted under
- * the locks, and `claim_seq` unchanged, so a claim that committed while this one prepared (its
- * reservation lapsed, say) is never overwritten with a stale plan read. The lease starts at this
- * acquisition (`clock_timestamp()`), after any lock wait, never at a transaction's start.
+ * Try, never wait: the acquire holds the candidate's row, and every thread-wide writer takes this lock FIRST and then
+ * waits on a member row (BEL-157, BEL-81). Busy is not an answer about the row, so the reservation's deferral goes
+ * back and the poll moves on; the next one retries. Only an explicit boolean is an answer.
+ */
+async function tryThreadLock(tx: TransactionSql, orgId: string, reserved: ReservedCandidate): Promise<boolean> {
+    const [lock] = await tx<{ locked: boolean }[]>`
+        select pg_try_advisory_xact_lock(hashtextextended(${reserved.root_job_id}::text, 0)) as locked
+    `;
+    if (typeof lock?.locked !== 'boolean') throw new Error('thread lock probe answered nothing');
+    if (lock.locked) return true;
+    await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
+             where org_id = ${orgId} and id = ${reserved.id}`;
+    return false;
+}
+
+/**
+ * The claim's short half: one transaction that takes the candidate's row lock, then TRIES its thread
+ * root's advisory lock — and claims the row only if nothing moved since the reservation: the whole
+ * claimability predicate re-asserted under the locks, and `claim_seq` unchanged, so a claim that
+ * committed while this one prepared (its reservation lapsed, say) is never overwritten with a stale
+ * plan read. The lease starts at this acquisition (`clock_timestamp()`), after any row lock wait,
+ * never at a transaction's start.
  *
- * The root lock is the serialization point. Deliberately not `for update` on the root ROW: that row
- * is the one a running thread heartbeats and completes against, and a claim parked on it would stall
- * those writes for as long as its env resolution takes. An advisory xact lock queues claims against
- * each other and nothing else, is keyed per root so different threads never block each other, and
- * claims of one thread therefore fully serialize: the re-check sees every earlier claim committed.
+ * The root lock is the serialization point, and the claim never WAITS for it while it holds a row:
+ * a thread-wide writer (retry, follow-up, remove, merge close, done) takes it first and then waits
+ * on a member row, so a claim that held that row and queued for the lock would be one half of a
+ * deadlock. A busy lock answers REFUSED with the reservation's deferral restored: this poll skips the
+ * thread, the next one retries with its place kept, and other threads are claimed meanwhile. Claims
+ * of one thread still fully serialize: the re-check sees every earlier claim committed, because the
+ * lock is held to the end of this transaction.
+ *
+ * Deliberately not `for update` on the root ROW: that row is the one a running thread heartbeats and
+ * completes against, and a claim parked on it would stall those writes for as long as its env
+ * resolution takes. An advisory xact lock queues claims against each other and nothing else, and is
+ * keyed per root so different threads never block each other.
  *
  * The rest of the claim — env and executor resolution, the workflow snapshot, the evidence stamp —
  * resolves on this transaction, so a throw rolls the half-claim back: the row is never `running`
@@ -372,7 +395,7 @@ async function acquireCandidate(
         `;
         // Gone: no row is left to carry a deferral.
         if (!locked) return NEXT_CANDIDATE;
-        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+        if (!(await tryThreadLock(tx, orgId, reserved))) return REFUSED;
         probe.locked();
         // A required integration with no live binding is a requirement, not a claim: checked under the
         // locks and before any admission slot is taken, restoring the reservation's deferral.
@@ -630,7 +653,7 @@ export async function claimJob(
      * the candidate's backoff; the acquisition decides under the row and root locks, against the
      * `claim_seq` the reservation read, so two racing claims of one thread cannot both walk out —
      * the exclusion reads OTHER rows without locking them, and only the root lock makes it see a
-     * same-thread claim that committed while this one waited.
+     * same-thread claim that committed while this one prepared.
      */
     return claimNextCandidate(ctx, worker, leaseSeconds, {
         refusal: options.refusal ?? { global: false },
