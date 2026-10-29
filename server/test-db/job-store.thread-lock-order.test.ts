@@ -291,9 +291,7 @@ describe.skipIf(!enabled)('claim vs thread writers', () => {
     // The insert's snapshot is taken at its statement start, the refusal read is a later statement: a verdict that
     // commits between them must not turn the answer into 'forbidden'. A statement trigger, armed for the writer's
     // backend only, parks the insert after its snapshot until the test lets go.
-    it('L10: retry of a running task whose verdict commits after the insert read still answers not_finished', async () => {
-        const root = await queued();
-        const lease = await mustClaim();
+    async function retryWithVerdictAfterInsertRead(retried: string, verdictOf: () => Promise<unknown>) {
         await sql.unsafe(`
             create function tlo_gate() returns trigger language plpgsql as $$
             begin
@@ -306,7 +304,7 @@ describe.skipIf(!enabled)('claim vs thread writers', () => {
         await sql`create trigger tlo_gate before insert on job for each statement execute function tlo_gate()`;
         try {
             const gate = await holder(sql, (tx) => tx`select pg_advisory_xact_lock(${GATE_KEY}::bigint)`);
-            const retry = writer.createRetry(root, ALICE.id);
+            const retry = writer.createRetry(retried, ALICE.id);
             await Promise.race([
                 retry.then(
                     () => undefined,
@@ -314,14 +312,32 @@ describe.skipIf(!enabled)('claim vs thread writers', () => {
                 ),
                 waitForLockWait(sql, WRITER, Date.now() + DEADLINE_MS),
             ]);
-            await plain.complete(root, lease.leaseToken, succeeded);
+            await verdictOf();
             gate.release();
             await gate.done;
-            expect(await retry).toBe('not_finished');
+            return await retry;
         } finally {
             await sql`drop trigger tlo_gate on job`;
             await sql`drop function tlo_gate()`;
         }
+    }
+
+    it('L10: retry of a running task whose verdict commits after the insert read still answers not_finished', async () => {
+        const root = await queued();
+        const lease = await mustClaim();
+        expect(
+            await retryWithVerdictAfterInsertRead(root, () => plain.complete(root, lease.leaseToken, succeeded))
+        ).toBe('not_finished');
+    });
+
+    it('L10b: retry of a terminal root whose running follow-up commits its verdict after the insert read answers not_finished', async () => {
+        const root = await terminalRoot();
+        const followUp = await followUpOf(root);
+        const lease = await mustClaim();
+        expect(lease.id).toBe(followUp);
+        expect(
+            await retryWithVerdictAfterInsertRead(root, () => plain.complete(followUp, lease.leaseToken, succeeded))
+        ).toBe('not_finished');
     });
 });
 
