@@ -30,6 +30,8 @@ describe('readSkillCatalog', () => {
         expect(Object.keys(byName).sort()).toEqual(['backend-fix', 'gates', 'github', 'jira', 'pr-land', 'review']);
         expect(byName['pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
         expect(byName.jira?.requires).toEqual({ tools: ['curl'], connections: ['jira'] });
+        // The gates skill calls the image's factory-gate wrapper, not curl.
+        expect(byName.gates?.requires).toEqual({ tools: [], connections: [] });
         expect(skillCatalog()).toEqual(readSkillCatalog());
     });
 
