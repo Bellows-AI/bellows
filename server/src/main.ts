@@ -5,7 +5,6 @@ import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
 import { resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
-import { createConnectionOfLease } from './db/connection-store.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
 import { createOperationReceipts } from './db/operation-receipts.js';
@@ -209,7 +208,6 @@ export async function start(options: StartOptions = {}): Promise<void> {
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
-        connectionOfLease: createConnectionOfLease({ sql, ready }),
         ...runnerCredentialDeps({ sql, ready }, options, config.integrations.jira),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,

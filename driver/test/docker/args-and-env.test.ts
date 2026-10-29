@@ -330,23 +330,18 @@ describe("the board's environment", () => {
         expect(claimEnv({ ...job, env: { BELLOWS_RESUME_MAY_BE_UNWRITTEN: '1' } })).toEqual({});
     });
 
-    // A Jira credential is a managed connection the board spends (docs/connections.md): even a
-    // stale or hand-planted claim value never reaches the runner's env file, so a runner holds the
-    // attempt pair and nothing that authenticates to Atlassian. Pinned beside the k8s Secret case.
-    it('never writes a Jira credential to the env file, only the attempt pair', () => {
-        const withJira: BoardJob = {
-            ...envJob,
-            env: {
-                MY_TOKEN: 'board-secret',
-                ATLASSIAN_SITE: 'https://example.atlassian.net',
-                ATLASSIAN_EMAIL: 'agent@example.com',
-                ATLASSIAN_API_TOKEN: 'atlassian-secret',
-            },
-        };
-        const body = envFileBody(withJira, loadDriverConfig({}));
+    // Jira is a managed connection the board spends through its broker (docs/connections.md): the env file holds the
+    // attempt pair and no Atlassian credential of the board's making, and no JIRA_API. A name a member chose is theirs.
+    it('writes the attempt pair and no Jira credential or JIRA_API of the board', () => {
+        const body = envFileBody({ ...envJob, env: { MY_TOKEN: 'board-secret' } }, loadDriverConfig({}));
         expect(body).not.toContain('ATLASSIAN');
-        expect(body).not.toContain('atlassian-secret');
+        expect(body).not.toContain('JIRA_API');
         expect(body).toContain('RUNNER_LEASE_TOKEN=');
+    });
+
+    it('forwards ATLASSIAN_API_TOKEN like any other member variable: the name is not reserved', () => {
+        const body = envFileBody({ ...envJob, env: { ATLASSIAN_API_TOKEN: 'member-value' } }, loadDriverConfig({}));
+        expect(body).toContain('ATLASSIAN_API_TOKEN=member-value');
     });
 
     it('writes one NAME=value line per variable, reserved names dropped', () => {

@@ -15,7 +15,7 @@ import { createOrgRegistry } from '../src/orgs.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { createFakeOAuth } from '../test/integrations-fake-provider.js';
 import { githubAuth, testConfig } from '../test/helpers-config.js';
-import { expireLease, testOrg, testUser } from './fixtures.js';
+import { expireLease, legacyConnection, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { attachJira, bindConnections, lineageHarness, seedGrantSecret, spied } from './integration-store-faults.js';
 
@@ -190,15 +190,11 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
 
     it('refuses an org-owned (legacy) connection in a worker', async () => {
         const r = await rig();
-        const orgWide = await createConnectionStore({ sql: r.sql, orgId: ORG }).create({
-            ownerUserId: null,
-            site: 'example.atlassian.net',
-            cloudId: `cloud-${randomUUID()}`,
-            email: `a-${randomUUID()}@example.com`,
-            apiToken: 'legacy-secret-token',
-            access: 'read',
-        });
-        await bindConnections(r.sql, { orgId: ORG, rootJobId: r.rootId, userId: ALICE.id }, [orgWide.id]);
+        const orgWide = { id: await legacyConnection(r.sql, ORG, null) };
+        // The bind itself refuses a legacy row; the broker must refuse it too, bound or not.
+        await bindConnections(r.sql, { orgId: ORG, rootJobId: r.rootId, userId: ALICE.id }, [orgWide.id]).catch(
+            () => {}
+        );
         const res = await r.askAs({ id: r.claim.id, leaseToken: r.claim.leaseToken }, orgWide.id);
         expect([HTTP_FORBIDDEN, HTTP_CONFLICT]).toContain(res.statusCode);
         expect(res.json().outcome).toBeDefined();
@@ -257,7 +253,6 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
             if (how === 'deleted') {
                 await createConnectionStore({ sql: r.sql, orgId: ORG }).disconnect(r.connectionId, {
                     userId: ALICE.id,
-                    admin: false,
                 });
             } else {
                 await r.sql`delete from job_connection_binding where root_job_id = ${r.rootId}`;
@@ -382,14 +377,7 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
     it("does not list a legacy API-token binding, nor another root's", async () => {
         const r = await rig();
         const other = await rig({ user: BOB });
-        const legacy = await createConnectionStore({ sql: r.sql, orgId: ORG }).create({
-            ownerUserId: ALICE.id,
-            site: 'example.atlassian.net',
-            cloudId: `cloud-${randomUUID()}`,
-            email: `a-${randomUUID()}@example.com`,
-            apiToken: 'legacy-secret-token',
-            access: 'read',
-        });
+        const legacy = { id: await legacyConnection(r.sql, ORG, ALICE.id) };
         await bindConnections(r.sql, { orgId: ORG, rootJobId: r.rootId, userId: ALICE.id }, [legacy.id]).catch(
             () => {}
         );

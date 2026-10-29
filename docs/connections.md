@@ -5,17 +5,16 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 | Concern | Code | Test |
 | --- | --- | --- |
-| The table, the proxy's per-call SQL check over the thread's `job_connection_binding` rows | `server/migrations/054_connections.sql`, `server/migrations/094_integration_connections.sql`, `server/src/db/connection-store.ts` (`createConnectionOfLease`) | `server/test-db/connection-store.test.ts` |
-| Create, list (the generic view), disconnect; who may own an org-wide one; site and credential shape | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
+| The table and the member's own OAuth rows: list, candidates, disconnect | `server/migrations/054_connections.sql`, `server/migrations/094_integration_connections.sql`, `server/src/db/connection-store.ts` | `server/test-db/connection-store.test.ts` |
+| List (the generic view) and disconnect; a connection is made only by the authorization flow | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
 | Task selection: `connections` on `POST /api/jobs` and `/:id/follow-up`, the owner's `POST /api/jobs/:id/connections` | `server/src/routes/connections.ts` (`parseConnectionIds`), `server/src/db/connection-bindings.ts`, `server/src/db/jobs/job-store-actions.ts` | `server/test/routes.jobs-connections.test.ts`, `server/test-db/job-store.connection-bindings.test.ts` |
 | The settings panels (Organization: legacy shared rows; Workspace: the caller's own) | `web/src/panels/JiraConnectionsPanel.tsx`, `JiraConnectionsSection.tsx`, `web/src/components/JiraConnectionDialog.tsx`, `web/src/api/connections.ts` | `web/test/jira-connections-panel.render.test.tsx`, `web/test/jira-connections.dom.test.tsx`, `e2e/jira-connections.spec.ts` |
 | CLI: `connection list`, `job create --connection`, `job preflight` | `cli/src/run.ts`, `cli/src/selection.ts`, `cli/src/diagnostics.ts`, `cli/src/board.ts` | `cli/test/discovery.test.ts`, `cli/test/diagnostics.test.ts` |
-| The Jira proxy | `server/src/routes/connector-jira.ts` | `server/test/routes.connector-jira.test.ts` |
+| Legacy API-token connections end: 100 disconnects the rows, scrubs the tokens, nulls the legacy `job.jira_connection_id` and leaves each queued task an open requirement; nothing lists, binds or serves one | `server/migrations/100_legacy_jira_tokens.sql`, `server/src/db/connection-bindings.ts` | `server/test-db/migration.100-legacy-jira-tokens.test.ts`, `server/test-db/job-store.connection-bindings.test.ts` |
 | The credential class: the attempt pair in every `AUTH_MODE`, nothing else | `server/src/auth/plugin.ts` (`CONNECTOR_ROUTES`) | `server/test/auth.enforcement.test.ts` |
 | Runner side: no Jira variable; both entrypoints drop a `JIRA_API` the claim env carried | `docker/claude-executor/entrypoint.sh`, `docker/opencode-executor/entrypoint.sh` | `driver/test/executor-images.test.ts` |
 | The agent's skill and its helper (issue, search, comments, add-comment through the broker's `connectionCredential`; a durable receipt and a property-only reconcile for add-comment; requests resolved against the API origin only) | `docker/skills/jira/SKILL.md`, `docker/skills/jira/jira.cjs` | `driver/test/jira-helper.test.ts`, `server/test/jira-helper-parity.test.ts`, `driver/test/executor-images.test.ts`, `driver/test/skill-helper-paths.test.ts` |
 | Docker and Kubernetes carry no Jira credential, only the pair and the board URL | `driver/src/claim.ts`, `driver/src/k8s/k8s-podspec.ts` | `driver/test/docker/`, `driver/test/k8s/` |
-| `ATLASSIAN_*` reserved env names | `core/src/env.ts`, `driver/src/claim.ts` | `server/test/routes.env.test.ts` |
 | GitHub: `POST /api/jobs/:id/credentials/github` (attempt pair only, `no-store`) | `server/src/routes/github-credential.ts`, `server/src/db/attempt-of-lease.ts` | `server/test/routes.github-credential.test.ts`, `server/test-db/github-credential.test.ts` |
 | Managed-connection broker: `POST /api/jobs/:id/credentials/connections/:connectionId` (attempt pair only, `no-store`; closed outcomes, `409 INTEGRATION_REQUIRED`; the token is rechecked against the lease before it leaves) | `server/src/routes/connection-credential.ts`, `server/src/db/attempt-of-lease.ts` (the shared lease check, keyed on the root's execution user), `server/src/integrations/integration-recovery.ts` (`resolverOf`) | `server/test-db/connection-credential.test.ts`, `server/test/routes.connection-credential.test.ts` |
 | Runner seam: `GET /api/jobs/:id/credentials/connections` (the root's live OAuth bindings with `apiBase`, never a credential or an account; re-read on every helper call) and the operation receipt, `POST /api/jobs/:id/operations` / `PUT /api/jobs/:id/operations/:receiptId` (attempt pair only; begin needs the live attempt and a live binding, a move needs only the pair) | `server/src/routes/connection-credential.ts`, `server/src/routes/operation-receipts.ts`, `server/src/db/operation-receipts.ts`, `server/migrations/099_operation_receipts.sql` | `server/test/routes.operation-receipts.test.ts`, `server/test-db/operation-receipts.test.ts`, `server/test-db/connection-credential.test.ts`, `server/test-db/migration.099-operation-receipts.test.ts` |
@@ -37,26 +36,26 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 ## Invariants
 
-- **The Jira credential never leaves the board.** The runner holds the attempt pair; the proxy adds the
-  connection's Basic auth, and revocation is a `DELETE` (a soft disconnect) the next call sees. `server/test/routes.connector-jira.test.ts`.
-- **Every call re-checks the live attempt**, with no tail grace: job unfinished, lease unexpired, no stop
-  requested, not a reviewer row. The thread's one live jira binding must still match its connection's account,
-  and the root's execution user must still be a member (and the owner of a personal one); two live bindings
-  refuse `ambiguous`, and nothing in the request names a connection. `server/test-db/connection-store.test.ts`.
+- **A runner never holds a Jira refresh secret or a stored credential.** It holds the attempt pair and asks the broker
+  for an access token per call; revocation is a `DELETE` (a soft disconnect) the next ask sees.
+  `server/test-db/connection-credential.test.ts`.
+- **Every ask re-checks the live attempt**, with no tail grace: job unfinished, lease unexpired, no stop requested, not
+  a reviewer row, and the root's execution user still a member. `server/test-db/connection-credential.test.ts`.
 - **Selection is the root task's bindings, stamped at create**; follow-ups, retries and workflow nodes read the
-  root's. A personal connection binds by default only when it is the lone candidate; a legacy org one binds only
-  when named. A provider a selected skill requires with no live binding is an open requirement: the claim never
+  root's. A personal connection binds by default only when it is the lone candidate. A provider a selected skill requires with no live binding is an open requirement: the claim never
   offers the queued root and spends no attempt. `server/test-db/job-store.connection-bindings.test.ts`.
 - **Bindings, requirements and grant revocation serialize on locks, never on a read**: every thread writer locks in one
   order: root rows (`for no key update`, ascending), PR lock, thread advisory lock, member rows, grant, connection; only
   the claim's acquire (root row and advisory lock tried) and a settle of its own running row are exempt.
   Until the contract release `job.jira_connection_id` is a projection of the root's one live jira binding (null
   otherwise) for old pods. `server/src/db/connection-bindings.ts`, `server/test-db/connection-lock-order.test.ts`, `server/test-db/job-store.bind-lock-order.test.ts`.
-- **Org-wide connections are admin-created; personal ones are the owner's.** The proxy forwards GET and HEAD
-  only, reaches `rest/api/3/*` on the connection's cloud id, and `site` must be `*.atlassian.net`.
-  `server/test/routes.connections.test.ts`, `server/test/routes.connector-jira.test.ts`.
-- **The Jira token is in no response, log line or error text**; refusals name the fix
-  (`CONNECTION_NOT_AUTHORIZED`). `server/test/routes.connector-jira.test.ts`.
+- **A connection is its owner's alone, and only an OAuth one.** An admin has no more reach than a member, and a legacy
+  API-token row is neither listed, bound nor served. `server/test-db/connection-store.test.ts`,
+  `server/test/routes.connections.test.ts`.
+- **A legacy connection never lends its identity to a task.** Migration 100 disconnects it, and a queued task bound to
+  it waits as an open `jira` requirement until its member connects Jira and binds a connection
+  (`POST /api/jobs/:id/connections`); a running one finds no connection and its helper stops with that guidance.
+  `server/test-db/migration.100-legacy-jira-tokens.test.ts`.
 - **GitHub's token is the attempt's, never the claim's.** No GitHub value rides the claim, the runner's env or
   Secret; a reviewer row and a superseded, cancelled or finished attempt get none.
   `server/test-db/github-credential.test.ts`, `driver/test/github-credential.test.ts`.
@@ -80,13 +79,11 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 ## Stated limits
 
-- Legacy API tokens are plaintext at rest (`server/migrations/054_connections.sql`); a disconnect scrubs one.
-  OAuth grants hold their secret in the SecretStore only.
+- OAuth grants hold their secret in the SecretStore only; the legacy plaintext tokens are scrubbed by migration 100.
 - The destroy after a disconnect is best effort and the answer stays 204; the background pass is its retry. No provider
   is registered yet, so the runtime recovers rows and destroys secrets but starts no authorization.
 - A wedged secret reference is permanent: an operation whose payload was lost blocks every later mutation on it, delete
   included. The grant moves to a fresh reference on reconnect and the old one stays encrypted at rest, uncollected.
-- Jira is scoped API-token auth: a classic token is stored untried and answers 401 on every call.
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past
   its hour runs on an expired token. It rides that run's gate step, whose env the gate container

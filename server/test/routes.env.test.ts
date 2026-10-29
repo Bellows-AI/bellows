@@ -264,11 +264,6 @@ describe('env var validation', () => {
             'RESERVED_ENV_NAME',
         ],
         [
-            'a Jira credential, which is a managed connection now',
-            { vars: [{ name: 'ATLASSIAN_API_TOKEN', value: 'spoof', isSecret: true }] },
-            'RESERVED_ENV_NAME',
-        ],
-        [
             'the session id the branch reporter claims',
             { vars: [{ name: 'BELLOWS_SESSION_ID', value: 'spoof', isSecret: false }] },
             'RESERVED_ENV_NAME',
@@ -354,6 +349,24 @@ describe('env var validation', () => {
                 expect(response.statusCode).toBe(HTTP_BAD_REQUEST);
                 expect(response.json().code).toBe('RESERVED_ENV_NAME');
             }
+        }
+    );
+
+    it.each([
+        ['org', '/api/env/org', {}],
+        ['workspace', '/api/env/workspace', {}],
+        ['repo', '/api/env/repo', { repo: { owner: 'acme', name: 'web' } }],
+    ] as const)(
+        'accepts ATLASSIAN_API_TOKEN in the %s scope: Jira is a managed connection, the name is not reserved',
+        async (_scope, url, extra) => {
+            const { app, memberCookie } = await boot();
+            const response = await app.inject({
+                method: 'PUT',
+                url,
+                headers: { cookie: memberCookie },
+                payload: { ...extra, vars: [{ name: 'ATLASSIAN_API_TOKEN', value: 'member-value', isSecret: true }] },
+            });
+            expect(response.statusCode).toBe(HTTP_OK);
         }
     );
 

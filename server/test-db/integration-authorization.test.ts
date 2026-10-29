@@ -295,7 +295,6 @@ describe.skipIf(!enabled)('start: the trusted context binds the transaction', ()
         });
         await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(mine.connectionId, {
             userId: ALICE.id,
-            admin: false,
         });
         expect(
             await r.flow.startAuthorization(asAlice(), { provider: 'jira', connectionId: mine.connectionId })
@@ -873,7 +872,7 @@ describe.skipIf(!enabled)('complete: activation is idempotent over connected res
         const [a] = await connectionsOfAccount(seeded.account);
         const b = await second(seeded.account, 'site-b');
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        expect((await store.disconnect(b.connectionId, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(b.connectionId, { userId: ALICE.id })).disconnected).toBe(true);
         r.fake.identity = {
             ...r.fake.identity!,
             resources: [
@@ -895,7 +894,7 @@ describe.skipIf(!enabled)('complete: activation is idempotent over connected res
         const seeded = await seedConnected(r);
         const b = await second(seeded.account, 'site-b');
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        expect((await store.disconnect(b.connectionId, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(b.connectionId, { userId: ALICE.id })).disconnected).toBe(true);
         r.fake.identity = { ...r.fake.identity!, resources: [{ id: 'site-b', label: 'b.fake.test' }] };
         const started = await begin(r);
         expect(await complete(r, { state: started.state, code: CODE })).toMatchObject({

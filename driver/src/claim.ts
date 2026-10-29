@@ -219,10 +219,6 @@ export const RESERVED_ENV_NAMES = [
     // The driver's grant alone: a member value would let a follow-up start its parent's lost
     // conversation empty instead of failing.
     RESUME_MAY_BE_UNWRITTEN_ENV,
-    // Jira credentials are a managed connection now (docs/connections.md), never claim env.
-    'ATLASSIAN_SITE',
-    'ATLASSIAN_EMAIL',
-    'ATLASSIAN_API_TOKEN',
     // GitHub is the App's: the runner's helper and the supervised steps obtain a token from the
     // board (docs/connections.md), so no claim value may stand in for it.
     'GITHUB_TOKEN',

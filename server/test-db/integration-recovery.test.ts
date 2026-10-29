@@ -87,7 +87,6 @@ async function seedGrant(h: PostgresHarness, fake = createFakeOAuth({ rotates: t
 const revoke = async (connectionId: string) => {
     const done = await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(connectionId, {
         userId: ALICE.id,
-        admin: false,
     });
     if (!done.revokedGrantId) throw new Error('the disconnect revoked no grant');
     return done.revokedGrantId;

@@ -87,8 +87,7 @@ const toResolved = (row: BindableRow, source: 'explicit' | 'default'): ResolvedB
 
 /**
  * The connections `userId` may bind in `orgId`, share-locked so a concurrent disconnect waits for this bind's
- * commit (and recomputes the projection with it) or is seen by it first: active, theirs, or a legacy org one (explicit only), and for an
- * OAuth connection an active grant. Anything else (another member's, another org's, disconnected) is absent.
+ * commit (and recomputes the projection with it) or is seen by it first: active, theirs, an OAuth connection, and an active grant. Anything else (another member's, another org's, disconnected) is absent.
  */
 async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[]): Promise<BindableRow[]> {
     if (ids.length === 0) return [];
@@ -98,7 +97,7 @@ async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[
         from connector_connection c
         left join integration_grant g on g.id = c.grant_id
         where c.org_id = ${orgId} and c.id in ${db(ids)} and c.status = 'active'
-          and (c.principal_user_id = ${userId} or (c.principal_user_id is null and c.credential = 'legacy_api_token'))
+          and c.credential = 'oauth_grant' and c.principal_user_id = ${userId}
           and (c.grant_id is null or g.status = 'active')
         for share of c
     `;
@@ -125,7 +124,7 @@ export async function resolveBindingsInTx(db: Db, input: ResolveInput): Promise<
             from connector_connection c
             left join integration_grant g on g.id = c.grant_id
             where c.org_id = ${orgId} and c.provider = ${provider} and c.status = 'active'
-              and c.principal_user_id = ${executionUser} and (c.grant_id is null or g.status = 'active')
+              and c.credential = 'oauth_grant' and c.principal_user_id = ${executionUser} and (c.grant_id is null or g.status = 'active')
             order by c.created_at desc, c.id
             limit 2
             for share of c

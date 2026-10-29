@@ -255,7 +255,7 @@ describe.skipIf(!enabled)('grant lineage: refresh against disconnect', () => {
             const pending = resolve(a.resolver, r);
             await park.accepted;
             // No database lock is held across the exchange: the disconnect commits before the release.
-            expect(await store.disconnect(r.connections[0]!, { userId: ALICE.id, admin: false })).toEqual({
+            expect(await store.disconnect(r.connections[0]!, { userId: ALICE.id })).toEqual({
                 disconnected: true,
                 revokedGrantId: r.grant.id,
             });
@@ -293,7 +293,7 @@ describe.skipIf(!enabled)('grant lineage: refresh against disconnect', () => {
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
         const pending = resolve(a.resolver, r);
         await hold.entered;
-        expect((await store.disconnect(r.connections[0]!, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(r.connections[0]!, { userId: ALICE.id })).disconnected).toBe(true);
         hold.release();
         expect((await pending).ok).toBe(false);
         const row = await columns(r.grant.id);
@@ -479,7 +479,7 @@ describe.skipIf(!enabled)('grant lineage: destroy', () => {
     const revokedRig = async (store?: (h: PostgresHarness) => SecretStore) => {
         const r = await rig({ expired: false, ...(store ? { store } : {}) });
         const connections = createConnectionStore({ sql: db.sql, orgId: ORG });
-        await connections.disconnect(r.connections[0]!, { userId: ALICE.id, admin: false });
+        await connections.disconnect(r.connections[0]!, { userId: ALICE.id });
         return r;
     };
 
@@ -686,7 +686,7 @@ describe.skipIf(!enabled)('grant lineage: reconsent finalize', () => {
         const committing = a.lineage.commitLineage(claim, payload());
         await hold.entered;
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        expect((await store.disconnect(r.connections[0]!, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(r.connections[0]!, { userId: ALICE.id })).disconnected).toBe(true);
         hold.release();
         expect(await committing).toMatchObject({ ok: true });
         const row = await columns(r.grant.id);
@@ -893,7 +893,6 @@ describe.skipIf(!enabled)('grant lineage: review r2, a durable fence at the stor
         const r = await rig({ expired: false });
         await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(r.connections[0]!, {
             userId: ALICE.id,
-            admin: false,
         });
         const a = replica(r, parkBeforeStore(r.h.open(), 'delete', gate));
         const b = replica(r, r.h.open());

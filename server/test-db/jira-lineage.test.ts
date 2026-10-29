@@ -89,7 +89,7 @@ describe.skipIf(!enabled)('jira lineage', () => {
         while (refreshCalls(fake) === 0) await new Promise((r) => setTimeout(r, 10));
         const [connection] = await connectionsOf(db.sql, tag);
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        expect((await store.disconnect(connection!.id, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(connection!.id, { userId: ALICE.id })).disconnected).toBe(true);
 
         const result = await pending;
         expect(result.ok).toBe(false);

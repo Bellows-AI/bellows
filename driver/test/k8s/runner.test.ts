@@ -181,20 +181,15 @@ describe('the kubernetes runner', () => {
 
     // The parity pin for docs/connections.md: the runner pod gets the attempt pair and the board
     // URL, which is all the Jira helper needs to ask the broker — and never a Jira credential or a
-    // JIRA_API, whatever the claim carried.
+    // JIRA_API of the board's making.
     it('78: the runner pod carries no Jira credential and no JIRA_API', async () => {
         const { request, calls } = fakeRequest();
-        const withJira: BoardJob = {
-            ...job,
-            env: { ATLASSIAN_API_TOKEN: 'atlassian-secret', ATLASSIAN_EMAIL: 'agent@example.com' },
-        };
-        await runner(request).run(withJira, { id: SESSION, resume: false });
+        await runner(request).run(job, { id: SESSION, resume: false });
         const secretsPath = `/api/v1/namespaces/${namespace}/secrets`;
         const secretPost = calls.find((call) => call.method === 'POST' && call.path === secretsPath);
         const stringData = (secretPost?.body as { stringData?: Record<string, string> })?.stringData ?? {};
         expect(Object.keys(stringData).filter((key) => key.startsWith('ATLASSIAN') || key === 'JIRA_API')).toEqual([]);
         expect(JSON.stringify(calls.map((call) => call.body))).not.toContain('JIRA_API');
-        expect(JSON.stringify(calls.map((call) => call.body))).not.toContain('atlassian-secret');
         expect(stringData).toMatchObject({ RUNNER_JOB_ID: job.id, RUNNER_LEASE_TOKEN: job.leaseToken });
     });
 

@@ -112,7 +112,7 @@ describe.skipIf(!enabled)('credential resolver', () => {
         expect((await r.resolve()).ok).toBe(true);
         const reads = r.spy.log.reads;
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        await store.disconnect(r.connectionId, { userId: ALICE.id, admin: false });
+        await store.disconnect(r.connectionId, { userId: ALICE.id });
         expect(await r.resolve()).toMatchObject(required('missing'));
         expect(r.spy.log.reads).toBe(reads);
     });
@@ -206,7 +206,7 @@ describe.skipIf(!enabled)('credential resolver', () => {
         const pending = r.resolve();
         await park.accepted;
         const store = createConnectionStore({ sql: db.sql, orgId: ORG });
-        await store.disconnect(r.connectionId, { userId: ALICE.id, admin: false });
+        await store.disconnect(r.connectionId, { userId: ALICE.id });
         park.release();
         const result = await pending;
         expect(result).toMatchObject(required('missing'));

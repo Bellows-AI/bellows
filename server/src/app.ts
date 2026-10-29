@@ -7,12 +7,10 @@ import type { AppConfig } from './config.js';
 import type { InstallationRepo } from './github/app-client.js';
 import type { ServerMetrics } from './metrics.js';
 import type { OrgRegistry } from './orgs.js';
-import type { ConnectionOfLease } from './db/connection-store.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
-import { connectionRoutes, type CloudIdLookup, type DestroyRevokedSecret } from './routes/connections.js';
-import { connectorJiraRoutes } from './routes/connector-jira.js';
+import { connectionRoutes, type DestroyRevokedSecret } from './routes/connections.js';
 import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
 import type { OperationReceipts } from './db/operation-receipts.js';
 import { operationReceiptRoutes } from './routes/operation-receipts.js';
@@ -82,11 +80,6 @@ export interface AppDeps {
     orgOfJob?: ((jobId: string) => Promise<string | null>) | undefined;
     orgOfReclaim?: ((reclaimId: string) => Promise<string | null>) | undefined;
     /**
-     * The connector proxy's per-call check (`createConnectionOfLease`); the proxy route exists
-     * exactly when it does. `fetchFn` and `cloudIdLookup` are the test seams for Atlassian.
-     */
-    connectionOfLease?: ConnectionOfLease | undefined;
-    /**
      * The runner credential routes' per-call check (`createAttemptOfLease`); the GitHub route exists
      * exactly when it does, and the managed-connection broker when `integrations` is present too.
      * `githubMint` replaces the org's installation mint — the lanes'
@@ -107,10 +100,8 @@ export interface AppDeps {
     githubMint?: GithubMint | undefined;
     /** Replaces the org's installation revoke, like `githubMint` (the lanes' stand-in, the tests' seam). */
     githubRevoke?: GithubRevoke | undefined;
-    fetchFn?: typeof fetch | undefined;
     /** The commerce service's plan push (095); the routes exist exactly when COMMERCE_ENABLED and this is present. */
     commercePlanWriter?: CommercePlanWriter | undefined;
-    cloudIdLookup?: CloudIdLookup | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -174,15 +165,14 @@ const orgRevoke =
     };
 
 /**
- * The routes a runner spends through with its attempt pair: the Jira proxy and the GitHub
- * credential, each existing exactly when its per-call check does.
+ * The routes a runner spends through with its attempt pair: the GitHub credential, the managed-connection broker and
+ * the operation receipts, each existing exactly when its per-call check does.
  */
 async function registerRunnerCredentialRoutes(
     app: FastifyInstance,
     deps: Pick<
         AppDeps,
         | 'orgs'
-        | 'connectionOfLease'
         | 'attemptOfLease'
         | 'pairMatches'
         | 'operationReceipts'
@@ -190,12 +180,10 @@ async function registerRunnerCredentialRoutes(
         | 'integrations'
         | 'githubMint'
         | 'githubRevoke'
-        | 'fetchFn'
     >
 ): Promise<void> {
     const {
         orgs,
-        connectionOfLease,
         attemptOfLease,
         pairMatches,
         operationReceipts,
@@ -203,11 +191,7 @@ async function registerRunnerCredentialRoutes(
         integrations,
         githubMint,
         githubRevoke,
-        fetchFn,
     } = deps;
-    if (connectionOfLease) {
-        await app.register(connectorJiraRoutes({ connectionOfLease, ...(fetchFn ? { fetchFn } : {}) }));
-    }
     if (attemptOfLease) {
         await app.register(
             githubCredentialRoutes({
@@ -248,7 +232,6 @@ export async function buildApp({
     orgOfLease,
     orgOfJob,
     orgOfReclaim,
-    connectionOfLease,
     attemptOfLease,
     integrations,
     githubMint,
@@ -256,8 +239,6 @@ export async function buildApp({
     pairMatches,
     operationReceipts,
     connectionListing,
-    fetchFn,
-    cloudIdLookup,
     destroyRevokedSecret,
     identity,
     appSlug,
@@ -328,17 +309,15 @@ export async function buildApp({
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.
     await app.register(batchRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
-    // Managed connector connections (#546) and the runner-facing proxy that spends them.
+    // Managed connector connections (list, disconnect) and the runner-facing routes that spend them.
     await app.register(
         connectionRoutes({
             orgs,
             destroyRevokedSecret: destroyRevokedSecret ?? integrations?.destroyRevokedSecret,
-            ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}),
         })
     );
     await registerRunnerCredentialRoutes(app, {
         orgs,
-        connectionOfLease,
         attemptOfLease,
         pairMatches,
         operationReceipts,
@@ -346,7 +325,6 @@ export async function buildApp({
         integrations,
         githubMint,
         githubRevoke,
-        fetchFn,
     });
     await app.register(workspaceRoutes({ orgs }));
     // Plans and usage (BEL-146): like the webhook, no route exists unless the deployment turned commerce on.

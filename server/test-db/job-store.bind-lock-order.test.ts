@@ -9,7 +9,7 @@ import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import { sweepRuntimeWakes, wakeOneRound } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
-import { expireLease, spendInterruptionBudget, testOrg, testUser } from './fixtures.js';
+import { expireLease, oauthConnection, spendInterruptionBudget, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { DEADLINE_MS, holder, pool, settledWithin, value, waitForLockWait } from './lock-order-harness.js';
 
@@ -63,17 +63,7 @@ afterAll(async () => {
     await claimPool?.end({ timeout: 5 });
 });
 
-const connect = async (): Promise<string> =>
-    (
-        await createConnectionStore({ sql, orgId: ORG }).create({
-            ownerUserId: ALICE.id,
-            site: 'example.atlassian.net',
-            cloudId: `cloud-${randomUUID()}`,
-            email: `a-${randomUUID()}@example.com`,
-            apiToken: 'tok',
-            access: 'read',
-        })
-    ).id;
+const connect = async (): Promise<string> => (await oauthConnection(sql, ORG, ALICE.id)).id;
 
 const queued = async (): Promise<string> => {
     const created = await plain.create('do the work', ALICE.id, { repo: REPO, executor: null });
@@ -369,7 +359,6 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
         const share = await holder(sql, (tx) => tx`select id from job where id = ${rootA} for share`);
         const disconnected = createConnectionStore({ sql: binderPool, orgId: ORG }).disconnect(mine, {
             userId: ALICE.id,
-            admin: false,
         });
         await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         const claim = createJobStore({ sql: claimPool, orgId: ORG }).claim(WORKER, LEASE_SECONDS);

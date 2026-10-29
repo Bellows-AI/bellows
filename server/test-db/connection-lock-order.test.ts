@@ -10,7 +10,7 @@ import { createGrantLineage } from '../src/integrations/grant-lineage.js';
 import { createSecretRef } from '../src/secrets/secret-input.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { testOrg, testUser } from './fixtures.js';
+import { oauthConnection, testOrg, testUser } from './fixtures.js';
 import { attachJira } from './integration-store-faults.js';
 import {
     DEADLINE_MS,
@@ -61,17 +61,7 @@ afterAll(async () => {
     await binderPool?.end({ timeout: 5 });
 });
 
-const connect = async (): Promise<string> =>
-    (
-        await connections.create({
-            ownerUserId: ALICE.id,
-            site: 'example.atlassian.net',
-            cloudId: `cloud-${randomUUID()}`,
-            email: `a-${randomUUID()}@example.com`,
-            apiToken: 'tok',
-            access: 'read',
-        })
-    ).id;
+const connect = async (): Promise<string> => (await oauthConnection(sql, ORG, ALICE.id)).id;
 
 const create = async (target: { skills?: string[]; connectionIds?: string[] } = {}): Promise<string> => {
     const created = await plain.create('do the work', ALICE.id, { repo: REPO, executor: null, ...target });
@@ -127,7 +117,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const root = await create();
         expect(await projection(root)).toBe(mine);
         const { claim, share } = await claimWaitingOnRoot(root);
-        const disconnected = binderConnections.disconnect(mine, { userId: ALICE.id, admin: false });
+        const disconnected = binderConnections.disconnect(mine, { userId: ALICE.id });
         await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         share.release();
         await share.done;
@@ -144,7 +134,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const root = await create({ skills: ['jira'] });
         const running = (await plain.claim(WORKER, LEASE_SECONDS)) as Claim;
         await plain.complete(running.id, running.leaseToken, { status: 'succeeded', exitCode: 0, output: 'ok' });
-        await connections.disconnect(first, { userId: ALICE.id, admin: false });
+        await connections.disconnect(first, { userId: ALICE.id });
         const second = await connect();
         const followUp = await plain.createFollowUp(root, 'again', ALICE.id);
         if (typeof followUp === 'string') throw new Error(followUp);
@@ -211,8 +201,8 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const first = await create({ connectionIds: [one, two] });
         const second = await create({ connectionIds: [two, one] });
         const results = await settledWithin([
-            connections.disconnect(one, { userId: ALICE.id, admin: false }),
-            connections.disconnect(two, { userId: ALICE.id, admin: false }),
+            connections.disconnect(one, { userId: ALICE.id }),
+            connections.disconnect(two, { userId: ALICE.id }),
         ]);
         expect(results.map((r) => value(r).disconnected)).toEqual([true, true]);
         expect(await projection(first)).toBeNull();
@@ -222,7 +212,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
     it('T7: the real acquire records a requirement for an unbound root, then the waiting bind satisfies it', async () => {
         const first = await connect();
         const root = await create({ skills: ['jira'] });
-        await connections.disconnect(first, { userId: ALICE.id, admin: false });
+        await connections.disconnect(first, { userId: ALICE.id });
         const second = await connect();
         const { claim, share } = await claimWaitingOnRoot(root);
         const bind = bindConnectionRow(binderPool, {
@@ -271,7 +261,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
             (tx) => tx`select id from connector_connection where id = ${connectionId} for share`
         );
         // The disconnect holds its root, advisory and grant locks and waits on the connection a parked bind share-locks.
-        const disconnected = binderConnections.disconnect(connectionId, { userId: ALICE.id, admin: false });
+        const disconnected = binderConnections.disconnect(connectionId, { userId: ALICE.id });
         await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         const claimed = lineage.claimLineage(grant.id, 'refresh', { rotates: false });
         await waitForLockWait(sql, CLAIMER, Date.now() + DEADLINE_MS);
@@ -290,7 +280,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         );
         const claimed = lineage.claimLineage(grant.id, 'refresh', { rotates: false });
         await settledOrBlocked(claimed, CLAIMER);
-        const disconnected = binderConnections.disconnect(connectionId, { userId: ALICE.id, admin: false });
+        const disconnected = binderConnections.disconnect(connectionId, { userId: ALICE.id });
         await waitForLockWait(sql, BINDER, Date.now() + DEADLINE_MS);
         bind.release();
         await bind.done;

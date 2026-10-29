@@ -271,9 +271,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/activity', 'user'],
     ['/api/jobs/:id/artifacts', 'user'],
     ['/api/jobs/:id/artifacts/read', 'user'],
-    // The Jira connector proxy (issue #546): its own requirement — the attempt's pair in every
-    // mode, never the worker secret, a cookie or a bearer. The runner is the only caller.
-    ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'connector'],
+    // The Jira proxy is gone (BEL-61): nothing under /connectors/ takes the attempt pair any more, so the path is an
+    // unmatched person-side URL like any other and answers 404 unauthenticated-or-not.
+    ['/api/jobs/:id/connectors/jira/rest/api/3/myself', 'user'],
     // The runner's GitHub credential (docs/connections.md): the same class — the attempt's pair in
     // every mode, asked by the runner's helper and the driver's supervised steps alike.
     ['/api/jobs/:id/credentials/github', 'connector'],
