@@ -581,6 +581,11 @@ export async function retryInTx(
     // with a claim of the head, or a done could commit between the check and the insert and
     // leave a fresh attempt queued into a closed thread.
     await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
+    // The insert below skips a member that is not terminal, and the refusal read after it is a later snapshot: a
+    // verdict committing in between would turn not_finished into forbidden. Answer from this read instead. A terminal
+    // row cannot leave its status while we hold the thread lock (reopen takes it too).
+    const [named] = await tx<{ status: JobStatus }[]>`select status from job where org_id = ${orgId} and id = ${id}`;
+    if (named && !TERMINAL_STATUSES.includes(named.status)) return 'not_finished';
     const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id

@@ -34,6 +34,7 @@ const REPO = 'acme/app';
 const CLAIMER = 'tlo-claim';
 const WRITER = 'tlo-writer';
 const PULL = 11;
+const GATE_KEY = 15_700_157;
 const succeeded = { status: 'succeeded', exitCode: 0, output: 'ok' } as const;
 const db = useTestDb({ orgs: [ORG], users: [ALICE], max: 8 });
 
@@ -285,6 +286,42 @@ describe.skipIf(!enabled)('claim vs thread writers', () => {
         const [completed, retried] = await settledWithin([verdict, retry]);
         expect(value(retried)).toBe('not_finished');
         expect(value(completed)).toMatchObject({ result: 'ok' });
+    });
+
+    // The insert's snapshot is taken at its statement start, the refusal read is a later statement: a verdict that
+    // commits between them must not turn the answer into 'forbidden'. A statement trigger, armed for the writer's
+    // backend only, parks the insert after its snapshot until the test lets go.
+    it('L10: retry of a running task whose verdict commits after the insert read still answers not_finished', async () => {
+        const root = await queued();
+        const lease = await mustClaim();
+        await sql.unsafe(`
+            create function tlo_gate() returns trigger language plpgsql as $$
+            begin
+                if current_setting('application_name') = '${WRITER}' then
+                    perform pg_advisory_lock(${GATE_KEY}::bigint);
+                    perform pg_advisory_unlock(${GATE_KEY}::bigint);
+                end if;
+                return null;
+            end $$`);
+        await sql`create trigger tlo_gate before insert on job for each statement execute function tlo_gate()`;
+        try {
+            const gate = await holder(sql, (tx) => tx`select pg_advisory_xact_lock(${GATE_KEY}::bigint)`);
+            const retry = writer.createRetry(root, ALICE.id);
+            await Promise.race([
+                retry.then(
+                    () => undefined,
+                    () => undefined
+                ),
+                waitForLockWait(sql, WRITER, Date.now() + DEADLINE_MS),
+            ]);
+            await plain.complete(root, lease.leaseToken, succeeded);
+            gate.release();
+            await gate.done;
+            expect(await retry).toBe('not_finished');
+        } finally {
+            await sql`drop trigger tlo_gate on job`;
+            await sql`drop function tlo_gate()`;
+        }
     });
 });
 
