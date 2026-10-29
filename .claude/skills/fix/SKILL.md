@@ -191,6 +191,19 @@ one package, `npx vitest run --project <pkg>`.
   `driver/src/scripts/*`, `charts/`, skills): also each test that names it,
   `git grep -l <basename> -- '*/test/*' e2e`.
 
+**Per slice, the slice's own reach; per issue, the branch's.** In a series of slice commits, each
+slice runs `sh HEAVY npm run test:changed -- HEAD` — the same mapping, limited to that slice's
+uncommitted work — plus `npm run typecheck`, `npm run lint:changed` and the slice's own lane or
+`test:db` when the plan names one. The branch-wide `sh HEAVY npm run test:changed -- $BASE` runs
+once per issue, after the last slice and before the first review round. A one-commit fix runs the
+branch-wide form only.
+
+**Fresh runner images before the first slice that needs them.** When the plan touches `docker/`,
+`driver/src/scripts/` or anything a lane copies into a runner image, run `sh HEAVY make runners`
+in WORKTREE before the first slice that runs `test:jobs` or `test:k8s --cluster`, and again after
+a merge of the default branch that changed those paths. A lane against an image built before the
+commit it tests is not evidence.
+
 Style is enforced by biome — run `npm run lint:changed` before
 committing (only the files the branch touched, at low CPU priority; never the whole-repo
 `npm run lint`, which CI runs), and `npm run lint:changed -- --write` (or `npm run format` for pure
@@ -206,8 +219,8 @@ In order:
    only confirms the fix.
 2. GREEN: write the minimum implementation that makes it pass. No features beyond the issue, no
    speculative abstractions.
-3. Run the focused suite plus `npm run typecheck`. If existing tests break, fix them before
-   proceeding — never delete or skip a test to get green. Never weaken one either without asking
+3. Run the focused suite plus `npm run typecheck` (in a slice series, the per-slice form above). If
+   existing tests break, fix them before proceeding — never delete or skip a test to get green. Never weaken one either without asking
    the user first: an assertion made conditional, a looser threshold, excused cases or seeds, a
    longer timeout so it passes. An agent that needs it stops and reports instead. Telling the user
    after a merge is not asking.

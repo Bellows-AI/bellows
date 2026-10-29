@@ -90,6 +90,9 @@ describe('the fix skills', () => {
     it('iterate on test:changed or one project, in AGENTS.md and both fix skills', () => {
         const fix = readFileSync(join(skill, 'SKILL.md'), 'utf8');
         expect(fix).toContain('`sh HEAVY npm run test:changed -- $BASE`');
+        expect(fix).toContain("**Per slice, the slice's own reach; per issue, the branch's.**");
+        expect(fix).toContain('`sh HEAVY npm run test:changed -- HEAD`');
+        expect(fix).toContain('**Fresh runner images before the first slice that needs them.**');
         expect(fix).toContain('`npx vitest run --project <pkg>`');
         expect(readFileSync(join(skill, '../ui-fix/SKILL.md'), 'utf8')).toContain('`npm run test:changed`');
         expect(readFileSync(join(skill, '../../../AGENTS.md'), 'utf8')).toContain('npm run test:changed ');
