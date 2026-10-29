@@ -5,4 +5,6 @@ export interface Interruption {
     claimSeq?: number;
     /** The runner never started: the released claim's launch is `refused`, not merely unproven. */
     refused?: boolean;
+    /** A claim held back by a leftover that will not go away: released outside the interruption budget, its retry deferred. */
+    blocked?: boolean;
 }

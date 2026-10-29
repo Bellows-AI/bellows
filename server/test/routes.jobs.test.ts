@@ -114,7 +114,16 @@ interface StoreStub extends JobStore {
     sessionEvidence: unknown[];
     progressed: { id: string; output: string; runtime: RuntimeVitals | null }[];
     suspended: string[];
-    interrupted: { id: string; interruption: { reason: string; release: boolean; claimSeq?: number | null } }[];
+    interrupted: {
+        id: string;
+        interruption: {
+            reason: string;
+            release: boolean;
+            claimSeq?: number | null;
+            refused?: boolean;
+            blocked?: boolean;
+        };
+    }[];
     followUps: { parentId: string; command: string; createdBy: string | null }[];
     retries: { id: string; createdBy: string | null }[];
     /** The idempotency input each create, follow-up and retry was handed, in call order (#589). */
@@ -2037,6 +2046,28 @@ describe('POST /api/jobs/:id/interrupt', () => {
         });
     });
 
+    it('passes a blocked hand-back through on a release', async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+
+        const response = await post(instance, `/api/jobs/${ID}/interrupt`, {
+            leaseToken: TOKEN,
+            reason: 'the claim waits for a leftover still terminating',
+            release: true,
+            refused: true,
+            blocked: true,
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.interrupted[0]!.interruption).toEqual({
+            reason: 'the claim waits for a leftover still terminating',
+            release: true,
+            claimSeq: null,
+            refused: true,
+            blocked: true,
+        });
+    });
+
     it('answers 409 INTERRUPTIONS_EXHAUSTED once the budget is spent', async () => {
         const store = stubStore({ interruptExhausted: true });
         const instance = await harnessWith(store);
@@ -2059,6 +2090,8 @@ describe('POST /api/jobs/:id/interrupt', () => {
         ['an adoption that names no adopted claim', { reason: 'adopted', release: false }],
         ['a refused flag that is not a boolean', { reason: 'evicted', release: true, refused: 'yes' }],
         ['a refused adoption', { reason: 'adopted', release: false, claimSeq: 2, refused: true }],
+        ['a blocked flag that is not a boolean', { reason: 'blocked', release: true, blocked: 'yes' }],
+        ['a blocked adoption', { reason: 'adopted', release: false, claimSeq: 2, blocked: true }],
     ])('refuses %s with 400 BAD_BODY, touching nothing', async (_name, fields) => {
         const store = stubStore({ verdict: 'ok' });
         const instance = await harnessWith(store);

@@ -8,7 +8,7 @@
 import { down } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
-import type { RunOutcome } from '../runner.js';
+import { LeftoverTerminating, type RunOutcome } from '../runner.js';
 import { SYNC_FAILURE_KINDS, withConflictContext, type SyncResult } from '../publish/publish.js';
 import type { AttemptCtx, EndDecision, LoopRuntime, SetupHalt, VerdictBody } from './loop-types.js';
 import { type StartupCause, StartupRefused, transientStartup } from '../startup-cause.js';
@@ -43,11 +43,24 @@ function startupHalt(cause: StartupCause, detail: string): SetupHalt {
 }
 
 /**
+ * A sweep that ran out its bound with every leftover already deleting (BEL-160): handed back, before
+ * anything of this claim launched, as an interruption outside the board's budget. The board defers
+ * the next claim; nothing here is a failure of the attempt.
+ */
+export const blockedHalt = (e: LeftoverTerminating): Extract<SetupHalt, { halt: 'interrupt' }> => ({
+    halt: 'interrupt',
+    reason: `the claim waits for a leftover still terminating: ${e.message}`,
+    refused: true,
+    blocked: true,
+});
+
+/**
  * A checkout sync that threw: it took its own claim down inside the runner, so nothing is held here.
  * A group the platform refused to start for a proven cause is decided; anything else is left.
  */
 export function syncThrewHalt(e: unknown): SetupHalt {
     if (e instanceof StartupRefused) return startupHaltOf(e);
+    if (e instanceof LeftoverTerminating) return blockedHalt(e);
     return { halt: 'leave', log: `checkout sync threw, leaving it to the lease: ${(e as Error).message}` };
 }
 
@@ -58,6 +71,7 @@ export function syncThrewHalt(e: unknown): SetupHalt {
  */
 export function thrownRunDecision(job: BoardJob, e: unknown): EndDecision {
     if (e instanceof StartupRefused) return setupDecision(startupHaltOf(e));
+    if (e instanceof LeftoverTerminating) return setupDecision(blockedHalt(e));
     return leaveDecision(job, `could not run: ${(e as Error).message}`, null);
 }
 
@@ -154,6 +168,7 @@ export function setupDecision(halt: SetupHalt): EndDecision {
                 reason: halt.reason,
                 exitCode: null,
                 ...(halt.refused ? { refused: true } : {}),
+                ...(halt.blocked ? { blocked: true } : {}),
             };
         case 'fault':
         case 'concluded':
