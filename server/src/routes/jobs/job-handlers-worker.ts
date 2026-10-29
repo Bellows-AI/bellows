@@ -417,11 +417,27 @@ export async function handleConclusion(orgs: OrgRegistry, request: FastifyReques
 /** The longest interruption reason the board records (issue #792): one driver sentence. */
 const INTERRUPTION_REASON_MAX = 500;
 
+/**
+ * The flags only a release carries: a start the runner refused is a released attempt's outcome (an
+ * adoption has a runner), and a claim that waits on a leftover still terminating (BEL-160) is a
+ * release outside the budget.
+ */
+function releaseFlagsOf(
+    raw: Record<string, unknown>,
+    release: boolean
+): { refused: boolean; blocked: boolean } | string {
+    for (const name of ['refused', 'blocked'] as const) {
+        if (raw[name] !== undefined && typeof raw[name] !== 'boolean') return `${name} must be a boolean`;
+        if (raw[name] === true && !release) return `${name} applies to a release`;
+    }
+    return { refused: raw.refused === true, blocked: raw.blocked === true };
+}
+
 /** The interruption body's fields, or the refusal message for the first bad one. */
 function interruptionOf(
     raw: Record<string, unknown>
-): { reason: string; release: boolean; claimSeq: number | null; refused?: true } | string {
-    const { reason, release, claimSeq, refused } = raw;
+): { reason: string; release: boolean; claimSeq: number | null; refused?: true; blocked?: true } | string {
+    const { reason, release, claimSeq } = raw;
     if (typeof reason !== 'string' || !reason.trim() || reason.length > INTERRUPTION_REASON_MAX) {
         return `reason must be a non-empty string of at most ${INTERRUPTION_REASON_MAX} characters`;
     }
@@ -432,14 +448,15 @@ function interruptionOf(
     // An adoption records the earlier claim it adopted, never the adopter's own.
     if (!release && (claimSeq === undefined || claimSeq === null))
         return 'an adoption (release false) names its claimSeq';
-    // A start the runner refused is a released attempt's outcome; an adoption has a runner.
-    if (refused !== undefined && typeof refused !== 'boolean') return 'refused must be a boolean';
-    if (refused === true && !release) return 'refused applies to a release';
+    const flagged = releaseFlagsOf(raw, release);
+    if (typeof flagged === 'string') return flagged;
+    const { refused, blocked } = flagged;
     return {
         reason,
         release,
         claimSeq: (claimSeq as number | null | undefined) ?? null,
-        ...(refused === true ? { refused: true as const } : {}),
+        ...(refused ? { refused: true as const } : {}),
+        ...(blocked ? { blocked: true as const } : {}),
     };
 }
 

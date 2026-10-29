@@ -392,3 +392,73 @@ describe.skipIf(!enabled)('a lease expiry is an interruption the next claim reco
         });
     });
 });
+
+/**
+ * A hand-back the claim could not even start because a leftover of an earlier claim is still
+ * terminating (BEL-160): it waits for the leftover, so it spends no budget, no attempt and never
+ * retires the job, and the next claim is deferred rather than immediate.
+ */
+describe.skipIf(!enabled)('a blocked hand-back waits outside the interruption budget — database', () => {
+    const blocked = (id: string, leaseToken: string) =>
+        store.interrupt(id, leaseToken, {
+            reason: 'a leftover is terminating',
+            release: true,
+            refused: true,
+            blocked: true,
+        });
+
+    it('spends neither the budget nor an attempt, and never retires the job', async () => {
+        const id = await queue();
+        for (let round = 0; round < INTERRUPTION_BUDGET + 3; round += 1) {
+            const c = await claim();
+            expect(c.attempts).toBe(1);
+            expect(await blocked(id, c.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+            await sql`update job set claim_deferred_until = now() where id = ${id}`;
+        }
+        const row = (await store.get(id))!;
+        expect(row.status).toBe('queued');
+        expect(row.interruptions).toHaveLength(INTERRUPTION_BUDGET + 3);
+        expect(row.interruptions.every((i) => i.blocked === true)).toBe(true);
+
+        const c = await claim();
+        expect(await store.interrupt(id, c.leaseToken, { reason: 'evicted', release: true })).toEqual({
+            result: 'ok',
+            status: 'queued',
+        });
+    });
+
+    it('is accepted after the budget is spent', async () => {
+        const id = await queue();
+        await spendInterruptionBudget(sql, id);
+        const c = await claim();
+        expect(await blocked(id, c.leaseToken)).toEqual({ result: 'ok', status: 'queued' });
+    });
+
+    it('defers the next claim, then resumes the session', async () => {
+        const id = await queue();
+        const first = await claim();
+        const session = randomUUID();
+        await store.session(id, first.leaseToken, session);
+        await blocked(id, first.leaseToken);
+
+        expect(await store.claim(WORKER, 60)).toBeNull();
+        const [row] = await sql<{ secs: number }[]>`
+            select extract(epoch from claim_deferred_until - now())::float as secs from job where id = ${id}`;
+        expect(row!.secs).toBeGreaterThan(50);
+        expect(row!.secs).toBeLessThanOrEqual(60);
+
+        await sql`update job set claim_deferred_until = now() where id = ${id}`;
+        expect(await claim()).toMatchObject({ id, resumeSessionId: session, continuesInterrupted: true });
+    });
+
+    it('tells the claim it is the last attempt only by unblocked interruptions', async () => {
+        const id = await queue();
+        await sql`update job set max_attempts = 1 where id = ${id}`;
+        for (let round = 0; round < INTERRUPTION_BUDGET; round += 1) {
+            const c = await claim();
+            await blocked(id, c.leaseToken);
+            await sql`update job set claim_deferred_until = now() where id = ${id}`;
+        }
+        expect(await claim()).toMatchObject({ id, lastAttempt: false });
+    });
+});
