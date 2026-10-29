@@ -7,7 +7,7 @@ import { bindConnectionRow } from '../src/db/jobs/job-store-connections.js';
 import { prLockKey, settleIfMergeClosed } from '../src/db/jobs/job-store-merge.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
-import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
+import { sweepRuntimeWakes, wakeOneRound } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import { expireLease, spendInterruptionBudget, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -382,5 +382,36 @@ describe.skipIf(!enabled)('bind vs thread writers — database', () => {
             select id, status, done_at from job where id in (${rootB}, ${member.id})`;
         expect(statuses.map((r) => r.status)).toEqual(['dead', 'dead']);
         expect((await rootRow(rootA)).done_at).not.toBeNull();
+    });
+
+    it('B12: waking a parked round and a merge close of its PR do not deadlock', async () => {
+        const root = await waitingThread();
+        const writerPrs = createPrLifecycleStore({ sql: writerPool, orgId: ORG });
+        await writerPrs.recordDelivery({
+            deliveryId: `d-${randomUUID()}`,
+            event: 'pull_request_review',
+            action: 'submitted',
+            repo: REPO,
+            prNumber: PULL,
+        });
+        const hooks = createJobStore({
+            sql: hookPool,
+            orgId: ORG,
+            prs: createPrLifecycleStore({ sql: hookPool, orgId: ORG }),
+        });
+        // Hold the wait row: the merge close queues on it (holding the root row, PR lock and ledger), then the wake.
+        const wait = await holder(
+            sql,
+            (tx) => tx`select 1 from workflow_wait where org_id = ${ORG} and root_job_id = ${root} for update`
+        );
+        const merged = hooks.closeMergedPr(REPO, PULL, `guid-${randomUUID()}`);
+        await waitForLockWait(sql, HOOK, Date.now() + DEADLINE_MS);
+        const woken = wakeOneRound({ sql: writerPool, orgId: ORG, prs: writerPrs }, root, 'review', true);
+        await waitForLockWait(sql, WRITER, Date.now() + DEADLINE_MS);
+        wait.release();
+        await wait.done;
+        const [closed, wake] = await settledWithin([merged, woken]);
+        expect(value(closed)).toEqual({ outcome: 'applied', closedRoots: 1 });
+        expect(wake.status).toBe('fulfilled');
     });
 });
