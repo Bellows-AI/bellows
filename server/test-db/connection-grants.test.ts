@@ -43,7 +43,8 @@ const attach = (
         provider: 'jira',
         externalAccountId,
         authority: { scopes: ['read:jira-work'] },
-        connection: { site: 'example.atlassian.net', cloudId, access: 'read' },
+        resource: { id: cloudId, label: 'example.atlassian.net' },
+        access: 'read',
     });
 
 const mustAttach = async (store: ConnectionGrants, userId: string, externalAccountId: string, cloudId?: string) => {
@@ -199,7 +200,8 @@ describe.skipIf(!enabled)('connection grants', () => {
             provider: 'jira',
             externalAccountId: account(),
             authority: {},
-            connection: { site: 'example.atlassian.net', cloudId: 'c', access: 'read' },
+            resource: { id: 'c', label: 'example.atlassian.net' },
+            access: 'read',
         });
         expect(result).toEqual({ ok: false, reason: 'service-principal-unsupported' });
     });
@@ -298,5 +300,52 @@ describe.skipIf(!enabled)('connection grants', () => {
         release();
         await holder;
         expect(await revoked).toBe(true);
+    });
+
+    it('a new grant takes the pre-allocated ID with the secret it already holds; the resource maps to cloud_id and site', async () => {
+        const grantId = randomUUID();
+        const secretRef = createSecretRef();
+        const acct = account();
+        const result = await grants.attachGrantConnection({
+            principal: { kind: 'user', userId: ALICE.id },
+            provider: 'jira',
+            externalAccountId: acct,
+            authority: { scopes: ['read:jira-work'] },
+            resource: { id: 'cloud-1', label: 'one.atlassian.net' },
+            access: 'write',
+            grantId,
+            secretRef,
+            secretVersion: 'v-1',
+        });
+        if (!result.ok) throw new Error(result.reason);
+        expect(result.grant).toMatchObject({ id: grantId, secretRef, secretVersion: 'v-1', status: 'active' });
+        const [connection] = await sql<{ site: string; cloud_id: string; access: string; grant_id: string }[]>`
+            select site, cloud_id, access, grant_id from connector_connection where id = ${result.connectionId}
+        `;
+        expect(connection).toEqual({
+            site: 'one.atlassian.net',
+            cloud_id: 'cloud-1',
+            access: 'write',
+            grant_id: grantId,
+        });
+    });
+
+    it('an existing grant of the account is reused and the pre-allocated identity is ignored', async () => {
+        const acct = account();
+        const first = await mustAttach(grants, ALICE.id, acct);
+        const second = await grants.attachGrantConnection({
+            principal: { kind: 'user', userId: ALICE.id },
+            provider: 'jira',
+            externalAccountId: acct,
+            authority: {},
+            resource: { id: 'cloud-2', label: 'two.atlassian.net' },
+            access: 'read',
+            grantId: randomUUID(),
+            secretRef: createSecretRef(),
+            secretVersion: 'v-9',
+        });
+        if (!second.ok) throw new Error(second.reason);
+        expect(second.grant.id).toBe(first.grant.id);
+        expect(second.grant.secretRef).toBeNull();
     });
 });

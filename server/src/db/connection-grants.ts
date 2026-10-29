@@ -44,8 +44,20 @@ export interface AttachGrantConnection {
     provider: string;
     externalAccountId: string;
     authority: Record<string, unknown>;
-    connection: { site: string; cloudId: string; email?: string; access: 'read' | 'write' };
+    /** The provider's resource: `id` is the connection's `cloud_id` and `label` its `site`. */
+    resource: { id: string; label: string };
+    email?: string;
+    access: 'read' | 'write';
+    /**
+     * A NEW grant is inserted under this pre-allocated ID with the secret it already holds, so the secret exists
+     * before the grant or its connection is visible. An existing grant of the account is reused and these are ignored.
+     */
+    grantId?: string;
+    secretRef?: string;
+    secretVersion?: string;
 }
+
+export type AttachRefusal = Extract<AttachResult, { ok: false }>['reason'];
 
 export type AttachResult =
     | { ok: true; grant: IntegrationGrant; connectionId: string }
@@ -216,6 +228,59 @@ const UNIQUE_VIOLATION = '23505';
 const isUniqueViolation = (error: unknown): boolean =>
     typeof error === 'object' && error !== null && (error as { code?: string }).code === UNIQUE_VIOLATION;
 
+/** The refusal a unique violation of an attach means, or null for any other error (which the caller rethrows). */
+export function attachRefusalOf(error: unknown): AttachRefusal | null {
+    if (!isUniqueViolation(error)) return null;
+    const detail = (error as { constraint_name?: string }).constraint_name ?? '';
+    return detail === 'connector_connection_grant_resource_uk' ? 'duplicate-connection' : 'grant-conflict';
+}
+
+/**
+ * Upserts the grant by `(provider, externalAccountId)` and adds an active connection under it, inside the caller's
+ * transaction. A unique violation propagates: `attachRefusalOf` names it. The `kind` column is the 054 rollout
+ * column (`'jira'` only); the contract release drops it, so every connection carries it until then.
+ */
+export async function attachInTx(
+    tx: TransactionSql,
+    orgId: string,
+    input: AttachGrantConnection
+): Promise<AttachResult> {
+    if (input.principal.kind !== 'user') return { ok: false, reason: 'service-principal-unsupported' };
+    const userId = input.principal.userId;
+    const existing = await tx<GrantRow[]>`
+        select ${tx.unsafe(grantColumns())} from integration_grant
+        where provider = ${input.provider} and external_account_id = ${input.externalAccountId}
+          and status <> 'revoked'
+        for update
+    `;
+    let grant: IntegrationGrant;
+    if (existing[0]) {
+        grant = toGrant(existing[0]);
+        if (grant.orgId !== orgId || grant.principalUserId !== userId) return { ok: false, reason: 'grant-conflict' };
+    } else {
+        const created = await tx<GrantRow[]>`
+            insert into integration_grant
+                (id, org_id, principal_kind, principal_user_id, provider, external_account_id, authority,
+                 secret_ref, secret_version)
+            values (coalesce(${input.grantId ?? null}::uuid, gen_random_uuid()), ${orgId}, 'user', ${userId},
+                    ${input.provider}, ${input.externalAccountId}, ${tx.json(input.authority as never)},
+                    ${input.secretRef ?? null}, ${input.secretVersion ?? null})
+            returning ${tx.unsafe(grantColumns())}
+        `;
+        grant = toGrant(created[0]!);
+    }
+    const [connection] = await tx<{ id: string }[]>`
+        insert into connector_connection
+            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider,
+             credential, principal_user_id, external_account_id, grant_id)
+        values (${orgId}, ${userId}, 'jira', ${input.resource.label}, ${input.resource.id},
+                ${input.email ?? input.externalAccountId}, null, ${input.access},
+                ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
+        returning id
+    `;
+    return { ok: true, grant, connectionId: connection!.id };
+}
+
 export function createConnectionGrants({
     sql,
     orgId,
@@ -232,55 +297,12 @@ export function createConnectionGrants({
     return {
         async attachGrantConnection(input) {
             await gate();
-            if (input.principal.kind !== 'user') return { ok: false, reason: 'service-principal-unsupported' };
-            const userId = input.principal.userId;
             try {
-                return await sql.begin(async (tx): Promise<AttachResult> => {
-                    const existing = await tx<GrantRow[]>`
-                        select ${tx.unsafe(grantColumns())} from integration_grant
-                        where provider = ${input.provider} and external_account_id = ${input.externalAccountId}
-                          and status <> 'revoked'
-                        for update
-                    `;
-                    let grant: IntegrationGrant;
-                    if (existing[0]) {
-                        grant = toGrant(existing[0]);
-                        if (grant.orgId !== orgId || grant.principalUserId !== userId) {
-                            return { ok: false, reason: 'grant-conflict' };
-                        }
-                    } else {
-                        const created = await tx<GrantRow[]>`
-                            insert into integration_grant
-                                (org_id, principal_kind, principal_user_id, provider, external_account_id, authority)
-                            values (${orgId}, 'user', ${userId}, ${input.provider}, ${input.externalAccountId},
-                                    ${tx.json(input.authority as never)})
-                            returning ${tx.unsafe(grantColumns())}
-                        `;
-                        grant = toGrant(created[0]!);
-                    }
-                    const [connection] = await tx<{ id: string }[]>`
-                        insert into connector_connection
-                            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider,
-                             credential, principal_user_id, external_account_id, grant_id)
-                        values (${orgId}, ${userId}, 'jira', ${input.connection.site}, ${input.connection.cloudId},
-                                ${input.connection.email ?? input.externalAccountId}, null, ${input.connection.access},
-                                ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
-                        returning id
-                    `;
-                    return { ok: true, grant, connectionId: connection!.id };
-                });
+                return await sql.begin((tx) => attachInTx(tx, orgId, input));
             } catch (error) {
                 // Two attaches racing on the same new account, or the same resource twice under one grant.
-                if (isUniqueViolation(error)) {
-                    const detail = (error as { constraint_name?: string }).constraint_name ?? '';
-                    return {
-                        ok: false,
-                        reason:
-                            detail === 'connector_connection_grant_resource_uk'
-                                ? 'duplicate-connection'
-                                : 'grant-conflict',
-                    };
-                }
+                const refusal = attachRefusalOf(error);
+                if (refusal) return { ok: false, reason: refusal };
                 throw error;
             }
         },

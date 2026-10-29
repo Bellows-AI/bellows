@@ -27,6 +27,7 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | Portable integration layer: definition, closed outcomes, bounded operation runner; imports nothing from `server` | `core/src/integrations/`, `lint/no-cross-package-imports.grit` | `core/test/integrations.operation.test.ts`, `core/test/integrations.boundary.test.ts`, `server/test/integrations.contract.test.ts` |
 | Grant lineage: one claim per grant, the exchange, identical-replay persistence, recovery by claim kind, destroy of a revoked secret | `server/migrations/095_grant_lineage.sql`, `server/src/integrations/grant-lineage.ts`, `server/src/integrations/grant-credentials.ts`, `server/src/integrations/oauth-provider.ts`, `server/src/db/connection-grants.ts` (`finalizeLineage`) | `server/test-db/integration-lineage.test.ts`, `server/test-db/connection-grants.test.ts`, `server/test-db/migration.095-grant-lineage.test.ts`, `server/test-db/connection-lock-order.test.ts` |
 | Credential resolver, trusted context and the binding ceiling | `server/src/integrations/credential-resolver.ts`, `server/src/integrations/trusted-context.ts` | `server/test-db/integration-resolver.test.ts` |
+| Authorization transaction (module API, no route yet): start, callback validation, claim-before-exchange reconnect, secret-first new grant, recovery | `server/migrations/096_integration_authorization.sql`, `server/src/integrations/authorization-flow.ts`, `authorization-complete.ts`, `authorization-store.ts`, `server/src/db/connection-grants.ts` (`attachInTx`) | `server/test-db/integration-authorization.test.ts`, `server/test-db/migration.096-integration-authorization.test.ts` |
 
 ## Invariants
 
@@ -52,6 +53,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - **GitHub's token is the attempt's, never the claim's.** No GitHub value rides the claim, the runner's env or
   Secret; a reviewer row and a superseded, cancelled or finished attempt get none.
   `server/test-db/github-credential.test.ts`, `driver/test/github-credential.test.ts`.
+- **A reconnect claims the grant's lineage before it exchanges the code; a new grant's secret is created before
+  its connection is visible.** The callback's return path is the one stored at start. `server/test-db/integration-authorization.test.ts`.
 
 ## Stated limits
 

@@ -60,8 +60,15 @@ export interface GrantLineage {
     claimLineage(grantId: string, kind: LineageKind, options: { rotates: boolean }): Promise<ClaimResult>;
     /** Persists `payload` under the held claim (record, identical replay, finalize). The caller signal never reaches it. */
     commitLineage(claim: LineageClaim, payload: GrantPayload): Promise<CommitResult>;
-    /** Ends a claim whose holder did not exchange anything; `operation` also forgets a recorded operation. */
-    releaseClaim(claim: Pick<LineageClaim, 'token' | 'grantId'>, options?: { operation?: boolean }): Promise<void>;
+    /**
+     * Ends a claim whose holder did not exchange anything; `operation` also forgets a recorded operation,
+     * `reconnect` sends the grant to `reconnect_required` (a spent rotating token), and `unrecordedOnly` leaves a
+     * claim that has a recorded operation to recovery. Resolves true when it ended the claim.
+     */
+    releaseClaim(
+        claim: Pick<LineageClaim, 'token' | 'grantId'>,
+        options?: { operation?: boolean; reconnect?: boolean; unrecordedOnly?: boolean }
+    ): Promise<boolean>;
     refreshGrant(grantId: string, options?: { signal?: AbortSignal | undefined }): Promise<RefreshResult>;
     recoverLineage(grantId: string): Promise<RecoverResult>;
     destroyRevokedSecret(grantId: string): Promise<DestroyResult>;
@@ -235,9 +242,7 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
         leaseMs,
         claimLineage: (grantId, kind, { rotates }) => claimStatement(ctx, grantId, kind, rotates),
         commitLineage: (claim, payload) => commit(ctx, claim, payload),
-        releaseClaim: async (claim, options) => {
-            await endClaim(ctx, claim, { operation: options?.operation === true });
-        },
+        releaseClaim: (claim, options) => endClaim(ctx, claim, options ?? {}),
         refreshGrant,
         recoverLineage: (grantId) => recover(ctx, grantId),
         destroyRevokedSecret: (grantId) => destroy(ctx, grantId),

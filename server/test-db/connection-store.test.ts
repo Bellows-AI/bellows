@@ -183,7 +183,8 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
                 provider: 'jira',
                 externalAccountId: `acct-${crypto.randomUUID()}`,
                 authority: {},
-                connection: { site: 'example.atlassian.net', cloudId: `c-${crypto.randomUUID()}`, access: 'read' },
+                resource: { id: `c-${crypto.randomUUID()}`, label: 'example.atlassian.net' },
+                access: 'read',
             });
             if (!result.ok) throw new Error(result.reason);
             return result;
@@ -208,7 +209,8 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
                 >`select external_account_id from integration_grant where id = ${first.grant.id}`
             )[0]!.external_account_id,
             authority: {},
-            connection: { site: 'example.atlassian.net', cloudId: `c-${crypto.randomUUID()}`, access: 'read' },
+            resource: { id: `c-${crypto.randomUUID()}`, label: 'example.atlassian.net' },
+            access: 'read',
         });
         expect(sibling.ok).toBe(true);
         expect(await store.disconnect(first.connectionId, { userId: OWNER.id, admin: false })).toEqual({

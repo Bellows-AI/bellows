@@ -115,7 +115,8 @@ export async function attachJira(
         provider: 'jira',
         externalAccountId,
         authority: { scopes },
-        connection: { site: 'example.atlassian.net', cloudId, access: 'read' },
+        resource: { id: cloudId, label: 'example.atlassian.net' },
+        access: 'read',
     });
     if (!result.ok) throw new Error(`attach refused: ${result.reason}`);
     return result;

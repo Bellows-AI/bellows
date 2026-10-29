@@ -141,6 +141,8 @@ export interface EndClaimOptions {
     operation?: boolean;
     /** The reference's operation was lost: it is wedged. */
     wedged?: boolean;
+    /** Only end a claim that has no recorded operation: a recorded one is recovery's. */
+    unrecordedOnly?: boolean;
 }
 
 /** Ends a claim by clearing every `lineage_*` column but, unless asked, the recorded operation. */
@@ -152,6 +154,7 @@ export async function endClaim(
     const reconnect = options.reconnect === true;
     const operation = options.operation === true;
     const wedged = options.wedged === true;
+    const unrecordedOnly = options.unrecordedOnly === true;
     const rows = await ctx.sql<{ id: string }[]>`
         update integration_grant
         set lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
@@ -161,6 +164,7 @@ export async function endClaim(
             secret_wedged_at = case when ${wedged}::boolean then now() else secret_wedged_at end,
             updated_at = now()
         where id = ${claim.grantId} and org_id = ${ctx.orgId} and lineage_claim = ${claim.token}
+          and (not ${unrecordedOnly}::boolean or lineage_operation_id is null)
         returning id
     `;
     return rows.length > 0;
