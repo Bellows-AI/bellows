@@ -97,9 +97,12 @@ export function createCommerceStore({ sql, orgId, ready, now = () => new Date() 
     return {
         async enqueueUsage() {
             await ready;
+            // The lease compares next_attempt_at with this clock, so it is stamped here, never by the column's
+            // database default: a row queued and leased within one millisecond would read as not due (BEL-163).
+            const at = now();
             await sql`
-                insert into commerce_usage_report (org_id, job_id, claim_seq)
-                select org_id, job_id, claim_seq from job_execution
+                insert into commerce_usage_report (org_id, job_id, claim_seq, next_attempt_at)
+                select org_id, job_id, claim_seq, ${at} from job_execution
                 where org_id = ${orgId} and origin = 'claim' and created_at is not null and ended_at is not null
                 on conflict do nothing
             `;

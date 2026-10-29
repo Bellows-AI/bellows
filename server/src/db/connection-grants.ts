@@ -2,10 +2,11 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { SecretIdentity } from '../secrets/secret-store.js';
 
 /**
- * Integration grants (094): the credential lineage of one external account. A connection is a principal's
- * usable resource under a grant; the grant owns the refresh chain (`version`, CAS) and, once BEL-138/61 land,
- * the SecretStore record named by `secret_ref`. These are store primitives only: no SecretStore write happens
- * here, and a `service` principal is reserved for BEL-143.
+ * Integration grants (094, 096): the credential lineage of one external account. A connection is a principal's
+ * usable resource under a grant; the grant owns the refresh chain (`version`) and the SecretStore record named by
+ * `secret_ref`. These are store primitives only: no SecretStore call happens here. The lineage module
+ * (`integrations/grant-lineage.ts`) takes the claim, talks to the SecretStore and then calls `finalize`, the only
+ * writer of a grant's credential columns once it holds the claim. A `service` principal is reserved for BEL-143.
  */
 
 export type GrantStatus = 'active' | 'reconnect_required' | 'revoked';
@@ -43,35 +44,52 @@ export interface AttachGrantConnection {
     provider: string;
     externalAccountId: string;
     authority: Record<string, unknown>;
-    connection: { site: string; cloudId: string; email?: string; access: 'read' | 'write' };
+    /** The provider's resource: `id` is the connection's `cloud_id` and `label` its `site`. */
+    resource: { id: string; label: string };
+    email?: string;
+    access: 'read' | 'write';
+    /**
+     * A NEW grant is inserted under this pre-allocated ID with the secret it already holds, so the secret exists
+     * before the grant or its connection is visible. An existing grant of the account is reused and these are ignored.
+     */
+    grantId?: string;
+    secretRef?: string;
+    secretVersion?: string;
 }
+
+export type AttachRefusal = Extract<AttachResult, { ok: false }>['reason'];
 
 export type AttachResult =
     | { ok: true; grant: IntegrationGrant; connectionId: string }
     | { ok: false; reason: 'grant-conflict' | 'service-principal-unsupported' | 'duplicate-connection' };
 
-export interface RotateInput {
-    secretVersion: string;
-    secretRef?: string | undefined;
-    authority?: Record<string, unknown> | undefined;
-}
+export type LineageKind = 'refresh' | 'reconsent' | 'destroy';
 
-export type RotateResult = { ok: true; version: number } | { ok: false; reason: 'stale' | 'not-found' | 'revoked' };
+/** What a claim-guarded finalize writes. `destroy` clears the secret and leaves `version` and `authority` alone. */
+export type FinalizeInput =
+    | { kind: 'refresh' | 'reconsent'; secretVersion: string; authority: Record<string, unknown> }
+    | { kind: 'destroy' };
 
-export interface ReconnectInput extends RotateInput {
+export type FinalizeResult = { ok: true; version: number } | { ok: false; reason: 'claim-lost' };
+
+export interface ReconnectInput {
     externalAccountId: string;
+    /** The `reconsent` claim this reconnect holds. */
+    claimToken: string;
+    secretVersion: string;
+    authority?: Record<string, unknown> | undefined;
 }
 
 export type ReconnectResult =
     | { ok: true; version: number }
-    | { ok: false; reason: 'not-found' | 'account-mismatch' | 'revoked' };
+    | { ok: false; reason: 'not-found' | 'account-mismatch' | 'revoked' | 'claim-lost' };
 
 export interface ConnectionGrants {
     /** Upserts the grant by `(provider, externalAccountId)` and adds an active connection under it. */
     attachGrantConnection(input: AttachGrantConnection): Promise<AttachResult>;
-    /** Advances the grant iff `expectedVersion` is still current; exactly one of two racers wins. */
-    rotate(grantId: string, expectedVersion: number, input: RotateInput): Promise<RotateResult>;
-    /** Re-authorizes a connection's grant under the same external account, else changes nothing. */
+    /** Ends a lineage claim by kind; applies only while `claimToken` is still the grant's claim. */
+    finalize(grantId: string, claimToken: string, input: FinalizeInput): Promise<FinalizeResult>;
+    /** Checks a connection's grant is under the same external account, then ends the held `reconsent` claim. */
     reconnect(connectionId: string, actor: { userId: string }, input: ReconnectInput): Promise<ReconnectResult>;
     /** Revokes the grant when no active connection references it; true when it did. */
     revokeIfOrphaned(grantId: string): Promise<boolean>;
@@ -119,6 +137,70 @@ const toGrant = (row: GrantRow): IntegrationGrant => ({
     version: Number(row.version),
 });
 
+/** One grant of `orgId`, or null: a confirmed absence. A thrown query is not an absence and propagates. */
+export async function readGrant(
+    db: Sql | TransactionSql,
+    orgId: string,
+    grantId: string
+): Promise<IntegrationGrant | null> {
+    const rows = await db<GrantRow[]>`
+        select ${db.unsafe(grantColumns())} from integration_grant where id = ${grantId} and org_id = ${orgId}
+    `;
+    return rows[0] ? toGrant(rows[0]) : null;
+}
+
+/**
+ * The one statement that ends a lineage claim with new credentials, by kind, and clears every `lineage_*` column.
+ * It holds no lock beyond the grant row it updates and applies only while `claimToken` is still the grant's claim.
+ *  - `refresh` leaves `status` alone: a concurrent `revoked` stays, and destroy deletes at the new version.
+ *  - `reconsent` restores `active` (a reconnected grant serves again) but never resurrects a concurrent `revoked`,
+ *    and moves the grant onto the reference its claim recorded (a fresh one when the old was wedged).
+ *  - `destroy` records the confirmed delete: no version, no authority change, no `version` bump.
+ */
+export async function finalizeLineage(
+    db: Sql | TransactionSql,
+    claim: { orgId: string; grantId: string; token: string },
+    input: FinalizeInput
+): Promise<FinalizeResult> {
+    const { orgId, grantId, token: claimToken } = claim;
+    const rows =
+        input.kind === 'destroy'
+            ? await db<{ version: string }[]>`
+                update integration_grant
+                set secret_version = null, secret_destroyed_at = now(), updated_at = now(),
+                    lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
+                    lineage_operation_id = null, lineage_secret_ref = null
+                where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
+                  and lineage_claim_kind = 'destroy'
+                returning version
+            `
+            : input.kind === 'refresh'
+              ? await db<{ version: string }[]>`
+                update integration_grant
+                set version = version + 1, secret_version = ${input.secretVersion},
+                    authority = ${db.json(input.authority as never)}, updated_at = now(),
+                    lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
+                    lineage_operation_id = null, lineage_secret_ref = null
+                where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
+                  and lineage_claim_kind = 'refresh'
+                returning version
+            `
+              : await db<{ version: string }[]>`
+                update integration_grant
+                set version = version + 1, secret_version = ${input.secretVersion},
+                    secret_ref = coalesce(lineage_secret_ref, secret_ref),
+                    authority = ${db.json(input.authority as never)},
+                    status = case when status = 'revoked' then 'revoked' else 'active' end,
+                    secret_wedged_at = null, secret_destroyed_at = null, updated_at = now(),
+                    lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
+                    lineage_operation_id = null, lineage_secret_ref = null
+                where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}
+                  and lineage_claim_kind = 'reconsent'
+                returning version
+            `;
+    return rows[0] ? { ok: true, version: Number(rows[0].version) } : { ok: false, reason: 'claim-lost' };
+}
+
 /**
  * Revokes `grantId` when no active connection references it. Shared with `connection-store.disconnect`, which
  * runs it in the disconnect's own transaction. The grant's row lock serializes two last-connection disconnects.
@@ -146,6 +228,59 @@ const UNIQUE_VIOLATION = '23505';
 const isUniqueViolation = (error: unknown): boolean =>
     typeof error === 'object' && error !== null && (error as { code?: string }).code === UNIQUE_VIOLATION;
 
+/** The refusal a unique violation of an attach means, or null for any other error (which the caller rethrows). */
+export function attachRefusalOf(error: unknown): AttachRefusal | null {
+    if (!isUniqueViolation(error)) return null;
+    const detail = (error as { constraint_name?: string }).constraint_name ?? '';
+    return detail === 'connector_connection_grant_resource_uk' ? 'duplicate-connection' : 'grant-conflict';
+}
+
+/**
+ * Upserts the grant by `(provider, externalAccountId)` and adds an active connection under it, inside the caller's
+ * transaction. A unique violation propagates: `attachRefusalOf` names it. The `kind` column is the 054 rollout
+ * column (`'jira'` only); the contract release drops it, so every connection carries it until then.
+ */
+export async function attachInTx(
+    tx: TransactionSql,
+    orgId: string,
+    input: AttachGrantConnection
+): Promise<AttachResult> {
+    if (input.principal.kind !== 'user') return { ok: false, reason: 'service-principal-unsupported' };
+    const userId = input.principal.userId;
+    const existing = await tx<GrantRow[]>`
+        select ${tx.unsafe(grantColumns())} from integration_grant
+        where provider = ${input.provider} and external_account_id = ${input.externalAccountId}
+          and status <> 'revoked'
+        for update
+    `;
+    let grant: IntegrationGrant;
+    if (existing[0]) {
+        grant = toGrant(existing[0]);
+        if (grant.orgId !== orgId || grant.principalUserId !== userId) return { ok: false, reason: 'grant-conflict' };
+    } else {
+        const created = await tx<GrantRow[]>`
+            insert into integration_grant
+                (id, org_id, principal_kind, principal_user_id, provider, external_account_id, authority,
+                 secret_ref, secret_version)
+            values (coalesce(${input.grantId ?? null}::uuid, gen_random_uuid()), ${orgId}, 'user', ${userId},
+                    ${input.provider}, ${input.externalAccountId}, ${tx.json(input.authority as never)},
+                    ${input.secretRef ?? null}, ${input.secretVersion ?? null})
+            returning ${tx.unsafe(grantColumns())}
+        `;
+        grant = toGrant(created[0]!);
+    }
+    const [connection] = await tx<{ id: string }[]>`
+        insert into connector_connection
+            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider,
+             credential, principal_user_id, external_account_id, grant_id)
+        values (${orgId}, ${userId}, 'jira', ${input.resource.label}, ${input.resource.id},
+                ${input.email ?? input.externalAccountId}, null, ${input.access},
+                ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
+        returning id
+    `;
+    return { ok: true, grant, connectionId: connection!.id };
+}
+
 export function createConnectionGrants({
     sql,
     orgId,
@@ -162,76 +297,19 @@ export function createConnectionGrants({
     return {
         async attachGrantConnection(input) {
             await gate();
-            if (input.principal.kind !== 'user') return { ok: false, reason: 'service-principal-unsupported' };
-            const userId = input.principal.userId;
             try {
-                return await sql.begin(async (tx): Promise<AttachResult> => {
-                    const existing = await tx<GrantRow[]>`
-                        select ${tx.unsafe(grantColumns())} from integration_grant
-                        where provider = ${input.provider} and external_account_id = ${input.externalAccountId}
-                          and status <> 'revoked'
-                        for update
-                    `;
-                    let grant: IntegrationGrant;
-                    if (existing[0]) {
-                        grant = toGrant(existing[0]);
-                        if (grant.orgId !== orgId || grant.principalUserId !== userId) {
-                            return { ok: false, reason: 'grant-conflict' };
-                        }
-                    } else {
-                        const created = await tx<GrantRow[]>`
-                            insert into integration_grant
-                                (org_id, principal_kind, principal_user_id, provider, external_account_id, authority)
-                            values (${orgId}, 'user', ${userId}, ${input.provider}, ${input.externalAccountId},
-                                    ${tx.json(input.authority as never)})
-                            returning ${tx.unsafe(grantColumns())}
-                        `;
-                        grant = toGrant(created[0]!);
-                    }
-                    const [connection] = await tx<{ id: string }[]>`
-                        insert into connector_connection
-                            (org_id, owner_user_id, kind, site, cloud_id, email, api_token, access, provider,
-                             credential, principal_user_id, external_account_id, grant_id)
-                        values (${orgId}, ${userId}, 'jira', ${input.connection.site}, ${input.connection.cloudId},
-                                ${input.connection.email ?? input.externalAccountId}, null, ${input.connection.access},
-                                ${input.provider}, 'oauth_grant', ${userId}, ${input.externalAccountId}, ${grant.id})
-                        returning id
-                    `;
-                    return { ok: true, grant, connectionId: connection!.id };
-                });
+                return await sql.begin((tx) => attachInTx(tx, orgId, input));
             } catch (error) {
                 // Two attaches racing on the same new account, or the same resource twice under one grant.
-                if (isUniqueViolation(error)) {
-                    const detail = (error as { constraint_name?: string }).constraint_name ?? '';
-                    return {
-                        ok: false,
-                        reason:
-                            detail === 'connector_connection_grant_resource_uk'
-                                ? 'duplicate-connection'
-                                : 'grant-conflict',
-                    };
-                }
+                const refusal = attachRefusalOf(error);
+                if (refusal) return { ok: false, reason: refusal };
                 throw error;
             }
         },
 
-        async rotate(grantId, expectedVersion, input) {
+        async finalize(grantId, claimToken, input) {
             await gate();
-            const rows = await sql<{ version: string }[]>`
-                update integration_grant
-                set version = version + 1, secret_version = ${input.secretVersion},
-                    secret_ref = coalesce(${input.secretRef ?? null}, secret_ref),
-                    authority = coalesce(${input.authority ? sql.json(input.authority as never) : null}, authority),
-                    status = 'active', updated_at = now()
-                where id = ${grantId} and org_id = ${orgId} and version = ${expectedVersion} and status <> 'revoked'
-                returning version
-            `;
-            if (rows[0]) return { ok: true, version: Number(rows[0].version) };
-            const current = await sql<{ status: GrantStatus }[]>`
-                select status from integration_grant where id = ${grantId} and org_id = ${orgId}
-            `;
-            if (!current[0]) return { ok: false, reason: 'not-found' };
-            return { ok: false, reason: current[0].status === 'revoked' ? 'revoked' : 'stale' };
+            return finalizeLineage(sql, { orgId, grantId, token: claimToken }, input);
         },
 
         async reconnect(connectionId, actor, input) {
@@ -251,16 +329,15 @@ export function createConnectionGrants({
                 if (grant.external_account_id !== input.externalAccountId) {
                     return { ok: false, reason: 'account-mismatch' };
                 }
-                const [rotated] = await tx<{ version: string }[]>`
-                    update integration_grant
-                    set version = version + 1, secret_version = ${input.secretVersion},
-                        secret_ref = coalesce(${input.secretRef ?? null}, secret_ref),
-                        authority = coalesce(${input.authority ? tx.json(input.authority as never) : null}, authority),
-                        status = 'active', updated_at = now()
-                    where id = ${grant.id}
-                    returning version
-                `;
-                return { ok: true, version: Number(rotated!.version) };
+                return finalizeLineage(
+                    tx,
+                    { orgId, grantId: grant.id, token: input.claimToken },
+                    {
+                        kind: 'reconsent',
+                        secretVersion: input.secretVersion,
+                        authority: input.authority ?? grant.authority,
+                    }
+                );
             });
         },
 

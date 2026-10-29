@@ -285,13 +285,19 @@ export interface JobActionStore {
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
      * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
-     * claim. `refused` says the runner never started (issue #845). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating (BEL-160): it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
         id: string,
         leaseToken: string,
-        interruption: { reason: string; release: boolean; claimSeq?: number | null; refused?: boolean }
+        interruption: {
+            reason: string;
+            release: boolean;
+            claimSeq?: number | null;
+            refused?: boolean;
+            blocked?: boolean;
+        }
     ): Promise<SuspendResult | { result: 'exhausted' }>;
 }
 
@@ -834,6 +840,21 @@ export async function suspendJob(
  */
 export const INTERRUPTION_BUDGET = 5;
 
+/**
+ * How long a blocked hand-back defers the next claim (BEL-160): the claim could not start because a
+ * leftover of an earlier claim is still terminating, so an immediate re-claim would only meet it again.
+ */
+export const BLOCKED_RETRY_SECONDS = 60;
+
+/**
+ * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
+ * losing an attempt to the infrastructure, so it is outside the count (BEL-160).
+ */
+export const interruptionsSpent = (q: Sql | TransactionSql): Fragment => q`(
+    select count(*) from jsonb_array_elements(interruptions) as spent
+    where spent ->> 'blocked' is distinct from 'true'
+) >= ${INTERRUPTION_BUDGET}`;
+
 /** The interruption the next claim records for an attempt whose lease expired (issue #822). */
 export const LEASE_EXPIRED_REASON = 'the lease expired: its driver went silent';
 
@@ -841,7 +862,7 @@ export async function interruptJob(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    { reason, release, claimSeq = null, refused = false }: Parameters<JobStore['interrupt']>[2]
+    { reason, release, claimSeq = null, refused = false, blocked = false }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
     // One lease-guarded update, an agent ran: the segment banks to the
@@ -850,7 +871,7 @@ export async function interruptJob(
     // and this one keeps its lease. A Stop already stamped wins over a release, as over a suspend.
     // An attempt already recorded (handed over, or expired and recorded by the claim that took it
     // over, then adopted) is one disruption: refunded once.
-    const entry = sql.json({ reason, at: new Date().toISOString() });
+    const entry = sql.json({ reason, at: new Date().toISOString(), ...(blocked ? { blocked: true } : {}) });
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
@@ -861,12 +882,12 @@ export async function interruptJob(
         jobId: id,
         leaseToken,
         operation: 'interrupt',
-        fingerprint: fingerprintOf({ reason, release, claimSeq }),
+        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked }),
     };
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
-        await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq }, recorded);
+        await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq, blocked }, recorded);
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status
@@ -876,6 +897,8 @@ export async function interruptJob(
                 started_at       = case when ${release} then null else started_at end,
                 lease_token      = case when ${release} then null else lease_token end,
                 lease_expires_at = case when ${release} then now() else lease_expires_at end,
+                claim_deferred_until = case when ${release && blocked}
+                    then now() + make_interval(secs => ${BLOCKED_RETRY_SECONDS}::int) else claim_deferred_until end,
                 cancel_requested_at = case when ${release} then null else cancel_requested_at end,
                 attempts         = greatest(attempts - 1, 0),
                 interruptions    = interruptions || jsonb_build_array(
@@ -883,7 +906,7 @@ export async function interruptJob(
                 )
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}
-              and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET}
+              and (${blocked && release} or not ${interruptionsSpent(tx)})
               and not ${recorded}
             returning status, root_job_id
         `;
@@ -907,14 +930,17 @@ export async function interruptJob(
 async function recordInterruptLaunch(
     tx: TransactionSql,
     at: { orgId: string; id: string; leaseToken: string },
-    { release, refused, claimSeq }: { release: boolean; refused: boolean; claimSeq: number | null },
+    {
+        release,
+        refused,
+        claimSeq,
+        blocked,
+    }: { release: boolean; refused: boolean; claimSeq: number | null; blocked: boolean },
     recorded: Fragment
 ): Promise<void> {
     if (!refused && release) return;
     const { orgId, id, leaseToken } = at;
-    const open = release
-        ? tx`and jsonb_array_length(interruptions) < ${INTERRUPTION_BUDGET} and not ${recorded}`
-        : tx``;
+    const open = release ? tx`and (${blocked} or not ${interruptionsSpent(tx)}) and not ${recorded}` : tx``;
     const [held] = await tx<{ claim_seq: string }[]>`
         select claim_seq from job
         where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken} ${open}

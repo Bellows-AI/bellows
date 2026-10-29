@@ -27,7 +27,8 @@ import {
 import { asIdentified } from './k8s-pod-shapes.js';
 import { jobOutcome, readTyped, readTypedList } from './k8s-poll.js';
 import { isLease, nonEmpty, optionalTimestamp, stringsOnly, validRunnerSpec } from './k8s-shapes.js';
-import type { Read } from '../runner.js';
+import { noteTerminating, stuckAmong, type Terminating, wellFormedDeleting } from './k8s-terminating.js';
+import { LeftoverTerminating, type Read } from '../runner.js';
 import {
     deleteSecretAcked,
     endRunnerJob,
@@ -342,6 +343,8 @@ interface SweepFleet {
     /** The uid each listed object answered, by name: its delete names that incarnation only. */
     uids: Map<string, string>;
     leases: string[];
+    /** The listed objects already deleting (a `deletionTimestamp`), by name: since when, and a pod's node. */
+    terminating: Map<string, Terminating>;
 }
 
 /** The finished agent runs the sweep spares, by Job name and by lease (Jobs are listed first). */
@@ -358,7 +361,8 @@ interface SweepScope {
 }
 
 type SweptItem = ListedRunnerJob & {
-    metadata: { name: string; uid: string; labels?: Record<string, string> };
+    metadata: { name: string; uid: string; labels?: Record<string, string>; deletionTimestamp?: string | null };
+    spec?: { nodeName?: string };
 };
 
 /**
@@ -390,11 +394,12 @@ function spared(deps: K8sDeps, { job, kind, kept }: SweepScope, item: SweptItem)
 
 /** The named objects a label-selector list carries, and their lease labels, except those the sweep spares. */
 function namedItemsOf(deps: K8sDeps, scope: SweepScope, items: SweptItem[]): Omit<SweepFleet, 'kind' | 'basePath'> {
-    const found: Omit<SweepFleet, 'kind' | 'basePath'> = { uids: new Map(), leases: [] };
+    const found: Omit<SweepFleet, 'kind' | 'basePath'> = { uids: new Map(), leases: [], terminating: new Map() };
     for (const item of items) {
         if (spared(deps, scope, item)) continue;
         // Every listed entry carries its uid (`asIdentified`): the delete below always names it.
         found.uids.set(item.metadata.name, item.metadata.uid);
+        noteTerminating(found.terminating, item, scope.kind);
         const lease = item.metadata.labels?.[LEASE_LABEL];
         if (lease !== undefined) found.leases.push(lease);
     }
@@ -427,7 +432,7 @@ const endedStatus = (status: unknown): boolean => isRecord(status) && jobOutcome
 const sweepEntry =
     (adopted: string | undefined, kind: string, live: boolean) =>
     (value: unknown): SweptItem | null => {
-        const item = asIdentified<SweptItem>(value);
+        const item = wellFormedDeleting(asIdentified<SweptItem>(value), kind);
         if (item === null) return null;
         const lease = item.metadata.labels?.[LEASE_LABEL];
         if (lease !== undefined && !isLease(lease)) return null;
@@ -550,11 +555,13 @@ async function deleteSweepFleets(deps: K8sDeps, fleets: SweepFleet[]): Promise<v
  */
 export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: AbortSignal): Promise<void> {
     let unmet = `the fence of job ${job.id} could not confirm the checkout empty`;
+    let stuck: string | undefined; // set by a round that proved every leftover already deleting
     const live = withSignal(deps, signal);
     const done = await pollFor<true>({ ...waitOf(live, REPLACE_WAIT_MS), everyMs: POLL_MS }, async (deadline) => {
         // Every request of the round, the deletes included, ends by the bound and refuses once
         // the attempt is killed.
         const round = boundedBy(live, deadline);
+        stuck = undefined;
         const { fleets, conclusive } = await probeLeftoverFleets(round, job);
         // Inconclusive: keep polling within the same bound, deleting nothing — a kind that proved
         // nothing may be the Job listing that spares the adopted run's pods (#869).
@@ -574,17 +581,23 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
             unmet = `the checkout claim of job ${job.id} could not be confirmed before fencing`;
             return;
         }
+        // Classified once the claim is held, so a later failure of this round keeps the blocked verdict.
+        stuck = stuckAmong(fleets);
         if (!(await deleteLeftoverSecrets(round, job, fleets))) {
             unmet = `the leftover secrets of job ${job.id} could not be deleted`;
             return;
         }
-        await deleteSweepFleets(round, fleets);
+        // Every leftover already accepted its delete: asking again is redundant and its failure must not hide the verdict.
+        if (stuck === undefined) await deleteSweepFleets(round, fleets);
         // No delete's answer is proof the checkout is free — a 409 on a uid precondition is
         // another incarnation under the name (issue #821): only a fresh, conclusive empty list
         // lets it go.
         unmet = `the leftover objects of job ${job.id} never disappeared after their delete`;
     });
-    if (done === undefined) throw new Error(`${unmet} (${REPLACE_WAIT_MS}ms)`);
+    if (done !== undefined) return;
+    // The final round held the claim and found every leftover already deleting: wait for it, outside the budget.
+    if (stuck !== undefined && !signal.aborted) throw new LeftoverTerminating(stuck);
+    throw new Error(`${unmet} (${REPLACE_WAIT_MS}ms)`);
 }
 
 /**

@@ -268,6 +268,14 @@ export const ownGroup = (job: BoardJob): BoardJob =>
 export class AdoptionBlocked extends Error {}
 
 /**
+ * A takeover sweep that ran out its bound while every leftover it listed was already deleting
+ * (a `deletionTimestamp` on each) — a pod whose node is gone never finishes. Nothing is wrong with
+ * this attempt: it ran nothing and is handed back as a blocked interruption, outside the board's
+ * interruption budget, instead of being left to the lease.
+ */
+export class LeftoverTerminating extends Error {}
+
+/**
  * A read that proves nothing — a transport failure past its retries, an answer that is neither the
  * thing nor its confirmed absence, a body that is not the shape asked for (#824). Never read as
  * empty or gone: whoever decides a delete or a negative verdict on it stands down instead.

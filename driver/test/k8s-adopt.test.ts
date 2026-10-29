@@ -8,14 +8,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import { loadDriverConfig } from '../src/config.js';
-import { jobPath } from '../src/k8s/k8s-auxspec.js';
+import { claimPath, jobPath } from '../src/k8s/k8s-auxspec.js';
 import { releaseClaimAfterGroupEnd } from '../src/k8s/k8s-fence.js';
 import { ensureGroup, finishGroup } from '../src/k8s/k8s-group.js';
 import { type CloseReads, adoptFinishedRunner } from '../src/k8s/k8s-adopt.js';
 import { pollRunnerJobUntilTerminal } from '../src/k8s/k8s-poll.js';
 import { jobsPath, runnerJobName, secretName } from '../src/k8s/k8s-podspec.js';
 import type { K8sDeps } from '../src/k8s/k8s-transport.js';
-import { AdoptionBlocked, commandMark, ownGroup, type AdoptedRun } from '../src/runner.js';
+import { AdoptionBlocked, commandMark, LeftoverTerminating, ownGroup, type AdoptedRun } from '../src/runner.js';
 import { AGENT_CONTAINER, SUPERVISOR_CONTAINER, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 import { k8sApiserver, type Special } from './fixtures/k8s-apiserver.js';
 
@@ -510,6 +510,41 @@ describe('a live run (#829)', () => {
 
         expect(adopted).toMatchObject({ live: true });
         expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, older.metadata.name)))).toBe(true);
+        expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, priorName)))).toBe(false);
+    });
+
+    // BEL-160: the sweep after a live takeover meets a pod stuck terminating on a gone node.
+    it('rejects a live takeover whose sweep meets a terminating leftover with LeftoverTerminating, owning no group and keeping the claim', async () => {
+        const stuck = {
+            metadata: {
+                name: 'stuck-pod',
+                uid: 'uid-stuck-pod',
+                labels: { 'factory.job': job.id, 'factory.lease': OTHER_TOKEN, 'job-name': 'job-of-other-lease' },
+                deletionTimestamp: '2026-10-29T10:00:00Z',
+            },
+            spec: { nodeName: 'node-a' },
+        };
+        const { deps, calls } = world(
+            [runnerItem({ active: 1 })],
+            (method, path) => {
+                if (method === 'GET' && path.startsWith(`/api/v1/namespaces/${NS}/pods?`)) {
+                    return decodeURIComponent(path).includes('factory.lease!=')
+                        ? { status: 200, body: JSON.stringify({ items: [stuck] }) }
+                        : undefined;
+                }
+                return logSays(`${RELEASED}\n`)(method, path);
+            },
+            { pods: runningPods() }
+        );
+
+        const e = await adoptFinishedRunner(deps, adopter, reads()).catch((error: unknown) => error);
+
+        expect(e).toBeInstanceOf(LeftoverTerminating);
+        expect(e).not.toBeInstanceOf(AdoptionBlocked);
+        expect(deps.groups?.get(job.leaseToken)).toBeUndefined();
+        expect(calls.some((call) => call.method === 'DELETE' && call.path.startsWith(claimPath(NS, adopter)))).toBe(
+            false
+        );
         expect(deletes(calls).some((call) => call.path.startsWith(jobPath(NS, priorName)))).toBe(false);
     });
 
