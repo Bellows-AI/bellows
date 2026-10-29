@@ -10,11 +10,13 @@ import {
 } from '../src/db/jobs/job-store-admission.js';
 import { useTestDb } from './harness.js';
 import { craftJob, testOrg } from './fixtures.js';
+import { holder, parkedReader, pool, waitForLockWait } from './lock-order-harness.js';
 
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const LEASE_SECONDS = 300;
 const MINUTE = 60;
+const CLAIMER = 'claim-metrics-claimer';
 
 const OTHER = testOrg();
 const db = useTestDb({ max: 6, orgs: [ORG, OTHER] });
@@ -131,21 +133,30 @@ describe.skipIf(!enabled)('claim observations', () => {
     });
 });
 
-describe.skipIf(!enabled)('claim wait includes the root lock wait', () => {
-    it('reports queued-to-claimed at acquisition, after a lock held by another claimer for ~2 s', async () => {
+describe.skipIf(!enabled)('claim wait includes the row lock wait', () => {
+    it('reports queued-to-claimed at acquisition, after a row lock held by another writer for ~2 s', async () => {
         const { seen, metrics } = observer();
         const id = await waiting(0);
-        const holder = await sql.reserve();
+        const claimPool = pool(CLAIMER);
         const HELD_MS = 2000;
         try {
-            await holder`select pg_advisory_lock(hashtextextended(${id}::text, 0))`;
-            const claiming = storeWith(metrics).claim('w1', LEASE_SECONDS);
+            const reader = parkedReader();
+            const claiming = createJobStore({
+                sql: claimPool,
+                orgId: ORG,
+                metrics,
+                plan: { readFor: reader.readFor },
+            }).claim('w1', LEASE_SECONDS);
+            await reader.entered;
+            const row = await holder(sql, (tx) => tx`select id from job where id = ${id} for update`);
+            reader.release();
+            await waitForLockWait(sql, CLAIMER, Date.now() + HELD_MS * 5);
             await new Promise((resolve) => setTimeout(resolve, HELD_MS));
-            await holder`select pg_advisory_unlock_all()`;
+            row.release();
+            await row.done;
             expect((await claiming)?.id).toBe(id);
         } finally {
-            await holder`select pg_advisory_unlock_all()`;
-            holder.release();
+            await claimPool.end({ timeout: 5 });
         }
         expect(seen.waits).toHaveLength(1);
         expect(seen.waits[0]!.seconds).toBeGreaterThanOrEqual(HELD_MS / 1000 - 0.2);

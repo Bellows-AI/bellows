@@ -4,11 +4,11 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import { CLAIM_PREPARE_SECONDS } from '../src/db/jobs/job-store-claim.js';
 import type { Claim, CreateJobStoreDeps, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
+import { holder, parkedReader, pool, waitForLockWait } from './lock-order-harness.js';
 import {
     account,
     expectUnblocked,
     expireLease,
-    holdLock,
     lapseDeferral,
     mustCreate,
     randomGithubId,
@@ -28,6 +28,8 @@ const LEASE_SECONDS = 300;
 /** How much of a lease the round trip from the claim to the database clock read may eat. */
 const LEASE_SLACK_MS = 500;
 const DELAY_MS = 1500;
+const LOCK_DEADLINE_MS = 10_000;
+const CLAIMER = 'claim-prep-claimer';
 const HEALTHY = 'acme/web';
 const POISON = 'acme/poison';
 const REVISION = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
@@ -192,17 +194,30 @@ describe.skipIf(!enabled)('claim preparation outside the locks — database', ()
         expect(await leaseLeftMs(claim)).toBeGreaterThanOrEqual(LEASE_SECONDS * 1000 - LEASE_SLACK_MS);
     });
 
-    it('measures the lease after a wait on the thread lock', async () => {
+    it("measures the lease after a wait on the candidate's row lock", async () => {
         const id = await queue();
-        const lock = await holdLock(sql, 'thread', id);
-        const pending = plain.claim(WORKER, LEASE_SECONDS);
-        await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
-        await lock.release();
+        const claimPool = pool(CLAIMER);
+        try {
+            const reader = parkedReader();
+            const pending = createJobStore({ sql: claimPool, orgId: ORG, plan: { readFor: reader.readFor } }).claim(
+                WORKER,
+                LEASE_SECONDS
+            );
+            await reader.entered;
+            const row = await holder(sql, (tx) => tx`select id from job where id = ${id} for update`);
+            reader.release();
+            await waitForLockWait(sql, CLAIMER, Date.now() + LOCK_DEADLINE_MS);
+            await new Promise((resolve) => setTimeout(resolve, DELAY_MS));
+            row.release();
+            await row.done;
 
-        const claim = await pending;
+            const claim = await pending;
 
-        expect(claim?.id).toBe(id);
-        expect(await leaseLeftMs(claim!)).toBeGreaterThanOrEqual(LEASE_SECONDS * 1000 - LEASE_SLACK_MS);
+            expect(claim?.id).toBe(id);
+            expect(await leaseLeftMs(claim!)).toBeGreaterThanOrEqual(LEASE_SECONDS * 1000 - LEASE_SLACK_MS);
+        } finally {
+            await claimPool.end({ timeout: 5 });
+        }
     });
 
     // A failed candidate queues as of its window's end: work queued before then goes first however
