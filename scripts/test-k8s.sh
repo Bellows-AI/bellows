@@ -479,6 +479,22 @@ render | grep -A4 'name: COMMERCE_TOKEN$' | grep -q 'key: commerce-token' && ok 
 render --set-string secret.commerceToken=commerce-token-value | grep -q 'commerce-token: "commerce-token-value"' &&
     ok 'the secret renders the commerce token key' || bad 'the secret renders the commerce token key' 'no commerce-token key'
 
+# Jira Cloud OAuth (docs/configuration.md): the client id is a plain value, the secret a secretKeyRef; unset, both are
+# empty and the board reads Jira as unconfigured.
+render --set-string integrations.jira.clientId=atl-client | grep -A1 'name: ATLASSIAN_CLIENT_ID$' |
+    grep -q 'value: "atl-client"' && ok 'the Atlassian client id renders' ||
+    bad 'the Atlassian client id renders' "$(render --set-string integrations.jira.clientId=atl-client | grep -A1 ATLASSIAN_CLIENT_ID)"
+render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep -q 'key: atlassian-client-secret' &&
+    render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep -q 'optional: true' &&
+    ok 'the Atlassian client secret is an optional Secret reference' ||
+    bad 'the Atlassian client secret is an optional Secret reference' "$(render | grep -A5 ATLASSIAN_CLIENT_SECRET)"
+render --set-string secret.atlassianClientSecret=atl-secret-value | grep -q 'atlassian-client-secret: "atl-secret-value"' &&
+    ok 'the generated Secret renders the Atlassian client secret key' ||
+    bad 'the generated Secret renders the Atlassian client secret key' 'no atlassian-client-secret key'
+render | grep -q 'atlassian-client-secret: ""' &&
+    ok 'the generated Secret renders the Atlassian key empty by default' ||
+    bad 'the generated Secret renders the Atlassian key empty by default' 'no atlassian-client-secret key'
+
 # Runner pod resources (issue #360): requests by default so Karpenter and the Cluster Autoscaler
 # can size for the runner fleet — a zero-request pod schedules onto any free pod slot and
 # provisions nothing. Limits only when set: a memory limit on an agent run OOM-kills a big build
@@ -702,6 +718,8 @@ byo="$(helm template "$RELEASE" charts/factory --set secret.create=false --set s
     --set secretStore.backend=database --set secretStore.existingSecret=managed-keys --set secretStore.activeKeyId=k1 2>&1)"
 expect_contains 'the collector sends the ingest header with a managed Secret' "$byo" \
     'X-Factory-Ingest-Token: ${env:INGEST_TOKEN}'
+expect_contains 'a managed Secret is read for the Atlassian client secret' "$byo" 'key: atlassian-client-secret'
+expect_not_contains 'a managed Secret is not generated alongside' "$byo" 'atlassian-client-secret: '
 # Every dashboard key but database-url is optional, so a missing one reads as the server's own boot
 # message; the driver's job-board-token is the exception (pinned above), so 7 rather than 8.
 [ "$(grep -c 'optional: true' <<<"$byo")" -ge 7 ] && ok 'managed-Secret keys are optional' ||

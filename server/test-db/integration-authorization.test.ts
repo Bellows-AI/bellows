@@ -570,7 +570,12 @@ describe.skipIf(!enabled)('complete: one lineage, claimed before the exchange', 
 describe.skipIf(!enabled)('complete: a new grant is created secret first, connection last', () => {
     const newAccount = (r: Rig, resources = [{ id: 'acme', label: 'acme.fake.test' }]) => {
         const account = acctId();
-        r.fake.identity = { externalAccountId: account, resources, authority: { scopes: ['fake:read'] } };
+        r.fake.identity = {
+            externalAccountId: account,
+            label: `${account}@example.test`,
+            resources,
+            authority: { scopes: ['fake:read'] },
+        };
         return account;
     };
 
@@ -905,6 +910,7 @@ describe.skipIf(!enabled)('complete: review r2, a create paused before or after 
         const account = acctId();
         r.fake.identity = {
             externalAccountId: account,
+            label: `${account}@example.test`,
             resources: [{ id: 'acme', label: 'acme.fake.test' }],
             authority: { scopes: ['fake:read'] },
         };
@@ -1067,6 +1073,7 @@ describe.skipIf(!enabled)('complete: recovery of a stuck transaction and cancell
         const account = acctId();
         r.fake.identity = {
             externalAccountId: account,
+            label: `${account}@example.test`,
             resources: [{ id: 'acme', label: 'a' }],
             authority: { scopes: ['fake:read'] },
         };
@@ -1101,6 +1108,7 @@ describe.skipIf(!enabled)('redaction', () => {
         const account = acctId();
         r.fake.identity = {
             externalAccountId: account,
+            label: `${account}@example.test`,
             resources: [{ id: 'acme', label: 'a' }],
             authority: { scopes: ['fake:read'] },
         };

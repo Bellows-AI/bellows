@@ -22,6 +22,7 @@ import {
     recoverIntegrations,
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
+import { jiraRegistration } from './integrations/providers/jira.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
@@ -163,13 +164,14 @@ export async function start(options: StartOptions = {}): Promise<void> {
         );
     }
 
-    // The outbound OAuth runtime (BEL-138). No provider is configured until a provider integration (BEL-61)
-    // registers its hooks, so today it serves only the recovery of rows and the destroy of a revoked grant's secret.
+    // The outbound OAuth runtime (BEL-138). Jira registers when ATLASSIAN_CLIENT_ID/SECRET are set; unset, no provider is
+    // configured and the runtime serves only the recovery of rows and the destroy of a revoked grant's secret.
+    const jira = jiraRegistration(config.integrations.jira);
     const integrations = createIntegrationRuntime({
         sql,
         secrets,
-        providers: () => undefined,
-        clients: () => undefined,
+        providers: jira.providers,
+        clients: jira.clients,
         callbackOrigin: config.integrations.callbackOrigin,
         log: (d) => console.log(`[integrations] ${JSON.stringify(d)}`),
     });
