@@ -6,7 +6,8 @@ import { BOARD_CALL_ATTEMPTS, BoardHttpError } from '../src/board/board-retry.js
 import { newJobState, raceStep } from '../src/loop/loop-attempt.js';
 import { end, endIfDown } from '../src/loop/loop-conclusion.js';
 import { recordEnding } from '../src/loop/loop-phase.js';
-import { handBackFence, setupDecision, standDown } from '../src/loop/loop-fence.js';
+import { handBackFence, setupDecision, standDown, syncThrewHalt, thrownRunDecision } from '../src/loop/loop-fence.js';
+import { LeftoverTerminating } from '../src/runner.js';
 import type { AttemptCtx, SetupHalt } from '../src/loop/loop-types.js';
 
 const JOB = { id: 'job-1' } as BoardJob;
@@ -231,6 +232,29 @@ describe('the attempt fences have exactly one owner (issue #472)', () => {
             expect(lines.join('\n')).toContain(halt.log);
         }
     );
+
+    // BEL-160: a sweep blocked by leftovers still deleting is no failure of the attempt.
+    describe('a sweep blocked by a terminating leftover', () => {
+        const blocked = new LeftoverTerminating('the leftover pod p on node n is still terminating after its delete');
+        const expected = {
+            halt: 'interrupt',
+            reason: `the claim waits for a leftover still terminating: ${blocked.message}`,
+            refused: true,
+            blocked: true,
+        };
+
+        it('maps a thrown sync to a blocked, refused interrupt', () => {
+            expect(syncThrewHalt(blocked)).toEqual(expected);
+        });
+
+        it('maps a thrown run to a blocked interrupt decision', () => {
+            expect(thrownRunDecision(JOB, blocked)).toMatchObject({ kind: 'interrupt', blocked: true, refused: true });
+        });
+
+        it('keeps blocked on the decision a setup halt becomes', () => {
+            expect(setupDecision(expected as SetupHalt)).toMatchObject({ kind: 'interrupt', blocked: true });
+        });
+    });
 
     // Issue #822: a refusal the driver makes while alive goes back to the board as an interruption,
     // after the claim and with no verdict — the board frees the lease at once and records why.

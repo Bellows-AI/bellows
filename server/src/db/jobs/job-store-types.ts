@@ -149,6 +149,8 @@ export interface JobInterruption {
     at: string;
     reason: string;
     claimSeq: number;
+    /** A hand-back that waited on a leftover still terminating: outside the interruption budget (BEL-160). */
+    blocked?: true;
 }
 
 export interface Job {

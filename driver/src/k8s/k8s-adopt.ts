@@ -41,6 +41,7 @@ import {
     type AdoptedRun,
     adoptionAbandoned,
     Inconclusive,
+    LeftoverTerminating,
     type LiveRun,
     type Read,
     type RunOutcome,
@@ -525,6 +526,8 @@ async function sweepAfterAdoption(
         await sweepClaimedFleets(deps, job, signal ?? ledgerOf(deps).signal(job));
     } catch (e) {
         if (signal?.aborted) throw adoptionAbandoned();
+        // Every leftover already deleting: nothing failed, the attempt waits for it (BEL-160).
+        if (e instanceof LeftoverTerminating) throw e;
         // A leftover the sweep could not confirm gone may still write the tree: the read run is
         // not abandoned for a fresh one, the attempt stands down to its lease.
         throw new AdoptionBlocked(`the run was read, but ${(e as Error).message}`);

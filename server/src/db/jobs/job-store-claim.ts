@@ -10,7 +10,7 @@ import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
 import type { EvidencePolicy, ReviewEvidence } from '../evidence-policy.js';
-import { INTERRUPTION_BUDGET, LEASE_EXPIRED_REASON } from './job-store-actions.js';
+import { interruptionsSpent, LEASE_EXPIRED_REASON } from './job-store-actions.js';
 import {
     admitInTx,
     awaitingTakeover,
@@ -197,7 +197,7 @@ const REFUSED = Symbol('refused by a budget');
  * indexed lookup by root, like the exclusion.
  */
 function claimRules({ sql, orgId }: JobStoreContext) {
-    const interruptionsSpent = sql`jsonb_array_length(interruptions) >= ${INTERRUPTION_BUDGET}`;
+    const spent = interruptionsSpent(sql);
     return {
         sameThreadRunning: (id: string | Fragment, root: string | Fragment) => sql`
             not exists (
@@ -208,8 +208,8 @@ function claimRules({ sql, orgId }: JobStoreContext) {
                   and o.status = 'running'
             )
         `,
-        recovering: sql`(status = 'running' and not ${interruptionsSpent})`,
-        exhausted: sql`(attempts >= max_attempts and ${interruptionsSpent})`,
+        recovering: sql`(status = 'running' and not ${spent})`,
+        exhausted: sql`(attempts >= max_attempts and ${spent})`,
         baseBranch: sql`(select tg.branch from batch_task t
                          join batch_target tg on tg.org_id = t.org_id and tg.batch_id = t.batch_id
                                              and tg.key = t.target_key

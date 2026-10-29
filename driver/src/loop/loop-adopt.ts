@@ -1,8 +1,8 @@
 import { raceStep } from './loop-attempt.js';
 import { isAgentless } from './loop-agentless.js';
-import { releaseAbandonedAdoption } from './loop-fence.js';
+import { blockedHalt, releaseAbandonedAdoption } from './loop-fence.js';
 import { type AdoptedRecord, type AttemptCtx, type SetupConclusion, STOOD_DOWN } from './loop-types.js';
-import { AdoptionBlocked, type AdoptedRun, type LiveRun, type Read } from '../runner.js';
+import { AdoptionBlocked, LeftoverTerminating, type AdoptedRun, type LiveRun, type Read } from '../runner.js';
 import { awaitFirstContact, controlTokenOf } from '../supervised-steps.js';
 import { SUPERVISOR_ENV, SUPERVISOR_REBIND_DELIVERY_MS } from '../supervisor-contract.js';
 
@@ -24,6 +24,12 @@ export async function adoptStep(
     try {
         adoptedOut = await raceStep(state.signal, adopting);
     } catch (e) {
+        // The sweep after the adoption met leftovers still deleting: the earlier run stays for the
+        // next claim, and the group (when live) is not this attempt's to end.
+        if (e instanceof LeftoverTerminating) {
+            state.keepGroup = true;
+            return blockedHalt(e);
+        }
         // A read run that could not be secured (issue #821), or an earlier run that could not be read at
         // all, is no reason to run afresh over its tree: an unconfirmed read never licenses the sweep.
         const why =

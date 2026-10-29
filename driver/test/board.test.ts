@@ -338,6 +338,20 @@ describe('reporting an interrupted attempt (issue #792)', () => {
         });
     });
 
+    it('sends blocked on a blocked interruption', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', status: 'queued' }, { status: 200 }));
+
+        await boardOn(fetch).interrupt(job, { reason: 'waiting', release: true, refused: true, blocked: true });
+
+        expect(calls[0]!.body).toEqual({
+            leaseToken: 'token-1',
+            reason: 'waiting',
+            release: true,
+            refused: true,
+            blocked: true,
+        });
+    });
+
     it('tells a spent budget apart from a lost lease, and reads a removed job as lost', async () => {
         const spent = recorder(() => Response.json({ code: 'INTERRUPTIONS_EXHAUSTED' }, { status: 409 }));
         expect(await boardOn(spent.fetch).interrupt(job, { reason: 'evicted', release: true })).toBe('exhausted');

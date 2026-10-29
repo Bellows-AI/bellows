@@ -8,6 +8,7 @@ import {
     SUPERVISOR_REPORT_PREFIX,
     SUPERVISOR_WINDDOWN_MS,
 } from '../../src/supervisor-contract.js';
+import { drive, stubBoard } from '../fixtures/loop-stubs.js';
 import { AdoptionBlocked, ARTIFACT_LIMIT, commandMark, type AdoptedRun } from '../../src/runner.js';
 import type { K8sMethod, K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { LOG_TAIL_LINES } from '../../src/k8s/k8s-transport.js';
@@ -42,6 +43,7 @@ import {
 describe('adopting a finished runner of an earlier claim (#792)', () => {
     const adopter: BoardJob = { ...job, leaseToken: NEW_TOKEN, attempts: 2, claimSeq: 2 };
     const priorName = runnerJobName(job);
+    const OTHER_LEASE = '66666666-6666-4666-8666-666666666666';
     const priorItem = (status: Record<string, unknown>, seq = '1', name = priorName, lease = job.leaseToken) => ({
         metadata: {
             name,
@@ -1134,6 +1136,44 @@ describe('adopting a finished runner of an earlier claim (#792)', () => {
         await expect(runner(request).adopt(adopter)).rejects.toBeInstanceOf(AdoptionBlocked);
 
         expect(deletedPrior(calls)).toBe(false);
+    });
+
+    // BEL-160: the sweep after the read run meets a pod stuck terminating on a gone node.
+    it('hands an adoption whose sweep meets an older pod stuck terminating back as a blocked interruption, the read run kept', async () => {
+        const { request: base, calls } = earlier({ item: priorItem({ succeeded: 1 }) });
+        const stuck = {
+            metadata: {
+                name: 'stuck-pod',
+                uid: 'uid-stuck-pod',
+                labels: { 'factory.job': job.id, 'factory.lease': OTHER_LEASE, 'job-name': 'job-of-other-lease' },
+                deletionTimestamp: '2026-10-29T10:00:00Z',
+            },
+            spec: { nodeName: 'node-a' },
+        };
+        const request: K8sRequest = (method, path, body) =>
+            method === 'GET' &&
+            path.startsWith(`/api/v1/namespaces/${namespace}/pods?`) &&
+            decodeURIComponent(path).includes('factory.lease!=')
+                ? Promise.resolve({ status: 200, body: JSON.stringify({ items: [stuck] }) })
+                : base(method, path, body);
+        const stub = stubBoard([adopter]);
+        const lines: string[] = [];
+
+        await drive({ ...stub, runner: runner(request), log: (line) => lines.push(line) });
+
+        expect(stub.board.interrupted).toHaveLength(1);
+        expect(stub.board.interrupted[0]).toMatchObject({
+            id: adopter.id,
+            release: true,
+            blocked: true,
+            refused: true,
+        });
+        expect(stub.board.interrupted[0]!.reason).toContain('stuck-pod');
+        expect(stub.board.interrupted[0]!.reason).toContain('node-a');
+        expect(stub.board.completed).toEqual([]);
+        expect(deletedPrior(calls)).toBe(false);
+        expect(lines.some((line) => line.includes('leaving it to the lease'))).toBe(false);
+        expect(calls.some((call) => call.method === 'POST' && call.path === jobsPath(namespace))).toBe(false);
     });
 
     it('reads the agent log again after a refusal, and adopts the run with its output', async () => {
