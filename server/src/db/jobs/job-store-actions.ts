@@ -403,6 +403,34 @@ export async function createFollowUpRow(sql: Sql, input: FollowUpRowInput): Prom
     return sql.begin((tx) => followUpInTx(tx, input));
 }
 
+/**
+ * The thread root of the named job (`root_job_id` is immutable, so the unlocked read is final), locked root row then
+ * thread lock — the bind's order; the claim only tries (BEL-161). Null when the job or its root is gone.
+ */
+async function lockThreadOf(tx: TransactionSql, orgId: string, id: string): Promise<string | null> {
+    const [named] = await tx<{ root_job_id: string }[]>`
+        select root_job_id from job where org_id = ${orgId} and id = ${id}
+    `;
+    if (!named) return null;
+    return (await lockThreadRootInTx(tx, orgId, named.root_job_id)) ? named.root_job_id : null;
+}
+
+/**
+ * Whether any member of the thread is not terminal, read under the thread's advisory lock. A missing row or a
+ * non-boolean answer throws: an unconfirmed read is never "idle".
+ */
+async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: string): Promise<boolean> {
+    const [row] = await tx<{ busy: boolean }[]>`
+        select exists (
+            select 1 from job m
+            where m.org_id = ${orgId} and m.root_job_id = ${rootJobId}
+              and m.status not in ${tx([...TERMINAL_STATUSES])}
+        ) as busy
+    `;
+    if (typeof row?.busy !== 'boolean') throw new Error('the thread busy read returned no answer');
+    return row.busy;
+}
+
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [] } = input;
@@ -413,14 +441,13 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     if (!label) return 'missing';
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return replayedFor(tx, { orgId, parentId, createdBy }, replayed);
-    // The same per-thread advisory lock the claim, remove, reopen and done take: the
-    // eligibility check and the insert must be atomic with a racing done on ANY member —
-    // not only on the parent row the CTE below locks — or a done could commit between the
-    // check and the insert and leave queued work in a thread the user closed.
-    // A follow-up naming connections binds under the root row, which the claim's acquire holds before the
-    // advisory lock: lock them in that order (`lockThreadRootInTx`). Without connections: unchanged.
-    if (connectionIds.length > 0) await lockThreadRootInTx(tx, orgId, label.root_job_id);
-    await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
+    // The root row, then the thread lock (the bind's order; the claim only tries): the eligibility check and the insert
+    // must be atomic with a racing done on ANY member — not only on the parent row the CTE below locks — or a done
+    // could commit between the check and the insert and leave queued work in a thread the user closed.
+    if (!(await lockThreadRootInTx(tx, orgId, label.root_job_id))) return 'missing';
+    // A busy thread is answered here, before the insert: the refusal read after it is a later snapshot, and a verdict
+    // committing in between would turn not_finished into forbidden.
+    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
     const rows = await tx<{ id: string }[]>`
             with parent as (
                 select id, repo, executor, executor_scope, session_id, root_job_id, workflow_name, mode
@@ -483,7 +510,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
         return { id: rows[0].id };
     }
     // Nothing inserted — one of the preconditions failed, and which one decides the answer
-    // the route turns into a status code. The parent cannot have moved to deleted since the pre-read above —
+    // the route turns into a status code. A busy thread was answered before the insert, so this read runs only on a
+    // thread that was idle under the lock: nothing can move a member out of terminal, or done in or out, so its
+    // answer agrees with the insert's. The parent cannot have moved to deleted since the pre-read above —
     // remove deletes under this same advisory lock — so missing was decided before the lock.
     return threadRefusalOf(tx, orgId, parentId);
 }
@@ -582,23 +611,15 @@ export async function retryInTx(
     if (!label) return 'missing';
     const replayed = await replayOf(tx, orgId, createdBy, idem);
     if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy }, replayed);
-    // The same per-thread advisory lock the claim, remove, reopen and done take: the
-    // eligibility check and the insert must be atomic with a racing done on ANY member and
-    // with a claim of the head, or a done could commit between the check and the insert and
-    // leave a fresh attempt queued into a closed thread.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${label.root_job_id}::text, 0))`;
+    // The root row, then the thread lock (the bind's order; the claim only tries): the eligibility check and the
+    // insert must be atomic with a racing done on ANY member and with a claim of the head, or a done could commit
+    // between the check and the insert and leave a fresh attempt queued into a closed thread.
+    if (!(await lockThreadRootInTx(tx, orgId, label.root_job_id))) return 'missing';
     // The insert below skips when the named row or any member of its thread is not terminal, and the refusal read
     // after it is a later snapshot: a verdict committing in between would turn not_finished into forbidden. Answer
     // from this read instead. Under the thread lock no member leaves terminal or appears (follow-up, retry and
     // reopen take it too), so this and the insert's busy predicate agree.
-    const [busy] = await tx<{ busy: boolean }[]>`
-        select exists (
-            select 1 from job m
-            where m.org_id = ${orgId} and m.root_job_id = ${label.root_job_id}
-              and m.status not in ${tx([...TERMINAL_STATUSES])}
-        ) as busy
-    `;
-    if (busy?.busy) return 'not_finished';
+    if (await threadBusyInTx(tx, orgId, label.root_job_id)) return 'not_finished';
     const rows = await tx<{ id: string }[]>`
             with named as (
                 select id, root_job_id
@@ -706,22 +727,14 @@ export async function markJobDone(
     // not. A thread that is still moving keeps its tree: its last completing attempt will
     // find every member terminal AND this done_at in place, and reclaim at the verdict.
     return sql.begin(async (tx) => {
-        // The thread root, straight off the named row (022) — the same pre-lock read remove and
-        // reopen make. Nothing when the input never existed.
-        const [named] = await tx<{ root_job_id: string }[]>`
-            select root_job_id from job where org_id = ${orgId} and id = ${id}
-        `;
-        if (!named) return 'missing';
-        // The same per-thread advisory lock the claim, remove, reopen and both insert paths take:
-        // stamping done_at must be atomic with the follow-up and retry inserts — whose
-        // thread-done eligibility checks read it — and with remove and reopen, or one of them
-        // could decide against a thread whose done it could not see. It also serializes done
-        // against remove and reopen, which row-locking alone never did.
-        await tx`select pg_advisory_xact_lock(hashtextextended(${named.root_job_id}::text, 0))`;
+        // Stamping done_at must be atomic with the follow-up and retry inserts — whose thread-done eligibility checks
+        // read it — and with remove and reopen, or one of them could decide against a thread whose done it could not see.
+        const rootJobId = await lockThreadOf(tx, orgId, id);
+        if (!rootJobId) return 'missing';
         // A live batch task's thread is closed by the batch, never by a plain Done: Done would block
         // the task's retry and queue the reclaim of the tree that retry runs in. Once the batch ended
         // or a person force-closed the task, nothing retries it and Done closes it.
-        if ((await batchThreadState(tx, orgId, named.root_job_id)) === 'live') return 'batch';
+        if ((await batchThreadState(tx, orgId, rootJobId)) === 'live') return 'batch';
         // coalesce, not assignment: the second "done" answers the first one's instant,
         // which is what makes the route idempotent rather than silently rewriting history.
         // done_by rides the same rule: the first writer's actor survives a retried click.
@@ -994,21 +1007,12 @@ export async function removeJobThread(
     removedBy: string | null
 ): ReturnType<JobStore['removeThread']> {
     const { sql, orgId, prs } = ctx;
-    // Same per-thread advisory lock the claim takes, for the same serialization reason: the
-    // refusal check and the delete must see every earlier claim of this thread commit, or a
-    // claim could walk out with a row after the check passed and before the delete ran — a
-    // removed task with a member running again afterwards. The lock queues removals against
-    // claims of the same thread and nothing else.
+    // The root row, then the thread lock (the bind's order; the claim only tries): the refusal check and the delete
+    // must see every earlier claim of this thread commit, or a claim could walk out with a row after the check passed
+    // and before the delete ran — a removed task with a member running again afterwards.
     return sql.begin(async (tx) => {
-        // The thread root, straight off the named row (022). Nothing when the input never
-        // existed — the row read below then answers nothing and the route says missing.
-        const [named] = await tx<{ id: string; root_job_id: string }[]>`
-            select id, root_job_id from job
-            where org_id = ${orgId} and id = ${id}
-        `;
-        if (!named) return 'missing';
-        const rootJobId = named.root_job_id;
-        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+        const rootJobId = await lockThreadOf(tx, orgId, id);
+        if (!rootJobId) return 'missing';
 
         // The thread's ROOT row carries the labels the reclaim is addressed by — the repo
         // the worktree was checked out from and the author whose checkout root it lives
@@ -1185,8 +1189,8 @@ export async function pokeThreadWait(
  * Done's inverse (issue #327): clear the done stamp on every member of the thread and withdraw a
  * task_reclaim row that has not run yet, so a task closed by mistake can be followed up again —
  * createFollowUpRow's thread-wide done predicate is exactly what this reverses. The whole decision
- * is one transaction under the SAME per-thread advisory lock the claim, remove and reclaim ack
- * take: the refusal checks, the withdraw and the clear must see every earlier claim and ack of this
+ * is one transaction under the thread's root row and then its advisory lock (the claim only tries
+ * the latter): the refusal checks, the withdraw and the clear must see every earlier claim and ack of this
  * thread commit, or a reclaim claim could take the row between the check and the withdraw — a tree
  * removed for a task that believes itself reopened. A row any acquisition took (a `claim_token`,
  * 075) is refused outright (`reclaiming`), its lease live or expired: a kubernetes reclaim group
@@ -1200,15 +1204,8 @@ export async function pokeThreadWait(
 export async function reopenJob(ctx: JobStoreContext, id: string): ReturnType<JobStore['reopen']> {
     const { sql, orgId } = ctx;
     return sql.begin(async (tx) => {
-        // The thread root, straight off the named row (022) — the same pre-lock read
-        // removeJobThread makes. Nothing when the input never existed.
-        const [named] = await tx<{ id: string; root_job_id: string }[]>`
-            select id, root_job_id from job
-            where org_id = ${orgId} and id = ${id}
-        `;
-        if (!named) return 'missing';
-        const rootJobId = named.root_job_id;
-        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+        const rootJobId = await lockThreadOf(tx, orgId, id);
+        if (!rootJobId) return 'missing';
 
         // A removed tree is unrecoverable: a follow-up resumes a session in the tree it ran in,
         // and there is no tree. The marker (045) is stamped only at the ack (a threadDone verdict

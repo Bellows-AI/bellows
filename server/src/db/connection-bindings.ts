@@ -175,24 +175,34 @@ export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId
 }
 
 /**
- * Global lock order for everything BEL-59 adds: thread root row (`for no key update`, ascending ids when several)
- * -> that thread's advisory lock -> `integration_grant` row -> `connector_connection` row -> child inserts. The
- * claim holds its candidate row and only TRIES the advisory lock (a busy thread is skipped, never waited on), so it
- * can neither invert this order nor be part of a cycle. `no key` so the child inserts' FK checks (KEY SHARE on the
- * root) of a claim on another member of the thread never wait on it. Returns false when the root is gone.
+ * The lock order of every thread writer (BEL-59, BEL-161): batch row -> thread root rows (`for no key update`,
+ * ascending ids) -> the PR lock -> the advisory lock of each held root (re-entrant) -> member rows -> grant ->
+ * connection -> child inserts. A blocking wait on a thread's advisory lock is only made by a transaction that already
+ * holds that root's row, so no transaction waits on an advisory lock held by another order-following one. Two
+ * exceptions block only on their FIRST lock: the claim's acquire (its candidate row, then the root row `skip locked`
+ * and the advisory lock tried) and a settle of the caller's own running row (then one thread, in order). `no key` so
+ * the child inserts' FK checks (KEY SHARE on the root) of a claim on another member never wait on it.
+ * Returns the ids of `rootIds` that exist as roots, locked in ascending order.
  */
-export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: string): Promise<boolean> {
+export async function lockRootRowsInTx(db: Db, orgId: string, rootIds: readonly string[]): Promise<string[]> {
     const rows = await db<{ id: string }[]>`
-        select id from job where org_id = ${orgId} and id = ${rootJobId} and root_job_id = id for no key update
+        select id from job
+        where org_id = ${orgId} and id = any(${rootIds as string[]}::uuid[]) and root_job_id = id
+        order by id for no key update
     `;
-    if (rows.length === 0) return false;
+    return rows.map((row) => row.id);
+}
+
+/** The root row, then the thread's advisory lock (see `lockRootRowsInTx`). Returns false when the root is gone. */
+export async function lockThreadRootInTx(db: Db, orgId: string, rootJobId: string): Promise<boolean> {
+    if ((await lockRootRowsInTx(db, orgId, [rootJobId])).length !== 1) return false;
     await lockThreadInTx(db, rootJobId);
     return true;
 }
 
 /**
- * The per-thread advisory lock the follow-up, remove and done take (the claim only tries it); re-entrant within a
- * transaction. Alone it is only for a transaction that already holds (or must never take) the root row.
+ * The per-thread advisory lock, re-entrant within a transaction. Alone it is only for a transaction that already
+ * holds the root row, or the ack fallback for a thread whose root is gone.
  */
 export async function lockThreadInTx(db: Db, rootJobId: string): Promise<void> {
     await db`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;

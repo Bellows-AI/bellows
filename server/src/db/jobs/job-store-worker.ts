@@ -6,6 +6,7 @@
 
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
+import { lockRootRowsInTx } from '../connection-bindings.js';
 import type { EvidencePolicy } from '../evidence-policy.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { recordReportedSession, type SessionEvidence } from './job-store-provenance.js';
@@ -504,6 +505,10 @@ async function settleVerdict(
     const jobRepo = row.repo;
     const stopPending = row.stop_pending;
 
+    // The root row first, ahead of the PR lock and every advisory lock below (BEL-161): a webhook holds roots then the
+    // PR lock, and this verdict may close a root through it. Exception (b): the caller's own running row landed, and
+    // the rest is one thread, in order.
+    await lockRootRowsInTx(tx, orgId, [rootJobId]);
     // The caller's verdict ends its separate reviews (issue #549): one still queued or running
     // has nothing left to inform, so it is stopped rather than left to finish orphaned.
     await stopReviewsOf(tx, { orgId, wallTick, stoppedBy: null }, [completedId]);

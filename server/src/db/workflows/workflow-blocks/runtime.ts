@@ -14,6 +14,7 @@
  */
 import type { Sql, TransactionSql } from 'postgres';
 import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
+import { lockThreadRootInTx } from '../../connection-bindings.js';
 import type { JobStorePrs } from '../../jobs/job-store-types.js';
 import { insertWorkflowSuccessor } from '../../jobs/job-store-rows.js';
 import { runtimeIsValid } from './runtime-params.js';
@@ -144,7 +145,9 @@ export async function wakeOneRound(
 ): Promise<string | null> {
     const { sql, orgId, prs } = ctx;
     return sql.begin(async (tx) => {
-        await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
+        // The root row, then the thread lock (BEL-161): a merge close holds the wait rows below after taking the root
+        // row, so waiting on them while holding only the advisory lock is the inverted order. A removed root is not woken.
+        if (!(await lockThreadRootInTx(tx, orgId, rootJobId))) return null;
 
         // Re-checked under the lock: the caller's candidate list ran unlocked, so a follow-up
         // queued or the thread marked done between that read and this lock grant would
