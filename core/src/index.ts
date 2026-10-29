@@ -318,3 +318,8 @@ export { batchUsageOf, reduceUsage, runContributionsOf, taskUsageOf } from './us
 export { rollupsFromFacts } from './usage-rollups.js';
 export type { RollupFacts, SessionFieldTotal } from './usage-rollups.js';
 export type * from './types.js';
+export * from './integrations/context.js';
+export * from './integrations/definition.js';
+export * from './integrations/operation.js';
+export * from './integrations/outcomes.js';
+export * from './integrations/redact.js';
