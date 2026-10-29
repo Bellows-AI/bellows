@@ -90,10 +90,10 @@ describe.skipIf(!enabled)('connection store — scoping', () => {
     it('disconnects personal for its owner and org-owned only for an admin', async () => {
         const orgOwned = await newConnection(null);
         const mine = await newConnection(OWNER.id);
-        expect(await store.disconnect(mine.id, { userId: STRANGER.id, admin: true })).toBe(false);
-        expect(await store.disconnect(orgOwned.id, { userId: OWNER.id, admin: false })).toBe(false);
-        expect(await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).toBe(true);
-        expect(await store.disconnect(orgOwned.id, { userId: OWNER.id, admin: true })).toBe(true);
+        expect((await store.disconnect(mine.id, { userId: STRANGER.id, admin: true })).disconnected).toBe(false);
+        expect((await store.disconnect(orgOwned.id, { userId: OWNER.id, admin: false })).disconnected).toBe(false);
+        expect((await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).disconnected).toBe(true);
+        expect((await store.disconnect(orgOwned.id, { userId: OWNER.id, admin: true })).disconnected).toBe(true);
     });
 });
 
@@ -150,14 +150,14 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
 
     it('disconnect is soft: the row remains, api_token is null and status is disconnected', async () => {
         const mine = await newConnection(OWNER.id);
-        expect(await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).toBe(true);
+        expect((await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).disconnected).toBe(true);
         const [row] = await sql<{ api_token: string | null; status: string; disconnected_at: Date | null }[]>`
             select api_token, status, disconnected_at from connector_connection where id = ${mine.id}
         `;
         expect(row).toMatchObject({ api_token: null, status: 'disconnected' });
         expect(row!.disconnected_at).not.toBeNull();
         expect((await store.list(OWNER.id)).map((v) => v.id)).not.toContain(mine.id);
-        expect(await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).toBe(false);
+        expect((await store.disconnect(mine.id, { userId: OWNER.id, admin: false })).disconnected).toBe(false);
     });
 
     it('a binding keeps its frozen account after the connection is disconnected', async () => {
@@ -189,7 +189,10 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
             return result;
         };
         const solo = await attach();
-        expect(await store.disconnect(solo.connectionId, { userId: OWNER.id, admin: false })).toBe(true);
+        expect(await store.disconnect(solo.connectionId, { userId: OWNER.id, admin: false })).toEqual({
+            disconnected: true,
+            revokedGrantId: solo.grant.id,
+        });
         const [revoked] = await sql<
             { status: string }[]
         >`select status from integration_grant where id = ${solo.grant.id}`;
@@ -208,7 +211,10 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
             connection: { site: 'example.atlassian.net', cloudId: `c-${crypto.randomUUID()}`, access: 'read' },
         });
         expect(sibling.ok).toBe(true);
-        await store.disconnect(first.connectionId, { userId: OWNER.id, admin: false });
+        expect(await store.disconnect(first.connectionId, { userId: OWNER.id, admin: false })).toEqual({
+            disconnected: true,
+            revokedGrantId: null,
+        });
         const [kept] = await sql<
             { status: string }[]
         >`select status from integration_grant where id = ${first.grant.id}`;
@@ -226,7 +232,7 @@ describe.skipIf(!enabled)('connection store — generic view (094)', () => {
         });
         expect((await store.list(OWNER.id)).map((v) => v.id)).not.toContain(foreign.id);
         expect((await store.candidates(OWNER.id, 'jira')).map((v) => v.id)).not.toContain(foreign.id);
-        expect(await store.disconnect(foreign.id, { userId: OWNER.id, admin: true })).toBe(false);
+        expect((await store.disconnect(foreign.id, { userId: OWNER.id, admin: true })).disconnected).toBe(false);
         expect((await otherOrgStore.list(OWNER.id)).map((v) => v.id)).toContain(foreign.id);
     });
 });

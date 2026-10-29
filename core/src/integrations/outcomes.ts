@@ -10,6 +10,8 @@ export const OUTCOME_REASONS = {
         'redirect-refused',
         'refresh-in-progress',
         'secret-unavailable',
+        'credential-pending',
+        'persistence-pending',
         'transport',
         'timeout',
         'aborted',

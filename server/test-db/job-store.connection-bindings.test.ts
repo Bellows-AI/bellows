@@ -369,7 +369,8 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
             expect(await projection(await create(BOB.id))).toBeNull();
         });
 
-        const disconnect = (id: string) => connections.disconnect(id, { userId: ALICE.id, admin: false });
+        const disconnect = async (id: string) =>
+            (await connections.disconnect(id, { userId: ALICE.id, admin: false })).disconnected;
 
         it('disconnecting one of two bindings projects the survivor; disconnecting the only one projects null', async () => {
             const one = await connect(ALICE.id);

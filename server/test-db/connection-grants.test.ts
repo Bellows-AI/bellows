@@ -4,6 +4,7 @@ import type { Sql } from 'postgres';
 import { createConnectionStore } from '../src/db/connection-store.js';
 import { waitForLockWaiters } from './lock-wait.js';
 import { createConnectionGrants, grantSecretIdentity, type ConnectionGrants } from '../src/db/connection-grants.js';
+import { createGrantLineage } from '../src/integrations/grant-lineage.js';
 import { createSecretRef } from '../src/secrets/secret-input.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
@@ -80,27 +81,61 @@ describe.skipIf(!enabled)('connection grants', () => {
         expect(next.grant.id).not.toBe(first.grant.id);
     });
 
-    it('concurrent rotate with the same expected version: exactly one wins, the other answers stale', async () => {
+    const lineage = () =>
+        createGrantLineage({ sql, orgId: ORG, secrets: testSecretStore(sql), providers: () => undefined });
+
+    it('finalize requires the claim: no claim, a stale token and a replayed token all change nothing', async () => {
         const { grant } = await mustAttach(grants, ALICE.id, account());
-        const results = await Promise.all([
-            grants.rotate(grant.id, grant.version, { secretVersion: 'v-a' }),
-            grants.rotate(grant.id, grant.version, { secretVersion: 'v-b' }),
-        ]);
-        expect(results.filter((r) => r.ok)).toHaveLength(1);
-        expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'stale' }]);
-        const [row] = await sql<{ version: string }[]>`select version from integration_grant where id = ${grant.id}`;
-        expect(Number(row!.version)).toBe(grant.version + 1);
+        const input = { kind: 'refresh', secretVersion: 'v-a', authority: { scopes: ['read'] } } as const;
+        expect(await grants.finalize(grant.id, randomUUID(), input)).toEqual({ ok: false, reason: 'claim-lost' });
+        const [row] = await sql<{ version: string; secret_version: string | null }[]>`
+            select version, secret_version from integration_grant where id = ${grant.id}
+        `;
+        expect(Number(row!.version)).toBe(grant.version);
+        expect(row!.secret_version).toBeNull();
     });
 
-    it('reconnect under the same account rotates the grant; the connection principal is unchanged', async () => {
+    it('two racers for the claim: exactly one wins; two finalizes with the winning token: exactly one applies', async () => {
+        const { grant } = await mustAttach(grants, ALICE.id, account());
+        await sql`update integration_grant set secret_ref = ${createSecretRef()}, secret_version = 'v-0' where id = ${grant.id}`;
+        const racers = await Promise.all([
+            lineage().claimLineage(grant.id, 'refresh', { rotates: false }),
+            lineage().claimLineage(grant.id, 'refresh', { rotates: false }),
+        ]);
+        expect(racers.filter((r) => r.ok)).toHaveLength(1);
+        expect(racers.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'held' }]);
+        const winner = racers.find((r) => r.ok)!;
+        if (!winner.ok) throw new Error('unreachable');
+        const input = { kind: 'refresh', secretVersion: 'v-a', authority: { scopes: ['read'] } } as const;
+        const results = await Promise.all([
+            grants.finalize(grant.id, winner.claim.token, input),
+            grants.finalize(grant.id, winner.claim.token, input),
+        ]);
+        expect(results.filter((r) => r.ok)).toHaveLength(1);
+        expect(results.filter((r) => !r.ok)).toEqual([{ ok: false, reason: 'claim-lost' }]);
+        const [row] = await sql<{ version: string; lineage_claim: string | null }[]>`
+            select version, lineage_claim from integration_grant where id = ${grant.id}
+        `;
+        expect(Number(row!.version)).toBe(grant.version + 1);
+        expect(row!.lineage_claim).toBeNull();
+    });
+
+    const reconsentClaim = async (grantId: string) => {
+        const claim = await lineage().claimLineage(grantId, 'reconsent', { rotates: false });
+        if (!claim.ok) throw new Error(`claim refused: ${claim.reason}`);
+        return claim.claim.token;
+    };
+
+    it('reconnect under the same account finalizes the reconsent claim; the connection principal is unchanged', async () => {
         const acct = account();
         const { grant, connectionId } = await mustAttach(grants, ALICE.id, acct);
         await sql`update integration_grant set status = 'reconnect_required' where id = ${grant.id}`;
+        const claimToken = await reconsentClaim(grant.id);
 
         const result = await grants.reconnect(
             connectionId,
             { userId: ALICE.id },
-            { externalAccountId: acct, secretVersion: 'v-new' }
+            { externalAccountId: acct, claimToken, secretVersion: 'v-new' }
         );
         expect(result).toEqual({ ok: true, version: grant.version + 1 });
         const [row] = await sql<{ status: string; secret_version: string; version: string }[]>`
@@ -115,10 +150,11 @@ describe.skipIf(!enabled)('connection grants', () => {
 
     it('reconnect under a different account is refused account-mismatch and changes nothing', async () => {
         const { grant, connectionId } = await mustAttach(grants, ALICE.id, account());
+        const claimToken = await reconsentClaim(grant.id);
         const result = await grants.reconnect(
             connectionId,
             { userId: ALICE.id },
-            { externalAccountId: account(), secretVersion: 'v-evil' }
+            { externalAccountId: account(), claimToken, secretVersion: 'v-evil' }
         );
         expect(result).toEqual({ ok: false, reason: 'account-mismatch' });
         const [row] = await sql<{ version: string; secret_version: string | null }[]>`
@@ -131,16 +167,15 @@ describe.skipIf(!enabled)('connection grants', () => {
     it("reconnect by someone who is not the connection's principal finds nothing", async () => {
         const acct = account();
         const { connectionId } = await mustAttach(grants, ALICE.id, acct);
-        expect(
-            await grants.reconnect(connectionId, { userId: BOB.id }, { externalAccountId: acct, secretVersion: 'v' })
-        ).toEqual({ ok: false, reason: 'not-found' });
-        expect(
-            await otherOrgGrants.reconnect(
-                connectionId,
-                { userId: ALICE.id },
-                { externalAccountId: acct, secretVersion: 'v' }
-            )
-        ).toEqual({ ok: false, reason: 'not-found' });
+        const input = { externalAccountId: acct, claimToken: randomUUID(), secretVersion: 'v' };
+        expect(await grants.reconnect(connectionId, { userId: BOB.id }, input)).toEqual({
+            ok: false,
+            reason: 'not-found',
+        });
+        expect(await otherOrgGrants.reconnect(connectionId, { userId: ALICE.id }, input)).toEqual({
+            ok: false,
+            reason: 'not-found',
+        });
     });
 
     it('revokeIfOrphaned keeps a grant while another active connection uses it', async () => {
@@ -229,7 +264,7 @@ describe.skipIf(!enabled)('connection grants', () => {
         const state = await waitForLockWaiters(sql, 2, () => done.a || done.b);
         release();
         await holder;
-        expect(await Promise.all([a, b])).toEqual([true, true]);
+        expect((await Promise.all([a, b])).map((r) => r.disconnected)).toEqual([true, true]);
         expect(state).toBe('blocked');
         const [grant] = await sql<
             { status: string }[]

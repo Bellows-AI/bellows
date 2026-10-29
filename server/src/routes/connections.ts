@@ -196,7 +196,7 @@ export function connectionRoutes({
             () => ctx.store.disconnect(id, { userId: ctx.caller.user.id, admin: ctx.caller.role === ADMIN_ROLE })
         );
         if (!removed.ok) return reply;
-        if (!removed.value) {
+        if (!removed.value.disconnected) {
             return reply
                 .code(HTTP_NOT_FOUND)
                 .send({ error: 'No such connection you may delete', code: ERROR_CODES.NOT_FOUND });

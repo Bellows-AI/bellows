@@ -72,9 +72,9 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
             const at = rows.findIndex(
                 (r) => r.id === id && (r.ownerUserId === userId || (r.ownerUserId === null && admin))
             );
-            if (at === -1) return false;
+            if (at === -1) return { disconnected: false, revokedGrantId: null };
             rows.splice(at, 1);
-            return true;
+            return { disconnected: true, revokedGrantId: null };
         },
     };
 }

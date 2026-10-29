@@ -25,6 +25,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | `GITHUB_TOKEN` and `GH_TOKEN` reserved env names | `core/src/env.ts`, `driver/src/claim.ts`, `driver/src/config.ts`, `server/migrations/072_github_env_reserved.sql` | `server/test/routes.env.test.ts`, `driver/test/config.test.ts`, `driver/test/executor-images.test.ts` |
 | GitHub, the lanes (forced expiry, App-less refusal, Memory cache) | `server/src/offline-mint.ts`, `scripts/test-jobs.sh`, `scripts/test-k8s.sh`, `scripts/k8s-stub.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/lane-stubs.test.ts` |
 | Portable integration layer: definition, closed outcomes, bounded operation runner; imports nothing from `server` | `core/src/integrations/`, `lint/no-cross-package-imports.grit` | `core/test/integrations.operation.test.ts`, `core/test/integrations.boundary.test.ts`, `server/test/integrations.contract.test.ts` |
+| Grant lineage: one claim per grant, the exchange, identical-replay persistence, recovery by claim kind, destroy of a revoked secret | `server/migrations/095_grant_lineage.sql`, `server/src/integrations/grant-lineage.ts`, `server/src/integrations/grant-credentials.ts`, `server/src/integrations/oauth-provider.ts`, `server/src/db/connection-grants.ts` (`finalizeLineage`) | `server/test-db/integration-lineage.test.ts`, `server/test-db/connection-grants.test.ts`, `server/test-db/migration.095-grant-lineage.test.ts`, `server/test-db/connection-lock-order.test.ts` |
+| Credential resolver, trusted context and the binding ceiling | `server/src/integrations/credential-resolver.ts`, `server/src/integrations/trusted-context.ts` | `server/test-db/integration-resolver.test.ts` |
 
 ## Invariants
 
@@ -55,6 +57,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 - Legacy API tokens are plaintext at rest, the `env_var` rule ([env.md](env.md)); a disconnect scrubs one.
   OAuth grants hold their secret in the SecretStore only.
+- A wedged secret reference is permanent: an operation whose payload was lost blocks every later mutation on it, delete
+  included. The grant moves to a fresh reference on reconnect and the old one stays encrypted at rest, uncollected.
 - Jira is scoped API-token auth: a classic token is stored untried and answers 401 on every call.
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past
