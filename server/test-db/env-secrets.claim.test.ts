@@ -41,7 +41,12 @@ describe.skipIf(!enabled)('environment secrets resolved inside a claim', () => {
         const jobs = createJobStore({
             sql: claimPool,
             orgId: ORG,
-            env: createEnvVarStore({ sql: claimPool, orgId: ORG, secrets: testSecretStore(sql, keys) }),
+            env: createEnvVarStore({
+                sql: claimPool,
+                orgId: ORG,
+                secrets: testSecretStore(sql, keys),
+                secretLog: () => {},
+            }),
         });
         await mustCreate(jobs.create('echo hi', null, { repo: null, executor: null }));
 
@@ -59,7 +64,12 @@ describe.skipIf(!enabled)('environment secrets resolved inside a claim', () => {
         const jobs = createJobStore({
             sql: claimPool,
             orgId: ORG,
-            env: createEnvVarStore({ sql: claimPool, orgId: ORG, secrets: testSecretStore(claimPool, keys) }),
+            env: createEnvVarStore({
+                sql: claimPool,
+                orgId: ORG,
+                secrets: testSecretStore(claimPool, keys),
+                secretLog: () => {},
+            }),
         });
         await mustCreate(jobs.create('echo hi', null, { repo: null, executor: null }));
 
@@ -81,7 +91,7 @@ describe.skipIf(!enabled)('environment secrets resolved inside a claim', () => {
                     reviewers: [REVIEWER],
                 }),
             },
-            env: createEnvVarStore({ sql, orgId: ORG, secrets }),
+            env: createEnvVarStore({ sql, orgId: ORG, secrets, secretLog: () => {} }),
             githubApp: true,
         });
         const author = await account(sql, randomGithubId(), 'review-env');

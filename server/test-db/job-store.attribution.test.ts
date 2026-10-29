@@ -91,7 +91,7 @@ describe.runIf(enabled)('attribution', () => {
     it('carries the stacked environment on the claim, resolved for the author and repo label', async () => {
         const ENV_CAT_GITHUB_ID = randomGithubId();
         const userId = await account(sql, ENV_CAT_GITHUB_ID, 'env-cat');
-        const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql) });
+        const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
         await envStore.replaceOrg([{ name: 'CORE', value: 'org-value', isSecret: true }]);
         await envStore.replaceWorkspace(userId, [{ name: 'CORE', value: 'workspace-value', isSecret: false }]);
         await envStore.replaceRepo('Bellows-AI', 'bellows.ai', [
@@ -117,7 +117,7 @@ describe.runIf(enabled)('attribution', () => {
         const envAware = createJobStore({
             sql,
             orgId: ORG,
-            env: createEnvVarStore({ sql, orgId: ORG, secrets }),
+            env: createEnvVarStore({ sql, orgId: ORG, secrets, secretLog: () => {} }),
         });
         const { ref } = await seedEncryptedRow(
             sql,
@@ -217,7 +217,7 @@ describe.runIf(enabled)('attribution', () => {
         // endpoint (docs/connections.md), so neither name reaches the claim env, whatever scope
         // holds it — the PUT refuses both, and this is the claim's own guarantee.
         const userId = await account(sql, randomGithubId(), 'no-pat-cat');
-        const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql) });
+        const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
         await envStore.replaceOrg([
             { name: 'CORE', value: 'org-value', isSecret: true },
             { name: 'GITHUB_TOKEN', value: 'ghp_member', isSecret: true },
@@ -336,7 +336,7 @@ describe.runIf(enabled)('attribution', () => {
             // predates the reservation. The executor config is the member's deliberate choice for
             // the run — it must not lose to a scope that exists for other things.
             const userId = await account(sql, executorAccountId(), 'executor-owl');
-            const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql) });
+            const envStore = createEnvVarStore({ sql, orgId: ORG, secrets: testSecretStore(sql), secretLog: () => {} });
             await envStore.replaceWorkspace(userId, [
                 { name: 'OPENCODE_CONFIG_CONTENT', value: '{"model":"stale"}', isSecret: false },
             ]);

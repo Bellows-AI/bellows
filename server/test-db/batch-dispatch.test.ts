@@ -736,6 +736,7 @@ describe.skipIf(!enabled)('force-closing a live batch’s thread', () => {
             config,
             withStores: true,
             secrets: testSecretStore(sql),
+            secretLog: () => {},
         });
         const runtime = (await registry.for(ORG))!;
         const board = runtime.batches!;

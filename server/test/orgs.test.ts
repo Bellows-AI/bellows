@@ -79,7 +79,14 @@ describe('createOrgRegistry', () => {
             orgRows([{ id: LOCAL_ORG_ID, installation_id: null }]),
         ]);
         const bare = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: false });
-        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true, secrets });
+        const full = createOrgRegistry({
+            sql,
+            ready: Promise.resolve(),
+            config,
+            withStores: true,
+            secrets,
+            secretLog: () => {},
+        });
 
         const bareRuntime = await bare.for(LOCAL_ORG_ID);
         expect(bareRuntime?.jobs).toBeUndefined();
@@ -92,7 +99,14 @@ describe('createOrgRegistry', () => {
 
     it('builds no checkout machinery: the runtime has no userRepos, cloneQueue, purger or facts', async () => {
         const { sql } = fakeSql([orgRows([{ id: LOCAL_ORG_ID, installation_id: null }])]);
-        const full = createOrgRegistry({ sql, ready: Promise.resolve(), config, withStores: true, secrets });
+        const full = createOrgRegistry({
+            sql,
+            ready: Promise.resolve(),
+            config,
+            withStores: true,
+            secrets,
+            secretLog: () => {},
+        });
 
         const runtime = await full.for(LOCAL_ORG_ID);
 

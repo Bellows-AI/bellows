@@ -309,3 +309,17 @@ export async function createSecret(
     }
     return { ref, version: created.version, operationId };
 }
+
+/** The database payload store with some of its calls replaced: a fault between two payload calls. */
+export const wrappedPayloads =
+    (over: Partial<PayloadStore>) =>
+    (database: DatabasePayloads): PayloadStore => ({
+        storage: database.storage,
+        twoPhase: database.twoPhase,
+        prepare: (...args) => database.prepare(...args),
+        holds: (...args) => database.holds(...args),
+        write: () => database.write(),
+        read: (row, aad) => database.read(row, aad),
+        remove: () => database.remove(),
+        ...over,
+    });

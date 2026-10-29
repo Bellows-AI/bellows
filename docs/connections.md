@@ -52,7 +52,7 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 
 ## Stated limits
 
-- Legacy API tokens are plaintext at rest, the `env_var` rule ([env.md](env.md)); a disconnect scrubs one.
+- Legacy API tokens are plaintext at rest (`server/migrations/054_connections.sql`); a disconnect scrubs one.
   OAuth grants hold their secret in the SecretStore only.
 - Jira is scoped API-token auth: a classic token is stored untried and answers 401 on every call.
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.

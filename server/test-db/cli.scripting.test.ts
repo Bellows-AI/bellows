@@ -77,7 +77,14 @@ beforeEach(async () => {
     const config = testConfig({ auth: githubAuth() });
     app = await buildApp({
         config,
-        orgs: createOrgRegistry({ sql, ready, config, withStores: true, secrets: testSecretStore(sql) }),
+        orgs: createOrgRegistry({
+            sql,
+            ready,
+            config,
+            withStores: true,
+            secrets: testSecretStore(sql),
+            secretLog: () => {},
+        }),
         auth,
         orgOfLease: createOrgOfLease({ sql, ready }),
         orgOfJob: createOrgOfJob({ sql, ready }),
