@@ -101,7 +101,8 @@ describe('the fix skills', () => {
         expect(fix).toContain('`deferred: <ref>`');
         expect(fix).toContain("The cap is the user's to raise, never the run's.");
         expect(codex()).toContain('the sweep block');
-        expect(codex()).toContain('only a correctness or data-loss defect counts as a blocker');
+        expect(codex()).toContain('No major issue means the round passes.');
+        expect(codex()).toContain('only a major defect counts as a blocker');
         expect(readFileSync(join(skill, '../../agents/fix-planner.md'), 'utf8')).toContain('- **Hazards**:');
     });
 
