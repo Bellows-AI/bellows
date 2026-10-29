@@ -3,12 +3,16 @@ import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { bindingsOf, requirementsOf } from '../src/db/connection-bindings.js';
+import { createConnectionGrants } from '../src/db/connection-grants.js';
 import { createConnectionStore, type ConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { bindConnectionRow } from '../src/db/jobs/job-store-connections.js';
+import { createGrantLineage } from '../src/integrations/grant-lineage.js';
+import { createSecretRef } from '../src/secrets/secret-input.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
+import { attachJira } from './integration-store-faults.js';
 
 /**
  * BEL-59 lock order: thread root row (no key update) -> thread advisory lock -> grant -> connection -> child
@@ -201,7 +205,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         await share.done;
         const [claimed, gone] = await settledWithin([claim, disconnected]);
         expect(value(claimed)).toMatchObject({ id: root });
-        expect(value(gone)).toBe(true);
+        expect(value(gone).disconnected).toBe(true);
         expect(await projection(root)).toBeNull();
         const [binding] = await bindingsOf(sql, ORG, root);
         expect(binding).toMatchObject({ connectionId: mine, live: false });
@@ -270,7 +274,7 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
             connections.disconnect(one, { userId: ALICE.id, admin: false }),
             connections.disconnect(two, { userId: ALICE.id, admin: false }),
         ]);
-        expect(results.map((r) => value(r))).toEqual([true, true]);
+        expect(results.map((r) => value(r).disconnected)).toEqual([true, true]);
         expect(await projection(first)).toBeNull();
         expect(await projection(second)).toBeNull();
     });
@@ -296,5 +300,56 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         expect(value(bound)).toMatchObject({ ok: true });
         expect(await requirementsOf(sql, ORG, root)).toEqual([]);
         expect(((await plain.claim(WORKER, LEASE_SECONDS)) as Claim | null)?.id).toBe(root);
+    });
+    /** A grant with a secret version (so a refresh claim is possible), one connection, and a root bound to it. */
+    async function grantWithBoundRoot() {
+        const grants = createConnectionGrants({ sql, orgId: ORG });
+        const attached = await attachJira(grants, ALICE.id, {
+            externalAccountId: `acct-${randomUUID()}`,
+            cloudId: `cloud-${randomUUID()}`,
+        });
+        await sql`update integration_grant set secret_ref = ${createSecretRef()}, secret_version = 'v1' where id = ${attached.grant.id}`;
+        const root = await create({ connectionIds: [attached.connectionId] });
+        const lineage = createGrantLineage({
+            sql: claimPool,
+            orgId: ORG,
+            secrets: undefined as never,
+            providers: () => undefined,
+        });
+        return { ...attached, root, lineage };
+    }
+
+    /** Resolves once `work` settled or one of `application`'s backends waits on a lock, whichever comes first. */
+    async function settledOrBlocked(work: Promise<unknown>, application: string): Promise<void> {
+        await Promise.race([work.catch(() => undefined), waitForLockWait(application, Date.now() + DEADLINE_MS)]);
+    }
+
+    it('T8: a lineage claim queued behind a disconnect that holds the grant: no 40P01, the claim sees the revoke', async () => {
+        const { connectionId, grant, lineage } = await grantWithBoundRoot();
+        const bind = await holder((tx) => tx`select id from connector_connection where id = ${connectionId} for share`);
+        // The disconnect holds its root, advisory and grant locks and waits on the connection a parked bind share-locks.
+        const disconnected = binderConnections.disconnect(connectionId, { userId: ALICE.id, admin: false });
+        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
+        const claimed = lineage.claimLineage(grant.id, 'refresh', { rotates: false });
+        await waitForLockWait(CLAIMER, Date.now() + DEADLINE_MS);
+        bind.release();
+        await bind.done;
+        const [gone, claim] = await settledWithin([disconnected, claimed]);
+        expect(value(gone).disconnected).toBe(true);
+        expect(value(claim)).toEqual({ ok: false, reason: 'revoked' });
+    });
+
+    it('T9: a lineage claim that arrives before the disconnect leaves no lock behind for it to deadlock on', async () => {
+        const { connectionId, grant, lineage } = await grantWithBoundRoot();
+        const bind = await holder((tx) => tx`select id from connector_connection where id = ${connectionId} for share`);
+        const claimed = lineage.claimLineage(grant.id, 'refresh', { rotates: false });
+        await settledOrBlocked(claimed, CLAIMER);
+        const disconnected = binderConnections.disconnect(connectionId, { userId: ALICE.id, admin: false });
+        await waitForLockWait(BINDER, Date.now() + DEADLINE_MS);
+        bind.release();
+        await bind.done;
+        const [claim, gone] = await settledWithin([claimed, disconnected]);
+        expect(value(claim)).toMatchObject({ ok: true });
+        expect(value(gone).disconnected).toBe(true);
     });
 });

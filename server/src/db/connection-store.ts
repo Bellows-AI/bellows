@@ -42,9 +42,15 @@ export interface ConnectionStore {
     candidates(userId: string, provider: string): Promise<ConnectionView[]>;
     /**
      * Disconnects an org-owned legacy connection (`admin`) or the caller's own: the row stays, its token is
-     * scrubbed, and a grant left with no active connection is revoked. False when neither matches.
+     * scrubbed, and a grant left with no active connection is revoked. `disconnected` is false when neither matches.
+     * `revokedGrantId` names the grant this call revoked, so the caller can destroy its secret after the commit.
      */
-    disconnect(connectionId: string, actor: { userId: string; admin: boolean }): Promise<boolean>;
+    disconnect(connectionId: string, actor: { userId: string; admin: boolean }): Promise<DisconnectResult>;
+}
+
+export interface DisconnectResult {
+    disconnected: boolean;
+    revokedGrantId: string | null;
 }
 
 interface Row {
@@ -82,7 +88,7 @@ async function disconnectOnce(
     orgId: string,
     connectionId: string,
     { userId, admin }: { userId: string; admin: boolean }
-): Promise<boolean> {
+): Promise<DisconnectResult> {
     const rootsOf = async (): Promise<string[]> =>
         (
             await tx<{ root_job_id: string }[]>`
@@ -107,13 +113,13 @@ async function disconnectOnce(
                or (principal_user_id is null and credential = 'legacy_api_token' and ${admin}))
         returning grant_id
     `;
-    if (rows.length === 0) return false;
+    if (rows.length === 0) return { disconnected: false, revokedGrantId: null };
     if ((await rootsOf()).some((root) => !roots.includes(root))) throw new RetryDisconnect();
     const grantId = rows[0]!.grant_id;
-    if (grantId !== null) await revokeGrantIfOrphaned(tx, orgId, grantId);
+    const revoked = grantId !== null && (await revokeGrantIfOrphaned(tx, orgId, grantId));
     // Old pods read the root's projection: recompute it wherever this connection was bound.
     for (const root of roots) await projectJiraConnectionInTx(tx, orgId, root);
-    return true;
+    return { disconnected: true, revokedGrantId: revoked ? grantId : null };
 }
 
 export function createConnectionStore({

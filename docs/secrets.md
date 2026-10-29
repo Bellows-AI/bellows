@@ -32,7 +32,7 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
   nothing. Owner is an organization (`orgId`) or a user (`userId`, `orgId` or `null` for a personal executor
   profile); a different owner, org, scope, purpose or owning record is `identity-mismatch`. Changing any of
   them needs a new secret and reference. `server/src/secrets/secret-input.ts`, `server/test/secrets.input.test.ts`.
-- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/src/db/connection-grants.ts` (`grantSecretIdentity`), `server/migrations/094_integration_connections.sql`):
+- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the grant row is confirmed by `grantSecretIdentity` in `server/src/db/connection-grants.ts`, its writer is `server/src/integrations/grant-lineage.ts`, pinned by `server/test-db/integration-lineage.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/migrations/094_integration_connections.sql`):
 
   | Consumer | Owner | Scope | Purpose | Owning record |
   | --- | --- | --- | --- | --- |
