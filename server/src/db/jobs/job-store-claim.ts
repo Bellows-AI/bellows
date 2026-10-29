@@ -37,7 +37,7 @@ import type {
     JobStorePrs,
     ReviewerSpec,
 } from './job-store-types.js';
-import type { ClaimCandidateRow } from './job-store-claim-row.js';
+import { type ClaimCandidateRow, rootRowFree } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
 import { skillCatalog } from '../../skills.js';
@@ -79,11 +79,11 @@ async function lockedCandidates(tx: TransactionSql, due: Fragment): Promise<stri
  * stamped row never reaches this sweep — the settle in `claimJob` has already landed it `stopped`,
  * which is the verdict a stop is (issue #152): dead is for attempts that failed on their own.
  */
-async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<void> {
+async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql): Promise<string[]> {
     const { orgId, wallTick } = ctx;
     const due = dueRows(ctx, tx, claimRules(ctx).exhausted);
     const ids = await lockedCandidates(tx, due);
-    if (ids.length === 0) return;
+    if (ids.length === 0) return [];
     const retired = await tx<{ id: string; root_job_id: string }[]>`
         update job set status = 'dead', finished_at = now(), lease_token = null,
                        wall_clock_ms = ${wallTick}
@@ -97,12 +97,8 @@ async function retireExhaustedAttempts(ctx: JobStoreContext, tx: TransactionSql)
         { orgId, wallTick, stoppedBy: null },
         retired.map((r) => r.id)
     );
-    // A merge-marked thread whose last moving member just retired is closed by it (issue #390) —
-    // the shared conditional settle, distinct roots in deterministic order so two transactions
-    // settling the same roots cannot cycle on the locks.
-    for (const root of [...new Set(retired.map((r) => r.root_job_id))].sort()) {
-        await settleIfMergeClosed(ctx, root, tx);
-    }
+    // The distinct retired roots, sorted: the caller settles each merge-marked thread after this commit (issue #390).
+    return [...new Set(retired.map((r) => r.root_job_id))].sort();
 }
 
 /**
@@ -331,16 +327,19 @@ async function slotsFor(
 }
 
 /**
- * Try, never wait: the acquire holds the candidate's row, and every thread-wide writer takes this lock FIRST and then
- * waits on a member row (BEL-157, BEL-81). Busy is not an answer about the row, so the reservation's deferral goes
- * back and the poll moves on; the next one retries. Only an explicit boolean is an answer.
+ * Try, never wait: the acquire holds the candidate's row, and every thread-wide writer holds the root row and then
+ * waits on the advisory lock or on a member row (BEL-157, BEL-81, BEL-161). So a member also tries the root row
+ * (`skip locked`; the fence locks it while the claim holds the advisory lock). Busy or gone is not an answer about the
+ * row, so the reservation's deferral goes back and the poll moves on. Only an explicit boolean is an answer.
  */
 async function tryThreadLock(tx: TransactionSql, orgId: string, reserved: ReservedCandidate): Promise<boolean> {
-    const [lock] = await tx<{ locked: boolean }[]>`
-        select pg_try_advisory_xact_lock(hashtextextended(${reserved.root_job_id}::text, 0)) as locked
-    `;
-    if (typeof lock?.locked !== 'boolean') throw new Error('thread lock probe answered nothing');
-    if (lock.locked) return true;
+    if (await rootRowFree(tx, orgId, reserved.id, reserved.root_job_id)) {
+        const [lock] = await tx<{ locked: boolean }[]>`
+            select pg_try_advisory_xact_lock(hashtextextended(${reserved.root_job_id}::text, 0)) as locked
+        `;
+        if (typeof lock?.locked !== 'boolean') throw new Error('thread lock probe answered nothing');
+        if (lock.locked) return true;
+    }
     await tx`update job set claim_deferred_until = ${reserved.prior_deferral}
              where org_id = ${orgId} and id = ${reserved.id}`;
     return false;
@@ -355,9 +354,9 @@ async function tryThreadLock(tx: TransactionSql, orgId: string, reserved: Reserv
  * never at a transaction's start.
  *
  * The root lock is the serialization point, and the claim never WAITS for it while it holds a row:
- * a thread-wide writer (retry, follow-up, remove, merge close, done) takes it first and then waits
- * on a member row, so a claim that held that row and queued for the lock would be one half of a
- * deadlock. A busy lock answers REFUSED with the reservation's deferral restored: this poll skips the
+ * a thread-wide writer (retry, follow-up, remove, merge close, done) holds the root row, then takes it
+ * and waits on a member row, so a claim that held that row and queued for the lock would be one half of a
+ * deadlock. A non-root candidate also tries the root row (`skip locked`) first, for the same reason. A busy lock answers REFUSED with the reservation's deferral restored: this poll skips the
  * thread, the next one retries with its place kept, and other threads are claimed meanwhile. Claims
  * of one thread still fully serialize: the re-check sees every earlier claim committed, because the
  * lock is held to the end of this transaction.
@@ -642,7 +641,14 @@ export async function claimJob(
     }
     // The dead retirement commits on its own for the same reason (issue #822): a preparation that
     // keeps failing must not keep an exhausted row `running` across every poll.
-    await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
+    const retiredRoots = await sql.begin((tx) => retireExhaustedAttempts(ctx, tx));
+    // A merge-marked thread whose last moving member just retired is closed by it (issue #390), per root in its own
+    // transaction after the commit: the sweep holds retired rows of SEVERAL threads, and locking another root's row
+    // while holding them would invert against an ascending multi-root holder (the merge webhook, a disconnect). A
+    // crash between the commit and a settle leaves the marked, all-terminal thread without its done stamp or
+    // reclaim, the same exposure the stamped stops above already accept: the task is not lost, only its tree is left
+    // unreclaimed.
+    for (const root of retiredRoots) await settleIfMergeClosed(ctx, root);
     ctx.metrics?.sweep(secondsSince(sweepStart));
 
     /*

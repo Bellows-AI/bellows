@@ -1,4 +1,5 @@
 import type { JobMode } from '@factory-ai/core';
+import type { TransactionSql } from 'postgres';
 
 /** The claimed row as the acquisition's RETURNING reads it (`job-store-claim.ts`): what `buildClaimResult` turns into a `Claim`. */
 export interface ClaimCandidateRow {
@@ -31,4 +32,16 @@ export interface ClaimCandidateRow {
     resumes_interrupted: boolean;
     /** Whether `session_id` was minted by this row's own attempt rather than inherited from an earlier row (`claimRules`). */
     own_session: boolean;
+}
+
+/**
+ * Try, never wait, the thread root's ROW for a member candidate (BEL-161): the cancellation fence locks it while the
+ * claim holds the advisory lock, and a thread writer holds it before waiting on that lock. A root candidate is its own
+ * row, already held. Busy or gone both answer false, which is no answer about the row.
+ */
+export async function rootRowFree(tx: TransactionSql, orgId: string, id: string, rootJobId: string): Promise<boolean> {
+    if (id === rootJobId) return true;
+    const rows =
+        await tx`select id from job where org_id = ${orgId} and id = ${rootJobId} for no key update skip locked`;
+    return rows.length > 0;
 }

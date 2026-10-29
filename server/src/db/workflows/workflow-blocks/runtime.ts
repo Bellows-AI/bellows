@@ -144,6 +144,8 @@ export async function wakeOneRound(
 ): Promise<string | null> {
     const { sql, orgId, prs } = ctx;
     return sql.begin(async (tx) => {
+        // Advisory lock only, deliberately (BEL-161): this inserts a job (FK KEY SHARE on the root, compatible with a
+        // bind's `no key update`) and never writes the root row, so it cannot invert the root-row-first order.
         await tx`select pg_advisory_xact_lock(hashtextextended(${rootJobId}::text, 0))`;
 
         // Re-checked under the lock: the caller's candidate list ran unlocked, so a follow-up

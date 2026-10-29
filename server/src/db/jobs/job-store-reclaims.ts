@@ -1,5 +1,6 @@
 // The worktree-reclaim queue's worker half (issue #41): claim, ack and renew, each under the
 // acquisition's own token (issue #821).
+import { lockThreadInTx, lockThreadRootInTx } from '../connection-bindings.js';
 import type { JobStore, JobStoreContext, ReclaimClaim, ReclaimRenewal } from './job-store-types.js';
 
 /** The worktree-reclaim queue. */
@@ -96,7 +97,11 @@ export async function ackReclaimRow(
             select root_job_id from task_reclaim where org_id = ${orgId} and id = ${id}
         `;
         if (queued) {
-            await tx`select pg_advisory_xact_lock(hashtextextended(${queued.root_job_id}::text, 0))`;
+            // Root row then thread lock; a root remove already deleted leaves the advisory lock alone (the
+            // update below is then a 0-row no-op).
+            if (!(await lockThreadRootInTx(tx, orgId, queued.root_job_id))) {
+                await lockThreadInTx(tx, queued.root_job_id);
+            }
             const [deleted] = await tx<{ root_job_id: string }[]>`
                 delete from task_reclaim
                 where org_id = ${orgId} and id = ${id} and claim_token = ${token}
