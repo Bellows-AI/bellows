@@ -8,7 +8,8 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | The table and the member's own OAuth rows: list, candidates, disconnect | `server/migrations/054_connections.sql`, `server/migrations/094_integration_connections.sql`, `server/src/db/connection-store.ts` | `server/test-db/connection-store.test.ts` |
 | List (the generic view) and disconnect; a connection is made only by the authorization flow | `server/src/routes/connections.ts` | `server/test/routes.connections.test.ts` |
 | Task selection: `connections` on `POST /api/jobs` and `/:id/follow-up`, the owner's `POST /api/jobs/:id/connections` | `server/src/routes/connections.ts` (`parseConnectionIds`), `server/src/db/connection-bindings.ts`, `server/src/db/jobs/job-store-actions.ts` | `server/test/routes.jobs-connections.test.ts`, `server/test-db/job-store.connection-bindings.test.ts` |
-| The settings panels (Organization: legacy shared rows; Workspace: the caller's own) | `web/src/panels/JiraConnectionsPanel.tsx`, `JiraConnectionsSection.tsx`, `web/src/components/JiraConnectionDialog.tsx`, `web/src/api/connections.ts` | `web/test/jira-connections-panel.render.test.tsx`, `web/test/jira-connections.dom.test.tsx`, `e2e/jira-connections.spec.ts` |
+| The settings panel (Workspace only; the Organization page has none): the caller's rows with account and site, Connect Jira (optional site, "Allow adding comments"), Reconnect, Allow adding comments (a read row; the confirmation warns read-bound tasks of the account will be refused), Disconnect, the callback's result sentence; the start navigates to the consent URL, nothing binds a task | `web/src/panels/JiraConnectionsPanel.tsx`, `JiraConnectionsSection.tsx`, `web/src/components/JiraConnectionDialog.tsx`, `JiraWriteConsentDialog.tsx`, `web/src/api/connections.ts` | `web/test/jira-connections-panel.render.test.tsx`, `web/test/jira-connections.dom.test.tsx`, `e2e/jira-connections.spec.ts` |
+| The operator's one-time Atlassian app registration: console steps, callback URL, scopes, distribution, env and chart names | `docs/jira-app-runbook.md` | `server/test/config.integrations.test.ts` |
 | CLI: `connection list`, `job create --connection`, `job preflight` | `cli/src/run.ts`, `cli/src/selection.ts`, `cli/src/diagnostics.ts`, `cli/src/board.ts` | `cli/test/discovery.test.ts`, `cli/test/diagnostics.test.ts` |
 | Legacy API-token connections end: 100 disconnects the rows, scrubs the tokens, nulls the legacy `job.jira_connection_id` and leaves each queued task an open requirement; nothing lists, binds or serves one | `server/migrations/100_legacy_jira_tokens.sql`, `server/src/db/connection-bindings.ts` | `server/test-db/migration.100-legacy-jira-tokens.test.ts`, `server/test-db/job-store.connection-bindings.test.ts` |
 | The credential class: the attempt pair in every `AUTH_MODE`, nothing else | `server/src/auth/plugin.ts` (`CONNECTOR_ROUTES`) | `server/test/auth.enforcement.test.ts` |
@@ -80,8 +81,9 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 ## Stated limits
 
 - OAuth grants hold their secret in the SecretStore only; the legacy plaintext tokens are scrubbed by migration 100.
-- The destroy after a disconnect is best effort and the answer stays 204; the background pass is its retry. No provider
-  is registered yet, so the runtime recovers rows and destroys secrets but starts no authorization.
+- The destroy after a disconnect is best effort and the answer stays 204; the background pass is its retry. Without
+  `ATLASSIAN_CLIENT_ID`/`ATLASSIAN_CLIENT_SECRET` the runtime recovers rows and destroys secrets but starts no
+  authorization (`docs/jira-app-runbook.md`).
 - A wedged secret reference is permanent: an operation whose payload was lost blocks every later mutation on it, delete
   included. The grant moves to a fresh reference on reconnect and the old one stays encrypted at rest, uncollected.
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.

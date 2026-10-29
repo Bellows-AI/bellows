@@ -28,7 +28,8 @@ const PORT = PORT_BASE;
  * harness and scripts/test-jobs.sh all depend on.
  */
 export const AUTH_PORT = PORT_BASE + AUTH_PORT_OFFSET;
-const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
+/** Exported for jira-connections.spec.ts, which tells the stub's Atlassian side which account consents. */
+export const IDP_PORT = PORT_BASE + IDP_PORT_OFFSET;
 /** Exported with the auth database below: org-executors.spec.ts promotes exactly this member. */
 export const E2E_LOGIN = 'e2e-user';
 /**
@@ -186,6 +187,13 @@ export default defineConfig({
                 GITHUB_OAUTH_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/authorize`,
                 GITHUB_OAUTH_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/login/oauth/access_token`,
                 GITHUB_OAUTH_USER_URL: `http://127.0.0.1:${IDP_PORT}/user`,
+                // The Jira connect flow (BEL-61) against the same stub's /atlassian/* endpoints; the
+                // board logs loudly when an override is in use, like the GitHub ones above.
+                ATLASSIAN_CLIENT_ID: 'stub-atlassian-client-id',
+                ATLASSIAN_CLIENT_SECRET: 'stub-atlassian-client-secret',
+                ATLASSIAN_AUTHORIZE_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/authorize`,
+                ATLASSIAN_TOKEN_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/oauth/token`,
+                ATLASSIAN_API_URL: `http://127.0.0.1:${IDP_PORT}/atlassian/api`,
                 // First sign-in materializes the installation the stub reports as the member's
                 // organization — the half of the flow most worth driving in a browser (#99).
                 // The seed's stored-repo rows land under these orgs (same ids the stub IdP

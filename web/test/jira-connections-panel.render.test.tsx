@@ -1,10 +1,10 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ORG_CONNECTION_SCOPE, USER_CONNECTION_SCOPE, type ConnectionView } from '../src/api/connections.js';
-import { SCOPED_TOKEN_HINT } from '../src/components/JiraConnectionDialog.js';
+import type { ConnectionView } from '../src/api/connections.js';
 import {
-    ADD_CONNECTION_LABEL,
-    DEFAULT_CONNECTION_CAPTION,
+    ALLOW_COMMENTS_LABEL,
+    CONNECT_JIRA_LABEL,
+    integrationNotice,
     JiraConnectionsPanel,
     NO_CONNECTIONS_NOTE,
 } from '../src/panels/JiraConnectionsPanel.js';
@@ -12,11 +12,8 @@ import {
 const connection = (site: string, overrides: Partial<ConnectionView> = {}): ConnectionView => ({
     id: `00000000-0000-4000-8000-${site.length.toString().padStart(12, '0')}`,
     provider: 'jira',
-    credential: 'legacy_api_token',
-    ownership: 'legacy-org',
-    principal: null,
     site,
-    account: `bot@${site}`,
+    account: 'stub-account-a@example.com',
     access: 'read',
     status: 'active',
     createdAt: '2026-09-01T00:00:00.000Z',
@@ -26,81 +23,60 @@ const connection = (site: string, overrides: Partial<ConnectionView> = {}): Conn
 const render = (props: Partial<Parameters<typeof JiraConnectionsPanel>[0]> = {}) =>
     renderToStaticMarkup(
         <JiraConnectionsPanel
-            scope={ORG_CONNECTION_SCOPE}
-            hint="hint"
-            connections={[connection('new.atlassian.net'), connection('older-site.atlassian.net')]}
-            canManage
+            connections={[connection('new.atlassian.net'), connection('older-site.atlassian.net', { access: 'write' })]}
             saving={false}
-            onCreate={async () => null}
-            onDelete={() => {}}
+            notice={null}
+            onStart={async () => null}
+            onDisconnect={() => {}}
             {...props}
         />
     );
 
 describe('the Jira connections panel', () => {
-    it('lists site, account, credential, access and created date', () => {
+    it('shows site, account label, access, Reconnect and Disconnect per row, and no token field', () => {
         const html = render();
         expect(html).toContain('new.atlassian.net');
-        expect(html).toContain('bot@older-site.atlassian.net');
+        expect(html).toContain('stub-account-a@example.com');
         expect(html).toContain('data-label="Account"');
         expect(html).toContain('data-label="Access"');
         expect(html).not.toContain('2026-09-01T00:00:00.000Z');
-    });
-
-    it('labels a legacy org row as a shared legacy API token, never as personal OAuth', () => {
-        const html = render();
-        expect(html).toContain('data-label="Credential"');
-        expect(html.match(/Legacy API token/g)).toHaveLength(2);
-        expect(html.match(/Shared \(legacy\)/g)).toHaveLength(2);
-        expect(html).not.toMatch(/OAuth/);
-    });
-
-    it('labels a personal OAuth row as OAuth, and marks only a lone personal connection as the default', () => {
-        const oauth = connection('oauth.atlassian.net', {
-            ownership: 'personal',
-            principal: 'self',
-            credential: 'oauth_grant',
-        });
-        const lone = render({ scope: USER_CONNECTION_SCOPE, connections: [oauth] });
-        expect(lone).toContain('OAuth');
-        expect(lone).not.toContain('Shared (legacy)');
-        expect(lone.match(new RegExp(DEFAULT_CONNECTION_CAPTION, 'g'))).toHaveLength(1);
-        const two = render({ scope: USER_CONNECTION_SCOPE, connections: [oauth, connection('b.atlassian.net')] });
-        expect(two).not.toContain(DEFAULT_CONNECTION_CAPTION);
-        expect(render()).not.toContain(DEFAULT_CONNECTION_CAPTION);
-    });
-
-    it('gives an admin the add button in the panel head and a disconnect per row, with the form kept in the dialog', () => {
-        const html = render();
-        expect(html).toMatch(new RegExp(`class="panel-head">.*${ADD_CONNECTION_LABEL}</button>`));
-        // The fields live in the closed dialog, never inline in the panel.
-        expect(html).not.toContain('<input');
+        expect(html.match(/>Reconnect<\/button>/g)).toHaveLength(2);
         expect(html.match(/>Disconnect<\/button>/g)).toHaveLength(2);
-    });
-
-    it('hides every control from a member, who still reads the list', () => {
-        const html = render({ canManage: false });
-        expect(html).toContain('new.atlassian.net');
-        expect(html).not.toContain(ADD_CONNECTION_LABEL);
         expect(html).not.toContain('<input');
-        expect(html).not.toContain('Disconnect');
+        expect(html).not.toMatch(/apiToken|api_token|API token|Legacy/);
     });
 
-    it('says so when the list is empty, and never renders a token', () => {
-        const html = render({ connections: [], scope: USER_CONNECTION_SCOPE });
+    it('offers "Allow adding comments" on a read row only, and the Connect button in the head', () => {
+        const html = render();
+        expect(html.match(new RegExp(`>${ALLOW_COMMENTS_LABEL}</button>`, 'g'))).toHaveLength(1);
+        expect(html).toMatch(new RegExp(`class="panel-head">.*${CONNECT_JIRA_LABEL}</button>`));
+    });
+
+    it('says so when the list is empty', () => {
+        const html = render({ connections: [] });
         expect(html).toContain(NO_CONNECTIONS_NOTE);
-        expect(html).not.toMatch(/apiToken|api_token/);
+        expect(html).toContain(CONNECT_JIRA_LABEL);
     });
 
-    it('disables the add button and every disconnect while a write is in flight', () => {
+    it('disables every control while a write is in flight', () => {
         const html = render({ saving: true });
-        expect(html.match(/<button[^>]*disabled/g)).toHaveLength(3);
+        // Connect, then Reconnect, Disconnect for both rows and Allow adding comments for the read one.
+        expect(html.match(/<button[^>]*disabled/g)).toHaveLength(6);
+    });
+
+    it('renders the callback result sentence as a status line', () => {
+        expect(render({ notice: 'Jira connected.' })).toContain('Jira connected.');
     });
 });
 
-/** The add dialog portals: its fields and in-dialog refusal are web/test/jira-connections.dom.test.tsx's. */
-describe('the Jira connection dialog copy', () => {
-    it('asks for a scoped service-account token', () => {
-        expect(SCOPED_TOKEN_HINT).toMatch(/scoped \(service-account\) token/);
+describe('the callback result sentences', () => {
+    it('names the mismatch, the denial and success, and is silent without a result', () => {
+        expect(integrationNotice('jira', 'connected')).toBe('Jira connected.');
+        expect(integrationNotice('jira', 'denied')).toMatch(/consent was denied/);
+        expect(integrationNotice('jira', 'identity-mismatch')).toMatch(/not the account this connection was made with/);
+        expect(integrationNotice('jira', 'site-mismatch')).toMatch(/site/);
+        expect(integrationNotice('jira', 'exchange-failed')).toContain('exchange-failed');
+        expect(integrationNotice(null, null)).toBeNull();
+        expect(integrationNotice('github', 'connected')).toBeNull();
     });
 });

@@ -74,11 +74,8 @@ export const orgExecutor = (name: string): SettingsBoard['orgExecutors'][number]
 export const connection = (site: string, overrides: Partial<ConnectionView> = {}): ConnectionView => ({
     id: id(),
     provider: 'jira',
-    credential: 'legacy_api_token',
-    ownership: 'legacy-org',
-    principal: null,
     site,
-    account: 'bot@example.com',
+    account: 'stub-account-a@example.com',
     access: 'read',
     status: 'active',
     createdAt: AT,
