@@ -581,11 +581,12 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
             unmet = `the checkout claim of job ${job.id} could not be confirmed before fencing`;
             return;
         }
+        // Classified once the claim is held, so a later failure of this round keeps the blocked verdict.
+        stuck = stuckAmong(fleets);
         if (!(await deleteLeftoverSecrets(round, job, fleets))) {
             unmet = `the leftover secrets of job ${job.id} could not be deleted`;
             return;
         }
-        stuck = stuckAmong(fleets);
         // Every leftover already accepted its delete: asking again is redundant and its failure must not hide the verdict.
         if (stuck === undefined) await deleteSweepFleets(round, fleets);
         // No delete's answer is proof the checkout is free — a 409 on a uid precondition is

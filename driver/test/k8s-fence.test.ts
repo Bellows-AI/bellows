@@ -444,6 +444,19 @@ describe('sweepClaimedFleets', () => {
             expect(deletes(calls, PODS)).toEqual([]);
         });
 
+        it.each([
+            ['answers 503', () => Promise.resolve(answer(503))],
+            ['throws as a request past its deadline does', () => Promise.reject(new Error('the request timed out'))],
+        ])('still throws LeftoverTerminating when the leftover Secret delete %s', async (_what, reply) => {
+            const { outcome } = await sweep(
+                listing([stuck], (method, path) =>
+                    method === 'DELETE' && path.includes('/secrets/') ? (reply() as never) : undefined
+                )
+            );
+
+            await expect(outcome).rejects.toBeInstanceOf(LeftoverTerminating);
+        });
+
         it('still deletes a leftover that is not terminating beside a terminating one', async () => {
             const live = podOf('pod-live', {}, { nodeName: 'node-b' });
             const { outcome, calls } = await sweep(listing([stuck, live]));
