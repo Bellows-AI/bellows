@@ -86,7 +86,9 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past
   its hour runs on an expired token. It rides that run's gate step, whose env the gate container
-  exports for the run alone (`driver/src/gates.ts`, `driver/src/scripts/gate-loop.sh`).
+  exports for the run alone (`driver/src/gates.ts`, `driver/src/scripts/gate-loop.sh`). Its value is redacted
+  from the gate's output before the supervisor keeps or returns it (`driver/src/scripts/supervisor.cjs`
+  `redactedResult`, `driver/test/supervisor.test.ts`).
 - The helper answers `https://github.com` only: an Enterprise `GITHUB_API_URL` deployment's agent runs git and
   gh without a credential.
 - A transient relay failure on an adopted runner falls back to the env lease: that one call may be refused
