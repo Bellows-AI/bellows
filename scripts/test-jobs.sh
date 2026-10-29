@@ -1402,10 +1402,10 @@ done
 [ -n "$mint_up" ] && ok 'the mint board comes up' || bad 'the mint board comes up' "$(tail -5 "$work/mint-server.log")"
 
 mkdir -p "$work/github"
-cp docker/claude-executor/github-credential.cjs docker/claude-executor/attempt-pair.cjs "$work/github/"
+cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs "$work/github/"
 # Through the tool shell: git and gh run as the tool uid, which owns the cache (issue #814).
 printf '#!/bin/sh\nfor last in "$@"; do :; done\nexec "$SHELL" -c "$last"\n' >"$work/github/run.sh"
-printf 'FROM %s\nCOPY github-credential.cjs /usr/local/bin/github-credential.cjs\nCOPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/github/Dockerfile"
+printf 'FROM %s\nCOPY github-credential.cjs /usr/local/bin/github-credential.cjs\nCOPY credential-broker.cjs /usr/local/bin/credential-broker.cjs\nCOPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\nCOPY run.sh /run.sh\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/run.sh"]\n' "$IMAGE_BASE" >"$work/github/Dockerfile"
 docker build -q -t "$IMAGE_GH" "$work/github" >/dev/null || {
     echo 'test-jobs: could not build the github helper stub image'
     exit 1
@@ -1425,12 +1425,12 @@ sleep 6
 c="$(node $h token)" || exit 13
 [ "$a" = "$b" ] && echo gh-cached
 [ "$c" != "$a" ] && echo gh-renewed
-echo "gh-mode-$(stat -c %a /run/factory-github)"
-awk '"'"'$2 == "/run/factory-github" { print "gh-fs-" $3 }'"'"' /proc/mounts
+echo "gh-mode-$(stat -c %a /run/factory-credentials)"
+awk '"'"'$2 == "/run/factory-credentials" { print "gh-fs-" $3 }'"'"' /proc/mounts
 env | grep -q -e "^GITHUB_TOKEN=" -e "^GH_TOKEN=" || echo gh-no-env-token
 git config --global credential.https://github.com.helper "!node $h git"
 printf "protocol=https\nhost=github.com\n\n" | git credential fill | grep -q "^password=lane_" && echo gh-git-answers
-node $h clear && [ ! -e /run/factory-github/token.json ] && echo gh-cleared')"
+node $h clear && [ -z "$(ls -A /run/factory-credentials)" ] && echo gh-cleared')"
 expect_contains 'the github helper job succeeds' "$(await_settled "$gh_job" 120)" succeeded
 gh_out="$(field "$(body "$(api GET "/api/jobs/$gh_job")")" output)"
 expect_contains 'a token is served from the cache inside its life' "$gh_out" gh-cached

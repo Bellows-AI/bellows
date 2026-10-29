@@ -118,7 +118,7 @@ for arg in "$@"; do
         node /usr/local/bin/github-credential.cjs token >/dev/null 2>/tmp/github.err || github_exit=$?
         echo "github exit $github_exit"
         cat /tmp/github.err
-        grep -q ' /run/factory-github tmpfs ' /proc/mounts && echo 'github cache tmpfs'
+        grep -q ' /run/factory-credentials tmpfs ' /proc/mounts && echo 'github cache tmpfs'
         env | grep -q -e '^GITHUB_TOKEN=' -e '^GH_TOKEN=' || echo 'github no env token'
         break
         ;;

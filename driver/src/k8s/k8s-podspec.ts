@@ -19,8 +19,8 @@ import {
     REVIEWER_TREE_DIR,
     REVIEWER_TREE_PATH,
     REVIEWER_UID,
-    GITHUB_CACHE_DIR,
-    GITHUB_CACHE_SIZE,
+    CREDENTIAL_CACHE_DIR,
+    CREDENTIAL_CACHE_SIZE,
     opencodeDbPath,
     runnerClaimEnv,
     runWorkingDir,
@@ -455,8 +455,8 @@ function exporterContainer(config: DriverConfig, job: BoardJob): RunnerPodContai
  * task worktree (issue #35), the same tree the docker runner's WORKDIR names (`runWorkingDir`),
  * because the close-time readout scopes the session scrape by this exact string.
  */
-/** The agent's GitHub token cache volume (`GITHUB_CACHE_DIR`). */
-const GITHUB_CACHE_VOLUME = 'github-cache';
+/** The agent's GitHub token cache volume (`CREDENTIAL_CACHE_DIR`). */
+const CREDENTIAL_CACHE_VOLUME = 'credential-cache';
 
 function agentPart(
     config: DriverConfig,
@@ -483,7 +483,7 @@ function agentPart(
         // mounted in this container alone, never on the task volume, gone with the pod.
         volumes: [
             ...volumes,
-            { name: GITHUB_CACHE_VOLUME, emptyDir: { medium: 'Memory', sizeLimit: GITHUB_CACHE_SIZE.k8s } },
+            { name: CREDENTIAL_CACHE_VOLUME, emptyDir: { medium: 'Memory', sizeLimit: CREDENTIAL_CACHE_SIZE.k8s } },
         ],
         container: {
             // A constant: a container name is a DNS LABEL (63 bytes), which rules out
@@ -509,7 +509,7 @@ function agentPart(
                 ...mounts,
                 mailboxMount(MAILBOXES.in, 'ro'),
                 mailboxMount(MAILBOXES.out, 'rw'),
-                { name: GITHUB_CACHE_VOLUME, mountPath: GITHUB_CACHE_DIR },
+                { name: CREDENTIAL_CACHE_VOLUME, mountPath: CREDENTIAL_CACHE_DIR },
             ],
         },
     };

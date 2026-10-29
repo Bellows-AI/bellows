@@ -69,10 +69,13 @@ describe('the lane stub executor images', () => {
         }
         // The credential helper requires attempt-pair.cjs beside it: copying one without the other fails at require.
         expect(script).toContain(
-            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/attempt-pair.cjs "$work/github/"'
+            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs "$work/github/"'
         );
         expect(dockerfile(script, '"$work/github/Dockerfile"')).toContain(
             'COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\\n'
+        );
+        expect(dockerfile(script, '"$work/github/Dockerfile"')).toContain(
+            'COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs\\n'
         );
         // The acceptance phase runs the kind lane's own stub (#779), so both lanes answer the same words.
         expect(script).toContain('cp scripts/k8s-stub.sh "$work/acc/stub.sh"');
@@ -86,9 +89,9 @@ describe('the lane stub executor images', () => {
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain(
-            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/attempt-pair.cjs "$work/"'
+            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs "$work/"'
         );
-        expect(line).toContain('COPY github-credential.cjs attempt-pair.cjs /usr/local/bin/\\n');
+        expect(line).toContain('COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs /usr/local/bin/\\n');
         expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub-runner.Dockerfile"'));
         expect(script.indexOf('-f "$work/stub-runner.Dockerfile"')).toBeLessThan(
             script.indexOf('-f "$work/stub.Dockerfile"')

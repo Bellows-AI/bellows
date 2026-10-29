@@ -15,7 +15,7 @@ import { jobsPath, runnerJobName, runnerJobSpec, secretName } from '../../src/k8
 import {
     GATE_GID,
     GATE_UID,
-    GITHUB_CACHE_DIR,
+    CREDENTIAL_CACHE_DIR,
     REVIEWER_HOME,
     REVIEWER_TREE_DIR,
     REVIEWER_TREE_PATH,
@@ -287,7 +287,7 @@ describe('the reviewer sidecar (issue #774)', () => {
         // The command is the loop's own text, which names these words in its comments: env and mounts only.
         const text = JSON.stringify({ env: reviewer.env, mounts: reviewer.volumeMounts });
         expect(text).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|PUBLISH|BELLOWS_|credential/i);
-        expect(text).not.toContain(GITHUB_CACHE_DIR);
+        expect(text).not.toContain(CREDENTIAL_CACHE_DIR);
         expect(reviewer.env).toEqual([{ name: 'HOME', value: REVIEWER_HOME }]);
     });
 

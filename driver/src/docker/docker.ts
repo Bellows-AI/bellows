@@ -13,8 +13,8 @@ import {
     UUID,
     TOOL_UID,
     AGENT_LAUNCH_CAPS,
-    GITHUB_CACHE_DIR,
-    GITHUB_CACHE_SIZE,
+    CREDENTIAL_CACHE_DIR,
+    CREDENTIAL_CACHE_SIZE,
     opencodeDbPath,
     runWorkingDir,
     runnerClaimEnv,
@@ -340,7 +340,7 @@ export function dockerArgs(
         // never on the task volume, gone with the container.
         '--tmpfs',
         // The tool uid's: git and gh run as it (issue #814).
-        `${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=${GITHUB_CACHE_SIZE.docker},mode=0700,uid=${TOOL_UID}`,
+        `${CREDENTIAL_CACHE_DIR}:rw,noexec,nosuid,size=${CREDENTIAL_CACHE_SIZE.docker},mode=0700,uid=${TOOL_UID}`,
     ];
 
     // Issue #360 on this side too: the configured requests/limits as resource flags, before the
