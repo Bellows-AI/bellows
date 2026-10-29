@@ -96,7 +96,7 @@ fi
 
 # GitHub (docs/connections.md): no token rides this container's env. git asks the image's helper
 # for github.com, and the helper obtains the attempt's token from the board with the attempt pair,
-# caches it on the memory-backed /run/factory-github and renews it ahead of expiry; gh is the
+# caches it on the memory-backed /run/factory-credentials and renews it ahead of expiry; gh is the
 # wrapper over the same helper. Only the helper's path lands in the git config, never a token.
 if [ -n "${FACTORY_STATS_URL:-}" ] && [ -n "${RUNNER_JOB_ID:-}" ] && [ -n "${RUNNER_LEASE_TOKEN:-}" ]; then
     git config --global credential.https://github.com.helper "!node '$GITHUB_CREDENTIAL' git" \

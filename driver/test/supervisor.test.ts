@@ -2617,3 +2617,55 @@ describe('a stop while the driver endpoint holds a request open', () => {
         }
     });
 });
+
+// BEL-60 slice 4: a step's GitHub token never survives in the output the supervisor keeps or returns.
+describe('the supervisor run: a gate step’s injected GitHub token in its output', () => {
+    const TOKENS = { GITHUB_TOKEN: 'ghs_gatetoken0123456789', GH_TOKEN: 'ghs_ghtoken9876543210' };
+    // The fake loop plays `echo $GITHUB_TOKEN $GH_TOKEN`: the env file the supervisor staged, read back as output.
+    const echoes = (request: GateRequestSeen) => ({
+        exitCode: 0,
+        output: `token=${/^GITHUB_TOKEN=(.*)$/m.exec(request.env)![1]} gh=${/^GH_TOKEN=(.*)$/m.exec(request.env)![1]}\n`,
+    });
+    const everything = (supervised: ReturnType<typeof run>, id: string) => JSON.stringify(supervised.ledger(id));
+
+    it('redacts it from a gate answer and its ledger', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, echoes);
+        driver.order(gateStep('gate-1', 'echo $GITHUB_TOKEN', { env: TOKENS }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        const answered = driver.answers.get('gate-1')!;
+        expect(answered.stdout).toBe('token=[redacted] gh=[redacted]\n');
+        for (const value of Object.values(TOKENS)) {
+            expect(JSON.stringify(answered)).not.toContain(value);
+            expect(everything(supervised, 'gate-1')).not.toContain(value);
+        }
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('redacts it from a review answer and its ledger', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, REVIEWING);
+        fakeGateLoop(supervised.box.review, echoes);
+        driver.order(reviewStep('review-1', ['echo'], { env: TOKENS }));
+        await until('the review answer', () => driver.answers.has('review-1'));
+        expect(driver.answers.get('review-1')!.stdout).toBe('token=[redacted] gh=[redacted]\n');
+        for (const value of Object.values(TOKENS)) {
+            expect(everything(supervised, 'review-1')).not.toContain(value);
+        }
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+
+    it('leaves a gate that carries no token untouched', async () => {
+        const driver = await startDriver();
+        const supervised = run(driver, GATED);
+        fakeGateLoop(supervised.box.gate, () => ({ exitCode: 0, output: 'token=abc' }));
+        driver.order(gateStep('gate-1', 'echo', { env: { PLAIN: 'abc' } }));
+        await until('the gate answer', () => driver.answers.has('gate-1'));
+        expect(driver.answers.get('gate-1')!.stdout).toBe('token=abc');
+        supervised.agentExits(0);
+        await supervised.done;
+    });
+});

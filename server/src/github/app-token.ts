@@ -106,11 +106,20 @@ async function json(response: Response, what: string, unprocessableHint?: string
     return response.json();
 }
 
-/** A narrowed runner token and the instant GitHub says it stops working (`expires_at`). */
+/**
+ * A narrowed runner token, the instant GitHub says it stops working (`expires_at`), and what GitHub
+ * answered it can do: `permissions` (name to access) and `repositories` (names; empty when the mint
+ * named none). Both were checked against the ceiling asked for before the token was returned.
+ */
 export interface MintedToken {
     token: string;
     expiresAt: string;
+    permissions: Record<string, string>;
+    repositories: string[];
 }
+
+/** `revoked`: the token no longer works (GitHub confirmed, or already refused it). `failed`: unconfirmed. */
+export type RevokeOutcome = 'revoked' | 'failed';
 
 export interface InstallationTokenProvider extends TokenProvider {
     /** The installation these tokens are for, discovered on first use if it was not configured. */
@@ -127,6 +136,11 @@ export interface InstallationTokenProvider extends TokenProvider {
      * permission narrowing alone — there is no repository to name.
      */
     fresh(repo?: string | null): Promise<MintedToken>;
+    /**
+     * Revokes ONE installation token (`DELETE /installation/token`, authenticated by that token) at
+     * the configured `apiUrl`. Never retried; a throw or timeout is `failed`, never read as revoked.
+     */
+    revoke(token: string): Promise<RevokeOutcome>;
 }
 
 /**
@@ -144,6 +158,55 @@ export const RUNNER_TOKEN_PERMISSIONS = {
     checks: 'read',
     actions: 'read',
 } as const;
+
+const ACCESS_RANK: Record<string, number> = { read: 1, write: 2, admin: 3 };
+const HTTP_NO_CONTENT = 204;
+const HTTP_UNAUTHORIZED = 401;
+
+/** GitHub adds this read-only permission to every installation token; it is not a grant the runner asked for. */
+const IMPLICIT_PERMISSIONS: Record<string, string> = { metadata: 'read' };
+
+/**
+ * The permissions GitHub answered, if every one is within the ceiling asked for (a name in `asked`,
+ * at no higher access); null when the field is absent, malformed or broader.
+ */
+function withinPermissions(answered: unknown, asked: Record<string, string>): Record<string, string> | null {
+    if (typeof answered !== 'object' || answered === null || Array.isArray(answered)) return null;
+    const granted: Record<string, string> = {};
+    for (const [name, access] of Object.entries(answered)) {
+        const ceiling = asked[name] ?? IMPLICIT_PERMISSIONS[name];
+        if (typeof access !== 'string' || ceiling === undefined) return null;
+        const rank = ACCESS_RANK[access];
+        if (rank === undefined || rank > (ACCESS_RANK[ceiling] ?? 0)) return null;
+        granted[name] = access;
+    }
+    return granted;
+}
+
+/** The repository names GitHub answered when exactly the one asked for; null otherwise (including absent). */
+function withinRepositories(answered: unknown, asked: string[]): string[] | null {
+    if (!Array.isArray(answered)) return null;
+    const names = answered.map((entry) => (entry as { name?: unknown } | null)?.name);
+    if (names.length !== asked.length || !names.every((name, i) => name === asked[i])) return null;
+    return names as string[];
+}
+
+/** GitHub's `expires_at` as epoch ms; a missing or unparseable one falls back to the documented hour. */
+function expiryOf(answered: string | undefined, nowMs: number): number {
+    const parsed = answered ? Date.parse(answered) : NaN;
+    return Number.isFinite(parsed) ? parsed : nowMs + SECONDS_PER_HOUR * MS_PER_SECOND;
+}
+
+/** What GitHub answered if it stays within the narrowed `scope` asked for; null when broader or unverifiable. */
+function withinCeiling(
+    answered: { permissions?: unknown; repositories?: unknown },
+    scope: string
+): { permissions: Record<string, string>; repositories: string[] } | null {
+    const asked = JSON.parse(scope) as { repositories?: string[]; permissions: Record<string, string> };
+    const permissions = withinPermissions(answered.permissions, asked.permissions);
+    const repositories = asked.repositories ? withinRepositories(answered.repositories, asked.repositories) : [];
+    return permissions && repositories ? { permissions, repositories } : null;
+}
 
 const PERMISSION_LABELS = {
     contents: 'Contents',
@@ -187,6 +250,25 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         return pending;
     };
 
+    /** One token revoked, authenticated by itself. `failed` on anything GitHub did not confirm. */
+    const revoke = async (token: string): Promise<RevokeOutcome> => {
+        try {
+            const response = await fetchFn(`${github.apiUrl}/installation/token`, {
+                method: 'DELETE',
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    accept: 'application/vnd.github+json',
+                    'user-agent': 'factory-ai',
+                },
+                signal: AbortSignal.timeout(mintTimeoutMs),
+            });
+            // 401: GitHub no longer accepts the token, which is the state a revoke is after.
+            return response.status === HTTP_NO_CONTENT || response.status === HTTP_UNAUTHORIZED ? 'revoked' : 'failed';
+        } catch {
+            return 'failed';
+        }
+    };
+
     /** `scope` is the request body of a narrowed mint; null mints the whole installation. */
     const mint = async (scope: string | null): Promise<MintedToken> => {
         const jwt = appJwt(github.appId, key, now());
@@ -208,15 +290,24 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         const body = (await json(response, 'installation token request', scope ? GRANT_HINT : undefined)) as {
             token?: string;
             expires_at?: string;
+            permissions?: unknown;
+            repositories?: unknown;
         };
         if (!body.token) throw new GitHubAppError('installation token response carried no token');
+
+        // A narrowed mint is only as narrow as GitHub's own answer says: a token broader than asked for,
+        // or one whose breadth the answer does not state, is revoked and never returned.
+        const ceiling = scope ? withinCeiling(body, scope) : { permissions: {}, repositories: [] };
+        if (!ceiling) {
+            await revoke(body.token);
+            throw new GitHubAppError('installation token is broader than requested, or its scope is unverified');
+        }
 
         // GitHub's own expiry, not now()+1h. The document says an hour; trusting the field means a
         // change on their side shortens the window here rather than producing a token this process
         // believes in for longer than it is valid.
-        const parsed = body.expires_at ? Date.parse(body.expires_at) : NaN;
-        const expiresAt = Number.isFinite(parsed) ? parsed : now() + SECONDS_PER_HOUR * MS_PER_SECOND;
-        return { token: body.token, expiresAt: new Date(expiresAt).toISOString() };
+        const expiresAt = expiryOf(body.expires_at, now());
+        return { token: body.token, expiresAt: new Date(expiresAt).toISOString(), ...ceiling };
     };
 
     return {
@@ -232,6 +323,8 @@ export function installationTokenProvider(options: AppTokenOptions): Installatio
         // No single-flight: a scoped mint is one attempt's credential, and sharing an in-flight
         // one would hand two attempts the same token.
         fresh: async (repo = null) => mint(scopeBody(repo)),
+
+        revoke,
 
         async installationId() {
             return installation;

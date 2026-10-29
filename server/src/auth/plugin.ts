@@ -81,7 +81,8 @@ const BRANCH_ROUTES: readonly RegExp[] = [/^\/api\/sessions\/branch$/];
  */
 const CONNECTOR_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/connectors\//,
-    /^\/api\/jobs\/[^/]+\/credentials\/github$/,
+    /^\/api\/jobs\/[^/]+\/credentials\/github(\/revoke)?$/,
+    /^\/api\/jobs\/[^/]+\/credentials\/connections\/[^/]+$/,
 ];
 
 export const JOB_ID_HEADER = 'x-factory-job-id';

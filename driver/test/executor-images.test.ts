@@ -1238,6 +1238,17 @@ describe('the shared executor skills', () => {
         }
     });
 
+    it('ships the credential broker client byte-identical, root-owned and executable, in both images (BEL-60)', () => {
+        expect(read('docker/opencode-executor/credential-broker.cjs')).toBe(
+            read('docker/claude-executor/credential-broker.cjs')
+        );
+        for (const image of ['claude', 'opencode']) {
+            const dockerfile = read(`docker/${image}-executor/Dockerfile`);
+            expect(dockerfile, image).toContain('COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs');
+            expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/credential-broker\.cjs/);
+        }
+    });
+
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
         expect(existsSync(join(ROOT, '.opencode/skills'))).toBe(false);
         expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(

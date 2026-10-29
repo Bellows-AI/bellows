@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
-import type { GithubAttempt, GithubCredentialOfLease } from '../src/db/github-credential.js';
-import type { InstallationTokenProvider, MintedToken } from '../src/github/app-token.js';
+import type { AttemptCheck, AttemptOfLease, PairCheck, PairMatches } from '../src/db/attempt-of-lease.js';
+import type { InstallationTokenProvider, MintedToken, RevokeOutcome } from '../src/github/app-token.js';
 import { githubAuth, memoryAuthStore, staticRegistry, stubTelemetryClient, testConfig } from './helpers.js';
 import {
     HTTP_BAD_GATEWAY,
     HTTP_CONFLICT,
     HTTP_FORBIDDEN,
     HTTP_OK,
+    HTTP_SERVICE_UNAVAILABLE,
     HTTP_UNAUTHORIZED,
     trackApps,
 } from './helpers-http.js';
@@ -26,29 +27,61 @@ const TOKEN = 'ghs_route_test_secret_token_value';
 const EXPIRES_AT = '2026-10-16T13:00:00.000Z';
 const PAIR = { 'x-factory-job-id': JOB_ID, 'x-factory-job-lease-token': LEASE };
 const URL_PATH = `/api/jobs/${JOB_ID}/credentials/github`;
-const LIVE: GithubAttempt = { ok: true, orgId: 'local', repo: 'acme/widgets' };
+const REVOKE_PATH = `${URL_PATH}/revoke`;
+const HTTP_NO_CONTENT = 204;
+const LIVE: AttemptCheck = {
+    ok: true,
+    orgId: 'local',
+    jobId: JOB_ID,
+    rootJobId: JOB_ID,
+    repo: 'acme/widgets',
+    rootRepo: 'acme/widgets',
+    executionUserId: '66666666-6666-4666-8666-666666666666',
+    claimSeq: 1,
+};
 
 const track = trackApps();
 
 interface Boot {
     /** The check's answers in call order; the last one repeats. */
-    answers?: GithubAttempt[];
+    answers?: AttemptCheck[];
     /** The org's installation; absent is the offline board. */
     fresh?: (repo?: string | null) => Promise<MintedToken>;
     mode?: 'github' | 'none';
+    /** The check throws instead of answering. */
+    throwing?: boolean;
+    /** The pair-only match the revoke route asks; the default matches the one pair. */
+    pair?: (jobId: string, leaseToken: string) => Promise<PairCheck>;
+    /** The org's revoke; absent is an org with no App installation. */
+    revoke?: (token: string) => Promise<RevokeOutcome>;
 }
 
-async function boot({ answers = [LIVE], fresh, mode = 'github' }: Boot = {}) {
+async function boot({ answers = [LIVE], fresh, mode = 'github', throwing = false, pair, revoke }: Boot = {}) {
     const lines: string[] = [];
     const mints: (string | null | undefined)[] = [];
     let call = 0;
-    const githubCredentialOfLease: GithubCredentialOfLease = async (jobId, leaseToken) => {
+    const attemptOfLease: AttemptOfLease = async (jobId, leaseToken) => {
+        if (throwing) throw new Error('connection terminated');
         const answer = answers[Math.min(call, answers.length - 1)] ?? { ok: false };
         call += 1;
         return jobId === JOB_ID && leaseToken === LEASE ? answer : { ok: false };
     };
+    const revoked: string[] = [];
+    const pairCalls: [string, string][] = [];
+    const pairMatches: PairMatches =
+        pair === undefined
+            ? async (jobId, leaseToken) =>
+                  jobId === JOB_ID && leaseToken === LEASE ? { ok: true, orgId: 'local' } : { ok: false }
+            : async (jobId, leaseToken) => {
+                  pairCalls.push([jobId, leaseToken]);
+                  return pair(jobId, leaseToken);
+              };
     const githubToken = fresh
         ? ({
+              revoke: async (token: string) => {
+                  revoked.push(token);
+                  return (await revoke?.(token)) ?? 'revoked';
+              },
               get: async () => 'unscoped',
               installationId: async () => '4242',
               fresh: async (repo?: string | null) => {
@@ -62,21 +95,34 @@ async function boot({ answers = [LIVE], fresh, mode = 'github' }: Boot = {}) {
         config,
         orgs: staticRegistry({ config, telemetry: stubTelemetryClient(), ...(githubToken ? { githubToken } : {}) }),
         auth: memoryAuthStore(),
-        githubCredentialOfLease,
+        attemptOfLease,
+        pairMatches,
         logger: { level: 'trace', stream: { write: (line: string) => lines.push(line) } },
     });
     track(app);
-    return { app, lines, mints, checks: () => call };
+    return { app, lines, mints, revoked, pairCalls, checks: () => call };
 }
 
-const minted = async (): Promise<MintedToken> => ({ token: TOKEN, expiresAt: EXPIRES_AT });
+const minted = async (): Promise<MintedToken> => ({
+    token: TOKEN,
+    expiresAt: EXPIRES_AT,
+    permissions: { contents: 'write', checks: 'read' },
+    repositories: ['widgets'],
+});
 
 describe('the runner GitHub credential route', () => {
     it("answers a live attempt with a token narrowed to its repo and GitHub's expiry, never cached", async () => {
         const { app, mints, checks } = await boot({ fresh: minted });
         const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });
         expect(res.statusCode).toBe(HTTP_OK);
-        expect(res.json()).toEqual({ token: TOKEN, expiresAt: EXPIRES_AT });
+        expect(res.json()).toEqual({
+            token: TOKEN,
+            expiresAt: EXPIRES_AT,
+            scopes: ['checks:read', 'contents:write'],
+            resources: ['widgets'],
+            refreshable: false,
+            revocable: true,
+        });
         expect(res.headers['cache-control']).toBe('no-store');
         expect(mints).toEqual(['acme/widgets']);
         // Checked before the mint and again after it.
@@ -117,6 +163,23 @@ describe('the runner GitHub credential route', () => {
         expect(res.statusCode).toBe(HTTP_FORBIDDEN);
         expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
         expect(res.json().error).toMatch(/no repository/);
+        expect(mints).toEqual([]);
+    });
+
+    // The check no longer compares repositories (the broker does not need to); the token's narrowing does.
+    it('refuses an attempt not working its thread root’s repository before any mint', async () => {
+        const { app, mints } = await boot({ answers: [{ ...LIVE, rootRepo: 'acme/elsewhere' }], fresh: minted });
+        const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
+        expect(mints).toEqual([]);
+    });
+
+    it('answers 503 retryable, not a refusal, when the check cannot be read', async () => {
+        const { app, mints } = await boot({ answers: [], fresh: minted, throwing: true });
+        const res = await app.inject({ method: 'POST', url: URL_PATH, headers: PAIR });
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.json().code).toBe('UNAVAILABLE');
         expect(mints).toEqual([]);
     });
 
@@ -181,6 +244,90 @@ describe('the runner GitHub credential route', () => {
             });
             expect(crossed.statusCode).toBe(HTTP_UNAUTHORIZED);
             expect(mints).toEqual([]);
+        }
+    );
+});
+
+describe('the runner GitHub revoke route', () => {
+    const revoke = (app: Awaited<ReturnType<typeof boot>>['app'], body: unknown = { token: TOKEN }, headers = PAIR) =>
+        app.inject({ method: 'POST', url: REVOKE_PATH, headers, payload: body as object });
+
+    it('sends the presented token to the org revoke once and answers 204, never cached', async () => {
+        const { app, revoked, lines } = await boot({ fresh: minted });
+        const res = await revoke(app);
+        expect(res.statusCode).toBe(HTTP_NO_CONTENT);
+        expect(res.headers['cache-control']).toBe('no-store');
+        expect(revoked).toEqual([TOKEN]);
+        expect(lines.join('\n')).not.toContain(TOKEN);
+    });
+
+    it('does not need the attempt to be live: a stopped attempt can still revoke its token', async () => {
+        // The lease check is not consulted at all; only the pair match is.
+        const { app, revoked, checks } = await boot({ answers: [{ ok: false }], fresh: minted });
+        expect((await revoke(app)).statusCode).toBe(HTTP_NO_CONTENT);
+        expect(revoked).toEqual([TOKEN]);
+        expect(checks()).toBe(0);
+    });
+
+    it('refuses a superseded pair and calls no revoke', async () => {
+        const { app, revoked } = await boot({ fresh: minted, pair: async () => ({ ok: false }) });
+        const res = await revoke(app);
+        expect(res.statusCode).toBe(HTTP_FORBIDDEN);
+        expect(res.json().code).toBe('CONNECTION_NOT_AUTHORIZED');
+        expect(revoked).toEqual([]);
+    });
+
+    it('answers 503 retryable when the pair cannot be read, and calls no revoke', async () => {
+        const { app, revoked } = await boot({
+            fresh: minted,
+            pair: async () => {
+                throw new Error('connection terminated');
+            },
+        });
+        const res = await revoke(app);
+        expect(res.statusCode).toBe(HTTP_SERVICE_UNAVAILABLE);
+        expect(res.json().code).toBe('UNAVAILABLE');
+        expect(revoked).toEqual([]);
+    });
+
+    it('answers 502 when GitHub did not confirm the revoke, without quoting anything', async () => {
+        const { app, lines } = await boot({ fresh: minted, revoke: async () => 'failed' });
+        const res = await revoke(app);
+        expect(res.statusCode).toBe(HTTP_BAD_GATEWAY);
+        expect(res.body).not.toContain(TOKEN);
+        expect(lines.join('\n')).not.toContain(TOKEN);
+    });
+
+    it('answers 502 when the org holds no App installation', async () => {
+        const { app } = await boot();
+        expect((await revoke(app)).statusCode).toBe(HTTP_BAD_GATEWAY);
+    });
+
+    it.each([{}, { token: '' }, { token: 7 }, { token: 'x'.repeat(600) }])(
+        'refuses a body %j that names no usable token, and calls no revoke',
+        async (body) => {
+            const { app, revoked } = await boot({ fresh: minted });
+            const res = await revoke(app, body);
+            expect(res.statusCode).toBeGreaterThanOrEqual(400);
+            expect(revoked).toEqual([]);
+        }
+    );
+
+    it.each(['github', 'none'] as const)(
+        'takes the attempt pair and nothing else, under AUTH_MODE=%s',
+        async (mode) => {
+            const { app, revoked } = await boot({ fresh: minted, mode });
+            expect((await app.inject({ method: 'POST', url: REVOKE_PATH, payload: { token: TOKEN } })).statusCode).toBe(
+                HTTP_UNAUTHORIZED
+            );
+            const worker = await app.inject({
+                method: 'POST',
+                url: REVOKE_PATH,
+                headers: { authorization: `Bearer ${TEST_JOB_BOARD_TOKEN}` },
+                payload: { token: TOKEN },
+            });
+            expect(worker.statusCode).toBe(HTTP_UNAUTHORIZED);
+            expect(revoked).toEqual([]);
         }
     );
 });

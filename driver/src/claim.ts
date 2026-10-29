@@ -150,14 +150,14 @@ export function workspacePath(job: Pick<BoardJob, 'id' | 'workspacePath'>): stri
 }
 
 /**
- * The agent container's memory-backed GitHub token cache (docs/connections.md): the executor
- * images' helper writes only here (`CACHE_DIR` in each image's github-credential.cjs), and both
+ * The agent container's memory-backed credential cache (docs/connections.md): the executor
+ * images' broker client writes only here (`CACHE_DIR` in each image's credential-broker.cjs), and both
  * executors mount it in the agent container alone — docker a `--tmpfs`, kubernetes an
- * `emptyDir: {medium: Memory}` — so the helper's cached token never reaches a disk or the task volume.
+ * `emptyDir: {medium: Memory}` — so a cached credential never reaches a disk or the task volume.
  */
-export const GITHUB_CACHE_DIR = '/run/factory-github';
+export const CREDENTIAL_CACHE_DIR = '/run/factory-credentials';
 /** The cache's ceiling, one small JSON file: the kubernetes quantity and the docker tmpfs size. */
-export const GITHUB_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
+export const CREDENTIAL_CACHE_SIZE = { k8s: '1Mi', docker: '1m' } as const;
 
 /** The env names the loop mints for a launched attempt's run-control channel (issue #442). */
 export const CONTROL_URL_ENV = 'BELLOWS_CONTROL_URL';

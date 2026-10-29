@@ -1065,8 +1065,22 @@ async function runCall(run, entry, step) {
     return settleCall(run, entry, step, await spawnStep(run, step));
 }
 
+/**
+ * A gate or review step's output with its injected GitHub token values replaced: the command may echo them,
+ * and what the ledger keeps and the driver is answered must never hold one. The one choke point of both executors.
+ */
+function redactedResult(step, result) {
+    if (!LANES.includes(step.kind)) return result;
+    const secrets = ['GITHUB_TOKEN', 'GH_TOKEN'].map((name) => step.env?.[name]).filter((value) => value);
+    if (secrets.length === 0) return result;
+    const redact = (text) => secrets.reduce((kept, secret) => kept.split(secret).join('[redacted]'), text);
+    return { ...result, stdout: redact(result.stdout), stderr: redact(result.stderr) };
+}
+
 /** Records how a call ended: an effect that landed, a call done, or one interrupted. */
-function settleCall(run, entry, step, { result, interrupted }) {
+function settleCall(run, entry, step, outcome) {
+    const { interrupted } = outcome;
+    const result = redactedResult(step, outcome.result);
     if (interrupted) {
         recordCall(run, entry, step.invocation, { state: 'interrupted', result });
         return result;

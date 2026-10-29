@@ -196,10 +196,11 @@ COPY ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
 # The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
 # wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
 COPY github-credential.cjs /usr/local/bin/github-credential.cjs
+COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs
 COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
 COPY gh-wrapper.sh /usr/local/bin/gh
 COPY stop-plugin/ /usr/local/lib/node_modules/factory-stop-plugin/
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in

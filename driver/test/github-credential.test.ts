@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
-import { envFileBody, GITHUB_CACHE_DIR, runnerClaimEnv, TOOL_UID } from '../src/claim.js';
+import { envFileBody, CREDENTIAL_CACHE_DIR, runnerClaimEnv, TOOL_UID } from '../src/claim.js';
 import { loadDriverConfig } from '../src/config.js';
 import { dockerArgs } from '../src/docker/docker.js';
 import { runnerJobSpec } from '../src/k8s/k8s-podspec.js';
@@ -29,6 +29,7 @@ interface Deps {
     now: () => number;
     fetch: typeof fetch;
     sleep: (ms: number) => Promise<void>;
+    signal: (ms: number) => AbortSignal;
     stdin: () => Promise<string>;
     stdout: (text: string) => void;
     stderr: (line: string) => void;
@@ -38,7 +39,11 @@ const helper = createRequire(import.meta.url)(HELPER) as {
     main: (argv: string[], deps: Deps) => Promise<number>;
     obtain: (deps: Deps) => Promise<string | null>;
     RENEW_SKEW_MS: number;
-    MAX_ATTEMPTS: number;
+    CACHE_DIR: string;
+};
+const broker = createRequire(import.meta.url)(join(ROOT, 'docker/claude-executor/credential-broker.cjs')) as {
+    DEADLINE_MS: number;
+    CACHE_DIR: string;
 };
 
 const MINUTE_MS = 60_000;
@@ -74,7 +79,7 @@ function rig(answers: Answer[], env: Record<string, string | undefined> = PAIR_E
     let now = START;
     const deps: Deps = {
         env,
-        dir: join(scratch(), 'factory-github'),
+        dir: join(scratch(), 'factory-credentials'),
         now: () => now,
         fetch: (async (url: string, init: RequestInit) => {
             asks.push({ url, headers: init.headers as Record<string, string> });
@@ -84,7 +89,9 @@ function rig(answers: Answer[], env: Record<string, string | undefined> = PAIR_E
         }) as unknown as typeof fetch,
         sleep: async (ms) => {
             sleeps.push(ms);
+            now += ms;
         },
+        signal: () => new AbortController().signal,
         stdin: async () => 'protocol=https\nhost=github.com\n\n',
         stdout: (text) => stdout.push(text),
         stderr: (line) => stderr.push(line),
@@ -130,11 +137,13 @@ describe('the runner GitHub helper', () => {
     it('keeps the cache 0600 in a 0700 directory, and clears it on exit', async () => {
         const r = rig([minted('ghs_cached_secret')]);
         await helper.obtain(r.deps);
-        const file = join(r.deps.dir, 'token.json');
+        const [name] = readdirSync(r.deps.dir);
+        const file = join(r.deps.dir, name!);
         expect(statSync(file).mode & PERMISSION_BITS).toBe(FILE_MODE);
         expect(statSync(r.deps.dir).mode & PERMISSION_BITS).toBe(DIR_MODE);
         expect(await helper.main(['clear'], r.deps)).toBe(0);
         expect(existsSync(file)).toBe(false);
+        expect(readdirSync(r.deps.dir)).toEqual([]);
     });
 
     it('drops the cache when git reports the credential rejected, so the next ask renews', async () => {
@@ -172,12 +181,13 @@ describe('the runner GitHub helper', () => {
         expect(r.asks).toHaveLength(1);
     });
 
-    it('retries an unreachable board a bounded number of times, backing off, then says so', async () => {
+    it('retries an unreachable board backing off until the wall-clock deadline, then says so', async () => {
         const r = rig([new Error('connect ECONNREFUSED')]);
         expect(await helper.main(['token'], r.deps)).toBe(1);
-        expect(r.asks).toHaveLength(helper.MAX_ATTEMPTS);
-        expect(r.sleeps).toEqual([500, 1000]);
-        expect(r.stderr.join('\n')).toContain('did not issue a GitHub token after several tries');
+        expect(r.asks.length).toBeGreaterThan(3);
+        expect(r.sleeps.slice(0, 3)).toEqual([500, 1000, 2000]);
+        expect(r.sleeps.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(broker.DEADLINE_MS);
+        expect(r.stderr.join('\n')).toContain('did not issue a credential before its deadline');
         expect(r.stdout).toEqual([]);
     });
 
@@ -191,7 +201,7 @@ describe('the runner GitHub helper', () => {
         const r = rig([{ status, body: { error: 'refused' } }]);
         expect(await helper.main(['git', 'get'], r.deps)).toBe(1);
         expect(r.asks).toHaveLength(1);
-        expect(r.stderr.join('\n')).toContain('the board refused this attempt a GitHub token');
+        expect(r.stderr.join('\n')).toContain('the board refused this attempt a credential');
         expect(r.stdout).toEqual([]);
     });
 
@@ -271,7 +281,7 @@ describe('the runner GitHub helper as a process', () => {
         await new Promise<void>((resolve) => relay.listen(socket, resolve));
         servers.push(relay);
         const seen: string[] = [];
-        const fake = await board([{ status: 200, body: { token: 'ghs_relay_secret', expiresAt: '' } }]);
+        const fake = await board([{ status: 200, body: { token: 'ghs_relay_secret', expiresAt: null } }]);
         fake.server.on('request', (request: IncomingMessage) => {
             seen.push(String(request.headers['x-factory-job-lease-token']));
         });
@@ -310,9 +320,9 @@ describe('the gh wrapper and the helper in both images', () => {
     const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
 
     it('ships byte-identical copies of the helper and the wrapper', () => {
-        expect(read('docker/opencode-executor/github-credential.cjs')).toBe(
-            read('docker/claude-executor/github-credential.cjs')
-        );
+        for (const file of ['github-credential.cjs', 'credential-broker.cjs']) {
+            expect(read(`docker/opencode-executor/${file}`), file).toBe(read(`docker/claude-executor/${file}`));
+        }
         expect(read('docker/opencode-executor/gh-wrapper.sh')).toBe(read('docker/claude-executor/gh-wrapper.sh'));
     });
 
@@ -321,6 +331,8 @@ describe('the gh wrapper and the helper in both images', () => {
         expect(dockerfile).toMatch(/mv "[^"]*\/bin\/gh" \/usr\/local\/libexec\/gh/);
         expect(dockerfile).toMatch(/^COPY gh-wrapper\.sh \/usr\/local\/bin\/gh$/m);
         expect(dockerfile).toMatch(/^COPY github-credential\.cjs \/usr\/local\/bin\/github-credential\.cjs$/m);
+        expect(dockerfile).toMatch(/^COPY credential-broker\.cjs \/usr\/local\/bin\/credential-broker\.cjs$/m);
+        expect(dockerfile).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/credential-broker\.cjs/);
         expect(dockerfile).toMatch(/chmod 0755 \/usr\/local\/bin\/gh \/usr\/local\/bin\/github-credential\.cjs /);
     });
 
@@ -335,8 +347,8 @@ describe('the gh wrapper and the helper in both images', () => {
 
     it('needs no write to anything but the cache directory it is given', () => {
         // The cache path is a constant, never an env name a member could point at a shared volume.
-        const source = read('docker/claude-executor/github-credential.cjs');
-        expect(source).toContain("const CACHE_DIR = '/run/factory-github';");
+        const source = read('docker/claude-executor/credential-broker.cjs');
+        expect(source).toContain("const CACHE_DIR = '/run/factory-credentials';");
         expect(source).not.toMatch(/process\.env\.[A-Z_]*DIR/);
     });
 });
@@ -373,23 +385,27 @@ describe('the token cache and the runner env, on both executors', () => {
     const SESSION = { id: '33333333-3333-4333-8333-333333333333', resume: false };
 
     it("caches where the image's helper writes", () => {
-        expect(GITHUB_CACHE_DIR).toBe((helper as unknown as { CACHE_DIR: string }).CACHE_DIR);
+        expect(CREDENTIAL_CACHE_DIR).toBe(helper.CACHE_DIR);
+        expect(CREDENTIAL_CACHE_DIR).toBe(broker.CACHE_DIR);
     });
 
     it('docker mounts a 0700 memory tmpfs over the cache in the agent container', () => {
         const args = dockerArgs(loadDriverConfig({}), runnerJob, SESSION, { envFile: '/tmp/agent.env' });
         const at = args.indexOf('--tmpfs');
         // The tool uid's: git and gh run as it (issue #814).
-        expect(args[at + 1]).toBe(`${GITHUB_CACHE_DIR}:rw,noexec,nosuid,size=1m,mode=0700,uid=${TOOL_UID}`);
+        expect(args[at + 1]).toBe(`${CREDENTIAL_CACHE_DIR}:rw,noexec,nosuid,size=1m,mode=0700,uid=${TOOL_UID}`);
         expect(args.join(' ')).not.toContain(MEMBER_TOKEN);
         expect(envFileBody(runnerJob, loadDriverConfig({}))).not.toMatch(/^(GITHUB_TOKEN|GH_TOKEN)=/m);
     });
 
     it('kubernetes mounts a Memory emptyDir over the cache in the agent container alone', () => {
         const spec = runnerJobSpec(loadDriverConfig({ EXECUTOR: 'kubernetes' }), runnerJob, SESSION).spec.template.spec;
-        expect(spec.volumes).toContainEqual({ name: 'github-cache', emptyDir: { medium: 'Memory', sizeLimit: '1Mi' } });
+        expect(spec.volumes).toContainEqual({
+            name: 'credential-cache',
+            emptyDir: { medium: 'Memory', sizeLimit: '1Mi' },
+        });
         const mounting = spec.containers
-            .filter((c) => c.volumeMounts.some((m) => m.mountPath === GITHUB_CACHE_DIR))
+            .filter((c) => c.volumeMounts.some((m) => m.mountPath === CREDENTIAL_CACHE_DIR))
             .map((c) => c.name);
         expect(mounting).toEqual([AGENT_CONTAINER]);
         // No GitHub value rides the pod spec or the Secret's claim half.

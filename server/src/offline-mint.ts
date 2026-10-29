@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { RUNNER_TOKEN_PERMISSIONS } from './github/app-token.js';
 import { start } from './main.js';
 
 /*
@@ -15,8 +16,12 @@ const TOKEN_BYTES = 16;
 
 await start({
     github: { mode: 'none' },
-    githubMint: async () => ({
+    githubMint: async (_orgId, repo) => ({
         token: `lane_${randomBytes(TOKEN_BYTES).toString('hex')}`,
         expiresAt: new Date(Date.now() + LANE_TOKEN_SECONDS * MS_PER_SECOND).toISOString(),
+        permissions: { ...RUNNER_TOKEN_PERMISSIONS },
+        repositories: repo ? [repo.split('/')[1] ?? repo] : [],
     }),
+    // No GitHub behind a lane token: the revoke the runner's clear asks has nothing to call.
+    githubRevoke: async () => 'revoked',
 });

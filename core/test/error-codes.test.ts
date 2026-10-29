@@ -10,4 +10,8 @@ describe('ERROR_CODES', () => {
     it('carries the runner credential endpoint’s no-App refusal, which the runner helper reads', () => {
         expect(ERROR_CODES.GITHUB_UNAVAILABLE).toBe('GITHUB_UNAVAILABLE');
     });
+
+    it('carries the broker’s typed missing-connection answer, which the runner helper reads', () => {
+        expect(ERROR_CODES.INTEGRATION_REQUIRED).toBe('INTEGRATION_REQUIRED');
+    });
 });

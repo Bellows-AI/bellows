@@ -85,11 +85,11 @@ export const RULES = [
     [/^driver\/src\/k8s\/k8s-[a-z-]+\.ts$/, NONE, 'kubernetes executor, covered by test:k8s'],
 
     // --- runner images ------------------------------------------------------------------------------
-    [/^docker\/claude-executor\/github-credential\.cjs$/, ['github-credential'], 'GitHub credential'],
+    [/^docker\/claude-executor\/(github-credential|credential-broker)\.cjs$/, ['github-credential'], 'GitHub credential'],
     [/^docker\/(claude-executor|opencode-executor)\/(stop-hook\.cjs|stop-plugin\/.*)$/, ['cooperative-stop'], 'cooperative stop'],
     [/^docker\/(claude|opencode)-executor\/test\.sh$/, ['image-checks'], 'executor image checks'],
     [/^docker\/claude-executor\/(Dockerfile|entrypoint\.sh|claude-bridge\.cjs|claude-progress\.cjs|turn-context-hook\.cjs|branch-reporter\.cjs|attempt-pair\.cjs|control-proxy\.cjs|factory-gate\.cjs|factory-control\.cjs|gh-wrapper\.sh|managed-settings\.json|claude-home\/.*)$/, [...REAL, 'image-checks'], 'claude-executor image'],
-    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|branch-reporter\.cjs|attempt-pair\.cjs|control-proxy\.cjs|factory-gate\.cjs|factory-control\.cjs|ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|gh-wrapper\.sh|github-credential\.cjs|rate-limit-watch\.cjs|tool-bash\.sh|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks'], 'opencode-executor image'],
+    [/^docker\/opencode-executor\/(Dockerfile|entrypoint\.sh|branch-reporter\.cjs|attempt-pair\.cjs|control-proxy\.cjs|factory-gate\.cjs|factory-control\.cjs|ctl-agent\.cjs|factory-launch\.sh|factory-tool\.cjs|gh-wrapper\.sh|github-credential\.cjs|credential-broker\.cjs|rate-limit-watch\.cjs|tool-bash\.sh|otel\.json|opencode-home\/.*)$/, ['cooperative-stop', 'tool-isolation', 'image-checks'], 'opencode-executor image'],
     [/^docker\/tool-isolation-checks\.sh$/, ['tool-isolation'], 'tool isolation'],
     [/^docker\/skills\//, ['tool-isolation'], 'skill helper scripts'],
     [/^docker\/(Dockerfile|driver\.Dockerfile)$/, ['compose-driver'], 'the deployed and compose images'],

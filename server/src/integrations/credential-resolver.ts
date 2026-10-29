@@ -4,6 +4,7 @@ import { grantSecretIdentity } from '../db/connection-grants.js';
 import type { SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
 import { authorityScopes, decodeGrantPayload, type GrantPayload } from './grant-credentials.js';
 import type { GrantLineage } from './grant-lineage.js';
+import type { OAuthProviderLookup } from './oauth-provider.js';
 import { isTrustedContext, type TrustedIntegrationContext } from './trusted-context.js';
 
 /**
@@ -13,13 +14,24 @@ import { isTrustedContext, type TrustedIntegrationContext } from './trusted-cont
  * value (a thrown query or read, a version mismatch, a payload that does not decode) is `unavailable`, never
  * "missing": absence is only what a successful query of the binding says.
  */
-export type ResolveResult = { ok: true; credential: Credential } | { ok: false; outcome: IntegrationOutcome };
+export type ResolveResult =
+    | {
+          ok: true;
+          credential: Credential;
+          /** The binding's selected resource, as labelled when it was chosen; null when none was. Not enforced here. */
+          resource: string | null;
+          /** What the holder may do with the token: server-side facts the portable `Credential` does not carry. */
+          lifecycle: { refreshable: boolean; revocable: boolean };
+      }
+    | { ok: false; outcome: IntegrationOutcome };
 
 export interface CredentialResolverDeps {
     sql: Sql;
     orgId: string;
     secrets: SecretStore;
     lineage: GrantLineage;
+    /** Tells a token's lifecycle: whether the provider can refresh it and revoke it by token. */
+    providers?: OAuthProviderLookup | undefined;
     /** A token expiring within this window is refreshed first. */
     skewMs?: number;
     readDeadlineMs?: number;
@@ -33,6 +45,7 @@ export interface ResolveRequest {
 
 interface BindingRow {
     provider: string;
+    b_resource: string | null;
     b_grant_id: string | null;
     b_authority: unknown;
     c_status: string | null;
@@ -55,6 +68,7 @@ type Checked =
     | {
           ok: true;
           grant: { id: string; provider: string; ref: string; version: string; scopes: string[]; principal: string };
+          resource: string | null;
       }
     | { ok: false; outcome: IntegrationOutcome };
 
@@ -79,7 +93,7 @@ type Settings = Required<Pick<CredentialResolverDeps, 'skewMs' | 'readDeadlineMs
 /** The binding, its connection and its grant, validated field by field. */
 async function check(deps: Settings, ctx: TrustedIntegrationContext, request: ResolveRequest): Promise<Checked> {
     const rows = await deps.sql<BindingRow[]>`
-        select b.provider, b.grant_id as b_grant_id, b.authority as b_authority,
+        select b.provider, b.resource as b_resource, b.grant_id as b_grant_id, b.authority as b_authority,
                c.status as c_status, c.credential as c_credential, c.principal_user_id as c_principal,
                c.grant_id as c_grant_id,
                g.id as g_id, g.principal_user_id as g_principal, g.provider as g_provider, g.status as g_status,
@@ -130,6 +144,7 @@ function grantOf(row: BindingRow): Checked {
             scopes,
             principal: row.g_principal as string,
         },
+        resource: row.b_resource,
     };
 }
 
@@ -161,6 +176,19 @@ interface Call {
     signal: AbortSignal | undefined;
 }
 
+/** Refreshable: a refresh token and a provider that can use it. Revocable: the provider revokes a single token. */
+function lifecycleOf(
+    deps: Settings,
+    provider: string,
+    payload: GrantPayload
+): { refreshable: boolean; revocable: boolean } {
+    const hooks = deps.providers?.(provider);
+    return {
+        refreshable: payload.refreshToken !== null && hooks !== undefined,
+        revocable: hooks?.revokeScope === 'token',
+    };
+}
+
 async function resolveOnce(deps: Settings, call: Call, mayRefresh: boolean): Promise<ResolveResult> {
     const { ctx, request, signal } = call;
     const before = await check(deps, ctx, request);
@@ -185,6 +213,8 @@ async function resolveOnce(deps: Settings, call: Call, mayRefresh: boolean): Pro
             expiresAt: payload.accessExpiresAt,
             authority: { scopes: after.grant.scopes },
         },
+        resource: after.resource,
+        lifecycle: lifecycleOf(deps, after.grant.provider, payload),
     };
 }
 

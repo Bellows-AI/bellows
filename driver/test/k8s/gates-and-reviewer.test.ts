@@ -7,7 +7,7 @@ import {
     REVIEWER_CONTAINER,
     SUPERVISOR_CONTAINER,
 } from '../../src/supervisor-contract.js';
-import { gateLoopArgv, reviewLoopArgv } from '../../src/container-scripts.js';
+import { gateLoopArgv, reviewLoopArgv, supervisorScript } from '../../src/container-scripts.js';
 import { ARTIFACT_LIMIT } from '../../src/runner.js';
 import type { K8sRequest, K8sResponse } from '../../src/k8s/k8s-transport.js';
 import { LOG_TAIL_LINES } from '../../src/k8s/k8s-transport.js';
@@ -15,7 +15,7 @@ import { jobsPath, runnerJobName, runnerJobSpec, secretName } from '../../src/k8
 import {
     GATE_GID,
     GATE_UID,
-    GITHUB_CACHE_DIR,
+    CREDENTIAL_CACHE_DIR,
     REVIEWER_HOME,
     REVIEWER_TREE_DIR,
     REVIEWER_TREE_PATH,
@@ -179,6 +179,12 @@ describe('the gate sidecar', () => {
         expect(agent.env).toContainEqual({ name: 'NPM_CONFIG_CACHE', value: path });
     });
 
+    // BEL-60 slice 4: the token redaction lives in the supervisor script, so the pod must run that script.
+    it('runs the one supervisor script, where a gate step’s token is redacted, as the supervisor container', () => {
+        const supervisor = podOf(gated).containers.find((candidate) => candidate.name === 'supervisor')!;
+        expect(supervisor.command).toEqual(['node', '-e', supervisorScript]);
+    });
+
     it('tells the supervisor its gate container is there, and gives the gate mailbox to it alone', () => {
         const pod = podOf(gated);
         const container = (name: string) => pod.containers.find((candidate) => candidate.name === name)!;
@@ -287,7 +293,7 @@ describe('the reviewer sidecar (issue #774)', () => {
         // The command is the loop's own text, which names these words in its comments: env and mounts only.
         const text = JSON.stringify({ env: reviewer.env, mounts: reviewer.volumeMounts });
         expect(text).not.toMatch(/GITHUB_TOKEN|GH_TOKEN|PUBLISH|BELLOWS_|credential/i);
-        expect(text).not.toContain(GITHUB_CACHE_DIR);
+        expect(text).not.toContain(CREDENTIAL_CACHE_DIR);
         expect(reviewer.env).toEqual([{ name: 'HOME', value: REVIEWER_HOME }]);
     });
 
