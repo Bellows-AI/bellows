@@ -4,15 +4,16 @@
 -- (BEL-158). Each statement names its rows by an explicit predicate. This file must contain NO `create extension`,
 -- per 005's header.
 
--- 1. A queued root bound to a still-active legacy connection waits as an open requirement: the claim never offers it
---    and spends no attempt, and the member connects Jira and binds it (`POST /api/jobs/:id/connections`). A running
---    root is left alone: its helper finds no OAuth connection and stops with the connect guidance.
+-- 1. A thread bound to a still-active legacy connection that holds a queued job (the root, or a follow-up beneath a
+--    root that already finished) waits as an open root-scoped requirement: the claim never offers it and spends no
+--    attempt, and the member connects Jira and binds it (`POST /api/jobs/:id/connections`). A thread with nothing
+--    queued is left alone: a running job's helper finds no OAuth connection and stops with the connect guidance.
 insert into job_integration_requirement (org_id, root_job_id, provider, reason)
 select distinct j.org_id, j.root_job_id, 'jira', 'missing'
 from job j
 join job_connection_binding b on b.org_id = j.org_id and b.root_job_id = j.root_job_id and b.provider = 'jira'
 join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id
-where j.id = j.root_job_id and j.status = 'queued'
+where j.status = 'queued'
   and c.credential = 'legacy_api_token' and c.status = 'active'
 on conflict do nothing;
 

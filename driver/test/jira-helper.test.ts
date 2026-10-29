@@ -179,6 +179,7 @@ function fakeBoard(getConnections: () => unknown) {
         conflictOnDispatch: false,
         moves: [] as { from: Status[]; to: Status }[],
         brokerAsks: 0,
+        issued: 0,
         brokerBase: Date.now(),
     };
     const publicOf = ({ id, status, result, dispatchedAt }: Receipt) => ({ id, status, result, dispatchedAt });
@@ -215,7 +216,7 @@ function fakeBoard(getConnections: () => unknown) {
                 return send(res, 200, { receipt: publicOf(existing), created: false });
             }
             const made: Receipt = {
-                id: `55555555-5555-4555-8555-${String(state.receipts.size).padStart(12, '0')}`,
+                id: `55555555-5555-4555-8555-${String(state.issued++).padStart(12, '0')}`,
                 status: 'started',
                 result: null,
                 dispatchedAt: null,
@@ -436,7 +437,7 @@ describe('add-comment', () => {
         const post = s.jira.calls.find((c) => c.method === 'POST');
         expect(post?.url).toBe(jiraPath('/issue/ABC-1/comment'));
         expect(post?.body).toMatchObject({
-            properties: [{ key: 'bellows-operation', value: { key: DEFAULT_KEY } }],
+            properties: [{ key: 'bellows-operation', value: { receipt: s.receipts()[0]?.id } }],
         });
         expect(s.board.moves.map((m) => m.to)).toEqual(['dispatched', 'succeeded']);
         expect(s.receipts()[0]).toMatchObject({ status: 'succeeded', result: { commentId: '100' } });
@@ -488,10 +489,26 @@ describe('add-comment', () => {
         const s = await scenario();
         s.jira.postMode = 'drop-before-create';
         s.jira.comments.push({ id: '7', author: { accountId: ME }, created: new Date().toISOString(), body: 'x' });
-        s.jira.properties.set('7/bellows-operation', { key: 'some-other-key' });
+        s.jira.properties.set('7/bellows-operation', { receipt: '55555555-5555-4555-8555-999999999999' });
         const { code } = await s.run(comment());
         expect(code).toBe(4);
         expect(s.receipts()[0]?.status).toBe('unknown');
+    });
+
+    it("67d: another task root's receipt for the same connection, issue and body is not evidence", async () => {
+        const s = await scenario();
+        await s.run(comment()); // the first root's receipt R1 and its real comment, carrying R1
+        const first = s.receipts()[0] as Receipt;
+        s.board.receipts.clear(); // a second root: same logical key, a new durable receipt
+        s.jira.postMode = 'drop-before-create';
+        const { code, out } = await s.run(comment());
+        expect(code).toBe(4);
+        expect(JSON.parse(out)).toMatchObject({ outcome: 'outcome_unknown' });
+        const second = s.receipts()[0] as Receipt;
+        expect(second.id).not.toBe(first.id);
+        expect(second.status).toBe('unknown');
+        expect(second.result).toBeNull();
+        expect(s.jira.posts).toBe(2);
     });
 
     it('68: a reconcile read that fails is unknown, never a POST', async () => {

@@ -277,6 +277,44 @@ describe.skipIf(!enabled)('jira authorization', () => {
         expect(connections.find((c) => c.site === hostOf(tag, 'one'))!.id).toBe(one!.id);
     });
 
+    it('an explicit connect to a site disconnected earlier makes a new active connection for it, beside the other site', async () => {
+        const tag = newTag();
+        const runtime = jiraRuntime(db.sql, fake);
+        script(fake, { tag, sites: ['one', 'two'] });
+        await (await begin(runtime, ORG, ALICE.id)).complete();
+        const [a, b] = await connectionsOf(db.sql, tag);
+        await db.sql`update connector_connection set status = 'disconnected' where id = ${a!.id}`;
+
+        const again = await begin(runtime, ORG, ALICE.id, { site: `https://${hostOf(tag, 'one')}/` });
+        const done = await again.complete();
+        expect(done).toMatchObject({ ok: true });
+        const rows = await connectionsOf(db.sql, tag);
+        const ofA = rows.filter((c) => c.site === hostOf(tag, 'one'));
+        expect(ofA.map((c) => c.status).sort()).toEqual(['active', 'disconnected']);
+        expect(ofA.find((c) => c.status === 'active')!.id).not.toBe(a!.id);
+        expect(rows.find((c) => c.site === hostOf(tag, 'two'))).toMatchObject({ id: b!.id, status: 'active' });
+    });
+
+    it('a reconnect or an all-sites connect leaves a site disconnected earlier disconnected', async () => {
+        const tag = newTag();
+        const runtime = jiraRuntime(db.sql, fake);
+        script(fake, { tag, sites: ['one', 'two'] });
+        await (await begin(runtime, ORG, ALICE.id)).complete();
+        const [a, b] = await connectionsOf(db.sql, tag);
+        await db.sql`update connector_connection set status = 'disconnected' where id = ${a!.id}`;
+
+        expect(await (await begin(runtime, ORG, ALICE.id, { connectionId: b!.id })).complete()).toMatchObject({
+            ok: true,
+            connectionId: b!.id,
+        });
+        expect(await (await begin(runtime, ORG, ALICE.id)).complete()).toMatchObject({ ok: true });
+        const rows = await connectionsOf(db.sql, tag);
+        expect(rows.map((c) => [c.id, c.status])).toEqual([
+            [a!.id, 'disconnected'],
+            [b!.id, 'active'],
+        ]);
+    });
+
     it('start is refused when Jira is not configured, and when the client is missing', async () => {
         const unconfigured = jiraRuntime(db.sql, fake, { configured: false });
         const ctx = contextOfSession({ user: { id: ALICE.id } }, ORG);

@@ -41,6 +41,12 @@ async function disconnectAll(page: Page) {
     for (const row of connections) await page.request.delete(`/api/connections/${row.id}`);
 }
 
+/** A row's overflow entry (Reconnect, Disconnect): open its menu, then pick; the inline action is a plain button. */
+async function pickFromMenu(page: Page, row: ReturnType<Page['locator']>, name: string) {
+    await row.getByRole('button', { name: /^Actions for / }).click();
+    await page.getByRole('menuitem', { name }).click();
+}
+
 const panel = (page: Page) => page.getByRole('region', { name: 'Jira connections' });
 
 async function connect(page: Page, options: { comments?: boolean } = {}) {
@@ -70,13 +76,23 @@ test('connecting through the stub shows the site, the account and read access', 
 
     await page.waitForURL(/integration=jira&result=connected/);
     await expect(panel(page).getByText('Jira connected.')).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/settings-jira-connections-callback.png`, fullPage: true });
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
     await expect(row).toContainText(ACCOUNT_A);
     await expect(row).toContainText('read');
-    await expect(row.getByRole('button', { name: /^Reconnect/ })).toBeVisible();
-    await expect(row.getByRole('button', { name: /^Disconnect/ })).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Allow adding comments' })).toBeVisible();
     await expect(panel(page).getByRole('textbox')).toHaveCount(0);
+    await expect(page).not.toHaveURL(/result=/);
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-connected.png`, fullPage: true });
+    await row.getByRole('button', { name: /^Actions for / }).click();
+    await page.screenshot({ path: `${SHOTS}/settings-jira-connections-menu.png`, fullPage: true });
+    await expect(page.getByRole('menuitem', { name: 'Reconnect' })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: 'Disconnect' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    // The result is shown once: it left the address above, and Disconnect (the destructive entry) clears it.
+    await pickFromMenu(page, row, 'Disconnect');
+    await expect(panel(page).getByText('Jira connected.')).toHaveCount(0);
+    await expect(panel(page).getByText('No Jira connections yet.')).toBeVisible();
 });
 
 test('reconnecting as another account is refused and the row keeps the first account', async ({ page }) => {
@@ -85,9 +101,7 @@ test('reconnecting as another account is refused and the row keeps the first acc
     await page.waitForURL(/result=connected/);
 
     await consentAs(page, 'b');
-    await panel(page)
-        .getByRole('button', { name: /^Reconnect/ })
-        .click();
+    await pickFromMenu(page, panel(page).getByRole('row').filter({ hasText: SITE }), 'Reconnect');
     await page.waitForURL(/result=identity-mismatch/);
     await expect(panel(page).getByText(/not the account this connection was made with/)).toBeVisible();
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
@@ -114,7 +128,7 @@ test('allowing adding comments reconnects and the row shows write', async ({ pag
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
     await expect(row).toContainText('read');
 
-    await row.getByRole('button', { name: /^Allow adding comments/ }).click();
+    await row.getByRole('button', { name: 'Allow adding comments' }).click();
     const confirm = page.getByRole('dialog', { name: 'Allow adding comments' });
     await expect(confirm).toContainText('read-bound tasks of this account will be refused');
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-write-consent.png`, fullPage: true });
@@ -122,7 +136,9 @@ test('allowing adding comments reconnects and the row shows write', async ({ pag
 
     await page.waitForURL(/result=connected/);
     await expect(row).toContainText('write');
-    await expect(row.getByRole('button', { name: /^Allow adding comments/ })).toHaveCount(0);
+    await expect(row.getByRole('button', { name: 'Allow adding comments' })).toHaveCount(0);
+    // Now a write row: Reconnect is its inline action.
+    await expect(row.getByRole('button', { name: 'Reconnect' })).toBeVisible();
 });
 
 test('a member sees no Jira panel on the Organization page, and their own on Workspace', async ({ page }) => {

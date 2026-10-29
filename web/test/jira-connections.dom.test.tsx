@@ -31,18 +31,31 @@ function spyNavigation() {
     return assign;
 }
 
+const ROW_MENU = 'Actions for mine.atlassian.net for stub-account-a@example.com';
+const openMenu = async (user: ReturnType<typeof userEvent.setup>) =>
+    user.click(await screen.findByRole('button', { name: ROW_MENU }));
+const pick = async (user: ReturnType<typeof userEvent.setup>, name: string) => {
+    await openMenu(user);
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name }));
+};
+
 const panel = () => screen.findByRole('region', { name: 'Jira connections' });
 
 describe('the Jira connection panel on the workspace page', () => {
     it('shows the connected account and site with Reconnect and Disconnect, for a member', async () => {
         stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
+        const user = userEvent.setup();
         renderApp('/settings/workspace');
 
         const row = await within(await panel()).findByRole('row', { name: /mine\.atlassian\.net/ });
         expect(row.textContent).toContain('stub-account-a@example.com');
         expect(row.textContent).toContain('read');
-        expect(within(row).getByRole('button', { name: /^Reconnect/ })).toBeTruthy();
-        expect(within(row).getByRole('button', { name: /^Disconnect/ })).toBeTruthy();
+        // A read row leads with Allow adding comments; Reconnect and Disconnect (last) are in the menu.
+        expect(within(row).getByRole('button', { name: ALLOW_COMMENTS_LABEL })).toBeTruthy();
+        expect(within(row).queryByRole('button', { name: /^Disconnect/ })).toBeNull();
+        await openMenu(user);
+        const items = within(await screen.findByRole('menu')).getAllByRole('menuitem');
+        expect(items.map((item) => item.textContent)).toEqual(['Reconnect', 'Disconnect']);
         expect(within(await panel()).queryAllByRole('textbox')).toHaveLength(0);
     });
 
@@ -91,7 +104,7 @@ describe('the Jira connection panel on the workspace page', () => {
         renderApp('/settings/workspace');
 
         const row = await within(await panel()).findByRole('row', { name: /mine\.atlassian\.net/ });
-        await user.click(within(row).getByRole('button', { name: new RegExp(`^${ALLOW_COMMENTS_LABEL}`) }));
+        await user.click(within(row).getByRole('button', { name: ALLOW_COMMENTS_LABEL }));
         const confirm = await screen.findByRole('dialog', { name: WRITE_CONSENT_TITLE });
         expect(confirm.textContent).toMatch(/read-bound tasks of this account will be refused/);
         expect(calls.some((call) => call.url === START)).toBe(false);
@@ -121,8 +134,45 @@ describe('the Jira connection panel on the workspace page', () => {
     it('?integration=jira&result=identity-mismatch renders the mismatch sentence', async () => {
         stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
         renderApp('/settings/workspace?integration=jira&result=identity-mismatch');
-        const status = await screen.findByText(/not the account this connection was made with/);
-        expect(status.getAttribute('role')).toBe('status');
+        const message = await screen.findByText(/not the account this connection was made with/);
+        const banner = message.closest('.banner-bad');
+        expect(banner?.getAttribute('role')).toBe('alert');
+    });
+
+    it('a connected result is an info banner without an alert role', async () => {
+        stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
+        renderApp('/settings/workspace?integration=jira&result=connected');
+        const banner = (await screen.findByText('Jira connected.')).closest('.banner-info');
+        expect(banner).not.toBeNull();
+        expect(banner?.getAttribute('role')).toBeNull();
+    });
+
+    it('consumes the callback result once: it leaves the URL and goes away on Disconnect', async () => {
+        stubFetch(startsWith({ status: 201, body: { authorizeUrl: CONSENT_URL } }));
+        const user = userEvent.setup();
+        const { router } = renderApp('/settings/workspace?integration=jira&result=connected');
+        await screen.findByText('Jira connected.');
+        await waitFor(() => expect(router.state.location.search).toBe(''));
+        await pick(user, 'Disconnect');
+        await waitFor(() => expect(screen.queryByText('Jira connected.')).toBeNull());
+    });
+
+    it('announces a failed disconnect inside the Jira panel', async () => {
+        stubFetch(
+            boardHandler(
+                settingsBoard({ role: MEMBER_ROLE, connections: [connection('mine.atlassian.net')] }),
+                ({ method, url }) =>
+                    method === 'DELETE' && url.startsWith('/api/connections/')
+                        ? { status: 500, body: { error: 'Could not disconnect right now.' } }
+                        : undefined
+            )
+        );
+        const user = userEvent.setup();
+        renderApp('/settings/workspace');
+        await screen.findByRole('row', { name: /mine\.atlassian\.net/ });
+        await pick(user, 'Disconnect');
+        const alert = await within(await panel()).findByRole('alert');
+        expect(alert.textContent).toContain('Could not disconnect right now.');
     });
 
     it('disconnects a row', async () => {
@@ -130,7 +180,8 @@ describe('the Jira connection panel on the workspace page', () => {
         const user = userEvent.setup();
         renderApp('/settings/workspace');
         const row = await within(await panel()).findByRole('row', { name: /mine\.atlassian\.net/ });
-        await user.click(within(row).getByRole('button', { name: /^Disconnect/ }));
+        expect(row).toBeTruthy();
+        await pick(user, 'Disconnect');
         await waitFor(() =>
             expect(
                 within(screen.getByRole('region', { name: 'Jira connections' })).queryByRole('row', {

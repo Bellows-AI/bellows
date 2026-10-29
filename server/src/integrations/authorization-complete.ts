@@ -228,6 +228,7 @@ async function activateNewGrant(
         id: row.id,
         provider: row.provider,
         facts,
+        expectedSite: row.expectedSite,
         newGrant: {
             grantId: row.pendingGrantId!,
             secretRef: row.secretRef!,
@@ -328,6 +329,7 @@ const activateExistingGrant = (fc: FlowCtx, row: AuthorizationRow, facts: Stored
         id: row.id,
         provider: row.provider,
         facts,
+        expectedSite: row.expectedSite,
         newGrant: null,
     });
 

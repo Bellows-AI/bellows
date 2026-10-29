@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
+import { Dialog, DialogBackdrop, DialogPanel, DialogTitle, Description } from '@headlessui/react';
 import type { ConnectionView } from '../api/connections.js';
 
 export const WRITE_CONSENT_TITLE = 'Allow adding comments';
@@ -37,11 +37,11 @@ export function JiraWriteConsentDialog({
                     <DialogTitle as="h2" className="task-remove-title">
                         {WRITE_CONSENT_TITLE}
                     </DialogTitle>
-                    <p>
+                    <Description as="p">
                         Atlassian will ask {connection?.account ?? 'you'} to approve adding comments. Once granted,
                         read-bound tasks of this account will be refused until they are started again with the new
                         access.
-                    </p>
+                    </Description>
                     <div className="task-remove-actions">
                         <button ref={cancelRef} type="button" className="chat-resume" onClick={onClose} disabled={busy}>
                             Cancel

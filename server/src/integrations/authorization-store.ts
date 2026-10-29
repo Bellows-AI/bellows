@@ -279,6 +279,11 @@ export interface Activation {
     id: string;
     provider: string;
     facts: StoredFacts;
+    /**
+     * The one site (lowercase host) the person asked for by name, or null. A site named here that was disconnected
+     * earlier is connected again; without it a disconnected site stays disconnected.
+     */
+    expectedSite: string | null;
     /** A NEW grant: the pre-allocated identity and the secret already stored under it. */
     newGrant: { grantId: string; secretRef: string; secretVersion: string; operationId: string } | null;
 }
@@ -329,7 +334,8 @@ async function followGrantAccess(tx: TransactionSql, input: Activation): Promise
 
 /**
  * Activation is idempotent over what is already there: a resource with an ACTIVE connection under the grant keeps it
- * (same id), a resource the person disconnected earlier stays disconnected, and only unseen resources are inserted.
+ * (same id), a resource the person disconnected earlier stays disconnected unless the consent names exactly that site
+ * (`expectedSite`), and only unseen resources, or that named one, are inserted.
  * Nothing left to activate is a `duplicate-connection`: the consent changed nothing.
  */
 async function attachResources(tx: TransactionSql, input: Activation): Promise<string[]> {
@@ -343,7 +349,8 @@ async function attachResources(tx: TransactionSql, input: Activation): Promise<s
             connectionIds.push(present.id);
             continue;
         }
-        if (present) continue;
+        // Only an explicit consent for this very site brings a disconnected one back, as a new connection.
+        if (present && resource.label !== input.expectedSite) continue;
         const attach: AttachGrantConnection = {
             principal: { kind: 'user', userId: input.userId },
             provider: input.provider,

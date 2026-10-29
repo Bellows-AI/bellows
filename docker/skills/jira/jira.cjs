@@ -115,13 +115,13 @@ function requestFor(op, input, cloudId) {
                 path: `${base(cloudId)}/issue/${issueKey(input.key)}/comment?startAt=0&maxResults=100&orderBy=created`,
             };
         case 'addComment':
-            if (input.body === '' || input.operationKey === '') throw new Error('a comment needs a body and a key');
+            if (input.body === '' || input.receiptId === '') throw new Error('a comment needs a body and a key');
             return {
                 method: 'POST',
                 path: `${base(cloudId)}/issue/${issueKey(input.key)}/comment`,
                 body: {
                     body: adf(input.body),
-                    properties: [{ key: OPERATION_PROPERTY, value: { key: input.operationKey } }],
+                    properties: [{ key: OPERATION_PROPERTY, value: { receipt: input.receiptId } }],
                 },
             };
         case 'myself':
@@ -438,10 +438,10 @@ const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 const safeDate = (text) => Date.parse(String(text).replace(/([+-]\d\d)(\d\d)$/, '$1:$2'));
 
 /**
- * The comment this operation made, by its `bellows-operation` property only: its id, or null for "not
+ * The comment this operation made, by its `bellows-operation` property only, which carries the operation receipt's globally unique id (never the logical key, which two task roots can share): its id, or null for "not
  * found" and for every read that failed or was malformed. No author, body or time match ever stands in.
  */
-async function reconcile(ctx, conn, issue, operationKey, dispatchedAt) {
+async function reconcile(ctx, conn, issue, receiptId, dispatchedAt) {
     try {
         const me = await jiraSend(ctx, conn, 'myself', requestFor('myself', {}, conn.resource), { once: true });
         if (me.kind !== 'ok' || typeof me.json?.accountId !== 'string') return null;
@@ -460,7 +460,7 @@ async function reconcile(ctx, conn, issue, operationKey, dispatchedAt) {
                 const property = await jiraSend(ctx, conn, 'listComments', { method: 'GET', path: `${base(conn.resource)}/comment/${comment.id}/properties/${OPERATION_PROPERTY}` }, { once: true });
                 if (property.kind === 'refused' && property.reason === 'not-found') continue;
                 if (property.kind !== 'ok') return null;
-                if (property.json?.value?.key === operationKey) return comment.id;
+                if (property.json?.value?.receipt === receiptId) return comment.id;
             }
             if (comments.length < RECONCILE_PAGE) return null;
         }
@@ -480,8 +480,8 @@ async function succeed(ctx, receipt, commentId) {
 }
 
 /** Reconcile a possibly-written comment; found is success, anything else is unknown and is never replayed. */
-async function settle(ctx, conn, receipt, issue, operationKey, dispatchedAt) {
-    const found = await reconcile(ctx, conn, issue, operationKey, dispatchedAt);
+async function settle(ctx, conn, receipt, issue, dispatchedAt) {
+    const found = await reconcile(ctx, conn, issue, receipt.id, dispatchedAt);
     if (found !== null) return succeed(ctx, receipt, found);
     if (receipt.status !== 'unknown') await moveReceipt(ctx, receipt, ['dispatched'], 'unknown');
     throw new Stop(
@@ -511,7 +511,7 @@ async function addComment(ctx, conn, issue, body, explicitKey) {
     if (receipt.status === 'failed') {
         throw new Stop(EXIT_FAILED, 'refused', 'failed_before', 'jira: this comment was refused earlier and nothing was posted; fix the cause and pass another --key to try again.');
     }
-    if (receipt.status !== 'started') return settle(ctx, conn, receipt, issue, operationKey, receipt.dispatchedAt ?? null);
+    if (receipt.status !== 'started') return settle(ctx, conn, receipt, issue, receipt.dispatchedAt ?? null);
 
     const moved = await moveReceipt(ctx, receipt, ['started'], 'dispatched');
     if (moved.conflict) {
@@ -520,15 +520,15 @@ async function addComment(ctx, conn, issue, body, explicitKey) {
     if (moved.failed) throw new Stop(EXIT_FAILED, 'unavailable', 'receipt_unrecorded', 'jira: the board did not record the comment as started; nothing was posted.');
     const dispatched = moved.receipt;
 
-    const request = requestFor('addComment', { key: issue, body, operationKey }, conn.resource);
+    const request = requestFor('addComment', { key: issue, body, receiptId: dispatched.id }, conn.resource);
     // A Stop past this point (deadline, broker) leaves the receipt dispatched; the next call reconciles it.
     const answer = await jiraSend(ctx, conn, 'addComment', request);
     if (answer.kind === 'ok') {
         const id = answer.json?.id;
         if (typeof id === 'string' && COMMENT_ID.test(id)) return succeed(ctx, dispatched, id);
-        return settle(ctx, conn, dispatched, issue, operationKey, dispatched.dispatchedAt);
+        return settle(ctx, conn, dispatched, issue, dispatched.dispatchedAt);
     }
-    if (answer.kind === 'ambiguous') return settle(ctx, conn, dispatched, issue, operationKey, dispatched.dispatchedAt);
+    if (answer.kind === 'ambiguous') return settle(ctx, conn, dispatched, issue, dispatched.dispatchedAt);
     await moveReceipt(ctx, dispatched, ['dispatched'], 'failed');
     if (answer.kind === 'unauthorized') {
         throw new Stop(EXIT_FAILED, 'refused', 'credential_rejected', 'jira: credential rejected by Jira after a fresh one was issued; nothing was posted. Report it.');

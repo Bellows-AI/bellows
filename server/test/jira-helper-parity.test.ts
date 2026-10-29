@@ -27,8 +27,8 @@ const CASES: [string, Record<string, unknown>][] = [
     ['searchIssues', { jql: 'a & b = "c"', fields: ['summary'], maxResults: 25 }],
     ['searchIssues', { jql: 'x', maxResults: 5000 }],
     ['listComments', { key: 'ABC-12' }],
-    ['addComment', { key: 'ABC-1', body: 'one', operationKey: 'k1' }],
-    ['addComment', { key: 'ABC-1', body: 'one\n\nthree "quoted" <b>', operationKey: 'k:2.x' }],
+    ['addComment', { key: 'ABC-1', body: 'one', receiptId: 'k1' }],
+    ['addComment', { key: 'ABC-1', body: 'one\n\nthree "quoted" <b>', receiptId: 'k:2.x' }],
     ['myself', {}],
 ];
 

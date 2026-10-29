@@ -14,7 +14,7 @@ export const jiraScopesFor = (access: 'read' | 'write'): string[] =>
     access === 'write' ? [...JIRA_SCOPES.read, ...JIRA_SCOPES.write] : [...JIRA_SCOPES.read];
 
 export const JIRA_ISSUE_KEY = /^[A-Z][A-Z0-9_]+-[1-9][0-9]*$/;
-/** The comment property that ties a posted comment to its operation receipt. */
+/** The comment property that ties a posted comment to its operation receipt: its value is the receipt's own unique id, never the logical key two roots can share. */
 export const JIRA_OPERATION_PROPERTY = 'bellows-operation';
 
 const DEFAULT_API_ORIGIN = 'https://api.atlassian.com';
@@ -138,18 +138,18 @@ const listComments: IntegrationOperation<{ key: string }> = {
     },
 };
 
-const addComment: IntegrationOperation<{ key: string; body: string; operationKey: string }> = {
+const addComment: IntegrationOperation<{ key: string; body: string; receiptId: string }> = {
     name: 'addComment',
     effect: 'write',
     requiredScopes: ['write:jira-work'],
     request: (input, resource) => {
-        if (input.body === '' || input.operationKey === '') throw new Error('a comment needs a body and a key');
+        if (input.body === '' || input.receiptId === '') throw new Error('a comment needs a body and a key');
         return {
             method: 'POST',
             path: `${base(resource)}/issue/${issueKey(input.key)}/comment`,
             body: {
                 body: jiraAdf(input.body),
-                properties: [{ key: JIRA_OPERATION_PROPERTY, value: { key: input.operationKey } }],
+                properties: [{ key: JIRA_OPERATION_PROPERTY, value: { receipt: input.receiptId } }],
             },
         };
     },

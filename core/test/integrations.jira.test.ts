@@ -134,14 +134,14 @@ describe('jira operations', () => {
 
     it('addComment posts ADF and the bellows-operation property; a 5xx after dispatch is outcome_unknown', async () => {
         const ok = fetcher(() => respond(201, { id: '10' }));
-        await run(JIRA_OPERATIONS.addComment, { key: 'ABC-1', body: 'a\nb', operationKey: 'op-1' }, ok);
+        await run(JIRA_OPERATIONS.addComment, { key: 'ABC-1', body: 'a\nb', receiptId: 'op-1' }, ok);
         expect(ok.calls[0]).toEqual({
             url: `${ORIGIN}${BASE}/issue/ABC-1/comment`,
             method: 'POST',
-            body: { body: jiraAdf('a\nb'), properties: [{ key: 'bellows-operation', value: { key: 'op-1' } }] },
+            body: { body: jiraAdf('a\nb'), properties: [{ key: 'bellows-operation', value: { receipt: 'op-1' } }] },
         });
         const bad = fetcher(() => respond(503, {}));
-        const r = await run(JIRA_OPERATIONS.addComment, { key: 'ABC-1', body: 'x', operationKey: 'op-2' }, bad);
+        const r = await run(JIRA_OPERATIONS.addComment, { key: 'ABC-1', body: 'x', receiptId: 'op-2' }, bad);
         expect(r.ok).toBe(false);
         expect(!r.ok && r.outcome.outcome).toBe('outcome_unknown');
     });
@@ -162,7 +162,7 @@ describe('jira operations', () => {
         const f = fetcher(() => respond(201, {}));
         const r = await run(
             JIRA_OPERATIONS.addComment,
-            { key: 'ABC-1', body: 'x', operationKey: 'k' },
+            { key: 'ABC-1', body: 'x', receiptId: 'k' },
             f,
             jiraScopesFor('read')
         );

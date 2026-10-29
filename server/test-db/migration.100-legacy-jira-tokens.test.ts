@@ -114,6 +114,8 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
     let queuedOauth: string;
     let followUp: string;
     let alreadyWaiting: string;
+    let completedRoot: string;
+    let completedFollowUp: string;
 
     it('upgrades a 099 database', async () => {
         await applyAll(versioned(VERSION));
@@ -137,6 +139,14 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
         await pool`
             insert into job (org_id, id, command, root_job_id, parent_job_id, created_by)
             values (${org}, ${followUp}, 'more', ${queuedLegacy}, ${queuedLegacy}, ${author})
+        `;
+        completedRoot = await root(org, author, { connection: legacyPersonal });
+        await pool`update job set status = 'running' where id = ${completedRoot}`;
+        await pool`update job set status = 'succeeded' where id = ${completedRoot}`;
+        completedFollowUp = randomUUID();
+        await pool`
+            insert into job (org_id, id, command, root_job_id, parent_job_id, created_by)
+            values (${org}, ${completedFollowUp}, 'more', ${completedRoot}, ${completedRoot}, ${author})
         `;
         await applyAll([VERSION]);
     });
@@ -169,6 +179,20 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
         expect(await openRequirements(org, followUp)).toEqual([]);
     });
 
+    it('81b: a queued follow-up beneath a completed root with a legacy binding gets the root-scoped requirement and is not claimable', async () => {
+        expect(await openRequirements(org, completedRoot)).toEqual([{ provider: 'jira', reason: 'missing' }]);
+        expect(await openRequirements(org, completedFollowUp)).toEqual([]);
+        const parked = [queuedLegacy, queuedOrgWide, runningLegacy, queuedOauth, alreadyWaiting, followUp];
+        await pool`update job set claim_deferred_until = now() + interval '1 hour' where id in ${pool(parked)}`;
+        const claimed = await createJobStore({ sql: pool, orgId: org }).claim('worker-2', 60);
+        expect(claimed).toBeNull();
+        const [row] = await pool<{ attempts: number; status: string }[]>`
+            select attempts, status from job where id = ${completedFollowUp}
+        `;
+        expect(row).toEqual({ attempts: 0, status: 'queued' });
+        await pool`update job set claim_deferred_until = null where id in ${pool(parked)}`;
+    });
+
     it('82: job.jira_connection_id pointing at a legacy row is nulled; an oauth one is kept', async () => {
         const rows = await pool<{ id: string; jira_connection_id: string | null }[]>`
             select id, jira_connection_id from job where org_id = ${org} and id in ${pool([
@@ -187,7 +211,7 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
 
     it('83: the claim does not offer that queued root and spends no attempt', async () => {
         // Only the roots the migration left waiting are in play: park the others.
-        const parked = [queuedOrgWide, runningLegacy, queuedOauth, alreadyWaiting, followUp];
+        const parked = [queuedOrgWide, runningLegacy, queuedOauth, alreadyWaiting, followUp, completedFollowUp];
         await pool`update job set claim_deferred_until = now() + interval '1 hour' where id in ${pool(parked)}`;
         const claimed = await createJobStore({ sql: pool, orgId: org }).claim('worker-1', 60);
         expect(claimed).toBeNull();
@@ -203,6 +227,6 @@ describe.skipIf(!enabled)('100_legacy_jira_tokens', () => {
         const [counted] = await pool<{ n: number }[]>`
             select count(*)::int as n from job_integration_requirement where org_id = ${org}
         `;
-        expect(counted!.n).toBe(3);
+        expect(counted!.n).toBe(4);
     });
 });
