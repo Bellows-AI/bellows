@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConnectionGrants, grantSecretIdentity } from '../src/db/connection-grants.js';
 import { createConnectionStore } from '../src/db/connection-store.js';
 import {
@@ -151,7 +151,8 @@ const connectionsOfAccount = (account: string) =>
 const lapse = (id: string) =>
     db.sql`
         update integration_authorization
-        set consumed_at = now() - interval '1 hour', expires_at = now() - interval '1 hour' where id = ${id}
+        set consumed_at = now() - interval '1 hour', expires_at = now() - interval '1 hour',
+            deadline_at = now() - interval '1 hour' where id = ${id}
     `;
 
 interface Seeded {
@@ -618,6 +619,107 @@ describe.skipIf(!enabled)('complete: a new grant is created secret first, connec
         expect(row.result).toMatchObject({ connectionIds: [connection!.id] });
     });
 
+    // Review r1 (A2): the authorization's own durable deadline covers the whole flow, not the refresh lease.
+    it('exchange, discovery and persistence outlasting the refresh lease but inside the authorization deadline: recovery leaves it and the connect succeeds', async () => {
+        const r = rig();
+        const account = newAccount(r);
+        const started = await begin(r);
+        const discoverGate = r.fake.parkDiscover();
+        const completing = complete(r, { state: started.state, code: CODE });
+        await discoverGate.accepted;
+        // The row was consumed longer ago than the 45 s refresh lease, but the whole flow may take longer.
+        await db.sql`
+            update integration_authorization
+            set consumed_at = now() - (${r.lineage.leaseMs + 1000}::double precision * interval '1 millisecond')
+            where id = ${started.authorizationId}
+        `;
+        expect(await r.flowOver().recoverAuthorization(started.authorizationId)).toBe('not-expired');
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'exchanging' });
+        discoverGate.release();
+        expect(await completing).toMatchObject({ ok: true });
+        expect(await grantsOfAccount(account)).toHaveLength(1);
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'completed', failure: null });
+    });
+
+    it('the row records the deadline at consume: it covers both provider calls, the persistence budget and a margin', async () => {
+        const r = rig({
+            timing: { exchangeDeadlineMs: 1000, persistBudgetMs: 2000, marginMs: 500, readDeadlineMs: 0 },
+        });
+        newAccount(r);
+        const started = await begin(r);
+        const discoverGate = r.fake.parkDiscover();
+        const completing = complete(r, { state: started.state, code: CODE });
+        await discoverGate.accepted;
+        const [window] = await db.sql<{ ms: number }[]>`
+            select extract(epoch from (deadline_at - consumed_at)) * 1000 as ms
+            from integration_authorization where id = ${started.authorizationId}
+        `;
+        expect(Number(window!.ms)).toBeGreaterThanOrEqual(2 * 1000 + 2000 + 500);
+        discoverGate.release();
+        await completing;
+    });
+
+    it('the live flow does not cross its deadline: a durable deadline that passed before the secret is recorded ends it interrupted, with nothing stored', async () => {
+        const r = rig();
+        const account = newAccount(r);
+        const started = await begin(r);
+        const discoverGate = r.fake.parkDiscover();
+        const completing = complete(r, { state: started.state, code: CODE });
+        await discoverGate.accepted;
+        await db.sql`update integration_authorization set deadline_at = now() - interval '1 second' where id = ${started.authorizationId}`;
+        discoverGate.release();
+        expect(await completing).toEqual({ ok: false, returnTo: '/', failure: 'interrupted' });
+        expect(await grantsOfAccount(account)).toHaveLength(0);
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
+    });
+
+    describe('with the process clock past the deadline', () => {
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it('the live flow checks the deadline before each step: no identity lookup after an exchange that used the whole budget', async () => {
+            const r = rig();
+            const account = newAccount(r);
+            const started = await begin(r);
+            const exchangeGate = r.fake.parkExchange();
+            const completing = complete(r, { state: started.state, code: CODE });
+            await exchangeGate.accepted;
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(Date.now() + 10 * 60_000);
+            exchangeGate.release();
+            expect(await completing).toEqual({ ok: false, returnTo: '/', failure: 'interrupted' });
+            vi.useRealTimers();
+            expect(r.fake.discoverCalls).toBe(0);
+            expect(await grantsOfAccount(account)).toHaveLength(0);
+            expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
+        });
+    });
+
+    it('recovery leaves a persistence attempt that is still live, even past the deadline, and the flow then completes', async () => {
+        const hold = parked();
+        const r = rig({
+            store: (h) =>
+                faultyStore(h, {
+                    stageVersion: async (run) => {
+                        await hold.hold();
+                        return run();
+                    },
+                }).store,
+        });
+        const account = newAccount(r);
+        const started = await begin(r);
+        const completing = complete(r, { state: started.state, code: CODE });
+        await hold.entered;
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'persisting' });
+        await lapse(started.authorizationId);
+        expect(await r.flowOver().recoverAuthorization(started.authorizationId)).toBe('left');
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'persisting', failure: null });
+        hold.release();
+        expect(await completing).toMatchObject({ ok: true });
+        expect(await grantsOfAccount(account)).toHaveLength(1);
+    });
+
     it('every discovered resource becomes a connection under the one grant', async () => {
         const r = rig();
         const account = newAccount(r, [
@@ -711,6 +813,89 @@ describe.skipIf(!enabled)('complete: a new grant is created secret first, connec
         expect(spy.log.deletes).toBe(1);
         expect(await grantsOfAccount(account)).toHaveLength(1);
         expect((await grantOf(rival.grant.id)).principal_user_id).toBe(BOB.id);
+    });
+});
+
+describe.skipIf(!enabled)('complete: activation is idempotent over connected resources (review r1, C1)', () => {
+    const second = async (account: string, cloudId: string) =>
+        attachJira(createConnectionGrants({ sql: db.sql, orgId: ORG }), ALICE.id, {
+            externalAccountId: account,
+            cloudId,
+        });
+
+    it('A connected, a consent that discovers [A, B]: A is untouched (same id), B becomes active, one grant', async () => {
+        const r = rig();
+        const seeded = await seedConnected(r);
+        const [a] = await connectionsOfAccount(seeded.account);
+        r.fake.identity = {
+            ...r.fake.identity!,
+            resources: [
+                { id: a!.cloud_id, label: a!.site },
+                { id: 'site-b', label: 'b.fake.test' },
+            ],
+        };
+        const started = await begin(r);
+        const done = await complete(r, { state: started.state, code: CODE });
+        expect(done).toMatchObject({ ok: true });
+        const connections = await connectionsOfAccount(seeded.account);
+        expect(connections.map((c) => c.cloud_id).sort()).toEqual([a!.cloud_id, 'site-b'].sort());
+        expect(connections.find((c) => c.cloud_id === a!.cloud_id)).toMatchObject({ id: a!.id, status: 'active' });
+        expect(connections.find((c) => c.cloud_id === 'site-b')).toMatchObject({ status: 'active' });
+        expect(await grantsOfAccount(seeded.account)).toHaveLength(1);
+        const row = await rowOf(started.authorizationId);
+        expect(row).toMatchObject({ status: 'completed', failure: null });
+        expect((row.result as { connectionIds: string[] }).connectionIds).toHaveLength(2);
+    });
+
+    it('a consent that discovers only connected resources completes with the existing connections', async () => {
+        const r = rig();
+        const seeded = await seedConnected(r);
+        const [a] = await connectionsOfAccount(seeded.account);
+        r.fake.identity = { ...r.fake.identity!, resources: [{ id: a!.cloud_id, label: a!.site }] };
+        const started = await begin(r);
+        expect(await complete(r, { state: started.state, code: CODE })).toMatchObject({
+            ok: true,
+            connectionId: a!.id,
+        });
+        expect(await connectionsOfAccount(seeded.account)).toHaveLength(1);
+    });
+
+    it('a previously disconnected resource stays disconnected when a later consent rediscovers it', async () => {
+        const r = rig();
+        const seeded = await seedConnected(r);
+        const [a] = await connectionsOfAccount(seeded.account);
+        const b = await second(seeded.account, 'site-b');
+        const store = createConnectionStore({ sql: db.sql, orgId: ORG });
+        expect((await store.disconnect(b.connectionId, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        r.fake.identity = {
+            ...r.fake.identity!,
+            resources: [
+                { id: a!.cloud_id, label: a!.site },
+                { id: 'site-b', label: 'b.fake.test' },
+                { id: 'site-c', label: 'c.fake.test' },
+            ],
+        };
+        const started = await begin(r);
+        expect(await complete(r, { state: started.state, code: CODE })).toMatchObject({ ok: true });
+        const statuses = Object.fromEntries(
+            (await connectionsOfAccount(seeded.account)).map((c) => [c.cloud_id, c.status])
+        );
+        expect(statuses).toEqual({ [a!.cloud_id]: 'active', 'site-b': 'disconnected', 'site-c': 'active' });
+    });
+
+    it('a consent whose every resource was disconnected is refused duplicate-connection and activates nothing', async () => {
+        const r = rig();
+        const seeded = await seedConnected(r);
+        const b = await second(seeded.account, 'site-b');
+        const store = createConnectionStore({ sql: db.sql, orgId: ORG });
+        expect((await store.disconnect(b.connectionId, { userId: ALICE.id, admin: false })).disconnected).toBe(true);
+        r.fake.identity = { ...r.fake.identity!, resources: [{ id: 'site-b', label: 'b.fake.test' }] };
+        const started = await begin(r);
+        expect(await complete(r, { state: started.state, code: CODE })).toMatchObject({
+            ok: false,
+            failure: 'duplicate-connection',
+        });
+        expect((await connectionsOfAccount(seeded.account)).filter((c) => c.status === 'active')).toHaveLength(1);
     });
 });
 

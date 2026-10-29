@@ -26,8 +26,14 @@ import {
     redirectUriOf,
 } from './authorization-types.js';
 import { encodeGrantPayload, type GrantPayload } from './grant-credentials.js';
-import { replay } from './lineage-commit.js';
-import type { LineageClaim, LineageCtx } from './lineage-types.js';
+import { attemptsLive, replay } from './lineage-commit.js';
+import {
+    authorizationAttemptKey,
+    authorizationWindowMs,
+    grantAttemptKey,
+    type LineageClaim,
+    type LineageCtx,
+} from './lineage-types.js';
 import type { DiscoveredIdentity, ExchangeResult, OAuthProviderHooks } from './oauth-provider.js';
 import { isTrustedContext, type TrustedIntegrationContext } from './trusted-context.js';
 
@@ -61,6 +67,15 @@ interface Held {
     claim: LineageClaim | null;
     rotates: boolean;
 }
+
+/** The same claim for the lease, a persistence fence no later than the authorization's own deadline. */
+const capClaim = (claim: LineageClaim, row: AuthorizationRow): LineageClaim => ({
+    ...claim,
+    deadlineAt: Math.min(claim.deadlineAt, row.deadlineAt ?? claim.deadlineAt),
+});
+
+/** The flow has no time left: nothing more is exchanged, looked up or stored. */
+const overDeadline = (row: AuthorizationRow): boolean => row.deadlineAt !== null && Date.now() >= row.deadlineAt;
 
 const release = async (fc: FlowCtx, held: Held, options: { reconnect?: boolean } = {}): Promise<void> => {
     if (held.claim) await fc.lineage.releaseClaim(held.claim, options).catch(() => false);
@@ -146,11 +161,20 @@ async function destroyOwnReference(
     try {
         const operationId = await fc.secrets.issueOperationId();
         const identity = grantSecretIdentity({ id: row.pendingGrantId, orgId: fc.orgId, principalUserId: row.userId });
+        // Best effort, under no claim: the retry budget, plus one more call's worth for the last attempt.
+        const until = Date.now() + fc.lineage.timing.persistBudgetMs;
         await replay(
             lctx,
-            () =>
-                fc.secrets.delete({ identity, ref: row.secretRef as SecretRef, operationId, expectedVersion: version }),
-            Date.now() + fc.lineage.timing.persistBudgetMs
+            authorizationAttemptKey(fc.orgId, row.id),
+            (signal) =>
+                fc.secrets.delete({
+                    identity,
+                    ref: row.secretRef as SecretRef,
+                    operationId,
+                    expectedVersion: version,
+                    signal,
+                }),
+            { fenceAt: until + fc.lineage.timing.readDeadlineMs, retryUntil: until }
         );
     } catch {
         // The reference stays encrypted at rest, unreferenced; a later sweep owns it.
@@ -208,10 +232,19 @@ async function connectNewGrant(
     if (!recorded) return fail(fc, row, 'interrupted');
     const identity = grantSecretIdentity({ id: pendingGrantId, orgId: fc.orgId, principalUserId: row.userId });
     const bytes = encodeGrantPayload(step.payload);
+    const fenceAt = (row.deadlineAt ?? Date.now()) - fc.lineage.timing.marginMs;
     const persisted = await replay(
         lineageCtxOf(fc),
-        () => fc.secrets.create({ identity, ref: secretRef, operationId: operationId as OperationId, payload: bytes }),
-        Date.now() + fc.lineage.timing.persistBudgetMs
+        authorizationAttemptKey(fc.orgId, row.id),
+        (signal) =>
+            fc.secrets.create({
+                identity,
+                ref: secretRef,
+                operationId: operationId as OperationId,
+                payload: bytes,
+                signal,
+            }),
+        { fenceAt, retryUntil: Math.min(fenceAt, Date.now() + fc.lineage.timing.persistBudgetMs) }
     );
     // Still inconclusive at the deadline: the row stays `persisting` and recovery reconciles the recorded operation.
     if (persisted.kind === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
@@ -233,7 +266,9 @@ async function connectExistingGrant(
     const claimed = await claimGrant(fc, row, { id: step.grantId, rotates: step.hooks.rotatesRefreshToken });
     // Busy: the tokens are a fresh consent, not the grant's lineage; dropping them leaves its refresh untouched.
     if (!claimed.ok) return fail(fc, row, claimed.failure);
-    const refusal = await commitUnderClaim(fc, claimed.held, step.payload);
+    // This claim was taken after the exchange and the lookup: its lease may outlast the flow, its persistence may not.
+    const held: Held = { ...claimed.held, claim: capClaim(claimed.held.claim!, row) };
+    const refusal = await commitUnderClaim(fc, held, step.payload);
     if (refusal === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
     if (refusal) return fail(fc, row, refusal);
     const activated = await activateAuthorization(fc.sql, {
@@ -282,6 +317,10 @@ async function afterExchange(
     tokens: Extract<ExchangeResult, { ok: true }>['tokens']
 ): Promise<CompleteAuthorizationResult> {
     const { row, hooks, held } = request;
+    if (overDeadline(row)) {
+        await release(fc, held);
+        return fail(fc, row, 'interrupted');
+    }
     // From here the caller's signal is detached: discovery and persistence run under their own bounds.
     const identity = await hooks
         .discoverIdentity({
@@ -292,6 +331,10 @@ async function afterExchange(
     if (!identity || identity.resources.length === 0) {
         await release(fc, held);
         return fail(fc, row, 'exchange-failed');
+    }
+    if (overDeadline(row)) {
+        await release(fc, held);
+        return fail(fc, row, 'interrupted');
     }
     const facts = factsOf(row, identity);
     const payload: GrantPayload = {
@@ -354,7 +397,7 @@ export async function completeAuthorization(
         return { ok: false, returnTo: '/', failure: 'state-mismatch' };
     }
     const owner = { orgId: fc.orgId, userId: ctx.principal.userId, stateHash: hashState(input.state) };
-    const row = await consumeAuthorization(fc.sql, owner);
+    const row = await consumeAuthorization(fc.sql, owner, authorizationWindowMs(fc.lineage.timing));
     if (!row) {
         const why = await classifyUnconsumed(fc.sql, owner);
         return { ok: false, returnTo: why.returnTo, failure: why.failure };
@@ -413,13 +456,15 @@ async function recoverExchanging(fc: FlowCtx, row: AuthorizationRow): Promise<Re
 }
 
 export async function recoverAuthorization(fc: FlowCtx, id: string): Promise<RecoverAuthorizationResult> {
-    const row = await readAuthorization(fc.sql, { orgId: fc.orgId, id, leaseMs: fc.lineage.leaseMs });
+    const row = await readAuthorization(fc.sql, { orgId: fc.orgId, id });
     if (!row || row.status === 'completed' || row.status === 'failed' || row.status === 'expired') return 'idle';
     if (row.status === 'pending') {
         if (!row.expired) return 'not-expired';
         return (await expireAuthorization(fc.sql, id)) ? 'expired' : 'left';
     }
-    // A holder may still be running until the lease it started under has lapsed.
-    if (!row.pastLease) return 'not-expired';
+    // A holder may still be running until the flow's own deadline has passed, and while a mutation of it is live.
+    if (!row.pastDeadline) return 'not-expired';
+    const grantKey = row.grantId ? grantAttemptKey(fc.orgId, row.grantId) : null;
+    if (attemptsLive(authorizationAttemptKey(fc.orgId, id)) || (grantKey && attemptsLive(grantKey))) return 'left';
     return row.status === 'persisting' ? recoverPersisting(fc, row) : recoverExchanging(fc, row);
 }

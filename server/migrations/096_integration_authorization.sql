@@ -4,7 +4,8 @@
 -- The state itself is never stored, only its hash; the PKCE verifier is nulled the moment the row is consumed. A row
 -- is consumed once (`pending` -> `exchanging`), so a replayed callback exchanges nothing. `persisting` carries the
 -- pre-allocated grant and secret reference with the SecretStore operation ID, so a lost holder is reconciled instead of
--- exchanged again. `result` holds non-secret facts only: account, resources, authority, connection IDs.
+-- exchanged again. `deadline_at` is the durable end of the flow, so recovery never fails a live holder. `result`
+-- holds non-secret facts only: account, resources, authority, connection IDs.
 --
 -- This file must contain NO `create extension`, per 005's header.
 
@@ -36,6 +37,9 @@ create table if not exists integration_authorization (
     created_at timestamptz not null default now(),
     expires_at timestamptz not null,
     consumed_at timestamptz,
+    -- Set when the row is consumed: the whole flow (exchange, identity lookup, persistence, margin) must end by then.
+    -- Recovery settles an `exchanging` or `persisting` row only after it, whatever lease a claim it holds runs on.
+    deadline_at timestamptz,
     completed_at timestamptz
 );
 

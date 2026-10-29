@@ -31,6 +31,18 @@ export const DEFAULT_LINEAGE_TIMING: LineageTiming = {
 export const leaseMsOf = (t: LineageTiming): number =>
     t.readDeadlineMs + t.exchangeDeadlineMs + t.persistBudgetMs + t.marginMs;
 
+/**
+ * The authorization transaction's own window, stored on its row at consume: the code exchange, the identity lookup,
+ * the whole persistence budget and a margin. The refresh lease is shorter (a refresh has no identity lookup), so it
+ * must not decide when a live authorization has lost its holder.
+ */
+export const authorizationWindowMs = (t: LineageTiming): number =>
+    2 * t.exchangeDeadlineMs + t.persistBudgetMs + t.marginMs;
+
+/** Keys of the process-local registry of SecretStore mutations that may still be running (`lineage-commit.ts`). */
+export const grantAttemptKey = (orgId: string, grantId: string): string => `grant:${orgId}:${grantId}`;
+export const authorizationAttemptKey = (orgId: string, id: string): string => `authorization:${orgId}:${id}`;
+
 /** Closed diagnostics: a grant ID and an event name, never a token, a reference or a provider body. */
 export interface LineageEvent {
     event:
@@ -86,7 +98,6 @@ export type RefreshResult = { ok: true } | { ok: false; outcome: IntegrationOutc
 export type RecoverResult =
     | 'idle'
     | 'not-expired'
-    | 'no-operation'
     | 'finalized'
     | 'destroyed'
     | 'released'

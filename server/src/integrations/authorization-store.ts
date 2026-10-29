@@ -26,8 +26,10 @@ export interface AuthorizationRow {
     result: StoredFacts | null;
     /** The PKCE verifier as it was before consume; present only on the row `consumeAuthorization` returns. */
     verifier: string | null;
-    /** The row was consumed longer ago than a holder can still be running. */
-    pastLease: boolean;
+    /** Epoch milliseconds on this process's clock by which the flow must end; set only on the row `consumeAuthorization` returns. */
+    deadlineAt: number | null;
+    /** The durable deadline has passed: no holder of the flow may still be running. */
+    pastDeadline: boolean;
     expired: boolean;
 }
 
@@ -57,7 +59,7 @@ interface Raw {
     secret_operation_id: string | null;
     result: StoredFacts | null;
     verifier?: string | null;
-    past_lease?: boolean;
+    past_deadline?: boolean;
     expired?: boolean;
 }
 
@@ -81,7 +83,8 @@ const toRow = (raw: Raw): AuthorizationRow => ({
     secretOperationId: raw.secret_operation_id,
     result: raw.result,
     verifier: raw.verifier ?? null,
-    pastLease: raw.past_lease === true,
+    deadlineAt: null,
+    pastDeadline: raw.past_deadline === true,
     expired: raw.expired === true,
 });
 
@@ -123,10 +126,12 @@ interface Owner {
 
 /**
  * Consumes the row: `pending` -> `exchanging`, once, for its own user, before its time is up. The verifier is
- * returned from the row as it was and nulled by the same statement. Zero rows is `null`, classified by
- * `classifyUnconsumed`; the lock on the target row serializes two racers, and the loser sees the new status.
+ * returned from the row as it was and nulled by the same statement, and `deadline_at` is stored: the flow has
+ * `windowMs` to end. Zero rows is `null`, classified by `classifyUnconsumed`; the lock on the target row serializes
+ * two racers, and the loser sees the new status.
  */
-export async function consumeAuthorization(sql: Sql, owner: Owner): Promise<AuthorizationRow | null> {
+export async function consumeAuthorization(sql: Sql, owner: Owner, windowMs: number): Promise<AuthorizationRow | null> {
+    const startedAt = Date.now();
     const rows = await sql<Raw[]>`
         with target as (
             select id, pkce_verifier from integration_authorization
@@ -135,11 +140,12 @@ export async function consumeAuthorization(sql: Sql, owner: Owner): Promise<Auth
             for update
         )
         update integration_authorization a
-        set status = 'exchanging', consumed_at = now(), pkce_verifier = null
+        set status = 'exchanging', consumed_at = now(), pkce_verifier = null,
+            deadline_at = now() + (${windowMs}::double precision * interval '1 millisecond')
         from target t where a.id = t.id
         returning ${sql.unsafe(COLUMNS.replaceAll(/\b(\w+)\b/g, 'a.$1'))}, t.pkce_verifier as verifier
     `;
-    return rows[0] ? toRow(rows[0]) : null;
+    return rows[0] ? { ...toRow(rows[0]), deadlineAt: startedAt + windowMs } : null;
 }
 
 /**
@@ -169,12 +175,11 @@ export async function classifyUnconsumed(
 
 export async function readAuthorization(
     sql: Sql,
-    input: { orgId: string; id: string; leaseMs: number }
+    input: { orgId: string; id: string }
 ): Promise<AuthorizationRow | null> {
     const rows = await sql<Raw[]>`
         select ${sql.unsafe(COLUMNS)},
-               (consumed_at is not null
-                and consumed_at < now() - (${input.leaseMs}::double precision * interval '1 millisecond')) as past_lease,
+               (deadline_at is not null and deadline_at < now()) as past_deadline,
                (expires_at <= now()) as expired
         from integration_authorization where id = ${input.id} and org_id = ${input.orgId}
     `;
@@ -196,20 +201,20 @@ export async function failAuthorization(sql: Sql, id: string, failure: Authoriza
 /** Marks the expiry of a transaction nobody consumed. */
 export const expireAuthorization = (sql: Sql, id: string): Promise<boolean> => failAuthorization(sql, id, 'expired');
 
-/** Records the lineage claim a reconnect (or a connect that found a grant) holds, while the row is `exchanging`. */
+/** Records the lineage claim a reconnect (or a connect that found a grant) holds, while the row is `exchanging` and inside its deadline. */
 export async function recordGrantClaim(
     sql: Sql,
     input: { id: string; grantId: string; claim: string }
 ): Promise<boolean> {
     const rows = await sql<{ id: string }[]>`
         update integration_authorization set grant_id = ${input.grantId}, grant_claim = ${input.claim}
-        where id = ${input.id} and status = 'exchanging'
+        where id = ${input.id} and status = 'exchanging' and deadline_at > now()
         returning id
     `;
     return rows.length > 0;
 }
 
-/** Records the pre-allocated grant, reference and operation BEFORE the secret is created: recovery reconciles them. */
+/** Records the pre-allocated grant, reference and operation BEFORE the secret is created (inside the deadline): recovery reconciles them. */
 export async function recordPersisting(
     sql: Sql,
     input: { id: string; pendingGrantId: string; secretRef: string; operationId: string; facts: StoredFacts }
@@ -218,7 +223,7 @@ export async function recordPersisting(
         update integration_authorization
         set status = 'persisting', pending_grant_id = ${input.pendingGrantId}, secret_ref = ${input.secretRef},
             secret_operation_id = ${input.operationId}, result = ${sql.json(input.facts as never)}
-        where id = ${input.id} and status = 'exchanging'
+        where id = ${input.id} and status = 'exchanging' and deadline_at > now()
         returning id
     `;
     return rows.length > 0;
@@ -268,9 +273,49 @@ export interface Activation {
 
 export type ActivationResult = { ok: true; connectionIds: string[] } | { ok: false; failure: AuthorizationFailure };
 
+type Known = Map<string, { id: string; status: string }>;
+
+/**
+ * The connections of the account's live grant of this person, by resource. The grant row is locked first, so the
+ * order stays authorization row -> grant -> connections.
+ */
+async function existingConnections(tx: TransactionSql, input: Activation): Promise<Known> {
+    await tx`
+        select id from integration_grant
+        where provider = ${input.provider} and external_account_id = ${input.facts.account} and status <> 'revoked'
+        for update
+    `;
+    const rows = await tx<{ id: string; cloud_id: string; status: string }[]>`
+        select c.id, c.cloud_id, c.status
+        from integration_grant g join connector_connection c on c.grant_id = g.id and c.org_id = g.org_id
+        where g.provider = ${input.provider} and g.external_account_id = ${input.facts.account}
+          and g.status <> 'revoked' and g.org_id = ${input.orgId} and g.principal_user_id = ${input.userId}
+        order by c.created_at
+    `;
+    // An active connection wins over an older disconnected row of the same resource.
+    const byResource: Known = new Map();
+    for (const row of rows) {
+        if (byResource.get(row.cloud_id)?.status !== 'active') byResource.set(row.cloud_id, row);
+    }
+    return byResource;
+}
+
+/**
+ * Activation is idempotent over what is already there: a resource with an ACTIVE connection under the grant keeps it
+ * (same id), a resource the person disconnected earlier stays disconnected, and only unseen resources are inserted.
+ * Nothing left to activate is a `duplicate-connection`: the consent changed nothing.
+ */
 async function attachResources(tx: TransactionSql, input: Activation): Promise<string[]> {
+    const known: Known = input.newGrant ? new Map() : await existingConnections(tx, input);
     const connectionIds: string[] = [];
+    let inserted = 0;
     for (const resource of input.facts.resources) {
+        const present = known.get(resource.id);
+        if (present?.status === 'active') {
+            connectionIds.push(present.id);
+            continue;
+        }
+        if (present) continue;
         const attach: AttachGrantConnection = {
             principal: { kind: 'user', userId: input.userId },
             provider: input.provider,
@@ -279,12 +324,14 @@ async function attachResources(tx: TransactionSql, input: Activation): Promise<s
             resource,
             access: 'read',
             // Only the first insert can create the grant; the rest find it.
-            ...(input.newGrant && connectionIds.length === 0 ? input.newGrant : {}),
+            ...(input.newGrant && inserted === 0 ? input.newGrant : {}),
         };
         const attached = await attachInTx(tx, input.orgId, attach);
         if (!attached.ok) throw new Refused(refusalOf(attached.reason));
         connectionIds.push(attached.connectionId);
+        inserted += 1;
     }
+    if (connectionIds.length === 0) throw new Refused('duplicate-connection');
     return connectionIds;
 }
 

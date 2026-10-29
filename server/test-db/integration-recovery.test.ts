@@ -144,6 +144,75 @@ describe.skipIf(!enabled)('integration recovery pass', () => {
         }
     );
 
+    // Review r1 (B1): every claim kind at the first step boundary (claim taken, nothing recorded) is adopted too.
+    it.each(['refresh', 'reconsent', 'destroy'] as const)(
+        'adopts an expired %s claim whose holder crashed before recording its operation',
+        async (kind) => {
+            const h = lineageHarness(db.sql);
+            const seeded = await seedGrant(h);
+            const { runtime } = runtimeOver(secretsOf(h));
+            if (kind === 'destroy') await revoke(seeded.connectionId);
+            const claimed = await runtime.lineageOf(ORG).claimLineage(seeded.grant.id, kind, { rotates: true });
+            expect(claimed.ok).toBe(true);
+            expect((await grantRow(seeded.grant.id)).lineage_operation_id).toBeNull();
+            await expireClaim(seeded.grant.id);
+
+            await recoverIntegrations(runtime);
+
+            const after = await grantRow(seeded.grant.id);
+            expect(after.lineage_claim).toBeNull();
+            expect(after.lineage_operation_id).toBeNull();
+            if (kind === 'destroy') expect(after.secret_version).toBeNull();
+            else expect(after.secret_version).not.toBeNull();
+            // A rotating refresh may have spent the token before dying; the others spent nothing of the grant's.
+            expect(after.status).toBe(
+                kind === 'refresh' ? 'reconnect_required' : kind === 'destroy' ? 'revoked' : 'active'
+            );
+        }
+    );
+
+    it('a non-rotating refresh claim that crashed before its operation is released, the grant stays active', async () => {
+        const h = lineageHarness(db.sql);
+        const fake = createFakeOAuth({ rotates: false });
+        const seeded = await seedGrant(h, fake);
+        const { runtime } = runtimeOver(secretsOf(h), fake);
+        expect((await runtime.lineageOf(ORG).claimLineage(seeded.grant.id, 'refresh', { rotates: false })).ok).toBe(
+            true
+        );
+        await expireClaim(seeded.grant.id);
+
+        await recoverIntegrations(runtime);
+
+        expect(await grantRow(seeded.grant.id)).toMatchObject({ status: 'active', lineage_claim: null });
+    });
+
+    it('an expired reconsent claim that an open authorization still holds is left to the authorization, then settled with it', async () => {
+        const h = lineageHarness(db.sql);
+        const seeded = await seedGrant(h);
+        const { runtime } = runtimeOver(secretsOf(h));
+        const ctx = contextOfSession({ user: { id: ALICE.id } }, ORG);
+        const started = await runtime
+            .flowOf(ORG)
+            .startAuthorization(ctx, { provider: 'jira', connectionId: seeded.connectionId });
+        if (!started.ok) throw new Error(`start refused: ${started.reason}`);
+        const claimed = await runtime.lineageOf(ORG).claimLineage(seeded.grant.id, 'reconsent', { rotates: true });
+        if (!claimed.ok) throw new Error('claim refused');
+        await db.sql`
+            update integration_authorization
+            set status = 'exchanging', consumed_at = now(), grant_id = ${seeded.grant.id}, grant_claim = ${claimed.claim.token},
+                deadline_at = now() + interval '1 hour'
+            where id = ${started.authorizationId}
+        `;
+        await expireClaim(seeded.grant.id);
+
+        await recoverIntegrations(runtime);
+        expect((await grantRow(seeded.grant.id)).lineage_claim).toBe(claimed.claim.token);
+
+        await db.sql`update integration_authorization set deadline_at = now() - interval '1 second' where id = ${started.authorizationId}`;
+        await recoverIntegrations(runtime);
+        expect(await grantRow(seeded.grant.id)).toMatchObject({ lineage_claim: null, status: 'reconnect_required' });
+    });
+
     it("destroys a revoked grant's secret and skips a wedged one", async () => {
         const h = lineageHarness(db.sql);
         const live = await seedGrant(h);

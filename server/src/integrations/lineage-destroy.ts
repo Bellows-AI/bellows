@@ -1,8 +1,14 @@
 import { finalizeLineage } from '../db/connection-grants.js';
 import type { SecretRef, SecretVersion } from '../secrets/secret-store.js';
 import { claimLineage, endClaim, recordOperation } from './lineage-claims.js';
-import { persistDeadline, readConfirmed, replay } from './lineage-commit.js';
-import { type DestroyResult, identityOf, type LineageClaim, type LineageCtx } from './lineage-types.js';
+import { persistLimits, readConfirmed, replay } from './lineage-commit.js';
+import {
+    type DestroyResult,
+    grantAttemptKey,
+    identityOf,
+    type LineageClaim,
+    type LineageCtx,
+} from './lineage-types.js';
 
 /**
  * Step 8: the secret of a revoked grant is deleted (and, for a provider that revokes per token, revoked first).
@@ -36,8 +42,9 @@ async function deleteOnce(ctx: LineageCtx, claim: LineageClaim, expectedVersion:
     if (!(await recordOperation(ctx, claim, operationId, ref))) return 'claim-lost';
     const deleted = await replay(
         ctx,
-        () => ctx.secrets.delete({ identity: identityOf(claim), ref, operationId, expectedVersion }),
-        persistDeadline(ctx, claim)
+        grantAttemptKey(claim.orgId, claim.grantId),
+        (signal) => ctx.secrets.delete({ identity: identityOf(claim), ref, operationId, expectedVersion, signal }),
+        persistLimits(ctx, claim)
     );
     if (deleted.kind === 'pending') return 'pending';
     if (deleted.kind === 'ok' || deleted.error.code === 'not-found') return 'destroyed';
@@ -47,7 +54,11 @@ async function deleteOnce(ctx: LineageCtx, claim: LineageClaim, expectedVersion:
 /** The store holds a version this grant does not know: the version to delete at, when the store confirms one. */
 async function confirmedVersion(ctx: LineageCtx, claim: LineageClaim): Promise<SecretVersion | null> {
     const current = await ctx.secrets
-        .readActive({ identity: identityOf(claim), ref: claim.secretRef as SecretRef })
+        .readActive({
+            identity: identityOf(claim),
+            ref: claim.secretRef as SecretRef,
+            signal: AbortSignal.timeout(ctx.timing.readDeadlineMs),
+        })
         .catch(() => null);
     return current?.ok ? current.version : null;
 }

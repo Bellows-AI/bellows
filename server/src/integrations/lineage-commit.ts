@@ -3,7 +3,14 @@ import { createSecretRef } from '../secrets/secret-input.js';
 import type { OperationId, SecretError, SecretRef, SecretResult, SecretVersion } from '../secrets/secret-store.js';
 import { decodeGrantPayload, encodeGrantPayload, type GrantPayload } from './grant-credentials.js';
 import { endClaim, readLineage, recordOperation } from './lineage-claims.js';
-import { type CommitResult, identityOf, type LineageClaim, type LineageCtx, pause } from './lineage-types.js';
+import {
+    type CommitResult,
+    grantAttemptKey,
+    identityOf,
+    type LineageClaim,
+    type LineageCtx,
+    pause,
+} from './lineage-types.js';
 
 /**
  * Steps 4-6 of the protocol: record the operation, persist the new credentials by replaying the identical
@@ -24,23 +31,89 @@ export type Replayed<T extends object> =
     | { kind: 'definitive'; error: SecretError }
     | { kind: 'pending' };
 
-/** Replays one mutation, identically, until the store answers definitively or the deadline passes. */
+/**
+ * The window one mutation may run in. `fenceAt` is absolute: no attempt starts at or after it and an attempt in flight
+ * is told to abort then, because past it recovery may treat the claim as dead. `retryUntil` only ends the retries: the
+ * first attempt always gets its chance inside the fence.
+ */
+export interface ReplayLimits {
+    fenceAt: number;
+    retryUntil: number;
+}
+
+/**
+ * SecretStore mutations that may still be running in this process, by key. A mutation that ignores its abort signal
+ * stays here until it really settles, so a recovery in the same process never reads "no operation observed" as
+ * "never happened" while one may still land. Another process relies on the signal and the margin before the lease.
+ */
+const live = new Map<string, Set<Promise<unknown>>>();
+
+export const attemptsLive = (key: string): boolean => (live.get(key)?.size ?? 0) > 0;
+
+/** Resolves when no tracked mutation is running in this process. */
+export async function settleAttempts(): Promise<void> {
+    while (live.size > 0) await Promise.allSettled([...live.values()].flatMap((running) => [...running]));
+}
+
+function track(key: string, running: Promise<unknown>): void {
+    let set = live.get(key);
+    if (!set) {
+        set = new Set();
+        live.set(key, set);
+    }
+    set.add(running);
+    void running.then(() => {
+        set.delete(running);
+        if (set.size === 0 && live.get(key) === set) live.delete(key);
+    });
+}
+
+/** One attempt, abandoned (not forgotten) when the fence passes. A throw is an inconclusive answer. */
+async function attemptWithin<T extends object>(
+    key: string,
+    attempt: (signal: AbortSignal) => Promise<SecretResult<T>>,
+    ms: number
+): Promise<SecretResult<T> | null | 'fenced'> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const fenced = new Promise<'fenced'>((resolve) => {
+        timer = setTimeout(() => {
+            controller.abort();
+            resolve('fenced');
+        }, ms);
+    });
+    const running = (async () => attempt(controller.signal))().catch(() => null);
+    track(key, running);
+    try {
+        return await Promise.race([running, fenced]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/** Replays one mutation, identically, until the store answers definitively or the limits end it. */
 export async function replay<T extends object>(
     ctx: LineageCtx,
-    attempt: () => Promise<SecretResult<T>>,
-    deadlineAt: number
+    key: string,
+    attempt: (signal: AbortSignal) => Promise<SecretResult<T>>,
+    limits: ReplayLimits
 ): Promise<Replayed<T>> {
-    for (;;) {
-        const result = await attempt().catch(() => null);
+    for (let first = true; ; first = false) {
+        const now = Date.now();
+        if (now >= limits.fenceAt || (!first && now >= limits.retryUntil)) return { kind: 'pending' };
+        const result = await attemptWithin(key, attempt, limits.fenceAt - now);
+        if (result === 'fenced') return { kind: 'pending' };
         if (result?.ok) return { kind: 'ok', result: result as Extract<SecretResult<T>, { ok: true }> };
         if (result && DEFINITIVE.has(result.error.code)) return { kind: 'definitive', error: result.error };
-        if (Date.now() >= deadlineAt) return { kind: 'pending' };
         await pause(ctx.timing.retryDelayMs);
     }
 }
 
-export const persistDeadline = (ctx: LineageCtx, claim: LineageClaim): number =>
-    Math.min(claim.deadlineAt - ctx.timing.marginMs, Date.now() + ctx.timing.persistBudgetMs);
+/** A claim's mutation may not run past its lease minus the margin, nor retry past the persistence budget. */
+export const persistLimits = (ctx: LineageCtx, claim: Pick<LineageClaim, 'deadlineAt'>): ReplayLimits => {
+    const fenceAt = claim.deadlineAt - ctx.timing.marginMs;
+    return { fenceAt, retryUntil: Math.min(fenceAt, Date.now() + ctx.timing.persistBudgetMs) };
+};
 
 /** Reads the active secret and accepts it only as a confirmed value of the version the grant names. */
 export async function readConfirmed(
@@ -100,13 +173,22 @@ async function persist(
 ): Promise<Replayed<{ version: SecretVersion }>> {
     const { fresh, ref, operationId, bytes } = target;
     const identity = identityOf(claim);
-    const deadline = persistDeadline(ctx, claim);
-    if (fresh) return replay(ctx, () => ctx.secrets.create({ identity, ref, operationId, payload: bytes }), deadline);
+    const key = grantAttemptKey(claim.orgId, claim.grantId);
+    const limits = persistLimits(ctx, claim);
+    if (fresh) {
+        return replay(
+            ctx,
+            key,
+            (signal) => ctx.secrets.create({ identity, ref, operationId, payload: bytes, signal }),
+            limits
+        );
+    }
     const expectedVersion = claim.secretVersion as SecretVersion;
     return replay(
         ctx,
-        () => ctx.secrets.replace({ identity, ref, operationId, expectedVersion, payload: bytes }),
-        deadline
+        key,
+        (signal) => ctx.secrets.replace({ identity, ref, operationId, expectedVersion, payload: bytes, signal }),
+        limits
     );
 }
 

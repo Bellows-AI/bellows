@@ -1,8 +1,8 @@
 import { finalizeLineage, type LineageKind } from '../db/connection-grants.js';
 import type { OperationId, OperationStatus, SecretRef, SecretVersion } from '../secrets/secret-store.js';
 import { endClaim, type LineageRow, readLineage } from './lineage-claims.js';
-import { readConfirmed } from './lineage-commit.js';
-import { identityOf, type LineageCtx, type RecoverResult } from './lineage-types.js';
+import { attemptsLive, readConfirmed } from './lineage-commit.js';
+import { grantAttemptKey, identityOf, type LineageCtx, type RecoverResult } from './lineage-types.js';
 
 /**
  * Recovery of a claim whose lease lapsed with an operation recorded (step 7), dispatched on the claim kind. The
@@ -83,10 +83,33 @@ async function recoverCredentials(ctx: LineageCtx, held: Held, status: Operation
     return done.ok ? 'finalized' : 'left';
 }
 
-function heldBy(ctx: LineageCtx, row: LineageRow): Held | RecoverResult {
+/**
+ * A claim that expired before it recorded an operation: nothing reached the store, so it is reclaimed, never replayed.
+ * A rotating refresh may have spent the token before dying (the person must reconnect); a destroy only waits for the
+ * next destroy pass; a reconsent that an open authorization still names is that authorization's to settle.
+ */
+async function reclaimUnrecorded(ctx: LineageCtx, row: LineageRow, token: string): Promise<RecoverResult> {
+    if (row.lineage_claim_kind === 'reconsent') {
+        const owners = await ctx.sql<{ id: string }[]>`
+            select id from integration_authorization
+            where org_id = ${ctx.orgId} and grant_claim = ${token} and status in ('exchanging', 'persisting')
+            limit 1
+        `;
+        if (owners.length > 0) return 'left';
+    }
+    const rotating = row.lineage_claim_kind === 'refresh' && (ctx.providers(row.provider)?.rotatesRefreshToken ?? true);
+    const ended = await endClaim(ctx, { token, grantId: row.id }, { unrecordedOnly: true, reconnect: rotating });
+    if (!ended) return 'left';
+    if (rotating) ctx.log('reconnect-required', row.id);
+    return rotating ? 'reconnect-required' : 'released';
+}
+
+function heldBy(ctx: LineageCtx, row: LineageRow): Held | RecoverResult | 'unrecorded' {
     if (!row.lineage_claim) return 'idle';
     if (row.expired !== true) return 'not-expired';
-    if (!row.lineage_operation_id || !row.lineage_secret_ref || !row.lineage_claim_kind) return 'no-operation';
+    if (!row.lineage_operation_id) return 'unrecorded';
+    // An operation without its reference or kind is not something to guess about.
+    if (!row.lineage_secret_ref || !row.lineage_claim_kind) return 'left';
     const kind = row.lineage_claim_kind;
     const hooks = ctx.providers(row.provider);
     return {
@@ -103,6 +126,10 @@ export async function recoverLineage(ctx: LineageCtx, grantId: string): Promise<
     const row = await readLineage(ctx, grantId);
     if (!row) return 'idle';
     const target = heldBy(ctx, row);
+    // A mutation of this process may still land: "no operation observed" is not "never happened" while it runs.
+    if (attemptsLive(grantAttemptKey(ctx.orgId, grantId)) && target !== 'idle' && target !== 'not-expired')
+        return 'left';
+    if (target === 'unrecorded') return reclaimUnrecorded(ctx, row, row.lineage_claim as string);
     if (typeof target === 'string') return target;
 
     const reconciled = await ctx.secrets

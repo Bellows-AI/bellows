@@ -693,3 +693,81 @@ describe.skipIf(!enabled)('grant lineage: reconsent finalize', () => {
         expect(row.secret_version).not.toBe(r.seededVersion);
     });
 });
+
+describe.skipIf(!enabled)('grant lineage: review r1 (A1) a mutation that outlives the lease that fences it', () => {
+    // The lease is the sum of the budgets; compressed so the fence passes within milliseconds of real time.
+    const COMPRESSED: Partial<LineageTiming> = {
+        readDeadlineMs: 0,
+        exchangeDeadlineMs: 0,
+        persistBudgetMs: 300,
+        marginMs: 100,
+    };
+
+    const newPayload = (): GrantPayload => ({
+        accessToken: 'access-late',
+        accessExpiresAt: freshToken(),
+        refreshToken: 'refresh-late',
+        authority: { scopes: ['fake:read'] },
+    });
+
+    it('a replace parked past its lease is not released by recovery while it may still land, and its late write never ends ahead of the recorded version', async () => {
+        const hold = parked();
+        const r = await rig({
+            rotates: true,
+            store: (h) =>
+                faultyStore(h, {
+                    stageVersion: async (run) => {
+                        await hold.hold();
+                        return run();
+                    },
+                }).store,
+        });
+        const holder = replica(r, r.secrets, { timing: COMPRESSED });
+        const claim = ok(await holder.lineage.claimLineage(r.grant.id, 'refresh', { rotates: true })).claim;
+        const committing = holder.lineage.commitLineage(claim, newPayload());
+        await hold.entered;
+
+        // The lease lapses with the mutation parked inside the store: nothing recorded it as run or not run.
+        await expireClaim(r.grant.id);
+        expect(await holder.lineage.recoverLineage(r.grant.id)).toBe('left');
+        const stillHeld = await columns(r.grant.id);
+        expect(stillHeld.lineage_claim).not.toBeNull();
+        expect(stillHeld.lineage_operation_id).not.toBeNull();
+
+        // The holder gives the wait up at its fence, but the mutation is still accounted for.
+        expect(await committing).toMatchObject({ ok: false, reason: 'persistence-pending' });
+        expect(await holder.lineage.recoverLineage(r.grant.id)).toBe('left');
+
+        hold.release();
+        await holder.lineage.idle();
+        const fresh = replica(r, r.h.openWith(r.h.realRepo));
+        expect(['finalized', 'wedged']).toContain(await fresh.lineage.recoverLineage(r.grant.id));
+        const after = await columns(r.grant.id);
+        const active = await activeOf(r, r.h.openWith(r.h.realRepo));
+        if (!active.ok) throw new Error('the active secret is unreadable');
+        // Either the grant records the version the store holds, or the reference is wedged: never behind a silent write.
+        expect(after.secret_wedged_at !== null || after.secret_version === active.version).toBe(true);
+        expect(r.fake.refreshCalls).toBe(0);
+    });
+
+    it('no mutation starts once the claim has no lease left: nothing reaches the store', async () => {
+        const calls = { stage: 0 };
+        const r = await rig({
+            rotates: true,
+            store: (h) =>
+                faultyStore(h, {
+                    stageVersion: async (run) => {
+                        calls.stage += 1;
+                        return run();
+                    },
+                }).store,
+        });
+        const holder = replica(r, r.secrets, { timing: { ...COMPRESSED, persistBudgetMs: 0, marginMs: 1_000_000 } });
+        const claim = ok(await holder.lineage.claimLineage(r.grant.id, 'refresh', { rotates: true })).claim;
+        expect(await holder.lineage.commitLineage(claim, newPayload())).toMatchObject({
+            ok: false,
+            reason: 'persistence-pending',
+        });
+        expect(calls.stage).toBe(0);
+    });
+});

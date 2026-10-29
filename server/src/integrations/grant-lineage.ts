@@ -2,7 +2,7 @@ import type { Sql } from 'postgres';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { authorityScopes, type GrantPayload } from './grant-credentials.js';
 import { abandonExpiredRefresh, claimLineage as claimStatement, endClaim, readLineage } from './lineage-claims.js';
-import { commitLineage as commit, readConfirmed } from './lineage-commit.js';
+import { commitLineage as commit, readConfirmed, settleAttempts } from './lineage-commit.js';
 import { destroyRevokedSecret as destroy } from './lineage-destroy.js';
 import { recoverLineage as recover } from './lineage-recovery.js';
 import {
@@ -72,7 +72,7 @@ export interface GrantLineage {
     refreshGrant(grantId: string, options?: { signal?: AbortSignal | undefined }): Promise<RefreshResult>;
     recoverLineage(grantId: string): Promise<RecoverResult>;
     destroyRevokedSecret(grantId: string): Promise<DestroyResult>;
-    /** Resolves when no refresh (and no detached persistence) is in flight in this process. */
+    /** Resolves when no refresh, detached persistence or abandoned SecretStore mutation is running in this process. */
     idle(): Promise<void>;
 }
 
@@ -248,6 +248,7 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
         destroyRevokedSecret: (grantId) => destroy(ctx, grantId),
         idle: async () => {
             while (inflight.size > 0) await Promise.allSettled([...inflight.values()]);
+            await settleAttempts();
         },
     };
 }

@@ -2,14 +2,7 @@ import type { Sql } from 'postgres';
 import type { SecretStore } from '../secrets/secret-store.js';
 import { type AuthorizationFlow, createAuthorizationFlow } from './authorization-flow.js';
 import type { AuthorizationFlowDeps } from './authorization-types.js';
-import {
-    createGrantLineage,
-    DEFAULT_LINEAGE_TIMING,
-    type DestroyResult,
-    type GrantLineage,
-    type LineageTiming,
-    leaseMsOf,
-} from './grant-lineage.js';
+import { createGrantLineage, type DestroyResult, type GrantLineage, type LineageTiming } from './grant-lineage.js';
 import type { OAuthProviderLookup } from './oauth-provider.js';
 
 /**
@@ -36,8 +29,6 @@ export interface IntegrationRuntimeDeps {
 
 export interface IntegrationRuntime {
     readonly sql: Sql;
-    /** The claim lease, which decides when an authorization that was consumed has lost its holder. */
-    readonly leaseMs: number;
     readonly log: (line: Record<string, unknown>) => void;
     lineageOf(orgId: string): GrantLineage;
     flowOf(orgId: string): AuthorizationFlow;
@@ -84,7 +75,6 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
     };
     return {
         sql: deps.sql,
-        leaseMs: leaseMsOf({ ...DEFAULT_LINEAGE_TIMING, ...deps.timing }),
         log,
         lineageOf,
         flowOf,
@@ -93,7 +83,7 @@ export function createIntegrationRuntime(deps: IntegrationRuntimeDeps): Integrat
 }
 
 export interface RecoverySummary {
-    /** Expired claims with a recorded operation that this pass examined. */
+    /** Expired claims (recorded operation or not) that this pass examined. */
     grants: number;
     /** Revoked grants whose secret this pass destroyed. */
     destroyed: number;
@@ -138,7 +128,7 @@ export async function recoverIntegrations(
 
     const expired = await sql<Candidate[]>`
         select org_id, id from integration_grant
-        where lineage_claim is not null and lineage_operation_id is not null and lineage_claim_expires_at < now()
+        where lineage_claim is not null and lineage_claim_expires_at < now()
         order by lineage_claim_expires_at
         limit ${limit}
     `;
@@ -167,7 +157,7 @@ export async function recoverIntegrations(
         : await sql<Candidate[]>`
             select org_id, id from integration_authorization
             where (status = 'pending' and expires_at < now())
-               or (status in ('exchanging', 'persisting') and consumed_at < now() - ${runtime.leaseMs} * interval '1 millisecond')
+               or (status in ('exchanging', 'persisting') and deadline_at < now())
             order by expires_at
             limit ${limit}
         `;
