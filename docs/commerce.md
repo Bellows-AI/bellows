@@ -25,6 +25,7 @@ Optional link to an external commerce service, off by default: the service pushe
 - **Reported usage is a raw fact.** Every closed `origin = 'claim'` claim is reported with its `launch`; `backfill` and open claims never are. Minutes are read from `job_execution` at lease time, never copied.
 - **Only echoed keys are acknowledged.** Any other outcome (status, timeout, malformed or partial answer) leaves the rows to retry with backoff; the token never appears in a result or log.
 - **A settle applies only while its lease token stands**, so a replica whose lease lapsed changes nothing.
+- **The outbox schedules on the store's clock**: `next_attempt_at` and `claimed_until` are written and compared with the injected `now`, never the database's. `server/src/db/commerce-store.ts`, `server/test-db/commerce-store.test.ts`.
 - **The push answers 200 only after commit**; a retry of a lost 200 is `replayed`. A database failure is 503, never an empty plan or a 200.
 - **The push credential is its own class**, enforced in both `AUTH_MODE`s, with no session, personal or worker fallback.
 - **One token in both directions**: a leak lets the holder write any org's plan; rotation is a redeploy of both sides.

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { createCommerceStore, type CommerceStore } from '../src/db/commerce-store.js';
+import { createCommerceStore, type CommerceStore, type UsageLease } from '../src/db/commerce-store.js';
 import { useTestDb } from './harness.js';
 import { testOrg } from './fixtures.js';
 
@@ -66,8 +66,17 @@ const outbox = (org = ORG) =>
         select job_id, claim_seq, reported_at, failures, error_code, next_attempt_at
         from commerce_usage_report where org_id = ${org} order by job_id, claim_seq`;
 
+// The epoch, not the database's now(): the lease compares claimed_until against the store's clock.
 const lapse = (job: string) =>
-    sql`update commerce_usage_report set claimed_until = now() - interval '1 second' where job_id = ${job}`;
+    sql`update commerce_usage_report set claimed_until = ${new Date(0)} where job_id = ${job}`;
+
+/** A lease that must exist: a missing one fails here, not later as an undefined token. */
+const leased = async (from: CommerceStore = store): Promise<UsageLease> => {
+    const lease = await from.leaseDueUsage(10, LEASE_MS);
+    expect(lease).not.toBeNull();
+    if (!lease) throw new Error('no lease');
+    return lease;
+};
 
 describe.skipIf(!enabled)('commerce store — database', () => {
     it('enqueues each closed claim once', async () => {
@@ -111,6 +120,33 @@ describe.skipIf(!enabled)('commerce store — database', () => {
         ]);
     });
 
+    // BEL-163: enqueue and lease must read one clock. The store's clock runs 10 minutes behind the database's,
+    // so a row stamped by the database default would not be due yet.
+    it('a row queued under the store clock is due at that clock', async () => {
+        const behind = new Date(Date.now() - 10 * MINUTE_MS);
+        const skewed = createCommerceStore({ sql, orgId: ORG, now: () => behind });
+        await claim();
+        await skewed.enqueueUsage();
+        expect((await leased(skewed)).records).toHaveLength(1);
+    });
+
+    it('enqueue stamps next_attempt_at with the store clock', async () => {
+        const behind = new Date(Date.now() - 10 * MINUTE_MS);
+        const skewed = createCommerceStore({ sql, orgId: ORG, now: () => behind });
+        await claim();
+        await skewed.enqueueUsage();
+        expect((await outbox())[0]?.next_attempt_at.getTime()).toBe(behind.getTime());
+    });
+
+    it('a second enqueue never resets a backed-off row', async () => {
+        await claim();
+        await store.enqueueUsage();
+        await store.settleUsage((await leased()).token, [], 'not_acknowledged');
+        const backedOff = (await outbox())[0]?.next_attempt_at.getTime();
+        await store.enqueueUsage();
+        expect((await outbox())[0]?.next_attempt_at.getTime()).toBe(backedOff);
+    });
+
     it('answers no lease when nothing is due', async () => {
         await store.enqueueUsage();
         expect(await store.leaseDueUsage(10, LEASE_MS)).toBeNull();
@@ -129,25 +165,25 @@ describe.skipIf(!enabled)('commerce store — database', () => {
     it('a lapsed lease is re-leased and the old token settles nothing', async () => {
         const { job, seq } = await claim();
         await store.enqueueUsage();
-        const first = await store.leaseDueUsage(10, LEASE_MS);
-        expect(first?.records).toHaveLength(1);
+        const first = await leased();
+        expect(first.records).toHaveLength(1);
         await lapse(job);
 
-        const second = await store.leaseDueUsage(10, LEASE_MS);
-        expect(second?.records).toHaveLength(1);
-        expect(second?.token).not.toBe(first?.token);
+        const second = await leased();
+        expect(second.records).toHaveLength(1);
+        expect(second.token).not.toBe(first.token);
 
-        await store.settleUsage(first?.token as string, [{ jobId: job, claimSeq: seq }]);
+        await store.settleUsage(first.token, [{ jobId: job, claimSeq: seq }]);
         expect((await outbox())[0]?.reported_at).toBeNull();
 
-        await store.settleUsage(second?.token as string, [{ jobId: job, claimSeq: seq }]);
+        await store.settleUsage(second.token, [{ jobId: job, claimSeq: seq }]);
         expect((await outbox())[0]?.reported_at).not.toBeNull();
     });
 
     it('a lease still standing is not leased again', async () => {
         await claim();
         await store.enqueueUsage();
-        expect(await store.leaseDueUsage(10, LEASE_MS)).not.toBeNull();
+        await leased();
         expect(await store.leaseDueUsage(10, LEASE_MS)).toBeNull();
     });
 
@@ -155,9 +191,9 @@ describe.skipIf(!enabled)('commerce store — database', () => {
         const a = await claim();
         const b = await claim();
         await store.enqueueUsage();
-        const lease = await store.leaseDueUsage(10, LEASE_MS);
+        const lease = await leased();
         const before = Date.now();
-        await store.settleUsage(lease?.token as string, [{ jobId: a.job, claimSeq: a.seq }], 'not_acknowledged');
+        await store.settleUsage(lease.token, [{ jobId: a.job, claimSeq: a.seq }], 'not_acknowledged');
 
         const rows = await outbox();
         const acked = rows.find((r) => r.job_id === a.job);
@@ -177,9 +213,9 @@ describe.skipIf(!enabled)('commerce store — database', () => {
         const b = await claim();
         await store.enqueueUsage();
         await sql`update commerce_usage_report set failures = 1010 where job_id = ${b.job}`;
-        const lease = await store.leaseDueUsage(10, LEASE_MS);
+        const lease = await leased();
         const before = Date.now();
-        await store.settleUsage(lease?.token as string, [{ jobId: a.job, claimSeq: a.seq }], 'not_acknowledged');
+        await store.settleUsage(lease.token, [{ jobId: a.job, claimSeq: a.seq }], 'not_acknowledged');
 
         const rows = await outbox();
         // The ack in the same call is not lost to an arithmetic error on the other row.
@@ -194,8 +230,8 @@ describe.skipIf(!enabled)('commerce store — database', () => {
     it('an acknowledged row is never leased again', async () => {
         const a = await claim();
         await store.enqueueUsage();
-        const lease = await store.leaseDueUsage(10, LEASE_MS);
-        await store.settleUsage(lease?.token as string, [{ jobId: a.job, claimSeq: a.seq }]);
+        const lease = await leased();
+        await store.settleUsage(lease.token, [{ jobId: a.job, claimSeq: a.seq }]);
         await store.enqueueUsage();
         expect(await store.leaseDueUsage(10, LEASE_MS)).toBeNull();
         expect(await outbox()).toHaveLength(1);
@@ -206,8 +242,8 @@ describe.skipIf(!enabled)('commerce store — database', () => {
         await claim();
         await store.enqueueUsage();
         expect(await store.read()).toEqual({ plan: null, unreportedClaims: 2 });
-        const lease = await store.leaseDueUsage(10, LEASE_MS);
-        await store.settleUsage(lease?.token as string, [{ jobId: a.job, claimSeq: a.seq }]);
+        const lease = await leased();
+        await store.settleUsage(lease.token, [{ jobId: a.job, claimSeq: a.seq }]);
         expect((await store.read()).unreportedClaims).toBe(1);
     });
 
