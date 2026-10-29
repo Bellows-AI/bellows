@@ -433,6 +433,26 @@ describe('sweepClaimedFleets', () => {
             expect((e as Error).message).toMatch(new RegExp(SINCE));
         });
 
+        it('still throws LeftoverTerminating when a delete of the terminating pod would fail, issuing none', async () => {
+            const { outcome, calls } = await sweep(
+                listing([stuck], (method, path) =>
+                    method === 'DELETE' && path.startsWith(`${PODS}/`) ? answer(503) : undefined
+                )
+            );
+
+            await expect(outcome).rejects.toBeInstanceOf(LeftoverTerminating);
+            expect(deletes(calls, PODS)).toEqual([]);
+        });
+
+        it('still deletes a leftover that is not terminating beside a terminating one', async () => {
+            const live = podOf('pod-live', {}, { nodeName: 'node-b' });
+            const { outcome, calls } = await sweep(listing([stuck, live]));
+
+            await outcome.catch(() => undefined);
+
+            expect(deletes(calls, PODS).map((call) => call.path.split('?')[0])).toContain(`${PODS}/pod-live`);
+        });
+
         it('throws the plain bound error when one leftover is terminating and another is not', async () => {
             const { outcome } = await sweep(listing([stuck, podOf('pod-live', {}, { nodeName: 'node-b' })]));
 

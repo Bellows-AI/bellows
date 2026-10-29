@@ -586,7 +586,8 @@ export async function sweepClaimedFleets(deps: K8sDeps, job: BoardJob, signal: A
             return;
         }
         stuck = stuckAmong(fleets);
-        await deleteSweepFleets(round, fleets);
+        // Every leftover already accepted its delete: asking again is redundant and its failure must not hide the verdict.
+        if (stuck === undefined) await deleteSweepFleets(round, fleets);
         // No delete's answer is proof the checkout is free — a 409 on a uid precondition is
         // another incarnation under the name (issue #821): only a fresh, conclusive empty list
         // lets it go.
