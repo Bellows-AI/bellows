@@ -179,7 +179,8 @@ async function obtain(deps, key) {
         const { token, expiresAt, scopes, resource } = cached;
         return { ok: true, token, expiresAt, scopes, resource };
     }
-    const deadline = deps.now() + DEADLINE_MS;
+    // A helper with its own wall-clock budget (BEL-61) passes the part it has left, never a fresh one.
+    const deadline = deps.now() + (deps.deadlineMs ?? DEADLINE_MS);
     let backoff = BACKOFF_MS;
     while (deps.now() < deadline) {
         const answer = await ask(deps, pair, key, deadline - deps.now());

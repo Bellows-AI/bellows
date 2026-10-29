@@ -31,6 +31,7 @@ const helpers = (): string[] => {
 describe('skill helper scripts reach the tool uid', () => {
     it('there is at least one helper to check', () => {
         expect(helpers()).toContain('pr-land/pr-status.sh');
+        expect(helpers()).toContain('jira/jira.cjs');
     });
 
     it.each(['docker/claude-executor/Dockerfile', 'docker/opencode-executor/Dockerfile'])(

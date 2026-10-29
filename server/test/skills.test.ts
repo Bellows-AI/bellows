@@ -29,7 +29,7 @@ describe('readSkillCatalog', () => {
         const byName = Object.fromEntries(readSkillCatalog().map((skill) => [skill.name, skill]));
         expect(Object.keys(byName).sort()).toEqual(['backend-fix', 'gates', 'github', 'jira', 'pr-land', 'review']);
         expect(byName['pr-land']?.requires).toEqual({ tools: ['gh'], connections: ['github'] });
-        expect(byName.jira?.requires).toEqual({ tools: ['curl'], connections: ['jira'] });
+        expect(byName.jira?.requires).toEqual({ tools: [], connections: ['jira'] });
         // The gates skill calls the image's factory-gate wrapper, not curl.
         expect(byName.gates?.requires).toEqual({ tools: [], connections: [] });
         expect(skillCatalog()).toEqual(readSkillCatalog());
@@ -70,7 +70,7 @@ describe('GET /api/skills', () => {
         const { skills } = response.json() as { skills: { name: string; requires: unknown }[] };
         const jira = skills.find((skill) => skill.name === 'jira');
         expect(jira?.requires).toEqual({
-            tools: ['curl'],
+            tools: [],
             connections: [{ name: 'jira', env: [], selectedBy: 'connections' }],
         });
         // github is the App's: no env names and no body field selects it.

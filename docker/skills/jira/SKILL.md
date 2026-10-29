@@ -1,51 +1,44 @@
 ---
 name: jira
-description: Read, search, create and comment on Jira work items through Jira's REST API with curl, against the $JIRA_API base the entrypoint exports. Use whenever a Jira issue key (ABC-1234), a *.atlassian.net/browse/ URL, or a request to look up, update or comment on a ticket appears. Also covers Jira authentication failures. Do not use an Atlassian MCP server or acli — curl on $JIRA_API is the supported path here.
+description: Read, search and comment on Jira work items through the jira helper, which uses the Jira connection the task was started with. Use whenever a Jira issue key (ABC-1234), a *.atlassian.net/browse/ URL, or a request to look up or comment on a ticket appears. Also covers Jira authorization failures. Do not use an Atlassian MCP server or `acli` — the helper is the supported path here.
 metadata:
-  requires-tools: curl
   requires-connections: jira
 ---
 
-# Jira through the REST API
+# Jira through the jira helper
 
-Reach Jira with `curl` against `$JIRA_API`, the board's connector for this task. You hold no Jira
-credential: the board adds the task's authorized connection to each call, and only while this
-attempt is running. Your run's own job id and lease token are what the board checks. The Atlassian
-MCP server is deliberately not configured, and `acli` cannot use this connection — do not use
-either.
+Reach Jira with `node /usr/local/share/factory-skills/jira/jira.cjs`, which talks to the Jira site of
+the connection this task is bound to. You hold no Jira credential and never see one: the helper asks
+the board for a short-lived token with the lease this attempt holds now, and only while this attempt
+is running. The Atlassian MCP server is deliberately not configured, and `acli` cannot use this
+connection — do not use either.
 
 Given a URL like `https://SITE.atlassian.net/browse/ABC-1234`, extract the key and read it through
-`$JIRA_API` rather than fetching the page. Never put the lease token in a URL or echo it.
+the helper rather than fetching the page.
 
 ## Commands
 
-Every call is one self-contained command; shell state does not carry between them. The pair
-reaches curl as headers in a config on stdin, printed by `attempt-pair.cjs`, which reads the lease
-this attempt holds now on every call (it changes when a new claim adopts this run, so never read
-`$RUNNER_LEASE_TOKEN` yourself). An argv shows in any process listing — never pass the token as a
-`-H` argument or in a URL.
+Every call is one self-contained command that prints JSON on stdout and guidance on stderr; shell
+state does not carry between them.
 
 ```bash
 # Full detail, including the comment thread
-node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Accept: application/json' \
-    "$JIRA_API/issue/<KEY>?fields=summary,description,status,issuetype,parent,fixVersions,components,labels,comment"
+node /usr/local/share/factory-skills/jira/jira.cjs issue <KEY> --fields summary,description,status,issuetype,parent,fixVersions,components,labels,comment
 
 # Search by JQL
-node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Accept: application/json' -G \
-    --data-urlencode "jql=project = ABC AND status = 'In Progress' ORDER BY updated DESC" \
-    --data-urlencode "fields=summary,status,issuetype,parent,fixVersions,components,labels" \
-    "$JIRA_API/search/jql"
+node /usr/local/share/factory-skills/jira/jira.cjs search "project = ABC AND status = 'In Progress' ORDER BY updated DESC" --fields summary,status,issuetype,parent,fixVersions,components,labels
 
-# Comment — the body is Atlassian Document Format, not plain text
-node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
-    -X POST "$JIRA_API/issue/<KEY>/comment" \
-    -d '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"..."}]}]}}'
+# The comment thread alone
+node /usr/local/share/factory-skills/jira/jira.cjs comments <KEY>
 
-# Create
-node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Content-Type: application/json' \
-    -X POST "$JIRA_API/issue" \
-    -d '{"fields":{"project":{"key":"ABC"},"issuetype":{"name":"Task"},"summary":"..."}}'
+# Comment — plain text; the helper converts it to Atlassian Document Format
+node /usr/local/share/factory-skills/jira/jira.cjs comment <KEY> --body-file /tmp/comment.txt
 ```
+
+If several Jira sites are bound to the task, add `--site HOST` (the site's host name) to choose one.
+`comment` posts at most once: the same key and text is one comment however often it is repeated, and
+`--key K` names a different comment on purpose. It needs a connection that was allowed to add
+comments. Creating or transitioning issues is not supported.
 
 `assignee = currentUser()` matches the connection's own account, not a person.
 
@@ -58,12 +51,20 @@ node /usr/local/bin/attempt-pair.cjs | curl -K - -sS --fail-with-body -H 'Conten
 - Name the fields you need. `description` and comment bodies come back as ADF JSON: read the
   `text` nodes.
 
-## Authentication
+## When the helper stops
 
-If `JIRA_API` is empty, or a call answers 401/403, **stop and report it** — quote the `error`
-message the board returned, which says what to fix (no connection selected, connection deleted or
-no longer authorized, read-only connection) — and do not work around it by guessing ticket
-contents. A refusal that says this attempt holds a lease it no longer has is the exception: every
-call re-reads the current pair, so retry it once; if a fresh call is refused the same way, report
-it, and remember it only for this call — a later turn may succeed. Loading this skill never grants
-access; only the connection the task was started with does.
+Exit 0 is success. Any other exit means **stop and report it** — quote the guidance the helper
+printed, which says what to fix — and do not work around it by guessing ticket contents.
+
+- **Exit 3** — the user must act: no Jira connection is bound to this task, or the bound one was not
+  allowed this step (for example, adding comments). Say so; the user connects or widens it and binds
+  it to the task.
+- **Exit 4** — a `comment` whose outcome is unknown or still in progress. It is never posted again
+  by the helper; read the comments to see whether it landed before you decide anything.
+- **Exit 1** — refused or failed (the closed reason is in the JSON: `provider-denied`, `not-found`,
+  `board_refused`, ...). Do not retry around it.
+
+A refusal that says this attempt holds a lease it no longer has (`board_refused`) is the exception:
+every call re-reads the current pair, so retry it once; if a fresh call is refused the same way,
+report it, and remember it only for this call — a later turn may succeed. Loading this skill never
+grants access; only the connection the task was started with does.
