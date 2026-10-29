@@ -22,6 +22,7 @@ import {
     faultyStore,
     lineageEvents,
     lineageHarness,
+    parkBeforeStore,
     newRoot,
     parked,
     seedGrantSecret,
@@ -769,5 +770,218 @@ describe.skipIf(!enabled)('grant lineage: review r1 (A1) a mutation that outlive
             reason: 'persistence-pending',
         });
         expect(calls.stage).toBe(0);
+    });
+});
+
+describe.skipIf(!enabled)('grant lineage: review r2, a durable fence at the store before ownership is released', () => {
+    const newPayload = (): GrantPayload => ({
+        accessToken: 'access-r2',
+        accessExpiresAt: freshToken(),
+        refreshToken: 'refresh-r2',
+        authority: { scopes: ['fake:read'] },
+    });
+    const consistent = async (r: Rig, ref: string | null = null) => {
+        const row = await columns(r.grant.id);
+        const active = await r.h
+            .open()
+            .readActive({ identity: grantSecretIdentity(r.grant), ref: (ref ?? row.secret_ref) as SecretRef });
+        if (!active.ok) throw new Error('the active secret is unreadable');
+        expect(active.version).toBe(row.secret_version);
+    };
+    const opOf = async (r: Rig) => (await columns(r.grant.id)).lineage_operation_id as never;
+    const reconcileState = async (r: Rig, operationId: never) =>
+        r.h.open().reconcileOperation({ identity: grantSecretIdentity(r.grant), ref: r.ref, operationId });
+
+    it.each([
+        ['refresh', true, 'reconnect-required'],
+        ['refresh', false, 'released'],
+        ['reconsent', true, 'reconnect-required'],
+    ] as const)(
+        '%s (rotating %s): paused before the store call, recovery fences the operation, the late replace is refused and the next commit works',
+        async (kind, rotates, recovered) => {
+            const gate = parked();
+            const r = await rig({ rotates });
+            const a = replica(r, parkBeforeStore(r.h.open(), 'replace', gate));
+            const b = replica(r, r.h.open());
+            const claim = ok(await a.lineage.claimLineage(r.grant.id, kind, { rotates })).claim;
+            const committing = a.lineage.commitLineage(claim, newPayload());
+            await gate.entered;
+            const operationId = await opOf(r);
+            await expireClaim(r.grant.id);
+
+            expect(await b.lineage.recoverLineage(r.grant.id)).toBe(recovered);
+            // The poison bound the recorded operation to a failure: nothing can apply under that ID any more.
+            expect(await reconcileState(r, operationId)).toMatchObject({ ok: true, status: { state: 'failed' } });
+
+            gate.release();
+            expect(await committing).toMatchObject({ ok: false });
+            await consistent(r);
+            expect((await columns(r.grant.id)).version).toBe(String(r.grant.version));
+
+            const again = ok(await b.lineage.claimLineage(r.grant.id, 'reconsent', { rotates })).claim;
+            expect(await b.lineage.commitLineage(again, newPayload())).toMatchObject({ ok: true });
+            const back = await columns(r.grant.id);
+            expect(back.status).toBe('active');
+            expect(back.version).toBe(String(r.grant.version + 1));
+            await consistent(r);
+        }
+    );
+
+    it('paused after the intent was inserted: the fence loses the race, the grant wedges, a late activation cannot corrupt it', async () => {
+        const gate = parked();
+        const r = await rig({ rotates: true });
+        const late = faultyStore(r.h, {
+            insertIntent: async (run) => {
+                const row = await run();
+                await gate.hold();
+                return row;
+            },
+        }).store;
+        const a = replica(r, late);
+        const b = replica(r, r.h.open());
+        const claim = ok(await a.lineage.claimLineage(r.grant.id, 'refresh', { rotates: true })).claim;
+        const committing = a.lineage.commitLineage(claim, newPayload());
+        await gate.entered;
+        await expireClaim(r.grant.id);
+
+        expect(await b.lineage.recoverLineage(r.grant.id)).toBe('wedged');
+        gate.release();
+        await committing;
+        await a.lineage.idle();
+        const wedged = await columns(r.grant.id);
+        expect(wedged.status).toBe('reconnect_required');
+        expect(wedged.secret_wedged_at).not.toBeNull();
+        expect(wedged.version).toBe(String(r.grant.version));
+
+        const fresh = ok(await b.lineage.claimLineage(r.grant.id, 'reconsent', { rotates: true })).claim;
+        expect(await b.lineage.commitLineage(fresh, newPayload())).toMatchObject({ ok: true });
+        const back = await columns(r.grant.id);
+        expect(back.secret_ref).not.toBe(r.ref);
+        await consistent(r, back.secret_ref);
+    });
+
+    it('the intent lands between the reconcile and the fence: the fence answers bound and the reconcile is repeated, the grant wedges', async () => {
+        const gate = parked();
+        const r = await rig({ rotates: true });
+        const late = faultyStore(r.h, {
+            insertIntent: async (run) => {
+                const row = await run();
+                await gate.hold();
+                return row;
+            },
+        }).store;
+        const a = replica(r, late);
+        const claim = ok(await a.lineage.claimLineage(r.grant.id, 'refresh', { rotates: true })).claim;
+        const committing = a.lineage.commitLineage(claim, newPayload());
+        await gate.entered;
+        await expireClaim(r.grant.id);
+        // B's first lookup misses the intent (it was not visible yet when B looked); the fence then finds it bound.
+        const b = replica(
+            r,
+            faultyStore(r.h, { findOperation: async (run, call) => (call === 1 ? (null as never) : run()) }).store
+        );
+
+        expect(await b.lineage.recoverLineage(r.grant.id)).toBe('wedged');
+        gate.release();
+        await committing;
+        await a.lineage.idle();
+        expect((await columns(r.grant.id)).status).toBe('reconnect_required');
+    });
+
+    it('destroy paused before the delete: the fence releases, the late delete is refused, the next pass destroys', async () => {
+        const gate = parked();
+        const r = await rig({ expired: false });
+        await createConnectionStore({ sql: db.sql, orgId: ORG }).disconnect(r.connections[0]!, {
+            userId: ALICE.id,
+            admin: false,
+        });
+        const a = replica(r, parkBeforeStore(r.h.open(), 'delete', gate));
+        const b = replica(r, r.h.open());
+        const destroying = a.lineage.destroyRevokedSecret(r.grant.id);
+        await gate.entered;
+        await expireClaim(r.grant.id);
+
+        expect(await b.lineage.recoverLineage(r.grant.id)).toBe('released');
+        gate.release();
+        expect(await destroying).toMatchObject({ ok: false });
+        // The late delete did not land: the secret is still the version the grant records.
+        await consistent(r);
+
+        expect(await b.lineage.destroyRevokedSecret(r.grant.id)).toMatchObject({ ok: true });
+        const after = await columns(r.grant.id);
+        expect(after.secret_version).toBeNull();
+        expect(await activeOf(r, r.h.open())).toMatchObject({ ok: false, error: { code: 'not-found' } });
+    });
+
+    it('a fence the store did not confirm leaves the claim and the operation; the next pass fences and releases', async () => {
+        const r = await rig({ rotates: true });
+        const spy = spied(r.h.open());
+        const a = replica(r, spy.store);
+        const claim = ok(await a.lineage.claimLineage(r.grant.id, 'refresh', { rotates: true })).claim;
+        const op = await spy.store.issueOperationId();
+        await db.sql`
+            update integration_grant set lineage_operation_id = ${op}, lineage_secret_ref = secret_ref
+            where id = ${r.grant.id} and lineage_claim = ${claim.token}
+        `;
+        await expireClaim(r.grant.id);
+        // The store retries an idempotent write itself, so it fails for as long as the fault stands.
+        const fault = { standing: true };
+        const flaky = faultyStore(r.h, {
+            insertFailure: async (run) => {
+                if (fault.standing) throw ambiguousWrite();
+                return run();
+            },
+        }).store;
+        const b = replica(r, flaky);
+
+        expect(await b.lineage.recoverLineage(r.grant.id)).toBe('left');
+        const held = await columns(r.grant.id);
+        expect(held.lineage_claim).toBe(claim.token);
+        expect(held.lineage_operation_id).toBe(op);
+
+        fault.standing = false;
+        expect(await b.lineage.recoverLineage(r.grant.id)).toBe('reconnect-required');
+        expect((await columns(r.grant.id)).lineage_claim).toBeNull();
+    });
+
+    it('the fence never deletes: on an active reference it is fenced and the bytes and version stay', async () => {
+        const { fenceOperation } = await import('../src/integrations/operation-fence.js');
+        const r = await rig();
+        const store = r.h.open();
+        const before = await activeOf(r, store);
+        expect(
+            await fenceOperation(store, {
+                identity: grantSecretIdentity(r.grant),
+                ref: r.ref,
+                operationId: await store.issueOperationId(),
+                signal: undefined,
+            })
+        ).toBe('fenced');
+        const after = await activeOf(r, store);
+        expect(after).toEqual(before);
+    });
+
+    it('a holder paused before recording its operation cannot record it after the lease expired, and never calls the store', async () => {
+        const gate = parked();
+        const r = await rig({ rotates: true });
+        const spy = spied(r.h.open());
+        const slow: SecretStore = {
+            ...spy.store,
+            issueOperationId: async () => {
+                const id = await spy.store.issueOperationId();
+                await gate.hold();
+                return id;
+            },
+        };
+        const a = replica(r, slow);
+        const claim = ok(await a.lineage.claimLineage(r.grant.id, 'refresh', { rotates: true })).claim;
+        const committing = a.lineage.commitLineage(claim, newPayload());
+        await gate.entered;
+        await expireClaim(r.grant.id);
+        gate.release();
+
+        expect(await committing).toMatchObject({ ok: false });
+        expect(spy.log.replaces).toBe(0);
+        expect((await columns(r.grant.id)).lineage_operation_id).toBeNull();
     });
 });

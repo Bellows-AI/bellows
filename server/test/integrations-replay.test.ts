@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { attemptsLive, replay } from '../src/integrations/lineage-commit.js';
-import type { LineageCtx } from '../src/integrations/lineage-types.js';
+import { createAttempts, type LineageCtx } from '../src/integrations/lineage-types.js';
 import type { SecretError, SecretResult, SecretVersion } from '../src/secrets/secret-store.js';
 
 /**
@@ -8,7 +8,7 @@ import type { SecretError, SecretResult, SecretVersion } from '../src/secrets/se
  * has left, and stays accounted for until it really settles, so recovery cannot mistake "no operation observed" for
  * "never happened" while an attempt may still land.
  */
-const ctx = { timing: { retryDelayMs: 100 } } as LineageCtx;
+const ctx = { timing: { retryDelayMs: 100 }, attempts: createAttempts() } as LineageCtx;
 const KEY = 'grant:test';
 const VERSION = 'ver_1' as SecretVersion;
 const ok = (): SecretResult<{ version: SecretVersion }> => ({ ok: true, version: VERSION });
@@ -64,17 +64,17 @@ describe('replay: the deadline bounds every attempt', () => {
         });
         const running = replay(ctx, KEY, attempt, { fenceAt: Date.now() + 500, retryUntil: Date.now() + 10_000 });
         await vi.advanceTimersByTimeAsync(0);
-        expect(attemptsLive(KEY)).toBe(true);
+        expect(attemptsLive(ctx.attempts, KEY)).toBe(true);
 
         await vi.advanceTimersByTimeAsync(500);
         expect(await running).toEqual({ kind: 'pending' });
         expect(seen?.aborted).toBe(true);
         // The parked mutation may still land: nobody may treat "no operation observed" as "never happened".
-        expect(attemptsLive(KEY)).toBe(true);
+        expect(attemptsLive(ctx.attempts, KEY)).toBe(true);
 
         settle(ok());
         await vi.advanceTimersByTimeAsync(0);
-        expect(attemptsLive(KEY)).toBe(false);
+        expect(attemptsLive(ctx.attempts, KEY)).toBe(false);
         expect(attempt).toHaveBeenCalledTimes(1);
     });
 });

@@ -26,6 +26,8 @@ export interface RepoWrappers {
     stageVersion?: Wrap<'stageVersion'>;
     activate?: Wrap<'activate'>;
     findOperation?: Wrap<'findOperation'>;
+    insertIntent?: Wrap<'insertIntent'>;
+    insertFailure?: Wrap<'insertFailure'>;
 }
 
 /** The error shape the store classifies as `outcome-unknown` (docs/secrets.md; secrets-postgres.faults.test.ts). */
@@ -35,13 +37,19 @@ export interface FaultyStore {
     harness: PostgresHarness;
     store: SecretStore;
     /** Counts per wrapped repo method, by call. */
-    calls: { stageVersion: number; activate: number; findOperation: number };
+    calls: {
+        stageVersion: number;
+        activate: number;
+        findOperation: number;
+        insertIntent: number;
+        insertFailure: number;
+    };
 }
 
 /** A real store over the harness's database whose repo methods are wrapped; `h.openWith(h.realRepo)` is a fresh process. */
 export function faultyStore(harness: PostgresHarness, wrappers: RepoWrappers = {}): FaultyStore {
     const real = harness.realRepo;
-    const calls = { stageVersion: 0, activate: 0, findOperation: 0 };
+    const calls = { stageVersion: 0, activate: 0, findOperation: 0, insertIntent: 0, insertFailure: 0 };
     const repo: SecretRepo = {
         ...real,
         stageVersion: (...args) => {
@@ -53,6 +61,16 @@ export function faultyStore(harness: PostgresHarness, wrappers: RepoWrappers = {
             calls.activate += 1;
             const run = () => real.activate(...args);
             return wrappers.activate ? wrappers.activate(run, calls.activate, args) : run();
+        },
+        insertIntent: (...args) => {
+            calls.insertIntent += 1;
+            const run = () => real.insertIntent(...args);
+            return wrappers.insertIntent ? wrappers.insertIntent(run, calls.insertIntent, args) : run();
+        },
+        insertFailure: (...args) => {
+            calls.insertFailure += 1;
+            const run = () => real.insertFailure(...args);
+            return wrappers.insertFailure ? wrappers.insertFailure(run, calls.insertFailure, args) : run();
         },
         findOperation: (...args) => {
             calls.findOperation += 1;
@@ -192,6 +210,37 @@ export function lineageEvents() {
             events.some((e) => e.event === name)
                 ? Promise.resolve()
                 : new Promise<void>((resolve) => waiting.push({ name, resolve })),
+    };
+}
+
+/**
+ * The store with `method` held on `gate` BEFORE the real call: the replica is paused after it decided to write and
+ * before the store saw the request (no lookup, no intent). Releasing the gate lets the late call through.
+ */
+export function parkBeforeStore(
+    store: SecretStore,
+    method: 'create' | 'replace' | 'delete',
+    gate: ReturnType<typeof parked>
+): SecretStore {
+    const hold = async (name: typeof method) => {
+        if (name === method) await gate.hold();
+    };
+    return {
+        issueOperationId: () => store.issueOperationId(),
+        readActive: (input) => store.readActive(input),
+        reconcileOperation: (input) => store.reconcileOperation(input),
+        create: async (input) => {
+            await hold('create');
+            return store.create(input);
+        },
+        replace: async (input) => {
+            await hold('replace');
+            return store.replace(input);
+        },
+        delete: async (input) => {
+            await hold('delete');
+            return store.delete(input);
+        },
     };
 }
 

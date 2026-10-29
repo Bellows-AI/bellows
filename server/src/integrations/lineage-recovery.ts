@@ -2,6 +2,7 @@ import { finalizeLineage, type LineageKind } from '../db/connection-grants.js';
 import type { OperationId, OperationStatus, SecretRef, SecretVersion } from '../secrets/secret-store.js';
 import { endClaim, type LineageRow, readLineage } from './lineage-claims.js';
 import { attemptsLive, readConfirmed } from './lineage-commit.js';
+import { reconcileFenced } from './operation-fence.js';
 import { grantAttemptKey, identityOf, type LineageCtx, type RecoverResult } from './lineage-types.js';
 
 /**
@@ -127,22 +128,27 @@ export async function recoverLineage(ctx: LineageCtx, grantId: string): Promise<
     if (!row) return 'idle';
     const target = heldBy(ctx, row);
     // A mutation of this process may still land: "no operation observed" is not "never happened" while it runs.
-    if (attemptsLive(grantAttemptKey(ctx.orgId, grantId)) && target !== 'idle' && target !== 'not-expired')
+    if (
+        attemptsLive(ctx.attempts, grantAttemptKey(ctx.orgId, grantId)) &&
+        target !== 'idle' &&
+        target !== 'not-expired'
+    )
         return 'left';
     if (target === 'unrecorded') return reclaimUnrecorded(ctx, row, row.lineage_claim as string);
     if (typeof target === 'string') return target;
 
-    const reconciled = await ctx.secrets
-        .reconcileOperation({
+    const settled = await reconcileFenced(
+        ctx.secrets,
+        {
             identity: identityOf({ grantId, orgId: ctx.orgId, principalUserId: row.principal_user_id }),
             ref: target.ref,
             operationId: row.lineage_operation_id as OperationId,
-        })
-        .catch(() => null);
-    if (!reconciled) return 'left';
-    // `not-found` is the store's confirmed "that operation never ran"; any other refusal is inconclusive.
-    if (!reconciled.ok) return reconciled.error.code === 'not-found' ? lost(ctx, target) : 'left';
+        },
+        ctx.timing.readDeadlineMs
+    );
+    if (settled.kind === 'fenced') return lost(ctx, target);
+    if (settled.kind === 'inconclusive') return 'left';
     return target.kind === 'destroy'
-        ? recoverDestroy(ctx, target, reconciled.status)
-        : recoverCredentials(ctx, target, reconciled.status);
+        ? recoverDestroy(ctx, target, settled.status)
+        : recoverCredentials(ctx, target, settled.status);
 }

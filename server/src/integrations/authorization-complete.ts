@@ -35,6 +35,7 @@ import {
     type LineageCtx,
 } from './lineage-types.js';
 import type { DiscoveredIdentity, ExchangeResult, OAuthProviderHooks } from './oauth-provider.js';
+import { reconcileFenced } from './operation-fence.js';
 import { isTrustedContext, type TrustedIntegrationContext } from './trusted-context.js';
 
 /**
@@ -182,6 +183,7 @@ async function destroyOwnReference(
 }
 
 const lineageCtxOf = (fc: FlowCtx): LineageCtx => ({
+    attempts: fc.lineage.attempts,
     sql: fc.sql,
     orgId: fc.orgId,
     secrets: fc.secrets,
@@ -203,7 +205,12 @@ async function activateNewGrant(
         id: row.id,
         provider: row.provider,
         facts,
-        newGrant: { grantId: row.pendingGrantId!, secretRef: row.secretRef!, secretVersion: version },
+        newGrant: {
+            grantId: row.pendingGrantId!,
+            secretRef: row.secretRef!,
+            secretVersion: version,
+            operationId: row.secretOperationId!,
+        },
     });
     // `interrupted`: someone else settled the row and may have activated this very reference.
     if (!activated.ok && activated.failure !== 'interrupted') {
@@ -249,7 +256,7 @@ async function connectNewGrant(
     // Still inconclusive at the deadline: the row stays `persisting` and recovery reconciles the recorded operation.
     if (persisted.kind === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
     if (persisted.kind === 'definitive') return fail(fc, row, 'storage-failed');
-    const stored = { ...row, pendingGrantId, secretRef };
+    const stored = { ...row, pendingGrantId, secretRef, secretOperationId: operationId };
     return finishActivation(
         fc,
         row,
@@ -419,16 +426,18 @@ async function recoverPersisting(fc: FlowCtx, row: AuthorizationRow): Promise<Re
         return 'failed';
     };
     if (!row.pendingGrantId || !row.secretRef || !row.secretOperationId || !row.result) return lost();
-    const reconciled = await fc.secrets
-        .reconcileOperation({
+    const settled = await reconcileFenced(
+        fc.secrets,
+        {
             identity: grantSecretIdentity({ id: row.pendingGrantId, orgId: fc.orgId, principalUserId: row.userId }),
             ref: row.secretRef as SecretRef,
             operationId: row.secretOperationId as OperationId,
-        })
-        .catch(() => null);
-    if (!reconciled) return 'left';
-    if (!reconciled.ok) return reconciled.error.code === 'not-found' ? lost() : 'left';
-    const { status } = reconciled;
+        },
+        fc.lineage.timing.readDeadlineMs
+    );
+    if (settled.kind === 'fenced') return lost();
+    if (settled.kind === 'inconclusive') return 'left';
+    const { status } = settled;
     if (status.state !== 'succeeded' || status.result.version === null) return lost();
     const activated = await activateNewGrant(fc, { row, facts: row.result, version: status.result.version });
     if (activated.ok) {
@@ -465,6 +474,10 @@ export async function recoverAuthorization(fc: FlowCtx, id: string): Promise<Rec
     // A holder may still be running until the flow's own deadline has passed, and while a mutation of it is live.
     if (!row.pastDeadline) return 'not-expired';
     const grantKey = row.grantId ? grantAttemptKey(fc.orgId, row.grantId) : null;
-    if (attemptsLive(authorizationAttemptKey(fc.orgId, id)) || (grantKey && attemptsLive(grantKey))) return 'left';
+    if (
+        attemptsLive(fc.lineage.attempts, authorizationAttemptKey(fc.orgId, id)) ||
+        (grantKey && attemptsLive(fc.lineage.attempts, grantKey))
+    )
+        return 'left';
     return row.status === 'persisting' ? recoverPersisting(fc, row) : recoverExchanging(fc, row);
 }

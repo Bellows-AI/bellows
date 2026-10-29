@@ -268,7 +268,7 @@ export interface Activation {
     provider: string;
     facts: StoredFacts;
     /** A NEW grant: the pre-allocated identity and the secret already stored under it. */
-    newGrant: { grantId: string; secretRef: string; secretVersion: string } | null;
+    newGrant: { grantId: string; secretRef: string; secretVersion: string; operationId: string } | null;
 }
 
 export type ActivationResult = { ok: true; connectionIds: string[] } | { ok: false; failure: AuthorizationFailure };
@@ -339,11 +339,15 @@ const refusalOf = (reason: string): AuthorizationFailure =>
     reason === 'duplicate-connection' ? 'duplicate-connection' : 'grant-conflict';
 
 async function activateInTx(tx: TransactionSql, input: Activation): Promise<ActivationResult> {
-    const [auth] = await tx<{ status: string }[]>`
-        select status from integration_authorization where id = ${input.id} and org_id = ${input.orgId}
+    const [auth] = await tx<{ status: string; secret_operation_id: string | null }[]>`
+        select status, secret_operation_id from integration_authorization where id = ${input.id} and org_id = ${input.orgId}
         for update
     `;
     if (!auth || (auth.status !== 'exchanging' && auth.status !== 'persisting')) {
+        return { ok: false, failure: 'interrupted' };
+    }
+    // A new grant activates only the transaction that still names its operation: a recovery that fenced it settled the row.
+    if (input.newGrant && (auth.status !== 'persisting' || auth.secret_operation_id !== input.newGrant.operationId)) {
         return { ok: false, failure: 'interrupted' };
     }
     if (input.newGrant) {

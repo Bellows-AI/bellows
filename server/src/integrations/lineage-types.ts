@@ -53,6 +53,7 @@ export interface LineageEvent {
         | 'persistence-pending'
         | 'revoke-attempted'
         | 'revoke-failed'
+        | 'fenced'
         | 'recovered';
     grantId: string;
 }
@@ -109,7 +110,14 @@ export type DestroyResult =
     | { ok: true }
     | { ok: false; reason: ClaimRefusal | 'pending' | 'failed' | 'claim-lost' | 'unconfirmed' };
 
+/** SecretStore mutations that may still be running, by key, per runtime instance (`lineage-commit.ts`). */
+export interface Attempts {
+    live: Map<string, Set<Promise<unknown>>>;
+}
+export const createAttempts = (): Attempts => ({ live: new Map() });
+
 export interface LineageCtx {
+    attempts: Attempts;
     sql: Sql;
     orgId: string;
     secrets: SecretStore;

@@ -56,10 +56,12 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
   `server/test-db/github-credential.test.ts`, `driver/test/github-credential.test.ts`.
 - **A reconnect claims the grant's lineage before it exchanges the code; a new grant's secret is created before
   its connection is visible.** The callback's return path is the one stored at start. `server/test-db/integration-authorization.test.ts`.
-- **No SecretStore mutation outlives the lease that fences it.** None starts past the claim's lease minus its
-  margin, each carries an abort at that fence, and one still running in this process keeps recovery off the grant.
-  An authorization settles only past its own `deadline_at`, set at consume to cover the whole flow.
-  `server/test/integrations-replay.test.ts`, `server/test-db/integration-lineage.test.ts`.
+- **A recorded operation is released only after its ID is durably fenced at the store.** A `not-found` reconcile is
+  "not yet": recovery first binds the ID to a delete at a never-active version, so a holder paused before its request
+  is refused `operation-id-reused`. An unconfirmed fence leaves the row; a record is refused past the lease; an
+  authorization settles only past its own `deadline_at`. The abort timer and the per-instance attempt registry are
+  mitigation only. `server/src/integrations/operation-fence.ts`, `server/test-db/integration-lineage.test.ts`,
+  `server/test/integrations-replay.test.ts`.
 - **An enumeration is a candidate list, never a verdict.** The pass acts only through each module's own guarded
   statements; a store that does not answer leaves the row for the next tick. `server/test-db/integration-recovery.test.ts`.
 

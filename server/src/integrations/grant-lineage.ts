@@ -6,7 +6,9 @@ import { commitLineage as commit, readConfirmed, settleAttempts } from './lineag
 import { destroyRevokedSecret as destroy } from './lineage-destroy.js';
 import { recoverLineage as recover } from './lineage-recovery.js';
 import {
+    type Attempts,
     type ClaimResult,
+    createAttempts,
     type CommitResult,
     DEFAULT_LINEAGE_TIMING,
     type DestroyResult,
@@ -57,6 +59,8 @@ export { DEFAULT_LINEAGE_TIMING, leaseMsOf } from './lineage-types.js';
 export interface GrantLineage {
     readonly timing: LineageTiming;
     readonly leaseMs: number;
+    /** The mutations of this instance that may still be running; two instances stand in for two processes. */
+    readonly attempts: Attempts;
     claimLineage(grantId: string, kind: LineageKind, options: { rotates: boolean }): Promise<ClaimResult>;
     /** Persists `payload` under the held claim (record, identical replay, finalize). The caller signal never reaches it. */
     commitLineage(claim: LineageClaim, payload: GrantPayload): Promise<CommitResult>;
@@ -204,6 +208,7 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
     const timing: LineageTiming = { ...DEFAULT_LINEAGE_TIMING, ...deps.timing };
     const leaseMs = leaseMsOf(timing);
     const ctx: LineageCtx = {
+        attempts: createAttempts(),
         sql: deps.sql,
         orgId: deps.orgId,
         secrets: deps.secrets,
@@ -240,6 +245,7 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
     return {
         timing,
         leaseMs,
+        attempts: ctx.attempts,
         claimLineage: (grantId, kind, { rotates }) => claimStatement(ctx, grantId, kind, rotates),
         commitLineage: (claim, payload) => commit(ctx, claim, payload),
         releaseClaim: (claim, options) => endClaim(ctx, claim, options ?? {}),
@@ -248,7 +254,7 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
         destroyRevokedSecret: (grantId) => destroy(ctx, grantId),
         idle: async () => {
             while (inflight.size > 0) await Promise.allSettled([...inflight.values()]);
-            await settleAttempts();
+            await settleAttempts(ctx.attempts);
         },
     };
 }

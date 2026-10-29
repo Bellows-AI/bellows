@@ -172,7 +172,8 @@ export async function endClaim(
 
 /**
  * Step 4: records the operation the claim is about to run and the reference it targets, so recovery can tell
- * "never reached the store" from "payload lost". A destroy runs on a revoked grant; everything else must not.
+ * "never reached the store" from "payload lost". It applies only inside the lease: an expired holder (paused, then
+ * resumed) cannot record, so it never calls the store. A destroy runs on a revoked grant; everything else must not.
  */
 export async function recordOperation(
     ctx: LineageCtx,
@@ -184,6 +185,7 @@ export async function recordOperation(
         update integration_grant
         set lineage_operation_id = ${operationId}, lineage_secret_ref = ${ref}, updated_at = now()
         where id = ${claim.grantId} and org_id = ${ctx.orgId} and lineage_claim = ${claim.token}
+          and lineage_claim_expires_at > now()
           and (status <> 'revoked' or lineage_claim_kind = 'destroy')
         returning id
     `;

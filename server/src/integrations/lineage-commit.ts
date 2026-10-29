@@ -4,6 +4,7 @@ import type { OperationId, SecretError, SecretRef, SecretResult, SecretVersion }
 import { decodeGrantPayload, encodeGrantPayload, type GrantPayload } from './grant-credentials.js';
 import { endClaim, readLineage, recordOperation } from './lineage-claims.js';
 import {
+    type Attempts,
     type CommitResult,
     grantAttemptKey,
     identityOf,
@@ -42,34 +43,35 @@ export interface ReplayLimits {
 }
 
 /**
- * SecretStore mutations that may still be running in this process, by key. A mutation that ignores its abort signal
- * stays here until it really settles, so a recovery in the same process never reads "no operation observed" as
- * "never happened" while one may still land. Another process relies on the signal and the margin before the lease.
+ * Mitigation, not the fence: SecretStore mutations that may still be running in this runtime instance, by key. A
+ * mutation that ignores its abort signal stays here until it settles, so a recovery of the same instance leaves the
+ * grant meanwhile. Correctness across instances is the store-side fence (`operation-fence.ts`).
  */
-const live = new Map<string, Set<Promise<unknown>>>();
+export const attemptsLive = (attempts: Attempts, key: string): boolean => (attempts.live.get(key)?.size ?? 0) > 0;
 
-export const attemptsLive = (key: string): boolean => (live.get(key)?.size ?? 0) > 0;
-
-/** Resolves when no tracked mutation is running in this process. */
-export async function settleAttempts(): Promise<void> {
-    while (live.size > 0) await Promise.allSettled([...live.values()].flatMap((running) => [...running]));
+/** Resolves when no tracked mutation is running in this instance. */
+export async function settleAttempts(attempts: Attempts): Promise<void> {
+    while (attempts.live.size > 0) {
+        await Promise.allSettled([...attempts.live.values()].flatMap((running) => [...running]));
+    }
 }
 
-function track(key: string, running: Promise<unknown>): void {
-    let set = live.get(key);
+function track(attempts: Attempts, key: string, running: Promise<unknown>): void {
+    let set = attempts.live.get(key);
     if (!set) {
         set = new Set();
-        live.set(key, set);
+        attempts.live.set(key, set);
     }
     set.add(running);
     void running.then(() => {
         set.delete(running);
-        if (set.size === 0 && live.get(key) === set) live.delete(key);
+        if (set.size === 0 && attempts.live.get(key) === set) attempts.live.delete(key);
     });
 }
 
 /** One attempt, abandoned (not forgotten) when the fence passes. A throw is an inconclusive answer. */
 async function attemptWithin<T extends object>(
+    attempts: Attempts,
     key: string,
     attempt: (signal: AbortSignal) => Promise<SecretResult<T>>,
     ms: number
@@ -83,7 +85,7 @@ async function attemptWithin<T extends object>(
         }, ms);
     });
     const running = (async () => attempt(controller.signal))().catch(() => null);
-    track(key, running);
+    track(attempts, key, running);
     try {
         return await Promise.race([running, fenced]);
     } finally {
@@ -101,7 +103,7 @@ export async function replay<T extends object>(
     for (let first = true; ; first = false) {
         const now = Date.now();
         if (now >= limits.fenceAt || (!first && now >= limits.retryUntil)) return { kind: 'pending' };
-        const result = await attemptWithin(key, attempt, limits.fenceAt - now);
+        const result = await attemptWithin(ctx.attempts, key, attempt, limits.fenceAt - now);
         if (result === 'fenced') return { kind: 'pending' };
         if (result?.ok) return { kind: 'ok', result: result as Extract<SecretResult<T>, { ok: true }> };
         if (result && DEFINITIVE.has(result.error.code)) return { kind: 'definitive', error: result.error };
@@ -212,7 +214,11 @@ export async function commitLineage(
         ctx.log('persistence-pending', claim.grantId);
         return { ok: false, reason: 'persistence-pending' };
     }
-    if (persisted.kind === 'definitive') return lose(ctx, claim, rotating);
+    if (persisted.kind === 'definitive') {
+        // A recovery bound this operation ID to its fence before the request arrived: nothing was written.
+        if (persisted.error.reason === 'operation-id-reused') ctx.log('fenced', claim.grantId);
+        return lose(ctx, claim, rotating);
+    }
 
     const secretVersion = persisted.result.version;
     try {

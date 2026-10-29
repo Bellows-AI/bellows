@@ -20,6 +20,7 @@ import {
     attachJira,
     faultyStore,
     lineageHarness,
+    parkBeforeStore,
     parked,
     seedGrantSecret,
     spied,
@@ -896,6 +897,96 @@ describe.skipIf(!enabled)('complete: activation is idempotent over connected res
             failure: 'duplicate-connection',
         });
         expect((await connectionsOfAccount(seeded.account)).filter((c) => c.status === 'active')).toHaveLength(1);
+    });
+});
+
+describe.skipIf(!enabled)('complete: review r2, a create paused before or after the store saw it', () => {
+    const newAccount = (r: Rig) => {
+        const account = acctId();
+        r.fake.identity = {
+            externalAccountId: account,
+            resources: [{ id: 'acme', label: 'acme.fake.test' }],
+            authority: { scopes: ['fake:read'] },
+        };
+        return account;
+    };
+    /** Another process over the same store: its own lineage (so its own attempt registry) and flow. */
+    const otherProcess = (a: Rig) => {
+        const secrets = a.h.openWith(a.h.realRepo);
+        const lineage = createGrantLineage({
+            sql: db.sql,
+            orgId: ORG,
+            secrets,
+            providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
+            timing: { retryDelayMs: 0 },
+        });
+        return createAuthorizationFlow({
+            sql: db.sql,
+            orgId: ORG,
+            secrets,
+            lineage,
+            providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
+            clients: (provider) => (provider === 'jira' ? { clientId: 'client-1', scopes: ['fake:read'] } : undefined),
+            callbackOrigin: 'https://board.example.test',
+        });
+    };
+    const referenceOf = async (id: string) => {
+        const row = await rowOf(id);
+        return {
+            identity: grantSecretIdentity({ id: row.pending_grant_id!, orgId: ORG, principalUserId: ALICE.id }),
+            ref: row.secret_ref as SecretRef,
+        };
+    };
+
+    it('paused before the store call: recovery fences the operation, the late create is refused and no reference exists', async () => {
+        const gate = parked();
+        const a = rig({ store: (h) => parkBeforeStore(h.open(), 'create', gate) });
+        const account = newAccount(a);
+        const started = await begin(a);
+        const completing = complete(a, { state: started.state, code: CODE });
+        await gate.entered;
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'persisting' });
+        await lapse(started.authorizationId);
+
+        const b = otherProcess(a);
+        expect(await b.recoverAuthorization(started.authorizationId)).toBe('failed');
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'storage-failed' });
+
+        gate.release();
+        expect(await completing).toMatchObject({ ok: false });
+        expect(await a.h.open().readActive(await referenceOf(started.authorizationId))).toMatchObject({
+            ok: false,
+            error: { code: 'not-found' },
+        });
+        expect(await grantsOfAccount(account)).toHaveLength(0);
+        expect(await connectionsOfAccount(account)).toHaveLength(0);
+    });
+
+    it('paused after the intent was inserted: the fence loses the race, the late activation is refused, no grant and no connection', async () => {
+        const gate = parked();
+        const a = rig({
+            store: (h) =>
+                faultyStore(h, {
+                    insertIntent: async (run) => {
+                        const row = await run();
+                        await gate.hold();
+                        return row;
+                    },
+                }).store,
+        });
+        const account = newAccount(a);
+        const started = await begin(a);
+        const completing = complete(a, { state: started.state, code: CODE });
+        await gate.entered;
+        await lapse(started.authorizationId);
+
+        const b = otherProcess(a);
+        expect(await b.recoverAuthorization(started.authorizationId)).toBe('failed');
+        gate.release();
+        expect(await completing).toMatchObject({ ok: false });
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'storage-failed' });
+        expect(await grantsOfAccount(account)).toHaveLength(0);
+        expect(await connectionsOfAccount(account)).toHaveLength(0);
     });
 });
 
