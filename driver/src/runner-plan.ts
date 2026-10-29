@@ -153,7 +153,9 @@ function claudePlan(config: DriverConfig, job: BoardJob, session: RunSession | n
         ...baseBranchEnv(job),
     ];
     const cliArgs = [session.resume ? '--resume' : '--session-id', session.id];
-    if (config.skipPermissions) cliArgs.push('--dangerously-skip-permissions');
+    // Auto mode is pinned on the command line as well as in managed settings: a resumed session
+    // otherwise restores the mode it recorded, and default mode denies every unlisted command.
+    cliArgs.push(...(config.skipPermissions ? ['--dangerously-skip-permissions'] : ['--permission-mode', 'auto']));
     // The board-owned Factory execution context (issue #244), through Claude Code's own
     // system-instruction channel — additive to its built-in system prompt, never a replacement.
     // It is the same text on every claim of a thread; the per-node turn context rides the env above.

@@ -18,6 +18,7 @@
         "SHELL": "/usr/local/libexec/factory-tool/bash"
     },
     "permissions": {
+        "defaultMode": "auto",
         "additionalDirectories": ["/task", "/tmp"],
         "allow": [
             "Bash(sed -i *)",
