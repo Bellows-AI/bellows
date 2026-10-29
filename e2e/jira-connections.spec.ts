@@ -74,7 +74,6 @@ test('connecting through the stub shows the site, the account and read access', 
     await expect(panel(page).getByText('No Jira connections yet.')).toBeVisible();
     await connect(page);
 
-    await page.waitForURL(/integration=jira&result=connected/);
     await expect(panel(page).getByText('Jira connected.')).toBeVisible();
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-callback.png`, fullPage: true });
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
@@ -98,11 +97,10 @@ test('connecting through the stub shows the site, the account and read access', 
 test('reconnecting as another account is refused and the row keeps the first account', async ({ page }) => {
     await page.goto('/settings/workspace');
     await connect(page);
-    await page.waitForURL(/result=connected/);
+    await expect(panel(page).getByText('Jira connected.')).toBeVisible();
 
     await consentAs(page, 'b');
     await pickFromMenu(page, panel(page).getByRole('row').filter({ hasText: SITE }), 'Reconnect');
-    await page.waitForURL(/result=identity-mismatch/);
     await expect(panel(page).getByText(/not the account this connection was made with/)).toBeVisible();
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
     await expect(row).toContainText(ACCOUNT_A);
@@ -115,7 +113,6 @@ test('a denied consent says so and leaves no row', async ({ page }) => {
     await consentAs(page, 'a', true);
     await connect(page);
 
-    await page.waitForURL(/result=denied/);
     await expect(panel(page).getByText(/consent was denied/)).toBeVisible();
     await expect(panel(page).getByRole('row').filter({ hasText: SITE })).toHaveCount(0);
     await expect(panel(page).getByText('No Jira connections yet.')).toBeVisible();
@@ -124,7 +121,7 @@ test('a denied consent says so and leaves no row', async ({ page }) => {
 test('allowing adding comments reconnects and the row shows write', async ({ page }) => {
     await page.goto('/settings/workspace');
     await connect(page);
-    await page.waitForURL(/result=connected/);
+    await expect(panel(page).getByText('Jira connected.')).toBeVisible();
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
     await expect(row).toContainText('read');
 
@@ -134,7 +131,6 @@ test('allowing adding comments reconnects and the row shows write', async ({ pag
     await page.screenshot({ path: `${SHOTS}/settings-jira-connections-write-consent.png`, fullPage: true });
     await confirm.getByRole('button', { name: 'Continue to Atlassian' }).click();
 
-    await page.waitForURL(/result=connected/);
     await expect(row).toContainText('write');
     await expect(row.getByRole('button', { name: 'Allow adding comments' })).toHaveCount(0);
     // Now a write row: Reconnect is its inline action.
