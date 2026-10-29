@@ -169,11 +169,12 @@ describe('biome', () => {
             'driver/test/probe-script.ts': "export const v = ['node', '-e', 'x'];",
             'core/src/executors.ts': "export const w = 'claude-code';",
             'server/src/probe.ts': "import { z } from '../../core/src/x.js';",
+            'core/src/integrations/probe.ts': "import { s } from '../../../server/src/secrets/secret-store.js';",
         };
         // One distinctive phrase per plugin message: each plugin must hit its fixture, so a plugin
         // that loads but matches nothing fails here too.
         const HITS: Record<string, RegExp> = {
-            'no-cross-package-imports': /copy the type instead/,
+            'no-cross-package-imports': /copy the type instead|core imports nothing from server/,
             'no-inline-container-scripts': /Container script passed inline/,
             'no-shared-literals': /^Shared literal/,
             'no-silent-empty-read': /A failed read must stay inconclusive/,
@@ -186,6 +187,16 @@ describe('biome', () => {
                 .sort();
             expect(plugins).toEqual(Object.keys(HITS).sort());
         });
+
+        it(
+            'no-cross-package-imports reports the core to server fixture as well as the driver one',
+            async () => {
+                const found = await lintScratch(FIXTURES);
+                expect(found.messages.some((m) => /copy the type instead/.test(m))).toBe(true);
+                expect(found.messages.some((m) => /core imports nothing from server/.test(m))).toBe(true);
+            },
+            BIOME_CHECK_TIMEOUT_MS
+        );
 
         it(
             'runs every plugin without a compile error and with a hit',

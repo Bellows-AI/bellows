@@ -24,6 +24,11 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | GitHub, driver side: asked before the sync's fetch, each publish, each github-writing helper and each gate run | `driver/src/github-credential-call.ts`, `loop-github.ts`, `loop-gates.ts`, `gates.ts`, `k8s-gate.ts`, `supervised-steps.ts` | `driver/test/board.test.ts`, `driver/test/loop/`, `driver/test/gates.test.ts`, `driver/test/k8s/` |
 | `GITHUB_TOKEN` and `GH_TOKEN` reserved env names | `core/src/env.ts`, `driver/src/claim.ts`, `driver/src/config.ts`, `server/migrations/072_github_env_reserved.sql` | `server/test/routes.env.test.ts`, `driver/test/config.test.ts`, `driver/test/executor-images.test.ts` |
 | GitHub, the lanes (forced expiry, App-less refusal, Memory cache) | `server/src/offline-mint.ts`, `scripts/test-jobs.sh`, `scripts/test-k8s.sh`, `scripts/k8s-stub.sh` | `server/test/test-jobs.harness.test.ts`, `driver/test/lane-stubs.test.ts` |
+| Portable integration layer: definition, closed outcomes, bounded operation runner; imports nothing from `server` | `core/src/integrations/`, `lint/no-cross-package-imports.grit` | `core/test/integrations.operation.test.ts`, `core/test/integrations.boundary.test.ts`, `server/test/integrations.contract.test.ts` |
+| Grant lineage: one claim per grant, the exchange, identical-replay persistence, recovery by claim kind, destroy of a revoked secret | `server/migrations/096_grant_lineage.sql`, `server/src/integrations/grant-lineage.ts`, `server/src/integrations/grant-credentials.ts`, `server/src/integrations/oauth-provider.ts`, `server/src/db/connection-grants.ts` (`finalizeLineage`) | `server/test-db/integration-lineage.test.ts`, `server/test-db/connection-grants.test.ts`, `server/test-db/migration.096-grant-lineage.test.ts`, `server/test-db/connection-lock-order.test.ts` |
+| Credential resolver, trusted context and the binding ceiling | `server/src/integrations/credential-resolver.ts`, `server/src/integrations/trusted-context.ts` | `server/test-db/integration-resolver.test.ts` |
+| Authorization transaction (module API, no route yet): start, callback validation, claim-before-exchange reconnect, secret-first new grant, recovery | `server/migrations/097_integration_authorization.sql`, `server/src/integrations/authorization-flow.ts`, `authorization-complete.ts`, `authorization-store.ts`, `server/src/db/connection-grants.ts` (`attachInTx`) | `server/test-db/integration-authorization.test.ts`, `server/test-db/migration.097-integration-authorization.test.ts` |
+| Composition and recovery: one lineage and flow per org, a bounded pass on every replica (expired claims with or without a recorded operation, revoked grants' secrets, authorizations past their deadline), the destroy after a disconnect that revoked a grant | `server/src/integrations/integration-recovery.ts`, `server/src/main.ts`, `server/src/routes/connections.ts` | `server/test-db/integration-recovery.test.ts`, `server/test/routes.connections.test.ts` |
 
 ## Invariants
 
@@ -49,11 +54,25 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 - **GitHub's token is the attempt's, never the claim's.** No GitHub value rides the claim, the runner's env or
   Secret; a reviewer row and a superseded, cancelled or finished attempt get none.
   `server/test-db/github-credential.test.ts`, `driver/test/github-credential.test.ts`.
+- **A reconnect claims the grant's lineage before it exchanges the code; a new grant's secret is created before
+  its connection is visible.** The callback's return path is the one stored at start. `server/test-db/integration-authorization.test.ts`.
+- **A recorded operation is released only after its ID is durably fenced at the store.** A `not-found` reconcile is
+  "not yet": recovery first binds the ID to a delete at a never-active version, so a holder paused before its request
+  is refused `operation-id-reused`. An unconfirmed fence leaves the row; a record is refused past the lease; an
+  authorization settles only past its own `deadline_at`. The abort timer and the per-instance attempt registry are
+  mitigation only. `server/src/integrations/operation-fence.ts`, `server/test-db/integration-lineage.test.ts`,
+  `server/test/integrations-replay.test.ts`.
+- **An enumeration is a candidate list, never a verdict.** The pass acts only through each module's own guarded
+  statements; a store that does not answer leaves the row for the next tick. `server/test-db/integration-recovery.test.ts`.
 
 ## Stated limits
 
 - Legacy API tokens are plaintext at rest (`server/migrations/054_connections.sql`); a disconnect scrubs one.
   OAuth grants hold their secret in the SecretStore only.
+- The destroy after a disconnect is best effort and the answer stays 204; the background pass is its retry. No provider
+  is registered yet, so the runtime recovers rows and destroys secrets but starts no authorization.
+- A wedged secret reference is permanent: an operation whose payload was lost blocks every later mutation on it, delete
+  included. The grant moves to a fresh reference on reconnect and the old one stays encrypted at rest, uncollected.
 - Jira is scoped API-token auth: a classic token is stored untried and answers 401 on every call.
 - GitHub is the App's alone: no member token, no PAT; a revoked installation surfaces as the route's `502`.
 - A gate run's GitHub token is asked at its start and never renewed during it: one gate running past

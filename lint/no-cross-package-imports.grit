@@ -10,7 +10,10 @@ language js
 //    `core/src`. Reaching into the sources bypasses the build that `npm run dev` and `npm run
 //    build` sequence first, and produces type errors that read like source bugs.
 //
-// Both are zero violations today, so this is a ratchet: it costs nothing now and refuses the
+// 3. `core/src` imports nothing from `server`, and nothing named after the secret store: the portable
+//    integration layer must be structurally unable to reach SecretStore or any long-lived credential.
+//
+// All are zero violations today, so this is a ratchet: it costs nothing now and refuses the
 // change that would otherwise be discovered by a container build or a stale `core/dist`.
 //
 // The paths are spelled as an `or` of whole regexes, never `(src|test)`: Grit binds a regex group
@@ -34,6 +37,18 @@ language js
             register_diagnostic(
                 span = $source,
                 message = "server and web resolve core through @factory-ai/core (core/dist), never core/src."
+            )
+        },
+        and {
+            $filename <: r".*/core/src/.*",
+            $source <: or {
+                r"^['\"].*/server/.*['\"]$",
+                r"^['\"].*/secrets/.*['\"]$",
+                r"^['\"].*secret-store.*['\"]$"
+            },
+            register_diagnostic(
+                span = $source,
+                message = "core imports nothing from server — portable integration code never reaches SecretStore"
             )
         }
     }
