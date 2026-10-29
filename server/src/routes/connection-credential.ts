@@ -2,6 +2,7 @@ import { ERROR_CODES, type IntegrationOutcome } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { JOB_ID_HEADER, LEASE_TOKEN_HEADER } from '../auth/plugin.js';
 import type { AttemptCheck, AttemptOfLease, LiveAttempt } from '../db/attempt-of-lease.js';
+import type { LiveConnection } from '../db/connection-bindings.js';
 import { UUID } from '../identifiers.js';
 import type { ResolveResult } from '../integrations/credential-resolver.js';
 import type { IntegrationRuntime } from '../integrations/integration-recovery.js';
@@ -18,9 +19,17 @@ import { contextOfExecution } from '../integrations/trusted-context.js';
  * provider's words.
  */
 
+/** What the runner's helper may be told of a thread root's connections (`GET .../credentials/connections`). */
+export interface ConnectionListing {
+    connectionsOf: (orgId: string, rootJobId: string) => Promise<LiveConnection[]>;
+    /** The provider API base of one resource, or null when the provider is not configured (the entry is omitted). */
+    apiBaseOf: (provider: string, resource: string) => string | null;
+}
+
 export interface ConnectionCredentialDeps {
     attemptOfLease: AttemptOfLease;
     integrations: Pick<IntegrationRuntime, 'resolverOf'>;
+    listing?: ConnectionListing | undefined;
     /** The one absolute bound over the lease check, the resolve and the recheck. */
     deadlineMs?: number;
 }
@@ -39,6 +48,8 @@ const BODY_LIMIT = 1024;
 /** One sentence for every refusal of the attempt: which check failed is not the caller's to learn. */
 const ATTEMPT_REFUSED =
     'This attempt may not use this connection: it is no longer running, or its task is no longer authorized. Do not retry.';
+/** The list names no connection; a placeholder keeps the one pair parser. */
+const ZERO_ID = '00000000-0000-4000-8000-000000000000';
 const NOT_PERMITTED = 'This connection may not be used by this task. Do not retry.';
 const REQUIRED = 'This task needs this connection connected or reconnected by its owner. Do not retry.';
 const UNREADABLE = 'The connection could not be read just now. Retry shortly.';
@@ -47,6 +58,9 @@ interface Params {
     id: string;
     connectionId: string;
 }
+
+const unauthenticated = (reply: FastifyReply) =>
+    reply.code(HTTP_UNAUTHORIZED).send({ error: 'Job id and lease token required', code: ERROR_CODES.UNAUTHENTICATED });
 
 const unavailable = (reply: FastifyReply, extra: Record<string, unknown> = {}) =>
     reply
@@ -86,8 +100,12 @@ interface Pair {
 }
 
 /** The request's pair and named connection, or the reason it is no request for this route. */
-function pairOf(request: FastifyRequest<{ Params: Params }>): Pair | 'unauthenticated' | 'malformed' {
-    const { id: jobId, connectionId } = request.params;
+function pairOf(
+    request: FastifyRequest<{ Params: { id: string; connectionId?: string } }>,
+    fixedConnectionId?: string
+): Pair | 'unauthenticated' | 'malformed' {
+    const { id: jobId } = request.params;
+    const connectionId = fixedConnectionId ?? request.params.connectionId ?? '';
     const leaseToken = request.headers[LEASE_TOKEN_HEADER];
     if (request.headers[JOB_ID_HEADER] !== jobId || typeof leaseToken !== 'string') return 'unauthenticated';
     // A malformed id is no attempt and no connection, refused before the database's uuid cast can throw.
@@ -112,9 +130,19 @@ function untilClosed(reply: FastifyReply): { signal: AbortSignal; dispose: () =>
     return { signal: closed.signal, dispose: () => reply.raw.removeListener('close', onClose) };
 }
 
+/** The helper's list: each live connection with the API base of its resource, one whose provider is off omitted. */
+async function listedFor(source: ConnectionListing, attempt: LiveAttempt) {
+    const live = await source.connectionsOf(attempt.orgId, attempt.rootJobId);
+    return live.flatMap(({ id, provider, site, resource, access }) => {
+        const apiBase = source.apiBaseOf(provider, resource);
+        return apiBase === null ? [] : [{ id, provider, site, resource, access, apiBase }];
+    });
+}
+
 export function connectionCredentialRoutes({
     attemptOfLease,
     integrations,
+    listing,
     deadlineMs = BROKER_DEADLINE_MS,
 }: ConnectionCredentialDeps): FastifyPluginAsync {
     /** The lease check; a throw confirmed nothing and is `null`, never a refusal. */
@@ -176,11 +204,7 @@ export function connectionCredentialRoutes({
     const handle = async (request: FastifyRequest<{ Params: Params }>, reply: FastifyReply) => {
         reply.header('cache-control', 'no-store');
         const pair = pairOf(request);
-        if (pair === 'unauthenticated') {
-            return reply
-                .code(HTTP_UNAUTHORIZED)
-                .send({ error: 'Job id and lease token required', code: ERROR_CODES.UNAUTHENTICATED });
-        }
+        if (pair === 'unauthenticated') return unauthenticated(reply);
         if (pair === 'malformed') return refused(reply, ATTEMPT_REFUSED);
 
         const attempt = await check(pair);
@@ -201,11 +225,37 @@ export function connectionCredentialRoutes({
         }
     };
 
+    /**
+     * The helper's re-read on every call (sees a bind made mid-run, survives a takeover): connection metadata only,
+     * never a credential or an account. A confirmed empty list is `[]`; a check or a query that throws is 503.
+     */
+    const list =
+        (source: ConnectionListing) =>
+        async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+            reply.header('cache-control', 'no-store');
+            const pair = pairOf(request, ZERO_ID);
+            if (pair === 'unauthenticated') return unauthenticated(reply);
+            if (pair === 'malformed') return refused(reply, ATTEMPT_REFUSED);
+            const attempt = await check(pair);
+            if (attempt === null) {
+                request.log.warn({ jobId: pair.jobId }, 'connection list lease check failed');
+                return unavailable(reply);
+            }
+            if (!attempt.ok) return refused(reply, ATTEMPT_REFUSED);
+            try {
+                return reply.send({ connections: await listedFor(source, attempt) });
+            } catch {
+                request.log.warn({ jobId: pair.jobId }, 'connection list read failed');
+                return unavailable(reply);
+            }
+        };
+
     return async (app) => {
         app.post<{ Params: Params }>(
             '/api/jobs/:id/credentials/connections/:connectionId',
             { bodyLimit: BODY_LIMIT },
             handle
         );
+        if (listing) app.get<{ Params: { id: string } }>('/api/jobs/:id/credentials/connections', list(listing));
     };
 }

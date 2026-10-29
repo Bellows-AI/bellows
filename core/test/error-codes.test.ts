@@ -15,6 +15,11 @@ describe('ERROR_CODES', () => {
         expect(ERROR_CODES.INTEGRATION_REQUIRED).toBe('INTEGRATION_REQUIRED');
     });
 
+    it('carries the reused operation key refusal the runner helper branches on', () => {
+        expect(ERROR_CODES.OPERATION_KEY_REUSED).toBe('OPERATION_KEY_REUSED');
+        expect(ERROR_CODES.OPERATION_CONFLICT).toBe('OPERATION_CONFLICT');
+    });
+
     it('carries the unconfigured-provider refusal the connect button branches on', () => {
         expect(ERROR_CODES.INTEGRATION_NOT_CONFIGURED).toBe('INTEGRATION_NOT_CONFIGURED');
     });

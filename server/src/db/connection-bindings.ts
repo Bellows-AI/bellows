@@ -362,6 +362,29 @@ export async function bindingsOf(db: Db, orgId: string, rootJobId: string): Prom
     }));
 }
 
+/** One of a thread root's usable OAuth connections, as the runner's helper is told of it: no credential, no account. */
+export interface LiveConnection {
+    id: string;
+    provider: string;
+    site: string;
+    resource: string;
+    /** What the binding froze at bind time, the ceiling the broker holds the connection to. */
+    access: string;
+}
+
+/** The root's bindings whose connection still exists, is active and is an OAuth grant's (never a legacy token). */
+export async function liveOAuthConnectionsOf(db: Db, orgId: string, rootJobId: string): Promise<LiveConnection[]> {
+    const rows = await db<{ id: string; provider: string; site: string; resource: string; access: string }[]>`
+        select c.id, b.provider, c.site, b.resource, coalesce(b.access, c.access) as access
+        from job_connection_binding b
+        join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id
+        where b.org_id = ${orgId} and b.root_job_id = ${rootJobId}
+          and c.status = 'active' and c.credential = 'oauth_grant' and b.resource is not null
+        order by b.revision, b.added_at, b.id
+    `;
+    return rows;
+}
+
 export interface RequirementRecord {
     provider: string;
     reason: 'missing' | 'ambiguous';

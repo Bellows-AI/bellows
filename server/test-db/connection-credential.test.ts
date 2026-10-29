@@ -5,6 +5,7 @@ import { buildApp } from '../src/app.js';
 import { createAuthStore } from '../src/auth/store.js';
 import { type AttemptOfLease, createAttemptOfLease } from '../src/db/attempt-of-lease.js';
 import { createConnectionGrants } from '../src/db/connection-grants.js';
+import { liveOAuthConnectionsOf } from '../src/db/connection-bindings.js';
 import { createConnectionStore } from '../src/db/connection-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { Claim } from '../src/db/jobs/job-store-types.js';
@@ -105,6 +106,11 @@ async function rig(options: RigOptions = {}) {
         auth: createAuthStore({ sql, ready }),
         attemptOfLease: options.attempt ? options.attempt(real) : real,
         integrations: runtime,
+        connectionListing: {
+            connectionsOf: (orgId, rootJobId) => liveOAuthConnectionsOf(sql, orgId, rootJobId),
+            apiBaseOf: (provider, resource) =>
+                provider === 'jira' ? `https://api.example.test/ex/jira/${resource}` : null,
+        },
         ready,
         version: '0.0.0',
         logger: { level: 'trace', stream: { write: (line: string) => lines.push(line) } },
@@ -131,6 +137,12 @@ async function rig(options: RigOptions = {}) {
         connectionId: attached.connectionId,
         cloudId,
         ref: seed.ref,
+        list: (pair: { id: string; leaseToken: string }) =>
+            app.inject({
+                method: 'GET',
+                url: `/api/jobs/${pair.id}/credentials/connections`,
+                headers: { 'x-factory-job-id': pair.id, 'x-factory-job-lease-token': pair.leaseToken },
+            }),
         ask: () => askAs({ id: claim.id, leaseToken: claim.leaseToken }),
         askAs,
     };
@@ -329,6 +341,79 @@ describe.skipIf(!enabled)('the managed-connection broker — on a real attempt',
         expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
         expect(res.json()).toMatchObject({ code: 'UNAVAILABLE', retryable: true });
         expect(res.json().code).not.toBe('INTEGRATION_REQUIRED');
+    });
+
+    it("lists the root's live OAuth bindings with apiBase and no token or account id, re-read on every call", async () => {
+        const r = await rig();
+        const pair = { id: r.claim.id, leaseToken: r.claim.leaseToken };
+        const first = await r.list(pair);
+        expect(first.statusCode).toBe(HTTP_OK);
+        expect(first.headers['cache-control']).toBe('no-store');
+        expect(first.json()).toEqual({
+            connections: [
+                {
+                    id: r.connectionId,
+                    provider: 'jira',
+                    site: 'example.atlassian.net',
+                    resource: r.cloudId,
+                    access: 'read',
+                    apiBase: `https://api.example.test/ex/jira/${r.cloudId}`,
+                },
+            ],
+        });
+        expect(first.body).not.toContain(SEED_TOKEN);
+
+        // A binding added after the first read appears on the next one.
+        const second = await attachJira(createConnectionGrants({ sql: r.sql, orgId: ORG }), ALICE.id, {
+            externalAccountId: `acct-${randomUUID()}`,
+            cloudId: `cloud-${randomUUID()}`,
+        });
+        await bindConnections(r.sql, { orgId: ORG, rootJobId: r.rootId, userId: ALICE.id }, [second.connectionId]);
+        const ids = ((await r.list(pair)).json().connections as { id: string }[]).map((c) => c.id);
+        expect(ids.sort()).toEqual([r.connectionId, second.connectionId].sort());
+
+        // A disconnected one is absent.
+        await r.sql`update connector_connection set status = 'disconnected' where id = ${second.connectionId}`;
+        const after = ((await r.list(pair)).json().connections as { id: string }[]).map((c) => c.id);
+        expect(after).toEqual([r.connectionId]);
+        expect(JSON.stringify(after)).not.toContain('acct-');
+    });
+
+    it("does not list a legacy API-token binding, nor another root's", async () => {
+        const r = await rig();
+        const other = await rig({ user: BOB });
+        const legacy = await createConnectionStore({ sql: r.sql, orgId: ORG }).create({
+            ownerUserId: ALICE.id,
+            site: 'example.atlassian.net',
+            cloudId: `cloud-${randomUUID()}`,
+            email: `a-${randomUUID()}@example.com`,
+            apiToken: 'legacy-secret-token',
+            access: 'read',
+        });
+        await bindConnections(r.sql, { orgId: ORG, rootJobId: r.rootId, userId: ALICE.id }, [legacy.id]).catch(
+            () => {}
+        );
+        const ids = (
+            (await r.list({ id: r.claim.id, leaseToken: r.claim.leaseToken })).json().connections as { id: string }[]
+        ).map((c) => c.id);
+        expect(ids).toEqual([r.connectionId]);
+        expect(ids).not.toContain(other.connectionId);
+    });
+
+    it('a lease query that throws on the list is 503, not 403', async () => {
+        const down = await rig({
+            attempt: () => async () => {
+                throw new Error('db down');
+            },
+        });
+        const res = await down.list({ id: down.claim.id, leaseToken: down.claim.leaseToken });
+        expect(res.statusCode).toBe(HTTP_UNAVAILABLE);
+    });
+
+    it('a lease refusal on the list is 403', async () => {
+        const r = await rig();
+        await expireLease(r.sql, r.claim.id);
+        expect((await r.list({ id: r.claim.id, leaseToken: r.claim.leaseToken })).statusCode).toBe(HTTP_FORBIDDEN);
     });
 
     it('a lease query that throws is 503, not 403', async () => {

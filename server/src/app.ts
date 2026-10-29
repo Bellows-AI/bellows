@@ -13,7 +13,9 @@ import type { IntegrationRuntime } from './integrations/integration-recovery.js'
 import { batchRoutes } from './routes/batches/batches.js';
 import { connectionRoutes, type CloudIdLookup, type DestroyRevokedSecret } from './routes/connections.js';
 import { connectorJiraRoutes } from './routes/connector-jira.js';
-import { connectionCredentialRoutes } from './routes/connection-credential.js';
+import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
+import type { OperationReceipts } from './db/operation-receipts.js';
+import { operationReceiptRoutes } from './routes/operation-receipts.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
@@ -93,6 +95,10 @@ export interface AppDeps {
     attemptOfLease?: AttemptOfLease | undefined;
     /** The revoke route's pair-only match (`createPairMatches`, no liveness); the route exists when it does. */
     pairMatches?: PairMatches | undefined;
+    /** The runner's durable operation receipts (099); with `attemptOfLease` and `pairMatches` the receipt routes exist. */
+    operationReceipts?: OperationReceipts | undefined;
+    /** The runner helper's connection list (`GET .../credentials/connections`); with `integrations` the route exists. */
+    connectionListing?: ConnectionListing | undefined;
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
     integrations?:
         | (Pick<IntegrationRuntime, 'resolverOf'> &
@@ -179,14 +185,26 @@ async function registerRunnerCredentialRoutes(
         | 'connectionOfLease'
         | 'attemptOfLease'
         | 'pairMatches'
+        | 'operationReceipts'
+        | 'connectionListing'
         | 'integrations'
         | 'githubMint'
         | 'githubRevoke'
         | 'fetchFn'
     >
 ): Promise<void> {
-    const { orgs, connectionOfLease, attemptOfLease, pairMatches, integrations, githubMint, githubRevoke, fetchFn } =
-        deps;
+    const {
+        orgs,
+        connectionOfLease,
+        attemptOfLease,
+        pairMatches,
+        operationReceipts,
+        connectionListing,
+        integrations,
+        githubMint,
+        githubRevoke,
+        fetchFn,
+    } = deps;
     if (connectionOfLease) {
         await app.register(connectorJiraRoutes({ connectionOfLease, ...(fetchFn ? { fetchFn } : {}) }));
     }
@@ -199,7 +217,14 @@ async function registerRunnerCredentialRoutes(
                 revoke: githubRevoke ?? orgRevoke(orgs),
             })
         );
-        if (integrations) await app.register(connectionCredentialRoutes({ attemptOfLease, integrations }));
+        if (integrations) {
+            await app.register(
+                connectionCredentialRoutes({ attemptOfLease, integrations, listing: connectionListing })
+            );
+        }
+        if (pairMatches && operationReceipts) {
+            await app.register(operationReceiptRoutes({ attemptOfLease, pairMatches, receipts: operationReceipts }));
+        }
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
     if (integrations?.flowOf) await app.register(integrationRoutes({ flowOf: integrations.flowOf }));
@@ -229,6 +254,8 @@ export async function buildApp({
     githubMint,
     githubRevoke,
     pairMatches,
+    operationReceipts,
+    connectionListing,
     fetchFn,
     cloudIdLookup,
     destroyRevokedSecret,
@@ -314,6 +341,8 @@ export async function buildApp({
         connectionOfLease,
         attemptOfLease,
         pairMatches,
+        operationReceipts,
+        connectionListing,
         integrations,
         githubMint,
         githubRevoke,

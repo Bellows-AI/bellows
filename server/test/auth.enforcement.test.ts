@@ -281,6 +281,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/github/revoke', 'connector'],
     // The managed-connection broker (BEL-60): the same class, one segment deeper.
     ['/api/jobs/:id/credentials/connections/:connectionId', 'connector'],
+    // The runner seam (BEL-61): the helper's connection list and its durable operation receipts, the same class.
+    ['/api/jobs/:id/credentials/connections', 'connector'],
+    ['/api/jobs/:id/operations', 'connector'],
+    ['/api/jobs/:id/operations/:receiptId', 'connector'],
     // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],

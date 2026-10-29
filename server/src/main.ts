@@ -1,11 +1,14 @@
+import { jiraApiBase } from '@factory-ai/core';
 import postgres, { type Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
-import { resolveConfig, type GitHubConfig } from './config.js';
+import { resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createConnectionOfLease } from './db/connection-store.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
+import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
+import { createOperationReceipts } from './db/operation-receipts.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/job-store-org-resolvers.js';
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
@@ -30,9 +33,23 @@ import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.j
 import type { SecretDiagnostic } from './secrets/secret-store.js';
 
 /** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
-const runnerCredentialDeps = (db: { sql: Sql; ready: Promise<unknown> }, options: StartOptions) => ({
+const runnerCredentialDeps = (
+    db: { sql: Sql; ready: Promise<unknown> },
+    options: StartOptions,
+    jira: JiraOAuthConfig | null
+) => ({
     attemptOfLease: createAttemptOfLease(db),
     pairMatches: createPairMatches(db),
+    operationReceipts: createOperationReceipts(db),
+    // The runner helper's connection list: Jira only, and only while the provider is configured.
+    connectionListing: {
+        connectionsOf: async (orgId: string, rootJobId: string) => {
+            await db.ready;
+            return liveOAuthConnectionsOf(db.sql, orgId, rootJobId);
+        },
+        apiBaseOf: (provider: string, resource: string) =>
+            provider === 'jira' && jira ? jiraApiBase(jira.apiOrigin, resource) : null,
+    },
     githubMint: options.githubMint,
     githubRevoke: options.githubRevoke,
 });
@@ -193,7 +210,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         orgOfJob: createOrgOfJob({ sql, ready }),
         orgOfReclaim: createOrgOfReclaim({ sql, ready }),
         connectionOfLease: createConnectionOfLease({ sql, ready }),
-        ...runnerCredentialDeps({ sql, ready }, options),
+        ...runnerCredentialDeps({ sql, ready }, options, config.integrations.jira),
         commercePlanWriter: createCommercePlanWriter({ sql, ready }),
         identity,
         appSlug: config.github.mode === 'app' ? createAppSlugProvider({ github: config.github }).slug : undefined,

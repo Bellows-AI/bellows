@@ -83,6 +83,9 @@ const CONNECTOR_ROUTES: readonly RegExp[] = [
     /^\/api\/jobs\/[^/]+\/connectors\//,
     /^\/api\/jobs\/[^/]+\/credentials\/github(\/revoke)?$/,
     /^\/api\/jobs\/[^/]+\/credentials\/connections\/[^/]+$/,
+    // The runner seam (BEL-61): the helper's connection list and its operation receipts.
+    /^\/api\/jobs\/[^/]+\/credentials\/connections$/,
+    /^\/api\/jobs\/[^/]+\/operations(\/[^/]+)?$/,
 ];
 
 export const JOB_ID_HEADER = 'x-factory-job-id';
