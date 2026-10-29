@@ -56,7 +56,7 @@ export const MAX_GATE_FIX_ROUNDS = 10;
 
 /**
  * The top-level config keys the board strips before a member's executor config reaches its runner
- * (issue 183): claude-code's git guard hook and baked plugin install, opencode's permission fence.
+ * (issue 183): claude-code's baked hooks and plugin install, opencode's permission fence.
  * One list for the claim that strips them and the dialog that warns about them (#261), so the
  * warning cannot promise a key the runner would honor or miss one it drops.
  */

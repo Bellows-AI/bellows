@@ -244,11 +244,11 @@ describe("Claude Code's PostToolUse stop hook", () => {
         expect(JSON.parse(runHook(marker))).toMatchObject({ continue: false });
     });
 
-    it('is registered as the only PostToolUse hook, beside the git guard', () => {
+    it('is registered as the only PostToolUse hook', () => {
         const settings = JSON.parse(read('docker/claude-executor/claude-home/settings.json')) as {
             hooks: Record<string, { hooks: { command: string }[] }[]>;
         };
-        expect(Object.keys(settings.hooks).sort()).toEqual(['PostToolUse', 'PreToolUse', 'Stop', 'UserPromptSubmit']);
+        expect(Object.keys(settings.hooks).sort()).toEqual(['PostToolUse', 'Stop', 'UserPromptSubmit']);
         expect(settings.hooks.PostToolUse!.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual([
             'node /usr/local/bin/stop-hook.cjs',
         ]);

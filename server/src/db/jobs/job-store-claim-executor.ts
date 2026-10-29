@@ -41,8 +41,8 @@ export function mergeExecutorConfigEnv(
     // RUNNER_MANAGED_KEYS is the runner's fence per type, stripped before the config travels.
     // opencode's `permission` is baked into the image and patched by its entrypoint — a pasted
     // `external_directory: allow` would open every member's tree to this run. claude-code's `hooks`,
-    // `enabledPlugins` and `extraKnownMarketplaces` are the git guard hook and the image's own
-    // plugin set (none): a pasted `hooks` would silently drop the guard; a pasted
+    // `enabledPlugins` and `extraKnownMarketplaces` are the baked hooks and the image's own
+    // plugin set (none): a pasted `hooks` would silently drop the stop and turn-context hooks; a pasted
     // plugin/marketplace pair would run code the image never installed. Everything else — model,
     // env, permissions.allow, provider — travels verbatim.
     const envName =

@@ -68,8 +68,8 @@ function assertSessionId(job: BoardJob, session: RunSession): void {
 }
 
 /**
- * The branch a batch task bases on, for the agent's side of the run: the claude git guard's merge
- * hint and the opencode entrypoint's merge allow name it instead of origin/HEAD.
+ * The branch a batch task bases on, for the agent's side of the run: what to merge or rebase onto
+ * instead of origin/HEAD.
  */
 const baseBranchEnv = (job: BoardJob): [string, string][] => {
     const base = baseBranchOf(job);

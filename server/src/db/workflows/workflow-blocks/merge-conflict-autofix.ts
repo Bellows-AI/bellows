@@ -13,12 +13,8 @@
  *   fresh session — not the whole task history — and reads the probe's
  *   `.factory/merge-conflict-probe.json` for `conflictingPaths`, since the generic helper
  *   transport surfaces only ok/fail to the loop, never a helper's own output. The agent resolves
- *   it using ONLY `git rebase --continue`/`--abort` — never an initiating `git rebase`,
- *   `git merge`, `git switch`/`checkout` of a branch, or `gh pr create`, all denied to the agent
- *   by the executor's git guard (docker/claude-executor/git-guard.cjs) for exactly this reason:
- *   a rebase INITIATION is the driver's own job, and `--continue`/`--abort` on one already in
- *   progress is "the repair path for a tree an interrupted sync left mid-rebase" — the guard's
- *   own words for precisely this block's scenario.
+ *   it with `git rebase --continue`/`--abort` on the rebase the probe left in progress: the
+ *   rebase INITIATION is the probe's, so the agent only finishes or abandons it.
  * - `verify` (`agent: false`, `publish: true`, gates default on) launches no agent at all: the
  *   driver's own claim machinery runs the declared gates and publishes through the existing
  *   publisher (`driver/src/publish/publish.ts`) once claimed — the block adds no publish logic of its
