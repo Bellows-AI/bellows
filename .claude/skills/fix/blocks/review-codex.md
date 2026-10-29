@@ -23,10 +23,12 @@ something to say.
    (HEAVY as `fix` defines it: the review queues for a host slot like any suite.)
 3. A non-zero exit or an empty `.out` is a failed round, not a clean one: read the `.log`, retry
    once, then STOP and report.
-4. Codex is a reviewer, not an authority. In every round
-   only a correctness or data-loss defect counts as a blocker, and only with a concrete input or
-   state that triggers it; everything else is a nitpick, taken if trivial and never a reason for
-   another round. A finding the code disproves is rejected with a one-line reason.
+4. Codex is a reviewer, not an authority. No major issue means the round passes. In every round
+   only a major defect counts as a blocker: a correctness or data-loss defect on the change's path,
+   with a concrete input or state that triggers it in normal use, that ships a wrong or incomplete
+   fix, or a break of an AGENTS.md rule. Everything else is a nitpick — rare edge cases, defensive
+   checks, hardening, test polish, style — taken if trivial, otherwise left or deferred, and never a
+   reason for another round. A finding the code disproves is rejected with a one-line reason.
 5. Round 2 is a check, not a new hunt: its brief lists every round-1 blocker with its class and
    `fixed: <how, every instance>`, `rejected: <why>` or `deferred: <ref>`, plus the sweep block
    (below) over every accepted class.
@@ -74,8 +76,8 @@ Read the docs/ file that AGENTS.md's "Read before you touch" table maps to the a
 - The RED test: would it fail on today's code for the issue's reason?
 - Ambiguity: anything in the issue the plan settled by guessing.
 
-Report only what the code confirms. A blocker is a plan that would ship a wrong or incomplete fix;
-style, naming and preferences are not blockers.
+Report only what the code confirms. A blocker is a major issue only: a plan that would ship a wrong
+or incomplete fix. Edge cases, hardening, style, naming and preferences are nitpicks.
 
 Output a numbered list. Each item: `blocker` or `nitpick`, the plan step or `file:line`, one or two
 sentences with the evidence; blockers add the change you suggest. Nothing found: reply exactly
@@ -106,9 +108,11 @@ Look for:
 - Tests: does the new test fail on the pre-fix code and pin the issue's behavior?
 - Repo rules: anything AGENTS.md or the area's docs/ file explicitly forbids or requires.
 
-A blocker is a correctness or data-loss defect you can trigger with a concrete input; give its
-class and report every instance in the code the diff adds or calls. Style, naming, refactors and
-hypotheticals with no concrete trigger are nitpicks at most. A defect in pre-existing code the diff
+A blocker is a major issue only: a correctness or data-loss defect you can trigger with a concrete
+input in normal use, or a break of an AGENTS.md rule; give its class and report every instance in
+the code the diff adds or calls. Rare edge cases, defensive checks, hardening, test polish, style,
+naming, refactors and hypotheticals with no concrete trigger are nitpicks at most. No major issue:
+reply "No blockers." even if you list nitpicks. A defect in pre-existing code the diff
 does not call goes under "Follow-up", never as a blocker.
 
 Output a numbered list. Each item: `blocker` or `nitpick`, its class, `file:line`, one or two
