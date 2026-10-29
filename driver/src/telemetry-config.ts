@@ -41,7 +41,10 @@ export function claudeManagedSettings(endpoint: string): string {
             SHELL: TOOL_SHELL,
         },
         // A headless run's permission prompt ends in a deny; these routine commands must not ask.
+        // Auto mode is pinned, never left to the CLI's default: a session that came up in default
+        // mode had every command outside this list denied (runner-plan.ts passes the flag too).
         permissions: {
+            defaultMode: 'auto',
             additionalDirectories: ['/task', '/tmp'],
             allow: [
                 'Bash(sed -i *)',

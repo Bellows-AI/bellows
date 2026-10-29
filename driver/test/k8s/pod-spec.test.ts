@@ -70,6 +70,8 @@ describe('the runner job spec', () => {
         expect(spec().spec.template.spec.containers[0]!.args).toEqual([
             '--session-id',
             SESSION,
+            '--permission-mode',
+            'auto',
             '--append-system-prompt',
             MASTER_PROMPT,
             '--system-prompt-snapshot',

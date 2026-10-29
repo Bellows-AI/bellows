@@ -77,7 +77,7 @@ describe('the claude-code runner plan', () => {
                 ...unwritten,
                 ['NPM_CONFIG_UPDATE_NOTIFIER', 'false'],
             ],
-            cliArgs: [flag, SESSION, ...SYSTEM_PROMPT, '-p', 'fix the failing build'],
+            cliArgs: [flag, SESSION, '--permission-mode', 'auto', ...SYSTEM_PROMPT, '-p', 'fix the failing build'],
         });
     });
 
@@ -114,6 +114,21 @@ describe('the claude-code runner plan', () => {
         expect(plan(job, session).cliArgs).not.toContain('--dangerously-skip-permissions');
         expect(plan(job, session, { RUNNER_SKIP_PERMISSIONS: '1' }).cliArgs).toContain(
             '--dangerously-skip-permissions'
+        );
+    });
+
+    // A session that came up in default mode denied every command outside the allowlist; a resume
+    // restores the mode it recorded unless the command line names one.
+    it('pins auto mode on fresh and resumed sessions unless permissions are skipped', () => {
+        for (const resume of [false, true]) {
+            const args = plan(job, { id: SESSION, resume }).cliArgs;
+            expect(args.slice(args.indexOf('--permission-mode'), args.indexOf('--permission-mode') + 2)).toEqual([
+                '--permission-mode',
+                'auto',
+            ]);
+        }
+        expect(plan(job, { id: SESSION, resume: false }, { RUNNER_SKIP_PERMISSIONS: '1' }).cliArgs).not.toContain(
+            '--permission-mode'
         );
     });
 

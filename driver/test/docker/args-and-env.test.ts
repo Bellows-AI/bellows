@@ -33,10 +33,12 @@ describe('the docker run arguments', () => {
             }
         };
         const claude = args();
-        expect(claude.slice(-9)).toEqual([
+        expect(claude.slice(-11)).toEqual([
             'claude-executor',
             '--session-id',
             SESSION,
+            '--permission-mode',
+            'auto',
             '--append-system-prompt',
             MASTER_PROMPT,
             '--system-prompt-snapshot',

@@ -21,6 +21,8 @@ describe('runner telemetry shipping', () => {
             ...baked,
             env: { ...baked.env, OTEL_EXPORTER_OTLP_ENDPOINT: 'http://otel.example:4318' },
         });
+        // Auto mode is pinned: a session left in default mode denies every unlisted command.
+        expect(JSON.parse(claudeManagedSettings('http://otel.example:4318')).permissions.defaultMode).toBe('auto');
     });
 
     it('renders the baked opencode otel.json with only the endpoint replaced', () => {
