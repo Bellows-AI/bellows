@@ -158,6 +158,12 @@ export interface AppConfig {
      * (ADMISSION_MAX_RUNNING_PER_REPO). An unset one is unlimited. See `db/jobs/job-store-admission.ts`.
      */
     readonly admission: { readonly global?: number; readonly org?: number; readonly repo?: number };
+    /**
+     * Outbound OAuth (BEL-138). `callbackOrigin` is the origin a provider redirects back to: `PUBLIC_URL`, else the
+     * loopback bind's own, else null. Null never fails the boot; starting an authorization then answers
+     * `not-configured`.
+     */
+    readonly integrations: { readonly callbackOrigin: string | null };
 }
 
 // A telemetry read is a local query with no quota to protect, so this floor exists only to stop a
@@ -354,13 +360,10 @@ function requireJobBoardToken(env: NodeJS.ProcessEnv): string {
  * elsewhere has to say what its origin is, because `http://0.0.0.0:8080` is not a URL any browser
  * will ever be redirected back to and a wrong one fails at GitHub with an opaque error.
  */
-function resolvePublicOrigin(env: NodeJS.ProcessEnv, host: string, port: number): URL {
-    const publicUrl = env.PUBLIC_URL?.trim() || (LOOPBACK_HOSTS.has(host) ? `http://${host}:${port}` : '');
-    if (!publicUrl) {
-        throw new Error(
-            `AUTH_MODE is "github" and HOST is "${host}", so PUBLIC_URL must be set: it is the origin GitHub redirects back to, and it cannot be derived from the request's Host header without letting the caller choose the redirect target.`
-        );
-    }
+function publicOriginOrNull(env: NodeJS.ProcessEnv, host: string, port: number): URL | null {
+    const urlHost = host.includes(':') ? `[${host}]` : host;
+    const publicUrl = env.PUBLIC_URL?.trim() || (LOOPBACK_HOSTS.has(host) ? `http://${urlHost}:${port}` : '');
+    if (!publicUrl) return null;
     let origin: URL;
     try {
         origin = new URL(publicUrl);
@@ -369,6 +372,16 @@ function resolvePublicOrigin(env: NodeJS.ProcessEnv, host: string, port: number)
     }
     if (origin.protocol !== 'http:' && origin.protocol !== 'https:') {
         throw new Error(`PUBLIC_URL must be http or https, got "${publicUrl}"`);
+    }
+    return origin;
+}
+
+function resolvePublicOrigin(env: NodeJS.ProcessEnv, host: string, port: number): URL {
+    const origin = publicOriginOrNull(env, host, port);
+    if (!origin) {
+        throw new Error(
+            `AUTH_MODE is "github" and HOST is "${host}", so PUBLIC_URL must be set: it is the origin GitHub redirects back to, and it cannot be derived from the request's Host header without letting the caller choose the redirect target.`
+        );
     }
     return origin;
 }
@@ -602,6 +615,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, injectedGitHub?
         webhookSecret,
         artifacts: loadArtifactsConfig(env),
         admission: loadAdmission(env),
+        integrations: { callbackOrigin: publicOriginOrNull(env, host, port)?.origin ?? null },
     });
 }
 

@@ -169,3 +169,27 @@ describe('loadConfig stays a pure function of its argument', () => {
         expect(() => load({})).not.toThrow();
     });
 });
+
+describe('integrations.callbackOrigin', () => {
+    it('is PUBLIC_URL reduced to its origin, in any auth mode', () => {
+        expect(load({ PUBLIC_URL: 'https://factory.example.com/some/path' }).integrations.callbackOrigin).toBe(
+            'https://factory.example.com'
+        );
+        expect(github({ PUBLIC_URL: 'https://factory.example.com' }).integrations.callbackOrigin).toBe(
+            'https://factory.example.com'
+        );
+    });
+
+    it('is the loopback origin on a loopback bind without PUBLIC_URL', () => {
+        expect(load({ HOST: '127.0.0.1', PORT: '8123' }).integrations.callbackOrigin).toBe('http://127.0.0.1:8123');
+    });
+
+    it('is null, without a throw, on a non-loopback none-mode host with no PUBLIC_URL', () => {
+        expect(load({ HOST: '0.0.0.0', AUTH_ALLOW_PUBLIC_BIND: '1' }).integrations.callbackOrigin).toBeNull();
+    });
+
+    it('still refuses a PUBLIC_URL that is not an http(s) URL', () => {
+        expect(() => load({ PUBLIC_URL: '/callback' })).toThrow(/absolute URL/);
+        expect(() => load({ PUBLIC_URL: 'ftp://example.com' })).toThrow(/http or https/);
+    });
+});

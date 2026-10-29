@@ -106,14 +106,19 @@ export function parseConnectionIds(raw: unknown): string[] | string {
     return raw as string[];
 }
 
+/** Destroys the SecretStore secret of a grant a disconnect just revoked; the integration runtime supplies it. */
+export type DestroyRevokedSecret = (orgId: string, grantId: string) => Promise<{ ok: boolean; reason?: string }>;
+
 export interface ConnectionRoutesDeps {
     orgs: OrgRegistry;
     lookupCloudId?: CloudIdLookup;
+    destroyRevokedSecret?: DestroyRevokedSecret | undefined;
 }
 
 export function connectionRoutes({
     orgs,
     lookupCloudId: lookup = lookupCloudId,
+    destroyRevokedSecret,
 }: ConnectionRoutesDeps): FastifyPluginAsync {
     /** The caller and their org's store, or the refusal already sent. */
     const resolve = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -201,7 +206,23 @@ export function connectionRoutes({
                 .code(HTTP_NOT_FOUND)
                 .send({ error: 'No such connection you may delete', code: ERROR_CODES.NOT_FOUND });
         }
+        const revoked = removed.value.revokedGrantId;
+        if (revoked && destroyRevokedSecret) await destroyAfterCommit(request, orgOf(request), revoked);
         return reply.code(HTTP_NO_CONTENT).send();
+    };
+
+    /**
+     * Best effort, after the disconnect committed: the answer is 204 whatever happens here, because the background
+     * recovery pass destroys any revoked grant's secret that this call did not. Logs a closed code, never an error.
+     */
+    const destroyAfterCommit = async (request: FastifyRequest, orgId: string, grantId: string): Promise<void> => {
+        try {
+            const result = await destroyRevokedSecret?.(orgId, grantId);
+            if (result && !result.ok)
+                request.log.warn({ grantId, code: result.reason }, 'grant secret destroy deferred');
+        } catch {
+            request.log.warn({ grantId, code: 'destroy-threw' }, 'grant secret destroy deferred');
+        }
     };
 
     return async (app) => {

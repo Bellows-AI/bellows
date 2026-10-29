@@ -10,7 +10,7 @@ import type { OrgRegistry } from './orgs.js';
 import type { ConnectionOfLease } from './db/connection-store.js';
 import type { GithubCredentialOfLease } from './db/github-credential.js';
 import { batchRoutes } from './routes/batches/batches.js';
-import { connectionRoutes, type CloudIdLookup } from './routes/connections.js';
+import { connectionRoutes, type CloudIdLookup, type DestroyRevokedSecret } from './routes/connections.js';
 import { connectorJiraRoutes } from './routes/connector-jira.js';
 import { githubCredentialRoutes, type GithubMint } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
@@ -112,6 +112,8 @@ export interface AppDeps {
     logger?: FastifyServerOptions['logger'];
     /** The secret-storage seam (docs/secrets.md). main.ts supplies the PostgreSQL backend; consumers read it. */
     secrets?: SecretStore | undefined;
+    /** Destroys the secret of a grant a disconnect revoked (BEL-138); main.ts supplies the integration runtime's. */
+    destroyRevokedSecret?: DestroyRevokedSecret | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -173,6 +175,7 @@ export async function buildApp({
     githubMint,
     fetchFn,
     cloudIdLookup,
+    destroyRevokedSecret,
     identity,
     appSlug,
     installationListing,
@@ -242,7 +245,9 @@ export async function buildApp({
     await app.register(batchRoutes({ orgs }));
     await app.register(envRoutes({ config, orgs }));
     // Managed connector connections (#546) and the runner-facing proxy that spends them.
-    await app.register(connectionRoutes({ orgs, ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}) }));
+    await app.register(
+        connectionRoutes({ orgs, destroyRevokedSecret, ...(cloudIdLookup ? { lookupCloudId: cloudIdLookup } : {}) })
+    );
     await registerRunnerCredentialRoutes(app, {
         orgs,
         connectionOfLease,

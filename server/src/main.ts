@@ -17,6 +17,11 @@ import { createOrgRegistry } from './orgs.js';
 import type { GithubMint } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
+import {
+    createIntegrationRuntime,
+    recoverIntegrations,
+    startIntegrationRecovery,
+} from './integrations/integration-recovery.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 
@@ -139,12 +144,24 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
         );
     }
 
+    // The outbound OAuth runtime (BEL-138). No provider is configured until a provider integration (BEL-61)
+    // registers its hooks, so today it serves only the recovery of rows and the destroy of a revoked grant's secret.
+    const integrations = createIntegrationRuntime({
+        sql,
+        secrets,
+        providers: () => undefined,
+        clients: () => undefined,
+        callbackOrigin: config.integrations.callbackOrigin,
+        log: (d) => console.log(`[integrations] ${JSON.stringify(d)}`),
+    });
+
     const app = await buildApp({
         config,
         orgs,
         ready,
         store,
         secrets,
+        destroyRevokedSecret: integrations.destroyRevokedSecret,
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one
@@ -183,6 +200,13 @@ export async function start(options: { github?: GitHubConfig; githubMint?: Githu
     // Unreferenced versions and finished operations are swept on every replica; each delete re-checks its own guard.
     void ready.then(() =>
         startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
+    );
+
+    // What a lost board pod left mid-exchange or mid-persistence is adopted on every replica; each row is re-checked.
+    void ready.then(() =>
+        startIntegrationRecovery((signal) =>
+            metrics.timedPass('integration_recover', () => recoverIntegrations(integrations, { signal }))
+        )
     );
 
     await app.listen({ port: config.port, host: config.host });

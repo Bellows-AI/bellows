@@ -28,6 +28,7 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
 | Grant lineage: one claim per grant, the exchange, identical-replay persistence, recovery by claim kind, destroy of a revoked secret | `server/migrations/095_grant_lineage.sql`, `server/src/integrations/grant-lineage.ts`, `server/src/integrations/grant-credentials.ts`, `server/src/integrations/oauth-provider.ts`, `server/src/db/connection-grants.ts` (`finalizeLineage`) | `server/test-db/integration-lineage.test.ts`, `server/test-db/connection-grants.test.ts`, `server/test-db/migration.095-grant-lineage.test.ts`, `server/test-db/connection-lock-order.test.ts` |
 | Credential resolver, trusted context and the binding ceiling | `server/src/integrations/credential-resolver.ts`, `server/src/integrations/trusted-context.ts` | `server/test-db/integration-resolver.test.ts` |
 | Authorization transaction (module API, no route yet): start, callback validation, claim-before-exchange reconnect, secret-first new grant, recovery | `server/migrations/096_integration_authorization.sql`, `server/src/integrations/authorization-flow.ts`, `authorization-complete.ts`, `authorization-store.ts`, `server/src/db/connection-grants.ts` (`attachInTx`) | `server/test-db/integration-authorization.test.ts`, `server/test-db/migration.096-integration-authorization.test.ts` |
+| Composition and recovery: one lineage and flow per org, a bounded pass on every replica (expired claims with an operation, revoked grants' secrets, stale authorizations), the destroy after a disconnect that revoked a grant | `server/src/integrations/integration-recovery.ts`, `server/src/main.ts`, `server/src/routes/connections.ts` | `server/test-db/integration-recovery.test.ts`, `server/test/routes.connections.test.ts` |
 
 ## Invariants
 
@@ -55,11 +56,15 @@ the runner's behalf, selected per task — and GitHub, whose token the board min
   `server/test-db/github-credential.test.ts`, `driver/test/github-credential.test.ts`.
 - **A reconnect claims the grant's lineage before it exchanges the code; a new grant's secret is created before
   its connection is visible.** The callback's return path is the one stored at start. `server/test-db/integration-authorization.test.ts`.
+- **An enumeration is a candidate list, never a verdict.** The pass acts only through each module's own guarded
+  statements; a store that does not answer leaves the row for the next tick. `server/test-db/integration-recovery.test.ts`.
 
 ## Stated limits
 
 - Legacy API tokens are plaintext at rest, the `env_var` rule ([env.md](env.md)); a disconnect scrubs one.
   OAuth grants hold their secret in the SecretStore only.
+- The destroy after a disconnect is best effort and the answer stays 204; the background pass is its retry. No provider
+  is registered yet, so the runtime recovers rows and destroys secrets but starts no authorization.
 - A wedged secret reference is permanent: an operation whose payload was lost blocks every later mutation on it, delete
   included. The grant moves to a fresh reference on reconnect and the old one stays encrypted at rest, uncollected.
 - Jira is scoped API-token auth: a classic token is stored untried and answers 401 on every call.

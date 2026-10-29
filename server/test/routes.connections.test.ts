@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
+import type { DestroyRevokedSecret } from '../src/routes/connections.js';
 import { ConnectionRefusedError } from '../src/db/connection-bindings.js';
 import type { ConnectionStore, ConnectionView, NewConnection } from '../src/db/connection-store.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
@@ -38,7 +39,9 @@ const SITE = { site: 'https://Example.atlassian.net/', email: 'agent@example.com
 const track = trackApps();
 
 /** A store double with the real scoping rule, holding tokens like the table does. */
-function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: string })[] } {
+function memoryConnections(
+    revokedGrantId: string | null = null
+): ConnectionStore & { rows: (NewConnection & { id: string })[] } {
     const rows: (NewConnection & { id: string })[] = [];
     const view = (row: NewConnection & { id: string }): ConnectionView => ({
         id: row.id,
@@ -74,17 +77,23 @@ function memoryConnections(): ConnectionStore & { rows: (NewConnection & { id: s
             );
             if (at === -1) return { disconnected: false, revokedGrantId: null };
             rows.splice(at, 1);
-            return { disconnected: true, revokedGrantId: null };
+            return { disconnected: true, revokedGrantId };
         },
     };
 }
 
-async function boot() {
+interface BootOptions {
+    /** The grant the double's disconnect reports as revoked (an OAuth connection that was the grant's last). */
+    revokedGrantId?: string;
+    destroyRevokedSecret?: DestroyRevokedSecret;
+}
+
+async function boot(options: BootOptions = {}) {
     const auth = memoryAuthStore();
     const admin = auth.seedMember('test-org', 'admin-cat', 'admin');
     const member = auth.seedMember('test-org', 'octocat');
     const other = auth.seedMember('test-org', 'hubot');
-    const connections = memoryConnections();
+    const connections = memoryConnections(options.revokedGrantId ?? null);
     const created: { connections: string[] | undefined }[] = [];
     const jobs = jobStoreSlice<JobActionStore>({
         // The store resolves and authorizes; the double refuses what no row of this fake grants `by`.
@@ -111,6 +120,7 @@ async function boot() {
         }),
         auth,
         cloudIdLookup: async (host) => (host === 'example.atlassian.net' ? CLOUD_ID : null),
+        ...(options.destroyRevokedSecret ? { destroyRevokedSecret: options.destroyRevokedSecret } : {}),
     });
     track(app);
     return {
@@ -261,6 +271,71 @@ describe('connection routes', () => {
         });
         expect(mine.statusCode).toBe(HTTP_NO_CONTENT);
         expect(mine.body).toBe('');
+    });
+
+    describe('a disconnect that revoked a grant destroys its secret after the commit', () => {
+        const GRANT = '3c1b6f0e-6d0f-4d77-9b0a-6c8d0f5f7a11';
+        const del = async (options: BootOptions) => {
+            const { instance, cookie } = await boot(options);
+            const created = await instance.inject({
+                method: 'POST',
+                url: '/api/connections',
+                headers: { cookie: cookie.member },
+                payload: SITE,
+            });
+            const { id } = created.json() as { id: string };
+            return instance.inject({
+                method: 'DELETE',
+                url: `/api/connections/${id}`,
+                headers: { cookie: cookie.member },
+            });
+        };
+
+        it('calls destroyRevokedSecret once with the org and the revoked grant', async () => {
+            const calls: [string, string][] = [];
+            const res = await del({
+                revokedGrantId: GRANT,
+                destroyRevokedSecret: async (orgId, grantId) => {
+                    calls.push([orgId, grantId]);
+                    return { ok: true };
+                },
+            });
+            expect(res.statusCode).toBe(HTTP_NO_CONTENT);
+            expect(calls).toEqual([['test-org', GRANT]]);
+        });
+
+        it('does not call it for a legacy connection, which revoked no grant', async () => {
+            const calls: string[] = [];
+            const res = await del({
+                destroyRevokedSecret: async (_orgId, grantId) => {
+                    calls.push(grantId);
+                    return { ok: true };
+                },
+            });
+            expect(res.statusCode).toBe(HTTP_NO_CONTENT);
+            expect(calls).toEqual([]);
+        });
+
+        it('still answers 204 when the destroy throws or reports a refusal', async () => {
+            expect(
+                (
+                    await del({
+                        revokedGrantId: GRANT,
+                        destroyRevokedSecret: async () => {
+                            throw new Error('boom');
+                        },
+                    })
+                ).statusCode
+            ).toBe(HTTP_NO_CONTENT);
+            expect(
+                (
+                    await del({
+                        revokedGrantId: GRANT,
+                        destroyRevokedSecret: async () => ({ ok: false, reason: 'pending' }),
+                    })
+                ).statusCode
+            ).toBe(HTTP_NO_CONTENT);
+        });
     });
 
     it('list carries ownership and credential and no token', async () => {
