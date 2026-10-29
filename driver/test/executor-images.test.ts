@@ -1106,6 +1106,8 @@ describe('the claude-executor managed settings', () => {
     it('allow the routine commands a headless run cannot be asked about', () => {
         const settings = JSON.parse(read('docker/claude-executor/managed-settings.json'));
         expect(settings.permissions).toEqual({
+            // Pinned: a session left to the CLI's default mode denies every command outside this allowlist.
+            defaultMode: 'auto',
             additionalDirectories: ['/task', '/tmp'],
             allow: [
                 'Bash(sed -i *)',
