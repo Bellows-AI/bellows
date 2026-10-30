@@ -15,7 +15,7 @@ const ORG = testOrg();
 const ORG_OTHER = testOrg();
 /** Sorted, so ROOT reads first wherever a query orders by root_job_id. */
 const [ROOT, ROOT_TWO] = [randomUUID(), randomUUID()].sort() as [string, string];
-const REPO = 'Bellows-AI/factory';
+const REPO = 'Bellows-AI/bellows';
 const PR = 42;
 
 const db = useTestDb({ orgs: [ORG, ORG_OTHER] });

@@ -88,7 +88,7 @@ const mounts = (argv: string[]): string[] => argv.filter((_arg, i) => argv[i - 1
 /** The same attempt, whose checkout declares a gate: its group holds a gate container. */
 const gated: BoardJob = {
     ...job,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 };
 /** The same attempt, whose claim lists a reviewer profile (issue #774): its group holds a reviewer container. */

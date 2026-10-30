@@ -1163,7 +1163,7 @@ describe('POST /api/jobs/claim', () => {
     it('passes the repo label and the gate declaration through verbatim', async () => {
         const withGates: Claim = {
             ...claim,
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         };
         const instance = await harnessWith(stubStore({ claim: withGates }));
@@ -1171,7 +1171,7 @@ describe('POST /api/jobs/claim', () => {
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(withGates);
 
-        const withError: Claim = { ...claim, repo: 'Bellows-AI/factory', planRefusal: '.bellows.yaml line 2: nope' };
+        const withError: Claim = { ...claim, repo: 'Bellows-AI/bellows', planRefusal: '.bellows.yaml line 2: nope' };
         const instance2 = await harnessWith(stubStore({ claim: withError }));
         const response2 = await post(instance2, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response2.json()).toEqual(withError);

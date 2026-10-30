@@ -220,9 +220,9 @@ const CELLS: Record<Row, Partial<Record<Column, ReactNode>>> = {
     'Destructive button': button('danger', 'Remove task', 'Removing…'),
     'Text field': {
         Default: <Field name="Repository" />,
-        Selected: <Field name="Repository, filled" value="bellows-ai/factory" />,
+        Selected: <Field name="Repository, filled" value="bellows-ai/bellows" />,
         Invalid: <Field name="Repository, invalid" value="factory" invalid />,
-        Disabled: <Field name="Repository, disabled" value="bellows-ai/factory" disabled />,
+        Disabled: <Field name="Repository, disabled" value="bellows-ai/bellows" disabled />,
         'Long content': <Field name="Repository, long" value={LONG_LABEL} />,
     },
     Textarea: {

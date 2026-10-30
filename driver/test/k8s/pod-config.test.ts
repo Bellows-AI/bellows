@@ -23,8 +23,8 @@ import {
 describe('the block-helper transport (issue #207)', () => {
     const NOOP_DESCRIPTOR = lookupHelper('noop')!;
     const NOOP_VERDICT = JSON.stringify({ schema: 'helper-noop/v1', version: 1, ok: true, output: { echoed: true } });
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory', env: { GITHUB_TOKEN: 'claim-token' } };
-    const WT = `${TASK_MOUNT}/factory`;
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows', env: { GITHUB_TOKEN: 'claim-token' } };
+    const WT = `${TASK_MOUNT}/bellows`;
     const plan = (over: Partial<HelperPlan> = {}): HelperPlan => ({
         helperId: 'noop',
         phase: 'pre',

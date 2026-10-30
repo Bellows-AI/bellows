@@ -71,7 +71,7 @@ const baseJob = job;
 describe('auxiliary services (RUNNER_SERVICES)', () => {
     const STUB: ServiceSpec = { name: 'stub', image: 'stub-svc:1', environment: [] };
     // A repo, as every claim that carries services has: the loop's sync creates the group first.
-    const job: BoardJob = { ...baseJob, repo: 'Bellows-AI/factory', services: [STUB] };
+    const job: BoardJob = { ...baseJob, repo: 'Bellows-AI/bellows', services: [STUB] };
     // The declared fleet is process-wide and the suite runs isolate: false — a failed test must not leak it.
     afterEach(() => forgetDeclaredServices(job));
     /** A restart's stand-down signal that never fires. */

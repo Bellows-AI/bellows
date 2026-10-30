@@ -457,7 +457,7 @@ describe('verification gates', () => {
         // checks are still shown as running.
         expect(board.board.gatesReported.length).toBeGreaterThan(0);
         // The environment goes back to its cooldown either way — filed under the task's worktree.
-        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/bellows`]);
         expect(stack.stack.unregistered).toBe(1);
     });
 
@@ -616,7 +616,7 @@ describe('verification gates', () => {
         // of leaking, one live container per failed claim until the driver restarts.
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
         expect(board.board.completed[0]?.output).toContain('could not be started');
-        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/bellows`]);
     });
 
     // The worktree (issue #35) is the checkout the gates share with the coding agent: the
@@ -632,11 +632,11 @@ describe('verification gates', () => {
 
         // One acquire in beginGates plus one per declared gate (2 in the fixture).
         expect(stack.stack.acquired).toEqual([
-            `${gatedJob(1).id}/factory`,
-            `${gatedJob(1).id}/factory`,
-            `${gatedJob(1).id}/factory`,
+            `${gatedJob(1).id}/bellows`,
+            `${gatedJob(1).id}/bellows`,
+            `${gatedJob(1).id}/bellows`,
         ]);
-        expect(stack.stack.ran.key).toBe(`${gatedJob(1).id}/factory`);
+        expect(stack.stack.ran.key).toBe(`${gatedJob(1).id}/bellows`);
     });
 
     it('registers the ad-hoc token and releases it, and never leaves it registered', async () => {
@@ -685,7 +685,7 @@ describe('verification gates', () => {
             ran.push(name);
             return { exitCode: 0, output: `${name} ok` };
         };
-        const key = `${gatedJob(1).id}/factory`;
+        const key = `${gatedJob(1).id}/bellows`;
         // The environment was forgotten while the agent kept working.
         const runner = stubRunner(async () => {
             up = false;

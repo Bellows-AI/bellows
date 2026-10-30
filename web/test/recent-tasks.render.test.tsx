@@ -30,7 +30,7 @@ const job = (over: Partial<Job> = {}): Job => ({
     failureKind: null,
     gates: null,
     runtime: null,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     executor: null,
     workflowNode: null,
     workflowName: null,
