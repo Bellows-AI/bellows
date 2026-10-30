@@ -14,7 +14,7 @@ import { StepChannelClosed, StepTimedOut } from '../src/step-control.js';
 const USER = '44444444-4444-4444-8444-444444444444';
 const JOB = {
     id: '11111111-1111-4111-8111-111111111111',
-    command: '/fix https://github.com/Bellows-AI/factory/issues/10',
+    command: '/fix https://github.com/Bellows-AI/bellows/issues/10',
     attempts: 1,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
@@ -24,10 +24,10 @@ const JOB = {
     followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     env: { GITHUB_TOKEN: 't0k-3n' },
 } as unknown as BoardJob;
-const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
+const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
 const COMMIT = 'a'.repeat(40);
 
 type Effect = 'git push' | 'gh pr create' | 'git ls-remote';
@@ -215,7 +215,7 @@ describe('publication reconciliation after an uncertain response', () => {
         const w = world();
         const failing = async (step: PublishStep) => {
             if (step.label === 'git push')
-                throw new Error('git push: remote: Permission to Bellows-AI/factory.git denied');
+                throw new Error('git push: remote: Permission to Bellows-AI/bellows.git denied');
             return w.run(step);
         };
         const result = await publishCheckout(JOB, undefined, failing);
@@ -256,7 +256,7 @@ describe('the PR operation record (issue #983)', () => {
         };
         return { notes, run: () => publishCheckout(JOB, options, w.run) };
     };
-    const NOTE = { repo: 'Bellows-AI/factory', prNumber: 42, prUrl: PR_URL, branch: 'fix/10' };
+    const NOTE = { repo: 'Bellows-AI/bellows', prNumber: 42, prUrl: PR_URL, branch: 'fix/10' };
 
     it('a new PR is `created`, and the reply names the operation', async () => {
         const w = world();
@@ -310,7 +310,7 @@ describe('the PR operation record (issue #983)', () => {
 
     it('a PR whose number cannot be read is not recorded, and the publish still lands', async () => {
         const w = world();
-        w.state.prs.push('https://github.com/Bellows-AI/factory/pulls');
+        w.state.prs.push('https://github.com/Bellows-AI/bellows/pulls');
         const { notes, run } = recording(w);
         expect(await run()).toMatchObject({ ok: true, published: true });
         expect(notes).toEqual([]);

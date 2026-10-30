@@ -457,35 +457,35 @@ expect_contains 'the gate listener binds all interfaces' "$(cat "$work/rendered.
 
 # Numbers arrive as integers, not whatever helm's float stringifier felt like — a `1.8e+06` here
 # would be refused by the driver's own integer check at boot.
-render | grep -q 'value: "7200000"' && ok 'the job timeout renders as an integer' ||
+render | grep 'value: "7200000"' >/dev/null && ok 'the job timeout renders as an integer' ||
     bad 'the job timeout renders as an integer' "$(render | grep -A1 DRIVER_JOB_TIMEOUT_MS)"
-render | grep -A1 'name: GATE_TIMEOUT_MS' | grep -q 'value: "1800000"' && ok 'the gate timeout renders as an integer' ||
+render | grep -A1 'name: GATE_TIMEOUT_MS' | grep 'value: "1800000"' >/dev/null && ok 'the gate timeout renders as an integer' ||
     bad 'the gate timeout renders as an integer' "$(render | grep -A1 GATE_TIMEOUT_MS)"
 
 # The shared admission budgets (issue #831) reach the dashboard: empty is unlimited, a set one is an integer.
-render | grep -A1 'name: ADMISSION_MAX_RUNNING$' | grep -q 'value: ""' && ok 'the admission budget defaults to unlimited' ||
+render | grep -A1 'name: ADMISSION_MAX_RUNNING$' | grep 'value: ""' >/dev/null && ok 'the admission budget defaults to unlimited' ||
     bad 'the admission budget defaults to unlimited' "$(render | grep -A1 ADMISSION_MAX_RUNNING)"
 render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 'name: ADMISSION_MAX_RUNNING_PER_REPO' |
-    grep -q 'value: "3"' && ok 'a per-repo admission budget renders' ||
+    grep 'value: "3"' >/dev/null && ok 'a per-repo admission budget renders' ||
     bad 'a per-repo admission budget renders' "$(render --set-string dashboard.admission.maxRunningPerRepo=3 | grep -A1 ADMISSION_MAX)"
 # The commerce service is off by default; its token is a secretKeyRef, never a plain env value.
-render | grep -A1 'name: COMMERCE_ENABLED$' | grep -q 'value: "false"' && ok 'commerce defaults to off' ||
+render | grep -A1 'name: COMMERCE_ENABLED$' | grep 'value: "false"' >/dev/null && ok 'commerce defaults to off' ||
     bad 'commerce defaults to off' "$(render | grep -A1 COMMERCE_ENABLED)"
 render --set dashboard.commerce.enabled=true --set-string dashboard.commerce.url=https://commerce.example/ |
-    grep -A1 'name: COMMERCE_URL$' | grep -q 'value: "https://commerce.example/"' && ok 'the commerce URL renders' ||
+    grep -A1 'name: COMMERCE_URL$' | grep 'value: "https://commerce.example/"' >/dev/null && ok 'the commerce URL renders' ||
     bad 'the commerce URL renders' "$(render --set-string dashboard.commerce.url=https://commerce.example/ | grep -A1 COMMERCE_URL)"
-render | grep -A4 'name: COMMERCE_TOKEN$' | grep -q 'key: commerce-token' && ok 'the commerce token is read from the Secret' ||
+render | grep -A4 'name: COMMERCE_TOKEN$' | grep 'key: commerce-token' >/dev/null && ok 'the commerce token is read from the Secret' ||
     bad 'the commerce token is read from the Secret' "$(render | grep -A4 COMMERCE_TOKEN)"
-render --set-string secret.commerceToken=commerce-token-value | grep -q 'commerce-token: "commerce-token-value"' &&
+render --set-string secret.commerceToken=commerce-token-value | grep 'commerce-token: "commerce-token-value"' >/dev/null &&
     ok 'the secret renders the commerce token key' || bad 'the secret renders the commerce token key' 'no commerce-token key'
 
 # Jira Cloud OAuth (docs/configuration.md): the client id is a plain value, the secret a secretKeyRef; unset, both are
 # empty and the board reads Jira as unconfigured.
 render --set-string integrations.jira.clientId=atl-client | grep -A1 'name: ATLASSIAN_CLIENT_ID$' |
-    grep -q 'value: "atl-client"' && ok 'the Atlassian client id renders' ||
+    grep 'value: "atl-client"' >/dev/null && ok 'the Atlassian client id renders' ||
     bad 'the Atlassian client id renders' "$(render --set-string integrations.jira.clientId=atl-client | grep -A1 ATLASSIAN_CLIENT_ID)"
-render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep -q 'key: atlassian-client-secret' &&
-    render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep -q 'optional: true' &&
+render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep 'key: atlassian-client-secret' >/dev/null &&
+    render | grep -A5 'name: ATLASSIAN_CLIENT_SECRET$' | grep 'optional: true' >/dev/null &&
     ok 'the Atlassian client secret is an optional Secret reference' ||
     bad 'the Atlassian client secret is an optional Secret reference' "$(render | grep -A5 ATLASSIAN_CLIENT_SECRET)"
 atl_render="$(render --set-string secret.atlassianClientSecret=atl-secret-value 2>&1)"
@@ -493,8 +493,8 @@ atl_status=$?
 [ "$atl_status" -eq 0 ] && grep -q 'atlassian-client-secret: "atl-secret-value"' <<<"$atl_render" &&
     ok 'the generated Secret renders the Atlassian client secret key' ||
     bad 'the generated Secret renders the Atlassian client secret key' \
-        "helm exit $atl_status; $(grep -n 'atlassian-client-secret\|Error' <<<"$atl_render" | head -3)"
-render | grep -q 'atlassian-client-secret: ""' &&
+        "helm exit $atl_status; $(grep -n 'atlassian-client-secret\|Error' <<<"$atl_render" | sed -n '1,3p')"
+render | grep 'atlassian-client-secret: ""' >/dev/null &&
     ok 'the generated Secret renders the Atlassian key empty by default' ||
     bad 'the generated Secret renders the Atlassian key empty by default' 'no atlassian-client-secret key'
 
@@ -1828,7 +1828,7 @@ give_up() {
     echo '--- port-forward'
     tail -5 "$PF_LOG" 2>/dev/null
     echo '--- pods'
-    bounded 30 kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=20s 2>&1 | head -20
+    bounded 30 kubectl get pods -l "app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=20s 2>&1 | sed -n '1,20p'
     printf '\n%d passed, %d failed\n' "$pass" "$fail"
     exit 1
 }
@@ -1836,7 +1836,7 @@ give_up() {
 first_runner_job() { # first_runner_job <id> -> the name of the runner Job claim 1 created
     kubectl get jobs -l "factory.job=$1,app.kubernetes.io/instance=$RELEASE" -n "$NAMESPACE" --request-timeout=10s \
         -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.annotations.factory\.claim-seq}{"\n"}{end}' \
-        2>/dev/null | awk '$2 == "1" { print $1; exit }'
+        2>/dev/null | awk '$2 == "1" && !found { print $1; found = 1 }'
 }
 
 await_runner_pod() { # await_runner_pod <id> -> the claim-1 runner pod's name once it runs, empty on timeout
@@ -2356,12 +2356,12 @@ kill_driver_pods() {
         rows="$(bounded 30 kubectl get "$1" -n "$NAMESPACE" --request-timeout=10s \
             -o jsonpath='{.metadata.name} {.spec.nodeName}{"\n"}' 2>/dev/null)" || read=1
         # A named pod must answer with its own name and node: a failed, empty or malformed read confirms nothing.
-        [ "$read" = 0 ] && ! printf '%s\n' "$rows" | grep -qE '^[^ ]+ [^ ]+$' && read=1
+        [ "$read" = 0 ] && ! printf '%s\n' "$rows" | grep -E '^[^ ]+ [^ ]+$' >/dev/null && read=1
         bounded 60 kubectl delete "$1" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1 || deleted=1
     else
         rows="$(bounded 30 kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s \
             -o jsonpath='{range .items[*]}{.metadata.name} {.spec.nodeName}{"\n"}{end}' 2>/dev/null)" || read=1
-        [ "$read" = 0 ] && [ -n "$rows" ] && ! printf '%s\n' "$rows" | grep -qE '^[^ ]+ [^ ]+$' && read=1
+        [ "$read" = 0 ] && [ -n "$rows" ] && ! printf '%s\n' "$rows" | grep -E '^[^ ]+ [^ ]+$' >/dev/null && read=1
         bounded 60 kubectl delete pod -l "$DRIVER_SEL" -n "$NAMESPACE" --grace-period=0 --force --request-timeout=30s >/dev/null 2>&1 || deleted=1
     fi
     # Returns non-zero when the identity read failed, the delete failed or the node never confirmed the containers
@@ -3018,7 +3018,7 @@ else
     final_job="$(first_runner_job "$final")"
     final_driver=''
     for driver_pod in $(kubectl get pod -l "$DRIVER_SEL" -n "$NAMESPACE" -o name); do
-        kubectl logs "$driver_pod" -n "$NAMESPACE" --tail=-1 2>/dev/null | grep -q "job $final" && final_driver="$driver_pod"
+        kubectl logs "$driver_pod" -n "$NAMESPACE" --tail=-1 2>/dev/null | grep "job $final" >/dev/null && final_driver="$driver_pod"
     done
     [ -n "$final_driver" ] && ok 'the driver holding the finalizing job is found' || {
         bad 'the driver holding the finalizing job is found' 'no driver pod logged the job'
@@ -3085,7 +3085,7 @@ LANE_REACH="$(
     cat <<'SH'
 #!/bin/sh
 for name in postgres s3; do
-    awk '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) print $i }' /etc/hosts | grep -qx "$name" || {
+    awk '$1 == "127.0.0.1" { for (i = 2; i <= NF; i++) print $i }' /etc/hosts | grep -x "$name" >/dev/null || {
         echo "$name is not on 127.0.0.1"
         exit 1
     }
@@ -3860,7 +3860,7 @@ driver_node() { # driver_node -> the node of the running driver pod; non-zero wh
     at="$(kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s --field-selector=status.phase=Running \
         -o jsonpath='{range .items[*]}{.spec.nodeName}{"\t"}{.metadata.deletionTimestamp}{"\n"}{end}')" || return 1
     # A terminating pod is still Running: only one that is not being deleted is the driver.
-    at="$(printf '%s\n' "$at" | awk -F'\t' '$2 == "" && $1 != "" { print $1; exit }')"
+    at="$(printf '%s\n' "$at" | awk -F'\t' '$2 == "" && $1 != "" && !found { print $1; found = 1 }')"
     [ -n "$at" ] || return 1
     printf '%s' "$at"
 }
@@ -4710,7 +4710,7 @@ cap_run() {
     h3_owner="$(cap_owner_of "$h3")"
     l1_owner="$(cap_owner_of "$l1")"
     if [ -n "$owners_known" ] && [ -n "$h1_owner" ] && kubectl get pods -l "$DRIVER_SEL" -n "$NAMESPACE" --request-timeout=10s -o name 2>/dev/null |
-        grep -qx "pod/$h1_owner"; then
+        grep -x "pod/$h1_owner" >/dev/null; then
         victim="$h1_owner"
         kill_driver_pods "pod/$victim" || bad 'capacity: the lost driver is confirmed stopped' "pod/$victim was not confirmed deleted and stopped"
         kill_at=$(date +%s)
@@ -4852,7 +4852,7 @@ BENCH_STEADY_S=30
 
 # The chart's own production values for the driver's pace, read from its defaults and never typed here.
 bench_default() { # bench_default <driver key> -> its default, digits only; empty when the chart does not say
-    helm show values charts/factory 2>/dev/null | sed -n "s/^    $1: '\{0,1\}\([0-9][0-9]*\)'\{0,1\}\$/\1/p" | head -1
+    helm show values charts/factory 2>/dev/null | sed -n "s/^    $1: '\{0,1\}\([0-9][0-9]*\)'\{0,1\}\$/\1/p" | sed -n 1p
 }
 
 bench_psql() { # bench_psql <sql> -> the answer, unaligned; non-zero when the read failed

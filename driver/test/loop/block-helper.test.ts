@@ -109,7 +109,7 @@ describe('block-helper steps (issue #207)', () => {
 
     it('runs a declared post-helper after the agent, and fails the verdict — skipping publish — when it fails', async () => {
         const board = stubBoard([
-            { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [helperPlan({ phase: 'post' })] },
+            { ...job(1), repo: 'Bellows-AI/bellows', helperPlans: [helperPlan({ phase: 'post' })] },
         ]);
         const { runner, calls } = runnerWithHelper(
             async () => ok(),
@@ -381,7 +381,7 @@ describe('block-helper steps (issue #207)', () => {
 
         it('a post-helper reporting "conclude" fails the verdict with invalid_control and skips publish', async () => {
             const board = stubBoard([
-                { ...job(1), repo: 'Bellows-AI/factory', helperPlans: [helperPlan({ phase: 'post' })] },
+                { ...job(1), repo: 'Bellows-AI/bellows', helperPlans: [helperPlan({ phase: 'post' })] },
             ]);
             const { runner } = runnerWithHelper(async () => ok(), [{ ok: true, output: null, control: 'conclude' }]);
             runner.publishGit = async (publishedJob) => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Job, RuntimeVitals } from '../src/api/useJobs.js';
 import { job, question, renderDetail } from './tasks-fixtures.js';
 
@@ -410,5 +410,70 @@ describe('follow-up composer', () => {
     it('a closed task renders no composer', () => {
         const html = renderDetail({ jobs: [job({ doneAt: '2026-09-01T13:00:00.000Z' })] });
         expect(html).not.toContain('Ask for a follow-up');
+    });
+});
+
+describe('TaskRun close-phase strip', () => {
+    const STARTED = '2026-09-01T12:00:00.000Z';
+    const gate = (name: string, status: 'pending' | 'running' | 'passed' | 'failed', startedAt?: string) => ({
+        name,
+        status,
+        exitCode: null,
+        output: null,
+        ...(startedAt === undefined ? {} : { startedAt }),
+    });
+    const closing = (startedAt: string | null = STARTED) => [
+        gate('build', 'passed'),
+        gate('test', 'passed'),
+        gate('typecheck', 'passed'),
+        gate('lint', 'running', startedAt ?? undefined),
+        gate('prettier', 'pending'),
+    ];
+    const liveJob = (gates: ReturnType<typeof closing> | null, over: Partial<Job> = {}) =>
+        job({ status: 'running', output: 'agent log', gates, ...over });
+    const strip = (html: string): string => {
+        const start = html.indexOf('run-close-phase');
+        return html.slice(start, html.indexOf('</section>', start));
+    };
+    const at = (iso: string) => vi.useFakeTimers({ now: new Date(iso), toFake: ['Date'] });
+
+    afterEach(() => vi.useRealTimers());
+
+    it('a running run with gates shows the close-phase strip after its raw output', () => {
+        at('2026-09-01T12:02:14.000Z');
+        const html = renderDetail({ jobs: [liveJob(closing())] });
+        expect(html.indexOf('run-close-phase')).toBeGreaterThan(html.indexOf('View raw output'));
+        const text = strip(html);
+        expect(text).toContain('Agent finished — running checks');
+        expect(text).toContain('3/5 gates passed');
+        expect(text).toContain('lint');
+        expect(text).toContain('>pending<');
+    });
+
+    it('the running gate shows elapsed seconds from startedAt', () => {
+        at('2026-09-01T12:02:14.000Z');
+        expect(strip(renderDetail({ jobs: [liveJob(closing())] }))).toContain('2m 14s');
+        for (const startedAt of ['garbage', null]) {
+            expect(strip(renderDetail({ jobs: [liveJob(closing(startedAt))] }))).not.toMatch(/\d+s</);
+        }
+    });
+
+    it('a running run with no gates, and a finished run with gates, show no strip', () => {
+        expect(renderDetail({ jobs: [liveJob(null)] })).not.toContain('run-close-phase');
+        expect(renderDetail({ jobs: [liveJob([])] })).not.toContain('run-close-phase');
+        expect(renderDetail({ jobs: [job({ gates: closing() })] })).not.toContain('run-close-phase');
+    });
+
+    it('the Verification panel of a finished run reads "not run" for a pending gate, "pending" while running', () => {
+        const finished = renderDetail({ jobs: [job({ status: 'failed', gates: closing() })] });
+        const panel = finished.slice(finished.indexOf('id="task-verification"'));
+        expect(panel).toContain('1 not run');
+        expect(panel).toContain('>not run<');
+        expect(panel).not.toContain('>pending<');
+
+        const live = renderDetail({ jobs: [liveJob(closing())] });
+        const livePanel = live.slice(live.indexOf('id="task-verification"'));
+        expect(livePanel).toContain('1 pending');
+        expect(livePanel).not.toContain('not run');
     });
 });

@@ -168,6 +168,23 @@ describe('resuming an adopted run from its phase checkpoints', () => {
         expect(r.logs).toContain(`job ${r.claimed.id}: resumed gates from claim 1's checkpoint`);
     });
 
+    it('a6: a checkpoint holding a failed gate followed by pending gates still resumes', async () => {
+        const failure = { name: 'test', exitCode: 1, output: 'FAIL src/a.test.ts' };
+        const reports = [
+            { name: 'test', status: 'failed', exitCode: 1, output: 'FAIL src/a.test.ts' },
+            { name: 'lint', status: 'pending', exitCode: null, output: null },
+        ];
+        const r = await run({
+            adopted,
+            checkpoints: [gatesCp({ result: { ...gatesResult, failure, reports } })],
+        });
+
+        expect(gatesRan(r)).toBe(false);
+        expect(r.board.gatesReported.map((g) => g.results)).toEqual([reports]);
+        expect(r.board.completed[0]).toMatchObject({ status: 'failed', failureKind: 'gate' });
+        expect(r.logs).toContain(`job ${r.claimed.id}: resumed gates from claim 1's checkpoint`);
+    });
+
     it('a2: a resumed pass clears the setup failure the live pass would have cleared', async () => {
         const setupFailure = { exitCode: 1, output: 'npm ci failed' };
         const r = await run({ adopted, setupFailure, checkpoints: [gatesCp()] });

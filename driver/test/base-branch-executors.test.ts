@@ -41,7 +41,7 @@ const base: BoardJob = {
     continuesInterrupted: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     env: {},
 };
 const onSandbox: BoardJob = { ...base, baseBranch: 'batch-sandbox' };

@@ -35,13 +35,13 @@ import {
     dockerRunner,
 } from '../fixtures/docker-suite.js';
 
-const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
+const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
 
 describe('publishing the produced work', () => {
     const ISSUE_JOB: BoardJob = {
         ...job,
-        command: '/fix https://github.com/Bellows-AI/factory/issues/10',
-        repo: 'Bellows-AI/factory',
+        command: '/fix https://github.com/Bellows-AI/bellows/issues/10',
+        repo: 'Bellows-AI/bellows',
         env: { GITHUB_TOKEN: 't0k-3n' },
     };
     const NOW = new Date('2026-09-09T12:00:00Z');
@@ -49,7 +49,7 @@ describe('publishing the produced work', () => {
     it('plans the branch, title and issue from the command', () => {
         expect(publishPlan(ISSUE_JOB, NOW)).toEqual({
             branch: 'fix/10',
-            title: '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
+            title: '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)',
             issueNumber: 10,
         });
         // No issue named: a dated task branch, no closed issue.
@@ -114,10 +114,10 @@ describe('publishing the produced work', () => {
     });
 
     it('builds the checkout directory and clone URL from the repo label, asserting it', () => {
-        expect(checkoutDir(ISSUE_JOB)).toBe(`${TASK_MOUNT}/factory`);
-        expect(remoteUrl(loadDriverConfig({}), ISSUE_JOB)).toBe('https://github.com/Bellows-AI/factory.git');
+        expect(checkoutDir(ISSUE_JOB)).toBe(`${TASK_MOUNT}/bellows`);
+        expect(remoteUrl(loadDriverConfig({}), ISSUE_JOB)).toBe('https://github.com/Bellows-AI/bellows.git');
         expect(remoteUrl(loadDriverConfig({ REPO_CLONE_BASE: 'file:///origins' }), ISSUE_JOB)).toBe(
-            'file:///origins/Bellows-AI/factory.git'
+            'file:///origins/Bellows-AI/bellows.git'
         );
         // A dot-segment is the traversal; a dot-prefixed name is the task volume's own (`.factory`, `.<name>.sync`).
         for (const repo of ['just-a-name', 'o/..', 'o/.', 'o/.factory', 'o/.hidden']) {
@@ -133,14 +133,14 @@ describe('publishing the produced work', () => {
      * and a session is only coherent in the tree it ran in. The clone itself stays pristine.
      */
     const ROOT = '55555555-5555-4555-8555-555555555555';
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
 
     it('computes the checkout key and branch from the thread root', () => {
-        expect(checkoutKey(repoJob)).toBe(`${job.id}/factory`);
+        expect(checkoutKey(repoJob)).toBe(`${job.id}/bellows`);
         // A follow-up is a NEW job row resuming the parent conversation: its checkout is the
         // thread's, so it lands in the tree the session (and the parent's work) lives in.
-        expect(checkoutKey({ ...repoJob, rootJobId: ROOT })).toBe(`${ROOT}/factory`);
-        expect(checkoutDir({ ...repoJob, rootJobId: ROOT })).toBe(`${TASK_MOUNT}/factory`);
+        expect(checkoutKey({ ...repoJob, rootJobId: ROOT })).toBe(`${ROOT}/bellows`);
+        expect(checkoutDir({ ...repoJob, rootJobId: ROOT })).toBe(`${TASK_MOUNT}/bellows`);
         expect(worktreeBranch({ ...repoJob, rootJobId: ROOT })).toBe(`factory/${ROOT}`);
     });
 
@@ -164,7 +164,7 @@ describe('publishing the produced work', () => {
             { id: SESSION, resume: false },
             { envFile: '/tmp/env-file' }
         );
-        expect(withRepo).toContain(`WORKDIR=${TASK_MOUNT}/factory`);
+        expect(withRepo).toContain(`WORKDIR=${TASK_MOUNT}/bellows`);
         // A command-only job names no repo: no checkout exists, and the task volume's root is where
         // it starts.
         expect(
@@ -215,8 +215,8 @@ describe('publishing the produced work', () => {
         // The checkout in the task volume and the remote it is cloned from. Paths, not credentials:
         // the claim env rides the step's own env, exactly as it rode the env file.
         expect(sync?.env).toMatchObject({
-            CHECKOUT: `${TASK_MOUNT}/factory`,
-            REMOTE: 'https://github.com/Bellows-AI/factory.git',
+            CHECKOUT: `${TASK_MOUNT}/bellows`,
+            REMOTE: 'https://github.com/Bellows-AI/bellows.git',
             BRANCH: `factory/${job.id}`,
         });
         // The step goes to the attempt's supervisor, under the control token only it holds.
@@ -491,7 +491,7 @@ describe('publishing the produced work', () => {
         });
         await runner.publishGit(ISSUE_JOB);
 
-        const wt = `/task/factory`;
+        const wt = `/task/bellows`;
         expect(steps.steps().length).toBeGreaterThan(0);
         for (const step of steps.steps()) {
             if (step.argv.some((x) => x.includes('shortstat'))) {
@@ -825,7 +825,7 @@ describe('publishing the produced work', () => {
             branch: 'fix/10',
             prUrl: PR_URL,
             reason: null,
-            repository: 'Bellows-AI/factory',
+            repository: 'Bellows-AI/bellows',
             baseBranch: 'main',
             prNumber: 42,
             cause: null,
@@ -862,7 +862,7 @@ describe('publishing the produced work', () => {
         const summary = steps.steps().find((step) => step.argv.some((x) => x.includes('shortstat')))!;
         expect(summary.env).toEqual({
             BASE: 'origin/main',
-            BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
+            BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)',
         });
         // The summarizer's stdout reaches the PR through this transport.
         const create = calls.find((a) => a.includes('pr') && a.includes('create'));
