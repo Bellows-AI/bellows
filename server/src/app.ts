@@ -18,6 +18,8 @@ import { integrationRoutes } from './routes/integrations.js';
 import { githubCredentialRoutes, type GithubMint, type GithubRevoke } from './routes/github-credential.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { orgExecutorRoutes } from './routes/org-executors.js';
+import { createConnectorRegistry, type ConnectorRegistry } from './notifications/connector.js';
+import { notificationSubscriptionRoutes } from './routes/notification-subscriptions.js';
 import { orgMemberRoutes } from './routes/org-members.js';
 import { authRoutes } from './routes/auth.js';
 import { envRoutes } from './routes/env.js';
@@ -102,6 +104,8 @@ export interface AppDeps {
     githubRevoke?: GithubRevoke | undefined;
     /** The commerce service's plan push (095); the routes exist exactly when COMMERCE_ENABLED and this is present. */
     commercePlanWriter?: CommercePlanWriter | undefined;
+    /** The delivery channels a subscription may name; absent means none, so every create is UNKNOWN_CONNECTOR. */
+    notificationConnectors?: ConnectorRegistry | undefined;
     /** The OAuth exchange. Absent under AUTH_MODE=none, where there is nothing to exchange with. */
     identity?: GitHubIdentityClient | undefined;
     /** The App slug provider — the install-page redirect. Absent offline, where it cannot ask. */
@@ -244,6 +248,7 @@ export async function buildApp({
     appSlug,
     installationListing,
     commercePlanWriter,
+    notificationConnectors = createConnectorRegistry([]),
     ready,
     version = readVersion(),
     now = Date.now,
@@ -332,6 +337,8 @@ export async function buildApp({
     // Organization-scoped executor profiles (issue 391): the admins' CRUD beside the personal
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));
+    // Notification subscriptions (BEL-131): the org's settings for who hears about a task verdict.
+    await app.register(notificationSubscriptionRoutes({ orgs, connectors: notificationConnectors }));
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
     if (auth) await app.register(orgMemberRoutes({ store: auth }));

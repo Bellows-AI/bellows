@@ -16,6 +16,10 @@ import type { ClaimObserver } from './db/jobs/job-store-admission.js';
 import type { JobStore } from './db/jobs/job-store-types.js';
 import { storedRepoNames } from './db/stored-repos.js';
 import { createUserExecutorStore, type UserExecutorStore } from './db/user-executor-store.js';
+import {
+    createNotificationSubscriptionStore,
+    type NotificationSubscriptionStore,
+} from './notifications/subscription-store.js';
 import { createGitHubAppClient } from './github/app-client.js';
 import { installationTokenProvider, type InstallationTokenProvider } from './github/app-token.js';
 import { createRepoSource, type RepoSource } from './github/repo-source.js';
@@ -74,6 +78,8 @@ export interface OrgRuntime {
     /** The org's installation mint, behind the runner GitHub credential route; absent offline or uninstalled. */
     githubToken?: InstallationTokenProvider | undefined;
     userExecutors?: UserExecutorStore | undefined;
+    /** The org's notification subscriptions (103); present with the other stores. */
+    notificationSubscriptions?: NotificationSubscriptionStore | undefined;
     /** The usage outbox and the pushed plan (094); present with the other stores, and only when COMMERCE_ENABLED. */
     commerce?: CommerceStore | undefined;
 }
@@ -156,6 +162,7 @@ function buildOrgStores({
     connections: ConnectionStore;
     connectionGrants: ConnectionGrants;
     userExecutors: UserExecutorStore;
+    notificationSubscriptions: NotificationSubscriptionStore;
     prs: PrLifecycleStore;
     jobs: JobStore;
     workflows: WorkflowStore;
@@ -165,6 +172,7 @@ function buildOrgStores({
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
+    const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
     const prs = createPrLifecycleStore({ sql, orgId, ready });
@@ -248,6 +256,7 @@ function buildOrgStores({
         connections,
         connectionGrants,
         userExecutors,
+        notificationSubscriptions,
         prs,
         jobs,
         workflows,
@@ -265,6 +274,7 @@ async function attachOrgStores(runtime: OrgRuntime, stores: Awaited<ReturnType<t
     runtime.connections = stores.connections;
     runtime.connectionGrants = stores.connectionGrants;
     runtime.userExecutors = stores.userExecutors;
+    runtime.notificationSubscriptions = stores.notificationSubscriptions;
     runtime.jobs = stores.jobs;
     runtime.prs = stores.prs;
     runtime.workflows = stores.workflows;
