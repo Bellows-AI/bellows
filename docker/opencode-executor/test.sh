@@ -13,7 +13,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 cd "$HERE" || exit 1
 
 IMAGE="opencode-executor-test"
-VERSION="$(sed -n 's/^ARG OPENCODE_VERSION=//p' Dockerfile | head -1)"
+VERSION="$(sed -n 's/^ARG OPENCODE_VERSION=//p' Dockerfile | sed -n 1p)"
 
 pass=0
 fail=0
@@ -267,7 +267,7 @@ got="$(run_watch "$RLW" '
     if kill -0 "$CLI" 2>/dev/null; then echo CLI-ALIVE; kill "$CLI" 2>/dev/null; else echo CLI-DEAD; fi
     wait')"
 rm -rf "$RLW"
-if printf '%s' "$got" | grep -q 'CLI-DEAD' && printf '%s' "$got" | grep -q 'Rate limit exceeded'; then
+if printf '%s' "$got" | grep 'CLI-DEAD' >/dev/null && printf '%s' "$got" | grep 'Rate limit exceeded' >/dev/null; then
     ok 'a 429 zombie is killed, with the rate limit as the stated reason'
 else
     bad 'a 429 zombie is killed, with the rate limit as the stated reason' "$got"
