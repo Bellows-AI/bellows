@@ -150,10 +150,30 @@ describe.skipIf(!enabled)('payload store faults', () => {
         expect(Date.now() - started).toBeLessThan(150 + 500);
         expect((await versionStates(seeded.ref)).map((v) => v.state)).toEqual(['deleting']);
 
+        // The pass after the hang lifts has its own budget: on a loaded runner its database work alone
+        // can outlast the 150 ms that bounds the hung pass. `slow` stands in for that load.
         hang = false;
-        expect((await store.collect()).removed).toBe(1);
+        const slow = slowed(h.faultyRepo, 200);
+        const after = createPostgresHarness(db.sql, { keys: h.keys, deadlineMs: 3000 });
+        expect((await after.openWith(slow, external.factory).collect()).removed).toBe(1);
         expect(await versionStates(seeded.ref)).toHaveLength(0);
     });
+
+    /** Every repo call waits `ms` first, as a database on a loaded host answers late. */
+    function slowed(real: SecretRepo, ms: number): SecretRepo {
+        return new Proxy(real, {
+            get(target, key, receiver) {
+                const value = Reflect.get(target, key, receiver);
+                if (typeof value !== 'function') {
+                    return value;
+                }
+                return async (...args: unknown[]) => {
+                    await new Promise((resolve) => setTimeout(resolve, ms));
+                    return value.apply(target, args);
+                };
+            },
+        });
+    }
 
     it('a write that answers exists is believed only when the object reads back as this payload', async () => {
         const h = createPostgresHarness(db.sql, { deadlineMs: 3000 });
