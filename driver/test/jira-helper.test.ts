@@ -28,6 +28,9 @@ interface Result {
     resource?: unknown;
     reason?: string;
 }
+type Asked =
+    | { kind: 'answer'; answer: 'bound' | 'unavailable' | 'waiting' }
+    | { kind: 'absent' | 'refused' | 'inconclusive' };
 interface Deps {
     env: Record<string, string | undefined>;
     now: () => number;
@@ -35,6 +38,7 @@ interface Deps {
     sleep: (ms: number) => Promise<void>;
     pair: (env: Record<string, string | undefined>) => Promise<{ jobId: string; leaseToken: string }>;
     credential: (id: string, remainingMs: number) => Promise<Result>;
+    ask: (provider: string, remainingMs: number) => Promise<Asked>;
     eraseCredential: (id: string) => void;
     readFile: (path: string) => string;
     stdout: (text: string) => void;
@@ -251,6 +255,8 @@ interface Scenario {
     jiraUrl: string;
     boardUrl: string;
     ask: { count: number; scopes: string[]; erased: number };
+    /** The providers the helper asked the board's runtime requirement for, in order. */
+    asks: string[];
     run: (argv: string[], overrides?: Partial<Deps>) => Promise<{ code: number; out: string; err: string }>;
     receipts: () => Receipt[];
 }
@@ -263,7 +269,15 @@ afterEach(() => {
 });
 
 async function scenario(
-    options: { scopes?: string[]; connections?: 'one' | 'two' | 'none' | 'other-provider'; deadlineMs?: number } = {}
+    options: {
+        scopes?: string[];
+        connections?: 'one' | 'two' | 'none' | 'other-provider' | 'bound-after-ask';
+        deadlineMs?: number;
+        /** What each runtime ask answers, in order; the last repeats. No proxy (`absent`) when empty. */
+        asked?: Asked[];
+        /** The broker's refusal for the first credential asks, before it issues. */
+        brokerRefusals?: number;
+    } = {}
 ): Promise<Scenario> {
     const jira = fakeJira();
     const jiraUrl = await listen(jira.server);
@@ -276,8 +290,9 @@ async function scenario(
         apiBase: `${jiraUrl}/ex/jira/${cloud}/rest/api/3`,
     });
     const shape = options.connections ?? 'one';
+    const asks: string[] = [];
     const connections = () =>
-        shape === 'none'
+        shape === 'none' || (shape === 'bound-after-ask' && asks.length === 0)
             ? []
             : shape === 'two'
               ? [entry(CONN_A, CLOUD, 'a.example.net'), entry(CONN_B, CLOUD_B, 'b.example.net')]
@@ -299,7 +314,13 @@ async function scenario(
             pair: async () => ({ jobId: JOB, leaseToken: LEASE }),
             credential: async (_id, _remaining) => {
                 ask.count++;
+                if (ask.count <= (options.brokerRefusals ?? 0)) return { ok: false, reason: 'integration_required' };
                 return { ok: true, token: TOKEN, expiresAt: null, scopes: ask.scopes, resource: CLOUD };
+            },
+            ask: async (provider) => {
+                asks.push(provider);
+                const scripted = options.asked ?? [{ kind: 'absent' }];
+                return scripted[Math.min(asks.length - 1, scripted.length - 1)] as Asked;
             },
             eraseCredential: () => {
                 ask.erased++;
@@ -323,6 +344,7 @@ async function scenario(
         jiraUrl,
         boardUrl,
         ask,
+        asks,
         run,
         receipts: () => [...board.state.receipts.values()],
     };
@@ -412,6 +434,104 @@ describe('finding the connection', () => {
         const picked = await s.run(['issue', 'ABC-1', '--site', 'a.example.net']);
         expect(picked.code).toBe(0);
         expect(s.jira.calls[0]?.url).toBe(jiraPath('/issue/ABC-1'));
+    });
+});
+
+describe('the runtime connection ask (BEL-174)', () => {
+    const outcomeOf = (out: string) => JSON.parse(out.trim().split('\n').pop() ?? '{}') as Json;
+
+    it('bound continues the same call after re-reading the list', async () => {
+        const s = await scenario({ connections: 'bound-after-ask', asked: [{ kind: 'answer', answer: 'bound' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(0);
+        expect(s.asks).toEqual(['jira']);
+        expect(s.jira.calls[0]?.url).toBe(jiraPath('/issue/ABC-1'));
+    });
+
+    it('unavailable exits 3: continue without Jira and say so', async () => {
+        const s = await scenario({ connections: 'none', asked: [{ kind: 'answer', answer: 'unavailable' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out)).toEqual({ outcome: 'integration_required', reason: 'connection_unavailable' });
+        expect(result.err).toContain('without Jira');
+        expect(s.jira.calls).toHaveLength(0);
+    });
+
+    it('waiting exits 3 waiting_for_connection: the task pauses here and resumes in this session', async () => {
+        const s = await scenario({ connections: 'none', asked: [{ kind: 'answer', answer: 'waiting' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out)).toEqual({ outcome: 'integration_required', reason: 'waiting_for_connection' });
+        expect(result.err).toContain('resumes in this session');
+        expect(s.asks).toEqual(['jira']);
+    });
+
+    it('an inconclusive ask is retried inside the deadline, then ends deadline exit 1, never unavailable or waiting', async () => {
+        const s = await scenario({ connections: 'none', deadlineMs: 1200, asked: [{ kind: 'inconclusive' }] });
+        const started = Date.now();
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(1);
+        expect(outcomeOf(result.out)).toEqual({ outcome: 'unavailable', reason: 'deadline' });
+        expect(s.asks.length).toBeGreaterThan(1);
+        expect(Date.now() - started).toBeLessThan(4000);
+    });
+
+    it('an inconclusive ask that then answers is that answer', async () => {
+        const s = await scenario({
+            connections: 'none',
+            asked: [{ kind: 'inconclusive' }, { kind: 'answer', answer: 'waiting' }],
+        });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out).reason).toBe('waiting_for_connection');
+        expect(s.asks).toEqual(['jira', 'jira']);
+    });
+
+    it('a refused ask stops board_refused', async () => {
+        const s = await scenario({ connections: 'none', asked: [{ kind: 'refused' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(1);
+        expect(outcomeOf(result.out)).toEqual({ outcome: 'refused', reason: 'board_refused' });
+        expect(s.asks).toEqual(['jira']);
+    });
+
+    it("no proxy at all is today's exit 3 no_connection", async () => {
+        const s = await scenario({ connections: 'none', asked: [{ kind: 'absent' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out).reason).toBe('no_connection');
+    });
+
+    it('never asks while a Jira connection is bound, even one the --site filter does not match', async () => {
+        const s = await scenario({ connections: 'two', asked: [{ kind: 'answer', answer: 'waiting' }] });
+        const other = await s.run(['issue', 'ABC-1', '--site', 'c.example.net']);
+        expect(other.code).toBe(3);
+        expect(outcomeOf(other.out).reason).toBe('no_connection');
+        expect((await s.run(['issue', 'ABC-1', '--site', 'a.example.net'])).code).toBe(0);
+        expect(s.asks).toEqual([]);
+    });
+
+    it('never asks for insufficient scopes', async () => {
+        const s = await scenario({ scopes: READ_SCOPES, asked: [{ kind: 'answer', answer: 'waiting' }] });
+        const result = await s.run(comment());
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out).reason).toBe('insufficient_scopes');
+        expect(s.asks).toEqual([]);
+    });
+
+    it('asks when the broker says the connection needs the user, and continues once bound', async () => {
+        const s = await scenario({ brokerRefusals: 1, asked: [{ kind: 'answer', answer: 'bound' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(0);
+        expect(s.asks).toEqual(['jira']);
+    });
+
+    it("pauses on the broker's reconnect when the ask says waiting", async () => {
+        const s = await scenario({ brokerRefusals: 1, asked: [{ kind: 'answer', answer: 'waiting' }] });
+        const result = await s.run(['issue', 'ABC-1']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out).reason).toBe('waiting_for_connection');
+        expect(s.jira.calls).toHaveLength(0);
     });
 });
 

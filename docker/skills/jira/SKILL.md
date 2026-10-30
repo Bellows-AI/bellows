@@ -56,9 +56,16 @@ comments. Creating or transitioning issues is not supported.
 Exit 0 is success. Any other exit means **stop and report it** — quote the guidance the helper
 printed, which says what to fix — and do not work around it by guessing ticket contents.
 
-- **Exit 3** — the user must act: no Jira connection is bound to this task, or the bound one was not
-  allowed this step (for example, adding comments). Say so; the user connects or widens it and binds
-  it to the task.
+- **Exit 3** — the user must act. The closed reason in the JSON says how:
+  - `waiting_for_connection` — the board is waiting for the user to connect Jira. End your turn right
+    there, with one line saying so, and do not retry or work around it: the task pauses at this point and
+    resumes in this same session once Jira is connected.
+  - `connection_unavailable` — the user chose to continue without Jira. Carry on with the rest of the
+    task without it, and say in your final report which Jira steps you did not do.
+  - `no_connection` or `connection` — nothing could be asked of the board here, or the bound connection
+    needs the user. Say so; the user connects it and binds it to the task.
+  - `insufficient_scopes` — the bound connection was not allowed this step (for example, adding
+    comments). Say so; the user widens it.
 - **Exit 4** — a `comment` whose outcome is unknown or still in progress. It is never posted again
   by the helper; read the comments to see whether it landed before you decide anything.
 - **Exit 1** — refused or failed (the closed reason is in the JSON: `provider-denied`, `not-found`,

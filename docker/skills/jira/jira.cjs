@@ -20,6 +20,7 @@ const fs = require('node:fs');
 const PATH_PREFIX = '/ex/jira';
 const DEADLINE_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const ASK_TIMEOUT_MS = 30_000;
 const BACKOFF_MS = 250;
 const BACKOFF_MAX_MS = 2000;
 const BODY_CAP_BYTES = 8 * 1024 * 1024;
@@ -258,13 +259,59 @@ function validEntry(entry) {
     }
 }
 
+/**
+ * Tells the board this task needs a Jira connection it lacks (BEL-174; the ask rides the agent's control socket,
+ * see connection-ask.cjs). 'bound' (the task has one now) and 'absent' (no control socket: nothing to ask) return;
+ * 'unavailable' and 'waiting' end the call at exit 3. An answer the board did not confirm - a hang-up, a 5xx, a
+ * body that is no answer - is retried inside the deadline and never read as either verdict.
+ */
+async function requireConnection(ctx) {
+    let backoff = BACKOFF_MS;
+    while (remaining(ctx) > 0) {
+        const result = await ctx.deps.ask('jira', Math.max(1, Math.min(ASK_TIMEOUT_MS, remaining(ctx))));
+        if (result.kind === 'absent') return 'absent';
+        if (result.kind === 'refused') {
+            throw new Stop(
+                EXIT_FAILED,
+                'refused',
+                'board_refused',
+                'jira: the board refused this attempt: it holds a lease it no longer holds, or its task is no longer authorized. Each call reads the current pair: retry once, and if a fresh call is refused the same way, report it.'
+            );
+        }
+        if (result.kind === 'answer') {
+            if (result.answer === 'bound') return 'bound';
+            if (result.answer === 'unavailable') {
+                throw new Stop(
+                    EXIT_INTEGRATION_REQUIRED,
+                    'integration_required',
+                    'connection_unavailable',
+                    'jira: the user chose to continue without a Jira connection; continue without Jira and say so in your report.'
+                );
+            }
+            throw new Stop(
+                EXIT_INTEGRATION_REQUIRED,
+                'integration_required',
+                'waiting_for_connection',
+                'jira: no Jira connection is bound to this task and the board is waiting for the user to connect one. Stop here: the task pauses at this point and resumes in this session once it is connected.'
+            );
+        }
+        if (!(await pause(ctx, backoff))) break;
+        backoff = Math.min(backoff * 2, BACKOFF_MAX_MS);
+    }
+    throw deadline();
+}
+
 /** The one Jira connection this call uses. Only a confirmed list may say "none"; anything else retries. */
-async function connectionFor(ctx, site) {
+async function connectionFor(ctx, site, asked = false) {
     const list = await board(ctx, 'GET', '/credentials/connections', undefined, (res) =>
         res.status === 200 && Array.isArray(res.json?.connections) && res.json.connections.every(validEntry) ? res.json.connections : null
     );
     const jira = list.filter((entry) => entry.provider === 'jira');
     const wanted = site === undefined ? jira : jira.filter((entry) => entry.site.toLowerCase() === site.toLowerCase());
+    // Only a task with no Jira connection at all asks: one bound to another site is the caller's --site to fix.
+    if (wanted.length === 0 && jira.length === 0 && !asked && (await requireConnection(ctx)) === 'bound') {
+        return connectionFor(ctx, site, true);
+    }
     if (wanted.length === 0) {
         const named = site === undefined ? '' : ` for ${site}`;
         throw new Stop(EXIT_INTEGRATION_REQUIRED, 'integration_required', 'no_connection', `jira: no Jira connection${named} is bound to this task; ask the user to connect Jira and bind it.`);
@@ -321,7 +368,11 @@ function urlFor(conn, path) {
 }
 
 async function credentialFor(ctx, conn, required) {
-    const result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
+    let result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
+    // The broker says the bound connection needs the user (revoked, to be reconnected): ask, and try once more when bound.
+    if (!result.ok && result.reason === 'integration_required' && (await requireConnection(ctx)) === 'bound') {
+        result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
+    }
     if (!result.ok) {
         if (result.reason === 'integration_required') {
             throw new Stop(EXIT_INTEGRATION_REQUIRED, 'integration_required', 'connection', 'jira: the connection needs the user to connect or reconnect it.');
@@ -619,7 +670,7 @@ async function run(argv, deps) {
     }
 }
 
-/** The real process's dependencies; the broker and the pair helper are baked at fixed paths in both images. */
+/** The real process's dependencies; the broker, the pair helper and the connection ask are baked at fixed paths in both images. */
 function defaultDeps(env = process.env) {
     const broker = require('/usr/local/bin/credential-broker.cjs');
     const { currentPair } = require('/usr/local/bin/attempt-pair.cjs');
@@ -629,6 +680,8 @@ function defaultDeps(env = process.env) {
         fetch: globalThis.fetch,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         pair: currentPair,
+        ask: (provider, remainingMs) =>
+            require('/usr/local/bin/connection-ask.cjs').askConnection(provider, { deadlineMs: remainingMs }),
         credential: (id, remainingMs) => broker.connectionCredential(id, { ...broker.defaultDeps(env), deadlineMs: remainingMs }),
         eraseCredential: (id) => broker.erase(broker.defaultDeps(env), broker.connectionKey(id)),
         readFile: (path) => fs.readFileSync(path, 'utf8'),
