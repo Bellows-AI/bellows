@@ -9,9 +9,9 @@ const CONTINUATION_LEAD =
 const TASK_LEAD = 'The task, for reference:\n\n';
 
 /** One sentence per requirement the earlier attempt raised: what the user did about the connection it asked for. */
-const outcomeSentence = ({ label, outcome }: ConnectionOutcome): string =>
+const outcomeSentence = ({ label, outcome, target }: ConnectionOutcome): string =>
     outcome === 'bound'
-        ? `The ${label} connection you asked for is now bound to this task; use it and carry on.`
+        ? `The ${label} connection${target ? ` for ${target}` : ''} you asked for is now bound to this task; use it and carry on.`
         : `The user chose to continue without the ${label} connection; do not ask for it again, and say so in your final report where it matters.`;
 
 /**

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { ConnectionView } from '../src/api/connections.js';
 import type { JobIntegrationRequirement } from '../src/api/useJobs.js';
-import { type Candidates, TaskConnectView } from '../src/panels/TaskConnect.js';
+import { type Candidates, candidatesFor, TaskConnectView } from '../src/panels/TaskConnect.js';
 import { FORBIDDEN } from './fixtures.js';
 
 const requirement = (over: Partial<JobIntegrationRequirement> = {}): JobIntegrationRequirement => ({
@@ -51,6 +51,22 @@ function render(
     for (const bad of FORBIDDEN) expect(html).not.toContain(bad);
     return html;
 }
+
+describe('TaskConnect: the picker list', () => {
+    const at = (id: string, site: string) => connection({ id, site });
+
+    it('a target-B requirement lists only B connections, whatever the case', () => {
+        const all = [at('a', 'a.example.net'), at('b', 'B.Example.net')];
+        const listed = candidatesFor(requirement({ target: 'b.example.net' }), all, new Set());
+        expect(listed.map((c) => c.id)).toEqual(['b']);
+    });
+
+    it('a requirement without a target lists every active unbound connection of the provider', () => {
+        const all = [at('a', 'a.example.net'), at('b', 'b.example.net'), at('c', 'c.example.net')];
+        const listed = candidatesFor(requirement(), all, new Set(['c']));
+        expect(listed.map((c) => c.id)).toEqual(['a', 'b']);
+    });
+});
 
 describe('TaskConnect: the block', () => {
     it('says what the task needs when the requirement names a target, and nothing when it does not', () => {

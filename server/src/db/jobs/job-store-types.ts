@@ -637,7 +637,7 @@ export interface Claim {
      * What became of the connections this job asked for while it ran, told once to the claim that
      * continues it (and again to a takeover of that claim). Absent when there is nothing to tell.
      */
-    connectionOutcomes?: { provider: string; label: string; outcome: 'bound' | 'dismissed' }[];
+    connectionOutcomes?: { provider: string; label: string; outcome: 'bound' | 'dismissed'; target: string | null }[];
     /**
      * The environment the runner starts with, resolved at claim time for THIS job's author and
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a

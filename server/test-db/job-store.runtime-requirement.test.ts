@@ -163,7 +163,9 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
         await expireLease(sql, id);
         const takeover = await claimNext(id);
         expect(takeover.claimSeq).toBe(second.claimSeq + 1);
-        expect(takeover.connectionOutcomes).toEqual([{ provider: 'jira', label: 'Jira', outcome: 'bound' }]);
+        expect(takeover.connectionOutcomes).toEqual([
+            { provider: 'jira', label: 'Jira', outcome: 'bound', target: null },
+        ]);
         // The next takeover is of the claim that received them again.
         await expireLease(sql, id);
         expect((await claimNext(id)).connectionOutcomes).toHaveLength(1);
@@ -435,6 +437,62 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
             await connect(user.id, SITE_B);
             expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
             expect(await requirementRows(id)).toMatchObject([{ reason: 'ambiguous', target: SITE_B }]);
+        });
+
+        it('pin: with A and B connected and neither bound, an ask for B binds B and never A', async () => {
+            const user = freshUser();
+            const a = await connect(user.id, SITE_A);
+            const b = await connect(user.id, SITE_B);
+            const id = await create(user.id);
+            const claim = await claimNext(id);
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'bound' });
+            const held = (await bindingsOf(sql, ORG, id)).map((x) => x.connectionId);
+            expect(held).toContain(b.id);
+            expect(held).not.toContain(a.id);
+        });
+
+        it('pin: A needs reconnect and there is no B: the reason is missing, not reconnect', async () => {
+            const { id, claim } = await boundToA();
+            await sql`update integration_grant set status = 'reconnect_required'
+                      where id = (select grant_id from connector_connection where site = ${SITE_A}
+                                  and principal_user_id = (select execution_user_id from job where id = ${id}))`;
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
+            expect(await requirementRows(id)).toMatchObject([{ reason: 'missing', target: SITE_B }]);
+        });
+
+        it('binding another connection at site A leaves a target-B requirement open and the task held', async () => {
+            const { user, id, claim } = await boundToA();
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
+            expect(await handBack(claim)).toEqual({ result: 'ok', status: 'queued' });
+            const otherA = await connect(user.id, SITE_A);
+            const bound = await bindConnectionRow(sql, {
+                orgId: ORG,
+                id,
+                connectionId: otherA.id,
+                bindingRevision: (await rootRow(id)).rev,
+                userId: user.id,
+            });
+            expect(bound).toMatchObject({ ok: true });
+            expect((await bindingsOf(sql, ORG, id)).map((b) => b.connectionId)).toContain(otherA.id);
+            expect(await requirementRows(id)).toMatchObject([{ target: SITE_B, satisfied_at: null }]);
+            const next = (await store.claim(WORKER, LEASE_SECONDS)) as Claim | null;
+            expect(next?.id).not.toBe(id);
+        });
+
+        it('binding the connection at site B closes the target-B requirement and the resumed claim names the site', async () => {
+            const { user, id, claim } = await boundToA();
+            await ask(claim, 'jira', SITE_B);
+            await handBack(claim);
+            const b = await connect(user.id, SITE_B);
+            await bindConnectionRow(sql, {
+                orgId: ORG,
+                id,
+                connectionId: b.id,
+                bindingRevision: (await rootRow(id)).rev,
+                userId: user.id,
+            });
+            const resumed = await claimNext(id);
+            expect(resumed.connectionOutcomes).toMatchObject([{ provider: 'jira', outcome: 'bound', target: SITE_B }]);
         });
 
         it('a later ask refreshes the target of the one open requirement', async () => {

@@ -16,6 +16,7 @@ import {
     dismissRequirementInTx,
     lockThreadInTx,
     recordMissingInTx,
+    requirementMatches,
     requireAtRuntimeInTx,
     resolveBindingsInTx,
     type ConnectionOutcome,
@@ -173,16 +174,17 @@ export async function openRequirementTargetRow(
     return row?.target ?? null;
 }
 
-/** The ids of `connectionIds` whose site is `target` (any case). */
+/** The ids of `connectionIds` that serve a requirement with `target`. */
 export async function connectionsAtSite(
     sql: Sql,
-    args: { orgId: string; connectionIds: readonly string[]; target: string }
+    args: { orgId: string; connectionIds: readonly string[]; target: string | null }
 ): Promise<string[]> {
-    const rows = await sql<{ id: string }[]>`
-        select id from connector_connection
-        where org_id = ${args.orgId} and id in ${sql(args.connectionIds)} and lower(site) = lower(${args.target})
+    if (args.connectionIds.length === 0) return [];
+    const rows = await sql<{ id: string; site: string | null }[]>`
+        select id, site from connector_connection
+        where org_id = ${args.orgId} and id in ${sql(args.connectionIds)}
     `;
-    return rows.map((r) => r.id);
+    return rows.filter((r) => requirementMatches(args.target, r.site)).map((r) => r.id);
 }
 
 /**

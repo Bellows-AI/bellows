@@ -468,6 +468,15 @@ describe.skipIf(!enabled)('jira authorization', () => {
             expect(await requirements(hit.id)).toMatchObject([{ outcome: 'bound' }]);
         });
 
+        it('two made connections, one matching the requirement target: binds it, no ambiguous flip', async () => {
+            const tag = newTag();
+            const claim = await askedRoot(ALICE.id, hostOf(tag, 'two'));
+            script(fake, { tag, sites: ['one', 'two'] });
+            await (await begin(jiraRuntime(db.sql, fake), ORG, ALICE.id, { jobId: claim.id })).complete();
+            expect(await bindings(claim.id)).toHaveLength(1);
+            expect(await requirements(claim.id)).toMatchObject([{ outcome: 'bound' }]);
+        });
+
         it('a refused bind (another user is the execution user) still completes the connection', async () => {
             const tag = newTag();
             const claim = await askedRoot(CAROL.id);

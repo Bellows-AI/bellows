@@ -215,6 +215,21 @@ describe.skipIf(!enabled)('job connection bindings — database', () => {
         expect((await jobRow(root)).rev).toBe(2);
     });
 
+    it('a follow-up binding site A leaves an open requirement that targets site B open', async () => {
+        const root = await create(ALICE.id);
+        const claim = (await claimNext())!;
+        await finish(claim);
+        await sql`insert into job_integration_requirement (org_id, root_job_id, provider, reason, source, target, asked_job_id, asked_claim_seq)
+                  values (${ORG}, ${root}, 'jira', 'missing', 'runtime', 'b.example.net', ${root}, ${claim.claimSeq})`;
+        const atA = (await oauthConnection(sql, ORG, ALICE.id, { site: 'a.example.net' })).id;
+        const followUp = await store.createFollowUp(root, 'with more', ALICE.id, undefined, [atA]);
+        if (typeof followUp === 'string') throw new Error(followUp);
+        expect((await bindingsOf(sql, ORG, root)).map((b) => b.connectionId)).toContain(atA);
+        const [row] = await sql<{ satisfied_at: Date | null }[]>`
+            select satisfied_at from job_integration_requirement where root_job_id = ${root}`;
+        expect(row?.satisfied_at).toBeNull();
+    });
+
     it('a follow-up naming a connection the author may not bind is refused and queues nothing', async () => {
         const root = await create(ALICE.id);
         await finish((await claimNext())!);

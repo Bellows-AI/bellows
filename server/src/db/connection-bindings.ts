@@ -72,7 +72,16 @@ interface BindableRow {
     authority: Record<string, unknown> | null;
     access: string;
     principal_user_id: string | null;
+    site: string | null;
 }
+
+/**
+ * A requirement is (provider, target): a connection serves it when the provider matches and, if `target` (a site)
+ * is set, its site equals the target, case-insensitively. A null target is served by any usable connection.
+ * Every place that asks whether a binding or connection answers a requirement uses this, in SQL as in TS.
+ */
+export const requirementMatches = (target: string | null | undefined, site: string | null | undefined): boolean =>
+    target === null || target === undefined || (site ?? '').toLowerCase() === target.toLowerCase();
 
 const toResolved = (row: BindableRow, source: 'explicit' | 'default'): ResolvedBinding => ({
     connectionId: row.id,
@@ -94,7 +103,7 @@ async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[
     if (ids.length === 0) return [];
     return db<BindableRow[]>`
         select c.id, c.provider, c.credential, c.external_account_id, c.cloud_id, c.grant_id, g.authority, c.access,
-               c.principal_user_id
+               c.principal_user_id, c.site
         from connector_connection c
         left join integration_grant g on g.id = c.grant_id
         where c.org_id = ${orgId} and c.id in ${db(ids)} and c.status = 'active'
@@ -117,7 +126,7 @@ async function defaultCandidates(
     const target = who.target ?? null;
     return db<BindableRow[]>`
         select c.id, c.provider, c.credential, c.external_account_id, c.cloud_id, c.grant_id, g.authority, c.access,
-               c.principal_user_id
+               c.principal_user_id, c.site
         from connector_connection c
         left join integration_grant g on g.id = c.grant_id
         where c.org_id = ${orgId} and c.provider = ${provider} and c.status = 'active'
@@ -331,11 +340,20 @@ async function satisfyRequirements(
     }: { orgId: string; rootJobId: string; chosen: BindableRow[]; revision: number; actor: string }
 ): Promise<void> {
     const providers = [...new Set(chosen.map((row) => row.provider))];
+    const open = await db<{ id: string; provider: string; target: string | null }[]>`
+        select id, provider, target from job_integration_requirement
+        where org_id = ${orgId} and root_job_id = ${rootJobId} and satisfied_at is null
+          and provider in ${db(providers)}
+    `;
+    // A binding that does not serve the requirement's target (another site) leaves it open.
+    const served = open
+        .filter((r) => chosen.some((c) => c.provider === r.provider && requirementMatches(r.target, c.site)))
+        .map((r) => r.id);
+    if (served.length === 0) return;
     await db`
         update job_integration_requirement
         set satisfied_at = now(), satisfied_revision = ${revision}, outcome = 'bound', closed_by = ${actor}
-        where org_id = ${orgId} and root_job_id = ${rootJobId} and satisfied_at is null
-          and provider in ${db(providers)}
+        where id in ${db(served)}
     `;
 }
 
@@ -541,9 +559,7 @@ async function servingStandings(
         left join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
         where b.org_id = ${orgId} and b.root_job_id = ${rootJobId} and b.provider = ${provider}
     `;
-    return held
-        .filter((row) => target === null || row.c_site?.toLowerCase() === target.toLowerCase())
-        .map(bindingStanding);
+    return held.filter((row) => requirementMatches(target, row.c_site)).map(bindingStanding);
 }
 
 /**
@@ -642,6 +658,8 @@ export interface ConnectionOutcome {
     provider: string;
     label: string;
     outcome: 'bound' | 'dismissed';
+    /** The site the requirement asked for, null when any connection of the provider would do. */
+    target: string | null;
 }
 
 /**
@@ -654,16 +672,21 @@ export async function takeConnectionOutcomesInTx(
     args: { orgId: string; jobId: string; claimSeq: number; takeover: boolean }
 ): Promise<ConnectionOutcome[]> {
     const { orgId, jobId, claimSeq, takeover } = args;
-    const rows = await db<{ provider: string; outcome: ConnectionOutcome['outcome'] }[]>`
+    const rows = await db<{ provider: string; outcome: ConnectionOutcome['outcome']; target: string | null }[]>`
         update job_integration_requirement
         set delivered_claim_seq = ${claimSeq}
         where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${jobId} and outcome is not null
           and (delivered_claim_seq is null or (${takeover}::boolean and delivered_claim_seq = ${claimSeq - 1}))
-        returning provider, outcome
+        returning provider, outcome, target
     `;
     return rows
         .sort((a, b) => a.provider.localeCompare(b.provider))
-        .map((r) => ({ provider: r.provider, label: providerLabel(r.provider), outcome: r.outcome }));
+        .map((r) => ({
+            provider: r.provider,
+            label: providerLabel(r.provider),
+            outcome: r.outcome,
+            target: r.target,
+        }));
 }
 
 /**

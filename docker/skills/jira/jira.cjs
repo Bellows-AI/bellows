@@ -367,10 +367,14 @@ function urlFor(conn, path) {
     return url;
 }
 
-async function credentialFor(ctx, conn, required) {
+/** The token for `conn`, and the connection that issued it: after a reconnect, the one the board now lists for that site. */
+async function credentialFor(ctx, first, required) {
+    let conn = first;
     let result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
-    // The broker says the bound connection needs the user (revoked, to be reconnected): ask, and try once more when bound.
-    if (!result.ok && result.reason === 'integration_required' && (await requireConnection(ctx)) === 'bound') {
+    // The broker says the bound connection needs the user (revoked, to be reconnected): ask for that site, and when
+    // bound read the list again and use what it holds now, never the connection that just failed.
+    if (!result.ok && result.reason === 'integration_required' && (await requireConnection(ctx, conn.site)) === 'bound') {
+        conn = await connectionFor(ctx, conn.site, true);
         result = await ctx.deps.credential(conn.id, Math.max(1, remaining(ctx)));
     }
     if (!result.ok) {
@@ -389,7 +393,7 @@ async function credentialFor(ctx, conn, required) {
             { missingScopes: missing }
         );
     }
-    return result.token;
+    return { token: result.token, conn };
 }
 
 /**
@@ -401,12 +405,15 @@ async function credentialFor(ctx, conn, required) {
 async function jiraSend(ctx, conn, op, request, options = {}) {
     const write = request.method !== 'GET';
     let reauthed = false;
+    let live = conn;
     let backoff = BACKOFF_MS;
     for (;;) {
-        const token = await credentialFor(ctx, conn, REQUIRED_SCOPES[op]);
+        const issued = await credentialFor(ctx, live, REQUIRED_SCOPES[op]);
+        live = issued.conn;
+        const token = issued.token;
         let wait = backoff;
         try {
-            const res = await wire(ctx, urlFor(conn, request.path), {
+            const res = await wire(ctx, urlFor(live, request.path), {
                 method: request.method,
                 headers: {
                     authorization: `Bearer ${token}`,
@@ -418,7 +425,7 @@ async function jiraSend(ctx, conn, op, request, options = {}) {
             if (res.status === HTTP_UNAUTHORIZED) {
                 if (reauthed) return { kind: 'unauthorized' };
                 reauthed = true;
-                ctx.deps.eraseCredential(conn.id);
+                ctx.deps.eraseCredential(live.id);
                 continue;
             }
             if (res.status >= HTTP_REDIRECT && res.status < 400) {
@@ -543,7 +550,7 @@ async function settle(ctx, conn, receipt, issue, dispatchedAt) {
     );
 }
 
-async function addComment(ctx, conn, issue, body, explicitKey) {
+async function addComment(ctx, bound, issue, body, explicitKey) {
     try {
         issueKey(issue);
     } catch {
@@ -551,7 +558,7 @@ async function addComment(ctx, conn, issue, body, explicitKey) {
     }
     if (body === '') throw bad('jira: the comment body is empty.');
     if (explicitKey !== undefined && !OPERATION_KEY.test(explicitKey)) throw bad('jira: --key is 1-128 characters of A-Z a-z 0-9 . _ : -.');
-    await credentialFor(ctx, conn, REQUIRED_SCOPES.addComment);
+    const { conn } = await credentialFor(ctx, bound, REQUIRED_SCOPES.addComment);
     const operationKey = explicitKey ?? sha256(`${conn.id}|${issue}|${body}`);
     const receipt = await beginReceipt(ctx, conn, operationKey, sha256(`${issue}|${body}`));
     if (receipt.status === 'succeeded') {

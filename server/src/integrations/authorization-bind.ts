@@ -17,7 +17,8 @@ import type { TrustedIntegrationContext } from './trusted-context.js';
 async function connectionsToBind(
     fc: FlowCtx,
     target: NonNullable<Awaited<ReturnType<typeof bindTargetOf>>>,
-    userId: string
+    userId: string,
+    madeId: string
 ): Promise<string[]> {
     if (target.connectionId) return [target.connectionId];
     const needs = await openRequirementTargetRow(fc.sql, {
@@ -26,8 +27,8 @@ async function connectionsToBind(
         provider: target.provider,
         userId,
     });
-    if (needs === null || target.connectionIds.length === 0) return target.connectionIds;
-    return connectionsAtSite(fc.sql, { orgId: fc.orgId, connectionIds: target.connectionIds, target: needs });
+    const made = target.connectionIds.length > 0 ? target.connectionIds : [madeId];
+    return connectionsAtSite(fc.sql, { orgId: fc.orgId, connectionIds: made, target: needs });
 }
 
 /**
@@ -48,7 +49,7 @@ export async function completeAndBind(
     try {
         const target = await bindTargetOf(fc.sql, owner);
         if (target) {
-            const made = await connectionsToBind(fc, target, owner.userId);
+            const made = await connectionsToBind(fc, target, owner.userId, done.connectionId);
             if (made.length > 1) {
                 await markRequirementAmbiguousRow(fc.sql, {
                     orgId: fc.orgId,
@@ -56,11 +57,11 @@ export async function completeAndBind(
                     provider: target.provider,
                     userId: owner.userId,
                 });
-            } else if (made.length === 1 || target.connectionIds.length === 0) {
+            } else if (made.length === 1) {
                 await bindAuthorizedConnectionRow(fc.sql, {
                     orgId: fc.orgId,
                     jobId: target.jobId,
-                    connectionId: made[0] ?? done.connectionId,
+                    connectionId: made[0]!,
                     userId: owner.userId,
                 });
             }

@@ -279,6 +279,8 @@ async function scenario(
         asked?: Asked[];
         /** The broker's refusal for the first credential asks, before it issues. */
         brokerRefusals?: number;
+        /** The broker refuses this connection (needs the user) for its first `times` credential asks. */
+        refuse?: { id: string; times: number };
     } = {}
 ): Promise<Scenario> {
     const jira = fakeJira();
@@ -294,6 +296,7 @@ async function scenario(
     const shape = options.connections ?? 'one';
     const asks: string[] = [];
     const askTargets: (string | undefined)[] = [];
+    const refused: Record<string, number> = {};
     const connections = () =>
         shape === 'none' || (shape === 'bound-after-ask' && asks.length === 0)
             ? []
@@ -315,8 +318,12 @@ async function scenario(
             fetch: globalThis.fetch,
             sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
             pair: async () => ({ jobId: JOB, leaseToken: LEASE }),
-            credential: async (_id, _remaining) => {
+            credential: async (id, _remaining) => {
                 ask.count++;
+                if (options.refuse?.id === id) {
+                    refused[id] = (refused[id] ?? 0) + 1;
+                    if (refused[id] <= options.refuse.times) return { ok: false, reason: 'integration_required' };
+                }
                 if (ask.count <= (options.brokerRefusals ?? 0)) return { ok: false, reason: 'integration_required' };
                 return { ok: true, token: TOKEN, expiresAt: null, scopes: ask.scopes, resource: CLOUD };
             },
@@ -532,6 +539,44 @@ describe('the runtime connection ask', () => {
         const result = await s.run(['issue', 'ABC-1']);
         expect(result.code).toBe(0);
         expect(s.asks).toEqual(['jira']);
+    });
+
+    it('A usable, B needs reconnect, --site B: the ask carries target B and exits 3 waiting', async () => {
+        const s = await scenario({
+            connections: 'two',
+            refuse: { id: CONN_B, times: 99 },
+            asked: [{ kind: 'answer', answer: 'waiting' }],
+        });
+        const result = await s.run(['issue', 'ABC-1', '--site', 'b.example.net']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out).reason).toBe('waiting_for_connection');
+        expect(s.askTargets).toEqual(['b.example.net']);
+    });
+
+    it('B reconnected after a bound answer: the call re-reads the list and continues on the connection it holds', async () => {
+        const s = await scenario({
+            connections: 'two',
+            refuse: { id: CONN_B, times: 1 },
+            asked: [{ kind: 'answer', answer: 'bound' }],
+        });
+        const result = await s.run(['issue', 'ABC-1', '--site', 'b.example.net']);
+        expect(result.code).toBe(0);
+        expect(s.askTargets).toEqual(['b.example.net']);
+    });
+
+    it('pin: the board says bound but the list still lacks site B: one ask, exit 3 no_connection', async () => {
+        const s = await scenario({ connections: 'one', asked: [{ kind: 'answer', answer: 'bound' }] });
+        const result = await s.run(['issue', 'ABC-1', '--site', 'b.example.net']);
+        expect(result.code).toBe(3);
+        expect(outcomeOf(result.out).reason).toBe('no_connection');
+        expect(s.asks).toEqual(['jira']);
+        expect(s.askTargets).toEqual(['b.example.net']);
+    });
+
+    it('pin: no connection for --site B asks with target B', async () => {
+        const s = await scenario({ connections: 'one', asked: [{ kind: 'answer', answer: 'waiting' }] });
+        await s.run(['issue', 'ABC-1', '--site', 'b.example.net']);
+        expect(s.askTargets).toEqual(['b.example.net']);
     });
 
     it("pauses on the broker's reconnect when the ask says waiting", async () => {

@@ -49,6 +49,16 @@ describe('the outcome of a runtime connection requirement', () => {
         expect(text.endsWith('The task, for reference:\n\nfix ABC-1')).toBe(true);
     });
 
+    it('names the site a bound connection was asked for', () => {
+        const text = agentPrompt(
+            job({
+                connectionOutcomes: [{ provider: 'jira', label: 'Jira', outcome: 'bound', target: 'b.example.net' }],
+            })
+        );
+
+        expect(text).toContain('The Jira connection for b.example.net you asked for is now bound to this task');
+    });
+
     it('tells it to continue without a connection the user declined, and to say so', () => {
         const text = agentPrompt(
             job({ connectionOutcomes: [{ provider: 'jira', label: 'Jira', outcome: 'dismissed' }] })

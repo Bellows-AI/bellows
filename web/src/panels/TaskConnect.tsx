@@ -280,6 +280,27 @@ function TaskConnectBlock({
  * Every open requirement of the thread, one block each, rendered on the newest run. The caller's
  * connections are read once, and only for the execution user — nobody else can bind.
  */
+/**
+ * Whether a connection at `site` serves a requirement with `target`: no target takes any, a target takes its site
+ * (any case). A web copy of the board's rule (`requirementMatches`), which the web cannot import.
+ */
+const servesTarget = (target: string | null, site: string): boolean =>
+    target === null || site.toLowerCase() === target.toLowerCase();
+
+/** The active connections the person may pick for `requirement`: its provider, its target, not already bound. */
+export const candidatesFor = (
+    requirement: JobIntegrationRequirement,
+    connections: readonly ConnectionView[],
+    bound: ReadonlySet<string | null>
+): ConnectionView[] =>
+    connections.filter(
+        (c) =>
+            c.provider === requirement.provider &&
+            c.status === 'active' &&
+            !bound.has(c.id) &&
+            servesTarget(requirement.target, c.site)
+    );
+
 export function TaskConnect({ job, viewer, onChanged }: { job: Job; viewer: FollowUpViewer; onChanged: () => void }) {
     const requirements = job.integrationRequirements;
     const canAct = !viewer.loading && viewer.id !== null && job.executionUser?.id === viewer.id;
@@ -318,12 +339,7 @@ export function TaskConnect({ job, viewer, onChanged }: { job: Job; viewer: Foll
                         read.state === 'ready'
                             ? {
                                   state: 'ready',
-                                  connections: read.connections.filter(
-                                      (c) =>
-                                          c.provider === requirement.provider &&
-                                          c.status === 'active' &&
-                                          !bound.has(c.id)
-                                  ),
+                                  connections: candidatesFor(requirement, read.connections, bound),
                               }
                             : read
                     }

@@ -25,13 +25,18 @@ export interface ConnectionOutcome {
     provider: string;
     label: string;
     outcome: 'bound' | 'dismissed';
+    /** The site the requirement asked for; absent or null when any connection of the provider would do. */
+    target?: string | null;
 }
 
 const isOutcome = (value: unknown): value is ConnectionOutcome => {
     if (typeof value !== 'object' || value === null) return false;
-    const { provider, label, outcome } = value as Record<string, unknown>;
+    const { provider, label, outcome, target } = value as Record<string, unknown>;
     return (
-        typeof provider === 'string' && typeof label === 'string' && (outcome === 'bound' || outcome === 'dismissed')
+        typeof provider === 'string' &&
+        typeof label === 'string' &&
+        (outcome === 'bound' || outcome === 'dismissed') &&
+        (target === undefined || target === null || typeof target === 'string')
     );
 };
 
