@@ -138,7 +138,7 @@ export const containerView = (config: DriverConfig, of: BoardJob, name: string):
 /** The suite's job, with a checkout that declares a gate: its pod holds the gate sidecar (issue #773). */
 export const gatedOf = (of: BoardJob): BoardJob => ({
     ...of,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
 });
 

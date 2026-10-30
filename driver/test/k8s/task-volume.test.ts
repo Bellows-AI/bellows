@@ -125,7 +125,7 @@ describe("the thread's task volume claim (issue #775)", () => {
         const { request, calls } = routed(() => undefined);
         const aborted = new AbortController();
         aborted.abort();
-        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+        const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
         await expect(runner(request).syncCheckout(repoJob, aborted.signal, SESSION_OF)).rejects.toThrow();
         expect(posts(calls)).toEqual([]);
     });

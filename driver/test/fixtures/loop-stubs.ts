@@ -784,7 +784,7 @@ export function stubGateStack(
 
 export const gatedJob = (n: number): BoardJob => ({
     ...job(n),
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     gates: {
         image: 'node:24',
         gates: [

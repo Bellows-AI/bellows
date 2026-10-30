@@ -48,7 +48,7 @@ token, and `core/test/ci-workflows.test.ts` pins every claim below.
   is the tag exactly, which `factory.image` falls back to. Each package's first push is private
   ([eks-runbook.md](eks-runbook.md), step 3).
 - **`npm` is the only job holding `id-token: write`**, and needs only `validate`. npmjs.com's trusted publisher for
-  `@bellows-ai/bellows-cli` must name `Bellows-AI/factory` and `release-image.yml`, or the publish is refused; a tag that
+  `@bellows-ai/bellows-cli` must name `Bellows-AI/bellows` and `release-image.yml`, or the publish is refused; a tag that
   disagrees with `VERSION` publishes nothing. A `-rc` tag skips the job: candidates ship images and the chart only.
 
 ## Stated limits

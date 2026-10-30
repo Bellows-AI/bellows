@@ -41,9 +41,9 @@ async function claimed(on: JobStore = store): Promise<Claim> {
 const operation = (over: Partial<PrOperationWrite> = {}): PrOperationWrite => ({
     operationId: randomUUID(),
     operation: 'created',
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     prNumber: 42,
-    prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+    prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
     branch: 'fix/10',
     ...over,
 });

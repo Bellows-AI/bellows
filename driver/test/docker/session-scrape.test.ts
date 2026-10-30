@@ -67,10 +67,10 @@ describe('scraping the session opencode used', () => {
     it('scopes the readout to the task worktree when the job names a repo', () => {
         const line = opencodeSessionReadoutArgs(
             loadDriverConfig({}),
-            { ...opencodeJob, repo: 'Bellows-AI/factory' },
+            { ...opencodeJob, repo: 'Bellows-AI/bellows' },
             START
         );
-        expect(line).toContain(`OPENCODE_DIR=${TASK_MOUNT}/factory`);
+        expect(line).toContain(`OPENCODE_DIR=${TASK_MOUNT}/bellows`);
     });
 
     it('pulls the session id, finish reason and context stats out of the readout’s answer', () => {
@@ -381,7 +381,7 @@ describe('the cache watch', () => {
 describe('the runner env for a gated job', () => {
     const gated: BoardJob = {
         ...job,
-        repo: 'Bellows-AI/factory',
+        repo: 'Bellows-AI/bellows',
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         env: { CLAIM_TOKEN: 'board-secret' },
         gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
@@ -406,7 +406,7 @@ describe('the runner env for a gated job', () => {
      */
     const gateOnly: BoardJob = {
         ...job,
-        repo: 'Bellows-AI/factory',
+        repo: 'Bellows-AI/bellows',
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         gateEnv: { BELLOWS_GATE_URL: 'http://host.docker.internal:9099', BELLOWS_GATE_TOKEN: 'tok' },
     };

@@ -5,6 +5,8 @@ import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { clearExecutors, E2E_REPO, saveExecutor, withExecutor } from './executor.js';
 import {
     authoredBy,
+    CLOSING_GATE_STARTED_AT,
+    closingGatesThread,
     failedGateFollowUpThread,
     failedGateThread,
     followUpThread,
@@ -437,6 +439,25 @@ test.describe('the task detail page', () => {
         await page.setViewportSize({ width: 390, height: 1000 });
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: `${SHOTS}/task-detail-interrupted-390.png`, fullPage: true });
+        expect(problems).toEqual([]);
+    });
+
+    test('a running task whose agent finished shows which gate runs and how many are left', async ({ page }) => {
+        await routeThread(page, closingGatesThread);
+        const problems = watchConsole(page);
+        await page.clock.setFixedTime(new Date(Date.parse(CLOSING_GATE_STARTED_AT) + 134_000));
+        await page.goto(`/tasks/${closingGatesThread[0]!.id}`);
+
+        const strip = page.locator('.task-conversation .run-close-phase');
+        await expect(strip.getByRole('status')).toContainText('Agent finished — running checks');
+        await expect(strip.getByRole('status')).toContainText('3/5 gates passed');
+        const lint = strip.locator('li', { hasText: 'lint' });
+        await expect(lint).toContainText('running');
+        await expect(lint).toContainText('2m 14s');
+        await expect(strip.locator('li', { hasText: 'prettier' })).toContainText('pending');
+        await page.screenshot({ path: `${SHOTS}/task-detail-closing-gates.png`, fullPage: true });
+        await page.setViewportSize({ width: 390, height: 1000 });
+        await page.screenshot({ path: `${SHOTS}/task-detail-closing-gates-390.png`, fullPage: true });
         expect(problems).toEqual([]);
     });
 
