@@ -538,7 +538,7 @@ describe('F1: the credential mount and the attempt pair are the agent containerâ
         continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
-        repo: 'Bellows-AI/factory',
+        repo: 'Bellows-AI/bellows',
         env: { MEMBER_VAR: 'member' },
     } as BoardJob;
     const SESSION = { id: '55555555-5555-4555-8555-555555555555', resume: false };

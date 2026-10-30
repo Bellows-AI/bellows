@@ -31,7 +31,7 @@ const review = {
     resumeSessionId: null,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     env: { JIRA_TOKEN: 'jira' },
     reviewRun: { profile: 'security', ref: REF, timeoutMinutes: 5 },
 } as unknown as ReviewClaim;

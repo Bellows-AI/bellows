@@ -148,7 +148,12 @@ export const GATE_PILL: Record<GateCheck['status'], string> = {
     passed: 'pill pill-ok',
     failed: 'pill pill-bad',
     running: 'pill pill-done',
+    pending: 'pill',
 };
+
+/** A gate status in the reader's words: a gate left `pending` on a finished run never ran. */
+export const gateStatusLabel = (status: GateCheck['status'], terminal: boolean): string =>
+    status === 'pending' && terminal ? 'not run' : status;
 
 /**
  * The structured failure kind in the reader's words (issue 339) — the badge's label. Words, not
@@ -174,12 +179,47 @@ export const gateCountPill = (status: GateCheck['status'], count: number): strin
     count > 0 ? GATE_PILL[status] : 'pill';
 
 /** The one glance at a run's verification: how many gates passed, failed, are still running. */
-export function gateCounts(gates: GateCheck[] | null | undefined): { passed: number; failed: number; running: number } {
+export function gateCounts(gates: GateCheck[] | null | undefined): {
+    passed: number;
+    failed: number;
+    running: number;
+    pending: number;
+} {
     const list = gates ?? [];
     return {
+        pending: list.filter((gate) => gate.status === 'pending').length,
         passed: list.filter((gate) => gate.status === 'passed').length,
         failed: list.filter((gate) => gate.status === 'failed').length,
         running: list.filter((gate) => gate.status === 'running').length,
+    };
+}
+
+/** The close phase of a running task: the agent is done and the declared gates are walking. */
+export interface ClosePhase {
+    label: string;
+    passed: number;
+    total: number;
+    running: GateCheck | null;
+    gates: GateCheck[];
+}
+
+/**
+ * The close-phase progress of a run, or null when there is none to show: only a running run whose
+ * board-stored gate list is non-empty is in it. An absent list (a list response) is no strip, never "0/0".
+ */
+export function closePhase(job: Job): ClosePhase | null {
+    const gates = job.gates;
+    if (job.status !== 'running' || !gates || gates.length === 0) return null;
+    const unfinished = gates.some((gate) => gate.status === 'running' || gate.status === 'pending');
+    let label = 'Agent finished — checks passed, finishing up';
+    if (gates.some((gate) => gate.status === 'failed')) label = 'Agent finished — a check failed';
+    else if (unfinished) label = 'Agent finished — running checks';
+    return {
+        label,
+        passed: gates.filter((gate) => gate.status === 'passed').length,
+        total: gates.length,
+        running: gates.find((gate) => gate.status === 'running') ?? null,
+        gates,
     };
 }
 

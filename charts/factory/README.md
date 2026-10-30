@@ -1,6 +1,6 @@
-# The `factory` chart
+# Bellows Helm chart
 
-The Factory stack on Kubernetes: dashboard, driver, and OTLP collector. Every value is
+The Bellows stack on Kubernetes: dashboard, driver, and OTLP collector. Every value is
 commented in `values.yaml`; the executor, EKS prerequisites and isolation residuals are in
 [docs/kubernetes.md](../../docs/kubernetes.md).
 

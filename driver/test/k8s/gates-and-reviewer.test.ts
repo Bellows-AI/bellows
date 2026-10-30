@@ -367,7 +367,7 @@ describe('the kubernetes runner and the gates', () => {
     const gated = { ...gatedOf(job), ...SUPERVISED };
     const gate = {
         command: 'npm test',
-        cwd: `${TASK_MOUNT}/factory`,
+        cwd: `${TASK_MOUNT}/bellows`,
         env: {},
         timeoutMs: 1000,
     };

@@ -159,7 +159,7 @@ describe('the runner job spec', () => {
     it('starts a repo job in its task worktree', () => {
         const repoSpec = runnerJobSpec(
             loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-            { ...job, repo: 'Bellows-AI/factory' },
+            { ...job, repo: 'Bellows-AI/bellows' },
             {
                 id: SESSION,
                 resume: false,
@@ -167,7 +167,7 @@ describe('the runner job spec', () => {
         );
         expect(repoSpec.spec.template.spec.containers[0]!.env).toContainEqual({
             name: 'WORKDIR',
-            value: `${TASK_MOUNT}/factory`,
+            value: `${TASK_MOUNT}/bellows`,
         });
     });
 
@@ -175,7 +175,7 @@ describe('the runner job spec', () => {
         expect(() =>
             runnerJobSpec(
                 loadDriverConfig({ EXECUTOR: 'kubernetes' }),
-                { ...job, repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' },
+                { ...job, repo: 'Bellows-AI/bellows', rootJobId: 'not-a-uuid' },
                 {
                     id: SESSION,
                     resume: false,
@@ -552,7 +552,7 @@ describe('resources on every pod the driver specs', () => {
     // (not Job) in the fleet, a declared service under the attempt's headless Service, is sized
     // like everything else, or it lands wherever a pod slot is free.
     const REQUESTS = { requests: { cpu: '500m', memory: '1Gi' } };
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
 
     // The runner's pod is sized by its agent: the supervisor and the exporter beside it are small
     // scripts, and a request on each would multiply the pod's reservation by three.

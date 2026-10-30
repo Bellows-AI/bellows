@@ -217,6 +217,56 @@ describe('the scripted model endpoint in ask mode (issue #226)', () => {
         expect(unanswered.content[0]!.text).toBe('ANSWER=missing');
     });
 
+    const laterMessages = (result: Record<string, unknown>, trailing = 'Carry on.') => [
+        { role: 'user', content: 'Ask me a question.' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_ask', name: 'AskUserQuestion', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', ...result }] },
+        { role: 'user', content: [{ type: 'text', text: `<system-reminder>${trailing}</system-reminder>` }] },
+    ];
+
+    it('reports ANSWER=Blue when a later message follows the tool_result that carries the answer', async () => {
+        const { url } = await start({ ask: true });
+        await askRequest(url, []);
+        const answered = await askRequest(url, laterMessages({ content: 'User answered: "Blue"' }));
+        expect(answered.content[0]!.text).toBe('ANSWER=Blue');
+    });
+
+    it('still reports ANSWER=missing when the toolu_ask result does not carry the answer, wherever it sits', async () => {
+        const { url } = await start({ ask: true });
+        await askRequest(url, []);
+        const unanswered = await askRequest(
+            url,
+            laterMessages({ content: 'denied', is_error: true }, 'Blue is a colour.')
+        );
+        expect(unanswered.content[0]!.text).toBe('ANSWER=missing');
+    });
+
+    it('serves the tail of each ask-mode agent request on GET /asks', async () => {
+        const { url } = await start({ ask: true });
+        await askRequest(url, []);
+        await askRequest(url, laterMessages({ content: 'User answered: "Blue"' }));
+        const asks = (await (await fetch(`${url}/asks`)).json()) as {
+            asks: {
+                step: number;
+                tail: { role: string; types: string[] }[];
+                answerFound: boolean;
+                result: string | null;
+            }[];
+        };
+        expect(asks.asks).toHaveLength(2);
+        expect(asks.asks[0]).toMatchObject({ step: 1, tail: [], answerFound: false, result: null });
+        expect(asks.asks[1]).toMatchObject({
+            step: 2,
+            answerFound: true,
+            result: 'User answered: "Blue"',
+            tail: [
+                { role: 'assistant', types: ['tool_use'] },
+                { role: 'user', types: ['tool_result'] },
+                { role: 'user', types: ['text'] },
+            ],
+        });
+    });
+
     it('plays the board: pending on the first poll, then answered, with the POSTs counted', async () => {
         const { url } = await start({ ask: true });
         const poll = async () =>

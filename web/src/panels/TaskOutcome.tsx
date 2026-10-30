@@ -3,7 +3,7 @@ import { wallClock } from '../format.js';
 import { PRODUCT_NAME } from '../brand.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
-import type { AuthorRef, GateCheck, Job } from '../api/useJobs.js';
+import { isTerminal, type AuthorRef, type GateCheck, type Job } from '../api/useJobs.js';
 import {
     closureOf,
     type FollowUpViewer,
@@ -126,12 +126,12 @@ function InterruptionsSection({ interruptions, runs }: { interruptions: ThreadIn
 /** The Verification section: the newest run's gate counts — only what happened — and a link to
  * the verification panel in the main column, which carries each gate's output. Split out of
  * `TaskOutcome` for the same reason as `ResultSection`. */
-function VerificationSection({ gates }: { gates: GateCheck[] }) {
+function VerificationSection({ gates, terminal }: { gates: GateCheck[]; terminal: boolean }) {
     return (
         <section>
             <h3 className="task-outcome-label">Verification</h3>
             <p className="msg-meta">
-                <GateCountPills gates={gates} />
+                <GateCountPills gates={gates} terminal={terminal} />
             </p>
             {/* The anchor is a focus target on the panel itself, so keyboard and pointer land in
                 the same place. */}
@@ -275,7 +275,9 @@ export function TaskOutcome({ jobs, viewer }: { jobs: Job[]; viewer: FollowUpVie
                         <KeyValues pairs={executionPairs} />
                     </section>
                 ) : null}
-                {latest.gates != null && latest.gates.length > 0 ? <VerificationSection gates={latest.gates} /> : null}
+                {latest.gates != null && latest.gates.length > 0 ? (
+                    <VerificationSection gates={latest.gates} terminal={isTerminal(latest.status)} />
+                ) : null}
                 {publish !== null || issue !== null ? (
                     <PublishedWorkSection
                         publish={publish}

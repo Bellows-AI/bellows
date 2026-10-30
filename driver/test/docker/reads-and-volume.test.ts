@@ -122,12 +122,12 @@ describe('readDocker and its listing parsers (#869)', () => {
 describe('the docker runner and the gates', () => {
     const gated: BoardJob = {
         ...job,
-        repo: 'Bellows-AI/factory',
+        repo: 'Bellows-AI/bellows',
         gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
     };
     const gate = {
         command: 'npm test',
-        cwd: `/task/factory`,
+        cwd: `/task/bellows`,
         env: {},
         timeoutMs: 1000,
     };
@@ -164,7 +164,7 @@ describe('the docker runner and the gates', () => {
         const daemon = recording();
         const supervised = fakeSteps((step) => (step.kind === 'review' ? ok() : ok('{"ok":true,"reason":null}')));
         const runner = dockerRunner(daemon.exec, { steps: supervised.sink });
-        const caller: BoardJob = { ...job, repo: 'Bellows-AI/factory', reviewerProfiles: ['security'] };
+        const caller: BoardJob = { ...job, repo: 'Bellows-AI/bellows', reviewerProfiles: ['security'] };
         const review = {
             ...caller,
             id: '66666666-6666-4666-8666-666666666666',

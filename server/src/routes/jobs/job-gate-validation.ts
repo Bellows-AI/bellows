@@ -1,7 +1,7 @@
 import type { GateReport } from '../../db/jobs/job-store-types.js';
 import { UUID } from '../../identifiers.js';
 import { body } from '../helpers.js';
-import { GATE_NAME_LIMIT, OUTPUT_LIMIT } from './job-limits.js';
+import { GATE_NAME_LIMIT, nullableTimestamp, OUTPUT_LIMIT } from './job-limits.js';
 
 /** The longest reason a reused gate entry may carry. */
 const REUSED_REASON_LIMIT = 512;
@@ -12,8 +12,8 @@ function gateEntryCore(entry: Record<string, unknown>): Pick<GateReport, 'name' 
     if (typeof name !== 'string' || !name.trim() || name.length > GATE_NAME_LIMIT) {
         return `every gate needs a name of at most ${GATE_NAME_LIMIT} characters`;
     }
-    if (status !== 'running' && status !== 'passed' && status !== 'failed') {
-        return "gate status must be 'running', 'passed' or 'failed'";
+    if (status !== 'pending' && status !== 'running' && status !== 'passed' && status !== 'failed') {
+        return "gate status must be 'pending', 'running', 'passed' or 'failed'";
     }
     if (exitCode !== undefined && exitCode !== null && !Number.isInteger(exitCode)) {
         return 'gate exitCode must be an integer or null';
@@ -43,9 +43,18 @@ function validateGateEntry(raw: unknown): GateReport | string {
     if (output !== undefined && output !== null && typeof output !== 'string') {
         return 'gate output must be a string or null';
     }
+    const { startedAt } = entry;
+    if (startedAt !== undefined && (typeof startedAt !== 'string' || !nullableTimestamp(startedAt))) {
+        return 'gate startedAt must be a timestamp';
+    }
     const record = gateEntryRecord(entry);
     if (typeof record === 'string') return record;
-    return { ...core, output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null, ...record };
+    return {
+        ...core,
+        output: typeof output === 'string' ? output.slice(0, OUTPUT_LIMIT) : null,
+        ...(startedAt === undefined ? {} : { startedAt }),
+        ...record,
+    };
 }
 
 /** A gate entry's `reused` attribution, or the reason it is refused. */
