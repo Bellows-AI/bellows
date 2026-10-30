@@ -15,6 +15,9 @@ export interface NotificationEventRow {
     command: string;
     reason: string | null;
     prUrl: string | null;
+    /** The asking question's id and its texts in ask order; null for every kind but task.question. */
+    questionId: string | null;
+    questions: string[] | null;
     occurredAt: string;
 }
 
@@ -31,6 +34,8 @@ export interface NotificationEvent {
     reason: string | null;
     prUrl: string | null;
     link: string;
+    questionId: string | null;
+    questions: string[] | null;
     occurredAt: string;
 }
 
@@ -47,6 +52,8 @@ export function notificationEventOf(row: NotificationEventRow, publicUrl: string
         reason: row.reason,
         prUrl: row.prUrl,
         link: new URL(`/tasks/${row.rootJobId}`, publicUrl).toString(),
+        questionId: row.questionId,
+        questions: row.questions,
         occurredAt: row.occurredAt,
     };
 }

@@ -15,6 +15,8 @@ const event: NotificationEvent = notificationEventOf(
         command: 'fix it',
         reason: 'policy',
         prUrl: null,
+        questionId: null,
+        questions: null,
         occurredAt: '2026-10-30T10:00:00.000Z',
     },
     'https://factory.example.com'
