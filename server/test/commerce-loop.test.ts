@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommerceClient, UsageResult } from '../src/commerce/commerce-client.js';
-import { createUsageReporter, startCommerceLoop } from '../src/commerce/commerce-loop.js';
+import { createUsageReporter } from '../src/commerce/commerce-loop.js';
 import type { CommerceStore, UsageKey, UsageLease, UsageRecord } from '../src/db/commerce-store.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 
@@ -135,42 +135,5 @@ describe('usage reporter', () => {
         const healthy = fakeStore([[record(1)]]);
         await createUsageReporter({ orgs: registry({ none: null, second: healthy }), client: ackAll() })();
         expect(healthy.settled).toHaveLength(1);
-    });
-});
-
-describe('commerce loop', () => {
-    it('never overlaps a pass', async () => {
-        vi.useFakeTimers();
-        let running = 0;
-        let peak = 0;
-        let release: () => void = () => {};
-        const pass = vi.fn(async () => {
-            running += 1;
-            peak = Math.max(peak, running);
-            await new Promise<void>((resolve) => {
-                release = resolve;
-            });
-            running -= 1;
-        });
-        const stop = startCommerceLoop(pass, 10);
-        await vi.advanceTimersByTimeAsync(55);
-        expect(peak).toBe(1);
-        expect(pass).toHaveBeenCalledTimes(1);
-        release();
-        await vi.advanceTimersByTimeAsync(15);
-        expect(pass.mock.calls.length).toBeGreaterThan(1);
-        stop();
-    });
-
-    it('a throwing pass does not stop the loop', async () => {
-        vi.useFakeTimers();
-        vi.spyOn(console, 'error').mockImplementation(() => {});
-        const pass = vi.fn(async () => {
-            throw new Error('boom');
-        });
-        const stop = startCommerceLoop(pass, 10);
-        await vi.advanceTimersByTimeAsync(35);
-        expect(pass.mock.calls.length).toBeGreaterThanOrEqual(3);
-        stop();
     });
 });

@@ -11,7 +11,7 @@ Optional link to an external commerce service, off by default: the service pushe
 | Outbox: enqueue closed claims, token-checked lease and settle, member read | `server/src/db/commerce-store.ts` | `server/test-db/commerce-store.test.ts` |
 | Plan push write: one guarded upsert, org existence decided by the write | `server/src/db/commerce-plan-writer.ts` | `server/test-db/commerce-plan-writer.test.ts` |
 | Outbound `POST {COMMERCE_URL}/v1/orgs/{orgId}/usage` | `server/src/commerce/commerce-client.ts` | `server/test/commerce-client.test.ts` |
-| Delivery loop, every replica, `commerce_usage` pass | `server/src/commerce/commerce-loop.ts`, `server/src/main.ts` | `server/test/commerce-loop.test.ts` |
+| Delivery loop, every replica, `commerce_usage` pass | `server/src/commerce/commerce-loop.ts`, `server/src/interval-loop.ts`, `server/src/main.ts` | `server/test/commerce-loop.test.ts`, `server/test/interval-loop.test.ts` |
 | `GET /api/commerce`, `PUT /api/commerce/orgs/:orgId/plan` | `server/src/routes/commerce.ts`, `server/src/app.ts` | `server/test/routes.commerce.test.ts` |
 | The `commerce` credential class | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 

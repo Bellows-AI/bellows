@@ -3,7 +3,7 @@ import postgres, { type Sql } from 'postgres';
 import { buildApp } from './app.js';
 import { callbackPath, createGitHubIdentityClient } from './auth/github.js';
 import { createAuthStore } from './auth/store.js';
-import { resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
+import { type AppConfig, resolveConfig, type GitHubConfig, type JiraOAuthConfig } from './config.js';
 import { LOCAL_ORG_ID } from './identifiers.js';
 import { createAttemptOfLease, createPairMatches } from './db/attempt-of-lease.js';
 import { liveOAuthConnectionsOf } from './db/connection-bindings.js';
@@ -14,8 +14,8 @@ import { startBatchPrObserver } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
 import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { admissionOccupancy } from './db/jobs/job-store-admission.js';
-import { createServerMetrics } from './metrics.js';
-import { createOrgRegistry } from './orgs.js';
+import { createServerMetrics, type ServerMetrics } from './metrics.js';
+import { createOrgRegistry, type OrgRegistry } from './orgs.js';
 import type { GithubMint, GithubRevoke } from './routes/github-credential.js';
 import { createPostgresStore } from './telemetry/store.js';
 import { migrate } from './db/migrate.js';
@@ -27,9 +27,33 @@ import {
 import { jiraRegistration } from './integrations/providers/jira.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
+import { createConnectorRegistry } from './notifications/connector.js';
+import { startNotificationDelivery } from './notifications/delivery-loop.js';
 import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 import type { SecretDiagnostic } from './secrets/secret-store.js';
+
+/** One registry: the subscription routes validate against it and delivery sends through it. */
+const connectors = createConnectorRegistry([]);
+
+/**
+ * The outbox deliveries run on every replica: closed claims go to the commerce service, off by default
+ * (docs/commerce.md); notification rows go through `connectors`, off until a channel ships (docs/notifications.md).
+ */
+function startDeliveries({
+    config,
+    orgs,
+    metrics,
+    ready,
+}: {
+    config: AppConfig;
+    orgs: OrgRegistry;
+    metrics: ServerMetrics;
+    ready: Promise<unknown>;
+}): void {
+    startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready });
+    startNotificationDelivery({ connectors, publicUrl: config.integrations.callbackOrigin, orgs, metrics, ready });
+}
 
 /** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
 const runnerCredentialDeps = (
@@ -196,6 +220,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         config,
         orgs,
         ready,
+        notificationConnectors: connectors,
         store,
         secrets,
         integrations,
@@ -245,8 +270,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         )
     );
 
-    // Closed claims are reported to the commerce service on every replica; off by default (docs/commerce.md).
-    startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready });
+    startDeliveries({ config, orgs, metrics, ready });
 
     await app.listen({ port: config.port, host: config.host });
 }

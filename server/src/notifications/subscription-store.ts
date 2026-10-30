@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import type { NotificationEvent, NotificationKind } from '@factory-ai/core';
+import type { NotificationKind } from '@factory-ai/core';
 
 /** What a write carries; the row's id and stamps are the store's. */
 export interface SubscriptionFields {
@@ -20,13 +20,6 @@ export interface SubscriptionView extends SubscriptionFields {
     updatedAt: string;
 }
 
-/** The `deliver()` target of a matching subscription, plus the row id. */
-export interface SubscriptionTarget {
-    id: string;
-    kind: string;
-    config: unknown;
-}
-
 export interface NotificationSubscriptionStore {
     list(): Promise<SubscriptionView[]>;
     create(fields: SubscriptionFields): Promise<SubscriptionView>;
@@ -34,12 +27,6 @@ export interface NotificationSubscriptionStore {
     update(id: string, fields: SubscriptionFields): Promise<SubscriptionView | null>;
     /** False when this org has no such row. */
     remove(id: string): Promise<boolean>;
-    /**
-     * The enabled subscriptions of this org that want the event: kind listed, and each non-empty filter
-     * containing the event's repo/workflow (a null never satisfies a filter). A failed read throws: it is
-     * never "no subscribers".
-     */
-    matching(event: Pick<NotificationEvent, 'kind' | 'repo' | 'workflow'>): Promise<SubscriptionTarget[]>;
 }
 
 interface Row {
@@ -120,18 +107,6 @@ export function createNotificationSubscriptionStore({
                 delete from notification_subscription where org_id = ${orgId} and id = ${id} returning id
             `;
             return rows.length > 0;
-        },
-        async matching(event) {
-            await gate();
-            const rows = await sql<{ id: string; connector_kind: string; connector_config: unknown }[]>`
-                select id, connector_kind, connector_config from notification_subscription
-                where org_id = ${orgId} and enabled
-                  and ${event.kind}::text = any(event_kinds)
-                  and (cardinality(repos) = 0 or ${event.repo}::text = any(repos))
-                  and (cardinality(workflows) = 0 or ${event.workflow}::text = any(workflows))
-                order by created_at, id
-            `;
-            return rows.map((r) => ({ id: r.id, kind: r.connector_kind, config: r.connector_config }));
         },
     };
 }
