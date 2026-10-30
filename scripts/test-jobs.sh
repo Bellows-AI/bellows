@@ -417,7 +417,7 @@ cleanup() {
         node "$REPO/scripts/lane-slow-jobs.mjs" "$work/driver.log" "${LANE_SLOW_S:-30}" >"$work/slow-jobs.txt" 2>&1 || true
         [ -s "$work/slow-jobs.txt" ] && printf '[slow-jobs] %s\n' "$(tail -n 1 "$work/slow-jobs.txt")"
     fi
-    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt "$work"/stalls/*; do
+    for log in "$work"/*.log "$work"/*.supervisor-*.json "$work"/*.requests.json "$work"/*.worker-*.tsv "$work"/slow-jobs.txt "$work"/stalls/*; do
         [ -f "$log" ] && cp "$log" "${TIMINGS_FILE%.tsv}.$(basename "$log")"
     done
     rm -rf "$work" "$SECRETS_ENV_FILE_PATH"
@@ -3703,11 +3703,13 @@ ask_lane() {
     lane_group_down "ask-$mode"
     posts="$(node -e 'fetch(process.argv[1] + "/questions").then((r) => r.json()).then((j) => console.log(j.questionPosts))' "http://127.0.0.1:$port")"
     hooks="$(node -e 'fetch(process.argv[1] + "/hooks").then((r) => r.json()).then((j) => console.log(j.hookRequests))' "http://127.0.0.1:$port")"
+    # The tail of every agent request, kept on every run (copied to artifacts/jobs/ at exit) so a rare miss shows what the CLI sent.
+    node -e 'fetch(process.argv[1] + "/asks").then((r) => r.text()).then((t) => process.stdout.write(t))' "http://127.0.0.1:$port" >"$work/ask-$mode.requests.json" 2>/dev/null
     lane_endpoint_stop "$fake_pid"
-    if grep -q 'ANSWER=Blue' "$log"; then
+    if grep 'ANSWER=Blue' "$log" >/dev/null; then
         ok "the answer reaches the same run (ANSWER=Blue in the progress output, $mode)"
     else
-        bad "the answer reaches the same run (ANSWER=Blue in the progress output, $mode)" "$(tail -5 "$log")"
+        bad "the answer reaches the same run (ANSWER=Blue in the progress output, $mode)" "$(tail -5 "$log"); request tails: ask-$mode.requests.json in the run's artifacts"
     fi
     if [ "$posts" = 1 ]; then
         ok "exactly one question was posted ($mode)"
