@@ -10,6 +10,7 @@ import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import { bindConnections, lineageHarness, newRoot } from './integration-store-faults.js';
 import {
+    accountOf,
     begin,
     codeCalls,
     connectionsOf,
@@ -390,5 +391,98 @@ describe.skipIf(!enabled)('jira authorization', () => {
             await jobs.bindConnection(created.id, { connectionId: connection!.id, bindingRevision: row!.rev }, CAROL.id)
         ).toMatchObject({ ok: true });
         expect(await drain()).toContain(created.id);
+    });
+    describe('with a jobId (BEL-174)', () => {
+        const jobs = () => createJobStore({ sql: db.sql, orgId: ORG });
+        /** A running root of `userId` that asked for Jira with nothing to bind: an open runtime requirement. */
+        const askedRoot = async (userId: string) => {
+            const created = await jobs().create('do the work', userId, { repo: null, executor: null });
+            if (typeof created === 'string') throw new Error(created);
+            const claim = (await jobs().claim('w', 60)) as Claim | null;
+            if (claim?.id !== created.id) throw new Error('expected the new root to be claimed');
+            expect(await jobs().requireConnection(claim.id, claim.leaseToken, 'jira')).toMatchObject({
+                answer: 'waiting',
+            });
+            return claim;
+        };
+        const requirements = (id: string) =>
+            db.sql<{ outcome: string | null; satisfied_at: Date | null }[]>`
+                select outcome, satisfied_at from job_integration_requirement where root_job_id = ${id}
+            `;
+        const bindings = (id: string) =>
+            db.sql<{ connection_id: string }[]>`
+                select connection_id from job_connection_binding where org_id = ${ORG} and root_job_id = ${id}
+            `;
+
+        it('start stores the jobId on the authorization row; a malformed one is refused', async () => {
+            const claim = await askedRoot(ALICE.id);
+            const runtime = jiraRuntime(db.sql, fake);
+            const started = await begin(runtime, ORG, ALICE.id, { jobId: claim.id });
+            const [row] = await db.sql<{ bind_job_id: string | null }[]>`
+                select bind_job_id from integration_authorization where id = ${started.authorizationId}
+            `;
+            expect(row!.bind_job_id).toBe(claim.id);
+            await expect(begin(runtime, ORG, ALICE.id, { jobId: 'not-a-uuid' })).rejects.toThrow('bad-input');
+        });
+
+        it('the callback binds the new connection to the task and satisfies the open runtime requirement', async () => {
+            const tag = newTag();
+            const claim = await askedRoot(ALICE.id);
+            script(fake, { tag });
+            const done = await (await begin(jiraRuntime(db.sql, fake), ORG, ALICE.id, { jobId: claim.id })).complete();
+            expect(done).toMatchObject({ ok: true });
+            const [connection] = await connectionsOf(db.sql, tag);
+            expect((await bindings(claim.id)).map((b) => b.connection_id)).toEqual([connection!.id]);
+            expect(await requirements(claim.id)).toMatchObject([{ outcome: 'bound' }]);
+        });
+
+        it('a refused bind (another user is the execution user) still completes the connection', async () => {
+            const tag = newTag();
+            const claim = await askedRoot(CAROL.id);
+            script(fake, { tag });
+            const done = await (await begin(jiraRuntime(db.sql, fake), ORG, BOB.id, { jobId: claim.id })).complete();
+            expect(done).toMatchObject({ ok: true });
+            expect(await connectionsOf(db.sql, tag)).toHaveLength(1);
+            expect(await bindings(claim.id)).toHaveLength(0);
+            expect(await requirements(claim.id)).toMatchObject([{ outcome: null }]);
+        });
+
+        it('a reconnect with jobId leaves the binding usable and satisfies a reconnect requirement', async () => {
+            const tag = newTag();
+            const runtime = jiraRuntime(db.sql, fake);
+            script(fake, { tag });
+            await (await begin(runtime, ORG, ALICE.id)).complete();
+            const [connection] = await connectionsOf(db.sql, tag);
+            const created = await jobs().create('do the work', ALICE.id, { repo: null, executor: null });
+            if (typeof created === 'string') throw new Error(created);
+            const [rev] = await db.sql<{ rev: number }[]>`
+                select binding_revision as rev from job where id = ${created.id}
+            `;
+            expect(
+                await jobs().bindConnection(
+                    created.id,
+                    { connectionId: connection!.id, bindingRevision: rev!.rev },
+                    ALICE.id
+                )
+            ).toMatchObject({ ok: true });
+            const claim = (await jobs().claim('w', 60)) as Claim | null;
+            if (claim?.id !== created.id) throw new Error('expected the new root to be claimed');
+            await db.sql`
+                update integration_grant set status = 'reconnect_required' where external_account_id = ${accountOf(tag)}
+            `;
+            expect(await jobs().requireConnection(claim.id, claim.leaseToken, 'jira')).toMatchObject({
+                answer: 'waiting',
+            });
+
+            const reconnect = await begin(runtime, ORG, ALICE.id, { connectionId: connection!.id, jobId: claim.id });
+            expect(await reconnect.complete()).toMatchObject({ ok: true, connectionId: connection!.id });
+
+            expect(await requirements(claim.id)).toMatchObject([{ outcome: 'bound' }]);
+            expect(
+                await resolveAs(runtime, ORG, ALICE.id, { rootJobId: claim.id, connectionId: connection!.id })
+            ).toMatchObject({
+                ok: true,
+            });
+        });
     });
 });

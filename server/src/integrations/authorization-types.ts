@@ -34,6 +34,8 @@ export interface StartAuthorizationInput {
     access?: AuthorizationAccess | undefined;
     /** One site (a bare host or an https URL) the connection is narrowed to; absent takes every accessible site. */
     site?: string | undefined;
+    /** The task whose connection requirement this connect answers: the callback binds the new connection to it. */
+    jobId?: string | undefined;
 }
 
 export type AuthorizationAccess = 'read' | 'write';

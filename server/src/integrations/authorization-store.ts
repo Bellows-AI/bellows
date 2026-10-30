@@ -104,6 +104,7 @@ export interface NewAuthorization {
     verifier: string | null;
     returnTo: string;
     interactionId: string | null;
+    bindJobId: string | null;
     requestedAccess: 'read' | 'write';
     expectedSite: string | null;
     ttlMs: number;
@@ -116,11 +117,11 @@ export async function insertAuthorization(
 ): Promise<{ id: string; expiresAt: string }> {
     const [row] = await sql<{ id: string; expires_at: Date }[]>`
         insert into integration_authorization
-            (org_id, user_id, provider, intent, connection_id, expected_account_id, interaction_id, state_hash,
+            (org_id, user_id, provider, intent, connection_id, expected_account_id, interaction_id, bind_job_id, state_hash,
              pkce_verifier, return_to, requested_access, expected_site, expires_at)
         values (${input.orgId}, ${input.userId}, ${input.provider},
                 ${input.reconnect ? 'reconnect' : 'connect'}, ${input.reconnect?.connectionId ?? null},
-                ${input.reconnect?.accountId ?? null}, ${input.interactionId}, ${input.stateHash},
+                ${input.reconnect?.accountId ?? null}, ${input.interactionId}, ${input.bindJobId}, ${input.stateHash},
                 ${input.verifier}, ${input.returnTo}, ${input.requestedAccess}, ${input.expectedSite},
                 now() + (${input.ttlMs}::double precision * interval '1 millisecond'))
         returning id, expires_at
@@ -128,7 +129,7 @@ export async function insertAuthorization(
     return { id: row!.id, expiresAt: row!.expires_at.toISOString() };
 }
 
-interface Owner {
+export interface Owner {
     orgId: string;
     userId: string;
     stateHash: string;
@@ -181,6 +182,15 @@ export async function classifyUnconsumed(
     return rows[0]
         ? { failure: 'replayed', returnTo: rows[0].return_to }
         : { failure: 'state-mismatch', returnTo: '/' };
+}
+
+/** The task a connect was started from (BEL-174), by the owner's state; null for none or an unknown state. */
+export async function bindJobOf(sql: Sql, owner: Owner): Promise<string | null> {
+    const [row] = await sql<{ bind_job_id: string | null }[]>`
+        select bind_job_id from integration_authorization
+        where state_hash = ${owner.stateHash} and user_id = ${owner.userId} and org_id = ${owner.orgId}
+    `;
+    return row?.bind_job_id ?? null;
 }
 
 export async function readAuthorization(

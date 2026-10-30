@@ -121,6 +121,40 @@ export async function bindConnectionRow(
 }
 
 /**
+ * The OAuth return binds the new connection to the task it was started from (BEL-174). The revision is read here,
+ * under the thread lock, never carried through the browser: the person named the connection, not a revision. Answers
+ * what the owner's own bind would: refusals are values.
+ */
+export async function bindAuthorizedConnectionRow(
+    sql: Sql,
+    args: { orgId: string; jobId: string; connectionId: string; userId: string }
+): Promise<BindConnectionResult> {
+    const { orgId, jobId, connectionId, userId } = args;
+    return sql.begin(async (tx) => {
+        const [job] = await tx<
+            { root_job_id: string }[]
+        >`select root_job_id from job where org_id = ${orgId} and id = ${jobId}`;
+        if (!job) return { ok: false, reason: 'missing' };
+        const [root] = await tx<
+            { binding_revision: number }[]
+        >`select binding_revision from job where org_id = ${orgId} and id = ${job.root_job_id}`;
+        const added = await addBindingsInTx(tx, {
+            orgId,
+            rootJobId: job.root_job_id,
+            expectedRevision: root!.binding_revision,
+            connectionIds: [connectionId],
+            actor: { userId },
+            source: 'requirement',
+        });
+        if (added.ok) return added;
+        return {
+            ok: false,
+            reason: added.reason === 'not-found' || added.reason === 'not-execution-user' ? 'missing' : added.reason,
+        };
+    });
+}
+
+/**
  * True when the root's selected skills require a provider with no live binding (and none dismissed), after
  * recording a `missing` requirement for each. The skills are the root's (a follow-up or retry reads them there). A read that
  * throws propagates and rolls the claim back; only a confirmed empty answer records anything.
