@@ -23,4 +23,9 @@ describe('ERROR_CODES', () => {
     it('carries the unconfigured-provider refusal the connect button branches on', () => {
         expect(ERROR_CODES.INTEGRATION_NOT_CONFIGURED).toBe('INTEGRATION_NOT_CONFIGURED');
     });
+
+    it('carries the subscription refusals the settings UI will branch on', () => {
+        expect(ERROR_CODES.UNKNOWN_CONNECTOR).toBe('UNKNOWN_CONNECTOR');
+        expect(ERROR_CODES.BAD_CONNECTOR_CONFIG).toBe('BAD_CONNECTOR_CONFIG');
+    });
 });

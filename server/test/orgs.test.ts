@@ -113,6 +113,7 @@ describe('createOrgRegistry', () => {
         expect(runtime).toBeDefined();
         for (const gone of ['userRepos', 'cloneQueue', 'purger', 'facts']) expect(runtime).not.toHaveProperty(gone);
         expect(runtime?.userExecutors).toBeDefined();
+        expect(runtime?.notificationSubscriptions).toBeDefined();
     });
 
     it('reads plans from the origin only in the none arm with an origin base', () => {
