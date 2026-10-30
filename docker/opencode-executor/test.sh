@@ -74,11 +74,9 @@ done
 # The baked policy, exactly: permissionless inside the workspace, hard gates outside. "ask" is
 # unusable headless — an unanswered ask auto-rejects — so nothing may resolve to it. The read
 # allow-all is pinned because opencode seeds a default `*.env.*` deny that once matched a test
-# file's name (routes.env.test.ts) and broke a run mid-investigation. The bash table is the git
-# guard (issue #73): opencode takes no hooks for this, so the deny lives here, and because the
-# rules resolve LAST MATCHING WINS, key order is load-bearing — the exact-match allows sit
-# after the deny globs they must outrank, and no allow uses a trailing glob that a compound
-# command could ride through.
+# file's name (routes.env.test.ts) and broke a run mid-investigation. The bash table is the
+# catch-all allow alone: every git and gh operation is the agent's, and the driver-side sync
+# refusal is the only check on the branch.
 policy="$(docker run --rm --entrypoint sh "$IMAGE" -c 'cat "$OPENCODE_CONFIG"')"
 expect_exact() { # expect_exact <name> <json> <dotted.key.path> <want>
     local got
@@ -95,34 +93,15 @@ expect_exact 'everything is allowed by default' "$policy" 'permission.*' allow
 expect_exact 'read allows every path'           "$policy" 'permission.read.*' allow
 expect_exact 'webfetch is denied'               "$policy" 'permission.webfetch' deny
 expect_exact 'bash is allowed by default'       "$policy" 'permission.bash.*' allow
-expect_exact 'git switch is denied'             "$policy" 'permission.bash.git switch *' deny
-expect_exact 'git checkout is denied'           "$policy" 'permission.bash.git checkout *' deny
-expect_exact 'git worktree is denied'           "$policy" 'permission.bash.git worktree *' deny
-expect_exact 'branch deletion is denied'        "$policy" 'permission.bash.git branch -d*' deny
-expect_exact 'a branch rename is denied'        "$policy" 'permission.bash.git branch -m*' deny
-expect_exact 'a hard reset is denied'           "$policy" 'permission.bash.git reset --hard *' deny
-expect_exact 'git rebase is denied'             "$policy" 'permission.bash.git rebase *' deny
-expect_exact 'git merge is denied'              "$policy" 'permission.bash.git merge *' deny
-expect_exact 'worktree list stays allowed'      "$policy" 'permission.bash.git worktree list' allow
-expect_exact 'rebase --abort stays allowed'     "$policy" 'permission.bash.git rebase --abort' allow
-expect_exact 'merge --quit stays allowed'       "$policy" 'permission.bash.git merge --quit' allow
-expect_exact 'merge --continue stays allowed'   "$policy" 'permission.bash.git merge --continue' allow
-expect_exact 'merging origin/main is allowed'   "$policy" 'permission.bash.git merge origin/main' allow
-expect_exact 'merging origin/main no-edit is allowed' "$policy" 'permission.bash.git merge --no-edit origin/main' allow
-expect_exact 'merging origin/main no-edit (flag last) is allowed' "$policy" 'permission.bash.git merge origin/main --no-edit' allow
 expect_exact 'external paths are denied by default' "$policy" 'permission.external_directory.*' deny
 expect_exact 'the runner scratch is reachable'  "$policy" 'permission.external_directory./tmp/*' allow
 expect_exact 'home scratch is reachable'        "$policy" 'permission.external_directory./home/node/*' allow
-if node -e \
-    'const p = JSON.parse(process.argv[1]).permission.bash; const keys = Object.keys(p);
-     const lastDeny = keys.reduce((acc, k, i) => (p[k] === "deny" ? i : acc), -1);
-     const firstAllow = keys.findIndex((k, i) => i > 0 && p[k] === "allow");
-     process.exit(firstAllow > lastDeny ? 0 : 1);' \
+if node -e 'const b = JSON.parse(process.argv[1]).permission.bash;
+     process.exit(Object.keys(b).length === 1 && b["*"] === "allow" ? 0 : 1);' \
     "$policy" >/dev/null 2>&1; then
-    ok 'bash-guard allows rank after the denies (last matching rule wins)'
+    ok 'the bash table is the catch-all allow alone, no git deny remains'
 else
-    bad 'bash-guard allows rank after the denies (last matching rule wins)' \
-        'an allow placed before a deny it must outrank silently loses'
+    bad 'the bash table is the catch-all allow alone, no git deny remains' "$policy"
 fi
 
 # The telemetry surface is baked, not fetched at runtime: the plugin package must exist in the
@@ -162,9 +141,9 @@ fi
 # The baked policy is root-owned twice over (issue #452): the global copy, the first config layer,
 # fixes the key order every later layer merges into; the managed copy (/etc/opencode) outranks
 # every layer the agent can write and restores each baked value. A checkout config that drops the
-# plugins, flips webfetch and lists the deny globs BEFORE the catch-all allows — a reorder that
-# would otherwise cancel them under last-match-wins — still runs with the baked plugins, values and
-# order. It can still add a narrower allow: that limit is stated in docs/security.md.
+# plugins, flips webfetch and lists the external-path allow BEFORE the catch-all deny — a reorder
+# that would otherwise cancel it under last-match-wins — still runs with the baked plugins, values
+# and order. It can still add a narrower allow: that limit is stated in docs/security.md.
 owned="$(docker run --rm --entrypoint sh "$IMAGE" -c '
     for f in /etc/opencode/opencode.json "$OPENCODE_CONFIG"; do
         [ ! -w "$f" ] && [ ! -w "${f%/*}" ] && [ "$(stat -c %u:%g "$f")" = 0:0 ] || { echo "writable: $f"; exit 1; }
@@ -181,14 +160,13 @@ else
 fi
 effective="$(docker run --rm --entrypoint sh "$IMAGE" -c '
     mkdir -p /tmp/repo && cd /tmp/repo && git init -q
-    printf "%s" "{\"plugin\":[],\"permission\":{\"webfetch\":\"allow\",\"bash\":{\"git checkout *\":\"deny\",\"*\":\"allow\"},\"external_directory\":{\"/tmp/*\":\"allow\",\"*\":\"allow\"}}}" > opencode.json
+    printf "%s" "{\"plugin\":[],\"permission\":{\"webfetch\":\"allow\",\"external_directory\":{\"/tmp/*\":\"allow\",\"*\":\"allow\"}}}" > opencode.json
     opencode debug config 2>/dev/null' 2>&1)"
 if node -e '
     const s = process.argv[1]; const c = JSON.parse(s.slice(s.indexOf("{")));
     const before = (o, a, b) => Object.keys(o).indexOf(a) < Object.keys(o).indexOf(b);
-    const { bash, external_directory: ext } = c.permission;
+    const { external_directory: ext } = c.permission;
     const ok = c.plugin.some((p) => p.includes("@gcornut/opencode-otel")) && c.permission.webfetch === "deny" &&
-        bash["git checkout *"] === "deny" && before(bash, "*", "git checkout *") &&
         ext["*"] === "deny" && before(ext, "*", "/tmp/*");
     process.exit(ok ? 0 : 1);' "$effective" >/dev/null 2>&1; then
     ok 'a checkout config cannot drop the telemetry plugin, flip or reorder the baked policy'
@@ -228,7 +206,7 @@ fi
 
 # The per-run allows, read from the config opencode actually runs with (`debug config`, through
 # the entrypoint): the baked policy is root-owned, so they ride OPENCODE_CONFIG_CONTENT, whose new
-# keys merge in after the baked deny globs.
+# keys merge in after the baked ones.
 #
 # The task volume allow: the driver's XDG_DATA_HOME names the volume at /task, and the entrypoint
 # opens exactly that subtree — `**`, because the allow must reach the tree's dot-directories. The
@@ -258,23 +236,6 @@ if node -e '
     ok 'the fence stays as baked without the driver-shaped XDG_DATA_HOME'
 else
     bad 'the fence stays as baked without the driver-shaped XDG_DATA_HOME' "${standalone:0:400}"
-fi
-
-# A checkout whose origin/HEAD names another default may merge it — exact allows, ranked after the
-# baked `git merge *` deny.
-REPO_DEV="$(mktemp -d)"
-git -C "$REPO_DEV" init -q && git -C "$REPO_DEV" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/develop
-chmod -R a+rwX "$REPO_DEV"
-branch="$(docker run --rm -v "$REPO_DEV:/workspace" "$IMAGE" debug config 2>/dev/null)"
-rm -rf "$REPO_DEV"
-if node -e '
-    const s = process.argv[1]; const b = JSON.parse(s.slice(s.indexOf("{"))).permission.bash;
-    const keys = Object.keys(b);
-    process.exit(b["git merge origin/develop"] === "allow" && keys.indexOf("git merge *") < keys.indexOf("git merge origin/develop") ? 0 : 1);' \
-    "$branch" >/dev/null 2>&1; then
-    ok 'the entrypoint allows merging a non-main origin/HEAD default, after the deny globs'
-else
-    bad 'the entrypoint allows merging a non-main origin/HEAD default, after the deny globs' "${branch:0:400}"
 fi
 
 # A missing WORKDIR must refuse in place, not start an agent in the wrong directory.
