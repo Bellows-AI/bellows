@@ -1,6 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { NOTIFICATION_KINDS, notificationEventOf, type NotificationEventRow } from '../src/notifications.js';
+import {
+    isSendResult,
+    NOTIFICATION_KINDS,
+    notificationEventOf,
+    type NotificationEventRow,
+} from '../src/notifications.js';
 
 const row = (over: Partial<NotificationEventRow> = {}): NotificationEventRow => ({
     id: '11111111-1111-4111-8111-111111111111',
@@ -65,5 +70,43 @@ describe('NOTIFICATION_KINDS', () => {
         const check = /kind in \(([^)]*)\)/.exec(sql);
         expect(check).not.toBeNull();
         expect([...check![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual([...NOTIFICATION_KINDS]);
+    });
+});
+
+describe('isSendResult', () => {
+    it('accepts each class', () => {
+        for (const ok of [
+            { status: 'delivered' },
+            { status: 'delivered', externalId: 'm1' },
+            { status: 'retryable', reason: 'transport' },
+            { status: 'retryable', reason: 'rate-limited', retryAfterMs: 0 },
+            { status: 'permanent', reason: 'payload-refused' },
+        ]) {
+            expect(isSendResult(ok), JSON.stringify(ok)).toBe(true);
+        }
+    });
+
+    it('rejects malformed', () => {
+        for (const bad of [
+            null,
+            undefined,
+            'delivered',
+            { status: 'nope' },
+            { status: 'retryable', reason: 'config-invalid' },
+            { status: 'permanent', reason: 'transport' },
+            { status: 'permanent', reason: 'nope' },
+            { status: 'retryable' },
+            { status: 'delivered', body: 'x' },
+            { status: 'permanent', reason: 'payload-refused', message: 'tok' },
+            { status: 'permanent', reason: 'payload-refused', retryAfterMs: 1 },
+            { status: 'delivered', externalId: '' },
+            { status: 'delivered', externalId: 7 },
+            { status: 'retryable', reason: 'transport', retryAfterMs: -1 },
+            { status: 'retryable', reason: 'transport', retryAfterMs: Number.NaN },
+            { status: 'retryable', reason: 'transport', retryAfterMs: Number.POSITIVE_INFINITY },
+            { status: 'retryable', reason: 'transport', retryAfterMs: '5' },
+        ]) {
+            expect(isSendResult(bad), JSON.stringify(bad)).toBe(false);
+        }
     });
 });
