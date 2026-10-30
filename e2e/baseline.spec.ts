@@ -4,6 +4,7 @@ import { expect, test } from '@playwright/test';
 import { BATCH_DETAIL_STATES, BatchBoard } from './fixtures/batch-board.js';
 import {
     agentFailedThread,
+    closingGatesThread,
     doneThread,
     failedGateThread,
     followUpOverWaitThread,
@@ -74,6 +75,7 @@ const THREADS: [state: string, fixture: string, jobs: readonly ThreadJob[]][] = 
     ['other-author', 'otherAuthorThread', otherAuthorThread],
     ['null-author', 'nullAuthorThread', nullAuthorThread],
     ['interrupted', 'interruptedThread', interruptedThread],
+    ['closing-gates', 'closingGatesThread', closingGatesThread],
 ];
 
 /** A started batch's detail page, served by the fake board: the open board runs no scheduler. */
