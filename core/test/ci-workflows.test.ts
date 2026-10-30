@@ -570,7 +570,7 @@ describe('ci workflows', () => {
             // The compiled JS only: no declarations (nothing imports a CLI) and no source maps
             // (they point at src/, which does not ship).
             files: ['dist/**/*.js'],
-            repository: { url: 'git+https://github.com/Bellows-AI/factory.git', directory: 'cli' },
+            repository: { url: 'git+https://github.com/Bellows-AI/bellows.git', directory: 'cli' },
         });
         expect(pkg.private).toBeUndefined();
         expect(pkg.dependencies).toBeUndefined();

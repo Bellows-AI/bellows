@@ -1163,7 +1163,7 @@ describe('POST /api/jobs/claim', () => {
     it('passes the repo label and the gate declaration through verbatim', async () => {
         const withGates: Claim = {
             ...claim,
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
         };
         const instance = await harnessWith(stubStore({ claim: withGates }));
@@ -1171,7 +1171,7 @@ describe('POST /api/jobs/claim', () => {
         expect(response.statusCode).toBe(200);
         expect(response.json()).toEqual(withGates);
 
-        const withError: Claim = { ...claim, repo: 'Bellows-AI/factory', planRefusal: '.bellows.yaml line 2: nope' };
+        const withError: Claim = { ...claim, repo: 'Bellows-AI/bellows', planRefusal: '.bellows.yaml line 2: nope' };
         const instance2 = await harnessWith(stubStore({ claim: withError }));
         const response2 = await post(instance2, '/api/jobs/claim', { worker: 'w1', leaseSeconds: 300 });
         expect(response2.json()).toEqual(withError);
@@ -1929,6 +1929,35 @@ describe('POST /api/jobs/:id/gates', () => {
         const response = await post(instance, `/api/jobs/${ID}/gates`, {
             leaseToken: TOKEN,
             gates: [{ name: 'test', status: 'passed', exitCode: 0, output: '', ...extra }],
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().code).toBe('BAD_GATES');
+    });
+
+    it("accepts a pending gate and a running gate's startedAt, and stores both", async () => {
+        const store = stubStore({ verdict: 'ok' });
+        const instance = await harnessWith(store);
+        const gates = [
+            { name: 'test', status: 'running', exitCode: null, output: null, startedAt: '2026-10-30T10:00:00.000Z' },
+            { name: 'lint', status: 'pending', exitCode: null, output: null },
+        ];
+
+        const response = await post(instance, `/api/jobs/${ID}/gates`, { leaseToken: TOKEN, gates });
+
+        expect(response.statusCode).toBe(200);
+        expect(store.gatesReported).toEqual([{ id: ID, results: gates }]);
+    });
+
+    it.each([
+        ['a numeric startedAt', { status: 'running', startedAt: 7 }],
+        ['an unparseable startedAt', { status: 'running', startedAt: 'yesterday' }],
+        ['an over-long startedAt', { status: 'running', startedAt: `2026-10-30T10:00:00.000Z${' '.repeat(40)}` }],
+        ['a status outside the four', { status: 'queued' }],
+    ])('refuses %s on a gate entry', async (_label, extra) => {
+        const instance = await harnessWith(stubStore());
+        const response = await post(instance, `/api/jobs/${ID}/gates`, {
+            leaseToken: TOKEN,
+            gates: [{ name: 'test', exitCode: null, output: null, ...extra }],
         });
         expect(response.statusCode).toBe(400);
         expect(response.json().code).toBe('BAD_GATES');

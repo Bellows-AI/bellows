@@ -1,6 +1,9 @@
 apiVersion: v2
 name: factory
-description: The Factory dashboard, its job board, and the driver that runs jobs on Kubernetes
+description: The Bellows dashboard, its job board, and the driver that runs jobs on Kubernetes
 type: application
 version: 0.1.0
 appVersion: '0.1.0'
+home: https://bellows.cloud
+sources:
+  - https://github.com/Bellows-AI/bellows

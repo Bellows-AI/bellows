@@ -378,7 +378,7 @@ describe('the token cache and the runner env, on both executors', () => {
         continuesInterrupted: false,
         userId: USER,
         workspacePath: `bellows/${USER}`,
-        repo: 'Bellows-AI/factory',
+        repo: 'Bellows-AI/bellows',
         // A board that still sent one: both names are reserved, so neither may reach a runner.
         env: { GITHUB_TOKEN: MEMBER_TOKEN, GH_TOKEN: MEMBER_TOKEN, MEMBER_VAR: 'member' },
     } as BoardJob;

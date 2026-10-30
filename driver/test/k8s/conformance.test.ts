@@ -313,7 +313,7 @@ describe('what a closed run leaves for the next claim, on kubernetes (the retent
  * cause — read the same way docker reads its daemon's words.
  */
 describe('how a refused group start ends, on kubernetes (the startup conformance table, #824 D11)', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
     const SESSION_OF = { id: SESSION, resume: false };
     const pulled = (detail: string) =>
         `rpc error: code = Unknown desc = failed to pull and unpack image "registry.example/claude-executor:latest": ${detail}`;

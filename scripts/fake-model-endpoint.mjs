@@ -14,8 +14,10 @@
 // `--ask` is the AskUserQuestion mode (issue #226): the first agent reply is an AskUserQuestion
 // tool call (one question, options Red and Blue), `POST /question` records the question, and
 // `GET /question/<id>` plays the board — pending on the first poll, then answered "Blue". The
-// request after the tool call must carry a tool_result containing "Blue"; the model then says
-// `ANSWER=Blue`, otherwise `ANSWER=missing`. `GET /questions` is the number of POSTs received.
+// request after the tool call must carry, in any of its messages, a tool_result for the tool call
+// containing "Blue"; the model then says `ANSWER=Blue`, otherwise `ANSWER=missing`. `GET /questions` is
+// the number of POSTs received. `GET /asks` lists each ask-mode agent request's last three messages (role
+// and block types), whether the answer was found, and the tool_result text, for a lane to keep as evidence.
 //
 // `--ask-prose` is the plain-text variant: the first agent reply is prose ending "Which one should
 // I use: Red or Blue?" with `end_turn`, so the baked Stop hook runs. The endpoint plays the hook's
@@ -56,6 +58,8 @@ const CONTROL_PATH = '/control';
 const QUESTION_PATH = '/question';
 const QUESTIONS_PATH = '/questions';
 const HOOKS_PATH = '/hooks';
+const ASKS_PATH = '/asks';
+const ASK_TOOL_USE_ID = 'toolu_ask';
 const TOOL_RESULTS_PATH = '/tool-results';
 const STEPS_PATH = '/steps';
 const TOOL_OK = 'FACTORY_TOOL_OK';
@@ -148,6 +152,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
     const skillBases = new Set();
     let hookRequests = 0;
     let questionPosts = 0;
+    const askRequests = [];
     let questionPolls = 0;
     /** True from the moment the first agent request arrives — what `GET /control` raises a Stop on. */
     let firstInFlight = false;
@@ -186,6 +191,22 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
         });
     };
     const askReply = (step, tools, messages) => {
+        // The answer is the toolu_ask tool_result wherever it sits in the request: a CLI that appends a message
+        // after it (suspected, unconfirmed) must not read as a missing answer. A malformed request is `missing`.
+        const blocks = (Array.isArray(messages) ? messages : []).flatMap((entry) => (Array.isArray(entry?.content) ? entry.content : []));
+        const found = blocks.find((block) => block?.type === 'tool_result' && block.tool_use_id === ASK_TOOL_USE_ID);
+        const result = found ? (typeof found.content === 'string' ? found.content : JSON.stringify(found.content ?? '')) : null;
+        const answerFound = result?.includes(ASK_ANSWER) === true;
+        const list = Array.isArray(messages) ? messages : [];
+        askRequests.push({
+            step,
+            tail: list.slice(-3).map((entry) => ({
+                role: typeof entry?.role === 'string' ? entry.role : null,
+                types: Array.isArray(entry?.content) ? entry.content.map((block) => String(block?.type)) : [typeof entry?.content],
+            })),
+            answerFound,
+            result,
+        });
         if (askProse && step === 1) {
             return message('msg_prose', [{ type: 'text', text: PROSE_QUESTION }], 'end_turn');
         }
@@ -203,8 +224,7 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
             ];
             return message('msg_ask', [{ type: 'tool_use', id: 'toolu_ask', name: ASK_TOOL, input: { questions } }], 'tool_use');
         }
-        const result = JSON.stringify(messages.at(-1) ?? {});
-        return message(`msg_${step}`, [{ type: 'text', text: `ANSWER=${result.includes(ASK_ANSWER) ? ASK_ANSWER : 'missing'}` }], 'end_turn');
+        return message(`msg_${step}`, [{ type: 'text', text: `ANSWER=${answerFound ? ASK_ANSWER : 'missing'}` }], 'end_turn');
     };
     const agentReply = (tools, messages) => {
         const step = ++agentRequests;
@@ -289,6 +309,10 @@ export function createFakeModelEndpoint({ firstDelayMs = 0, toolSteps = 3, ask =
                 reply.setHeader('content-type', 'application/json');
                 const results = [...stepResults.values()].sort((a, b) => Number(a.id.split('_')[1]) - Number(b.id.split('_')[1]));
                 return reply.end(JSON.stringify({ results, agentRequests, skillBases: [...skillBases] }));
+            }
+            if (url === ASKS_PATH) {
+                reply.setHeader('content-type', 'application/json');
+                return reply.end(JSON.stringify({ asks: askRequests }));
             }
             if (url === HOOKS_PATH) {
                 reply.setHeader('content-type', 'application/json');

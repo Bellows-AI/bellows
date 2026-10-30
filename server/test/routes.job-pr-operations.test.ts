@@ -22,9 +22,9 @@ type Answer = 'ok' | 'lost' | 'missing';
 const FIELDS = {
     operationId: OPERATION,
     operation: 'created' as const,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     prNumber: 42,
-    prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+    prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
     branch: 'fix/10',
 };
 const good = { leaseToken: TOKEN, ...FIELDS };

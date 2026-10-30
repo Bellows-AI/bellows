@@ -47,6 +47,14 @@ export const PR_URL_LIMIT = 2048;
 const OUTPUT_LIMIT_KIB = 64;
 export const OUTPUT_LIMIT = OUTPUT_LIMIT_KIB * BYTES_PER_KIB;
 
+/** The longest timestamp string a worker may send; far over any ISO-8601 form. */
+const TIMESTAMP_LIMIT = 40;
+
+/** A parseable timestamp within `TIMESTAMP_LIMIT`, or null. */
+export const nullableTimestamp = (value: unknown): value is string | null =>
+    value === null ||
+    (typeof value === 'string' && value.length <= TIMESTAMP_LIMIT && !Number.isNaN(Date.parse(value)));
+
 /**
  * The agent's questions (050, issue #531). Every figure is the issue's contract, enforced HERE at
  * the door: a question is member-visible content, so what the board stores is bounded by shape,
