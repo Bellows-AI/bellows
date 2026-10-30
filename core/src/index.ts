@@ -259,6 +259,8 @@ export {
 export type { DateRange, RangePreset } from './range.js';
 export { inputTokens, seriesGranularity, telemetryStats, usageRangeOf } from './telemetry.js';
 export { taskUsageStats } from './task-usage.js';
+export { taskTitleFromCommand } from './task-title.js';
+export * from './notifications.js';
 export {
     UNKNOWN_BUCKET,
     bucketTimedContributions,

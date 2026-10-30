@@ -7,7 +7,6 @@ import {
     taskDotClass,
     taskStatusLabel,
     taskSummary,
-    taskTitleFromCommand,
     taskTone,
     type TaskStatus,
 } from '../src/task-tree.js';
@@ -35,17 +34,6 @@ const summary = (over: Partial<TaskSummary> = {}): TaskSummary => ({
     createdAt: over.createdAt ?? '2026-09-01T12:00:00.000Z',
     activityAt: over.activityAt ?? '2026-09-01T12:10:00.000Z',
     needsAnswer: over.needsAnswer ?? false,
-});
-
-describe('taskTitleFromCommand', () => {
-    it('takes the first line of the command, trimmed', () => {
-        expect(taskTitleFromCommand('fix the flaky login test\nsecond line\nthird')).toBe('fix the flaky login test');
-        expect(taskTitleFromCommand('  padded  ')).toBe('padded');
-    });
-
-    it('answers an empty string for an empty command rather than inventing one', () => {
-        expect(taskTitleFromCommand('')).toBe('');
-    });
 });
 
 const status = (over: Partial<TaskStatus>): TaskStatus => ({
