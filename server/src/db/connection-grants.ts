@@ -154,7 +154,8 @@ export async function readGrant(
  * It holds no lock beyond the grant row it updates and applies only while `claimToken` is still the grant's claim.
  *  - `refresh` leaves `status` alone: a concurrent `revoked` stays, and destroy deletes at the new version.
  *  - `reconsent` restores `active` (a reconnected grant serves again) but never resurrects a concurrent `revoked`,
- *    and moves the grant onto the reference its claim recorded (a fresh one when the old was wedged).
+ *    and moves the grant onto the reference its claim recorded (a fresh one when the old was wedged). It records the
+ *    claim token as `lineage_finalized_claim`, which an authorization settles from.
  *  - `destroy` records the confirmed delete: no version, no authority change, no `version` bump.
  */
 export async function finalizeLineage(
@@ -192,6 +193,7 @@ export async function finalizeLineage(
                     authority = ${db.json(input.authority as never)},
                     status = case when status = 'revoked' then 'revoked' else 'active' end,
                     secret_wedged_at = null, secret_destroyed_at = null, updated_at = now(),
+                    lineage_finalized_claim = ${claimToken},
                     lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null,
                     lineage_operation_id = null, lineage_secret_ref = null
                 where id = ${grantId} and org_id = ${orgId} and lineage_claim = ${claimToken}

@@ -160,12 +160,17 @@ async function lose(ctx: LineageCtx, claim: LineageClaim, rotating: boolean): Pr
     return { ok: false, reason: 'lost', reconnectRequired: rotating };
 }
 
-/** The grant was revoked (or the claim lost) while the exchange ran: the new tokens are dropped, never stored. */
+/**
+ * The grant was revoked (or the claim lost) while the exchange ran: the new tokens are dropped, never stored. They
+ * are revoked only for a CONFIRMED revoked grant: a holder that lost its claim may share its refresh token with the
+ * claim's new holder (a non-rotating provider), and revoking it would kill the grant. An unconfirmed read revokes nothing.
+ */
 async function dropped(ctx: LineageCtx, claim: LineageClaim, payload: GrantPayload): Promise<CommitResult> {
-    const current = await readLineage(ctx, claim.grantId);
-    await dropTokens(ctx, claim, payload);
+    const current = await readLineage(ctx, claim.grantId).catch(() => null);
+    const revoked = current?.status === 'revoked';
+    if (revoked) await dropTokens(ctx, claim, payload);
     await endClaim(ctx, claim);
-    return { ok: false, reason: current?.status === 'revoked' ? 'revoked' : 'claim-lost' };
+    return { ok: false, reason: revoked ? 'revoked' : 'claim-lost' };
 }
 
 async function persist(

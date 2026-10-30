@@ -9,7 +9,12 @@ import {
     type StartAuthorizationInput,
 } from '../src/integrations/authorization-flow.js';
 import { decodeGrantPayload } from '../src/integrations/grant-credentials.js';
-import { createGrantLineage, type LineageEvent, type LineageTiming } from '../src/integrations/grant-lineage.js';
+import {
+    createGrantLineage,
+    type GrantLineage,
+    type LineageEvent,
+    type LineageTiming,
+} from '../src/integrations/grant-lineage.js';
 import type { OAuthProviderHooks } from '../src/integrations/oauth-provider.js';
 import { contextOfSession } from '../src/integrations/trusted-context.js';
 import type { SecretRef, SecretStore } from '../src/secrets/secret-store.js';
@@ -18,6 +23,7 @@ import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 import {
     attachJira,
+    ambiguousWrite,
     faultyStore,
     lineageHarness,
     parkBeforeStore,
@@ -55,6 +61,8 @@ interface RigOptions {
     timing?: Partial<LineageTiming>;
     hooks?: (fake: FakeOAuth) => OAuthProviderHooks;
     callbackOrigin?: string | null;
+    /** The lineage the flow under test sees (the rig's own `lineage` stays the real one). */
+    flowLineage?: (lineage: GrantLineage) => GrantLineage;
 }
 
 function rig(options: RigOptions = {}) {
@@ -77,7 +85,7 @@ function rig(options: RigOptions = {}) {
             sql: db.sql,
             orgId: ORG,
             secrets: over.secrets ?? secrets,
-            lineage,
+            lineage: options.flowLineage ? options.flowLineage(lineage) : lineage,
             providers: (provider) => (provider === 'jira' || provider === 'noclient' ? hooks : undefined),
             clients: (provider) =>
                 provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
@@ -129,18 +137,21 @@ interface GrantColumns {
     secret_version: string | null;
     lineage_claim: string | null;
     lineage_operation_id: string | null;
+    lineage_finalized_claim: string | null;
     principal_user_id: string;
 }
 const grantOf = async (id: string): Promise<GrantColumns> =>
     (
         await db.sql<GrantColumns[]>`
-            select id, status, version, secret_ref, secret_version, lineage_claim, lineage_operation_id, principal_user_id
+            select id, status, version, secret_ref, secret_version, lineage_claim, lineage_operation_id,
+                   lineage_finalized_claim, principal_user_id
             from integration_grant where id = ${id}
         `
     )[0]!;
 const grantsOfAccount = (account: string) =>
     db.sql<GrantColumns[]>`
-        select id, status, version, secret_ref, secret_version, lineage_claim, lineage_operation_id, principal_user_id
+        select id, status, version, secret_ref, secret_version, lineage_claim, lineage_operation_id,
+                   lineage_finalized_claim, principal_user_id
         from integration_grant where external_account_id = ${account}
     `;
 const connectionsOfAccount = (account: string) =>
@@ -195,6 +206,29 @@ const storedPayload = async (r: Rig, grantId: string) => {
 
 const complete = (r: Rig, input: CompleteAuthorizationInput, ctx = asAlice(), signal?: AbortSignal) =>
     r.flow.completeAuthorization(ctx, input, signal ? { signal } : {});
+
+/** Another process over the same store: its own lineage (so its own attempt registry) and flow. */
+const otherProcessOf = (a: Rig, secrets: SecretStore = a.h.openWith(a.h.realRepo)) => {
+    const lineage = createGrantLineage({
+        sql: db.sql,
+        orgId: ORG,
+        secrets,
+        providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
+        timing: { retryDelayMs: 0 },
+    });
+    const flow = createAuthorizationFlow({
+        sql: db.sql,
+        orgId: ORG,
+        secrets,
+        lineage,
+        providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
+        clients: (provider) =>
+            provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
+        callbackOrigin: 'https://board.example.test',
+    });
+    return { flow, lineage };
+};
+const otherProcess = (a: Rig) => otherProcessOf(a).flow;
 
 describe.skipIf(!enabled)('start: the trusted context binds the transaction', () => {
     it('binds user, org, provider, intent and interaction from the context only; stores the state hash, never the state', async () => {
@@ -916,27 +950,6 @@ describe.skipIf(!enabled)('complete: review r2, a create paused before or after 
         };
         return account;
     };
-    /** Another process over the same store: its own lineage (so its own attempt registry) and flow. */
-    const otherProcess = (a: Rig) => {
-        const secrets = a.h.openWith(a.h.realRepo);
-        const lineage = createGrantLineage({
-            sql: db.sql,
-            orgId: ORG,
-            secrets,
-            providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
-            timing: { retryDelayMs: 0 },
-        });
-        return createAuthorizationFlow({
-            sql: db.sql,
-            orgId: ORG,
-            secrets,
-            lineage,
-            providers: (provider) => (provider === 'jira' ? a.fake.hooks : undefined),
-            clients: (provider) =>
-                provider === 'jira' ? { clientId: 'client-1', scopesFor: () => ['fake:read'] } : undefined,
-            callbackOrigin: 'https://board.example.test',
-        });
-    };
     const referenceOf = async (id: string) => {
         const row = await rowOf(id);
         return {
@@ -1134,5 +1147,298 @@ describe.skipIf(!enabled)('redaction', () => {
             expect(Object.keys(event).sort()).toEqual(expect.arrayContaining(['event']));
             expect(Object.keys(event).every((k) => ['event', 'authorizationId', 'failure'].includes(k))).toBe(true);
         }
+    });
+});
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** Waits, on the database's clock and for at most five seconds, until the authorization's deadline has passed. */
+async function pastDeadline(id: string): Promise<void> {
+    const until = Date.now() + 5_000;
+    for (;;) {
+        const [row] = await db.sql<{ past: boolean }[]>`
+            select deadline_at < now() as past from integration_authorization where id = ${id}
+        `;
+        if (row?.past) return;
+        if (Date.now() > until) throw new Error('the authorization deadline never passed');
+        await sleep(10);
+    }
+}
+
+/** The store call lands, then the caller is held: the write is durable and its holder cannot continue. */
+const parkAfterReplace = (store: SecretStore, gate: ReturnType<typeof parked>): SecretStore => ({
+    issueOperationId: () => store.issueOperationId(),
+    readActive: (input) => store.readActive(input),
+    reconcileOperation: (input) => store.reconcileOperation(input),
+    create: (input) => store.create(input),
+    delete: (input) => store.delete(input),
+    replace: async (input) => {
+        const result = await store.replace(input);
+        await gate.hold();
+        return result;
+    },
+});
+
+/** The flow's claim is held before its UPDATE is issued, so its `now()` (and a lease from it) starts late. */
+const delayedClaim =
+    (gate: ReturnType<typeof parked>) =>
+    (lineage: GrantLineage): GrantLineage => ({
+        ...lineage,
+        claimLineage: async (...args) => {
+            await gate.hold();
+            return lineage.claimLineage(...args);
+        },
+    });
+
+// Window 800 ms, lease 700 ms, fence at the claim's end minus 100 ms. Orderings the tests rely on:
+// deadline < recovery < store gate release < (before the fix) the delayed claim's fence.
+const TIGHT: Partial<LineageTiming> = {
+    exchangeDeadlineMs: 200,
+    readDeadlineMs: 100,
+    persistBudgetMs: 300,
+    marginMs: 100,
+};
+
+describe.skipIf(!enabled)('complete: the claim runs on the authorization deadline', () => {
+    const reconnectOf = async (r: Rig) => {
+        const seeded = await seedConnected(r);
+        const started = await begin(r, { provider: 'jira', connectionId: seeded.connectionId });
+        return { seeded, started, before: await grantOf(seeded.grantId) };
+    };
+    /** A reconnect whose replace landed in the store and whose holder is then held; recovery finds the claim at its end. */
+    const heldAfterReplace = async () => {
+        const gate = parked();
+        const a = rig({ timing: TIGHT, store: (h) => parkAfterReplace(h.open(), gate) });
+        const { seeded, started, before } = await reconnectOf(a);
+        const completing = complete(a, { state: started.state, code: CODE });
+        await gate.entered;
+        await pastDeadline(started.authorizationId);
+        return { a, gate, seeded, started, before, completing };
+    };
+
+    it('a reconnect whose delayed claim is parked before the store: recovery on another instance fences it, the authorization fails and the grant is not finalized', async () => {
+        const claimGate = parked();
+        const storeGate = parked();
+        const a = rig({
+            timing: TIGHT,
+            store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
+            flowLineage: delayedClaim(claimGate),
+        });
+        const { seeded, started, before } = await reconnectOf(a);
+        const completing = complete(a, { state: started.state, code: CODE });
+        await claimGate.entered;
+        await sleep(600);
+        claimGate.release();
+        await storeGate.entered;
+        await pastDeadline(started.authorizationId);
+
+        expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
+        storeGate.release();
+        expect(await completing).toMatchObject({ ok: false });
+        expect(await grantOf(seeded.grantId)).toMatchObject({
+            version: before.version,
+            secret_version: before.secret_version,
+            lineage_finalized_claim: null,
+        });
+    });
+
+    it('a reconnect parked after its replace landed: recovery finalizes from the store and completes the authorization', async () => {
+        const { a, gate, seeded, started, before, completing } = await heldAfterReplace();
+
+        expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('activated');
+        const row = await rowOf(started.authorizationId);
+        expect(row).toMatchObject({ status: 'completed', failure: null });
+        expect(row.result).toMatchObject({ connectionIds: [expect.any(String)] });
+        expect(await grantOf(seeded.grantId)).toMatchObject({
+            version: String(Number(before.version) + 1),
+            lineage_claim: null,
+            lineage_finalized_claim: row.grant_claim,
+        });
+        gate.release();
+        // The holder reached its fence while the store call was out: the durable row is the truth.
+        expect(await completing).toMatchObject({ ok: false, failure: 'storage-failed' });
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'completed' });
+    });
+
+    it('the same race on a connect that finds the caller’s existing grant', async () => {
+        const claimGate = parked();
+        const storeGate = parked();
+        const a = rig({
+            timing: TIGHT,
+            store: (h) => parkBeforeStore(h.open(), 'replace', storeGate),
+            flowLineage: delayedClaim(claimGate),
+        });
+        const seeded = await seedConnected(a);
+        const started = await begin(a);
+        const before = await grantOf(seeded.grantId);
+        const completing = complete(a, { state: started.state, code: CODE });
+        await claimGate.entered;
+        await sleep(600);
+        claimGate.release();
+        await storeGate.entered;
+        await pastDeadline(started.authorizationId);
+
+        expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('interrupted');
+        storeGate.release();
+        expect(await completing).toMatchObject({ ok: false });
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
+        expect(await grantOf(seeded.grantId)).toMatchObject({
+            version: before.version,
+            secret_version: before.secret_version,
+            lineage_finalized_claim: null,
+        });
+    });
+
+    it.each([
+        [
+            'reconnect',
+            async (a: Rig, gate: ReturnType<typeof parked>) => {
+                const exchange = a.fake.parkExchange();
+                const seeded = await seedConnected(a);
+                const started = await begin(a, { provider: 'jira', connectionId: seeded.connectionId });
+                const completing = complete(a, { state: started.state, code: CODE });
+                await exchange.accepted;
+                return {
+                    started,
+                    seeded,
+                    finish: async () => {
+                        exchange.release('invalid_grant');
+                        await completing;
+                        gate.release();
+                    },
+                };
+            },
+        ],
+        [
+            'connect',
+            async (a: Rig, gate: ReturnType<typeof parked>) => {
+                const seeded = await seedConnected(a);
+                const started = await begin(a);
+                const completing = complete(a, { state: started.state, code: CODE });
+                await gate.entered;
+                return {
+                    started,
+                    seeded,
+                    finish: async () => {
+                        gate.release();
+                        await completing;
+                    },
+                };
+            },
+        ],
+    ])('a claim taken for a %s expires at the authorization deadline_at', async (_name, drive) => {
+        const gate = parked();
+        const a = rig({ store: (h) => parkBeforeStore(h.open(), 'replace', gate) });
+        const { started, seeded, finish } = await drive(a, gate);
+        const [row] = await db.sql<{ same: boolean }[]>`
+            select g.lineage_claim_expires_at = au.deadline_at as same
+            from integration_grant g join integration_authorization au on au.grant_claim = g.lineage_claim
+            where au.id = ${started.authorizationId} and g.id = ${seeded.grantId}
+        `;
+        expect(row).toEqual({ same: true });
+        await finish();
+    });
+
+    it('recovery after the claim finalized and the holder vanished completes the authorization from the stored facts', async () => {
+        const gate = parked();
+        const a = rig({
+            flowLineage: (lineage) => ({
+                ...lineage,
+                commitLineage: async (...args) => {
+                    const committed = await lineage.commitLineage(...args);
+                    await gate.hold();
+                    return committed;
+                },
+            }),
+        });
+        const { seeded, started, before } = await reconnectOf(a);
+        const completing = complete(a, { state: started.state, code: CODE });
+        await gate.entered;
+        expect(await grantOf(seeded.grantId)).toMatchObject({
+            version: String(Number(before.version) + 1),
+            lineage_claim: null,
+        });
+        await lapse(started.authorizationId);
+
+        expect(await otherProcess(a).recoverAuthorization(started.authorizationId)).toBe('activated');
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'completed' });
+        const stored = (await rowOf(started.authorizationId)).result as { connectionIds: string[] };
+        expect(stored.connectionIds).toHaveLength(1);
+        expect((await connectionsOfAccount(seeded.account)).map((c) => c.id).sort()).toEqual(
+            [seeded.connectionId, ...stored.connectionIds].sort()
+        );
+        gate.release();
+        // The returning holder finds its activation already done and answers from the settled row.
+        expect(await completing).toMatchObject({ ok: true, connectionId: seeded.connectionId });
+    });
+
+    it('a lineage pass first, then the authorization pass: the same end state', async () => {
+        const { a, gate, seeded, started, before, completing } = await heldAfterReplace();
+        const b = otherProcessOf(a);
+
+        await b.lineage.recoverLineage(seeded.grantId);
+        expect(await b.flow.recoverAuthorization(started.authorizationId)).toBe('activated');
+        const row = await rowOf(started.authorizationId);
+        expect(row).toMatchObject({ status: 'completed' });
+        expect(await grantOf(seeded.grantId)).toMatchObject({
+            version: String(Number(before.version) + 1),
+            lineage_finalized_claim: row.grant_claim,
+        });
+        gate.release();
+        await completing;
+    });
+
+    it('an inconclusive store answer leaves the authorization open', async () => {
+        const { a, gate, seeded, started, completing } = await heldAfterReplace();
+        const faulty = faultyStore(a.h, {
+            findOperation: async () => {
+                throw ambiguousWrite();
+            },
+        }).store;
+        const b = otherProcessOf(a, faulty);
+
+        expect(await b.flow.recoverAuthorization(started.authorizationId)).toBe('left');
+        const row = await rowOf(started.authorizationId);
+        expect(row).toMatchObject({ status: 'exchanging', failure: null });
+        expect(await grantOf(seeded.grantId)).toMatchObject({ lineage_claim: row.grant_claim });
+        gate.release();
+        await completing;
+    });
+
+    it('a claim that ended without finalizing still fails the authorization', async () => {
+        const r = rig({ rotates: false });
+        const exchange = r.fake.parkExchange();
+        const { seeded, started } = await (async () => {
+            const seeded = await seedConnected(r);
+            return { seeded, started: await begin(r, { provider: 'jira', connectionId: seeded.connectionId }) };
+        })();
+        const completing = complete(r, { state: started.state, code: CODE });
+        await exchange.accepted;
+        await db.sql`
+            update integration_grant set lineage_claim = null, lineage_claim_kind = null, lineage_claim_expires_at = null
+            where id = ${seeded.grantId}
+        `;
+        await lapse(started.authorizationId);
+
+        expect(await r.flowOver().recoverAuthorization(started.authorizationId)).toBe('interrupted');
+        expect(await rowOf(started.authorizationId)).toMatchObject({ status: 'failed', failure: 'interrupted' });
+        exchange.release('invalid_grant');
+        await completing;
+    });
+
+    it('a refresh claim keeps its own lease', async () => {
+        const r = rig({ rotates: false });
+        const seeded = await seedConnected(r);
+        const claimed = await r.lineage.claimLineage(seeded.grantId, 'refresh', { rotates: false });
+        expect(claimed.ok).toBe(true);
+        const [row] = await db.sql<{ left_ms: string }[]>`
+            select extract(epoch from (lineage_claim_expires_at - now())) * 1000 as left_ms
+            from integration_grant where id = ${seeded.grantId}
+        `;
+        const leftMs = Number(row!.left_ms);
+        expect(leftMs).toBeGreaterThan(r.lineage.leaseMs - 2_000);
+        expect(leftMs).toBeLessThanOrEqual(r.lineage.leaseMs);
+        if (claimed.ok) expect(claimed.claim.deadlineAt - Date.now()).toBeLessThanOrEqual(r.lineage.leaseMs);
     });
 });
