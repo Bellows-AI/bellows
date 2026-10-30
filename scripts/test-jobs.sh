@@ -286,7 +286,7 @@ EOF_PLAN
         passed=$((passed + $(grep -c '^ok ' "$dir/$name.log")))
         failed=$((failed + $(grep -c '^FAIL ' "$dir/$name.log")))
         if [ "$group_code" -ne 0 ]; then
-            grep -A1 '^FAIL ' "$dir/$name.log" | head -n 40
+            grep -A1 '^FAIL ' "$dir/$name.log" | sed -n '1,40p'
             [ "$(grep -c '^FAIL ' "$dir/$name.log")" -gt 0 ] || tail -n 15 "$dir/$name.log"
         fi
     done <"$dir/results.tsv"
@@ -603,7 +603,7 @@ supervisor_served() { # supervisor_served <job-id> <seconds> -> 0 once its super
     while [ "$i" -lt "$2" ]; do
         sup="$(docker ps -aq --filter "label=factory.job=$1" --filter 'label=factory.role=supervisor' | sed -n 1p)"
         if [ -n "$sup" ] && logs="$(docker logs "$sup" 2>&1)"; then
-            printf '%s' "$logs" | grep -qF 'supervisor: stopped serving the steps' && return 0
+            printf '%s' "$logs" | grep -F 'supervisor: stopped serving the steps' >/dev/null && return 0
         fi
         sleep 1
         i=$((i + 1))
@@ -938,7 +938,7 @@ start_postgres "$work/postgres.log"
 # The name ends in _test on purpose: it marks the database disposable, and the drop in cleanup()
 # refuses anything this run did not create.
 if compose exec -T postgres psql -U factory -d postgres -tAc \
-    "select 1 from pg_database where datname = '$DB'" 2>/dev/null | grep -q 1; then
+    "select 1 from pg_database where datname = '$DB'" 2>/dev/null | grep 1 >/dev/null; then
     echo "reusing database $DB"
 else
     compose exec -T postgres psql -U factory -d postgres -c "create database $DB" >/dev/null 2>&1 ||
@@ -1038,7 +1038,7 @@ docker volume create "$ORIGIN_VOLUME" >/dev/null &&
     echo 'test-jobs: could not serve the smoke origin'
     exit 1
 }
-PLAN_BASE="git://127.0.0.1:$(docker port "$ORIGIN_NAME" 9418/tcp | head -n 1 | sed 's/.*://')"
+PLAN_BASE="git://127.0.0.1:$(docker port "$ORIGIN_NAME" 9418/tcp | sed -n '1s/.*://p')"
 case "$PLAN_BASE" in
 git://127.0.0.1:[0-9]*) ;;
 *)
@@ -1427,9 +1427,9 @@ c="$(node $h token)" || exit 13
 [ "$c" != "$a" ] && echo gh-renewed
 echo "gh-mode-$(stat -c %a /run/factory-credentials)"
 awk '"'"'$2 == "/run/factory-credentials" { print "gh-fs-" $3 }'"'"' /proc/mounts
-env | grep -q -e "^GITHUB_TOKEN=" -e "^GH_TOKEN=" || echo gh-no-env-token
+env | grep -e "^GITHUB_TOKEN=" -e "^GH_TOKEN=" >/dev/null || echo gh-no-env-token
 git config --global credential.https://github.com.helper "!node $h git"
-printf "protocol=https\nhost=github.com\n\n" | git credential fill | grep -q "^password=lane_" && echo gh-git-answers
+printf "protocol=https\nhost=github.com\n\n" | git credential fill | grep "^password=lane_" >/dev/null && echo gh-git-answers
 node $h clear && [ -z "$(ls -A /run/factory-credentials)" ] && echo gh-cleared')"
 expect_contains 'the github helper job succeeds' "$(await_settled "$gh_job" 120)" succeeded
 gh_out="$(field "$(body "$(api GET "/api/jobs/$gh_job")")" output)"
@@ -3649,7 +3649,8 @@ for cli in claude opencode; do
     if IMAGE="$cli-executor" bash "docker/$cli-executor/test.sh" >"$work/image-checks-$cli.log" 2>&1; then
         ok "$cli-executor image checks ($(tail -n 1 "$work/image-checks-$cli.log" | tr -d '\n'))"
     else
-        bad "$cli-executor image checks" "$(grep -A3 '^FAIL' "$work/image-checks-$cli.log" | head -c 380)"
+        failed_checks="$(grep -A3 '^FAIL' "$work/image-checks-$cli.log")"
+        bad "$cli-executor image checks" "${failed_checks:0:380}"
     fi
 done
 
