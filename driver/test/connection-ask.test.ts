@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
 
 /**
- * The runtime connection ask a helper makes (BEL-174), shipped in both executor images: one POST of the
+ * The runtime connection ask a helper makes, shipped in both executor images: one POST of the
  * provider to the agent's control socket, answered `bound`, `unavailable` or `waiting`. Anything else —
  * a hang-up, a 5xx, a body that is not an answer — is inconclusive and never reads as a verdict. Driven
  * against a real unix socket.

@@ -121,7 +121,7 @@ export async function bindConnectionRow(
 }
 
 /**
- * The OAuth return binds the new connection to the task it was started from (BEL-174). The revision is read here,
+ * The OAuth return binds the new connection to the task it was started from. The revision is read here,
  * under the thread lock, never carried through the browser: the person named the connection, not a revision. Answers
  * what the owner's own bind would: refusals are values.
  */
@@ -155,6 +155,24 @@ export async function bindAuthorizedConnectionRow(
 }
 
 /**
+ * An authorization made several usable connections for a task's open requirement: none is picked for the person, so
+ * the requirement asks them to choose (`ambiguous`). Only the execution user's own `missing` requirement changes.
+ */
+export async function markRequirementAmbiguousRow(
+    sql: Sql,
+    args: { orgId: string; jobId: string; provider: string; userId: string }
+): Promise<void> {
+    const { orgId, jobId, provider, userId } = args;
+    await sql`
+        update job_integration_requirement r set reason = 'ambiguous'
+        from job j join job root on root.org_id = j.org_id and root.id = j.root_job_id
+        where j.org_id = ${orgId} and j.id = ${jobId} and root.execution_user_id = ${userId}
+          and r.org_id = j.org_id and r.root_job_id = root.id and r.provider = ${provider}
+          and r.satisfied_at is null and r.reason = 'missing'
+    `;
+}
+
+/**
  * True when the root's selected skills require a provider with no live binding (and none dismissed), after
  * recording a `missing` requirement for each. The skills are the root's (a follow-up or retry reads them there). A read that
  * throws propagates and rolls the claim back; only a confirmed empty answer records anything.
@@ -183,7 +201,7 @@ export async function recordUnboundRequirements(
 export type RequireConnectionResult = { result: 'ok'; answer: RuntimeAnswer } | { result: 'lost' | 'missing' };
 
 /**
- * requireConnection's body (BEL-174): the running attempt asks for a provider. Lock order: the asker's own running
+ * requireConnection's body: the running attempt asks for a provider. Lock order: the asker's own running
  * row (a settle of the caller's own row), then the thread root and its advisory lock, then grant and connection
  * (`lockRootRowsInTx`). A row not running under that lease is `lost`, an unknown one `missing`.
  */
@@ -239,7 +257,7 @@ export interface ClaimConnections {
 }
 
 /**
- * What the claim's transaction reads of the thread's connection choices (BEL-174), for the claimed `job` (its
+ * What the claim's transaction reads of the thread's connection choices, for the claimed `job` (its
  * `claim_seq` is the post-update one): the dismissed providers and the outcomes to tell. A read that throws
  * rolls the claim back.
  */
@@ -250,6 +268,14 @@ export async function claimConnectionsInTx(
     takeover: boolean
 ): Promise<ClaimConnections> {
     const claimSeq = Number(job.claim_seq);
+    // An ordinary re-claim of an answered requirement means the run was released some other way: nothing is owed.
+    if (!takeover) {
+        await tx`
+            update job_integration_requirement set hand_back_pending = false
+            where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${job.id} and hand_back_pending
+              and satisfied_at is not null
+        `;
+    }
     return {
         dismissed: await dismissedProvidersInTx(tx, orgId, rootJobId),
         outcomes: await takeConnectionOutcomesInTx(tx, { orgId, jobId: job.id, claimSeq, takeover }),

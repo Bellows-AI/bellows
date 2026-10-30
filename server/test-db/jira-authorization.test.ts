@@ -392,7 +392,7 @@ describe.skipIf(!enabled)('jira authorization', () => {
         ).toMatchObject({ ok: true });
         expect(await drain()).toContain(created.id);
     });
-    describe('with a jobId (BEL-174)', () => {
+    describe('with a jobId', () => {
         const jobs = () => createJobStore({ sql: db.sql, orgId: ORG });
         /** A running root of `userId` that asked for Jira with nothing to bind: an open runtime requirement. */
         const askedRoot = async (userId: string) => {
@@ -434,6 +434,20 @@ describe.skipIf(!enabled)('jira authorization', () => {
             const [connection] = await connectionsOf(db.sql, tag);
             expect((await bindings(claim.id)).map((b) => b.connection_id)).toEqual([connection!.id]);
             expect(await requirements(claim.id)).toMatchObject([{ outcome: 'bound' }]);
+        });
+
+        it('an authorization that discovers several sites binds none and leaves the requirement open as ambiguous', async () => {
+            const tag = newTag();
+            const claim = await askedRoot(ALICE.id);
+            script(fake, { tag, sites: ['one', 'two'] });
+            const done = await (await begin(jiraRuntime(db.sql, fake), ORG, ALICE.id, { jobId: claim.id })).complete();
+            expect(done).toMatchObject({ ok: true });
+            expect(await connectionsOf(db.sql, tag)).toHaveLength(2);
+            expect(await bindings(claim.id)).toEqual([]);
+            const rows = await db.sql<{ reason: string; satisfied_at: Date | null }[]>`
+                select reason, satisfied_at from job_integration_requirement where root_job_id = ${claim.id}
+            `;
+            expect(rows).toMatchObject([{ reason: 'ambiguous', satisfied_at: null }]);
         });
 
         it('a refused bind (another user is the execution user) still completes the connection', async () => {

@@ -36,7 +36,7 @@ describe('continuationPrompt', () => {
     });
 });
 
-describe('the outcome of a runtime connection requirement (BEL-174)', () => {
+describe('the outcome of a runtime connection requirement', () => {
     const job = (extra: Partial<BoardJob>) =>
         ({ command: 'fix ABC-1', continuesInterrupted: true, ...extra }) as BoardJob;
 

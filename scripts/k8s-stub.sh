@@ -123,7 +123,7 @@ for arg in "$@"; do
         break
         ;;
     *factory-stub-connect*)
-        # `factory-stub-connect` (BEL-174): the Jira helper for a task with no Jira connection asks the board on the
+        # `factory-stub-connect`: the Jira helper for a task with no Jira connection asks the board on the
         # supervisor's agent socket and exits 3; the driver ends this run as a requirement wait. The stub keeps no
         # session, so the run a bind releases is a plain re-run (the resumed prompt is the docker lane's).
         connect_exit=0

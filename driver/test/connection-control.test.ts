@@ -5,7 +5,7 @@ import { type ControlChannel, createControlChannel } from '../src/control-channe
 import type { ConnectionRelay } from '../src/connection-control.js';
 
 /**
- * The control channel's connection route (BEL-174): the agent's token — and only it — asks for a
+ * The control channel's connection route: the agent's token — and only it — asks for a
  * connection its task lacks, `POST /connection {provider}`, and the answer is the board's.
  */
 const TOKEN = 'tok';

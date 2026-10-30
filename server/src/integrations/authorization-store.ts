@@ -184,13 +184,27 @@ export async function classifyUnconsumed(
         : { failure: 'state-mismatch', returnTo: '/' };
 }
 
-/** The task a connect was started from (BEL-174), by the owner's state; null for none or an unknown state. */
-export async function bindJobOf(sql: Sql, owner: Owner): Promise<string | null> {
-    const [row] = await sql<{ bind_job_id: string | null }[]>`
-        select bind_job_id from integration_authorization
+/**
+ * The task a connect was started from, by the owner's state, with what the authorization made: the connection it
+ * reconnected, else every connection it activated. Null for no task or an unknown state.
+ */
+export async function bindTargetOf(
+    sql: Sql,
+    owner: Owner
+): Promise<{ jobId: string; provider: string; connectionId: string | null; connectionIds: string[] } | null> {
+    const [row] = await sql<
+        { bind_job_id: string | null; provider: string; connection_id: string | null; result: StoredFacts | null }[]
+    >`
+        select bind_job_id, provider, connection_id, result from integration_authorization
         where state_hash = ${owner.stateHash} and user_id = ${owner.userId} and org_id = ${owner.orgId}
     `;
-    return row?.bind_job_id ?? null;
+    if (!row?.bind_job_id) return null;
+    return {
+        jobId: row.bind_job_id,
+        provider: row.provider,
+        connectionId: row.connection_id,
+        connectionIds: row.result?.connectionIds ?? [],
+    };
 }
 
 export async function readAuthorization(

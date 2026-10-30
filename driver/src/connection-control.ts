@@ -1,7 +1,7 @@
 import { parseJsonObject } from './json-parse.js';
 
 /**
- * The agent token's connection route (BEL-174): `POST /connection {provider}` is a helper telling the
+ * The agent token's connection route: `POST /connection {provider}` is a helper telling the
  * board its task lacks a connection it needs (docs/connections.md). The route answers what the board
  * did — `bound`, `unavailable`, or `waiting` — and on `waiting` the loop has already begun to stop the
  * agent and hand the attempt back (`loop/loop-connection.ts`). Anything the board did not confirm is a

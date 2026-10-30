@@ -99,7 +99,7 @@ function RawOutput({
 /** How the page answers a question: the board's answer POST, settled to the state it shows. */
 export type OnAnswer = (jobId: string, questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
 
-/** What the newest run needs to raise the thread's connection requirements (BEL-174). */
+/** What the newest run needs to raise the thread's connection requirements. */
 export interface ConnectContext {
     viewer: FollowUpViewer;
     /** Re-reads the thread once a requirement was bound or dismissed. */

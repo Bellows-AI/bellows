@@ -144,7 +144,7 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
     if (state.ending?.kind === 'handover') {
         return { kind: 'interrupt', reason: state.handoverReason ?? 'the driver was drained', exitCode: null };
     }
-    // A requirement wait (BEL-174) is handed back like a drain's handover, but held by the board until it closes.
+    // A requirement wait is handed back like a drain's handover, but held by the board until it closes.
     if (state.ending?.kind === 'requirement') return requirementDecision(state, beforePark);
     if (lostOf(state)) {
         return {

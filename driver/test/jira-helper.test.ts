@@ -437,7 +437,7 @@ describe('finding the connection', () => {
     });
 });
 
-describe('the runtime connection ask (BEL-174)', () => {
+describe('the runtime connection ask', () => {
     const outcomeOf = (out: string) => JSON.parse(out.trim().split('\n').pop() ?? '{}') as Json;
 
     it('bound continues the same call after re-reading the list', async () => {
@@ -502,13 +502,14 @@ describe('the runtime connection ask (BEL-174)', () => {
         expect(outcomeOf(result.out).reason).toBe('no_connection');
     });
 
-    it('never asks while a Jira connection is bound, even one the --site filter does not match', async () => {
+    it('asks when the bound Jira connections do not match --site, and never when one matches', async () => {
         const s = await scenario({ connections: 'two', asked: [{ kind: 'answer', answer: 'waiting' }] });
         const other = await s.run(['issue', 'ABC-1', '--site', 'c.example.net']);
         expect(other.code).toBe(3);
-        expect(outcomeOf(other.out).reason).toBe('no_connection');
+        expect(outcomeOf(other.out).reason).toBe('waiting_for_connection');
+        expect(s.asks).toEqual(['jira']);
         expect((await s.run(['issue', 'ABC-1', '--site', 'a.example.net'])).code).toBe(0);
-        expect(s.asks).toEqual([]);
+        expect(s.asks).toEqual(['jira']);
     });
 
     it('never asks for insufficient scopes', async () => {

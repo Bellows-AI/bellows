@@ -1,7 +1,7 @@
 import type { Board, BoardJob } from './board.js';
 
 /**
- * The runtime connection requirement's board call and claim field (BEL-174). Split out of `board.ts`
+ * The runtime connection requirement's board call and claim field. Split out of `board.ts`
  * for its line budget; `createBoard` is the only importer. Types are copied from the board's, never
  * imported: this process depends on nothing.
  */

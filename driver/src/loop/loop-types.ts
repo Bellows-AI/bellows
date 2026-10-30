@@ -163,7 +163,7 @@ export type EndDecision =
           exitCode: number | null;
           refused?: true;
           blocked?: true;
-          /** The agent's helper asked for a connection the task lacks (BEL-174): released outside the budget, held by the board. */
+          /** The agent's helper asked for a connection the task lacks: released outside the budget, held by the board. */
           requirement?: true;
           /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */
           beforeInterrupt?: () => Promise<void>;

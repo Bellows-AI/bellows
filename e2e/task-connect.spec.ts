@@ -4,7 +4,7 @@ import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
 
 /**
- * The Connect block on the task page (BEL-174), against the real board: a queued task held by an
+ * The Connect block on the task page, against the real board: a queued task held by an
  * open connection requirement, seeded through the database like the other task-detail specs, acted
  * on as the AUTH_MODE=none stand-in member, `Local`. The OAuth hand-off and the bind are
  * task-connect-auth.spec.ts's (they need a signed-in caller); the provider-generic and read-only

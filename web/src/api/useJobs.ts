@@ -249,7 +249,7 @@ export interface Job {
     connections: JobConnection[];
     /** The thread root's `binding_revision`: what `POST /api/jobs/:id/connections` must echo. */
     bindingRevision: number;
-    /** The open requirements holding the thread (BEL-174); empty on list responses. */
+    /** The open requirements holding the thread; empty on list responses. */
     integrationRequirements: JobIntegrationRequirement[];
     /** The thread root's frozen execution user, who a requirement waits on; null on list responses. */
     executionUser: AuthorRef | null;

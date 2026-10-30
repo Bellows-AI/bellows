@@ -420,8 +420,8 @@ const INTERRUPTION_REASON_MAX = 500;
 
 /**
  * The flags only a release carries: a start the runner refused is a released attempt's outcome (an
- * adoption has a runner), and a claim that waits on a leftover still terminating (BEL-160) or on a
- * connection the task asked for (BEL-174) is a release outside the budget.
+ * adoption has a runner), and a claim that waits on a leftover still terminating or on a
+ * connection the task asked for is a release outside the budget.
  */
 function releaseFlagsOf(
     raw: Record<string, unknown>,

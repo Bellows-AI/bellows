@@ -260,7 +260,7 @@ function validEntry(entry) {
 }
 
 /**
- * Tells the board this task needs a Jira connection it lacks (BEL-174; the ask rides the agent's control socket,
+ * Tells the board this task needs a Jira connection it lacks (the ask rides the agent's control socket,
  * see connection-ask.cjs). 'bound' (the task has one now) and 'absent' (no control socket: nothing to ask) return;
  * 'unavailable' and 'waiting' end the call at exit 3. An answer the board did not confirm - a hang-up, a 5xx, a
  * body that is no answer - is retried inside the deadline and never read as either verdict.
@@ -308,8 +308,8 @@ async function connectionFor(ctx, site, asked = false) {
     );
     const jira = list.filter((entry) => entry.provider === 'jira');
     const wanted = site === undefined ? jira : jira.filter((entry) => entry.site.toLowerCase() === site.toLowerCase());
-    // Only a task with no Jira connection at all asks: one bound to another site is the caller's --site to fix.
-    if (wanted.length === 0 && jira.length === 0 && !asked && (await requireConnection(ctx)) === 'bound') {
+    // No usable Jira connection for what this call needs (none at all, or none for --site) asks the board.
+    if (wanted.length === 0 && !asked && (await requireConnection(ctx)) === 'bound') {
         return connectionFor(ctx, site, true);
     }
     if (wanted.length === 0) {

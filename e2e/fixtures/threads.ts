@@ -142,7 +142,7 @@ export interface ThreadJob {
     }[];
     /** The thread root's `binding_revision`; 0 until a connection is bound. */
     bindingRevision: number;
-    /** The open requirements holding the thread (BEL-174); empty on every fixture that is not held. */
+    /** The open requirements holding the thread; empty on every fixture that is not held. */
     integrationRequirements: ThreadRequirement[];
     /** The thread root's frozen execution user: who a requirement waits on. */
     executionUser: ThreadUser | null;

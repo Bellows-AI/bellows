@@ -9,13 +9,13 @@ import { useTestDb } from './harness.js';
 import { expireLease, oauthConnection, testOrg, testUser } from './fixtures.js';
 
 /**
- * BEL-174 slice 1: a running task that needs a connection asks the board for it (`requireConnection`). The
+ * A running task that needs a connection asks the board for it (`requireConnection`). The
  * attempt is then handed back as a requirement wait: queued, refunded, outside the interruption budget, held by the
  * claim gate until the owner binds or dismisses, and continued in the same session by the next claim.
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
-const USERS = Array.from({ length: 24 }, (_, i) => testUser(`rr-${i}`));
+const USERS = Array.from({ length: 28 }, (_, i) => testUser(`rr-${i}`));
 const WORKER = 'worker-rr';
 const LEASE_SECONDS = 60;
 const SENTENCE = 'the task waits for a Jira connection';
@@ -346,6 +346,45 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
         const otherId = await create(freshUser().id);
         const other = await claimNext(otherId);
         expect(await beat(other)).toMatchObject({ requirementWait: false });
+    });
+
+    describe.each(['bound', 'dismissed'] as const)('answered before any hand-back (%s)', (answer) => {
+        it('a takeover is still told to hand back, and the claim after the hand-back gets the outcome', async () => {
+            const user = freshUser();
+            const id = await create(user.id);
+            const first = await claimNext(id);
+            const session = randomUUID();
+            await store.session(id, first.leaseToken, session);
+            expect(await ask(first)).toEqual({ result: 'ok', answer: 'waiting' });
+            // The driver dies here: the board answered `waiting` and nothing was handed back.
+            if (answer === 'bound') {
+                const conn = await connect(user.id);
+                await bindConnectionRow(sql, {
+                    orgId: ORG,
+                    id,
+                    connectionId: conn.id,
+                    bindingRevision: (await rootRow(id)).rev,
+                    userId: user.id,
+                });
+            } else {
+                expect(await store.dismissRequirement(id, 'jira', user.id)).toMatchObject({ ok: true });
+            }
+            await expireLease(sql, id);
+            const takeover = await claimNext(id);
+            expect(takeover.claimSeq).toBe(first.claimSeq + 1);
+            const beat = () => store.heartbeat(takeover.id, takeover.leaseToken, LEASE_SECONDS);
+            expect(await beat()).toMatchObject({ result: 'ok', requirementWait: true });
+
+            expect(await handBack(takeover)).toEqual({ result: 'ok', status: 'queued' });
+            const resumed = await claimNext(id);
+            expect(resumed).toMatchObject({
+                resumeSessionId: session,
+                connectionOutcomes: [{ provider: 'jira', label: 'Jira', outcome: answer }],
+            });
+            expect(await store.heartbeat(resumed.id, resumed.leaseToken, LEASE_SECONDS)).toMatchObject({
+                requirementWait: false,
+            });
+        });
     });
 
     it('an ask from a row not running under that lease is lost', async () => {

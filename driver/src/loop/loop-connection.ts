@@ -12,7 +12,7 @@ import type { LoopRuntime } from './loop-types.js';
 export const CONNECTION_ASK_BUDGET_MS = 8_000;
 
 /**
- * The relay one attempt's agent token asks for a connection through (BEL-174). The board decides: `bound`
+ * The relay one attempt's agent token asks for a connection through. The board decides: `bound`
  * and `unavailable` change nothing here. `waiting` records the requirement on the attempt and stops the
  * agent exactly as a heartbeat carrying `requirementWait` would (`applyHeartbeatVerdict`), so the ask and
  * an adopter's heartbeat are one code path; the run's end then hands the attempt back as a requirement wait.
@@ -46,7 +46,7 @@ export function createConnectionRelay(rt: LoopRuntime, job: BoardJob, state: Job
     };
 }
 
-/** Opens the connection route on an attempt's control token (BEL-174): every attempt with an endpoint has it. */
+/** Opens the connection route on an attempt's control token: every attempt with an endpoint has it. */
 export function attachConnection(ctx: { rt: LoopRuntime; job: BoardJob; state: JobState }, token: string): void {
     const { rt, job, state } = ctx;
     rt.gates?.server.attachConnection(token, createConnectionRelay(rt, job, state));

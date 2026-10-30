@@ -150,7 +150,7 @@ export interface JobActionStore {
     ): Promise<BindConnectionResult>;
 
     /**
-     * The owner declines `provider` for the thread (BEL-174): its open requirement closes as `dismissed` at the
+     * The owner declines `provider` for the thread: its open requirement closes as `dismissed` at the
      * current binding revision, the claim launches the task without it, and a later ask at that revision answers
      * `unavailable`. `missing` for an unknown job or anyone but the execution user; `none-open` when nothing is open.
      */
@@ -297,7 +297,7 @@ export interface JobActionStore {
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
      * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
-     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating (BEL-160): it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for (BEL-174): no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating: it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for: no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
@@ -889,8 +889,8 @@ export const BLOCKED_RETRY_SECONDS = 60;
 
 /**
  * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
- * losing an attempt to the infrastructure, so it is outside the count (BEL-160); a requirement hand-back waits on a
- * person, so it is too (BEL-174).
+ * losing an attempt to the infrastructure, so it is outside the count; a requirement hand-back waits on a
+ * person, so it is too.
  */
 export const interruptionsSpent = (q: Sql | TransactionSql): Fragment => q`(
     select count(*) from jsonb_array_elements(interruptions) as spent
@@ -974,12 +974,33 @@ export async function interruptJob(
         const row = rows[0];
         if (row) {
             if (row.status === 'stopped') await settleIfMergeClosed(ctx, row.root_job_id, tx);
+            await settleHandBack(tx, { orgId, id, handedBack: release && requirement });
             const answer = { result: 'ok', status: row.status } as const;
             if (release) await recordReceipt(tx, key, answer);
             return answer;
         }
         return missedInterrupt(tx, key, recorded);
     });
+}
+
+/**
+ * The requirement hand-back happened: what the asking run owed is paid. An outcome told to the claim that was just
+ * handed back was never acted on by its agent, so it is told again to the claim that continues the session.
+ */
+async function settleHandBack(
+    tx: TransactionSql,
+    { orgId, id, handedBack }: { orgId: string; id: string; handedBack: boolean }
+): Promise<void> {
+    if (!handedBack) return;
+    await tx`
+        update job_integration_requirement q
+        set hand_back_pending = false,
+            delivered_claim_seq = case when q.delivered_claim_seq = j.claim_seq then null else q.delivered_claim_seq end
+        from job j
+        where j.org_id = ${orgId} and j.id = ${id}
+          and q.org_id = ${orgId} and q.source = 'runtime' and q.asked_job_id = ${id}
+          and (q.hand_back_pending or q.delivered_claim_seq = j.claim_seq)
+    `;
 }
 
 /**

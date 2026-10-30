@@ -80,7 +80,7 @@ export interface ControlChannel {
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Gives an open token the relay of its supervisor's checkpoint (issue #775): the `/checkpoint` routes answer 400 until then. */
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
-    /** Gives an open token the relay of its agent's connection ask (BEL-174): `/connection` answers 503 until then. */
+    /** Gives an open token the relay of its agent's connection ask: `/connection` answers 503 until then. */
     attachConnection(token: string, connection: ConnectionRelay): void;
     /** Whether the supervisor has contacted this token — its control poll, or a question POST. */
     polled(token: string): boolean;

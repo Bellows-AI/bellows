@@ -484,7 +484,7 @@ export async function recordMissingInTx(
 export type RuntimeAnswer = 'bound' | 'unavailable' | 'waiting';
 
 /**
- * A running task asks for a provider (BEL-174), in the caller's transaction, which already holds the asking
+ * A running task asks for a provider, in the caller's transaction, which already holds the asking
  * row. Answers `bound` when the thread has a binding the broker would serve, or after binding the execution user's
  * lone usable candidate; `unavailable` when nobody can bind (no execution user, a provider the board never binds) or
  * the owner dismissed the requirement at this binding revision; otherwise opens (or refreshes) the runtime
@@ -534,11 +534,11 @@ export async function requireAtRuntimeInTx(
     }
     await db`
         insert into job_integration_requirement
-            (org_id, root_job_id, provider, reason, source, asked_job_id, asked_claim_seq)
-        values (${orgId}, ${rootJobId}, ${provider}, ${reason}, 'runtime', ${askedJobId}, ${claimSeq})
+            (org_id, root_job_id, provider, reason, source, asked_job_id, asked_claim_seq, hand_back_pending)
+        values (${orgId}, ${rootJobId}, ${provider}, ${reason}, 'runtime', ${askedJobId}, ${claimSeq}, true)
         on conflict (org_id, root_job_id, provider) where satisfied_at is null
         do update set reason = excluded.reason, source = 'runtime', asked_job_id = excluded.asked_job_id,
-                      asked_claim_seq = excluded.asked_claim_seq
+                      asked_claim_seq = excluded.asked_claim_seq, hand_back_pending = true
     `;
     return 'waiting';
 }
@@ -588,7 +588,7 @@ export interface ConnectionOutcome {
 }
 
 /**
- * What became of the requirements this job asked for while it ran, told to the claim that continues it (BEL-174).
+ * What became of the requirements this job asked for while it ran, told to the claim that continues it.
  * Each is stamped with the claim it was told to; a TAKEOVER of that claim is told again (its session never saw
  * the answer), an ordinary re-claim is not (the resumed session already did).
  */
@@ -609,11 +609,15 @@ export async function takeConnectionOutcomesInTx(
         .map((r) => ({ provider: r.provider, label: providerLabel(r.provider), outcome: r.outcome }));
 }
 
-/** Whether an open runtime requirement on the root was asked by `jobId`: the asker, or its takeover, must stop. */
+/**
+ * Whether `jobId` asked for a connection and has not been handed back since: the asker, or its takeover, must stop.
+ * It holds after the requirement is bound or dismissed (`hand_back_pending`, cleared by the hand-back itself), so a
+ * takeover that finds the requirement already answered still hands the stopped agent back.
+ */
 export async function requirementWaitOf(db: Db, orgId: string, jobId: string): Promise<boolean> {
     const rows = await db<{ one: number }[]>`
         select 1 as one from job_integration_requirement
-        where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${jobId} and satisfied_at is null
+        where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${jobId} and hand_back_pending
         limit 1
     `;
     return rows.length > 0;

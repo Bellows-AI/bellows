@@ -2251,7 +2251,7 @@ expect_contains 'the refusal is the App-less board, said on stderr'  "$gh_result
 expect_contains "the helper's cache is a Memory emptyDir"           "$gh_result" 'github cache tmpfs'
 expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result" 'github no env token'
 
-# --- The runtime connection requirement (BEL-174) -----------------------------------------------
+# --- The runtime connection requirement -----------------------------------------------
 #
 # A task with no Jira connection runs the Jira helper in its pod: the helper asks on the supervisor's
 # control socket, the driver relays the ask to the board, the board holds the task queued behind an open

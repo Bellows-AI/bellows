@@ -1235,7 +1235,7 @@ describe('the shared executor skills', () => {
         }
     });
 
-    it('ships the runtime connection ask byte-identical, root-owned and executable, in both images (BEL-174)', () => {
+    it('ships the runtime connection ask byte-identical, root-owned and executable, in both images', () => {
         expect(read('docker/opencode-executor/connection-ask.cjs')).toBe(
             read('docker/claude-executor/connection-ask.cjs')
         );

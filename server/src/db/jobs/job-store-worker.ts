@@ -54,14 +54,14 @@ export interface JobWorkerStore {
         /** Every `answered` question of this lease token — applied idempotently by the driver. */
         answeredQuestions: { questionId: string; answers: Record<string, string> }[];
         /**
-         * An open runtime requirement on the thread was asked by THIS row (BEL-174): the run ends and is handed back.
+         * An open runtime requirement on the thread was asked by THIS row: the run ends and is handed back.
          * Keyed by job, not claim: a takeover of the asker carries it too.
          */
         requirementWait: boolean;
     }>;
 
     /**
-     * The running attempt asks for a connection it needs (BEL-174), lease-fenced: `bound` (the thread has a usable
+     * The running attempt asks for a connection it needs, lease-fenced: `bound` (the thread has a usable
      * binding, or the lone candidate was just bound), `unavailable` (nobody can bind, or the owner dismissed it) or
      * `waiting` (an open requirement now holds the next claim; the caller ends the run). `lost` / `missing` as every
      * lease-fenced write.

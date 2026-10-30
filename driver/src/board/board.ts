@@ -142,7 +142,7 @@ export interface BoardJob {
      * adoption mark, helper receipts and commit title read the same text on each.
      */
     continuesInterrupted: boolean;
-    /** What became of the connection requirement an earlier attempt raised (BEL-174); told to the resumed agent. */
+    /** What became of the connection requirement an earlier attempt raised; told to the resumed agent. */
     connectionOutcomes?: ConnectionOutcome[];
     /**
      * The account that queued the job, or null for an unattributed one.
@@ -339,7 +339,7 @@ export type HeartbeatVerdict =
           result: 'held';
           cancelRequested: boolean;
           answeredQuestions?: AnsweredQuestion[];
-          /** An open runtime connection requirement this job's attempt raised (BEL-174): hand the attempt back. */
+          /** An open runtime connection requirement this job's attempt raised: hand the attempt back. */
           requirementWait?: boolean;
       }
     | 'lost'
@@ -604,7 +604,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      * the lease is no longer this attempt's, or the job is gone.
      */
     interrupt(job: BoardJob, interruption: Interruption): Promise<LeaseState | 'exhausted'>;
-    /** Tells the board the task lacks a connection its helper needs (BEL-174, docs/connections.md); a throw is no answer. */
+    /** Tells the board the task lacks a connection its helper needs (docs/connections.md); a throw is no answer. */
     requireConnection(job: BoardJob, provider: string): Promise<RequirementVerdict>;
     /**
      * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status

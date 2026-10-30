@@ -126,7 +126,7 @@ export interface JobState {
      */
     draining: boolean;
     /**
-     * The runtime connection requirement the board holds this attempt for (BEL-174): the agent's helper asked
+     * The runtime connection requirement the board holds this attempt for: the agent's helper asked
      * (`loop-connection.ts`), or a heartbeat said an earlier holder's ask is open. The agent is stopped on the
      * control endpoint and the attempt is handed back as a requirement wait, never given a verdict. `provider`
      * is null where only a heartbeat said so.
@@ -382,7 +382,7 @@ async function startDraining(rt: LoopRuntime, job: BoardJob, state: JobState, co
 }
 
 /**
- * A requirement wait on a running agent (BEL-174): like a Stop it is raised once on the control endpoint and the
+ * A requirement wait on a running agent: like a Stop it is raised once on the control endpoint and the
  * agent finishes its current step — the helper's guidance lands in its session — then exits on its own. Unlike a
  * Stop the attempt does not settle as stopped: the run's end hands it back (`standDown`). An agent that never
  * reaches a boundary is killed when the grace passes, and the hand-back still follows.
@@ -405,7 +405,7 @@ function startRequirementDrain(rt: LoopRuntime, job: BoardJob, state: JobState, 
 }
 
 /**
- * A requirement wait (BEL-174) lands on the attempt: a running agent is drained cooperatively (answers true); any
+ * A requirement wait lands on the attempt: a running agent is drained cooperatively (answers true); any
  * other phase, or an attempt with no endpoint to stop the agent on, stands down now (records the ending, false).
  */
 function holdForRequirement(rt: LoopRuntime, job: BoardJob, state: JobState): boolean {

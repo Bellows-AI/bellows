@@ -755,7 +755,7 @@
         margin: 0;
     }
 
-    /* The Connect block's action row (BEL-174): its blocks reuse the question frame above. */
+    /* The Connect block's action row: its blocks reuse the question frame above. */
     .connect-actions {
         display: flex;
         flex-wrap: wrap;

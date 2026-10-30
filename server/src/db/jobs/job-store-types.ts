@@ -151,7 +151,7 @@ export interface JobInterruption {
     claimSeq: number;
     /** A hand-back that waited on a leftover still terminating: outside the interruption budget (BEL-160). */
     blocked?: true;
-    /** A hand-back that waited on a connection the task asked for: outside the interruption budget (BEL-174). */
+    /** A hand-back that waited on a connection the task asked for: outside the interruption budget. */
     requirement?: true;
 }
 
@@ -374,7 +374,7 @@ export interface Job {
     executionUser: UserRef | null;
 }
 
-/** One open requirement as the job view shows it (BEL-174). */
+/** One open requirement as the job view shows it. */
 export interface JobIntegrationRequirement {
     provider: string;
     /** What a person calls the provider. */
@@ -632,7 +632,7 @@ export interface Claim {
      */
     continuesInterrupted: boolean;
     /**
-     * What became of the connections this job asked for while it ran (BEL-174), told once to the claim that
+     * What became of the connections this job asked for while it ran, told once to the claim that
      * continues it (and again to a takeover of that claim). Absent when there is nothing to tell.
      */
     connectionOutcomes?: { provider: string; label: string; outcome: 'bound' | 'dismissed' }[];

@@ -17,7 +17,7 @@ import {
 } from '../fixtures/loop-stubs.js';
 
 /**
- * A runtime connection requirement (BEL-174) through the real loop and the real connection route: the agent's
+ * A runtime connection requirement through the real loop and the real connection route: the agent's
  * helper asks for a connection its task lacks, the board records the requirement, the driver stops the agent
  * itself and hands the attempt back as a requirement wait — released, outside the interruption budget, never a
  * failed or blocked verdict — so the board holds the row until the user binds or dismisses.

@@ -1,6 +1,6 @@
 'use strict';
 /*
- * The runtime connection ask (BEL-174), the one call a helper makes when its task lacks a connection it
+ * The runtime connection ask, the one call a helper makes when its task lacks a connection it
  * needs: `POST /connection {provider}` on the agent's control socket (`control-proxy.cjs`), which the
  * supervisor relays to the driver and the driver to the board. The board decides, and the answer is one of
  *

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { assertTestDatabase } from './harness.js';
 
-/** BEL-174: 102 widens the requirement's reason and records who asked, how it closed and what was delivered. */
+/** 102 widens the requirement's reason and records who asked, how it closed and what was delivered. */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);

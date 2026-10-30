@@ -1,4 +1,4 @@
--- A running task asks for a connection (BEL-174): the requirement row it opens carries who asked and under which
+-- A running task asks for a connection: the requirement row it opens carries who asked and under which
 -- claim, how it closed, and which claim was told. Expand only (docs/persistence.md): every new column is nullable or
 -- defaulted, so a pod of the previous release keeps reading and writing the table. This file must contain NO
 -- `create extension`, per 005's header.

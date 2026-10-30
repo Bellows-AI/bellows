@@ -105,7 +105,7 @@ export interface BoardStub extends Board {
     suspended: string[];
     /** The interrupted attempts the loop reported (issue #792). */
     interrupted: ({ id: string } & Interruption)[];
-    /** Every runtime connection ask the loop relayed to the board (BEL-174), in order. */
+    /** Every runtime connection ask the loop relayed to the board, in order. */
     connectionAsks: { id: string; provider: string }[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
@@ -159,9 +159,9 @@ export function stubBoard(
         artifactsDown?: boolean;
         /** The board's answer to an interruption report (issue #792); held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
-        /** The board's answer to a runtime connection ask (BEL-174); `waiting` when absent. */
+        /** The board's answer to a runtime connection ask; `waiting` when absent. */
         connectionVerdict?: RequirementVerdict | (() => Promise<RequirementVerdict>);
-        /** Every heartbeat answers `requirementWait: true` (BEL-174): an adopter of an attempt that asked. */
+        /** Every heartbeat answers `requirementWait: true`: an adopter of an attempt that asked. */
         requirementWait?: boolean;
         /** The board's answer to a phase checkpoint read (issue #829); null (unreadable) when absent. */
         phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);

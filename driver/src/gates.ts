@@ -422,7 +422,7 @@ export interface GateServer {
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Gives an open control token its supervisor's checkpoint relay (the `/checkpoint` routes). */
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
-    /** Gives an open control token the relay of its agent's connection ask (BEL-174). */
+    /** Gives an open control token the relay of its agent's connection ask. */
     attachConnection(token: string, connection: ConnectionRelay): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an

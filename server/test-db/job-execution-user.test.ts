@@ -3,7 +3,7 @@ import { createJobStore } from '../src/db/jobs/job-store.js';
 import { testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
-/** BEL-174: the thread root's frozen execution user rides on every detail read, so the task page can say who must act. */
+/** the thread root's frozen execution user rides on every detail read, so the task page can say who must act. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const ALICE = testUser('exec-alice');

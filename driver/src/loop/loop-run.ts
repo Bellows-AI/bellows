@@ -398,7 +398,7 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // A draining attempt settles as stopped even after a clean exit: the agent stopped because it
     // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
-    // The board holds the task for a connection its helper asked for (BEL-174): the attempt stood down for it.
+    // The board holds the task for a connection its helper asked for: the attempt stood down for it.
     if (state.requirement !== null && !state.draining) recordEnding(state, 'requirement');
     stopIfDraining(state);
     const lastWords = () => pump.flush(outcome.output).then(() => reportRunTail(ctx, executorType, outcome));

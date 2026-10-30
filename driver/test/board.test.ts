@@ -364,7 +364,7 @@ describe('reporting an interrupted attempt (issue #792)', () => {
     });
 });
 
-describe('the runtime connection requirement (BEL-174)', () => {
+describe('the runtime connection requirement', () => {
     const job = boardJob();
 
     it('posts the provider under the lease and reads the board’s three answers', async () => {

@@ -3820,7 +3820,7 @@ ask_roundtrip_lane() {
     stop_driver
 }
 
-# BEL-174: the runtime connection requirement, end to end. The real claude-executor runs the Jira helper
+# the runtime connection requirement, end to end. The real claude-executor runs the Jira helper
 # (a scripted Bash step) for a task that has no Jira connection: the helper asks on the control socket, the
 # driver relays it to the board, the board holds the task queued behind an open requirement, and the driver
 # ends the run as a hand-back (not failed). Binding a connection through the API releases the claim: the next

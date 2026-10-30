@@ -10,9 +10,9 @@ import { bad, body, guard } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
 import { HTTP_CONFLICT, HTTP_OK, leaseLost, notFoundJob } from './job-limits.js';
 
-/** The runtime connection requirement (BEL-174): the runner's ask and the owner's dismissal. */
+/** The runtime connection requirement: the runner's ask and the owner's dismissal. */
 
-// The running attempt asks for a connection its task needs (BEL-174): lease-fenced like every worker write. The
+// The running attempt asks for a connection its task needs: lease-fenced like every worker write. The
 // answer is the store's verdict; `waiting` is what makes the driver end the run and hand it back.
 export async function handleRequirement(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
@@ -37,7 +37,7 @@ export async function handleRequirement(orgs: OrgRegistry, request: FastifyReque
     return reply.code(HTTP_OK).send({ answer: asked.value.answer });
 }
 
-// BEL-174: the owner declines a provider the thread asked for. The store decides who owns the thread (anyone else is
+// the owner declines a provider the thread asked for. The store decides who owns the thread (anyone else is
 // a 404) and whether a requirement is still open (409).
 export async function handleDismissRequirement(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
     const route = await resolveJobRoute<keyof JobActionStore>(orgs, request, reply);
