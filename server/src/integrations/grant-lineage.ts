@@ -61,7 +61,11 @@ export interface GrantLineage {
     readonly leaseMs: number;
     /** The mutations of this instance that may still be running; two instances stand in for two processes. */
     readonly attempts: Attempts;
-    claimLineage(grantId: string, kind: LineageKind, options: { rotates: boolean }): Promise<ClaimResult>;
+    claimLineage(
+        grantId: string,
+        kind: LineageKind,
+        options: { rotates: boolean; authorizationId?: string }
+    ): Promise<ClaimResult>;
     /** Persists `payload` under the held claim (record, identical replay, finalize). The caller signal never reaches it. */
     commitLineage(claim: LineageClaim, payload: GrantPayload): Promise<CommitResult>;
     /**
@@ -177,7 +181,7 @@ async function runRefresh(ctx: LineageCtx, grantId: string, signal: AbortSignal 
     const hooks = ctx.providers(info.provider);
     if (!hooks) return unavailable('secret-unavailable');
     for (let round = 0; ; round += 1) {
-        const claimed = await claimStatement(ctx, grantId, 'refresh', hooks.rotatesRefreshToken);
+        const claimed = await claimStatement(ctx, grantId, 'refresh', { rotates: hooks.rotatesRefreshToken });
         if (claimed.ok) return exchangeUnderClaim(ctx, claimed.claim, hooks, signal);
         switch (claimed.reason) {
             case 'held':
@@ -246,7 +250,7 @@ export function createGrantLineage(deps: GrantLineageDeps): GrantLineage {
         timing,
         leaseMs,
         attempts: ctx.attempts,
-        claimLineage: (grantId, kind, { rotates }) => claimStatement(ctx, grantId, kind, rotates),
+        claimLineage: (grantId, kind, options) => claimStatement(ctx, grantId, kind, options),
         commitLineage: (claim, payload) => commit(ctx, claim, payload),
         releaseClaim: (claim, options) => endClaim(ctx, claim, options ?? {}),
         refreshGrant,

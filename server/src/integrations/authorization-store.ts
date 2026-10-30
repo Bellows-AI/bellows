@@ -224,6 +224,22 @@ export async function recordGrantClaim(
     return rows.length > 0;
 }
 
+/**
+ * Keeps the facts a commit under the held claim will activate from, BEFORE the commit: a holder that vanishes after
+ * the claim finalized leaves recovery everything it needs. It applies only to the claim the row recorded, in time.
+ */
+export async function recordClaimResult(
+    sql: Sql,
+    input: { id: string; claim: string; facts: StoredFacts }
+): Promise<boolean> {
+    const rows = await sql<{ id: string }[]>`
+        update integration_authorization set result = ${sql.json(input.facts as never)}
+        where id = ${input.id} and status = 'exchanging' and grant_claim = ${input.claim} and deadline_at > now()
+        returning id
+    `;
+    return rows.length > 0;
+}
+
 /** Records the pre-allocated grant, reference and operation BEFORE the secret is created (inside the deadline): recovery reconciles them. */
 export async function recordPersisting(
     sql: Sql,

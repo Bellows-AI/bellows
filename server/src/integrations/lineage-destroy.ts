@@ -81,7 +81,7 @@ async function destroyUnderClaim(ctx: LineageCtx, claim: LineageClaim): Promise<
 }
 
 export async function destroyRevokedSecret(ctx: LineageCtx, grantId: string): Promise<DestroyResult> {
-    const claimed = await claimLineage(ctx, grantId, 'destroy', false);
+    const claimed = await claimLineage(ctx, grantId, 'destroy', { rotates: false });
     if (!claimed.ok) return { ok: false, reason: claimed.reason };
     try {
         return await destroyUnderClaim(ctx, claimed.claim);

@@ -15,6 +15,7 @@ interface ClaimRow {
     secret_version: string | null;
     authority: Record<string, unknown>;
     wedged: boolean;
+    remaining_ms: string | number;
 }
 
 export interface LineageRow {
@@ -31,6 +32,7 @@ export interface LineageRow {
     lineage_claim_kind: LineageKind | null;
     lineage_operation_id: string | null;
     lineage_secret_ref: string | null;
+    lineage_finalized_claim: string | null;
     expired: boolean | null;
 }
 
@@ -44,7 +46,7 @@ export async function readLineage(ctx: LineageCtx, grantId: string): Promise<Lin
     const rows = await ctx.sql<LineageRow[]>`
         select id, provider, principal_user_id, status, version, secret_ref, secret_version, authority,
                secret_wedged_at, lineage_claim, lineage_claim_kind, lineage_operation_id, lineage_secret_ref,
-               (lineage_claim_expires_at < now()) as expired
+               lineage_finalized_claim, (lineage_claim_expires_at < now()) as expired
         from integration_grant where id = ${grantId} and org_id = ${ctx.orgId}
     `;
     return rows[0] ?? null;
@@ -54,12 +56,15 @@ export async function readLineage(ctx: LineageCtx, grantId: string): Promise<Lin
  * Takes the claim. It applies only when no live claim stands and no operation is recorded: a recorded operation is
  * recovery's. An expired claim with no operation is taken over, except a rotating refresh, whose holder may have
  * spent the token (`abandoned`). A wedged grant refuses refresh and destroy; only a reconsent may leave the wedge.
+ *
+ * With `authorizationId` the claim ends exactly at that exchanging authorization's `deadline_at` (a missing or settled
+ * one gives a claim born expired), so the claim and the flow share one clock; otherwise it holds for the lease.
  */
 export async function claimLineage(
     ctx: LineageCtx,
     grantId: string,
     kind: LineageKind,
-    rotates: boolean
+    { rotates, authorizationId }: { rotates: boolean; authorizationId?: string }
 ): Promise<ClaimResult> {
     const { sql, orgId, leaseMs } = ctx;
     const token = randomUUID();
@@ -67,10 +72,16 @@ export async function claimLineage(
     const reconsent = kind === 'reconsent';
     const refresh = kind === 'refresh';
     const destroy = kind === 'destroy';
+    const expiresAt = authorizationId
+        ? sql`coalesce(
+              (select deadline_at from integration_authorization
+               where id = ${authorizationId} and org_id = ${orgId} and status = 'exchanging'),
+              now())`
+        : sql`now() + (${leaseMs}::double precision * interval '1 millisecond')`;
     const rows = await sql<ClaimRow[]>`
         update integration_grant
         set lineage_claim = ${token}, lineage_claim_kind = ${kind},
-            lineage_claim_expires_at = now() + (${leaseMs}::double precision * interval '1 millisecond'),
+            lineage_claim_expires_at = ${expiresAt},
             updated_at = now()
         where id = ${grantId} and org_id = ${orgId} and status in ${sql(ALLOWED_STATUS[kind])}
           and (lineage_operation_id is null or (${reconsent}::boolean and secret_wedged_at is not null))
@@ -81,7 +92,8 @@ export async function claimLineage(
                or (lineage_claim_expires_at < now() and lineage_operation_id is null
                    and not (${rotates}::boolean and lineage_claim_kind = 'refresh')))
         returning provider, principal_user_id, version, secret_ref, secret_version, authority,
-                  (secret_wedged_at is not null) as wedged
+                  (secret_wedged_at is not null) as wedged,
+                  extract(epoch from (lineage_claim_expires_at - now())) * 1000 as remaining_ms
     `;
     const row = rows[0];
     if (!row) return { ok: false, reason: await classifyRefusal(ctx, grantId, kind, rotates) };
@@ -97,7 +109,7 @@ export async function claimLineage(
         secretVersion: row.secret_version,
         authority: row.authority,
         wedged: row.wedged,
-        deadlineAt: startedAt + leaseMs,
+        deadlineAt: startedAt + Number(row.remaining_ms),
     };
     return { ok: true, claim };
 }

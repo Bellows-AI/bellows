@@ -12,6 +12,7 @@ import {
     failAuthorization,
     grantOfAccount,
     readAuthorization,
+    recordClaimResult,
     recordGrantClaim,
     recordPersisting,
     type StoredFacts,
@@ -27,6 +28,7 @@ import {
     redirectUriOf,
 } from './authorization-types.js';
 import { encodeGrantPayload, type GrantPayload } from './grant-credentials.js';
+import { readLineage } from './lineage-claims.js';
 import { attemptsLive, replay } from './lineage-commit.js';
 import {
     authorizationAttemptKey,
@@ -70,12 +72,6 @@ interface Held {
     rotates: boolean;
 }
 
-/** The same claim for the lease, a persistence fence no later than the authorization's own deadline. */
-const capClaim = (claim: LineageClaim, row: AuthorizationRow): LineageClaim => ({
-    ...claim,
-    deadlineAt: Math.min(claim.deadlineAt, row.deadlineAt ?? claim.deadlineAt),
-});
-
 /** The flow has no time left: nothing more is exchanged, looked up or stored. */
 const overDeadline = (row: AuthorizationRow): boolean => row.deadlineAt !== null && Date.now() >= row.deadlineAt;
 
@@ -83,13 +79,19 @@ const release = async (fc: FlowCtx, held: Held, options: { reconnect?: boolean }
     if (held.claim) await fc.lineage.releaseClaim(held.claim, options).catch(() => false);
 };
 
-/** Takes the grant's `reconsent` claim; refused means the grant is busy or gone, and nothing was exchanged. */
+/**
+ * Takes the grant's `reconsent` claim, which ends at the authorization's own deadline; refused means the grant is busy
+ * or gone, and nothing was exchanged.
+ */
 async function claimGrant(
     fc: FlowCtx,
     row: AuthorizationRow,
     grant: { id: string; rotates: boolean }
 ): Promise<{ ok: true; held: Held } | { ok: false; failure: AuthorizationFailure }> {
-    const claimed = await fc.lineage.claimLineage(grant.id, 'reconsent', { rotates: grant.rotates });
+    const claimed = await fc.lineage.claimLineage(grant.id, 'reconsent', {
+        rotates: grant.rotates,
+        authorizationId: row.id,
+    });
     if (!claimed.ok) {
         return {
             ok: false,
@@ -171,6 +173,10 @@ async function finishActivation(fc: FlowCtx, row: AuthorizationRow, activated: A
             connectionId: row.connectionId ?? activated.connectionIds[0]!,
         };
     }
+    // `interrupted`: someone else settled the row (recovery completes a finalized claim), and the durable row answers.
+    const settled = activated.failure === 'interrupted' ? await settledRow(fc, row) : null;
+    if (settled?.kind === 'completed')
+        return { ok: true as const, returnTo: row.returnTo, connectionId: settled.connectionId };
     return fail(fc, row, activated.failure);
 }
 
@@ -288,6 +294,37 @@ async function connectNewGrant(
     );
 }
 
+/**
+ * Under the held claim: keep the facts the activation needs BEFORE the commit (a vanished holder leaves recovery
+ * everything), commit, then activate. A claim lost mid-commit is settled from its durable outcome.
+ */
+async function commitAndActivate(
+    fc: FlowCtx,
+    row: AuthorizationRow,
+    step: { held: Held; payload: GrantPayload; facts: StoredFacts }
+): Promise<CompleteAuthorizationResult> {
+    const { held, payload, facts } = step;
+    if (!(await recordClaimResult(fc.sql, { id: row.id, claim: held.claim!.token, facts }))) {
+        await release(fc, held);
+        return fail(fc, row, 'interrupted');
+    }
+    const refusal = await commitUnderClaim(fc, held, payload);
+    if (refusal === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
+    if (refusal === 'busy') return answerFromClaim(fc, row);
+    if (refusal) return fail(fc, row, refusal);
+    // The same activation as a first connect: access follows the new authority and newly seen sites attach.
+    return finishActivation(fc, row, await activateExistingGrant(fc, row, facts));
+}
+
+/** The claim was lost under the holder: what recovery made of it decides, never the holder's stale view. */
+async function answerFromClaim(fc: FlowCtx, row: AuthorizationRow): Promise<CompleteAuthorizationResult> {
+    const fresh = await readAuthorization(fc.sql, { orgId: fc.orgId, id: row.id }).catch(() => null);
+    const settled = fresh ? await settleClaimed(fc, fresh) : ({ kind: 'left' } as const);
+    if (settled.kind === 'completed') return { ok: true, returnTo: row.returnTo, connectionId: settled.connectionId };
+    if (settled.kind === 'failed') return { ok: false, returnTo: row.returnTo, failure: settled.failure };
+    return { ok: false, returnTo: row.returnTo, failure: 'busy' };
+}
+
 /** A connect to an account that already has a grant of this person: reconsent it now, then add the connections. */
 async function connectExistingGrant(
     fc: FlowCtx,
@@ -297,12 +334,7 @@ async function connectExistingGrant(
     const claimed = await claimGrant(fc, row, { id: step.grantId, rotates: step.hooks.rotatesRefreshToken });
     // Busy: the tokens are a fresh consent, not the grant's lineage; dropping them leaves its refresh untouched.
     if (!claimed.ok) return fail(fc, row, claimed.failure);
-    // This claim was taken after the exchange and the lookup: its lease may outlast the flow, its persistence may not.
-    const held: Held = { ...claimed.held, claim: capClaim(claimed.held.claim!, row) };
-    const refusal = await commitUnderClaim(fc, held, step.payload);
-    if (refusal === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
-    if (refusal) return fail(fc, row, refusal);
-    return finishActivation(fc, row, await activateExistingGrant(fc, row, step.facts));
+    return commitAndActivate(fc, row, { held: claimed.held, payload: step.payload, facts: step.facts });
 }
 
 /** A reconnect: the claim is already held, the account must be the same one, then the lineage commit. */
@@ -315,11 +347,7 @@ async function reconnect(
         await release(fc, step.held);
         return fail(fc, row, 'identity-mismatch');
     }
-    const refusal = await commitUnderClaim(fc, step.held, step.payload);
-    if (refusal === 'pending') return { ok: false, returnTo: row.returnTo, failure: 'storage-failed' };
-    if (refusal) return fail(fc, row, refusal);
-    // The same activation as a first connect: access follows the new authority and newly seen sites attach.
-    return finishActivation(fc, row, await activateExistingGrant(fc, row, step.facts));
+    return commitAndActivate(fc, row, step);
 }
 
 const activateExistingGrant = (fc: FlowCtx, row: AuthorizationRow, facts: StoredFacts): Promise<ActivationResult> =>
@@ -468,6 +496,62 @@ async function recoverPersisting(fc: FlowCtx, row: AuthorizationRow): Promise<Re
     return activated.failure === 'interrupted' ? 'left' : 'failed';
 }
 
+type Settled =
+    | { kind: 'completed'; connectionId: string }
+    | { kind: 'failed'; failure: AuthorizationFailure }
+    | { kind: 'left' };
+
+/**
+ * Settles an `exchanging` authorization from its claim's durable outcome, on a FRESHLY read row. The grant's marker
+ * says the claim finalized (activate from the facts stored before the commit); a claim still held is not settled;
+ * a claim that ended without finalizing is today's `interrupted`. An unconfirmed read settles nothing.
+ */
+async function settleClaimed(fc: FlowCtx, row: AuthorizationRow): Promise<Settled> {
+    if (!row.grantId || !row.grantClaim) return { kind: 'left' };
+    const grant = await readLineage(lineageCtxOf(fc), row.grantId).catch(() => null);
+    if (!grant) return { kind: 'left' };
+    if (grant.lineage_finalized_claim === row.grantClaim) {
+        // Finalized: the credentials landed, so a missing fact is inconclusive, never a failure.
+        if (!row.result) return { kind: 'left' };
+        const activated = await activateExistingGrant(fc, row, row.result);
+        if (activated.ok) {
+            fc.log('completed', row.id);
+            return { kind: 'completed', connectionId: row.connectionId ?? activated.connectionIds[0]! };
+        }
+        if (activated.failure === 'interrupted') return settledRow(fc, row);
+        await fail(fc, row, activated.failure);
+        return { kind: 'failed', failure: activated.failure };
+    }
+    if (grant.lineage_claim === row.grantClaim) return { kind: 'left' };
+    await fail(fc, row, 'interrupted');
+    return { kind: 'failed', failure: 'interrupted' };
+}
+
+/** Another settler got there first: answer from the row it left. */
+async function settledRow(fc: FlowCtx, row: AuthorizationRow): Promise<Settled> {
+    const fresh = await readAuthorization(fc.sql, { orgId: fc.orgId, id: row.id }).catch(() => null);
+    if (fresh?.status === 'completed') {
+        const connectionId = fresh.connectionId ?? fresh.result?.connectionIds?.[0];
+        if (connectionId) return { kind: 'completed', connectionId };
+    }
+    return fresh?.status === 'failed' ? { kind: 'failed', failure: 'interrupted' } : { kind: 'left' };
+}
+
+/** A recorded operation is the lineage's: its own recovery finalizes or loses it, and the claim's outcome decides. */
+async function settleAfterLineage(
+    fc: FlowCtx,
+    row: AuthorizationRow & { grantId: string }
+): Promise<RecoverAuthorizationResult> {
+    await fc.lineage.recoverLineage(row.grantId).catch(() => undefined);
+    const fresh = await readAuthorization(fc.sql, { orgId: fc.orgId, id: row.id }).catch(() => null);
+    if (!fresh || fresh.status !== 'exchanging') return fresh ? 'idle' : 'left';
+    const settled = await settleClaimed(fc, fresh);
+    if (settled.kind === 'left') return 'left';
+    fc.log('recovered', row.id);
+    if (settled.kind === 'completed') return 'activated';
+    return settled.failure === 'interrupted' ? 'interrupted' : 'failed';
+}
+
 /** The holder of an `exchanging` row is gone: the code is never exchanged again; a held claim is released (F7). */
 async function recoverExchanging(fc: FlowCtx, row: AuthorizationRow): Promise<RecoverAuthorizationResult> {
     if (row.grantClaim && row.grantId) {
@@ -476,8 +560,7 @@ async function recoverExchanging(fc: FlowCtx, row: AuthorizationRow): Promise<Re
             { token: row.grantClaim, grantId: row.grantId },
             { reconnect: row.intent === 'reconnect' && rotates, unrecordedOnly: true }
         );
-        // A recorded operation is the lineage's: its own recovery finalizes or loses it.
-        if (!released) await fc.lineage.recoverLineage(row.grantId).catch(() => undefined);
+        if (!released) return settleAfterLineage(fc, { ...row, grantId: row.grantId });
     }
     await fail(fc, row, 'interrupted');
     fc.log('recovered', row.id);

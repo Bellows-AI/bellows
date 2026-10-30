@@ -276,6 +276,24 @@ describe.skipIf(!enabled)('grant lineage: refresh against disconnect', () => {
         }
     );
 
+    it('a paused refresher whose claim was taken over drops its tokens without revoking the one the new holder stored', async () => {
+        const r = await rig({ rotates: false, revokeScope: 'token' });
+        const a = replica(r, r.h.open());
+        const b = replica(r, r.h.open());
+        const park = r.fake.parkNext();
+        const paused = resolve(a.resolver, r);
+        await park.accepted;
+        // A's lease lapsed with no operation recorded: B takes the claim over, stores and finalizes.
+        await expireClaim(r.grant.id);
+        expect(ok(await resolve(b.resolver, r)).credential.accessToken).toEqual(expect.any(String));
+        const stored = await columns(r.grant.id);
+        park.release();
+        expect((await paused).ok).toBe(false);
+        expect(r.fake.revoked).toEqual([]);
+        expect(await columns(r.grant.id)).toMatchObject({ secret_version: stored.secret_version, status: 'active' });
+        expect(ok(await resolve(b.resolver, r)).credential.accessToken).toEqual(expect.any(String));
+    });
+
     it('after persist: the finalize keeps revoked and the destroy deletes the new version', async () => {
         const hold = parked();
         const r = await rig({
