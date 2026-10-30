@@ -1,6 +1,6 @@
 # Notifications
 
-The durable event a delivery stage reads when a task becomes ready or blocked; the connector contract and `deliver` classify a send; an org's subscriptions say who hears about it; the outbox that calls them comes later (BEL-129).
+The durable event a delivery stage reads when a task becomes ready or blocked; the connector contract and `deliver` classify a send; an org's subscriptions say who hears about it; the outbox fans an event out to them at emission and a delivery loop sends each row.
 
 | Concern | Code | Test |
 | --- | --- | --- |
@@ -11,7 +11,12 @@ The durable event a delivery stage reads when a task becomes ready or blocked; t
 | Connector contract, registry, `deliver` classification | `server/src/notifications/connector.ts` | `server/test/notifications.deliver.test.ts` |
 | Fake connector for delivery tests | `server/test/notifications-fake-connector.ts` | `server/test/notifications.deliver.test.ts` |
 | Subscriptions: table (103) | `server/migrations/103_notification_subscription.sql` | `server/test-db/notification-subscriptions.test.ts` |
-| Subscription store, org-bound CRUD and `matching` | `server/src/notifications/subscription-store.ts` | `server/test-db/notification-subscriptions.test.ts` |
+| Subscription store, org-bound CRUD | `server/src/notifications/subscription-store.ts` | `server/test-db/notification-subscriptions.test.ts` |
+| Outbox: table, due index and fan-out at emission (104) | `server/migrations/104_notification_outbox.sql` | `server/test-db/notification-outbox.test.ts` |
+| Outbox store: lease, settle, release | `server/src/notifications/outbox-store.ts` | `server/test-db/notification-outbox.test.ts` |
+| Delivery loop, every replica, `notification_delivery` pass | `server/src/notifications/delivery-loop.ts`, `server/src/main.ts` | `server/test/notifications.delivery.test.ts` |
+| Backoff constants and SQL, shared with commerce | `server/src/db/outbox-backoff.ts` | `server/test-db/notification-outbox.test.ts` |
+| Non-overlapping interval loop, shared with commerce | `server/src/interval-loop.ts` | `server/test/interval-loop.test.ts` |
 | Subscription body validation against the registry | `server/src/notifications/subscription-fields.ts` | `server/test/notifications.subscription-fields.test.ts` |
 | Subscription routes (`/api/org/notification-subscriptions`) | `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-subscriptions.routes.test.ts` |
 
@@ -26,4 +31,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked; t
 - A result carries closed reasons only and the config never rides the event, so neither leaks a credential; connector credentials are not stored yet, the first real channel adds them: `core/src/notifications.ts`, `server/test/notifications.deliver.test.ts`.
 - Adding a channel is one connector file passed to `createConnectorRegistry`; `deliver` is bounded by the caller's signal, the outbox owns the deadline: `server/src/notifications/connector.ts`.
 - A subscription's config is whatever the registered connector's `validateConfig` returned; the production registry is empty, so creates refuse `UNKNOWN_CONNECTOR` until a channel ships: `server/src/notifications/subscription-fields.ts`, `server/test-db/notification-subscriptions.routes.test.ts`.
-- `matching` is the outbox's fan-out read and a failed read throws; a filtered subscription never matches a null repo/workflow: `server/src/notifications/subscription-store.ts`, `server/test-db/notification-subscriptions.test.ts`.
+- An event fans out to the enabled subscriptions matching it at emission, in the settle's transaction; a re-fired trigger for an existing event fans out nothing, a filtered subscription never matches a null repo/workflow: `server/migrations/104_notification_outbox.sql`, `server/test-db/notification-outbox.test.ts`.
+- A send settles only under the lease token and on the store's injected clock; only `delivered` sets `delivered_at`, only a well-formed `permanent` or a subscription disabled after enqueue parks, and an unconfirmed read throws instead of parking: `server/src/notifications/outbox-store.ts`, `server/test-db/notification-outbox.test.ts`.
+- The loop starts only with a registered connector and a public URL, releases every lease it takes, and bounds a pass by an absolute deadline: `server/src/notifications/delivery-loop.ts`, `server/test/notifications.delivery.test.ts`.
+- Stated limits: delivery is at-least-once (a send in flight when a pod is lost, or ended `aborted`, may be re-sent); a subscription only receives events emitted while it existed and was enabled; one in-flight send may still reach a subscription disabled while its row is leased; re-enabling does not replay rows parked as `subscription-disabled`.

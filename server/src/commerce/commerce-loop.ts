@@ -1,5 +1,6 @@
 import type { AppConfig } from '../config.js';
 import type { CommerceStore, UsageKey } from '../db/commerce-store.js';
+import { startIntervalLoop } from '../interval-loop.js';
 import type { ServerMetrics } from '../metrics.js';
 import type { OrgRegistry } from '../orgs.js';
 import { type CommerceClient, createCommerceClient } from './commerce-client.js';
@@ -65,26 +66,6 @@ export function createUsageReporter({
     };
 }
 
-/** Runs `pass` now and then on an interval, never overlapping itself. Returns the stop. */
-export function startCommerceLoop(pass: () => Promise<void>, intervalMs = COMMERCE_INTERVAL_MS): () => void {
-    let running = false;
-    const tick = async () => {
-        if (running) return;
-        running = true;
-        try {
-            await pass();
-        } catch (e) {
-            console.error(`[commerce] pass failed: ${(e as Error).message}`);
-        } finally {
-            running = false;
-        }
-    };
-    void tick();
-    const timer = setInterval(() => void tick(), intervalMs);
-    timer.unref();
-    return () => clearInterval(timer);
-}
-
 /** Starts delivery on this replica when COMMERCE_ENABLED, after the migrations; a no-op otherwise. */
 export function startCommerceDelivery({
     commerce,
@@ -102,5 +83,7 @@ export function startCommerceDelivery({
         orgs,
         client: createCommerceClient({ url: commerce.url, token: commerce.token }),
     });
-    void ready.then(() => startCommerceLoop(() => metrics.timedPass('commerce_usage', report)));
+    void ready.then(() =>
+        startIntervalLoop('commerce', () => metrics.timedPass('commerce_usage', report), COMMERCE_INTERVAL_MS)
+    );
 }
