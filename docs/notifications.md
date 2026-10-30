@@ -13,6 +13,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked; t
 | Subscriptions: table (103) | `server/migrations/103_notification_subscription.sql` | `server/test-db/notification-subscriptions.test.ts` |
 | Subscription store, org-bound CRUD | `server/src/notifications/subscription-store.ts` | `server/test-db/notification-subscriptions.test.ts` |
 | Outbox: table, due index and fan-out at emission (104) | `server/migrations/104_notification_outbox.sql` | `server/test-db/notification-outbox.test.ts` |
+| Task-ready narrowing and PR link (105) | `server/migrations/105_notification_task_ready.sql` | `server/test-db/notification-events.test.ts` |
 | Outbox store: lease, settle, release | `server/src/notifications/outbox-store.ts` | `server/test-db/notification-outbox.test.ts` |
 | Delivery loop, every replica, `notification_delivery` pass | `server/src/notifications/delivery-loop.ts`, `server/src/main.ts` | `server/test/notifications.delivery.test.ts` |
 | Backoff constants and SQL, shared with commerce | `server/src/db/outbox-backoff.ts` | `server/test-db/notification-outbox.test.ts` |
@@ -26,6 +27,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked; t
 - One event per (job, kind): the id is `md5(job_id || '/' || kind)::uuid`, so a policy refusal (`succeeded` then `failed` in one transaction) yields `task.blocked` only: `server/test-db/notification-events.test.ts`.
 - The row copies the raw command and the frozen `workflow_name`; the title is derived only in core: `core/src/notifications.ts`, `core/src/task-title.ts`.
 - A no-op or replayed settle, a takeover, a `running` to `queued` interruption and a stop emit nothing: `server/test-db/notification-events.test.ts`.
+- `task.ready` is emitted only for the row the board shows as Needs review: a succeeded thread head (newest by created_at, id) that is not a review and not done, open wait or not; it snapshots the thread's `job_pr.pr_url`: `server/migrations/105_notification_task_ready.sql`, `server/test-db/notification-events.test.ts`.
 - No `pg_notify`; delivery polls: `core/test/polling-authority.test.ts`.
 - A thrown, aborted or malformed send is retryable, never permanent; only a well-formed connector verdict or a refused config parks: `server/src/notifications/connector.ts`, `server/test/notifications.deliver.test.ts`.
 - A result carries closed reasons only and the config never rides the event, so neither leaks a credential; connector credentials are not stored yet, the first real channel adds them: `core/src/notifications.ts`, `server/test/notifications.deliver.test.ts`.
@@ -34,4 +36,4 @@ The durable event a delivery stage reads when a task becomes ready or blocked; t
 - An event fans out to the enabled subscriptions matching it at emission, in the settle's transaction; a re-fired trigger for an existing event fans out nothing, a filtered subscription never matches a null repo/workflow: `server/migrations/104_notification_outbox.sql`, `server/test-db/notification-outbox.test.ts`.
 - A send settles only under the lease token and on the store's injected clock; only `delivered` sets `delivered_at`, only a well-formed `permanent` or a subscription disabled after enqueue parks, and an unconfirmed read throws instead of parking: `server/src/notifications/outbox-store.ts`, `server/test-db/notification-outbox.test.ts`.
 - The loop starts only with a registered connector and a public URL, releases every lease it takes, and bounds a pass by an absolute deadline: `server/src/notifications/delivery-loop.ts`, `server/test/notifications.delivery.test.ts`.
-- Stated limits: delivery is at-least-once (a send in flight when a pod is lost, or ended `aborted`, may be re-sent); a subscription only receives events emitted while it existed and was enabled; one in-flight send may still reach a subscription disabled while its row is leased; re-enabling does not replay rows parked as `subscription-disabled`.
+- Stated limits: delivery is at-least-once (a send in flight when a pod is lost, or ended `aborted`, may be re-sent); a subscription only receives events emitted while it existed and was enabled; one in-flight send may still reach a subscription disabled while its row is leased; re-enabling does not replay rows parked as `subscription-disabled`; a reopened thread does not re-notify.

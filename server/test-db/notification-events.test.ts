@@ -3,6 +3,7 @@ import { notificationEventOf } from '@factory-ai/core';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
+import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
 import { craftJob, testOrg } from './fixtures.js';
@@ -54,12 +55,13 @@ interface EventRow {
     workflow: string | null;
     command: string;
     reason: string | null;
+    pr_url: string | null;
     occurred_at: Date;
 }
 
 const events = (id: string, org = ORG) =>
     sql<EventRow[]>`
-        select id, kind, org_id, job_id, root_job_id, repo, workflow, command, reason, occurred_at
+        select id, kind, org_id, job_id, root_job_id, repo, workflow, command, reason, pr_url, occurred_at
         from notification_event where org_id = ${org} and job_id = ${id} order by kind
     `;
 
@@ -67,6 +69,13 @@ const expectedId = async (id: string, kind: string): Promise<string> => {
     const [row] = await sql<{ id: string }[]>`select md5(${id}::text || '/' || ${kind})::uuid as id`;
     return row!.id;
 };
+
+/** Every column job_review_ck requires, so the row is a named-profile review of a caller. */
+const asReview = (id: string) => sql`
+    update job set review_of = ${randomUUID()}, review_key = 'k', review_profile = 'security',
+        review_spec = '{}'::jsonb, review_revision = 'rev', review_ref = 'ref'
+    where org_id = ${ORG} and id = ${id}
+`;
 
 describe.skipIf(!enabled)('notification events — database', () => {
     it('a succeeded verdict emits one task.ready', async () => {
@@ -83,6 +92,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
             job_id: id,
             root_job_id: id,
             reason: null,
+            pr_url: null,
             command: 'ship the thing',
         });
     });
@@ -229,6 +239,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
                     workflow: row!.workflow,
                     command: row!.command,
                     reason: row!.reason,
+                    prUrl: row!.pr_url,
                     occurredAt: row!.occurred_at.toISOString(),
                 },
                 'https://factory.example.com'
@@ -263,6 +274,110 @@ describe.skipIf(!enabled)('notification events — database', () => {
         const rows = await events(id);
         expect(rows).toHaveLength(1);
         expect(rows[0]).toMatchObject({ command: 'remove me' });
+    });
+
+    it('a succeeded verdict carries the thread’s PR link', async () => {
+        const REPO = 'acme/web';
+        const prs = createPrLifecycleStore({ sql, orgId: ORG });
+        const publishing = createJobStore({ sql, orgId: ORG, prs });
+        const created = await publishing.create('ship it', null, { repo: REPO, executor: null });
+        if (typeof created === 'string') throw new Error(created);
+        const c = await publishing.claim(WORKER, LEASE_SECONDS);
+        expect(c?.id).toBe(created.id);
+        const prUrl = `https://github.com/${REPO}/pull/7`;
+        await publishing.complete(created.id, c!.leaseToken, {
+            ...succeeded,
+            publication: { repo: REPO, prNumber: 7, prUrl, headBranch: `factory/${created.id}`, baseBranch: 'main' },
+        });
+
+        const rows = await events(created.id);
+        expect(rows.map((r) => r.kind)).toEqual(['task.ready']);
+        expect(rows[0]!.pr_url).toBe(prUrl);
+    });
+
+    it('a succeeded review job emits nothing', async () => {
+        const id = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+        await asReview(id);
+        await sql`update job set status = 'succeeded', finished_at = now() where org_id = ${ORG} and id = ${id}`;
+        expect(await events(id)).toHaveLength(0);
+    });
+
+    it('a node whose verdict queued its successor in the same transaction emits nothing', async () => {
+        const root = await craftJob(
+            { sql, org: ORG, author: '' },
+            { author: null, status: 'running', createdMinutesAgo: 1 }
+        );
+        const successor = randomUUID();
+        await sql.begin(async (tx) => {
+            await tx`insert into job (org_id, id, command, status, parent_job_id, root_job_id)
+                values (${ORG}, ${successor}, 'next node', 'queued', ${root}, ${root})`;
+            await tx`update job set status = 'succeeded', finished_at = now() where org_id = ${ORG} and id = ${root}`;
+        });
+        expect(await events(root)).toHaveLength(0);
+        expect(await events(successor)).toHaveLength(0);
+    });
+
+    it('a head closed done in the settle’s transaction emits nothing', async () => {
+        const id = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+        await sql`update job set status = 'succeeded', finished_at = now(), done_at = now()
+            where org_id = ${ORG} and id = ${id}`;
+        expect(await events(id)).toHaveLength(0);
+    });
+
+    it('a succeeded head parked on an open PR wait still emits task.ready', async () => {
+        const root = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+        await sql.begin(async (tx) => {
+            await tx`insert into workflow_wait (org_id, root_job_id, reason, repo, pr_number)
+                values (${ORG}, ${root}, 'review', 'acme/widgets', 1)`;
+            await tx`update job set status = 'succeeded', finished_at = now() where org_id = ${ORG} and id = ${root}`;
+        });
+        expect((await events(root)).map((r) => r.kind)).toEqual(['task.ready']);
+    });
+
+    it('a follow-up’s success is its own task.ready and the root’s stays one', async () => {
+        const root = await queue();
+        await store.complete(root, (await claim()).leaseToken, succeeded);
+        const followUp = await store.createFollowUp(root, 'again', null);
+        if (typeof followUp === 'string' || !('id' in followUp)) throw new Error('no follow-up');
+        await store.complete(followUp.id, (await claim()).leaseToken, succeeded);
+
+        const rootRows = await events(root);
+        expect(rootRows.map((r) => r.kind)).toEqual(['task.ready']);
+        const followRows = await events(followUp.id);
+        expect(followRows.map((r) => r.kind)).toEqual(['task.ready']);
+        expect(followRows[0]!.id).toBe(await expectedId(followUp.id, 'task.ready'));
+        expect(followRows[0]!.id).not.toBe(rootRows[0]!.id);
+    });
+
+    it('a re-settle after a takeover emits one task.ready', async () => {
+        const id = await queue();
+        const first = await claim();
+        await age(id);
+        const second = await claim();
+        expect(second.id).toBe(id);
+        expect(await store.complete(id, second.leaseToken, succeeded)).toMatchObject({ result: 'ok' });
+        expect(await store.complete(id, first.leaseToken, succeeded)).toEqual({ result: 'lost' });
+        await store.complete(id, second.leaseToken, succeeded);
+        expect((await events(id)).map((r) => r.kind)).toEqual(['task.ready']);
+    });
+
+    it('a failed review job and a failed non-head still emit task.blocked', async () => {
+        const review = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+        await asReview(review);
+        await sql`update job set status = 'failed', finished_at = now() where org_id = ${ORG} and id = ${review}`;
+
+        const root = await craftJob(
+            { sql, org: ORG, author: '' },
+            { author: null, status: 'running', createdMinutesAgo: 1 }
+        );
+        const successor = randomUUID();
+        await sql.begin(async (tx) => {
+            await tx`insert into job (org_id, id, command, status, parent_job_id, root_job_id)
+                values (${ORG}, ${successor}, 'next node', 'queued', ${root}, ${root})`;
+            await tx`update job set status = 'failed', finished_at = now() where org_id = ${ORG} and id = ${root}`;
+        });
+        expect((await events(review)).map((r) => r.kind)).toEqual(['task.blocked']);
+        expect((await events(root)).map((r) => r.kind)).toEqual(['task.blocked']);
     });
 
     it('events are scoped to the job’s org', async () => {

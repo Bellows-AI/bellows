@@ -277,6 +277,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
                 orgId: ORG,
                 jobId: id,
                 title: 'ship the thing',
+                prUrl: null,
                 link: new URL(`/tasks/${id}`, PUBLIC_URL).toString(),
             },
         });

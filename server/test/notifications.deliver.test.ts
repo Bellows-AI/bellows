@@ -14,6 +14,7 @@ const event: NotificationEvent = notificationEventOf(
         workflow: 'walk',
         command: 'fix it',
         reason: 'policy',
+        prUrl: null,
         occurredAt: '2026-10-30T10:00:00.000Z',
     },
     'https://factory.example.com'

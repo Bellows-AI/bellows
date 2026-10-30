@@ -20,6 +20,7 @@ const eventRow = (n: number): NotificationEventRow => ({
     workflow: null,
     command: `task ${n}`,
     reason: null,
+    prUrl: null,
     occurredAt: '2026-08-01T00:00:00.000Z',
 });
 
