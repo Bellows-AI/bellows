@@ -142,8 +142,20 @@ export interface ThreadJob {
     }[];
     /** The thread root's `binding_revision`; 0 until a connection is bound. */
     bindingRevision: number;
-    /** The providers a selected skill requires that no live binding covers; empty on every fixture here. */
-    integrationRequirements: { provider: string; reason: 'missing' | 'ambiguous' }[];
+    /** The open requirements holding the thread (BEL-174); empty on every fixture that is not held. */
+    integrationRequirements: ThreadRequirement[];
+    /** The thread root's frozen execution user: who a requirement waits on. */
+    executionUser: ThreadUser | null;
+}
+
+/** One open connection requirement as the job view shows it. */
+export interface ThreadRequirement {
+    provider: string;
+    label: string;
+    reason: 'missing' | 'ambiguous' | 'reconnect';
+    source: 'create' | 'runtime';
+    connectionId: string | null;
+    createdAt: string;
 }
 
 type Wait = Pick<ThreadJob, 'waitReason' | 'waitingSince' | 'waitTerminalReason'>;
@@ -247,6 +259,7 @@ function run(fields: RunFields): ThreadJob {
         ...NO_WAIT,
         ...fields,
         author,
+        executionUser: fields.executionUser === undefined ? author : fields.executionUser,
         createdBy: author?.id ?? null,
     };
 }
@@ -284,6 +297,32 @@ export const queuedThread = thread([
         ...unfinished,
     }),
 ]);
+
+/** One requirement for a provider other than any real one, so a spec proves the block is provider-generic. */
+export const requirement = (fields: Partial<ThreadRequirement> = {}): ThreadRequirement => ({
+    provider: 'jira',
+    label: 'Jira',
+    reason: 'missing',
+    source: 'runtime',
+    connectionId: null,
+    createdAt: '2026-09-01T12:05:00.000Z',
+    ...fields,
+});
+
+/** The queued row a requirement holds: `create` never started, `runtime` ran and was handed back. */
+export const heldThread = (...open: ThreadRequirement[]): ThreadJob[] =>
+    thread([
+        run({
+            id: 'aaaaaaaa-0000-4000-8000-000000000111',
+            command: 'queued and held for a connection',
+            status: 'queued',
+            attempts: 0,
+            claimedBy: null,
+            startedAt: null,
+            integrationRequirements: open,
+            ...unfinished,
+        }),
+    ]);
 
 /** Running, with a live activity line and an output tall enough to clip the live well. */
 export const runningThread = thread([
@@ -844,7 +883,7 @@ export async function routeThread(page: Page, jobs: readonly ThreadJob[]): Promi
  *  the task's author is offered a follow-up (#281), so a spec that needs the composer re-authors
  *  a fixture to whoever is signed in. */
 export function authoredBy(jobs: readonly ThreadJob[], author: ThreadUser | null): ThreadJob[] {
-    return jobs.map((job) => ({ ...job, author, createdBy: author?.id ?? null }));
+    return jobs.map((job) => ({ ...job, author, createdBy: author?.id ?? null, executionUser: author }));
 }
 
 /** The signed-in account, as a thread author. Under AUTH_MODE=none this is the stand-in account,

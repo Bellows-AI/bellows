@@ -260,6 +260,7 @@ export function TaskDetail({
     sending,
     onFollowUp,
     onAnswer,
+    onConnectionChange,
     activity = NO_ACTIVITY,
 }: {
     /** The task's whole chain, oldest first — null until the thread poll lands. */
@@ -276,6 +277,8 @@ export function TaskDetail({
     onFollowUp: (command: string) => Promise<string | null>;
     /** Answers a run's question; the page refreshes the thread once it settles. */
     onAnswer: OnAnswer;
+    /** Re-reads the thread after a connection requirement was bound or dismissed. */
+    onConnectionChange: () => void;
     /**
      * Every run's activity answer (issues 339, 530), fetched by the page's hook — the panel draws
      * what it is handed, and a run with no answer yet is "loading", never a zero.
@@ -332,6 +335,9 @@ export function TaskDetail({
                                 index={index + 1}
                                 liveRef={task.id === latestTask.id && !isTerminal(task.status) ? outputRef : undefined}
                                 onAnswer={onAnswer}
+                                connect={
+                                    task.id === latestTask.id ? { viewer, onChanged: onConnectionChange } : undefined
+                                }
                             />
                         ))}
                     </section>

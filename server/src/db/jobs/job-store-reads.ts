@@ -5,7 +5,7 @@
 
 import type { Sql, Fragment } from 'postgres';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
-import { type JobRow, toJobRow, type TaskRow, toTask } from './job-store-rows.js';
+import { type JobRow, toJobRow, type TaskRow, toTask, userRef } from './job-store-rows.js';
 import type {
     Job,
     JobArtifactScope,
@@ -163,10 +163,21 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
 async function integrationsOf(
     ctx: JobStoreContext,
     rootJobId: string
-): Promise<Pick<Job, 'connections' | 'bindingRevision' | 'integrationRequirements'>> {
+): Promise<Pick<Job, 'connections' | 'bindingRevision' | 'integrationRequirements' | 'executionUser'>> {
     const { sql, orgId } = ctx;
-    const [root] = await sql<{ binding_revision: number }[]>`
-        select binding_revision from job where org_id = ${orgId} and id = ${rootJobId}
+    const [root] = await sql<
+        {
+            binding_revision: number;
+            exec_id: string | null;
+            exec_login: string | null;
+            exec_name: string | null;
+            exec_avatar_url: string | null;
+        }[]
+    >`
+        select job.binding_revision, eu.id as exec_id, eu.github_login as exec_login,
+               eu.display_name as exec_name, eu.avatar_url as exec_avatar_url
+        from job left join app_user eu on eu.id = job.execution_user_id
+        where job.org_id = ${orgId} and job.id = ${rootJobId}
     `;
     const bound = await bindingsOf(sql, orgId, rootJobId);
     const open = await requirementsOf(sql, orgId, rootJobId);
@@ -182,6 +193,7 @@ async function integrationsOf(
         })),
         bindingRevision: root?.binding_revision ?? 0,
         integrationRequirements: open,
+        executionUser: root ? userRef(root.exec_id, root.exec_login, root.exec_name, root.exec_avatar_url) : null,
     };
 }
 

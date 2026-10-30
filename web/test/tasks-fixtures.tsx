@@ -66,6 +66,10 @@ export function job(overrides: Partial<Job> = {}): Job {
         waitingSince: null,
         waitTerminalReason: null,
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
+        executionUser: null,
         ...overrides,
     };
 }
@@ -198,6 +202,7 @@ export const renderDetail = ({
                 sending={sending}
                 onFollowUp={async () => null}
                 onAnswer={async () => ({ state: 'failed', error: 'not wired in this suite' })}
+                onConnectionChange={() => {}}
                 activity={activity}
             />
         </MemoryRouter>

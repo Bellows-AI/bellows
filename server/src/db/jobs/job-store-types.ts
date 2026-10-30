@@ -370,6 +370,8 @@ export interface Job {
     bindingRevision: number;
     /** The open requirements holding the thread: a skill's provider with no live binding, or one a run asked for. `get()`/`thread()` only. */
     integrationRequirements: JobIntegrationRequirement[];
+    /** The thread root's frozen execution user: who a connection requirement waits on. `get()`/`thread()` only, else null. */
+    executionUser: UserRef | null;
 }
 
 /** One open requirement as the job view shows it (BEL-174). */

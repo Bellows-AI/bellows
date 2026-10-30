@@ -52,6 +52,10 @@ const job = (over: Partial<Job> = {}): Job => ({
     waitingSince: null,
     waitTerminalReason: null,
     questions: [],
+    connections: [],
+    bindingRevision: 0,
+    integrationRequirements: [],
+    executionUser: null,
     ...over,
 });
 

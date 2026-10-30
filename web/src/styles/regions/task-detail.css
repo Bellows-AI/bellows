@@ -755,6 +755,13 @@
         margin: 0;
     }
 
+    /* The Connect block's action row (BEL-174): its blocks reuse the question frame above. */
+    .connect-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
     .question-answers {
         display: grid;
         gap: 8px;

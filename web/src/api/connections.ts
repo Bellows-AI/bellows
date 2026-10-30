@@ -3,9 +3,10 @@ import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 /**
- * The Jira connections' client half: the caller's own list and the disconnect (a `DELETE`) of
- * `/api/connections`, and the OAuth start of `POST /api/integrations/jira/authorizations`. No
- * credential is ever in a response, so no type here has a field for one.
+ * The connections' client half: the caller's own list and the disconnect (a `DELETE`) of
+ * `/api/connections`, the OAuth start of `POST /api/integrations/<provider>/authorizations`, and
+ * a task's bind and dismiss of its connection requirements. No credential is ever in a response,
+ * so no type here has a field for one.
  */
 
 export const CONNECTION_ACCESS = ['read', 'write'] as const;
@@ -23,11 +24,16 @@ export interface ConnectionView {
     createdAt: string;
 }
 
-/** What the start sends: `connectionId` reconnects that connection, `site` narrows a new connect to one site. */
+/**
+ * What the start sends: `connectionId` reconnects that connection, `site` narrows a new connect to one
+ * site, `jobId` binds the new connection to that task on consent, and `returnTo` is where the browser lands.
+ */
 export interface StartAuthorizationInput {
-    access: ConnectionAccess;
+    access?: ConnectionAccess;
     site?: string;
     connectionId?: string;
+    jobId?: string;
+    returnTo?: string;
 }
 
 const isConnectionView = (row: unknown): row is ConnectionView => {
@@ -73,17 +79,19 @@ export const listConnections = async (): Promise<
 export const CONNECTIONS_RETURN_PATH = '/settings/workspace';
 
 /**
- * Starts a Jira authorization. Resolves to the provider's consent URL, or the route's refusal
- * message as sent (the 503 names the operator's missing configuration).
+ * Starts a provider's authorization. Resolves to the provider's consent URL, or the route's refusal
+ * message as sent (the 503 names the operator's missing configuration). `returnTo` defaults to the
+ * settings page.
  */
 export const startAuthorization = async (
+    provider: string,
     input: StartAuthorizationInput
 ): Promise<{ ok: true; authorizeUrl: string } | { ok: false; error: string }> => {
     try {
-        const response = await fetch('/api/integrations/jira/authorizations', {
+        const response = await fetch(`/api/integrations/${encodeURIComponent(provider)}/authorizations`, {
             method: 'POST',
             headers: JSON_HEADERS,
-            body: JSON.stringify({ ...input, returnTo: CONNECTIONS_RETURN_PATH }),
+            body: JSON.stringify({ returnTo: CONNECTIONS_RETURN_PATH, ...input }),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
@@ -109,6 +117,48 @@ export const deleteConnection = async (id: string): Promise<string | null> => {
             return SESSION_EXPIRED;
         }
         if (!response.ok) return (await refusalOf(response, 'Could not disconnect the connection')).error;
+        return null;
+    } catch (e) {
+        return (e as Error).message;
+    }
+};
+
+/** Returns the refusal's message, or null when the task's thread now holds the connection. */
+export const bindTaskConnection = async (
+    jobId: string,
+    connectionId: string,
+    bindingRevision: number
+): Promise<string | null> => {
+    try {
+        const response = await fetch(`/api/jobs/${jobId}/connections`, {
+            method: 'POST',
+            headers: JSON_HEADERS,
+            body: JSON.stringify({ connectionId, bindingRevision }),
+        });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+            reportUnauthenticated();
+            return SESSION_EXPIRED;
+        }
+        if (!response.ok) return (await refusalOf(response, 'Could not bind the connection')).error;
+        return null;
+    } catch (e) {
+        return (e as Error).message;
+    }
+};
+
+/** Returns the refusal's message, or null when the requirement is dismissed ("Continue without it"). */
+export const dismissRequirement = async (jobId: string, provider: string): Promise<string | null> => {
+    try {
+        const response = await fetch(`/api/jobs/${jobId}/requirements/${encodeURIComponent(provider)}/dismiss`, {
+            method: 'POST',
+            headers: JSON_HEADERS,
+            body: '{}',
+        });
+        if (response.status === HTTP_STATUS_UNAUTHORIZED) {
+            reportUnauthenticated();
+            return SESSION_EXPIRED;
+        }
+        if (!response.ok) return (await refusalOf(response, 'Could not continue without the connection')).error;
         return null;
     } catch (e) {
         return (e as Error).message;

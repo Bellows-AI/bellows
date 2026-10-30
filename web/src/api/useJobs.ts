@@ -245,6 +245,37 @@ export interface Job {
     waitTerminalReason: string | null;
     /** The run's agent questions, oldest first; empty on list responses and runs that asked none. */
     questions: JobQuestion[];
+    /** The thread root's connection bindings, oldest first; empty on list responses. */
+    connections: JobConnection[];
+    /** The thread root's `binding_revision`: what `POST /api/jobs/:id/connections` must echo. */
+    bindingRevision: number;
+    /** The open requirements holding the thread (BEL-174); empty on list responses. */
+    integrationRequirements: JobIntegrationRequirement[];
+    /** The thread root's frozen execution user, who a requirement waits on; null on list responses. */
+    executionUser: AuthorRef | null;
+}
+
+/** One bound connection as the job view shows it: ids and labels only, never a credential. */
+export interface JobConnection {
+    connectionId: string | null;
+    provider: string;
+    account: string | null;
+    site: string | null;
+    revision: number;
+    source: string;
+    live: boolean;
+}
+
+/** One open connection requirement: the provider's name comes from the server, so no panel names a provider. */
+export interface JobIntegrationRequirement {
+    provider: string;
+    label: string;
+    reason: 'missing' | 'ambiguous' | 'reconnect';
+    /** `create`: the task never started; `runtime`: it ran, asked and was handed back. */
+    source: 'create' | 'runtime';
+    /** The bound connection a `reconnect` is about; null otherwise. */
+    connectionId: string | null;
+    createdAt: string;
 }
 
 /**
