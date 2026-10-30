@@ -15,7 +15,7 @@ const ROOT = '55555555-5555-4555-8555-555555555555';
 const job = {
     id: JOB_ID,
     rootJobId: ROOT,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     workspacePath: `bellows/${USER}`,
     followUp: false,
     resumeSessionId: null,
@@ -38,7 +38,7 @@ describe('snapshotTree', () => {
                 entrypoint: 'node',
                 args: ['-e', gitReviewSnapshotScript],
                 env: false,
-                envLiterals: { REPO: `${TASK_MOUNT}/factory`, REVIEW_REF: ref },
+                envLiterals: { REPO: `${TASK_MOUNT}/bellows`, REVIEW_REF: ref },
                 inRepo: false,
             },
         ]);

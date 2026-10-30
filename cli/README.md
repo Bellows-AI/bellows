@@ -1,6 +1,6 @@
 # @bellows-ai/bellows-cli
 
-Command-line client for a [Bellows Factory](https://github.com/Bellows-AI/factory) board: queue
+Command-line client for a [Bellows Factory](https://github.com/Bellows-AI/bellows) board: queue
 tasks, wait on them, follow up, and drive batches over the board's HTTP API.
 
 ## Quick start

@@ -14,6 +14,7 @@ import type {
     QuestionRecord,
     SkillView,
 } from './board.js';
+import { isTerminal } from './board.js';
 import type { TaskUsage, Tokens, UsageBlock } from './usage-types.js';
 import type { ConfigSummary, Preflight } from './diagnostics.js';
 import type { ExecutorRow, RepoDiscovery } from './discovery.js';
@@ -108,7 +109,9 @@ function gateLines(job: BoardJobRecord): string[] {
     if (gates.length === 0) return [field('gates:', DASH)];
     return gates.flatMap((gate) => {
         const exit = gate.exitCode === undefined || gate.exitCode === null ? '' : ` (exit ${gate.exitCode})`;
-        const row = field('gates:', `${gate.name} ${gate.status}${exit}`);
+        // A gate that never started reads "not run" once the run is over, "pending" while it walks.
+        const status = gate.status === 'pending' && isTerminal(job.status) ? 'not run' : gate.status;
+        const row = field('gates:', `${gate.name} ${status}${exit}`);
         const tail = gate.status === GATE_FAILED ? outputTail(gate.output ?? null) : [];
         return [row, ...tail.map((line) => `  ${line}`)];
     });

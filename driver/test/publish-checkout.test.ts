@@ -18,7 +18,7 @@ import { TASK_MOUNT } from '../src/task-volume.js';
 const USER = '44444444-4444-4444-8444-444444444444';
 const ISSUE_JOB = {
     id: '11111111-1111-4111-8111-111111111111',
-    command: '/fix https://github.com/Bellows-AI/factory/issues/10',
+    command: '/fix https://github.com/Bellows-AI/bellows/issues/10',
     attempts: 1,
     claimSeq: 1,
     leaseToken: '22222222-2222-4222-8222-222222222222',
@@ -28,12 +28,12 @@ const ISSUE_JOB = {
     followUp: false,
     userId: USER,
     workspacePath: `bellows/${USER}`,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     env: { GITHUB_TOKEN: 't0k-3n' } as Record<string, string>,
 } as BoardJob;
-const WT = `${TASK_MOUNT}/factory`;
-const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
-const PLAN_TITLE = '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)';
+const WT = `${TASK_MOUNT}/bellows`;
+const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
+const PLAN_TITLE = '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)';
 const GATES_LINE = 'Published by the factory board after the declared gates passed.';
 
 const DIRTY_ON_MAIN = {
@@ -54,7 +54,7 @@ const LANDED = {
     branch: 'fix/10',
     prUrl: PR_URL,
     reason: null,
-    repository: 'Bellows-AI/factory',
+    repository: 'Bellows-AI/bellows',
     baseBranch: 'main',
     prNumber: 42,
     cause: null,
@@ -437,7 +437,7 @@ describe('a failed publish step', () => {
         ],
         [
             'a denied push',
-            'remote: Permission to Bellows-AI/factory.git denied to bellows-ai[bot]\nfatal: Authentication failed',
+            'remote: Permission to Bellows-AI/bellows.git denied to bellows-ai[bot]\nfatal: Authentication failed',
             'denied',
         ],
     ])('fails %s naming the step and the tool’s own words', async (_name, words, cause) => {

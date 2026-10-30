@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { isTerminal, type Job, type RuntimeVitals } from '../src/api/useJobs.js';
 import { runDuration, taskTime, wallClock } from '../src/format.js';
 import {
+    closePhase,
     closureOf,
     endedOnQuestion,
     FAILURE_KIND_LABEL,
     followUpEligibility,
     gateCounts,
+    gateStatusLabel,
     issueUrl,
     newestTerminalExit,
     prNumber,
@@ -428,11 +430,75 @@ describe('task outcome derivations — gates, issues and closure', () => {
                 { name: 'lint', status: 'failed' as const, exitCode: 1, output: null },
                 { name: 'build', status: 'running' as const, exitCode: null, output: null },
             ];
-            expect(gateCounts(gates)).toEqual({ passed: 1, failed: 1, running: 1 });
+            expect(gateCounts(gates)).toEqual({ passed: 1, failed: 1, running: 1, pending: 0 });
+        });
+
+        it('counts pending', () => {
+            const gates = [
+                { name: 'test', status: 'pending' as const, exitCode: null, output: null },
+                { name: 'lint', status: 'pending' as const, exitCode: null, output: null },
+            ];
+            expect(gateCounts(gates).pending).toBe(2);
         });
 
         it('answers all-zero for nothing declared', () => {
-            expect(gateCounts(null)).toEqual({ passed: 0, failed: 0, running: 0 });
+            expect(gateCounts(null)).toEqual({ passed: 0, failed: 0, running: 0, pending: 0 });
+        });
+    });
+
+    describe('gateStatusLabel', () => {
+        it('maps pending to "not run" on a terminal run and "pending" while running', () => {
+            expect(gateStatusLabel('pending', true)).toBe('not run');
+            expect(gateStatusLabel('pending', false)).toBe('pending');
+        });
+
+        it('leaves the other statuses unchanged either way', () => {
+            for (const status of ['passed', 'failed', 'running'] as const) {
+                expect(gateStatusLabel(status, true)).toBe(status);
+                expect(gateStatusLabel(status, false)).toBe(status);
+            }
+        });
+    });
+
+    describe('closePhase', () => {
+        const gate = (name: string, status: 'pending' | 'running' | 'passed' | 'failed') => ({
+            name,
+            status,
+            exitCode: null,
+            output: null,
+        });
+        const running = (gates: ReturnType<typeof gate>[] | null) => closePhase(job({ status: 'running', gates }));
+
+        it('is null for a terminal or queued run, and for gates null, undefined or empty', () => {
+            const gates = [gate('test', 'running')];
+            expect(closePhase(job({ status: 'succeeded', gates }))).toBeNull();
+            expect(closePhase(job({ status: 'queued', gates }))).toBeNull();
+            expect(running(null)).toBeNull();
+            expect(closePhase(job({ status: 'running' }))).toBeNull();
+            expect(running([])).toBeNull();
+        });
+
+        it('3 passed, 1 running, 1 pending reads 3/5 and names the running gate', () => {
+            const phase = running([
+                gate('build', 'passed'),
+                gate('test', 'passed'),
+                gate('typecheck', 'passed'),
+                gate('lint', 'running'),
+                gate('prettier', 'pending'),
+            ])!;
+            expect(phase).toMatchObject({ passed: 3, total: 5, label: 'Agent finished — running checks' });
+            expect(phase.running?.name).toBe('lint');
+        });
+
+        it('all passed while running reads "checks passed, finishing up"', () => {
+            const phase = running([gate('test', 'passed'), gate('lint', 'passed')])!;
+            expect(phase.label).toBe('Agent finished — checks passed, finishing up');
+            expect(phase.running).toBeNull();
+        });
+
+        it('a failed gate with pending after it reads "a check failed"', () => {
+            const phase = running([gate('test', 'failed'), gate('lint', 'pending')])!;
+            expect(phase.label).toBe('Agent finished — a check failed');
         });
     });
 

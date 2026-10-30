@@ -446,8 +446,8 @@ describe('verification gates', () => {
         expect(ranBeforeOutcome).toBe(true);
         expect(stack.stack.ran.names).toEqual(['test', 'lint']);
         expect(board.board.gatesReported.map((r) => r.results.map((g) => g.status))).toEqual([
-            ['running'],
-            ['passed'],
+            ['running', 'pending'],
+            ['passed', 'pending'],
             ['passed', 'running'],
             ['passed', 'passed'],
         ]);
@@ -457,8 +457,38 @@ describe('verification gates', () => {
         // checks are still shown as running.
         expect(board.board.gatesReported.length).toBeGreaterThan(0);
         // The environment goes back to its cooldown either way — filed under the task's worktree.
-        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/bellows`]);
         expect(stack.stack.unregistered).toBe(1);
+    });
+
+    it('every report lists every declared gate, a failed gate leaves the later ones pending', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+        const reports = board.board.gatesReported.map((r) => r.results.map((g) => g.status));
+        expect(reports.every((r) => r.length === 2)).toBe(true);
+        expect(reports.at(-1)).toEqual(['failed', 'pending']);
+    });
+
+    it('the running entry carries the time it started; the settled entry does not', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const before = Date.now();
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+        const after = Date.now();
+        const running = board.board.gatesReported.flatMap((r) => r.results).filter((g) => g.status === 'running');
+        expect(running.length).toBe(2);
+        for (const g of running) {
+            const at = Date.parse(g.startedAt ?? '');
+            expect(at).toBeGreaterThanOrEqual(before);
+            expect(at).toBeLessThanOrEqual(after);
+        }
+        const settled = board.board.gatesReported.flatMap((r) => r.results).filter((g) => g.status === 'passed');
+        expect(settled.every((g) => g.startedAt === undefined)).toBe(true);
     });
 
     it('uploads the run’s log under its claim sequence before the gates, and still succeeds', async () => {
@@ -586,7 +616,7 @@ describe('verification gates', () => {
         // of leaking, one live container per failed claim until the driver restarts.
         expect(board.board.completed[0]).toMatchObject({ status: 'failed' });
         expect(board.board.completed[0]?.output).toContain('could not be started');
-        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/bellows`]);
     });
 
     // The worktree (issue #35) is the checkout the gates share with the coding agent: the
@@ -602,11 +632,11 @@ describe('verification gates', () => {
 
         // One acquire in beginGates plus one per declared gate (2 in the fixture).
         expect(stack.stack.acquired).toEqual([
-            `${gatedJob(1).id}/factory`,
-            `${gatedJob(1).id}/factory`,
-            `${gatedJob(1).id}/factory`,
+            `${gatedJob(1).id}/bellows`,
+            `${gatedJob(1).id}/bellows`,
+            `${gatedJob(1).id}/bellows`,
         ]);
-        expect(stack.stack.ran.key).toBe(`${gatedJob(1).id}/factory`);
+        expect(stack.stack.ran.key).toBe(`${gatedJob(1).id}/bellows`);
     });
 
     it('registers the ad-hoc token and releases it, and never leaves it registered', async () => {
@@ -655,7 +685,7 @@ describe('verification gates', () => {
             ran.push(name);
             return { exitCode: 0, output: `${name} ok` };
         };
-        const key = `${gatedJob(1).id}/factory`;
+        const key = `${gatedJob(1).id}/bellows`;
         // The environment was forgotten while the agent kept working.
         const runner = stubRunner(async () => {
             up = false;

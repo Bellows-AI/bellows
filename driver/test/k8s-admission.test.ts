@@ -171,7 +171,7 @@ describe('the admission policy requires the pod hardening (#382)', () => {
                 config,
                 {
                     ...promptedJob,
-                    repo: 'Bellows-AI/factory',
+                    repo: 'Bellows-AI/bellows',
                     gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
                     services: [{ name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } }],
                 },
@@ -216,7 +216,7 @@ describe('the admission policy fences the task pod shape (#773)', () => {
         {
             ...job,
             masterPrompt: 'Factory execution contract',
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             gates: { image: 'node:24', gates: [{ name: 'test', command: 'npm test' }] },
             services: [
                 { name: 'cache', image: 'redis', environment: [], user: { uid: 999, gid: 999 } },
@@ -290,7 +290,7 @@ describe('the admission policy fences the task pod shape (#773)', () => {
             {
                 ...job,
                 masterPrompt: 'Factory execution contract',
-                repo: 'Bellows-AI/factory',
+                repo: 'Bellows-AI/bellows',
                 reviewerProfiles: ['security'],
             },
             { id: SESSION, resume: false }
