@@ -4,7 +4,7 @@ import { finalizeLineage } from '../src/db/connection-grants.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 
-/** BEL-164: 101 adds the marker of the last reconsent claim that finalized a grant, expand only. */
+/** 101 adds the marker of the last reconsent claim that finalized a grant, expand only. */
 const enabled = Boolean(process.env.DATABASE_URL);
 
 const ORG = testOrg();
