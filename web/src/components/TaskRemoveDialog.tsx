@@ -1,7 +1,7 @@
 import { useRef } from 'react';
+import { taskTitleFromCommand } from '@factory-ai/core';
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 import { PRODUCT_NAME } from '../brand.js';
-import { taskTitleFromCommand } from '../task-tree.js';
 
 /**
  * The remove confirmation's copy, exported pure so the offline suite holds it: the title names

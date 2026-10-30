@@ -1,3 +1,4 @@
+import { taskTitleFromCommand } from '@factory-ai/core';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -10,7 +11,7 @@ import { trackedRepos } from '../api/useRepos.js';
 import { DEFAULT_FILTERS, inboxQueryString, QUERY_MAX } from '../api/useTasks.js';
 import type { InboxFilters, TaskNavigation, TaskSummary, UseTasks } from '../api/useTasks.js';
 import { countLabel } from '../nav-model.js';
-import { taskDotClass, taskStatusLabel, taskTitleFromCommand, taskTone } from '../task-tree.js';
+import { taskDotClass, taskStatusLabel, taskTone } from '../task-tree.js';
 import type { TaskStatus, TaskTone } from '../task-tree.js';
 
 /**

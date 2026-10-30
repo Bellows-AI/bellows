@@ -1,9 +1,10 @@
+import { taskTitleFromCommand } from '@factory-ai/core';
 import { useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import type { TaskNavigation, TaskSummary } from '../api/useTasks.js';
 import { PRODUCT_NAME } from '../brand.js';
 import { NAV_ITEMS, navCount } from '../nav-model.js';
-import { type SidenavPreview, sidenavPreview, taskDotClass, taskTitleFromCommand } from '../task-tree.js';
+import { type SidenavPreview, sidenavPreview, taskDotClass } from '../task-tree.js';
 import { NavItemLink, NewTaskLink, SettingsSectionItems } from './NavItems.js';
 
 /**
