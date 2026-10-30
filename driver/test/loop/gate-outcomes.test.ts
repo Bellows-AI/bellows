@@ -80,7 +80,7 @@ describe('gates over a run that did not finish cleanly', () => {
         expect(complete.output).toContain(`[driver] gates skipped — ${why}`);
         // Teardown still runs on the skip path.
         expect(stack.stack.unregistered).toBe(1);
-        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
+        expect(stack.stack.released).toEqual([`${gatedJob(1).id}/bellows`]);
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);
     });
 
@@ -435,7 +435,7 @@ describe('a verdict the board refuses with a 5xx', () => {
 
     it('is retried, so the landed work keeps its verdict', async () => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         const complete = board.board.complete.bind(board.board);
         let completes = 0;
         board.board.complete = async (j, result) => {
@@ -461,7 +461,7 @@ describe('a verdict the board refuses with a 5xx', () => {
         ['the last attempt', 3],
     ])('retries for the lease, then leaves %s to the lease with its verdict unrewritten', async (_l, attempts) => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory', attempts, maxAttempts: 3 }]);
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows', attempts, maxAttempts: 3 }]);
         const sent: Parameters<Board['complete']>[1][] = [];
         board.board.complete = async (_j, result) => {
             sent.push(result);
@@ -479,7 +479,7 @@ describe('a verdict the board refuses with a 5xx', () => {
 
     it('sends a verdict the board refuses as malformed exactly once', async () => {
         const logs: string[] = [];
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         let completes = 0;
         board.board.complete = async () => {
             completes += 1;
@@ -494,7 +494,7 @@ describe('a verdict the board refuses with a 5xx', () => {
     });
 
     it('answers publishFailed when the runner throws mid-publish', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         const runner = stubRunner(async () => ok(), { publish: landed });
         runner.publishGit = async () => {
             throw new Error('apiserver blip');

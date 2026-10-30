@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { int, relativeTime, timestamp, tokenPair, utcRange } from '../src/format.js';
+import { elapsedSeconds, int, relativeTime, timestamp, tokenPair, utcRange } from '../src/format.js';
 
 /** The clock is always injected, so every expectation here is frozen, never flaky. */
 const NOW = new Date('2026-08-21T12:00:00.000Z');
@@ -101,5 +101,23 @@ describe('tokenPair', () => {
     it('keeps an unmeasured side an em dash, never a zero', () => {
         expect(tokenPair({ input: null, output: 4_500 })).toBe('— / 4.5k');
         expect(tokenPair({ input: null, output: null })).toBe('— / —');
+    });
+});
+
+describe('elapsedSeconds', () => {
+    const since = (ms: number) => elapsedSeconds(ago(ms), NOW);
+
+    it('reads seconds under a minute, minutes and seconds under an hour, hours and minutes after', () => {
+        expect(since(45_000)).toBe('45s');
+        expect(since(134_000)).toBe('2m 14s');
+        expect(since(3_780_000)).toBe('1h 3m');
+        expect(since(0)).toBe('0s');
+    });
+
+    it('is null for an absent, unparseable or future start, never a made-up zero', () => {
+        expect(elapsedSeconds(null, NOW)).toBeNull();
+        expect(elapsedSeconds(undefined, NOW)).toBeNull();
+        expect(elapsedSeconds('garbage', NOW)).toBeNull();
+        expect(since(-1000)).toBeNull();
     });
 });

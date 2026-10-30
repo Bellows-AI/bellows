@@ -35,6 +35,8 @@ refuses to boot. Every setting is in `.env.example`; what each decides is
 [configuration](docs/configuration.md).
 
 ```bash
+git clone https://github.com/Bellows-AI/bellows.git
+cd bellows
 npm install
 docker compose up -d postgres
 cp .env.example .env          # set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY

@@ -54,8 +54,8 @@ const kindsOf = (steps: { submitted: StepRequest[] }): string[] => steps.submitt
  * here; the group's own lifecycle is k8s-group.test.ts.
  */
 describe('the worktree sync', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
-    const WORKTREE = '/task/factory';
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
+    const WORKTREE = '/task/bellows';
     const syncOf = (steps: { submitted: StepRequest[] }): StepRequest =>
         steps.submitted.find((s) => s.kind === 'sync')!;
     const syncing = (stdout: string) => fakeSteps((step) => (step.kind === 'sync' ? stepOk(stdout) : stepOk()));
@@ -79,7 +79,7 @@ describe('the worktree sync', () => {
         expect(step.env).toEqual({
             CORE_TOKEN: 'shh',
             CHECKOUT: WORKTREE,
-            REMOTE: 'https://github.com/Bellows-AI/factory.git',
+            REMOTE: 'https://github.com/Bellows-AI/bellows.git',
             BRANCH: `factory/${repoJob.id}`,
         });
         expect(steps.tokens).toEqual(new Set([CONTROL_TOKEN]));
@@ -355,7 +355,7 @@ describe('the worktree sync', () => {
     it('carries the script’s failure kind through the step’s answer (issue #666)', async () => {
         const verdict = {
             ok: false,
-            reason: 'the task checkout /task/factory does not exist',
+            reason: 'the task checkout /task/bellows does not exist',
             kind: 'branch_unrestorable',
         };
         expect(await sync(repoJob, syncing(`${JSON.stringify(verdict)}\n`))).toMatchObject(verdict);
@@ -705,7 +705,7 @@ describe('the worktree sync', () => {
  * no request at all, and nothing a live follow-up could be hurt by.
  */
 describe('the terminal reclaim', () => {
-    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/factory', env: { GITHUB_TOKEN: 't0k-3n' } };
+    const repoJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows', env: { GITHUB_TOKEN: 't0k-3n' } };
 
     it.each([
         ['a job with a repository', repoJob],
@@ -727,12 +727,12 @@ describe('the terminal reclaim', () => {
 describe('publishing the produced work', () => {
     const ISSUE_JOB: BoardJob = {
         ...job,
-        command: '/fix https://github.com/Bellows-AI/factory/issues/10',
-        repo: 'Bellows-AI/factory',
+        command: '/fix https://github.com/Bellows-AI/bellows/issues/10',
+        repo: 'Bellows-AI/bellows',
         env: { GITHUB_TOKEN: 't0k-3n' },
     };
-    const WT = `${TASK_MOUNT}/factory`;
-    const PR_URL = 'https://github.com/Bellows-AI/factory/pull/42';
+    const WT = `${TASK_MOUNT}/bellows`;
+    const PR_URL = 'https://github.com/Bellows-AI/bellows/pull/42';
 
     const DIRTY_ON_MAIN = {
         cloned: true,
@@ -786,7 +786,7 @@ describe('publishing the produced work', () => {
             branch: 'fix/10',
             prUrl: PR_URL,
             reason: null,
-            repository: 'Bellows-AI/factory',
+            repository: 'Bellows-AI/bellows',
             baseBranch: 'main',
             prNumber: 42,
             cause: null,
@@ -806,7 +806,7 @@ describe('publishing the produced work', () => {
         expect(order('commit')).toBeLessThan(order('push'));
         expect(order('push')).toBeLessThan(order('create'));
         const commit = commands.find((argv) => argv.includes('commit'));
-        expect(commit).toContain('/fix https://github.com/Bellows-AI/factory/issues/10 (#10)');
+        expect(commit).toContain('/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)');
         expect(commit).toContain('user.name=factory-ai');
         const push = commands.find((argv) => argv.includes('push'));
         expect(push!.join(' ')).toContain('credential.helper=');
@@ -820,7 +820,7 @@ describe('publishing the produced work', () => {
         expect(summary!.argv).toEqual(['node', '-e', expect.stringContaining('shortstat')]);
         expect(summary!.env).toEqual({
             BASE: 'origin/main',
-            BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/factory/issues/10 (#10)',
+            BACKSTOP_TITLE: '/fix https://github.com/Bellows-AI/bellows/issues/10 (#10)',
         });
         expect(summary!.cwd).toBe(WT);
         const create = commands.find((argv) => argv.includes('pr') && argv.includes('create'));
@@ -965,7 +965,7 @@ describe('publishing the produced work', () => {
                     ? {
                           exitCode: 128,
                           stdout: '',
-                          stderr: 'remote: Permission to Bellows-AI/factory.git denied to bellows-ai[bot]\nfatal: Authentication failed\n',
+                          stderr: 'remote: Permission to Bellows-AI/bellows.git denied to bellows-ai[bot]\nfatal: Authentication failed\n',
                           timedOut: false,
                       }
                     : null,
@@ -974,7 +974,7 @@ describe('publishing the produced work', () => {
 
         expect(result.ok).toBe(false);
         expect(result.published).toBe(false);
-        expect(result.reason).toContain('Permission to Bellows-AI/factory');
+        expect(result.reason).toContain('Permission to Bellows-AI/bellows');
         expect(result.cause).toBe('denied');
     });
 

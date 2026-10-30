@@ -55,7 +55,7 @@ const isDeadService = (v: unknown): v is DeadService =>
     isString(v.logTail) &&
     (v.restartFailure === undefined || isString(v.restartFailure));
 
-const GATE_STATUSES: readonly unknown[] = ['running', 'passed', 'failed'];
+const GATE_STATUSES: readonly unknown[] = ['pending', 'running', 'passed', 'failed'];
 const isReport = (v: unknown): v is GateReport =>
     isRecord(v) &&
     isString(v.name) &&

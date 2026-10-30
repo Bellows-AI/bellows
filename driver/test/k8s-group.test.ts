@@ -57,7 +57,7 @@ const job = {
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     env: { GITHUB_TOKEN: 'ghs_claim' },
     supervisorEnv: {
         [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130',

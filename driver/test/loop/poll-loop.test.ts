@@ -232,10 +232,10 @@ describe('the poll loop', () => {
                 ok: true,
                 published: true,
                 branch: 'fix/10',
-                prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+                prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
                 reason: null,
                 cause: null,
-                repository: 'Bellows-AI/factory',
+                repository: 'Bellows-AI/bellows',
                 baseBranch: 'main',
                 prNumber: 42,
             },
@@ -246,14 +246,14 @@ describe('the poll loop', () => {
         expect(runner.published).toHaveLength(1);
         expect(board.board.completed[0]?.status).toBe('succeeded');
         expect(board.board.completed[0]?.output).toContain(
-            '[driver] published fix/10 — https://github.com/Bellows-AI/factory/pull/42'
+            '[driver] published fix/10 — https://github.com/Bellows-AI/bellows/pull/42'
         );
         // The structured identity of the publication rides the verdict — the board records what
         // a thread shipped, and review traffic and the thread's wait key on it.
         expect(board.board.completed[0]?.publication).toEqual({
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             prNumber: 42,
-            prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+            prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
             headBranch: 'fix/10',
             baseBranch: 'main',
         });
@@ -323,10 +323,10 @@ describe('the poll loop', () => {
                 ok: true,
                 published: true,
                 branch: 'fix/10',
-                prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+                prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
                 reason: null,
                 cause: null,
-                repository: 'Bellows-AI/factory',
+                repository: 'Bellows-AI/bellows',
                 baseBranch: 'main',
                 prNumber: 42,
             },
@@ -410,7 +410,7 @@ describe('the poll loop', () => {
     });
 
     it("hands a starting claim's sync a token minted for it, and asks nothing for a restore", async () => {
-        const repoJob = { ...job(1), repo: 'Bellows-AI/factory', publish: false };
+        const repoJob = { ...job(1), repo: 'Bellows-AI/bellows', publish: false };
         const board = stubBoard([repoJob], { githubToken: 'ghs_sync' });
         const runner = stubRunner(async () => ok());
 
@@ -421,7 +421,7 @@ describe('the poll loop', () => {
 
         // A follow-up restores its tree: nothing touches the remote, so nothing is asked.
         const restoring = stubBoard(
-            [{ ...job(2, 'session-x'), repo: 'Bellows-AI/factory', followUp: true, publish: false }],
+            [{ ...job(2, 'session-x'), repo: 'Bellows-AI/bellows', followUp: true, publish: false }],
             {
                 githubToken: 'ghs_unused',
             }
@@ -519,7 +519,7 @@ describe('the poll loop', () => {
         // is failed with a reason, never run in a fallback location.
         [
             'fails a repo job whose worktree path cannot be resolved, before anything runs',
-            { ...job(1), repo: 'Bellows-AI/factory', rootJobId: 'not-a-uuid' },
+            { ...job(1), repo: 'Bellows-AI/bellows', rootJobId: 'not-a-uuid' },
             expect.stringContaining('do not resolve to a task worktree'),
             'runner_error',
         ],
@@ -539,7 +539,7 @@ describe('the poll loop', () => {
         const board = stubBoard([
             {
                 ...job(1),
-                repo: 'Bellows-AI/factory',
+                repo: 'Bellows-AI/bellows',
                 services: [{ name: 'db', image: 'postgres:16', environment: [] }],
                 planRefusal: planReason,
             },
@@ -662,7 +662,7 @@ describe('the poll loop', () => {
     it('reclaims after a pre-run failure, once the whole thread is done', async () => {
         // A job whose checkout cannot be synced is completed failed without ever running; the
         // reclaim is the same downstream-of-the-verdict step it is for a run.
-        const repoJob = { ...job(1), repo: 'Bellows-AI/factory', workspacePath: `bellows/${USER}` };
+        const repoJob = { ...job(1), repo: 'Bellows-AI/bellows', workspacePath: `bellows/${USER}` };
         const board = stubBoard([repoJob], { reclaimId: 'reclaim-1' });
         const runner = stubRunner(async () => ok(), { sync: { ok: false, reason: 'no disk' } });
 
@@ -1389,7 +1389,7 @@ describe('the poll loop', () => {
                     id: rowId,
                     token: ROW_TOKEN,
                     rootJobId: root,
-                    repo: 'Bellows-AI/factory',
+                    repo: 'Bellows-AI/bellows',
                     workspacePath: `bellows/${USER}`,
                     leaseExpiresAt: '2026-08-21T12:05:00.000Z',
                 },
@@ -1421,7 +1421,7 @@ describe('the poll loop', () => {
                 workspacePath: `bellows/${USER}`,
                 rootJobId: root,
                 rootCommand: '',
-                repo: 'Bellows-AI/factory',
+                repo: 'Bellows-AI/bellows',
                 executorType: 'claude-code',
                 executorRefusal: null,
                 planRefusal: null,
@@ -1511,7 +1511,7 @@ describe('the poll loop', () => {
             id: rowId,
             token: ROW_TOKEN,
             rootJobId: root,
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             workspacePath: `bellows/${USER}`,
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };
@@ -1760,7 +1760,7 @@ describe('the poll loop', () => {
             id: rowId,
             token: ROW_TOKEN,
             rootJobId: root,
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             workspacePath: `bellows/${USER}`,
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };

@@ -29,6 +29,7 @@
         "driver/test/helper-receipts.test.ts",
         "driver/test/k8s-lane.test.ts",
         "driver/test/lane-last-attempt.test.ts",
+        "driver/test/lane-pipefail.test.ts",
         "driver/test/lane-stubs.test.ts",
         "driver/test/loop-containment.test.ts",
         "driver/test/merge-conflict-probe-script.test.ts",

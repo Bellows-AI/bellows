@@ -183,6 +183,23 @@ describe('bellows job investigate', () => {
         expect(calls[1]!.url).toBe('http://board/api/jobs/job-1/thread');
     });
 
+    it('prints "not run" for a pending gate of a finished job, and "pending" while it runs', async () => {
+        const gates = [
+            { name: 'test', status: 'failed', exitCode: 1, output: null },
+            { name: 'lint', status: 'pending', exitCode: null, output: null },
+        ];
+        const printed = async (detail: ReturnType<typeof job>) => {
+            const { out, io } = harness(ENV, (index) => (index === 0 ? json(detail) : json({ jobs: [detail] })));
+            await run(['job', 'investigate', 'job-1'], io);
+            return out.join('');
+        };
+
+        expect(await printed(job({ status: 'failed', gates }))).toContain('lint not run');
+        const live = await printed(job({ status: 'running', gates }));
+        expect(live).toContain('lint pending');
+        expect(live).not.toContain('not run');
+    });
+
     it('separates the executor scope label from its value in the detail block', async () => {
         const detail = job({ executorScope: 'org' });
         const thread = { jobs: [detail] };

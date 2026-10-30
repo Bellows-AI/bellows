@@ -68,6 +68,23 @@ export function runDuration(
     return duration((to.getTime() - from.getTime()) / MS_PER_HOUR);
 }
 
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 3600;
+
+/**
+ * Seconds a step has been going: "45s", "2m 14s", "1h 3m". Null for an absent, unparseable or future
+ * start — never a made-up "0s" — so the caller renders nothing. `now` is the caller's, like `runDuration`.
+ */
+export function elapsedSeconds(startedAt: string | null | undefined, now: Date = new Date()): string | null {
+    if (!startedAt) return null;
+    const from = Date.parse(startedAt);
+    if (Number.isNaN(from) || from > now.getTime()) return null;
+    const total = Math.floor((now.getTime() - from) / MS_PER_SECOND);
+    if (total < SECONDS_PER_MINUTE) return `${total}s`;
+    if (total < SECONDS_PER_HOUR) return `${Math.floor(total / SECONDS_PER_MINUTE)}m ${total % SECONDS_PER_MINUTE}s`;
+    return `${Math.floor(total / SECONDS_PER_HOUR)}h ${Math.floor((total % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE)}m`;
+}
+
 /** One agent question's wait window, as a `JobQuestion` carries it. */
 interface QuestionWait {
     askedAt: string;
