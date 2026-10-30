@@ -14,6 +14,7 @@ export interface NotificationEventRow {
     workflow: string | null;
     command: string;
     reason: string | null;
+    prUrl: string | null;
     occurredAt: string;
 }
 
@@ -28,6 +29,7 @@ export interface NotificationEvent {
     workflow: string | null;
     title: string;
     reason: string | null;
+    prUrl: string | null;
     link: string;
     occurredAt: string;
 }
@@ -43,6 +45,7 @@ export function notificationEventOf(row: NotificationEventRow, publicUrl: string
         workflow: row.workflow,
         title: taskTitleFromCommand(row.command),
         reason: row.reason,
+        prUrl: row.prUrl,
         link: new URL(`/tasks/${row.rootJobId}`, publicUrl).toString(),
         occurredAt: row.occurredAt,
     };
