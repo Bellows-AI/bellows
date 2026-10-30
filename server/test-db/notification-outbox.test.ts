@@ -15,7 +15,9 @@ import {
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
 import { fakeConnector, type FakeScript } from '../test/notifications-fake-connector.js';
 import { useTestDb } from './harness.js';
-import { testOrg } from './fixtures.js';
+import { startRow, testOrg, testUser } from './fixtures.js';
+import { createBatchStore } from '../src/db/batches/batch-store.js';
+import { batchPlan, headOf, rootOf, startBatch } from './batch-fixtures.js';
 
 /**
  * BEL-129: the durable notification outbox. The settle's own transaction fans an event out to the
@@ -28,7 +30,8 @@ const OTHER = testOrg();
 const WORKER = 'worker-1';
 const PUBLIC_URL = 'https://board.example.test';
 const T0 = Date.now();
-const db = useTestDb({ max: 4, orgs: [ORG, OTHER] });
+const ALICE_USER = testUser('alice');
+const db = useTestDb({ max: 4, orgs: [ORG, OTHER], users: [ALICE_USER] });
 
 let sql: Sql;
 let jobs: JobStore;
@@ -244,6 +247,41 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
 
         expect((await rows()).map((r) => r.subscription_id)).toEqual([sub.id]);
         expect(fake.sent.map((s) => s.event.kind)).toEqual(['task.blocked']);
+    });
+
+    it('a batch task.blocked fans out to a matching subscription in the reconcile’s transaction', async () => {
+        const sub = await subs.create(fields({ eventKinds: ['task.blocked'] }));
+        const batches = createBatchStore({
+            sql,
+            orgId: ORG,
+            stop: (id, by) => jobs.stop(id, by),
+            close: (id, by) => jobs.markDone(id, by),
+        });
+        const task = {
+            key: 'a',
+            objective: 'do a',
+            acceptance: 'a works',
+            verification: 'npm test',
+            completion: { kind: 'accepted', condition: 'reviewed' },
+        };
+        const id = await startBatch(
+            batches,
+            batchPlan('Fan out', [{ key: 'one', tasks: [task] }], { infraRetries: 0 }),
+            ALICE_USER.id
+        );
+        await batches.reconcile(id);
+        const root = await rootOf(batches, id, 'a');
+        const head = await headOf(sql, root);
+        await startRow(sql, head.id);
+        await sql`update job set status = 'dead', finished_at = now(), lease_token = null where id = ${head.id}`;
+        expect(await rows()).toHaveLength(0);
+
+        await batches.reconcile(id);
+        const [event] = await sql<{ id: string }[]>`
+            select id from notification_event where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.blocked'
+        `;
+        expect(event).toBeDefined();
+        expect(await rows()).toMatchObject([{ event_id: event!.id, subscription_id: sub.id }]);
     });
 
     it('deleting a subscription removes its pending rows', async () => {

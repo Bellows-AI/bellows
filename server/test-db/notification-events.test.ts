@@ -4,9 +4,11 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import { createPrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
+import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { craftJob, testOrg } from './fixtures.js';
+import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
+import { craftJob, mustCreate, testOrg } from './fixtures.js';
 
 /**
  * BEL-128: every committed job.status change to a settled verdict records one durable
@@ -172,6 +174,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
 
         const rows = await events(id);
         expect(rows.map((r) => r.kind)).toEqual(['task.blocked']);
+        expect(rows[0]!.reason).toBe('dead');
     });
 
     it('an interruption hand-back (running→queued) and the re-claim emit nothing', async () => {
@@ -361,11 +364,7 @@ describe.skipIf(!enabled)('notification events — database', () => {
         expect((await events(id)).map((r) => r.kind)).toEqual(['task.ready']);
     });
 
-    it('a failed review job and a failed non-head still emit task.blocked', async () => {
-        const review = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
-        await asReview(review);
-        await sql`update job set status = 'failed', finished_at = now() where org_id = ${ORG} and id = ${review}`;
-
+    it('a failed non-head (its verdict queued a successor) emits nothing', async () => {
         const root = await craftJob(
             { sql, org: ORG, author: '' },
             { author: null, status: 'running', createdMinutesAgo: 1 }
@@ -376,8 +375,202 @@ describe.skipIf(!enabled)('notification events — database', () => {
                 values (${ORG}, ${successor}, 'next node', 'queued', ${root}, ${root})`;
             await tx`update job set status = 'failed', finished_at = now() where org_id = ${ORG} and id = ${root}`;
         });
-        expect((await events(review)).map((r) => r.kind)).toEqual(['task.blocked']);
-        expect((await events(root)).map((r) => r.kind)).toEqual(['task.blocked']);
+        expect(await events(root)).toHaveLength(0);
+        expect(await events(successor)).toHaveLength(0);
+    });
+
+    it('a failed review job emits nothing', async () => {
+        const review = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+        await asReview(review);
+        await sql`update job set status = 'failed', finished_at = now() where org_id = ${ORG} and id = ${review}`;
+        expect(await events(review)).toHaveLength(0);
+    });
+
+    it('a head closed done emits no task.blocked', async () => {
+        const id = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+        await sql`update job set status = 'failed', finished_at = now(), done_at = now()
+            where org_id = ${ORG} and id = ${id}`;
+        expect(await events(id)).toHaveLength(0);
+    });
+
+    it('a gate failure’s reason carries its cause', async () => {
+        const id = await queue();
+        const c = await claim();
+        await store.complete(id, c.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'no',
+            failureKind: 'gate',
+            failureCause: 'verification',
+        });
+        expect((await events(id))[0]).toMatchObject({ kind: 'task.blocked', reason: 'gate:verification' });
+    });
+
+    it('an interrupted run resumed by a re-claim and then failed emits exactly one task.blocked', async () => {
+        const id = await queue();
+        const first = await claim();
+        await age(id);
+        const second = await claim();
+        expect(second.id).toBe(id);
+        await store.complete(id, second.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'no',
+            failureKind: 'timeout',
+        });
+        await store.complete(id, first.leaseToken, {
+            status: 'failed',
+            exitCode: 1,
+            output: 'no',
+            failureKind: 'timeout',
+        });
+        expect((await events(id)).map((r) => r.kind)).toEqual(['task.blocked']);
+    });
+
+    describe('workflow threads', () => {
+        const flow = (edges: WorkflowDefinition['edges']): WorkflowDefinition => ({
+            entry: 'work',
+            params: [],
+            nodes: [
+                { name: 'work', kind: 'agent', session: 'fresh', prompt: 'work' },
+                { name: 'repair', kind: 'agent', session: 'fresh', prompt: 'repair' },
+            ],
+            edges,
+        });
+        const queueFlow = async (definition: WorkflowDefinition): Promise<string> => {
+            const job = await mustCreate(
+                store.create('run the flow', null, {
+                    repo: null,
+                    executor: null,
+                    workflow: {
+                        id: randomUUID(),
+                        name: 'flow',
+                        node: definition.entry,
+                        snapshot: definition,
+                        params: {},
+                    },
+                })
+            );
+            return job.id;
+        };
+
+        it('a failure whose failed edge queues a successor emits nothing', async () => {
+            const root = await queueFlow(flow([{ from: 'work', to: 'repair', when: 'failed' }]));
+            const c = await claim();
+            await store.complete(root, c.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+            expect(await events(root)).toHaveLength(0);
+            const rows = await sql<{ id: string }[]>`
+                select id from job where org_id = ${ORG} and root_job_id = ${root} and workflow_node = 'repair'`;
+            expect(rows).toHaveLength(1);
+            expect(await events(rows[0]!.id)).toHaveLength(0);
+        });
+
+        it('a step that reports itself blocked emits one task.blocked', async () => {
+            const root = await queueFlow(flow([{ from: 'work', to: 'repair', when: 'succeeded' }]));
+            const c = await claim();
+            await store.complete(root, c.leaseToken, {
+                status: 'failed',
+                exitCode: 1,
+                output: 'no',
+                failureKind: 'blocked',
+            });
+            const rows = await events(root);
+            expect(rows).toHaveLength(1);
+            expect(rows[0]).toMatchObject({ kind: 'task.blocked', reason: 'blocked' });
+        });
+
+        it('a failed step with no matching edge emits one task.blocked', async () => {
+            const root = await queueFlow(flow([{ from: 'work', to: 'repair', when: 'succeeded' }]));
+            const c = await claim();
+            await store.complete(root, c.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+            expect((await events(root)).map((r) => r.kind)).toEqual(['task.blocked']);
+        });
+    });
+
+    it('a failed wait node whose failed edge re-parks emits nothing', async () => {
+        const REPO = 'acme/widgets';
+        const definition: WorkflowDefinition = {
+            entry: 'verify',
+            params: [],
+            nodes: [
+                { name: 'verify', kind: 'agent', session: 'fresh', publish: true, prompt: 'verify' },
+                {
+                    name: 'review',
+                    kind: 'agent',
+                    session: 'fresh',
+                    prompt: 'react to review',
+                    runtime: { runtime: 'pr-delivery-wait', block: 'fake/test-block', params: {} },
+                },
+            ],
+            edges: [
+                { from: 'verify', to: 'review', when: 'succeeded' },
+                { from: 'review', to: 'review', when: 'failed', max: 3 },
+            ],
+        };
+        const prs = createPrLifecycleStore({ sql, orgId: ORG });
+        const waiting = createJobStore({ sql, orgId: ORG, prs });
+        const root = (
+            await mustCreate(
+                waiting.create('start the thread', null, {
+                    repo: REPO,
+                    executor: null,
+                    workflow: { id: randomUUID(), name: 'park', node: 'verify', snapshot: definition, params: {} },
+                })
+            )
+        ).id;
+        const first = await waiting.claim(WORKER, LEASE_SECONDS);
+        await waiting.complete(root, first!.leaseToken, {
+            ...succeeded,
+            publication: {
+                repo: REPO,
+                prNumber: 11,
+                prUrl: `https://github.com/${REPO}/pull/11`,
+                headBranch: `factory/${root}`,
+                baseBranch: 'main',
+            },
+        });
+        await prs.recordDelivery({
+            deliveryId: randomUUID(),
+            event: 'pull_request_review',
+            action: 'submitted',
+            repo: REPO,
+            prNumber: 11,
+        });
+        await sweepRuntimeWakes({ sql, orgId: ORG, prs });
+        const woken = await waiting.claim(WORKER, LEASE_SECONDS);
+        const [node] = await sql<
+            { workflow_node: string }[]
+        >`select workflow_node from job where org_id = ${ORG} and id = ${woken!.id}`;
+        expect(node!.workflow_node).toBe('review');
+
+        await waiting.complete(woken!.id, woken!.leaseToken, { status: 'failed', exitCode: 1, output: 'no' });
+
+        const parked = await sql`select 1 from workflow_round where org_id = ${ORG} and root_job_id = ${root}
+            and workflow_node = 'review' and woken_at is null`;
+        expect(parked).toHaveLength(1);
+        expect(await events(woken!.id)).toHaveLength(0);
+    });
+
+    describe('a failure under a durable wait', () => {
+        const parkUnderWait = async (cancelled: boolean): Promise<string> => {
+            const root = await craftJob({ sql, org: ORG, author: '' }, { author: null, status: 'running' });
+            await sql.begin(async (tx) => {
+                await tx`insert into workflow_wait (org_id, root_job_id, reason, repo, pr_number, cancelled_at)
+                    values (${ORG}, ${root}, 'wait', 'acme/widgets', 1, ${cancelled ? new Date() : null})`;
+                await tx`insert into workflow_round (org_id, root_job_id, workflow_node, round, repo, pr_number, command, parent_job_id)
+                    values (${ORG}, ${root}, 'wait', 1, 'acme/widgets', 1, 'continue', ${root})`;
+                await tx`update job set status = 'failed', finished_at = now() where org_id = ${ORG} and id = ${root}`;
+            });
+            return root;
+        };
+
+        it('a failure that re-parks its thread into an open wait emits nothing', async () => {
+            expect(await events(await parkUnderWait(false))).toHaveLength(0);
+        });
+
+        it('a failure under a cancelled wait still emits task.blocked', async () => {
+            expect((await events(await parkUnderWait(true))).map((r) => r.kind)).toEqual(['task.blocked']);
+        });
     });
 
     it('events are scoped to the job’s org', async () => {
