@@ -151,6 +151,8 @@ export interface JobInterruption {
     claimSeq: number;
     /** A hand-back that waited on a leftover still terminating: outside the interruption budget (BEL-160). */
     blocked?: true;
+    /** A hand-back that waited on a connection the task asked for: outside the interruption budget (BEL-174). */
+    requirement?: true;
 }
 
 export interface Job {
@@ -366,8 +368,21 @@ export interface Job {
     connections: JobConnection[];
     /** The thread root's `binding_revision`: what `POST /api/jobs/:id/connections` must echo. `get()`/`thread()` only, else 0. */
     bindingRevision: number;
-    /** The providers a selected skill requires that no live binding covers, so the claim waits. `get()`/`thread()` only. */
-    integrationRequirements: { provider: string; reason: 'missing' | 'ambiguous' }[];
+    /** The open requirements holding the thread: a skill's provider with no live binding, or one a run asked for. `get()`/`thread()` only. */
+    integrationRequirements: JobIntegrationRequirement[];
+}
+
+/** One open requirement as the job view shows it (BEL-174). */
+export interface JobIntegrationRequirement {
+    provider: string;
+    /** What a person calls the provider. */
+    label: string;
+    reason: 'missing' | 'ambiguous' | 'reconnect';
+    /** `create`: never started; `runtime`: it ran, asked, and was handed back. */
+    source: 'create' | 'runtime';
+    /** The bound connection a `reconnect` is about; null otherwise. */
+    connectionId: string | null;
+    createdAt: string;
 }
 
 /** One bound connection as the job view shows it: ids and labels only, never a credential. */
@@ -614,6 +629,11 @@ export interface Claim {
      * prompt as a continuation (`driver/src/continuation.ts`).
      */
     continuesInterrupted: boolean;
+    /**
+     * What became of the connections this job asked for while it ran (BEL-174), told once to the claim that
+     * continues it (and again to a takeover of that claim). Absent when there is nothing to tell.
+     */
+    connectionOutcomes?: { provider: string; label: string; outcome: 'bound' | 'dismissed' }[];
     /**
      * The environment the runner starts with, resolved at claim time for THIS job's author and
      * repo label: org < workspace < repo, the more specific scope winning. Optional — absent on a

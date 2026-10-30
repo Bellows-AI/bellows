@@ -26,14 +26,17 @@ export const SKILL_CONNECTIONS = {
 } as const satisfies Record<string, readonly string[]>;
 
 /**
- * The integrations a skill may require. A `connection` provider is bound to a task through the
- * `connections` field of `POST /api/jobs`; `github` is a legacy repository capability the task never
- * selects: the org's GitHub App installation provides it.
+ * The integrations a skill may require, each with the `label` a person sees. A `connection` provider is
+ * bound to a task through the `connections` field of `POST /api/jobs`; `github` is a legacy repository
+ * capability the task never selects: the org's GitHub App installation provides it.
  */
 export const INTEGRATION_PROVIDERS = {
-    github: { kind: 'legacy-repository-capability' },
-    jira: { kind: 'connection' },
-} as const satisfies Record<keyof typeof SKILL_CONNECTIONS, { kind: 'connection' | 'legacy-repository-capability' }>;
+    github: { kind: 'legacy-repository-capability', label: 'GitHub' },
+    jira: { kind: 'connection', label: 'Jira' },
+} as const satisfies Record<
+    keyof typeof SKILL_CONNECTIONS,
+    { kind: 'connection' | 'legacy-repository-capability'; label: string }
+>;
 
 /** The field that selects a provider for a task, or null for a provider the task never selects. */
 export function selectedBy(provider: string): 'connections' | null {

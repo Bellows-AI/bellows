@@ -5,7 +5,7 @@
  */
 
 import { OBJECTIVE_MODE, type JobMode, skillSelectionProblems } from '@factory-ai/core';
-import { recordUnboundRequirements } from './job-store-connections.js';
+import { type ClaimConnections, claimConnectionsInTx, recordUnboundRequirements } from './job-store-connections.js';
 import type { Fragment, TransactionSql } from 'postgres';
 import type { BellowsConfig } from '../../workspace/bellows.js';
 import type { ServiceSpec } from '../../workspace/bellows-services.js';
@@ -499,7 +499,8 @@ async function acquireCandidate(
         probe.aged(locked.status === 'queued' ? 'new' : 'takeover', row.queue_age);
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         await recordExecution(tx, orgId, row.id);
-        return assembleClaim(ctx, tx, row, { rootJobId, gates });
+        const connections = await claimConnectionsInTx(tx, { orgId, rootJobId }, row, locked.status === 'running');
+        return assembleClaim(ctx, tx, row, { rootJobId, gates, connections });
     });
     // Only a transaction that resolved reports: a throw above rolled back and observed nothing.
     probe.done(result !== NEXT_CANDIDATE && result !== REFUSED);
@@ -553,10 +554,11 @@ async function assembleClaim(
         workflow_name: string | null;
         mode: JobMode;
     },
-    prepared: { rootJobId: string; gates: ResolvedClaimGates }
+    prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
 ): Promise<Claim> {
     const { orgId, env, githubApp, executorConfig, prs } = ctx;
     const { rootJobId } = prepared;
+    const { connections } = prepared;
     const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
     const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.created_by) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
@@ -564,15 +566,16 @@ async function assembleClaim(
     const command = await claimCommand(tx, orgId, rootJobId, row);
     // The thread root's selection checked against what this claim's env authorizes: names
     // only, so selecting a skill never adds to the env and the sentence never carries a value.
-    const managed = [...row.live_providers, ...(githubApp ? ['github'] : [])];
+    const managed = [...row.live_providers, ...connections.dismissed, ...(githubApp ? ['github'] : [])];
     const skillRefusal = resolveClaimSkills(row.skills, executor.claimEnv, managed);
-    return buildClaimResult({ ...row, command }, rootJobId, {
+    const claim = buildClaimResult({ ...row, command }, rootJobId, {
         ...executor,
         ...gates,
         ...workflow,
         ...evidence,
         skillRefusal,
     });
+    return connections.outcomes.length > 0 ? { ...claim, connectionOutcomes: connections.outcomes } : claim;
 }
 
 export async function claimJob(

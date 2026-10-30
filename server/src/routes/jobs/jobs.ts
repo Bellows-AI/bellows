@@ -41,6 +41,7 @@ import {
     handleReadArtifacts,
 } from './job-handlers-artifacts.js';
 import { handleAnswer, handleQuestion } from './job-handlers-questions.js';
+import { handleDismissRequirement, handleRequirement } from './job-handlers-requirements.js';
 import { handleReviewRead, handleReviewRequest } from './job-handlers-reviews.js';
 import { gateRunRoutes } from './job-handlers-gate-runs.js';
 import { prOperationRoutes } from './job-handlers-pr-operations.js';
@@ -98,6 +99,9 @@ export const jobRoutes =
         app.post('/api/jobs/:id/heartbeat', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleHeartbeat(orgs, request, reply)
         );
+        app.post('/api/jobs/:id/requirements', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleRequirement(orgs, request, reply)
+        );
         app.post('/api/jobs/:id/session', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleSession(orgs, request, reply)
         );
@@ -118,6 +122,9 @@ export const jobRoutes =
         );
         app.post('/api/jobs/:id/connections', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleBindConnection(orgs, request, reply)
+        );
+        app.post('/api/jobs/:id/requirements/:provider/dismiss', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
+            handleDismissRequirement(orgs, request, reply)
         );
         app.post('/api/jobs/:id/retry', { bodyLimit: CONTROL_BODY_LIMIT }, (request, reply) =>
             handleRetry(orgs, request, reply)

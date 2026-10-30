@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { ConnectionRefusedError } from '../src/db/connection-bindings.js';
 import type { JobActionStore } from '../src/db/jobs/job-store-actions.js';
+import type { JobWorkerStore } from '../src/db/jobs/job-store-worker.js';
 import { staticRepoSource } from '../src/github/repo-source.js';
 import { githubAuth, memoryAuthStore, signedIn, staticRegistry, jobStoreSlice, testConfig } from './helpers.js';
 import {
@@ -187,5 +188,165 @@ describe('POST /api/jobs/:id/connections', () => {
         const res = await bind(instance, cookie, { connectionId: CONN_A, bindingRevision: 0 });
         expect(res.statusCode).toBe(status);
         expect(res.json()).toMatchObject({ code });
+    });
+});
+
+describe('POST /api/jobs/:id/requirements (the runner asks for a connection)', () => {
+    const TOKEN = '44444444-4444-4444-8444-444444444444';
+    const ask = (instance: FastifyInstance, payload: unknown) =>
+        instance.inject({ method: 'POST', url: `/api/jobs/${ID}/requirements`, payload: payload as object });
+
+    async function bootWorker(answer: unknown = { result: 'ok', answer: 'waiting' }) {
+        const asks: unknown[][] = [];
+        const jobs = jobStoreSlice<JobWorkerStore>({
+            async requireConnection(...args: unknown[]) {
+                asks.push(args);
+                if (answer instanceof Error) throw answer;
+                return answer;
+            },
+        });
+        const config = testConfig();
+        const instance = await buildApp({ config, orgs: staticRegistry({ config, jobs }) });
+        track(instance);
+        return { instance, asks };
+    }
+
+    it('records the requirement under the attempt lease and answers the store verdict', async () => {
+        const { instance, asks } = await bootWorker();
+        const res = await ask(instance, { leaseToken: TOKEN, provider: 'jira' });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(res.json()).toEqual({ answer: 'waiting' });
+        expect(asks).toEqual([[ID, TOKEN, 'jira']]);
+    });
+
+    it.each([
+        [{ leaseToken: 'nope', provider: 'jira' }, 'BAD_TOKEN'],
+        [{ leaseToken: TOKEN, provider: 'github' }, 'BAD_CONNECTION'],
+        [{ leaseToken: TOKEN, provider: 7 }, 'BAD_CONNECTION'],
+        [{ leaseToken: TOKEN }, 'BAD_CONNECTION'],
+    ])('refuses %j before the store is asked', async (payload, code) => {
+        const { instance, asks } = await bootWorker();
+        const res = await ask(instance, payload);
+        expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+        expect(res.json()).toMatchObject({ code });
+        expect(asks).toEqual([]);
+    });
+
+    it('answers a lost lease 409 and an unknown job 404', async () => {
+        const lost = await ask((await bootWorker({ result: 'lost' })).instance, {
+            leaseToken: TOKEN,
+            provider: 'jira',
+        });
+        expect(lost.statusCode).toBe(HTTP_CONFLICT);
+        expect(lost.json()).toMatchObject({ code: 'LEASE_LOST' });
+        const missing = await ask((await bootWorker({ result: 'missing' })).instance, {
+            leaseToken: TOKEN,
+            provider: 'jira',
+        });
+        expect(missing.statusCode).toBe(HTTP_NOT_FOUND);
+    });
+
+    it('answers a store that throws 503, never a verdict', async () => {
+        const { instance } = await bootWorker(new Error('database down'));
+        const res = await ask(instance, { leaseToken: TOKEN, provider: 'jira' });
+        expect(res.statusCode).toBe(503);
+    });
+});
+
+describe('POST /api/jobs/:id/requirements/:provider/dismiss', () => {
+    const dismiss = (instance: FastifyInstance, cookie: string, provider = 'jira') =>
+        instance.inject({
+            method: 'POST',
+            url: `/api/jobs/${ID}/requirements/${provider}/dismiss`,
+            headers: { cookie },
+            payload: {},
+        });
+
+    it('dismisses as the signed-in member', async () => {
+        const dismissed: unknown[][] = [];
+        const { instance, cookie } = await boot({
+            async dismissRequirement(...args: unknown[]) {
+                dismissed.push(args);
+                return { ok: true };
+            },
+        });
+        const res = await dismiss(instance, cookie);
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(dismissed).toMatchObject([[ID, 'jira', expect.any(String)]]);
+    });
+
+    it('refuses an unknown provider before the store is asked', async () => {
+        const { instance, cookie } = await boot({
+            async dismissRequirement() {
+                throw new Error('must not be called');
+            },
+        });
+        const res = await dismiss(instance, cookie, 'github');
+        expect(res.statusCode).toBe(HTTP_BAD_REQUEST);
+    });
+
+    it.each([
+        ['missing', HTTP_NOT_FOUND],
+        ['none-open', HTTP_CONFLICT],
+    ])('answers the store refusal %s as %i', async (reason, status) => {
+        const { instance, cookie } = await boot({
+            async dismissRequirement() {
+                return { ok: false, reason };
+            },
+        });
+        expect((await dismiss(instance, cookie)).statusCode).toBe(status);
+    });
+
+    it('answers a store that throws 503', async () => {
+        const { instance, cookie } = await boot({
+            async dismissRequirement() {
+                throw new Error('database down');
+            },
+        });
+        expect((await dismiss(instance, cookie)).statusCode).toBe(503);
+    });
+});
+
+describe('POST /api/jobs/:id/interrupt requirement', () => {
+    const TOKEN = '44444444-4444-4444-8444-444444444444';
+
+    async function bootInterrupt() {
+        const seen: unknown[] = [];
+        const jobs = jobStoreSlice<JobActionStore>({
+            async interrupt(...args: unknown[]) {
+                seen.push(args[2]);
+                return { result: 'ok', status: 'queued' };
+            },
+        });
+        const config = testConfig();
+        const instance = await buildApp({ config, orgs: staticRegistry({ config, jobs }) });
+        track(instance);
+        const send = (payload: object) =>
+            instance.inject({ method: 'POST', url: `/api/jobs/${ID}/interrupt`, payload });
+        return { send, seen };
+    }
+
+    it('hands the store a requirement release', async () => {
+        const { send, seen } = await bootInterrupt();
+        const res = await send({
+            leaseToken: TOKEN,
+            reason: 'the task waits for a Jira connection',
+            release: true,
+            requirement: true,
+        });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(seen).toMatchObject([{ release: true, requirement: true }]);
+    });
+
+    it('refuses a requirement flag that is not a boolean or not on a release', async () => {
+        const { send, seen } = await bootInterrupt();
+        const reason = 'the task waits for a Jira connection';
+        expect((await send({ leaseToken: TOKEN, reason, release: true, requirement: 'yes' })).statusCode).toBe(
+            HTTP_BAD_REQUEST
+        );
+        expect(
+            (await send({ leaseToken: TOKEN, reason, release: false, claimSeq: 1, requirement: true })).statusCode
+        ).toBe(HTTP_BAD_REQUEST);
+        expect(seen).toEqual([]);
     });
 });

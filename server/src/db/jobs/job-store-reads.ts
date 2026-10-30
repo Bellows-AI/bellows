@@ -181,7 +181,7 @@ async function integrationsOf(
             live: b.live,
         })),
         bindingRevision: root?.binding_revision ?? 0,
-        integrationRequirements: open.map((r) => ({ provider: r.provider, reason: r.reason })),
+        integrationRequirements: open,
     };
 }
 

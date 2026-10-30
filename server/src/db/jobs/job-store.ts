@@ -20,7 +20,7 @@
  * of them: the decisions here look simplifiable and mostly are not.
  */
 
-import { bindConnectionRow } from './job-store-connections.js';
+import { bindConnectionRow, dismissRequirementRow, requireConnectionRow } from './job-store-connections.js';
 import {
     createJobRow,
     createFollowUpRow,
@@ -82,6 +82,7 @@ function workerMethods(
     | 'claim'
     | 'demand'
     | 'heartbeat'
+    | 'requireConnection'
     | 'session'
     | 'progress'
     | 'gates'
@@ -114,6 +115,11 @@ function workerMethods(
         async heartbeat(id, leaseToken, leaseSeconds) {
             await gate();
             return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
+        },
+
+        async requireConnection(id, leaseToken, provider) {
+            await gate();
+            return requireConnectionRow(ctx.sql, { orgId: ctx.orgId, id, leaseToken, provider });
         },
 
         async session(id, leaseToken, sessionId, evidence) {
@@ -282,6 +288,11 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
         async bindConnection(id, input, userId) {
             await gate();
             return bindConnectionRow(ctx.sql, { orgId: ctx.orgId, id, userId, ...input });
+        },
+
+        async dismissRequirement(id, provider, userId) {
+            await gate();
+            return dismissRequirementRow(ctx.sql, { orgId: ctx.orgId, id, provider, userId });
         },
 
         async createRetry(id, createdBy, idempotency) {

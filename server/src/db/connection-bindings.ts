@@ -1,5 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { INTEGRATION_PROVIDERS, selectedBy } from '@factory-ai/core';
+import { bindingStanding, type StandingRow } from '../integrations/credential-resolver.js';
 
 /**
  * Which connections a task thread uses (094). The bindings belong to the thread ROOT and are append-only: each
@@ -103,6 +104,25 @@ async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[
     `;
 }
 
+/**
+ * The execution user's own usable OAuth connections for a provider, newest first, at most two (one is the
+ * unambiguous default, two are ambiguous), share-locked like `bindableByIds`.
+ */
+async function defaultCandidates(db: Db, orgId: string, provider: string, userId: string): Promise<BindableRow[]> {
+    return db<BindableRow[]>`
+        select c.id, c.provider, c.credential, c.external_account_id, c.cloud_id, c.grant_id, g.authority, c.access,
+               c.principal_user_id
+        from connector_connection c
+        left join integration_grant g on g.id = c.grant_id
+        where c.org_id = ${orgId} and c.provider = ${provider} and c.status = 'active'
+          and c.credential = 'oauth_grant' and c.principal_user_id = ${userId}
+          and (c.grant_id is null or g.status = 'active')
+        order by c.created_at desc, c.id
+        limit 2
+        for share of c
+    `;
+}
+
 export async function resolveBindingsInTx(db: Db, input: ResolveInput): Promise<Resolution | ResolveRefusal> {
     const { orgId, executionUser, explicit, providers } = input;
     if (new Set(explicit).size !== explicit.length) return { ok: false, reason: 'duplicate' };
@@ -118,17 +138,7 @@ export async function resolveBindingsInTx(db: Db, input: ResolveInput): Promise<
     const requirements: ResolvedRequirement[] = [];
     for (const provider of providers) {
         if (covered.has(provider)) continue;
-        const candidates = await db<BindableRow[]>`
-            select c.id, c.provider, c.credential, c.external_account_id, c.cloud_id, c.grant_id, g.authority, c.access,
-                   c.principal_user_id
-            from connector_connection c
-            left join integration_grant g on g.id = c.grant_id
-            where c.org_id = ${orgId} and c.provider = ${provider} and c.status = 'active'
-              and c.credential = 'oauth_grant' and c.principal_user_id = ${executionUser} and (c.grant_id is null or g.status = 'active')
-            order by c.created_at desc, c.id
-            limit 2
-            for share of c
-        `;
+        const candidates = await defaultCandidates(db, orgId, provider, executionUser);
         if (candidates.length === 1) bindings.push(toResolved(candidates[0]!, 'default'));
         else if (required.has(provider)) {
             requirements.push({ provider, reason: candidates.length === 0 ? 'missing' : 'ambiguous' });
@@ -179,7 +189,8 @@ export async function projectJiraConnectionInTx(db: Db, orgId: string, rootJobId
  * connection -> child inserts. A blocking wait on a thread's advisory lock is only made by a transaction that already
  * holds that root's row, so no transaction waits on an advisory lock held by another order-following one. Two
  * exceptions block only on their FIRST lock: the claim's acquire (its candidate row, then the root row `skip locked`
- * and the advisory lock tried) and a settle of the caller's own running row (then one thread, in order). `no key` so
+ * and the advisory lock tried) and a settle of the caller's own running row (then one thread, in order), which the runtime ask is too: its own
+ * running row, the root row, then grant and connection. `no key` so
  * the child inserts' FK checks (KEY SHARE on the root) of a claim on another member never wait on it.
  * Returns the ids of `rootIds` that exist as roots, locked in ascending order.
  */
@@ -237,7 +248,7 @@ export interface AddBindingsInput {
     expectedRevision: number;
     connectionIds: string[];
     actor: { userId: string };
-    source: 'follow_up' | 'requirement';
+    source: 'follow_up' | 'requirement' | 'default';
 }
 
 export type AddBindingsResult =
@@ -275,7 +286,13 @@ export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<
         // The owner answering a requirement with a connection the thread already holds must not strand the task:
         // the requirement is satisfied by the live binding, at the current revision, nothing new is written.
         if (source === 'requirement' && bound.length === connectionIds.length) {
-            await satisfyRequirements(db, { orgId, rootJobId, chosen, revision: root.binding_revision });
+            await satisfyRequirements(db, {
+                orgId,
+                rootJobId,
+                chosen,
+                revision: root.binding_revision,
+                actor: actor.userId,
+            });
             return { ok: true, revision: root.binding_revision };
         }
         return { ok: false, reason: 'duplicate' };
@@ -292,7 +309,7 @@ export async function addBindingsInTx(db: Db, input: AddBindingsInput): Promise<
     });
     await db`update job set binding_revision = ${revision} where org_id = ${orgId} and id = ${rootJobId}`;
     await projectJiraConnectionInTx(db, orgId, rootJobId);
-    await satisfyRequirements(db, { orgId, rootJobId, chosen, revision });
+    await satisfyRequirements(db, { orgId, rootJobId, chosen, revision, actor: actor.userId });
     return { ok: true, revision };
 }
 
@@ -303,11 +320,13 @@ async function satisfyRequirements(
         rootJobId,
         chosen,
         revision,
-    }: { orgId: string; rootJobId: string; chosen: BindableRow[]; revision: number }
+        actor,
+    }: { orgId: string; rootJobId: string; chosen: BindableRow[]; revision: number; actor: string }
 ): Promise<void> {
     const providers = [...new Set(chosen.map((row) => row.provider))];
     await db`
-        update job_integration_requirement set satisfied_at = now(), satisfied_revision = ${revision}
+        update job_integration_requirement
+        set satisfied_at = now(), satisfied_revision = ${revision}, outcome = 'bound', closed_by = ${actor}
         where org_id = ${orgId} and root_job_id = ${rootJobId} and satisfied_at is null
           and provider in ${db(providers)}
     `;
@@ -386,18 +405,51 @@ export async function liveOAuthConnectionsOf(db: Db, orgId: string, rootJobId: s
 
 export interface RequirementRecord {
     provider: string;
-    reason: 'missing' | 'ambiguous';
+    /** What a person calls the provider (`INTEGRATION_PROVIDERS`). */
+    label: string;
+    reason: 'missing' | 'ambiguous' | 'reconnect';
+    /** `create`: the task never started and waits to; `runtime`: it ran, asked, and was handed back. */
+    source: 'create' | 'runtime';
+    /** The bound connection a `reconnect` requirement is about; null for every other reason. */
+    connectionId: string | null;
     createdAt: string;
 }
 
+/** What a person calls `provider`; an unknown one is its own name. */
+export const providerLabel = (provider: string): string =>
+    Object.hasOwn(INTEGRATION_PROVIDERS, provider)
+        ? INTEGRATION_PROVIDERS[provider as keyof typeof INTEGRATION_PROVIDERS].label
+        : provider;
+
 /** The root's open (unsatisfied) requirements. */
 export async function requirementsOf(db: Db, orgId: string, rootJobId: string): Promise<RequirementRecord[]> {
-    const rows = await db<{ provider: string; reason: 'missing' | 'ambiguous'; created_at: Date }[]>`
-        select provider, reason, created_at from job_integration_requirement
-        where org_id = ${orgId} and root_job_id = ${rootJobId} and satisfied_at is null
-        order by created_at, id
+    const rows = await db<
+        {
+            provider: string;
+            reason: RequirementRecord['reason'];
+            source: RequirementRecord['source'];
+            connection_id: string | null;
+            created_at: Date;
+        }[]
+    >`
+        select r.provider, r.reason, r.source, r.created_at,
+               case when r.reason = 'reconnect' then (
+                   select b.connection_id from job_connection_binding b
+                   where b.org_id = r.org_id and b.root_job_id = r.root_job_id and b.provider = r.provider
+                   order by b.revision desc, b.added_at desc, b.id desc limit 1
+               ) end as connection_id
+        from job_integration_requirement r
+        where r.org_id = ${orgId} and r.root_job_id = ${rootJobId} and r.satisfied_at is null
+        order by r.created_at, r.id
     `;
-    return rows.map((r) => ({ provider: r.provider, reason: r.reason, createdAt: r.created_at.toISOString() }));
+    return rows.map((r) => ({
+        provider: r.provider,
+        label: providerLabel(r.provider),
+        reason: r.reason,
+        source: r.source,
+        connectionId: r.connection_id,
+        createdAt: r.created_at.toISOString(),
+    }));
 }
 
 /**
@@ -427,4 +479,142 @@ export async function recordMissingInTx(
             on conflict do nothing
         `;
     }
+}
+
+export type RuntimeAnswer = 'bound' | 'unavailable' | 'waiting';
+
+/**
+ * A running task asks for a provider (BEL-174), in the caller's transaction, which already holds the asking
+ * row. Answers `bound` when the thread has a binding the broker would serve, or after binding the execution user's
+ * lone usable candidate; `unavailable` when nobody can bind (no execution user, a provider the board never binds) or
+ * the owner dismissed the requirement at this binding revision; otherwise opens (or refreshes) the runtime
+ * requirement and answers `waiting`: `reconnect` for a binding that no longer serves, else `missing` or `ambiguous`.
+ * A read that throws propagates: only a confirmed answer licenses recording a requirement.
+ */
+export async function requireAtRuntimeInTx(
+    db: Db,
+    args: { orgId: string; rootJobId: string; askedJobId: string; claimSeq: number; provider: string }
+): Promise<RuntimeAnswer> {
+    const { orgId, rootJobId, askedJobId, claimSeq, provider } = args;
+    if (!BINDABLE_PROVIDERS.includes(provider)) return 'unavailable';
+    if (!(await lockThreadRootInTx(db, orgId, rootJobId))) return 'unavailable';
+    const [root] = await db<{ execution_user_id: string | null; binding_revision: number }[]>`
+        select execution_user_id, binding_revision from job where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    const held = await db<StandingRow[]>`
+        select b.grant_id as b_grant_id, c.status as c_status, c.credential as c_credential,
+               c.grant_id as c_grant_id, g.id as g_id, g.status as g_status
+        from job_connection_binding b
+        left join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id
+        left join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
+        where b.org_id = ${orgId} and b.root_job_id = ${rootJobId} and b.provider = ${provider}
+    `;
+    const standings = held.map(bindingStanding);
+    if (standings.includes('usable')) return 'bound';
+    const executionUser = root?.execution_user_id ?? null;
+    if (!root || executionUser === null) return 'unavailable';
+    if ((await dismissedProvidersInTx(db, orgId, rootJobId)).includes(provider)) return 'unavailable';
+
+    let reason: RecordedReason = 'reconnect';
+    if (!standings.includes('reconnect')) {
+        const candidates = await defaultCandidates(db, orgId, provider, executionUser);
+        if (candidates.length === 1) {
+            const added = await addBindingsInTx(db, {
+                orgId,
+                rootJobId,
+                expectedRevision: root.binding_revision,
+                connectionIds: [candidates[0]!.id],
+                actor: { userId: executionUser },
+                source: 'default',
+            });
+            if (!added.ok) throw new Error(`binding the lone ${provider} candidate was refused: ${added.reason}`);
+            return 'bound';
+        }
+        reason = candidates.length === 0 ? 'missing' : 'ambiguous';
+    }
+    await db`
+        insert into job_integration_requirement
+            (org_id, root_job_id, provider, reason, source, asked_job_id, asked_claim_seq)
+        values (${orgId}, ${rootJobId}, ${provider}, ${reason}, 'runtime', ${askedJobId}, ${claimSeq})
+        on conflict (org_id, root_job_id, provider) where satisfied_at is null
+        do update set reason = excluded.reason, source = 'runtime', asked_job_id = excluded.asked_job_id,
+                      asked_claim_seq = excluded.asked_claim_seq
+    `;
+    return 'waiting';
+}
+
+type RecordedReason = RequirementRecord['reason'];
+
+/** The providers whose requirement the owner dismissed at the root's CURRENT binding revision (sticky until it moves). */
+export async function dismissedProvidersInTx(db: Db, orgId: string, rootJobId: string): Promise<string[]> {
+    const rows = await db<{ provider: string }[]>`
+        select distinct r.provider
+        from job_integration_requirement r
+        join job root on root.org_id = r.org_id and root.id = r.root_job_id
+        where r.org_id = ${orgId} and r.root_job_id = ${rootJobId} and r.outcome = 'dismissed'
+          and r.satisfied_revision = root.binding_revision
+    `;
+    return rows.map((r) => r.provider);
+}
+
+/**
+ * The owner declines a provider for the thread: closes its open requirement as `dismissed` at the current revision.
+ * `missing` when the root is gone or the caller is not its execution user, `none-open` when nothing is open.
+ */
+export async function dismissRequirementInTx(
+    db: Db,
+    args: { orgId: string; rootJobId: string; provider: string; userId: string }
+): Promise<'ok' | 'missing' | 'none-open'> {
+    const { orgId, rootJobId, provider, userId } = args;
+    if (!(await lockThreadRootInTx(db, orgId, rootJobId))) return 'missing';
+    const [root] = await db<{ execution_user_id: string | null; binding_revision: number }[]>`
+        select execution_user_id, binding_revision from job where org_id = ${orgId} and id = ${rootJobId}
+    `;
+    if (!root || root.execution_user_id === null || root.execution_user_id !== userId) return 'missing';
+    const closed = await db<{ id: string }[]>`
+        update job_integration_requirement
+        set satisfied_at = now(), satisfied_revision = ${root.binding_revision}, outcome = 'dismissed',
+            closed_by = ${userId}
+        where org_id = ${orgId} and root_job_id = ${rootJobId} and provider = ${provider} and satisfied_at is null
+        returning id
+    `;
+    return closed.length === 0 ? 'none-open' : 'ok';
+}
+
+export interface ConnectionOutcome {
+    provider: string;
+    label: string;
+    outcome: 'bound' | 'dismissed';
+}
+
+/**
+ * What became of the requirements this job asked for while it ran, told to the claim that continues it (BEL-174).
+ * Each is stamped with the claim it was told to; a TAKEOVER of that claim is told again (its session never saw
+ * the answer), an ordinary re-claim is not (the resumed session already did).
+ */
+export async function takeConnectionOutcomesInTx(
+    db: Db,
+    args: { orgId: string; jobId: string; claimSeq: number; takeover: boolean }
+): Promise<ConnectionOutcome[]> {
+    const { orgId, jobId, claimSeq, takeover } = args;
+    const rows = await db<{ provider: string; outcome: ConnectionOutcome['outcome'] }[]>`
+        update job_integration_requirement
+        set delivered_claim_seq = ${claimSeq}
+        where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${jobId} and outcome is not null
+          and (delivered_claim_seq is null or (${takeover}::boolean and delivered_claim_seq = ${claimSeq - 1}))
+        returning provider, outcome
+    `;
+    return rows
+        .sort((a, b) => a.provider.localeCompare(b.provider))
+        .map((r) => ({ provider: r.provider, label: providerLabel(r.provider), outcome: r.outcome }));
+}
+
+/** Whether an open runtime requirement on the root was asked by `jobId`: the asker, or its takeover, must stop. */
+export async function requirementWaitOf(db: Db, orgId: string, jobId: string): Promise<boolean> {
+    const rows = await db<{ one: number }[]>`
+        select 1 as one from job_integration_requirement
+        where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${jobId} and satisfied_at is null
+        limit 1
+    `;
+    return rows.length > 0;
 }

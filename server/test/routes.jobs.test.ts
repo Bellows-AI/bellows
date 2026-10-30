@@ -313,6 +313,14 @@ function stubStore(
             boom();
             return { ok: true as const, revision: 1 };
         },
+        async dismissRequirement() {
+            boom();
+            return { ok: true as const };
+        },
+        async requireConnection() {
+            boom();
+            return { result: 'ok' as const, answer: 'waiting' as const };
+        },
         async createRetry(id, createdBy, idempotency) {
             boom();
             stub.retries.push({ id, createdBy: createdBy ?? null });
@@ -345,6 +353,7 @@ function stubStore(
                 leaseExpiresAt: result === 'ok' ? '2026-08-21T12:05:00.000Z' : null,
                 cancelRequested: result === 'ok' ? (options.heartbeatCancelRequested ?? false) : false,
                 answeredQuestions: result === 'ok' ? (options.answeredQuestions ?? []) : [],
+                requirementWait: false,
             };
         },
         async askQuestion(id, _token, ask) {

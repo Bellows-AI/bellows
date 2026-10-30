@@ -6,7 +6,12 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
-import { addFollowUpBindings, type BindConnectionResult, bindOnCreate } from './job-store-connections.js';
+import {
+    addFollowUpBindings,
+    type BindConnectionResult,
+    bindOnCreate,
+    type DismissRequirementResult,
+} from './job-store-connections.js';
 import {
     backsBatchTask,
     batchThreadState,
@@ -143,6 +148,13 @@ export interface JobActionStore {
         input: { connectionId: string; bindingRevision: number },
         userId: string
     ): Promise<BindConnectionResult>;
+
+    /**
+     * The owner declines `provider` for the thread (BEL-174): its open requirement closes as `dismissed` at the
+     * current binding revision, the claim launches the task without it, and a later ask at that revision answers
+     * `unavailable`. `missing` for an unknown job or anyone but the execution user; `none-open` when nothing is open.
+     */
+    dismissRequirement(id: string, provider: string, userId: string): Promise<DismissRequirementResult>;
 
     /**
      * Queues a fresh attempt of the thread head's command (issue #326): a new job in the SAME
@@ -285,7 +297,7 @@ export interface JobActionStore {
      * driver, an evicted runner) — queued, or stopped when a Stop got there first — with the
      * segment banked; without it the claim is an adopter's and keeps its lease, `claimSeq` naming
      * the earlier attempt it adopted; the adopting claim's launch becomes `adopted`, linked to that
-     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating (BEL-160): it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
+     * claim. `refused` says the runner never started (issue #845). `blocked` (a release only) says the claim waits on a leftover still terminating (BEL-160): it spends no budget, is accepted past a spent one, and defers the next claim `BLOCKED_RETRY_SECONDS`. `requirement` (a release only) says the task waits on a connection it asked for (BEL-174): no budget, accepted past a spent one, no deferral (the open requirement holds the claim). `exhausted` once `INTERRUPTION_BUDGET` is spent: nothing
      * changed, and the caller reports or leaves the attempt as before.
      */
     interrupt(
@@ -297,6 +309,7 @@ export interface JobActionStore {
             claimSeq?: number | null;
             refused?: boolean;
             blocked?: boolean;
+            requirement?: boolean;
         }
     ): Promise<SuspendResult | { result: 'exhausted' }>;
 }
@@ -876,11 +889,12 @@ export const BLOCKED_RETRY_SECONDS = 60;
 
 /**
  * Whether the row's interruption budget is spent. A blocked hand-back waits on a leftover rather than
- * losing an attempt to the infrastructure, so it is outside the count (BEL-160).
+ * losing an attempt to the infrastructure, so it is outside the count (BEL-160); a requirement hand-back waits on a
+ * person, so it is too (BEL-174).
  */
 export const interruptionsSpent = (q: Sql | TransactionSql): Fragment => q`(
     select count(*) from jsonb_array_elements(interruptions) as spent
-    where spent ->> 'blocked' is distinct from 'true'
+    where spent ->> 'blocked' is distinct from 'true' and spent ->> 'requirement' is distinct from 'true'
 ) >= ${INTERRUPTION_BUDGET}`;
 
 /** The interruption the next claim records for an attempt whose lease expired (issue #822). */
@@ -890,7 +904,14 @@ export async function interruptJob(
     ctx: JobStoreContext,
     id: string,
     leaseToken: string,
-    { reason, release, claimSeq = null, refused = false, blocked = false }: Parameters<JobStore['interrupt']>[2]
+    {
+        reason,
+        release,
+        claimSeq = null,
+        refused = false,
+        blocked = false,
+        requirement = false,
+    }: Parameters<JobStore['interrupt']>[2]
 ): ReturnType<JobStore['interrupt']> {
     const { sql, orgId, wallTick } = ctx;
     // One lease-guarded update, an agent ran: the segment banks to the
@@ -899,7 +920,14 @@ export async function interruptJob(
     // and this one keeps its lease. A Stop already stamped wins over a release, as over a suspend.
     // An attempt already recorded (handed over, or expired and recorded by the claim that took it
     // over, then adopted) is one disruption: refunded once.
-    const entry = sql.json({ reason, at: new Date().toISOString(), ...(blocked ? { blocked: true } : {}) });
+    const entry = sql.json({
+        reason,
+        at: new Date().toISOString(),
+        ...(blocked ? { blocked: true } : {}),
+        ...(requirement ? { requirement: true } : {}),
+    });
+    // Neither spends the budget, so both are accepted past a spent one.
+    const outsideBudget = blocked || requirement;
     const recorded = sql`interruptions @> jsonb_build_array(
         jsonb_build_object('claimSeq', coalesce(${claimSeq}::bigint, claim_seq))
     )`;
@@ -910,12 +938,17 @@ export async function interruptJob(
         jobId: id,
         leaseToken,
         operation: 'interrupt',
-        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked }),
+        fingerprint: fingerprintOf({ reason, release, claimSeq, blocked, requirement }),
     };
     return sql.begin(async (tx) => {
         // A staged conclusion is the attempt's outcome (issue #821): nothing hands it back instead.
         if (release && (await stagedFingerprint(tx, key)) !== null) return { result: 'conflict' };
-        await recordInterruptLaunch(tx, { orgId, id, leaseToken }, { release, refused, claimSeq, blocked }, recorded);
+        await recordInterruptLaunch(
+            tx,
+            { orgId, id, leaseToken },
+            { release, refused, claimSeq, outsideBudget },
+            recorded
+        );
         const rows = await tx<{ status: JobStatus; root_job_id: string }[]>`
             update job set
                 status           = case when not ${release} then status
@@ -934,7 +967,7 @@ export async function interruptJob(
                 )
             where org_id = ${orgId} and id = ${id}
               and status = 'running' and lease_token = ${leaseToken}
-              and (${blocked && release} or not ${interruptionsSpent(tx)})
+              and (${outsideBudget && release} or not ${interruptionsSpent(tx)})
               and not ${recorded}
             returning status, root_job_id
         `;
@@ -962,13 +995,13 @@ async function recordInterruptLaunch(
         release,
         refused,
         claimSeq,
-        blocked,
-    }: { release: boolean; refused: boolean; claimSeq: number | null; blocked: boolean },
+        outsideBudget,
+    }: { release: boolean; refused: boolean; claimSeq: number | null; outsideBudget: boolean },
     recorded: Fragment
 ): Promise<void> {
     if (!refused && release) return;
     const { orgId, id, leaseToken } = at;
-    const open = release ? tx`and (${blocked} or not ${interruptionsSpent(tx)}) and not ${recorded}` : tx``;
+    const open = release ? tx`and (${outsideBudget} or not ${interruptionsSpent(tx)}) and not ${recorded}` : tx``;
     const [held] = await tx<{ claim_seq: string }[]>`
         select claim_seq from job
         where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken} ${open}
