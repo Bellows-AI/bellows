@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NotificationEventRow, SendResult } from '@factory-ai/core';
 import { createConnectorRegistry } from '../src/notifications/connector.js';
 import { createNotificationDeliverer, startNotificationDelivery } from '../src/notifications/delivery-loop.js';
+import { productionConnectors } from '../src/notifications/registry.js';
 import type { NotificationOutboxStore, OutboxItem, OutboxKey } from '../src/notifications/outbox-store.js';
 import type { ServerMetrics } from '../src/metrics.js';
 import type { OrgRegistry, OrgRuntime } from '../src/orgs.js';
@@ -250,5 +251,28 @@ describe('startNotificationDelivery', () => {
 
         expect(m.spy).toHaveBeenCalledWith('notification_delivery', expect.any(Function));
         expect(orgs.list).toHaveBeenCalled();
+    });
+
+    it('productionConnectors() holds discord', () => {
+        const registry = productionConnectors();
+
+        expect([...registry.keys()]).toEqual(['discord']);
+    });
+
+    it('starts with the production registry and a public URL', async () => {
+        vi.useFakeTimers();
+        const orgs = { list: vi.fn(async () => []), for: vi.fn() };
+        const m = metrics();
+
+        startNotificationDelivery({
+            connectors: productionConnectors(),
+            publicUrl: PUBLIC_URL,
+            orgs: orgs as unknown as OrgRegistry,
+            metrics: m,
+            ready: Promise.resolve(),
+        });
+        await vi.advanceTimersByTimeAsync(10);
+
+        expect(m.spy).toHaveBeenCalledWith('notification_delivery', expect.any(Function));
     });
 });
