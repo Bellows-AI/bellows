@@ -65,15 +65,16 @@ describe('lane scripts under pipefail', () => {
         expect(pipefailFiles().flatMap(hitsIn)).toEqual([]);
     });
 
-    it('a pipefail pipeline into grep -q fails on output past the pipe buffer, and one into grep >/dev/null does not', async () => {
+    it('a pipefail pipeline into grep -q fails on a writer still writing, and one into grep >/dev/null does not', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'lane-pipefail-'));
         dirs.push(dir);
         mkdirSync(dir, { recursive: true });
         const file = join(dir, 'big.txt');
         writeFileSync(file, 'y\n'.repeat(500_000));
-        const run = (reader: string) =>
-            runAsync('bash', ['-c', `set -o pipefail; cat "$1" | ${reader}; echo $?`, '_', file]);
-        expect((await run('grep -q y')).stdout.trim()).toBe('141');
-        expect((await run('grep y >/dev/null')).stdout.trim()).toBe('0');
+        const run = (pipeline: string) => runAsync('bash', ['-c', `set -o pipefail; ${pipeline}; echo $?`, '_', file]);
+        // A finite writer may finish before grep -q exits (it did on Linux CI), so the early exit is
+        // proven against a writer that never finishes: it always takes the SIGPIPE.
+        expect((await run('yes y | grep -q y')).stdout.trim()).toBe('141');
+        expect((await run('cat "$1" | grep y >/dev/null')).stdout.trim()).toBe('0');
     });
 });
