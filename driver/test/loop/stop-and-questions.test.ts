@@ -57,7 +57,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     it.each(['stop', 'lost', 'removed'] as const)(
         'G1 %s landing during a post-helper publishes nothing and reports no verdict',
         async (kind) => {
-            const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory', helperPlans: [postPlan] }]);
+            const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows', helperPlans: [postPlan] }]);
             const fire = armHeartbeat(board.board, kind);
             const runner = stubRunner(async () => ok(), { publish: landed });
             runner.runHelper = async () => {
@@ -77,7 +77,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     );
 
     it('G2 a stop landing during the publish token ask publishes nothing and parks the run', async () => {
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         const fire = armHeartbeat(board.board, 'stop');
         let asks = 0;
         board.board.githubCredential = async () => {
@@ -165,7 +165,7 @@ describe('a stand-down after the gates (issue #427)', () => {
     it('#488 a lease lost after the push says so, and the push is not reported', async () => {
         // The push itself is not abortable, and a stand-down after it reports nothing: the next
         // holder re-runs the publish. Pinned here as the limit docs/jobs.md states.
-        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/factory' }]);
+        const board = stubBoard([{ ...job(1), repo: 'Bellows-AI/bellows' }]);
         const fire = armHeartbeat(board.board, 'lost');
         const runner = stubRunner(async () => ok(), { publish: landed });
         const rawPublish = runner.publishGit.bind(runner);
@@ -710,10 +710,10 @@ describe('revision-bound evidence', () => {
         ok: true,
         published: true,
         branch: 'factory/1',
-        prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+        prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
         reason: null,
         cause: null,
-        repository: 'Bellows-AI/factory',
+        repository: 'Bellows-AI/bellows',
         baseBranch: 'main',
         prNumber: 42,
     };

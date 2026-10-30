@@ -10,9 +10,9 @@ import { boardJob } from './fixtures/board-job.js';
 const write = {
     operationId: '88888888-8888-4888-8888-888888888888',
     operation: 'created' as const,
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     prNumber: 42,
-    prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+    prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
     branch: 'fix/10',
 };
 

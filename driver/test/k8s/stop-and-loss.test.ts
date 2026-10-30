@@ -183,7 +183,7 @@ describe('a Stop on kubernetes (issue #427)', () => {
     // runHelper's finally, i.e. only once helperVerdict returns — the Job runs to completion.
     it('a Stop (kill) during a pre-helper deletes its aux Job promptly', async () => {
         const base = fakeRequest();
-        const helperJob: BoardJob = { ...job, repo: 'Bellows-AI/factory' };
+        const helperJob: BoardJob = { ...job, repo: 'Bellows-AI/bellows' };
         let helperName: string | null = null;
         let helperDeleted = false;
         let finished = false;

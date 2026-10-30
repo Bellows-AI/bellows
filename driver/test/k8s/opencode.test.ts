@@ -136,8 +136,8 @@ describe('the opencode session readout step', () => {
     });
 
     it('scopes the readout to the task worktree when the job names a repo', () => {
-        expect(opencodeReadoutStep({ ...job, repo: 'Bellows-AI/factory' }, START).env.OPENCODE_DIR).toBe(
-            `${TASK_MOUNT}/factory`
+        expect(opencodeReadoutStep({ ...job, repo: 'Bellows-AI/bellows' }, START).env.OPENCODE_DIR).toBe(
+            `${TASK_MOUNT}/bellows`
         );
     });
 

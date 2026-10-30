@@ -47,7 +47,7 @@ describe('final envelope (issue #821 D1)', () => {
     }
 
     it('stages, then completes, then finishes the group — the staged body the very verdict', async () => {
-        const { order, board, runner } = ordered({ ...job(1), repo: 'Bellows-AI/factory' });
+        const { order, board, runner } = ordered({ ...job(1), repo: 'Bellows-AI/bellows' });
 
         await drive({ ...board, runner });
 

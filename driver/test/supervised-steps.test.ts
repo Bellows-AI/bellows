@@ -71,11 +71,11 @@ const job: BoardJob = {
     userId: USER,
     workspacePath: `bellows/${USER}`,
     rootCommand: 'fix the failing build',
-    repo: 'Bellows-AI/factory',
+    repo: 'Bellows-AI/bellows',
     env: { GITHUB_TOKEN: CLAIM_TOKEN, MEMBER_VAR: 'member' },
     supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: CONTROL_TOKEN },
 } as BoardJob;
-const WORKTREE = `${TASK_MOUNT}/factory`;
+const WORKTREE = `${TASK_MOUNT}/bellows`;
 
 const ok = (stdout = ''): StepResult => ({ exitCode: 0, stdout, stderr: '', timedOut: false });
 
@@ -299,7 +299,7 @@ describe('the sync and the helpers over the supervisor', () => {
         expect(sync!.env).toMatchObject({
             GITHUB_TOKEN: MINTED_TOKEN,
             CHECKOUT: WORKTREE,
-            REMOTE: `${config.cloneBase}/Bellows-AI/factory.git`,
+            REMOTE: `${config.cloneBase}/Bellows-AI/bellows.git`,
             BRANCH: worktreeBranch(job),
             CRED_HELPER: CREDENTIAL_HELPER,
         });
