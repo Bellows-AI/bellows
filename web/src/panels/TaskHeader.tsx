@@ -1,3 +1,4 @@
+import { taskTitleFromCommand } from '@factory-ai/core';
 import { Menu, MenuButton, MenuItem, MenuItems } from '@headlessui/react';
 import { useId } from 'react';
 import { useDownwardAnchor } from '../anchor.js';
@@ -19,7 +20,6 @@ import {
     taskDotClass,
     taskStatusLabel,
     taskSummary,
-    taskTitleFromCommand,
     taskTone,
     threadNeedsAnswer,
 } from '../task-tree.js';

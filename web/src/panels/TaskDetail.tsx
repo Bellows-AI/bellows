@@ -354,7 +354,9 @@ export function TaskDetail({
                     {/* The latest run's pulse and the thread's statistics modal (issue 530). */}
                     <TaskActivity jobs={jobs} activity={activity} />
                     <RunHistory jobs={jobs} />
-                    {gates !== null && gates.length > 0 ? <Verification gates={gates} /> : null}
+                    {gates !== null && gates.length > 0 ? (
+                        <Verification gates={gates} terminal={isTerminal(latestTask.status)} />
+                    ) : null}
                     {publish !== null ? <Publication publish={publish} /> : null}
                 </div>
             </div>

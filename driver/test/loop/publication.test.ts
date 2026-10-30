@@ -20,10 +20,10 @@ describe('the agent’s draft publication (issue #547)', () => {
         ok: true,
         published: true,
         branch: 'fix/10',
-        prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+        prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
         reason: null,
         cause: null,
-        repository: 'Bellows-AI/factory',
+        repository: 'Bellows-AI/bellows',
         baseBranch: 'main',
         prNumber: 42,
     };
@@ -67,7 +67,7 @@ describe('the agent’s draft publication (issue #547)', () => {
         ]);
         expect(board.completed[0]?.status).toBe('succeeded');
         expect(board.completed[0]?.publication).toEqual({
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             prNumber: 42,
             prUrl: LANDED.prUrl,
             headBranch: 'fix/10',
@@ -89,10 +89,10 @@ describe('an objective-mode task, ticket to draft publication (issue #550)', () 
         ok: true,
         published: true,
         branch: 'factory/objective',
-        prUrl: 'https://github.com/Bellows-AI/factory/pull/77',
+        prUrl: 'https://github.com/Bellows-AI/bellows/pull/77',
         reason: null,
         cause: null,
-        repository: 'Bellows-AI/factory',
+        repository: 'Bellows-AI/bellows',
         baseBranch: 'main',
         prNumber: 77,
     };
@@ -180,17 +180,17 @@ describe('the PR operation record, from the loop (issue #983)', () => {
         ok: true,
         published: true,
         branch: 'fix/10',
-        prUrl: 'https://github.com/Bellows-AI/factory/pull/42',
+        prUrl: 'https://github.com/Bellows-AI/bellows/pull/42',
         reason: null,
         cause: null,
-        repository: 'Bellows-AI/factory',
+        repository: 'Bellows-AI/bellows',
         baseBranch: 'main',
         prNumber: 42,
     };
     const NOTE = {
         operationId: '88888888-8888-4888-8888-888888888888',
         operation: 'created' as const,
-        repo: 'Bellows-AI/factory',
+        repo: 'Bellows-AI/bellows',
         prNumber: 42,
         prUrl: LANDED.prUrl!,
         branch: 'fix/10',

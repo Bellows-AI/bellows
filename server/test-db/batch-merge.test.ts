@@ -5,7 +5,7 @@ import { createBatchMerger, type BatchMerger, type MergeClient } from '../src/ba
 import { createBatchPrObserver, type BatchPrObserver } from '../src/batch-pr-observer.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
 import type { BatchStore } from '../src/db/batches/batch-store-types.js';
-import { claimMerges } from '../src/db/batches/batch-store-merge.js';
+import { claimMerges, resolveMerge } from '../src/db/batches/batch-store-merge.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { createPrLifecycleStore, type PrLifecycleStore } from '../src/db/pr-lifecycle-store.js';
@@ -639,3 +639,48 @@ describe.skipIf(!enabled)('automerge', () => {
         expect((await intents(id)).map((row) => row.task_key)).toEqual(['a']);
     });
 });
+
+describe.skipIf(!enabled)('task.blocked from a refused merge (BEL-134)', () => {
+    const blockedOf = (root: string) =>
+        sql<{ job_id: string; reason: string | null }[]>`
+            select job_id, reason from notification_event
+            where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.blocked' order by occurred_at, id
+        `;
+
+    // resolveMerge alone sets attention; the "merge refused" wait text arrives with a later reconcile.
+    async function refuse(source: BatchPlan) {
+        const ready = await readyBatch(source);
+        const [intent] = await claimMerges({ sql, orgId: ORG, now }, 1);
+        expect(intent).toBeDefined();
+        const outcome = { state: 'refused', detail: 'required checks are expected' } as const;
+        expect(await resolveMerge({ sql, orgId: ORG, now }, intent!, outcome)).toBe(true);
+        return { ...ready, intent: intent! };
+    }
+
+    it("emits 'refused' on the succeeded head the moment resolveMerge commits, unchanged by the next reconcile", async () => {
+        const { id, root } = await refuse(plan([policyStage('automerge', ['a'])]));
+        const rows = await blockedOf(root);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ reason: 'refused' });
+        expect(rows[0]!.job_id).toBe((await headOfRoot(root)).id);
+
+        await store.reconcile(id);
+        expect(await blockedOf(root)).toEqual(rows);
+    });
+
+    it('does not re-notify when attention is cleared and set again on the same head', async () => {
+        const { root, intent } = await refuse(plan([policyStage('automerge', ['a'])]));
+        expect(await blockedOf(root)).toHaveLength(1);
+        await sql`update batch_task set attention = null where org_id = ${ORG} and root_job_id = ${root}`;
+        await sql`update batch_merge set state = 'dispatching' where org_id = ${ORG} and id = ${intent.id}::bigint`;
+        await resolveMerge({ sql, orgId: ORG, now }, intent, { state: 'refused', detail: 'again' });
+        expect(await blockedOf(root)).toHaveLength(1);
+    });
+});
+
+const headOfRoot = async (root: string) => {
+    const [row] = await sql<{ id: string }[]>`
+        select id from job where root_job_id = ${root} order by created_at desc, id desc limit 1
+    `;
+    return row!;
+};

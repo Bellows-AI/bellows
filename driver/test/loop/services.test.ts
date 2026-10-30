@@ -25,10 +25,10 @@ describe('a dead declared service (issue #423)', () => {
         ok: true,
         published: true,
         branch: 'factory/1',
-        prUrl: 'https://github.com/Bellows-AI/factory/pull/7',
+        prUrl: 'https://github.com/Bellows-AI/bellows/pull/7',
         reason: null,
         cause: null,
-        repository: 'Bellows-AI/factory',
+        repository: 'Bellows-AI/bellows',
         baseBranch: 'main',
         prNumber: 7,
     };
@@ -81,7 +81,7 @@ describe('a dead declared service (issue #423)', () => {
         // The finished work stays recoverable: a draft PR, recorded on the verdict.
         expect(runner.publishOptions).toEqual([{ draft: true, recordPrOperation: expect.any(Function) }]);
         expect(complete.output).toContain(
-            '[driver] published factory/1 — https://github.com/Bellows-AI/factory/pull/7'
+            '[driver] published factory/1 — https://github.com/Bellows-AI/bellows/pull/7'
         );
         expect(complete.publication).toMatchObject({ prNumber: 7 });
         expect(runner.servicesReleased).toEqual([gatedJob(1).id]);

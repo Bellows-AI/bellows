@@ -574,9 +574,10 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
         job: BoardJob,
         results: readonly {
             name: string;
-            status: 'running' | 'passed' | 'failed';
+            status: 'pending' | 'running' | 'passed' | 'failed';
             exitCode: number | null;
             output: string | null;
+            startedAt?: string;
         }[]
     ): Promise<LeaseState>;
     /**

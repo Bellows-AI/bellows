@@ -62,9 +62,11 @@ export interface GateFailure {
 /** What one gate looks like on the board, at one moment. */
 export type GateReport = {
     name: string;
-    status: 'running' | 'passed' | 'failed';
+    status: 'pending' | 'running' | 'passed' | 'failed';
     exitCode: number | null;
     output: string | null;
+    /** When a `running` entry started (ISO); the settled entry carries none. */
+    startedAt?: string;
     /** The recorded execution this entry is (issue #983); absent for a gate no record covers. */
     executionId?: string;
     /** Set when the gate was not launched: it is served from an earlier verified pass. */
@@ -530,7 +532,11 @@ export async function runDeclaredGates(
     // so every ad-hoc run has landed in the record read here.
     let earlier = content === null ? null : await readGateRuns(runCtx);
     for (;;) {
+        // Every declared gate is listed from the first report on: the ones not yet started read pending.
         results.length = 0;
+        for (const gate of gateSession.declared) {
+            results.push({ name: gate.name, status: 'pending', exitCode: null, output: null });
+        }
         const verdict = await passOver(walk, earlier);
         if (verdict !== STALE_REUSE) return verdict;
         earlier = null;
@@ -586,9 +592,19 @@ async function contentOf(ctx: GatesRunCtx, treeAfter: string | null): Promise<st
 }
 
 /** One declared gate executed and settled in the report: its failure, or `GATE_PASSED`; null when stood down. */
-async function executeGate(w: GateWalk, gate: DeclaredGate): Promise<GateFailure | null | typeof GATE_PASSED> {
+async function executeGate(
+    w: GateWalk,
+    gate: DeclaredGate,
+    index: number
+): Promise<GateFailure | null | typeof GATE_PASSED> {
     const { state, results, perGate, report } = w;
-    results.push({ name: gate.name, status: 'running', exitCode: null, output: null });
+    results[index] = {
+        name: gate.name,
+        status: 'running',
+        exitCode: null,
+        output: null,
+        startedAt: new Date().toISOString(),
+    };
     await report();
     // Re-acquire, then run, under one catch: an environment that cannot be revived is a
     // gate that cannot run at all — the same failed-gate shape, never a crash of the run.
@@ -602,7 +618,7 @@ async function executeGate(w: GateWalk, gate: DeclaredGate): Promise<GateFailure
     const { entry, text } = settledGate(gate, outcome, perGate);
     // Replace the gate's own entry — one entry per declared gate, always, so the list the
     // board stores IS the declared list at its current state.
-    results[results.length - 1] = { ...entry, executionId: raced!.value!.executionId };
+    results[index] = { ...entry, executionId: raced!.value!.executionId };
     await report();
     if (entry.status === 'failed') {
         return { name: gate.name, exitCode: outcome.exitCode ?? REFUSED_TO_RUN_EXIT_CODE, output: text };
@@ -644,7 +660,7 @@ async function passOver(
     let pool = earlier;
     let executed = false;
     let reusedAny = false;
-    for (const gate of gateSession.declared) {
+    for (const [index, gate] of gateSession.declared.entries()) {
         // The lease can be reclaimed — or the task stopped or removed — mid-gates. Everything
         // after that is dead work, and the attempt settles without a gate verdict.
         if (down(state)) return null;
@@ -655,12 +671,12 @@ async function passOver(
         if (reused) {
             reusedAny = true;
             rt.log(`job ${job.id}: gate ${gate.name} reused from execution ${reused.executionId}, not run again`);
-            results.push(reusedReport(gate, reused));
+            results[index] = reusedReport(gate, reused);
             await report();
             continue;
         }
         executed = true;
-        const ran = await executeGate(w, gate);
+        const ran = await executeGate(w, gate, index);
         if (ran !== GATE_PASSED) return ran;
     }
     if (executed && reusedAny) {

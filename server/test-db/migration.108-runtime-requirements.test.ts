@@ -9,7 +9,7 @@ const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '102_runtime_requirements.sql';
+const VERSION = '108_runtime_requirements.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -35,7 +35,7 @@ const versioned = (filter: (name: string) => boolean): string[] =>
         .filter((name) => name.endsWith('.sql') && !name.endsWith('.repeatable.sql') && filter(name))
         .sort();
 
-describe.skipIf(!enabled)('102_runtime_requirements', () => {
+describe.skipIf(!enabled)('108_runtime_requirements', () => {
     it('keeps every existing row and widens the checks', async () => {
         await pool`create table if not exists schema_migrations (version text primary key, applied_at timestamptz not null default now())`;
         for (const name of versioned((n) => n < VERSION)) {

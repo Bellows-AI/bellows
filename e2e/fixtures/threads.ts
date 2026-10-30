@@ -36,9 +36,10 @@ export interface ThreadUser {
 
 export interface ThreadGate {
     name: string;
-    status: 'running' | 'passed' | 'failed';
+    status: 'pending' | 'running' | 'passed' | 'failed';
     exitCode: number | null;
     output: string | null;
+    startedAt?: string;
 }
 
 export interface ThreadRuntime {
@@ -1052,3 +1053,27 @@ export function recordedActivityOf(jobs: readonly ThreadJob[]): unknown {
     };
     return { ...(measuredActivityOf(jobs) as object), gates, prs, taskActivity: { gates, prs } };
 }
+
+/** The `startedAt` of `closingGatesThread`'s running gate: the spec pins the clock 134 s after it. */
+export const CLOSING_GATE_STARTED_AT = '2026-09-01T12:10:00.000Z';
+
+/** The agent finished and the close phase is walking its gates: three passed, one running, one pending. */
+export const closingGatesThread = thread([
+    run({
+        id: 'aaaaaaaa-0000-4000-8000-000000000130',
+        command: 'tighten the lint config',
+        status: 'running',
+        repo: REPO,
+        sessionId: 'bbbbbbbb-0000-4000-8000-000000000130',
+        output: 'lint config updated\nagent done',
+        gates: [
+            { name: 'build', status: 'passed', exitCode: 0, output: 'built' },
+            { name: 'test', status: 'passed', exitCode: 0, output: 'all green' },
+            { name: 'typecheck', status: 'passed', exitCode: 0, output: 'clean' },
+            { name: 'lint', status: 'running', exitCode: null, output: null, startedAt: CLOSING_GATE_STARTED_AT },
+            { name: 'prettier', status: 'pending', exitCode: null, output: null },
+        ],
+        runtime: liveRuntime('→ closing', '2026-09-01T12:12:00.000Z'),
+        ...unfinished,
+    }),
+]);

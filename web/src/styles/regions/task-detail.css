@@ -361,6 +361,33 @@
         padding: 6px 10px;
     }
 
+    /* The close-phase strip: the agent is done and the declared gates are walking, at the bottom of the turn. */
+    .run-close-phase {
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        margin: 8px 0 0;
+        padding: 8px 10px;
+    }
+
+    .run-close-phase > p {
+        margin: 0 0 6px;
+    }
+
+    .run-close-gates {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 12px;
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .run-close-gates li {
+        align-items: center;
+        display: flex;
+        gap: 6px;
+    }
+
     .chat-output {
         background: var(--surface);
         border: 1px solid var(--line);

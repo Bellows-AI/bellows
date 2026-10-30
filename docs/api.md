@@ -40,6 +40,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Organization executor profiles | `server/src/routes/org-executors.ts` | `server/test/routes.org-executors.test.ts` |
 | Member roster and roles | `server/src/routes/org-members.ts` | `server/test/routes.org-members.test.ts` |
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
+| Notification subscriptions (`/api/org/notification-subscriptions`; members read, admins write; [notifications.md](notifications.md)) | `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-subscriptions.routes.test.ts` |
 | Commerce: `GET /api/commerce` (member), `PUT /api/commerce/orgs/:orgId/plan` (the service; [commerce.md](commerce.md)); registered only with `COMMERCE_ENABLED` | `server/src/routes/commerce.ts` | `server/test/routes.commerce.test.ts` |
 | GitHub webhook deliveries | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Which credential a path needs | `server/src/auth/plugin.ts` (`requirementFor`) | `server/test/auth.enforcement.test.ts` |

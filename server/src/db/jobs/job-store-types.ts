@@ -77,11 +77,13 @@ export type FailureKind =
  */
 export type FailureCause = 'verification' | 'conflict' | 'denied' | 'config' | 'transport' | 'environment' | 'unknown';
 
-/** Where one declared gate is, right now. 'running' is the worker's claim, the others its verdict. */
+/** Where one declared gate is, right now. 'pending' is a gate not yet started, 'running' the worker's claim, the others its verdict. */
 export interface GateReport {
     name: string;
-    status: 'running' | 'passed' | 'failed';
+    status: 'pending' | 'running' | 'passed' | 'failed';
     exitCode: number | null;
+    /** When a `running` entry started (ISO); absent on the others. */
+    startedAt?: string;
     /** The gate's tail. Bounded by the driver's window; truncated again at the route. */
     output: string | null;
     /** The recorded execution this entry is (issue #983); absent for a gate no record covers. */

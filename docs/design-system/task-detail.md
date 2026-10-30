@@ -7,7 +7,7 @@ The task page. `web/src/styles/regions/task-detail.css`; shared system:
 | --- | --- | --- |
 | Page frame, grid, panel order, remove dialog | `web/src/pages/TaskDetailPage.tsx`, `web/src/panels/TaskDetail.tsx`, `web/src/components/TaskRemoveDialog.tsx` | `web/test/task-detail.render.test.tsx`, `web/test/task-detail.dom.test.tsx`, `e2e/task-detail.spec.ts` |
 | Head: state pill, metadata, action row | `web/src/panels/TaskHeader.tsx` | `web/test/task-header.render.test.tsx` |
-| Outcome rail (interruptions included), and one run's exchange, output, gates, published work | `web/src/panels/TaskOutcome.tsx`, `web/src/panels/TaskRun.tsx` | `web/test/task-outcome.render.test.tsx`, `web/test/task-run.render.test.tsx`, `e2e/task-detail.spec.ts` |
+| Outcome rail (interruptions included), and one run's exchange, output, close-phase progress strip, gates, published work | `web/src/panels/TaskOutcome.tsx`, `web/src/panels/TaskRun.tsx` | `web/test/task-outcome.render.test.tsx`, `web/test/task-run.render.test.tsx`, `e2e/task-detail.spec.ts` |
 | An agent question in its run's exchange: states, answer value, submit | `web/src/panels/TaskQuestion.tsx`, `web/src/task-question.ts`, `web/src/api/answer-question.ts` | `web/test/task-question.render.test.tsx`, `e2e/task-question.spec.ts` |
 | A connection requirement in the newest run's exchange: provider-generic block, bind, dismiss, read-only for anyone but the execution user | `web/src/panels/TaskConnect.tsx`, `web/src/api/connections.ts` | `web/test/task-connect.render.test.tsx`, `web/test/task-connect.dom.test.tsx`, `e2e/task-connect.spec.ts`, `e2e/task-connect-auth.spec.ts` |
 | Gate tones, follow-up eligibility, a thread's interruptions | `web/src/task-outcome.ts` | `web/test/task-derivations.test.ts` |
@@ -28,7 +28,8 @@ Classes defined here: `task-layout`, `task-main`, `task-support`, `task-summary`
 `task-copy`, `task-verification-counts`, `task-remove-title`, `task-remove-actions`, `msg-user`,
 `msg-meta`, `chat-exchange`, `chat-exit`, `chat-runtime`, `chat-activity`, `chat-gate-list`,
 `chat-output`, `chat-resume`, `chat-done`, `chat-stop`, `chat-remove`, `run-label`, `run-summary`,
-`run-output`, `run-history`, `run-well`, `run-publish`, `gate-output-wrap`, `question`, `question-set`,
+`run-output`, `run-history`, `run-close-phase`, `run-close-gates`, `run-well`, `run-publish`, `gate-output-wrap`, `question`,
+`question-set`,
 `question-chip`, `question-option`, `question-hint`, `question-other`, `question-error`,
 `question-status`, `question-answers`, `connect-actions`, `task-stats`, `task-stats-trigger`, `task-stats-scope`,
 `task-stats-summary`, `task-stats-note`, `task-stats-head`, `task-stats-totals`, `task-stats-runs`,

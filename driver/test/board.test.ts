@@ -698,7 +698,7 @@ describe('the removed-thread reclaim queue', () => {
             id: '55555555-5555-4555-8555-555555555555',
             token: TOKEN,
             rootJobId: 'job-1',
-            repo: 'Bellows-AI/factory',
+            repo: 'Bellows-AI/bellows',
             workspacePath: 'bellows/user-7',
             leaseExpiresAt: '2026-08-21T12:05:00.000Z',
         };
