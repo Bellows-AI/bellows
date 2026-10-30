@@ -463,7 +463,9 @@ export async function requirementsOf(db: Db, orgId: string, rootJobId: string): 
         select r.provider, r.reason, r.source, r.created_at, r.target,
                case when r.reason = 'reconnect' then (
                    select b.connection_id from job_connection_binding b
+                   join connector_connection c on c.id = b.connection_id
                    where b.org_id = r.org_id and b.root_job_id = r.root_job_id and b.provider = r.provider
+                     and (r.target is null or lower(c.site) = lower(r.target))
                    order by b.revision desc, b.added_at desc, b.id desc limit 1
                ) end as connection_id
         from job_integration_requirement r

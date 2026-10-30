@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { bindingsOf } from '../src/db/connection-bindings.js';
+import { bindingsOf, requirementsOf } from '../src/db/connection-bindings.js';
 import { createJobStore, INTERRUPTION_BUDGET } from '../src/db/jobs/job-store.js';
 import { bindConnectionRow } from '../src/db/jobs/job-store-connections.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
@@ -458,6 +458,28 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
                                   and principal_user_id = (select execution_user_id from job where id = ${id}))`;
             expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
             expect(await requirementRows(id)).toMatchObject([{ reason: 'missing', target: SITE_B }]);
+        });
+
+        it('a reconnect requirement for B names the B binding even when a newer binding is for A', async () => {
+            const user = freshUser();
+            const id = await create(user.id);
+            const b = await connect(user.id, SITE_B);
+            const a = await connect(user.id, SITE_A);
+            for (const conn of [b, a]) {
+                await bindConnectionRow(sql, {
+                    orgId: ORG,
+                    id,
+                    connectionId: conn.id,
+                    bindingRevision: (await rootRow(id)).rev,
+                    userId: user.id,
+                });
+            }
+            const claim = await claimNext(id);
+            await sql`update integration_grant set status = 'reconnect_required' where id = ${b.grantId}`;
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
+            expect(await requirementsOf(sql, ORG, id)).toMatchObject([
+                { reason: 'reconnect', target: SITE_B, connectionId: b.id },
+            ]);
         });
 
         it('binding another connection at site A leaves a target-B requirement open and the task held', async () => {
