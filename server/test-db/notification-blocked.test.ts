@@ -162,6 +162,20 @@ describe.skipIf(!enabled)('task.blocked for a batch task', () => {
         expect(await blockedOf(root)).toHaveLength(0);
     });
 
+    it('a running task asking a question emits one task.question and no task.blocked', async () => {
+        const { id, root } = await launched(planWith());
+        await askQuestion(root);
+        await store.reconcile(id);
+        const head = await headOf(root);
+        const rows = await sql<{ id: string; question_id: string }[]>`
+            select id, question_id from notification_event
+            where org_id = ${ORG} and root_job_id = ${root} and kind = 'task.question'
+        `;
+        const [expected] = await sql<{ id: string }[]>`select md5(${head.id}::text || '/q1/task.question')::uuid as id`;
+        expect(rows).toEqual([{ id: expected!.id, question_id: 'q1' }]);
+        expect(await blockedOf(root)).toHaveLength(0);
+    });
+
     it('a run that dies with its question unanswered emits one task.blocked', async () => {
         const { id, root } = await launched(planWith());
         await askQuestion(root);

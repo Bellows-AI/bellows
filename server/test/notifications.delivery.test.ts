@@ -21,6 +21,8 @@ const eventRow = (n: number): NotificationEventRow => ({
     command: `task ${n}`,
     reason: null,
     prUrl: null,
+    questionId: null,
+    questions: null,
     occurredAt: '2026-08-01T00:00:00.000Z',
 });
 

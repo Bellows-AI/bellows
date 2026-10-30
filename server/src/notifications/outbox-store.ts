@@ -52,6 +52,8 @@ interface LeasedRow {
     command: string;
     reason: string | null;
     pr_url: string | null;
+    question_id: string | null;
+    questions: string[] | null;
     occurred_at: Date;
 }
 
@@ -104,7 +106,7 @@ export function createNotificationOutboxStore({
                 const found = await tx<LeasedRow[]>`
                     select o.event_id, o.subscription_id, s.connector_kind, s.connector_config,
                            e.kind, e.job_id, e.root_job_id, e.repo, e.workflow, e.command, e.reason, e.pr_url,
-                           e.occurred_at
+                           e.question_id, e.questions, e.occurred_at
                     from notification_outbox o
                     join notification_event e on e.org_id = o.org_id and e.id = o.event_id
                     join notification_subscription s on s.org_id = o.org_id and s.id = o.subscription_id
@@ -128,6 +130,8 @@ export function createNotificationOutboxStore({
                             command: r.command,
                             reason: r.reason,
                             prUrl: r.pr_url,
+                            questionId: r.question_id,
+                            questions: r.questions,
                             occurredAt: r.occurred_at.toISOString(),
                         },
                     })),

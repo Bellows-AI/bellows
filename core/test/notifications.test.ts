@@ -18,6 +18,8 @@ const row = (over: Partial<NotificationEventRow> = {}): NotificationEventRow => 
     command: 'fix the flaky test\nsecond line',
     reason: 'policy',
     prUrl: null,
+    questionId: null,
+    questions: null,
     occurredAt: '2026-10-30T10:00:00.000Z',
     ...over,
 });
@@ -35,6 +37,8 @@ describe('notificationEventOf', () => {
             title: 'fix the flaky test',
             reason: 'policy',
             prUrl: null,
+            questionId: null,
+            questions: null,
             link: 'https://factory.example.com/tasks/33333333-3333-4333-8333-333333333333',
             occurredAt: '2026-10-30T10:00:00.000Z',
         });
@@ -54,6 +58,15 @@ describe('notificationEventOf', () => {
         const prUrl = 'https://github.com/acme/widgets/pull/7';
         expect(notificationEventOf(row({ prUrl }), 'https://x.example').prUrl).toBe(prUrl);
         expect(notificationEventOf(row({ prUrl: null }), 'https://x.example').prUrl).toBeNull();
+    });
+
+    it('passes the question id and texts through', () => {
+        const event = notificationEventOf(
+            row({ kind: 'task.question', questionId: 'toolu_1', questions: ['Which db?'] }),
+            'https://x.example'
+        );
+        expect(event).toMatchObject({ questionId: 'toolu_1', questions: ['Which db?'] });
+        expect(event.link).toBe(`https://x.example/tasks/${row().rootJobId}`);
     });
 
     it('derives the title from the command, for a multi-line and a CRLF command', () => {

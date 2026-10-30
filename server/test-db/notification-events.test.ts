@@ -243,6 +243,8 @@ describe.skipIf(!enabled)('notification events — database', () => {
                     command: row!.command,
                     reason: row!.reason,
                     prUrl: row!.pr_url,
+                    questionId: null,
+                    questions: null,
                     occurredAt: row!.occurred_at.toISOString(),
                 },
                 'https://factory.example.com'
