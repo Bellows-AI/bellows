@@ -117,9 +117,9 @@ function workerMethods(
             return heartbeatJob(ctx, id, leaseToken, leaseSeconds);
         },
 
-        async requireConnection(id, leaseToken, provider) {
+        async requireConnection(id, leaseToken, provider, target) {
             await gate();
-            return requireConnectionRow(ctx.sql, { orgId: ctx.orgId, id, leaseToken, provider });
+            return requireConnectionRow(ctx.sql, { orgId: ctx.orgId, id, leaseToken, provider, target });
         },
 
         async session(id, leaseToken, sessionId, evidence) {

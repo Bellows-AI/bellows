@@ -1,8 +1,34 @@
-import { bindAuthorizedConnectionRow, markRequirementAmbiguousRow } from '../db/jobs/job-store-connections.js';
+import {
+    bindAuthorizedConnectionRow,
+    connectionsAtSite,
+    markRequirementAmbiguousRow,
+    openRequirementTargetRow,
+} from '../db/jobs/job-store-connections.js';
 import { completeAuthorization, hashState } from './authorization-complete.js';
 import { bindTargetOf } from './authorization-store.js';
 import type { CompleteAuthorizationInput, CompleteAuthorizationResult, FlowCtx } from './authorization-types.js';
 import type { TrustedIntegrationContext } from './trusted-context.js';
+
+/**
+ * The connections an authorization made that answer the task's requirement: a reconnect answers for the one it
+ * started from; a connect answers with what it made, narrowed to the site a requirement names (a site-less
+ * requirement takes them all).
+ */
+async function connectionsToBind(
+    fc: FlowCtx,
+    target: NonNullable<Awaited<ReturnType<typeof bindTargetOf>>>,
+    userId: string
+): Promise<string[]> {
+    if (target.connectionId) return [target.connectionId];
+    const needs = await openRequirementTargetRow(fc.sql, {
+        orgId: fc.orgId,
+        jobId: target.jobId,
+        provider: target.provider,
+        userId,
+    });
+    if (needs === null || target.connectionIds.length === 0) return target.connectionIds;
+    return connectionsAtSite(fc.sql, { orgId: fc.orgId, connectionIds: target.connectionIds, target: needs });
+}
 
 /**
  * The callback, then the bind: a connect started from a task's Connect block binds what it made to that
@@ -22,9 +48,7 @@ export async function completeAndBind(
     try {
         const target = await bindTargetOf(fc.sql, owner);
         if (target) {
-            // A reconnect answers for the connection it was started from; a connect that made several (one account,
-            // several sites) picks none for the person: the requirement asks them to choose.
-            const made = target.connectionId ? [target.connectionId] : target.connectionIds;
+            const made = await connectionsToBind(fc, target, owner.userId);
             if (made.length > 1) {
                 await markRequirementAmbiguousRow(fc.sql, {
                     orgId: fc.orgId,
@@ -32,7 +56,7 @@ export async function completeAndBind(
                     provider: target.provider,
                     userId: owner.userId,
                 });
-            } else {
+            } else if (made.length === 1 || target.connectionIds.length === 0) {
                 await bindAuthorizedConnectionRow(fc.sql, {
                     orgId: fc.orgId,
                     jobId: target.jobId,

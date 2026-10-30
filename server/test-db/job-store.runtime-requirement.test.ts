@@ -15,7 +15,7 @@ import { expireLease, oauthConnection, testOrg, testUser } from './fixtures.js';
  */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
-const USERS = Array.from({ length: 28 }, (_, i) => testUser(`rr-${i}`));
+const USERS = Array.from({ length: 36 }, (_, i) => testUser(`rr-${i}`));
 const WORKER = 'worker-rr';
 const LEASE_SECONDS = 60;
 const SENTENCE = 'the task waits for a Jira connection';
@@ -46,7 +46,8 @@ const claimNext = async (id: string): Promise<Claim> => {
     return claim;
 };
 
-const ask = (claim: Claim, provider = 'jira') => store.requireConnection(claim.id, claim.leaseToken, provider);
+const ask = (claim: Claim, provider = 'jira', target?: string) =>
+    store.requireConnection(claim.id, claim.leaseToken, provider, target);
 
 const handBack = (claim: Claim) =>
     store.interrupt(claim.id, claim.leaseToken, { reason: SENTENCE, release: true, requirement: true });
@@ -56,13 +57,14 @@ const requirementRows = (id: string) =>
         {
             provider: string;
             reason: string;
+            target: string | null;
             source: string;
             outcome: string | null;
             asked_job_id: string | null;
             satisfied_at: Date | null;
             delivered_claim_seq: string | null;
         }[]
-    >`select provider, reason, source, outcome, asked_job_id, satisfied_at, delivered_claim_seq
+    >`select provider, reason, target, source, outcome, asked_job_id, satisfied_at, delivered_claim_seq
       from job_integration_requirement where root_job_id = ${id} order by created_at, id`;
 
 const rootRow = async (id: string) => {
@@ -72,7 +74,7 @@ const rootRow = async (id: string) => {
     return row!;
 };
 
-const connect = async (userId: string) => oauthConnection(sql, ORG, userId);
+const connect = async (userId: string, site?: string) => oauthConnection(sql, ORG, userId, site ? { site } : {});
 
 /** A task with no connection, claimed, asking for Jira, and handed back as a requirement wait. */
 async function waiting(): Promise<{ id: string; userId: string; first: Claim; session: string }> {
@@ -384,6 +386,62 @@ describe.skipIf(!enabled)('runtime connection requirement — database', () => {
             expect(await store.heartbeat(resumed.id, resumed.leaseToken, LEASE_SECONDS)).toMatchObject({
                 requirementWait: false,
             });
+        });
+    });
+
+    describe('an ask that names a target (the site a helper needs)', () => {
+        const SITE_A = 'a.example.net';
+        const SITE_B = 'b.example.net';
+        /** A running task of a fresh user with a usable binding to SITE_A and nothing else bound. */
+        async function boundToA() {
+            const user = freshUser();
+            const id = await create(user.id);
+            const conn = await connect(user.id, SITE_A);
+            await bindConnectionRow(sql, {
+                orgId: ORG,
+                id,
+                connectionId: conn.id,
+                bindingRevision: (await rootRow(id)).rev,
+                userId: user.id,
+            });
+            return { user, id, claim: await claimNext(id) };
+        }
+
+        it('is bound when a usable binding matches it, whatever the case', async () => {
+            const { id, claim } = await boundToA();
+            expect(await ask(claim, 'jira', SITE_A.toUpperCase())).toEqual({ result: 'ok', answer: 'bound' });
+            expect(await requirementRows(id)).toEqual([]);
+        });
+
+        it('opens a missing requirement recording the target when the binding is for another site', async () => {
+            const { id, claim } = await boundToA();
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
+            expect(await requirementRows(id)).toMatchObject([
+                { reason: 'missing', target: SITE_B, source: 'runtime', satisfied_at: null },
+            ]);
+        });
+
+        it('binds the lone unbound connection that matches the target', async () => {
+            const { user, id, claim } = await boundToA();
+            const other = await connect(user.id, SITE_B);
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'bound' });
+            expect((await bindingsOf(sql, ORG, id)).map((b) => b.connectionId)).toContain(other.id);
+            expect(await requirementRows(id)).toEqual([]);
+        });
+
+        it('is ambiguous when several unbound connections match the target', async () => {
+            const { user, id, claim } = await boundToA();
+            await connect(user.id, SITE_B);
+            await connect(user.id, SITE_B);
+            expect(await ask(claim, 'jira', SITE_B)).toEqual({ result: 'ok', answer: 'waiting' });
+            expect(await requirementRows(id)).toMatchObject([{ reason: 'ambiguous', target: SITE_B }]);
+        });
+
+        it('a later ask refreshes the target of the one open requirement', async () => {
+            const { id, claim } = await boundToA();
+            await ask(claim, 'jira', SITE_B);
+            await ask(claim, 'jira', 'c.example.net');
+            expect(await requirementRows(id)).toMatchObject([{ target: 'c.example.net' }]);
         });
     });
 

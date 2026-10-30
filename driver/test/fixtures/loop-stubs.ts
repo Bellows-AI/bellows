@@ -106,7 +106,7 @@ export interface BoardStub extends Board {
     /** The interrupted attempts the loop reported (issue #792). */
     interrupted: ({ id: string } & Interruption)[];
     /** Every runtime connection ask the loop relayed to the board, in order. */
-    connectionAsks: { id: string; provider: string }[];
+    connectionAsks: { id: string; provider: string; target?: string }[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
     /** Every GitHub credential ask the loop made, by job id (docs/connections.md). */
@@ -247,8 +247,8 @@ export function stubBoard(
             board.suspended.push(claimed.id);
             return 'held';
         },
-        async requireConnection(claimed, provider) {
-            board.connectionAsks.push({ id: claimed.id, provider });
+        async requireConnection(claimed, provider, target) {
+            board.connectionAsks.push({ id: claimed.id, provider, ...(target === undefined ? {} : { target }) });
             const verdict = options.connectionVerdict ?? 'waiting';
             return typeof verdict === 'function' ? verdict() : verdict;
         },

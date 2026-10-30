@@ -16,16 +16,19 @@ let server: Server;
 let channel: ControlChannel;
 let base: string;
 let asked: string[];
+let askedTargets: (string | undefined)[];
 
 const relay: ConnectionRelay = {
-    require: async (provider) => {
+    require: async (provider, target) => {
         asked.push(provider);
+        askedTargets.push(target);
         return 'waiting';
     },
 };
 
 beforeEach(async () => {
     asked = [];
+    askedTargets = [];
     channel = createControlChannel();
     channel.open(TOKEN);
     channel.grantAgent(TOKEN, AGENT);
@@ -73,6 +76,16 @@ describe('POST /connection', () => {
 
         expect(answer.status).toBe(200);
         expect(JSON.parse(answer.body)).toEqual({ answer: 'waiting' });
+        expect(asked).toEqual(['jira']);
+    });
+
+    it('relays what the helper needs, and refuses one that is not a host-like string', async () => {
+        const ok = await call('POST', AGENT, JSON.stringify({ provider: 'jira', target: 'b.example.net' }));
+        expect(ok.status).toBe(200);
+        expect(askedTargets).toEqual(['b.example.net']);
+        for (const target of [7, '', 'a b', 'x'.repeat(300)]) {
+            expect((await call('POST', AGENT, JSON.stringify({ provider: 'jira', target }))).status).toBe(400);
+        }
         expect(asked).toEqual(['jira']);
     });
 

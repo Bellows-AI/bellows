@@ -108,7 +108,13 @@ async function bindableByIds(db: Db, orgId: string, userId: string, ids: string[
  * The execution user's own usable OAuth connections for a provider, newest first, at most two (one is the
  * unambiguous default, two are ambiguous), share-locked like `bindableByIds`.
  */
-async function defaultCandidates(db: Db, orgId: string, provider: string, userId: string): Promise<BindableRow[]> {
+async function defaultCandidates(
+    db: Db,
+    orgId: string,
+    who: { provider: string; userId: string; target?: string | null }
+): Promise<BindableRow[]> {
+    const { provider, userId } = who;
+    const target = who.target ?? null;
     return db<BindableRow[]>`
         select c.id, c.provider, c.credential, c.external_account_id, c.cloud_id, c.grant_id, g.authority, c.access,
                c.principal_user_id
@@ -117,6 +123,7 @@ async function defaultCandidates(db: Db, orgId: string, provider: string, userId
         where c.org_id = ${orgId} and c.provider = ${provider} and c.status = 'active'
           and c.credential = 'oauth_grant' and c.principal_user_id = ${userId}
           and (c.grant_id is null or g.status = 'active')
+          and (${target}::text is null or lower(c.site) = lower(${target}::text))
         order by c.created_at desc, c.id
         limit 2
         for share of c
@@ -138,7 +145,7 @@ export async function resolveBindingsInTx(db: Db, input: ResolveInput): Promise<
     const requirements: ResolvedRequirement[] = [];
     for (const provider of providers) {
         if (covered.has(provider)) continue;
-        const candidates = await defaultCandidates(db, orgId, provider, executionUser);
+        const candidates = await defaultCandidates(db, orgId, { provider, userId: executionUser });
         if (candidates.length === 1) bindings.push(toResolved(candidates[0]!, 'default'));
         else if (required.has(provider)) {
             requirements.push({ provider, reason: candidates.length === 0 ? 'missing' : 'ambiguous' });
@@ -412,6 +419,8 @@ export interface RequirementRecord {
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` requirement is about; null for every other reason. */
     connectionId: string | null;
+    /** What the asking helper needs of the provider (for Jira the site); null when it named none. */
+    target: string | null;
     createdAt: string;
 }
 
@@ -429,10 +438,11 @@ export async function requirementsOf(db: Db, orgId: string, rootJobId: string): 
             reason: RequirementRecord['reason'];
             source: RequirementRecord['source'];
             connection_id: string | null;
+            target: string | null;
             created_at: Date;
         }[]
     >`
-        select r.provider, r.reason, r.source, r.created_at,
+        select r.provider, r.reason, r.source, r.created_at, r.target,
                case when r.reason = 'reconnect' then (
                    select b.connection_id from job_connection_binding b
                    where b.org_id = r.org_id and b.root_job_id = r.root_job_id and b.provider = r.provider
@@ -448,6 +458,7 @@ export async function requirementsOf(db: Db, orgId: string, rootJobId: string): 
         reason: r.reason,
         source: r.source,
         connectionId: r.connection_id,
+        target: r.target,
         createdAt: r.created_at.toISOString(),
     }));
 }
@@ -484,6 +495,58 @@ export async function recordMissingInTx(
 export type RuntimeAnswer = 'bound' | 'unavailable' | 'waiting';
 
 /**
+ * Binds the execution user's lone usable candidate for the ask (matching its target) and answers `bound`; otherwise
+ * the reason the requirement stays open: `missing` for none, `ambiguous` for several.
+ */
+async function bindLoneCandidate(
+    db: Db,
+    args: {
+        orgId: string;
+        rootJobId: string;
+        provider: string;
+        target: string | null;
+        executionUser: string;
+        revision: number;
+    }
+): Promise<'bound' | 'missing' | 'ambiguous'> {
+    const { orgId, rootJobId, provider, target, executionUser } = args;
+    const candidates = await defaultCandidates(db, orgId, { provider, userId: executionUser, target });
+    if (candidates.length !== 1) return candidates.length === 0 ? 'missing' : 'ambiguous';
+    const added = await addBindingsInTx(db, {
+        orgId,
+        rootJobId,
+        expectedRevision: args.revision,
+        connectionIds: [candidates[0]!.id],
+        actor: { userId: executionUser },
+        source: 'default',
+    });
+    if (!added.ok) throw new Error(`binding the lone ${provider} candidate was refused: ${added.reason}`);
+    return 'bound';
+}
+
+/**
+ * The standing of the thread's bindings for `provider` that serve the ask: with a target (a site), a binding for
+ * another site does not count.
+ */
+async function servingStandings(
+    db: Db,
+    args: { orgId: string; rootJobId: string; provider: string; target: string | null }
+): Promise<ReturnType<typeof bindingStanding>[]> {
+    const { orgId, rootJobId, provider, target } = args;
+    const held = await db<(StandingRow & { c_site: string | null })[]>`
+        select b.grant_id as b_grant_id, c.status as c_status, c.credential as c_credential,
+               c.grant_id as c_grant_id, g.id as g_id, g.status as g_status, c.site as c_site
+        from job_connection_binding b
+        left join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id
+        left join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
+        where b.org_id = ${orgId} and b.root_job_id = ${rootJobId} and b.provider = ${provider}
+    `;
+    return held
+        .filter((row) => target === null || row.c_site?.toLowerCase() === target.toLowerCase())
+        .map(bindingStanding);
+}
+
+/**
  * A running task asks for a provider, in the caller's transaction, which already holds the asking
  * row. Answers `bound` when the thread has a binding the broker would serve, or after binding the execution user's
  * lone usable candidate; `unavailable` when nobody can bind (no execution user, a provider the board never binds) or
@@ -493,57 +556,51 @@ export type RuntimeAnswer = 'bound' | 'unavailable' | 'waiting';
  */
 export async function requireAtRuntimeInTx(
     db: Db,
-    args: { orgId: string; rootJobId: string; askedJobId: string; claimSeq: number; provider: string }
+    args: {
+        orgId: string;
+        rootJobId: string;
+        askedJobId: string;
+        claimSeq: number;
+        provider: string;
+        /** What the helper needs of the provider (for Jira the site): only a binding or candidate matching it serves. */
+        target?: string | null;
+    }
 ): Promise<RuntimeAnswer> {
     const { orgId, rootJobId, askedJobId, claimSeq, provider } = args;
+    const target = args.target?.trim() || null;
     if (!BINDABLE_PROVIDERS.includes(provider)) return 'unavailable';
     if (!(await lockThreadRootInTx(db, orgId, rootJobId))) return 'unavailable';
     const [root] = await db<{ execution_user_id: string | null; binding_revision: number }[]>`
         select execution_user_id, binding_revision from job where org_id = ${orgId} and id = ${rootJobId}
     `;
-    const held = await db<StandingRow[]>`
-        select b.grant_id as b_grant_id, c.status as c_status, c.credential as c_credential,
-               c.grant_id as c_grant_id, g.id as g_id, g.status as g_status
-        from job_connection_binding b
-        left join connector_connection c on c.id = b.connection_id and c.org_id = b.org_id
-        left join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
-        where b.org_id = ${orgId} and b.root_job_id = ${rootJobId} and b.provider = ${provider}
-    `;
-    const standings = held.map(bindingStanding);
+    const standings = await servingStandings(db, { orgId, rootJobId, provider, target });
     if (standings.includes('usable')) return 'bound';
     const executionUser = root?.execution_user_id ?? null;
     if (!root || executionUser === null) return 'unavailable';
     if ((await dismissedProvidersInTx(db, orgId, rootJobId)).includes(provider)) return 'unavailable';
 
-    let reason: RecordedReason = 'reconnect';
-    if (!standings.includes('reconnect')) {
-        const candidates = await defaultCandidates(db, orgId, provider, executionUser);
-        if (candidates.length === 1) {
-            const added = await addBindingsInTx(db, {
-                orgId,
-                rootJobId,
-                expectedRevision: root.binding_revision,
-                connectionIds: [candidates[0]!.id],
-                actor: { userId: executionUser },
-                source: 'default',
-            });
-            if (!added.ok) throw new Error(`binding the lone ${provider} candidate was refused: ${added.reason}`);
-            return 'bound';
-        }
-        reason = candidates.length === 0 ? 'missing' : 'ambiguous';
-    }
+    const reason = standings.includes('reconnect')
+        ? 'reconnect'
+        : await bindLoneCandidate(db, {
+              orgId,
+              rootJobId,
+              provider,
+              target,
+              executionUser,
+              revision: root.binding_revision,
+          });
+    if (reason === 'bound') return 'bound';
     await db`
         insert into job_integration_requirement
-            (org_id, root_job_id, provider, reason, source, asked_job_id, asked_claim_seq, hand_back_pending)
-        values (${orgId}, ${rootJobId}, ${provider}, ${reason}, 'runtime', ${askedJobId}, ${claimSeq}, true)
+            (org_id, root_job_id, provider, reason, source, asked_job_id, asked_claim_seq, hand_back_pending, target)
+        values (${orgId}, ${rootJobId}, ${provider}, ${reason}, 'runtime', ${askedJobId}, ${claimSeq}, true, ${target})
         on conflict (org_id, root_job_id, provider) where satisfied_at is null
         do update set reason = excluded.reason, source = 'runtime', asked_job_id = excluded.asked_job_id,
-                      asked_claim_seq = excluded.asked_claim_seq, hand_back_pending = true
+                      asked_claim_seq = excluded.asked_claim_seq, hand_back_pending = true,
+                      target = excluded.target
     `;
     return 'waiting';
 }
-
-type RecordedReason = RequirementRecord['reason'];
 
 /** The providers whose requirement the owner dismissed at the root's CURRENT binding revision (sticky until it moves). */
 export async function dismissedProvidersInTx(db: Db, orgId: string, rootJobId: string): Promise<string[]> {

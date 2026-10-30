@@ -50,8 +50,8 @@ type Post = (
 
 export function connectionCalls(post: Post): Pick<Board, 'requireConnection'> {
     return {
-        async requireConnection(job: BoardJob, provider: string) {
-            const body = { leaseToken: job.leaseToken, provider };
+        async requireConnection(job: BoardJob, provider: string, target?: string) {
+            const body = { leaseToken: job.leaseToken, provider, ...(target === undefined ? {} : { target }) };
             const response = await post(`/api/jobs/${job.id}/requirements`, body, true, { allow: [HTTP_BAD_REQUEST] });
             if (response.status === HTTP_NOT_FOUND) return 'removed';
             if (response.status === HTTP_CONFLICT) return 'lost';

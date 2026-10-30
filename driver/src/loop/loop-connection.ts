@@ -20,12 +20,12 @@ export const CONNECTION_ASK_BUDGET_MS = 8_000;
  */
 export function createConnectionRelay(rt: LoopRuntime, job: BoardJob, state: JobState): ConnectionRelay {
     return {
-        async require(provider) {
+        async require(provider, target) {
             if (state.phase === 'ended' || (down(state) && state.ending?.kind !== 'requirement')) return 'gone';
             const verdict = await withBoardRetry(
                 rt,
                 `job ${job.id}: the ${provider} connection ask was not accepted`,
-                () => rt.board.requireConnection(job, provider),
+                () => rt.board.requireConnection(job, provider, target),
                 { budgetMs: CONNECTION_ASK_BUDGET_MS }
             );
             if (verdict === 'lost' || verdict === 'removed') {

@@ -1,14 +1,17 @@
 'use strict';
 /*
  * The runtime connection ask, the one call a helper makes when its task lacks a connection it
- * needs: `POST /connection {provider}` on the agent's control socket (`control-proxy.cjs`), which the
+ * needs: `POST /connection {provider, target?}` on the agent's control socket (`control-proxy.cjs`), which the
  * supervisor relays to the driver and the driver to the board. The board decides, and the answer is one of
  *
  *   bound         the task has a usable connection now: read the list again and go on
  *   unavailable   the user chose to continue without it
  *   waiting       the requirement is open: the driver stops the agent and the task resumes here once it closes
  *
- * `askConnection(provider, { socket, deadlineMs })` resolves, never rejects:
+ * `target` is what the helper needs of the provider (for Jira, the site): the board counts only a binding or a
+ * connection that matches it.
+ *
+ * `askConnection(provider, { socket, deadlineMs, target })` resolves, never rejects:
  *   { kind: 'answer', answer }   one of the three, from a 200 with exactly such a body
  *   { kind: 'refused' }          401, 403 or 409: this attempt is no longer the board's to answer
  *   { kind: 'absent' }           there is no proxy socket at all (ENOENT, ENOTDIR): nothing to ask
@@ -74,7 +77,7 @@ function askConnection(provider, options = {}) {
                 }
             });
         });
-        request.end(JSON.stringify({ provider }));
+        request.end(JSON.stringify(options.target === undefined ? { provider } : { provider, target: options.target }));
     });
 }
 

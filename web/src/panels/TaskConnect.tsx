@@ -175,6 +175,9 @@ export function TaskConnectView({
             <p>
                 <span className="pill question-chip">{label}</span> {leadOf(requirement)}
             </p>
+            {requirement.target !== null ? (
+                <p className="question-status">The task needs: {requirement.target}</p>
+            ) : null}
             {picking ? <CandidatesNote label={label} candidates={candidates} /> : null}
             {picking && offered.length > 0 ? (
                 <ConnectionPicker

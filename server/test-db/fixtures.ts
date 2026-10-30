@@ -237,14 +237,14 @@ export const oauthConnection = async (
     sql: Sql,
     orgId: string,
     userId: string,
-    options: { account?: string; cloudId?: string; access?: 'read' | 'write' } = {}
+    options: { account?: string; cloudId?: string; access?: 'read' | 'write'; site?: string } = {}
 ): Promise<{ id: string; grantId: string }> => {
     const result = await createConnectionGrants({ sql, orgId }).attachGrantConnection({
         principal: { kind: 'user', userId },
         provider: 'jira',
         externalAccountId: options.account ?? `acct-${randomUUID()}`,
         authority: { scopes: ['read:jira-work'] },
-        resource: { id: options.cloudId ?? `cloud-${randomUUID()}`, label: 'example.atlassian.net' },
+        resource: { id: options.cloudId ?? `cloud-${randomUUID()}`, label: options.site ?? 'example.atlassian.net' },
         access: options.access ?? 'read',
     });
     if (!result.ok) throw new Error(`oauth connection refused: ${result.reason}`);

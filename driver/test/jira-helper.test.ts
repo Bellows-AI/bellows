@@ -38,7 +38,7 @@ interface Deps {
     sleep: (ms: number) => Promise<void>;
     pair: (env: Record<string, string | undefined>) => Promise<{ jobId: string; leaseToken: string }>;
     credential: (id: string, remainingMs: number) => Promise<Result>;
-    ask: (provider: string, remainingMs: number) => Promise<Asked>;
+    ask: (provider: string, remainingMs: number, target?: string) => Promise<Asked>;
     eraseCredential: (id: string) => void;
     readFile: (path: string) => string;
     stdout: (text: string) => void;
@@ -257,6 +257,8 @@ interface Scenario {
     ask: { count: number; scopes: string[]; erased: number };
     /** The providers the helper asked the board's runtime requirement for, in order. */
     asks: string[];
+    /** The target each ask carried (undefined when it carried none). */
+    askTargets: (string | undefined)[];
     run: (argv: string[], overrides?: Partial<Deps>) => Promise<{ code: number; out: string; err: string }>;
     receipts: () => Receipt[];
 }
@@ -291,6 +293,7 @@ async function scenario(
     });
     const shape = options.connections ?? 'one';
     const asks: string[] = [];
+    const askTargets: (string | undefined)[] = [];
     const connections = () =>
         shape === 'none' || (shape === 'bound-after-ask' && asks.length === 0)
             ? []
@@ -317,8 +320,9 @@ async function scenario(
                 if (ask.count <= (options.brokerRefusals ?? 0)) return { ok: false, reason: 'integration_required' };
                 return { ok: true, token: TOKEN, expiresAt: null, scopes: ask.scopes, resource: CLOUD };
             },
-            ask: async (provider) => {
+            ask: async (provider, _remainingMs, target) => {
                 asks.push(provider);
+                askTargets.push(target);
                 const scripted = options.asked ?? [{ kind: 'absent' }];
                 return scripted[Math.min(asks.length - 1, scripted.length - 1)] as Asked;
             },
@@ -345,6 +349,7 @@ async function scenario(
         boardUrl,
         ask,
         asks,
+        askTargets,
         run,
         receipts: () => [...board.state.receipts.values()],
     };
@@ -445,6 +450,7 @@ describe('the runtime connection ask', () => {
         const result = await s.run(['issue', 'ABC-1']);
         expect(result.code).toBe(0);
         expect(s.asks).toEqual(['jira']);
+        expect(s.askTargets).toEqual([undefined]);
         expect(s.jira.calls[0]?.url).toBe(jiraPath('/issue/ABC-1'));
     });
 
@@ -508,6 +514,7 @@ describe('the runtime connection ask', () => {
         expect(other.code).toBe(3);
         expect(outcomeOf(other.out).reason).toBe('waiting_for_connection');
         expect(s.asks).toEqual(['jira']);
+        expect(s.askTargets).toEqual(['c.example.net']);
         expect((await s.run(['issue', 'ABC-1', '--site', 'a.example.net'])).code).toBe(0);
         expect(s.asks).toEqual(['jira']);
     });

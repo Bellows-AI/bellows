@@ -216,7 +216,14 @@ describe('POST /api/jobs/:id/requirements (the runner asks for a connection)', (
         const res = await ask(instance, { leaseToken: TOKEN, provider: 'jira' });
         expect(res.statusCode).toBe(HTTP_OK);
         expect(res.json()).toEqual({ answer: 'waiting' });
-        expect(asks).toEqual([[ID, TOKEN, 'jira']]);
+        expect(asks).toEqual([[ID, TOKEN, 'jira', undefined]]);
+    });
+
+    it('hands the store what the helper needs beside the provider', async () => {
+        const { instance, asks } = await bootWorker();
+        const res = await ask(instance, { leaseToken: TOKEN, provider: 'jira', target: 'b.example.net' });
+        expect(res.statusCode).toBe(HTTP_OK);
+        expect(asks).toEqual([[ID, TOKEN, 'jira', 'b.example.net']]);
     });
 
     it.each([
@@ -224,6 +231,8 @@ describe('POST /api/jobs/:id/requirements (the runner asks for a connection)', (
         [{ leaseToken: TOKEN, provider: 'github' }, 'BAD_CONNECTION'],
         [{ leaseToken: TOKEN, provider: 7 }, 'BAD_CONNECTION'],
         [{ leaseToken: TOKEN }, 'BAD_CONNECTION'],
+        [{ leaseToken: TOKEN, provider: 'jira', target: 7 }, 'BAD_CONNECTION'],
+        [{ leaseToken: TOKEN, provider: 'jira', target: 'a b' }, 'BAD_CONNECTION'],
     ])('refuses %j before the store is asked', async (payload, code) => {
         const { instance, asks } = await bootWorker();
         const res = await ask(instance, payload);

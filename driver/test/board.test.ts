@@ -367,6 +367,12 @@ describe('reporting an interrupted attempt (issue #792)', () => {
 describe('the runtime connection requirement', () => {
     const job = boardJob();
 
+    it('posts what the helper needs beside the provider', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ answer: 'waiting' }, { status: 200 }));
+        await boardOn(fetch).requireConnection(job, 'jira', 'b.example.net');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', provider: 'jira', target: 'b.example.net' });
+    });
+
     it('posts the provider under the lease and reads the board’s three answers', async () => {
         for (const answer of ['bound', 'unavailable', 'waiting'] as const) {
             const { calls, fetch } = recorder(() => Response.json({ answer }, { status: 200 }));

@@ -605,7 +605,7 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      */
     interrupt(job: BoardJob, interruption: Interruption): Promise<LeaseState | 'exhausted'>;
     /** Tells the board the task lacks a connection its helper needs (docs/connections.md); a throw is no answer. */
-    requireConnection(job: BoardJob, provider: string): Promise<RequirementVerdict>;
+    requireConnection(job: BoardJob, provider: string, target?: string): Promise<RequirementVerdict>;
     /**
      * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status
      * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the

@@ -155,6 +155,7 @@ export interface ThreadRequirement {
     reason: 'missing' | 'ambiguous' | 'reconnect';
     source: 'create' | 'runtime';
     connectionId: string | null;
+    target: string | null;
     createdAt: string;
 }
 
@@ -305,6 +306,7 @@ export const requirement = (fields: Partial<ThreadRequirement> = {}): ThreadRequ
     reason: 'missing',
     source: 'runtime',
     connectionId: null,
+    target: null,
     createdAt: '2026-09-01T12:05:00.000Z',
     ...fields,
 });

@@ -275,6 +275,8 @@ export interface JobIntegrationRequirement {
     source: 'create' | 'runtime';
     /** The bound connection a `reconnect` is about; null otherwise. */
     connectionId: string | null;
+    /** What the asking helper needs of the provider (for Jira the site); null when it named none. */
+    target: string | null;
     createdAt: string;
 }
 

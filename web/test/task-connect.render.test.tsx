@@ -11,6 +11,7 @@ const requirement = (over: Partial<JobIntegrationRequirement> = {}): JobIntegrat
     reason: 'missing',
     source: 'runtime',
     connectionId: null,
+    target: null,
     createdAt: '2026-09-01T12:05:00.000Z',
     ...over,
 });
@@ -52,6 +53,13 @@ function render(
 }
 
 describe('TaskConnect: the block', () => {
+    it('says what the task needs when the requirement names a target, and nothing when it does not', () => {
+        expect(render({ requirement: requirement({ target: 'b.example.test' }) })).toContain(
+            'The task needs: b.example.test'
+        );
+        expect(render()).not.toContain('The task needs');
+    });
+
     it('missing lists none and offers Connect <label> and Continue without it', () => {
         const html = render();
         expect(html).toContain('Connect Jira');

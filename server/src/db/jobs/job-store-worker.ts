@@ -66,7 +66,12 @@ export interface JobWorkerStore {
      * `waiting` (an open requirement now holds the next claim; the caller ends the run). `lost` / `missing` as every
      * lease-fenced write.
      */
-    requireConnection(id: string, leaseToken: string, provider: string): Promise<RequireConnectionResult>;
+    requireConnection(
+        id: string,
+        leaseToken: string,
+        provider: string,
+        target?: string
+    ): Promise<RequireConnectionResult>;
 
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded

@@ -27,8 +27,8 @@ const until = async (condition: () => boolean) => {
     for (let i = 0; i < 2_000 && !condition(); i++) await tick();
     expect(condition()).toBe(true);
 };
-const ask = (control: ControlEntry, provider = 'jira') =>
-    serveConnection(control.connecting, JSON.stringify({ provider }));
+const ask = (control: ControlEntry, provider = 'jira', target?: string) =>
+    serveConnection(control.connecting, JSON.stringify({ provider, ...(target === undefined ? {} : { target }) }));
 const landed: PublishResult = {
     ok: true,
     published: true,
@@ -79,6 +79,15 @@ async function driveRun(
 }
 
 describe('a runtime connection requirement', () => {
+    it('carries what the helper needs (a site) from the ask to the board', async () => {
+        const { board } = await driveRun(async ({ control, stack }) => {
+            await ask(control, 'jira', 'b.example.net');
+            await until(() => stack.stopsRaised.length > 0);
+            return ok();
+        });
+        expect(board.connectionAsks).toEqual([{ id: job(1).id, provider: 'jira', target: 'b.example.net' }]);
+    });
+
     it('a helper refusal ends the run as a requirement wait, not failed or blocked', async () => {
         let answer: Awaited<ReturnType<typeof ask>> | undefined;
         const { board, runner, stack } = await driveRun(async ({ control, stack }) => {

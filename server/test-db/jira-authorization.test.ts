@@ -395,12 +395,12 @@ describe.skipIf(!enabled)('jira authorization', () => {
     describe('with a jobId', () => {
         const jobs = () => createJobStore({ sql: db.sql, orgId: ORG });
         /** A running root of `userId` that asked for Jira with nothing to bind: an open runtime requirement. */
-        const askedRoot = async (userId: string) => {
+        const askedRoot = async (userId: string, target?: string) => {
             const created = await jobs().create('do the work', userId, { repo: null, executor: null });
             if (typeof created === 'string') throw new Error(created);
             const claim = (await jobs().claim('w', 60)) as Claim | null;
             if (claim?.id !== created.id) throw new Error('expected the new root to be claimed');
-            expect(await jobs().requireConnection(claim.id, claim.leaseToken, 'jira')).toMatchObject({
+            expect(await jobs().requireConnection(claim.id, claim.leaseToken, 'jira', target)).toMatchObject({
                 answer: 'waiting',
             });
             return claim;
@@ -448,6 +448,24 @@ describe.skipIf(!enabled)('jira authorization', () => {
                 select reason, satisfied_at from job_integration_requirement where root_job_id = ${claim.id}
             `;
             expect(rows).toMatchObject([{ reason: 'ambiguous', satisfied_at: null }]);
+        });
+
+        it('a connection that does not match the requirement target is made but not bound; one that does is bound', async () => {
+            const tag = newTag();
+            const miss = await askedRoot(ALICE.id, hostOf(tag, 'two'));
+            script(fake, { tag, sites: ['one'] });
+            expect(
+                await (await begin(jiraRuntime(db.sql, fake), ORG, ALICE.id, { jobId: miss.id })).complete()
+            ).toMatchObject({ ok: true });
+            expect(await bindings(miss.id)).toEqual([]);
+            expect(await requirements(miss.id)).toMatchObject([{ outcome: null }]);
+
+            const tag2 = newTag();
+            const hit = await askedRoot(CAROL.id, hostOf(tag2, 'one'));
+            script(fake, { tag: tag2, sites: ['one'] });
+            await (await begin(jiraRuntime(db.sql, fake), ORG, CAROL.id, { jobId: hit.id })).complete();
+            expect(await bindings(hit.id)).toHaveLength(1);
+            expect(await requirements(hit.id)).toMatchObject([{ outcome: 'bound' }]);
         });
 
         it('a refused bind (another user is the execution user) still completes the connection', async () => {

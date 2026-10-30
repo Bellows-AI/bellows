@@ -155,6 +155,37 @@ export async function bindAuthorizedConnectionRow(
 }
 
 /**
+ * What an open requirement of the task's thread asks of `provider` (the site a helper needs), or null when it names
+ * none or none is open. Read for the execution user only: anyone else's callback changes nothing.
+ */
+export async function openRequirementTargetRow(
+    sql: Sql,
+    args: { orgId: string; jobId: string; provider: string; userId: string }
+): Promise<string | null> {
+    const { orgId, jobId, provider, userId } = args;
+    const [row] = await sql<{ target: string | null }[]>`
+        select r.target
+        from job j join job root on root.org_id = j.org_id and root.id = j.root_job_id
+        join job_integration_requirement r on r.org_id = root.org_id and r.root_job_id = root.id
+        where j.org_id = ${orgId} and j.id = ${jobId} and root.execution_user_id = ${userId}
+          and r.provider = ${provider} and r.satisfied_at is null
+    `;
+    return row?.target ?? null;
+}
+
+/** The ids of `connectionIds` whose site is `target` (any case). */
+export async function connectionsAtSite(
+    sql: Sql,
+    args: { orgId: string; connectionIds: readonly string[]; target: string }
+): Promise<string[]> {
+    const rows = await sql<{ id: string }[]>`
+        select id from connector_connection
+        where org_id = ${args.orgId} and id in ${sql(args.connectionIds)} and lower(site) = lower(${args.target})
+    `;
+    return rows.map((r) => r.id);
+}
+
+/**
  * An authorization made several usable connections for a task's open requirement: none is picked for the person, so
  * the requirement asks them to choose (`ambiguous`). Only the execution user's own `missing` requirement changes.
  */
@@ -207,9 +238,9 @@ export type RequireConnectionResult = { result: 'ok'; answer: RuntimeAnswer } | 
  */
 export async function requireConnectionRow(
     sql: Sql,
-    args: { orgId: string; id: string; leaseToken: string; provider: string }
+    args: { orgId: string; id: string; leaseToken: string; provider: string; target?: string | undefined }
 ): Promise<RequireConnectionResult> {
-    const { orgId, id, leaseToken, provider } = args;
+    const { orgId, id, leaseToken, provider, target } = args;
     return sql.begin(async (tx) => {
         const [held] = await tx<{ root_job_id: string; claim_seq: string }[]>`
             select root_job_id, claim_seq from job
@@ -226,6 +257,7 @@ export async function requireConnectionRow(
             askedJobId: id,
             claimSeq: Number(held.claim_seq),
             provider,
+            target: target ?? null,
         });
         return { result: 'ok', answer } as const;
     });

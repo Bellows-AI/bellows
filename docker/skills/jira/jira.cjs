@@ -265,10 +265,10 @@ function validEntry(entry) {
  * 'unavailable' and 'waiting' end the call at exit 3. An answer the board did not confirm - a hang-up, a 5xx, a
  * body that is no answer - is retried inside the deadline and never read as either verdict.
  */
-async function requireConnection(ctx) {
+async function requireConnection(ctx, target) {
     let backoff = BACKOFF_MS;
     while (remaining(ctx) > 0) {
-        const result = await ctx.deps.ask('jira', Math.max(1, Math.min(ASK_TIMEOUT_MS, remaining(ctx))));
+        const result = await ctx.deps.ask('jira', Math.max(1, Math.min(ASK_TIMEOUT_MS, remaining(ctx))), target);
         if (result.kind === 'absent') return 'absent';
         if (result.kind === 'refused') {
             throw new Stop(
@@ -309,7 +309,7 @@ async function connectionFor(ctx, site, asked = false) {
     const jira = list.filter((entry) => entry.provider === 'jira');
     const wanted = site === undefined ? jira : jira.filter((entry) => entry.site.toLowerCase() === site.toLowerCase());
     // No usable Jira connection for what this call needs (none at all, or none for --site) asks the board.
-    if (wanted.length === 0 && !asked && (await requireConnection(ctx)) === 'bound') {
+    if (wanted.length === 0 && !asked && (await requireConnection(ctx, site)) === 'bound') {
         return connectionFor(ctx, site, true);
     }
     if (wanted.length === 0) {
@@ -680,8 +680,8 @@ function defaultDeps(env = process.env) {
         fetch: globalThis.fetch,
         sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
         pair: currentPair,
-        ask: (provider, remainingMs) =>
-            require('/usr/local/bin/connection-ask.cjs').askConnection(provider, { deadlineMs: remainingMs }),
+        ask: (provider, remainingMs, target) =>
+            require('/usr/local/bin/connection-ask.cjs').askConnection(provider, { deadlineMs: remainingMs, ...(target === undefined ? {} : { target }) }),
         credential: (id, remainingMs) => broker.connectionCredential(id, { ...broker.defaultDeps(env), deadlineMs: remainingMs }),
         eraseCredential: (id) => broker.erase(broker.defaultDeps(env), broker.connectionKey(id)),
         readFile: (path) => fs.readFileSync(path, 'utf8'),

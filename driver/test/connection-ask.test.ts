@@ -18,7 +18,10 @@ type Asked =
     | { kind: 'answer'; answer: 'bound' | 'unavailable' | 'waiting' }
     | { kind: 'absent' | 'refused' | 'inconclusive' };
 const connection = createRequire(import.meta.url)(MODULE) as {
-    askConnection: (provider: string, options: { socket: string; deadlineMs: number }) => Promise<Asked>;
+    askConnection: (
+        provider: string,
+        options: { socket: string; deadlineMs: number; target?: string }
+    ) => Promise<Asked>;
 };
 
 const servers: Server[] = [];
@@ -70,6 +73,14 @@ describe('the connection ask', () => {
             expect(seen).toEqual([{ line: 'POST /connection', body: JSON.stringify({ provider: 'jira' }) }]);
         }
     );
+
+    it('posts what the helper needs beside the provider', async () => {
+        const { socket, seen } = await relay(json(200, JSON.stringify({ answer: 'waiting' })));
+        await connection.askConnection('jira', { socket, deadlineMs: 2000, target: 'b.example.net' });
+        expect(seen).toEqual([
+            { line: 'POST /connection', body: JSON.stringify({ provider: 'jira', target: 'b.example.net' }) },
+        ]);
+    });
 
     it.each([
         ['a 401', json(401, '{}')],
