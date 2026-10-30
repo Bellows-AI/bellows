@@ -1,7 +1,7 @@
 import type { BoardJob, ReviewAnswer, ReviewClaim } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
 import { openReviewExport } from './loop-export.js';
-import { applyHeartbeatVerdict, down, type JobState, newReviewStop } from './loop-attempt.js';
+import { applyHeartbeatVerdict, down, type JobState, newReviewStop, settling } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { ReviewRelay, ReviewVerdict } from '../review/review-control.js';
 import { OUTPUT_LIMIT, tailBytes } from '../runner.js';
@@ -33,7 +33,7 @@ import type { StepResult } from '../supervisor-contract.js';
  * only draining refuses too — a review is new work, and the agent was told to finish.
  */
 export function createReviewRelay(rt: LoopRuntime, job: BoardJob, state: JobState): ReviewRelay {
-    const gone = (): boolean => state.phase === 'ended' || state.draining || down(state);
+    const gone = (): boolean => state.phase === 'ended' || settling(state) || down(state);
     return {
         async request(key, profile) {
             if (gone()) return 'gone';

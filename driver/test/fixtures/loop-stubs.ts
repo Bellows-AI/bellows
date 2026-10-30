@@ -12,6 +12,7 @@ import type {
     QuestionVerdict,
     Reclaim,
     ReclaimRenewal,
+    RequirementVerdict,
     ReviewClaim,
     RuntimeReport,
 } from '../../src/board/board.js';
@@ -19,6 +20,7 @@ import type { GateRunRecord, GateRunWrite } from '../../src/board/board-gate-run
 import type { PrOperationWrite } from '../../src/board/board-pr-operations.js';
 import type { CheckpointPhase, PhaseCheckpoint } from '../../src/board/board-phase-checkpoints.js';
 import { type DriverConfig, loadDriverConfig } from '../../src/config.js';
+import type { ConnectionRelay } from '../../src/connection-control.js';
 import type { CheckpointRelay, ExportRelay } from '../../src/export-control.js';
 import type { ReviewControl } from '../../src/supervised-steps.js';
 import type { GateManager, GateRun, GateRunOptions, GateServer } from '../../src/gates.js';
@@ -103,6 +105,8 @@ export interface BoardStub extends Board {
     suspended: string[];
     /** The interrupted attempts the loop reported (issue #792). */
     interrupted: ({ id: string } & Interruption)[];
+    /** Every runtime connection ask the loop relayed to the board (BEL-174), in order. */
+    connectionAsks: { id: string; provider: string }[];
     beats: number;
     gatesReported: { id: string; results: Parameters<Board['gates']>[1] }[];
     /** Every GitHub credential ask the loop made, by job id (docs/connections.md). */
@@ -155,6 +159,10 @@ export function stubBoard(
         artifactsDown?: boolean;
         /** The board's answer to an interruption report (issue #792); held when absent. */
         interruptVerdict?: LeaseState | 'exhausted';
+        /** The board's answer to a runtime connection ask (BEL-174); `waiting` when absent. */
+        connectionVerdict?: RequirementVerdict | (() => Promise<RequirementVerdict>);
+        /** Every heartbeat answers `requirementWait: true` (BEL-174): an adopter of an attempt that asked. */
+        requirementWait?: boolean;
         /** The board's answer to a phase checkpoint read (issue #829); null (unreadable) when absent. */
         phaseCheckpoints?: PhaseCheckpoint[] | null | ((signal?: AbortSignal) => Promise<PhaseCheckpoint[] | null>);
         /** The board's answer to a phase checkpoint write (issue #829); `throw` models a board that throws. */
@@ -189,6 +197,7 @@ export function stubBoard(
         progressed: [],
         suspended: [],
         interrupted: [],
+        connectionAsks: [],
         beats: 0,
         gatesReported: [],
         githubAsks: [],
@@ -238,6 +247,11 @@ export function stubBoard(
             board.suspended.push(claimed.id);
             return 'held';
         },
+        async requireConnection(claimed, provider) {
+            board.connectionAsks.push({ id: claimed.id, provider });
+            const verdict = options.connectionVerdict ?? 'waiting';
+            return typeof verdict === 'function' ? verdict() : verdict;
+        },
         async interrupt(claimed, interruption) {
             board.interrupted.push({ id: claimed.id, ...interruption });
             return options.interruptVerdict ?? 'held';
@@ -268,7 +282,11 @@ export function stubBoard(
             board.beats += 1;
             if (options.lease === 'lost' || options.leaseGone?.()) return 'lost';
             if (options.removedOnBeat) return 'removed';
-            const verdict: HeartbeatVerdict = { result: 'held', cancelRequested: options.cancelRequested ?? false };
+            const verdict: HeartbeatVerdict = {
+                result: 'held',
+                cancelRequested: options.cancelRequested ?? false,
+                ...(options.requirementWait ? { requirementWait: true } : {}),
+            };
             return verdict;
         },
         async claimReclaim(_worker) {
@@ -728,6 +746,10 @@ export function stubGateStack(
             attachCheckpoint: (token: string, checkpoint: CheckpointRelay) => {
                 const control = stack.controls.get(token);
                 if (control) control.checkpointing.relay = checkpoint;
+            },
+            attachConnection: (token: string, connection: ConnectionRelay) => {
+                const control = stack.controls.get(token);
+                if (control) control.connecting.relay = connection;
             },
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {

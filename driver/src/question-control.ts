@@ -1,4 +1,5 @@
 import type { AskedQuestion } from './board/board.js';
+import type { ConnectionSlot } from './connection-control.js';
 import type { PublishRelay, PublishSlot } from './publish/publish-control.js';
 import type { ReviewRelay, ReviewSlot } from './review/review-control.js';
 import type { CheckpointSlot, ExportRelay, ExportSlot } from './export-control.js';
@@ -62,6 +63,8 @@ export interface ControlEntry {
     exporting: ExportSlot;
     /** The checkpoint routes' relay (`export-control.ts`), the supervisor's finalize stage; null until the loop attaches it. */
     checkpointing: CheckpointSlot;
+    /** The connection route's relay (`connection-control.ts`), the agent's; null until the loop attaches it. */
+    connecting: ConnectionSlot;
 }
 
 export const newControl = (
@@ -82,6 +85,7 @@ export const newControl = (
     reviewing: { running: false },
     exporting: { relay: exporter },
     checkpointing: { relay: null },
+    connecting: { relay: null },
 });
 
 export interface QuestionAnswer {

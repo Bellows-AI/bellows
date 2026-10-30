@@ -15,6 +15,7 @@ import {
 } from './gate-record.js';
 
 import type { GateRunNote } from './timeout-note.js';
+import type { ConnectionRelay } from './connection-control.js';
 import { createControlChannel } from './control-channel.js';
 import { GATE_IMAGE, GATE_KEY } from './publish/publish.js';
 import { TASK_MOUNT } from './task-volume.js';
@@ -421,6 +422,8 @@ export interface GateServer {
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Gives an open control token its supervisor's checkpoint relay (the `/checkpoint` routes). */
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
+    /** Gives an open control token the relay of its agent's connection ask (BEL-174). */
+    attachConnection(token: string, connection: ConnectionRelay): void;
     /**
      * Settles a pending question on an open control token: an answer the board recorded, or an
      * answer arriving. False — and nothing changes — for an unknown token or id and a question
@@ -685,6 +688,7 @@ export function createGateServer({
         revokeExporter: (exporterToken) => channel.revokeExporter(exporterToken),
         attachExporter: (token, exporter) => channel.attachExporter(token, exporter),
         attachCheckpoint: (token, checkpoint) => channel.attachCheckpoint(token, checkpoint),
+        attachConnection: (token, connection) => channel.attachConnection(token, connection),
         resolveQuestion: (token, id, resolution) => channel.resolveQuestion(token, id, resolution),
         hasPendingQuestion: (token) => channel.hasPendingQuestion(token),
         cancelQuestions: (token) => channel.cancelQuestions(token),

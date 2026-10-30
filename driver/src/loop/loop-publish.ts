@@ -2,7 +2,7 @@ import { prOperationRecorder } from './loop-pr-operation.js';
 import type { BoardJob } from '../board/board.js';
 import { evidenceDecision } from '../evidence-policy.js';
 import { askGithubToken } from './loop-github.js';
-import { down, type JobState } from './loop-attempt.js';
+import { down, type JobState, settling } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import { publishFailed } from '../publish/publish.js';
 import { stepLost } from '../step-control.js';
@@ -22,7 +22,7 @@ import type { PublishRelay, PublishVerdict } from '../publish/publish-control.js
  * (`job.publish === false`) and the route says so.
  */
 export function createPublishRelay(rt: LoopRuntime, job: BoardJob, state: JobState): PublishRelay {
-    const gone = (): boolean => state.phase === 'ended' || state.draining || down(state);
+    const gone = (): boolean => state.phase === 'ended' || settling(state) || down(state);
     return {
         async publish() {
             if (job.publish === false) return 'forbidden';

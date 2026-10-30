@@ -7,4 +7,9 @@ export interface Interruption {
     refused?: boolean;
     /** A claim held back by a leftover that will not go away: released outside the interruption budget, its retry deferred. */
     blocked?: boolean;
+    /**
+     * The agent's helper asked for a connection the task lacks (BEL-174): released outside the interruption
+     * budget with no retry deferral, and held by the board's claim gate until the requirement closes.
+     */
+    requirement?: boolean;
 }

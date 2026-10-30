@@ -6,7 +6,7 @@
 
 export type AttemptPhase = 'setup' | 'launched' | 'concluding' | 'ended';
 
-export type EndingKind = 'stop' | 'lost' | 'removed' | 'handover';
+export type EndingKind = 'stop' | 'lost' | 'removed' | 'handover' | 'requirement';
 
 /** What ended the attempt where it stands, and when; the first one recorded is the one that counts. */
 export interface Ending {

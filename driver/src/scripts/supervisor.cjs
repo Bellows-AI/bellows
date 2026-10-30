@@ -1600,6 +1600,7 @@ const RELAYS = {
         routes: [
             { method: 'POST', match: (p) => p === '/publish', cap: MIB },
             { method: 'POST', match: (p) => p === '/review', cap: MIB },
+            { method: 'POST', match: (p) => p === '/connection', cap: KIB },
             { method: 'GET', match: (p) => REVIEW_KEY.test(p), cap: MIB },
         ],
     },

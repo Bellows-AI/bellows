@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { continuationPrompt } from '../src/continuation.js';
+import type { BoardJob } from '../src/board/board.js';
+import { agentPrompt, continuationPrompt } from '../src/continuation.js';
 
 /** The board's own command cap (core's `COMMAND_LIMIT`), copied: the driver imports nothing of core. */
 const COMMAND_LIMIT = 16_384;
@@ -32,5 +33,48 @@ describe('continuationPrompt', () => {
         const recapped = `This task continues in a new agent session.\n\nTurn 1 (failed): first\n\nNew instruction:\n\ntighten the test`;
 
         expect(continuationPrompt(recapped).endsWith(`The task, for reference:\n\n${recapped}`)).toBe(true);
+    });
+});
+
+describe('the outcome of a runtime connection requirement (BEL-174)', () => {
+    const job = (extra: Partial<BoardJob>) =>
+        ({ command: 'fix ABC-1', continuesInterrupted: true, ...extra }) as BoardJob;
+
+    it('tells a resumed agent the connection it asked for is bound, ahead of the task', () => {
+        const text = agentPrompt(job({ connectionOutcomes: [{ provider: 'jira', label: 'Jira', outcome: 'bound' }] }));
+
+        expect(text).toContain('Your previous run of this task was interrupted');
+        expect(text).toContain('The Jira connection you asked for is now bound to this task');
+        expect(text.indexOf('Jira connection')).toBeLessThan(text.indexOf('The task, for reference:'));
+        expect(text.endsWith('The task, for reference:\n\nfix ABC-1')).toBe(true);
+    });
+
+    it('tells it to continue without a connection the user declined, and to say so', () => {
+        const text = agentPrompt(
+            job({ connectionOutcomes: [{ provider: 'jira', label: 'Jira', outcome: 'dismissed' }] })
+        );
+
+        expect(text).toContain('continue without the Jira connection');
+        expect(text).toContain('say so');
+        expect(text.endsWith('The task, for reference:\n\nfix ABC-1')).toBe(true);
+    });
+
+    it('names each provider once, one sentence each', () => {
+        const text = agentPrompt(
+            job({
+                connectionOutcomes: [
+                    { provider: 'jira', label: 'Jira', outcome: 'bound' },
+                    { provider: 'acme', label: 'Acme', outcome: 'dismissed' },
+                ],
+            })
+        );
+
+        expect(text).toContain('The Jira connection you asked for is now bound');
+        expect(text).toContain('continue without the Acme connection');
+    });
+
+    it('is the plain continuation prompt with no outcome, and the bare command when nothing was interrupted', () => {
+        expect(agentPrompt(job({}))).toBe(continuationPrompt('fix ABC-1'));
+        expect(agentPrompt(job({ continuesInterrupted: false }))).toBe('fix ABC-1');
     });
 });
