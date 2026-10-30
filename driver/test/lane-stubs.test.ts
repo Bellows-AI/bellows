@@ -89,9 +89,11 @@ describe('the lane stub executor images', () => {
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain(
-            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs "$work/"'
+            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs docker/claude-executor/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"'
         );
-        expect(line).toContain('COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs /usr/local/bin/\\n');
+        expect(line).toContain(
+            'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\\n'
+        );
         expect(script.indexOf(STAGE)).toBeLessThan(script.indexOf('-f "$work/stub-runner.Dockerfile"'));
         expect(script.indexOf('-f "$work/stub-runner.Dockerfile"')).toBeLessThan(
             script.indexOf('-f "$work/stub.Dockerfile"')

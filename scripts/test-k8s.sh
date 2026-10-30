@@ -1627,9 +1627,9 @@ begin_phase images
 # entrypoints honor.
 cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
     docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs "$work/"
+cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs docker/claude-executor/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
-printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
+printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.
 docker build -f docker/Dockerfile --target runtime -q -t "$DASH_IMAGE" . >"$work/dashboard-build.log" 2>&1 &
 dash_build=$!
@@ -2250,6 +2250,85 @@ expect_contains 'the helper reaches the credential route and is refused' "$gh_re
 expect_contains 'the refusal is the App-less board, said on stderr'  "$gh_result" 'no GitHub App installation'
 expect_contains "the helper's cache is a Memory emptyDir"           "$gh_result" 'github cache tmpfs'
 expect_contains 'the runner pod carries no GitHub token in its env'  "$gh_result" 'github no env token'
+
+# --- The runtime connection requirement (BEL-174) -----------------------------------------------
+#
+# A task with no Jira connection runs the Jira helper in its pod: the helper asks on the supervisor's
+# control socket, the driver relays the ask to the board, the board holds the task queued behind an open
+# requirement, and the driver ends the run as a hand-back, not a failure. The member's bind through the API
+# releases it and the next run ends. The stub keeps no session, so the resumed prompt is the docker lane's (`connection_roundtrip_lane`). The connection is made only once
+# the task waits: a member with a lone Jira connection would have it bound at the claim.
+
+echo
+echo '# runtime connection requirement'
+
+conn_id="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ command: "factory-stub-connect lane", executor: "claude", repo: process.argv[2] }) })
+    .then(async (r) => { const b = await r.json().catch(() => ({})); process.stdout.write(r.status === 201 ? String(b.id ?? "") : ""); })
+    .catch(() => {});
+' "$BASE/api/jobs" "$SMOKE_REPO")"
+conn_state=''
+for _ in $(seq 1 180); do
+    conn_state="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write([j.status, (j.integrationRequirements || []).length, j.bindingRevision, j.attempts].join(" ")); })
+    .catch(() => process.stdout.write("queued 0 0 0"));
+' "$BASE/api/jobs/$conn_id")"
+    case "$conn_state" in
+    'queued 1 '* | failed* | dead* | succeeded*) break ;;
+    esac
+    sleep 1
+done
+expect_contains 'the asking task is queued behind one open requirement, not failed' "$conn_state" 'queued 1 '
+[ "${conn_state##* }" = 0 ] && ok 'the hand-back refunds the attempt' || bad 'the hand-back refunds the attempt' "state: $conn_state"
+conn_rev="$(printf '%s' "$conn_state" | cut -d' ' -f3)"
+conn_connection="$(kubectl exec -n "$NAMESPACE" "deploy/$RELEASE-factory" -c dashboard --request-timeout=60s -- \
+    env LANE_ORG="$member" LANE_USER="$member_user" node --input-type=module -e '
+import postgres from "postgres";
+import { createConnectionGrants } from "./server/dist/db/connection-grants.js";
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+const made = await createConnectionGrants({ sql, orgId: process.env.LANE_ORG }).attachGrantConnection({
+    principal: { kind: "user", userId: process.env.LANE_USER },
+    provider: "jira",
+    externalAccountId: "lane-account",
+    authority: { scopes: ["read:jira-work"] },
+    resource: { id: "lane-cloud", label: "example.atlassian.net" },
+    access: "read",
+});
+await sql.end();
+process.stdout.write(made.ok ? made.connectionId : "");
+' 2>&1)"
+case "$conn_connection" in
+????????-????-????-????-????????????) ok 'a Jira connection is made for the task owner' ;;
+*) bad 'a Jira connection is made for the task owner' "$conn_connection" ;;
+esac
+conn_bound="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { method: "POST", headers, body: JSON.stringify({ connectionId: process.argv[2], bindingRevision: Number(process.argv[3]) }) })
+    .then((r) => process.stdout.write(String(r.status)))
+    .catch(() => process.stdout.write("000"));
+' "$BASE/api/jobs/$conn_id/connections" "$conn_connection" "${conn_rev:-0}")"
+[ "$conn_bound" = 200 ] && ok 'the owner binds the connection to the waiting task' ||
+    bad 'the owner binds the connection to the waiting task' "status $conn_bound"
+conn_result=''
+for _ in $(seq 1 180); do
+    conn_result="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(j.status + "\t" + String(j.output ?? "")); })
+    .catch(() => process.stdout.write("queued\t"));
+' "$BASE/api/jobs/$conn_id")"
+    case "$conn_result" in
+    queued* | running*) sleep 1 ;;
+    *) break ;;
+    esac
+done
+expect_contains 'the released task runs again and succeeds' "$conn_result" 'succeeded'
+conn_after="$(node -e "$JS_HEADERS"'
+fetch(process.argv[1], { headers })
+    .then(async (r) => { const j = await r.json(); process.stdout.write(String((j.integrationRequirements || []).length)); })
+    .catch(() => process.stdout.write("unread"));
+' "$BASE/api/jobs/$conn_id")"
+[ "$conn_after" = 0 ] && ok 'the requirement is closed once the connection is bound' ||
+    bad 'the requirement is closed once the connection is bound' "open requirements: $conn_after"
 
 # --- The orphan reaper (issue #301), against the real apiserver ---------------------------------
 #
