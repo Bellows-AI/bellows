@@ -11,24 +11,27 @@ import {
 } from '../../db/jobs/job-store-gate-runs.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, body, guard } from '../helpers.js';
-import { CONTROL_BODY_LIMIT, GATE_NAME_LIMIT, HTTP_CONFLICT, HTTP_OK, leaseLost, notFoundJob } from './job-limits.js';
+import {
+    CONTROL_BODY_LIMIT,
+    GATE_NAME_LIMIT,
+    HTTP_CONFLICT,
+    HTTP_OK,
+    leaseLost,
+    notFoundJob,
+    nullableTimestamp,
+} from './job-limits.js';
 import { resolveJobRoute } from '../route-guards.js';
 
 /** HMAC-SHA256 hex: the driver's gate identity. Anything else is not a digest and is never stored. */
 const IDENTITY = /^[0-9a-f]{64}$/;
 /** A tree's content key is `<tree id>:<sha256>`; far under this. */
 const TREE_LIMIT = 256;
-const TIMESTAMP_LIMIT = 40;
 
 const runClaimSeqOf = (value: unknown): number | null =>
     typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 ? value : null;
 
 const nullableString = (value: unknown, limit: number): value is string | null =>
     value === null || (typeof value === 'string' && value.length <= limit);
-
-const nullableTimestamp = (value: unknown): value is string | null =>
-    value === null ||
-    (typeof value === 'string' && value.length <= TIMESTAMP_LIMIT && !Number.isNaN(Date.parse(value)));
 
 type Checked<T> = { ok: true; value: T } | { ok: false; message: string };
 

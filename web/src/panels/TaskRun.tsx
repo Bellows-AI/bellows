@@ -2,8 +2,17 @@ import { type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
 import { isTerminal, type GateCheck, type Job, type RuntimeVitals } from '../api/useJobs.js';
 import type { AnswerOutcome } from '../api/answer-question.js';
 import { Icon } from '../components/Icon.js';
-import { runDuration, timestamp } from '../format.js';
-import { FAILURE_KIND_LABEL, GATE_PILL, gateCounts, isHttpUrl, prNumber, type ThreadPublish } from '../task-outcome.js';
+import { elapsedSeconds, runDuration, timestamp } from '../format.js';
+import {
+    closePhase,
+    FAILURE_KIND_LABEL,
+    GATE_PILL,
+    gateCounts,
+    gateStatusLabel,
+    isHttpUrl,
+    prNumber,
+    type ThreadPublish,
+} from '../task-outcome.js';
 import { TaskQuestion } from './TaskQuestion.js';
 
 /**
@@ -114,6 +123,35 @@ function RunQuestions({ job, onAnswer }: { job: Job; onAnswer: OnAnswer }) {
 }
 
 /**
+ * The close phase of a live run: the agent has finished and the declared gates are walking. The
+ * running gate counts its seconds from the driver's stamp; the 2 s thread poll is the ticker, and
+ * the count sits outside the `role="status"` line so it is not re-announced on every poll.
+ */
+function ClosePhase({ job }: { job: Job }) {
+    const phase = closePhase(job);
+    if (phase === null) return null;
+    return (
+        <section className="run-close-phase" aria-label="Close-phase progress">
+            <p role="status">
+                {phase.label} · {phase.passed}/{phase.total} gates passed
+            </p>
+            <ul className="run-close-gates">
+                {phase.gates.map((gate) => {
+                    const elapsed = gate.status === 'running' ? elapsedSeconds(gate.startedAt) : null;
+                    return (
+                        <li key={gate.name}>
+                            <span>{gate.name}</span>
+                            <span className={GATE_PILL[gate.status]}>{gateStatusLabel(gate.status, false)}</span>
+                            {elapsed !== null ? <span className="chat-activity">{elapsed}</span> : null}
+                        </li>
+                    );
+                })}
+            </ul>
+        </section>
+    );
+}
+
+/**
  * The agent response/activity body: a terminal run's summary, or a live run's vitals and activity
  * line, then the run's questions, then the run's raw-output disclosure. Split out of `TaskRun` — the nested "which branch of
  * the run's life is this" choice was the bulk of its cognitive complexity.
@@ -147,6 +185,7 @@ function RunResponseBody({
                 ) : (
                     <p className="muted">Waiting for the executor…</p>
                 )}
+                <ClosePhase job={job} />
             </>
         );
     }
@@ -299,19 +338,26 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
 export const VERIFICATION_ID = 'task-verification';
 
 /** Gate outcomes in reading order: what failed first, then what passed, then what is still going. */
-const GATE_ORDER: readonly GateCheck['status'][] = ['failed', 'passed', 'running'];
+const GATE_ORDER: readonly GateCheck['status'][] = ['failed', 'passed', 'running', 'pending'];
 
 /**
  * The count pills: one per outcome that happened, words carrying the meaning — the tint is never
  * the only signal, and a zero is never drawn at all ("0 failed" is no news).
  */
-export function GateCountPills({ gates }: { gates: GateCheck[] | null | undefined }) {
+export function GateCountPills({
+    gates,
+    terminal,
+}: {
+    gates: GateCheck[] | null | undefined;
+    /** Whether the run is over: a gate still `pending` then never ran. */
+    terminal: boolean;
+}) {
     const counts = gateCounts(gates);
     return (
         <>
             {GATE_ORDER.filter((status) => counts[status] > 0).map((status) => (
                 <span key={status} className={GATE_PILL[status]}>
-                    {counts[status]} {status}
+                    {counts[status]} {gateStatusLabel(status, terminal)}
                 </span>
             ))}
         </>
@@ -325,13 +371,13 @@ export function GateCountPills({ gates }: { gates: GateCheck[] | null | undefine
  * gate starts open, because its output is what the reader came for. The output is the gate's own
  * mono well with its own scroll and a copy button.
  */
-export function Verification({ gates }: { gates: GateCheck[] }) {
+export function Verification({ gates, terminal }: { gates: GateCheck[]; terminal: boolean }) {
     return (
         <section className="panel task-verification" id={VERIFICATION_ID} tabIndex={-1}>
             <div className="panel-head">
                 <h2>Verification</h2>
                 <p className="task-verification-counts">
-                    <GateCountPills gates={gates} />
+                    <GateCountPills gates={gates} terminal={terminal} />
                 </p>
             </div>
             <ul className="chat-gate-list">
@@ -340,7 +386,7 @@ export function Verification({ gates }: { gates: GateCheck[] }) {
                         <details open={gate.status === 'failed'}>
                             <summary>
                                 <span>{gate.name}</span>
-                                <span className={GATE_PILL[gate.status]}>{gate.status}</span>
+                                <span className={GATE_PILL[gate.status]}>{gateStatusLabel(gate.status, terminal)}</span>
                                 {gate.exitCode !== null ? (
                                     <span className="chat-exit">exit {gate.exitCode}</span>
                                 ) : null}

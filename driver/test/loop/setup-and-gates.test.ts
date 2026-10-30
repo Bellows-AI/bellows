@@ -446,8 +446,8 @@ describe('verification gates', () => {
         expect(ranBeforeOutcome).toBe(true);
         expect(stack.stack.ran.names).toEqual(['test', 'lint']);
         expect(board.board.gatesReported.map((r) => r.results.map((g) => g.status))).toEqual([
-            ['running'],
-            ['passed'],
+            ['running', 'pending'],
+            ['passed', 'pending'],
             ['passed', 'running'],
             ['passed', 'passed'],
         ]);
@@ -459,6 +459,36 @@ describe('verification gates', () => {
         // The environment goes back to its cooldown either way — filed under the task's worktree.
         expect(stack.stack.released).toEqual([`${gatedJob(1).id}/factory`]);
         expect(stack.stack.unregistered).toBe(1);
+    });
+
+    it('every report lists every declared gate, a failed gate leaves the later ones pending', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack({ test: 1 });
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+        const reports = board.board.gatesReported.map((r) => r.results.map((g) => g.status));
+        expect(reports.every((r) => r.length === 2)).toBe(true);
+        expect(reports.at(-1)).toEqual(['failed', 'pending']);
+    });
+
+    it('the running entry carries the time it started; the settled entry does not', async () => {
+        const board = stubBoard([gatedJob(1)]);
+        const stack = stubGateStack();
+        const before = Date.now();
+
+        await drive({ ...board, runner: stubRunner(async () => ok()), gates: stack.gates });
+
+        const after = Date.now();
+        const running = board.board.gatesReported.flatMap((r) => r.results).filter((g) => g.status === 'running');
+        expect(running.length).toBe(2);
+        for (const g of running) {
+            const at = Date.parse(g.startedAt ?? '');
+            expect(at).toBeGreaterThanOrEqual(before);
+            expect(at).toBeLessThanOrEqual(after);
+        }
+        const settled = board.board.gatesReported.flatMap((r) => r.results).filter((g) => g.status === 'passed');
+        expect(settled.every((g) => g.startedAt === undefined)).toBe(true);
     });
 
     it('uploads the run’s log under its claim sequence before the gates, and still succeeds', async () => {
