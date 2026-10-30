@@ -1,4 +1,4 @@
-import { notificationEventOf } from '@factory-ai/core';
+import { notificationEventOf, type SendResult } from '@factory-ai/core';
 import { startIntervalLoop } from '../interval-loop.js';
 import type { ServerMetrics } from '../metrics.js';
 import type { OrgRegistry } from '../orgs.js';
@@ -49,12 +49,17 @@ async function deliverOrg(
             for (const item of lease.items) {
                 if (now() >= deadlineAt) break;
                 const signal = AbortSignal.timeout(Math.max(1, Math.min(sendTimeoutMs, deadlineAt - now())));
-                const result = await deliver(
-                    connectors,
-                    item.target,
-                    notificationEventOf(item.event, publicUrl),
-                    signal
-                );
+                const credential = await store.credentialOf(item, signal).catch(() => null);
+                // An unconfirmed read is retryable, never parked: a hiccup in the secret store must not end a delivery.
+                const result: SendResult =
+                    credential === null
+                        ? { status: 'retryable', reason: 'credential-unavailable' }
+                        : await deliver(
+                              connectors,
+                              { ...item.target, credential },
+                              notificationEventOf(item.event, publicUrl),
+                              signal
+                          );
                 await store.settle(lease.token, item, result);
                 if (result.status === 'permanent') {
                     // Ids and the closed reason only: the config can carry a destination.

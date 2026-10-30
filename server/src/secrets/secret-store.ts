@@ -20,7 +20,12 @@ export const SECRET_SCOPE_TYPES = [
 ] as const;
 export type SecretScopeType = (typeof SECRET_SCOPE_TYPES)[number];
 
-export const SECRET_PURPOSES = ['environment-secret', 'connection-grant', 'executor-credential'] as const;
+export const SECRET_PURPOSES = [
+    'environment-secret',
+    'connection-grant',
+    'executor-credential',
+    'notification-credential',
+] as const;
 export type SecretPurpose = (typeof SECRET_PURPOSES)[number];
 
 /** Immutable once a reference is created; every operation checks all of it, retries included. */
