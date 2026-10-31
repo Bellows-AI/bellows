@@ -43,6 +43,7 @@
         "driver/test/run-async.test.ts",
         "driver/test/run-control.test.ts",
         "driver/test/run-deadline.test.ts",
+        "driver/test/scripts-attachment-extract.test.ts",
         "driver/test/scripts-attachment-fetch.test.ts",
         "driver/test/scripts-binding-write.test.ts",
         "driver/test/scripts-checkpoint-restore.test.ts",

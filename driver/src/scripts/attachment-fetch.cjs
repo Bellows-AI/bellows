@@ -2,8 +2,8 @@
 // Delivers a task's input files into a directory: each file of the claim's list is read from the control
 // endpoint's `/input/<delivery>/<id>` route and lands at `<id><ext>`, behind a `manifest.json` written last.
 //
-// A display name is data, not a path: only its extension (when it is plain) reaches a file name, and the name
-// itself lives in manifest.json alone. Files already present with the right sha256 are kept; the rest are
+// A display name is data, not a path: it never reaches a file name (the extension comes from the media type), and
+// the name itself lives in manifest.json alone. Files already present with the right sha256 are kept; the rest are
 // fetched into `.staging-<seq>/`, checked against the claim's digest, and renamed into place only once every
 // one of them is in hand, so a failed run leaves no partial file at a final path. The new manifest is renamed
 // in last, and only after it is published does the script remove what it no longer lists (stale files and
@@ -22,10 +22,13 @@
 //   INPUT_DELIVERY — the delivery name on the control route (`task`, or a review row's id);
 //   STAGING_SEQ   — the claim sequence, naming the staging directory;
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint and its bearer (the supervisor adds them to a step with INPUT_FEED=1);
-//   FETCH_TIMEOUT_MS — optional: the bound of one file's read.
+//   FETCH_TIMEOUT_MS — optional: the bound of one file's read;
+//   EXTRACT_SCRIPT — optional: scripts/attachment-extract.cjs, run once over the published directory (text beside
+//                 PDF and Word files, `unreadable` entries). Its own failure is transient like any other.
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const KIND_UNAVAILABLE = 'attachment_unavailable';
 const MANIFEST_NAME = 'manifest.json';
@@ -36,7 +39,6 @@ const HTTP_UNPROCESSABLE = 422;
 const UNAVAILABLE_STATUSES = new Set([HTTP_GONE, HTTP_UNPROCESSABLE]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
-const EXTENSION = /^\.[A-Za-z0-9]{1,16}$/;
 
 class Unavailable extends Error {}
 
@@ -55,10 +57,18 @@ const holds = (file, entry) => {
     return bytes !== null && bytes.length === entry.size && sha256(bytes) === entry.sha256;
 };
 
-const pathOf = (entry) => {
-    const ext = path.extname(String(entry.name));
-    return entry.id + (EXTENSION.test(ext) ? ext : '');
+/** The one extension a delivered file keeps: decided by its validated media type, never by its display name. */
+const EXTENSIONS = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp',
+    'application/pdf': '.pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'text/plain': '.txt',
+    'text/markdown': '.md',
+    'text/csv': '.csv',
 };
+const pathOf = (entry) => entry.id + (EXTENSIONS[entry.mediaType] || '');
 
 const listOf = (raw) => {
     const list = JSON.parse(raw || '');
@@ -99,6 +109,36 @@ const SEALED_MODE = 0o555;
 const OPEN_MODE = 0o755;
 /** Every temp file is written writable and made read-only only before its rename, so an interrupted write is retried over. */
 const READ_ONLY_MODE = 0o444;
+
+const EXTRACT_TIMEOUT_MS = 300_000;
+const EXTRACT_ENV_DROPPED = ['RESTORE_URL', 'RESTORE_TOKEN', 'MANIFEST', 'EXTRACT_SCRIPT'];
+
+/** Runs the extract script over `target` in a child that never sees the control endpoint's bearer. */
+const extract = (target) => {
+    const code = process.env.EXTRACT_SCRIPT;
+    if (!code) return;
+    const env = { ...process.env, TARGET_DIR: target };
+    for (const name of EXTRACT_ENV_DROPPED) delete env[name];
+    const run = spawnSync(process.execPath, ['--no-warnings', '-e', code], {
+        env,
+        encoding: 'utf8',
+        timeout: EXTRACT_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+    });
+    const last = String(run.stdout || '')
+        .trim()
+        .split('\n')
+        .pop();
+    let verdict = null;
+    try {
+        verdict = JSON.parse(last);
+    } catch {}
+    if (run.error || !verdict || !verdict.ok) {
+        throw new Error(
+            `the attachment text extraction failed: ${(run.error && run.error.message) || (verdict && verdict.reason) || run.stderr}`
+        );
+    }
+};
 
 /** Removes everything in `dir` that is not in `keep`: stale files and staging directories. */
 const sweep = (dir, keep) => {
@@ -142,6 +182,7 @@ async function main() {
     fs.chmodSync(pending, READ_ONLY_MODE);
     fs.renameSync(pending, path.join(target, MANIFEST_NAME));
     sweep(target, new Set([MANIFEST_NAME, ...manifest.files.map((file) => file.path)]));
+    extract(target);
     fs.chmodSync(target, SEALED_MODE);
     return { ok: true, files: list.length, fetched: missing.length };
 }
