@@ -10,6 +10,8 @@ import {
     composerDraftReducer,
     draftOwner,
     ownedDraft,
+    TASK_SCOPE,
+    threadScope,
     useComposerDraftStore,
 } from '../src/composer-draft.js';
 
@@ -52,6 +54,8 @@ describe('composer draft store', () => {
             task: next,
             files: { attachments: [], submissionKey: null },
             followUps: {},
+            revisions: { task: 1 },
+            submits: {},
         });
     });
 
@@ -170,6 +174,61 @@ describe('composer draft store', () => {
         it('holds no draft for a thread whose draft became empty', () => {
             const held = saveFollowUp(null, 'root-a', { text: '', attachments: [], submissionKey: null });
             expect(held).toBeNull();
+        });
+    });
+
+    describe('the submission lock', () => {
+        const fileDraft = { attachments: [], submissionKey: null };
+        const saved = () => composerDraftReducer(null, { type: 'save', next, owner: OWNER });
+        const begun = () => composerDraftReducer(saved(), { type: 'begin', scope: TASK_SCOPE, key: 'k1' })!;
+
+        it('refuses every mutation of a draft with a request in flight', () => {
+            const held = begun();
+            const moved = { ...next, repo: 'acme/other' };
+            expect(composerDraftReducer(held, { type: 'save', next: moved, owner: OWNER })).toBe(held);
+            expect(composerDraftReducer(held, { type: 'clear' })).toBe(held);
+            expect(composerDraftReducer(held, { type: 'taskFiles', owner: OWNER, update: () => fileDraft })).toBe(held);
+            expect(composerDraftReducer(held, { type: 'clearTaskFiles' })).toBe(held);
+        });
+
+        it('locks one draft only: another thread, and the task, stay editable', () => {
+            let held = composerDraftReducer(saved(), {
+                type: 'followUp',
+                root: 'a',
+                owner: OWNER,
+                update: () => ({ text: 'A', ...fileDraft }),
+            });
+            held = composerDraftReducer(held, { type: 'begin', scope: threadScope('a'), key: null });
+            const edit = (root: string) =>
+                composerDraftReducer(held, {
+                    type: 'followUp',
+                    root,
+                    owner: OWNER,
+                    update: (d) => ({ ...d, text: 'changed' }),
+                });
+            expect(edit('a')).toBe(held);
+            expect(edit('b')!.followUps.b?.text).toBe('changed');
+            expect(composerDraftReducer(held, { type: 'save', next, owner: OWNER })).not.toBe(held);
+        });
+
+        it('clears exactly the submitted draft on success and releases the lock', () => {
+            let held = composerDraftReducer(begun(), {
+                type: 'followUp',
+                root: 'a',
+                owner: OWNER,
+                update: () => ({ text: 'A', ...fileDraft }),
+            });
+            held = composerDraftReducer(held, { type: 'finish', scope: TASK_SCOPE, succeeded: true });
+            expect(held!.task).toBeNull();
+            expect(held!.submits).toEqual({});
+            expect(held!.followUps.a?.text).toBe('A');
+        });
+
+        it('keeps the draft and its key when the request fails, and releases the lock', () => {
+            const held = composerDraftReducer(begun(), { type: 'finish', scope: TASK_SCOPE, succeeded: false })!;
+            expect(held.task).toEqual(next);
+            expect(held.submits).toEqual({});
+            expect(composerDraftReducer(held, { type: 'save', next, owner: OWNER })).not.toBe(held);
         });
     });
 });

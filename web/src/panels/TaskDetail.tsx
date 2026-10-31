@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useRef } from 'react';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { SubmittedFiles } from '../api/useTasks.js';
-import type { ComposerDraftStore } from '../composer-draft.js';
+import { type ComposerDraftStore, threadScope } from '../composer-draft.js';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
@@ -162,6 +162,8 @@ function FollowUpComposer({
     // The text, the files and the submission key live in the shell's store, so a trip to
     // Settings (or to another task) and back finds this thread's draft as it was left.
     const held = draftStore.followUps[rootId];
+    // A request in flight owns this thread's draft until it settles, however often the composer remounts.
+    const frozen = sending || draftStore.submits[threadScope(rootId)] !== undefined;
     const draft = held?.text ?? '';
     const limits = useAttachmentLimits();
     const files = useAttachments(
@@ -170,16 +172,25 @@ function FollowUpComposer({
             update: (change) => draftStore.updateFollowUp(rootId, (current) => ({ ...current, ...change(current) })),
         },
         limits,
-        sending
+        frozen
     );
     const dropAndPaste = attachmentHandlers(limits !== null, files.add);
-    const blocked = !draft.trim() || sending || files.blocker !== null;
+    const blocked = !draft.trim() || frozen || files.blocker !== null;
     const send = async () => {
         if (blocked) return;
         // No executor choice here: the adjustment is bound to the executor that ran the task.
         const ids = files.readyIds();
-        const submitted = ids.length === 0 ? undefined : { attachments: ids, idempotencyKey: files.submissionKey() };
-        if ((await onFollowUp(draft, submitted)) === null) draftStore.clearFollowUp(rootId);
+        const key = ids.length === 0 ? null : files.submissionKey();
+        const submitted = key === null ? undefined : { attachments: ids, idempotencyKey: key };
+        // The store clears exactly this draft on success and releases the lock either way, even
+        // when this composer is gone by then.
+        draftStore.beginSubmit(threadScope(rootId), key);
+        let sent = false;
+        try {
+            sent = (await onFollowUp(draft, submitted)) === null;
+        } finally {
+            draftStore.finishSubmit(threadScope(rootId), sent);
+        }
     };
     return (
         <div className="composer">
@@ -193,7 +204,7 @@ function FollowUpComposer({
                 className="field composer-input"
                 placeholder="Describe the adjustment…"
                 value={draft}
-                readOnly={sending}
+                readOnly={frozen}
                 {...dropAndPaste}
                 onChange={(e) =>
                     draftStore.updateFollowUp(rootId, (current) => ({
@@ -210,14 +221,14 @@ function FollowUpComposer({
                 attachments={files.attachments}
                 onRemove={files.remove}
                 onRetry={files.retry}
-                locked={sending}
+                locked={frozen}
             />
             <div className="composer-row">
-                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} disabled={sending} />}
+                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />}
                 {/* The shortcut is written down, and it is the same guarded path the button takes. */}
                 <span className="composer-label">Ctrl/⌘ + Enter</span>
                 <button type="button" className="primary" disabled={blocked} onClick={() => void send()}>
-                    {sending ? 'Sending…' : 'Send follow-up'}
+                    {frozen ? 'Sending…' : 'Send follow-up'}
                 </button>
             </div>
             {files.blocker === null ? null : (

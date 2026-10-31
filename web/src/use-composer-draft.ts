@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { QueueTaskInput } from './api/useTasks.js';
 import type { Attachments } from './api/useAttachments.js';
-import type { ComposerDraftInput, ComposerDraftStore } from './composer-draft.js';
+import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from './composer-draft.js';
 import {
     type WorkflowParamChoice,
     clampedWorkflow,
@@ -53,6 +53,8 @@ export interface ComposerDraft {
     fresh: boolean;
     /** Back to the fresh composer, and the held draft with it. */
     discard: () => void;
+    /** A request from this draft is in flight: every field and file is frozen. */
+    locked: boolean;
     /** What a restored draft lost while the member was away; empty until there is something to say. */
     notices: string[];
     dismissNotices: () => void;
@@ -268,13 +270,17 @@ export function useComposerDraft(input: {
     const [state, setState] = useState(() => initialComposerState(restored, { repos, executors, defaultExecutor }));
     const update = useCallback<Update>((patch) => setState((held) => ({ ...held, ...patch })), []);
     const { updateTaskFiles, clearTaskFiles } = draftStore;
+    // A request in flight owns the draft until it settles — in the store, so a composer mounted
+    // meanwhile is as frozen as the one that started it.
+    const locked = draftStore.submits[TASK_SCOPE] !== undefined;
     // Any edit makes the request a new one, so a failed submission's key no longer names it.
     const edit = useCallback<Update>(
         (patch) => {
+            if (locked) return;
             update(patch);
             updateTaskFiles((held) => (held.submissionKey === null ? held : { ...held, submissionKey: null }));
         },
-        [update, updateTaskFiles]
+        [update, updateTaskFiles, locked]
     );
 
     // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
@@ -320,6 +326,7 @@ export function useComposerDraft(input: {
 
     /** Back to exactly what a fresh mount would show; the sync above then holds no draft. */
     const discard = () => {
+        if (locked) return;
         setState(initialComposerState(null, { repos, executors, defaultExecutor }));
         clear();
         clearTaskFiles();
@@ -329,7 +336,15 @@ export function useComposerDraft(input: {
     // wire — the composer says nothing and the launch stays dark.
     const send = async () => {
         const { draft, executor } = state;
-        if (!draft.trim() || commandTooLong(draft) || sending || workflowPending || !paramsReady || executor === '') {
+        if (
+            locked ||
+            !draft.trim() ||
+            commandTooLong(draft) ||
+            sending ||
+            workflowPending ||
+            !paramsReady ||
+            executor === ''
+        ) {
             return;
         }
         // A launched task is no longer a draft; a refusal keeps every field for the retry.
@@ -337,14 +352,32 @@ export function useComposerDraft(input: {
         const ids = files.readyIds();
         const queued = queuedTask(state, declaredParams, paramValues);
         // Text-only stays exactly the old request: the files and their key ride only when there are some.
-        const withFiles =
-            ids.length === 0 ? queued : { ...queued, attachments: ids, idempotencyKey: files.submissionKey() };
-        if ((await onSend(withFiles)) === null) discard();
+        const key = ids.length === 0 ? null : files.submissionKey();
+        const withFiles = key === null ? queued : { ...queued, attachments: ids, idempotencyKey: key };
+        // The store clears exactly this draft on success and releases the lock either way, even
+        // when this composer is long unmounted by then.
+        draftStore.beginSubmit(TASK_SCOPE, key);
+        let launched = false;
+        try {
+            launched = (await onSend(withFiles)) === null;
+        } finally {
+            draftStore.finishSubmit(TASK_SCOPE, launched);
+        }
     };
+
+    // A launch that finished while this composer was away cleared the store; the copy this one
+    // read at mount must go with it, or its next save would bring the launched draft back.
+    const seenCompletions = useRef(draftStore.taskCompletions);
+    useEffect(() => {
+        if (seenCompletions.current === draftStore.taskCompletions) return;
+        seenCompletions.current = draftStore.taskCompletions;
+        setState(initialComposerState(null, { repos, executors, defaultExecutor }));
+    }, [draftStore.taskCompletions, repos, executors, defaultExecutor]);
 
     return {
         state,
         update: edit,
+        locked,
         declaredParams,
         chosenWorkflowId,
         paramValues,

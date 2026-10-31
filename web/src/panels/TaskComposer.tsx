@@ -14,7 +14,7 @@ import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
 import { AttachmentChips } from './AttachmentList.js';
 import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
-import type { ComposerDraftInput, ComposerDraftStore } from '../composer-draft.js';
+import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { Icon } from '../components/Icon.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
@@ -498,7 +498,8 @@ export function TaskComposer({
     draftStore: ComposerDraftStore;
 }) {
     const limits = useAttachmentLimits();
-    const files = useAttachments({ draft: draftStore.files, update: draftStore.updateTaskFiles }, limits, sending);
+    const frozen = sending || draftStore.submits[TASK_SCOPE] !== undefined;
+    const files = useAttachments({ draft: draftStore.files, update: draftStore.updateTaskFiles }, limits, frozen);
     const dropAndPaste = attachmentHandlers(limits !== null, files.add);
     const composer = useComposerDraft({
         repos,
@@ -519,7 +520,7 @@ export function TaskComposer({
 
     const promptTooLong = commandTooLong(state.draft);
     const blocker = startBlocker({
-        sending,
+        sending: frozen,
         executorMissing: state.executor === '',
         promptEmpty: state.draft.trim() === '',
         promptTooLong,
@@ -580,7 +581,7 @@ export function TaskComposer({
                         aria-invalid={promptTooLong || undefined}
                         placeholder={PROMPT_PLACEHOLDER}
                         value={state.draft}
-                        readOnly={sending}
+                        readOnly={frozen}
                         onChange={(e) => update({ draft: e.target.value })}
                     />
                     <p
@@ -593,7 +594,7 @@ export function TaskComposer({
                         attachments={files.attachments}
                         onRemove={files.remove}
                         onRetry={files.retry}
-                        locked={sending}
+                        locked={frozen}
                     />
                     <div className="composer-bar">
                         <ComposerContextRow
@@ -604,9 +605,9 @@ export function TaskComposer({
                             update={update}
                         />
                         {limits === null ? null : (
-                            <AttachmentPicker limits={limits} onPick={files.add} disabled={sending} />
+                            <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />
                         )}
-                        <ComposerLaunch blocker={blocker} sending={sending} onStart={attemptStart} />
+                        <ComposerLaunch blocker={blocker} sending={frozen} onStart={attemptStart} />
                     </div>
                     {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
                     <ReadinessBanner blocker={blocker} workflow={state.workflow} />

@@ -40,6 +40,10 @@ export const inertDraftStore = (overrides: Partial<ComposerDraftStore> = {}): Co
     saveFollowUp: () => {},
     updateFollowUp: () => {},
     clearFollowUp: () => {},
+    submits: {},
+    beginSubmit: () => {},
+    finishSubmit: () => {},
+    taskCompletions: 0,
     ...overrides,
 });
 

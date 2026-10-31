@@ -151,4 +151,52 @@ describe('the follow-up composer drafts', () => {
         release({ status: 201, body: { id: SENT_ID } });
         await waitFor(() => expect(text.value).toBe(''));
     });
+
+    it('stays locked after a trip away and back, and success clears exactly that thread draft', async () => {
+        const user = userEvent.setup();
+        let release: (reply: unknown) => void = () => undefined;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        const { sent } = board({ followUp: () => held });
+        const { router } = renderApp(`/tasks/${A[0]!.id}`);
+        await user.type(await box(), 'go');
+        await user.upload((await screen.findByLabelText('Attach files')) as HTMLInputElement, file('spec.txt'));
+        await screen.findByText('Ready');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+        await waitFor(() => expect(sent()).toHaveLength(1));
+
+        await act(() => router.navigate('/settings/repos'));
+        await waitFor(() => expect(screen.queryByLabelText('Ask for a follow-up')).toBeNull());
+        await act(() => router.navigate(`/tasks/${A[0]!.id}`));
+        const back = await box();
+        expect(back.value).toBe('go');
+        expect(back.readOnly).toBe(true);
+        fireEvent.drop(back, { dataTransfer: { files: [file('late.txt')], types: ['Files'] } });
+        expect(screen.queryByText('late.txt')).toBeNull();
+        expect((screen.getByRole('button', { name: 'Remove spec.txt' }) as HTMLButtonElement).disabled).toBe(true);
+
+        release({ status: 201, body: { id: SENT_ID } });
+        await waitFor(() => expect(back.value).toBe(''));
+        expect(screen.queryByText('spec.txt')).toBeNull();
+    });
+
+    it('releases the lock on a refusal and keeps the draft and its key', async () => {
+        const user = userEvent.setup();
+        const { sent } = board({
+            followUp: (n) => (n === 1 ? { status: 403, body: { error: 'Not now' } } : undefined),
+        });
+        renderApp(`/tasks/${A[0]!.id}`);
+        const text = await box();
+        await user.type(text, 'go');
+        await user.upload((await screen.findByLabelText('Attach files')) as HTMLInputElement, file('spec.txt'));
+        await screen.findByText('Ready');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+        await screen.findByText('Not now');
+        expect(text.readOnly).toBe(false);
+        expect(text.value).toBe('go');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+        await waitFor(() => expect(sent()).toHaveLength(2));
+        expect(sent()[1]!.headers['idempotency-key']).toBe(sent()[0]!.headers['idempotency-key']);
+    });
 });

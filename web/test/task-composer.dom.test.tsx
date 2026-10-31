@@ -208,6 +208,7 @@ function openWithAttachments(options: {
     upload?: (name: string, attempt: number) => FetchReply;
     launch?: (attempt: number) => FetchReply;
     limits?: Partial<typeof LIMITS>;
+    repos?: string[];
 }) {
     const attempts = new Map<string, number>();
     let launches = 0;
@@ -215,7 +216,7 @@ function openWithAttachments(options: {
     const calls = stubFetch((call: FetchCall) => {
         const { method, url } = call;
         if (url === '/api/workspace') return workspace;
-        if (url === '/api/repos') return reposReply(['web']);
+        if (url === '/api/repos') return reposReply(options.repos ?? ['web']);
         if (url === '/api/auth/me') return OPEN_BOARD_SESSION;
         if (url === '/api/attachments/limits') return { ...LIMITS, ...options.limits };
         if (method === 'POST' && url === '/api/attachments') {
@@ -457,5 +458,73 @@ describe('the composer attachments', () => {
                 calls.some((c) => c.method === 'DELETE' && c.url === `/api/attachments/${metaFor('slow.txt', 7).id}`)
             ).toBe(true)
         );
+    });
+
+    describe('while a launch is in flight', () => {
+        const held = () => {
+            let release: (reply: unknown) => void = () => undefined;
+            const promise = new Promise((resolve) => {
+                release = resolve;
+            });
+            return { promise, release };
+        };
+
+        it('stays locked across a trip to Settings and back, and success clears exactly that draft', async () => {
+            const user = userEvent.setup();
+            const launch = held();
+            const { router, launches } = openWithAttachments({ launch: () => launch.promise });
+            const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+            await user.type(prompt, 'go');
+            await user.upload(await attachInput(), textFile('a.txt'));
+            await screen.findByText('Ready');
+            await user.click(screen.getByRole('button', { name: 'Start task' }));
+            await waitFor(() => expect(prompt.readOnly).toBe(true));
+
+            await act(() => router.navigate('/settings/repos'));
+            await waitFor(() => expect(screen.queryByLabelText('What should the agent do?')).toBeNull());
+            await act(() => router.navigate('/tasks/new'));
+            const back = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+            expect(back.value).toBe('go');
+            expect(back.readOnly).toBe(true);
+            expect((screen.getByRole('button', { name: 'Remove a.txt' }) as HTMLButtonElement).disabled).toBe(true);
+            fireEvent.drop(back, { dataTransfer: { files: [textFile('late.txt')], types: ['Files'] } });
+            expect(screen.queryByText('late.txt')).toBeNull();
+            expect(launches()).toHaveLength(1);
+
+            launch.release({ status: 201, body: { id: LAUNCHED_ID, status: 'queued' } });
+            await waitFor(() => expect(router.state.location.pathname).toBe(`/tasks/${LAUNCHED_ID}`));
+            await act(() => router.navigate('/tasks/new'));
+            expect(((await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement).value).toBe('');
+            expect(screen.queryByText('a.txt')).toBeNull();
+        });
+
+        it('refuses a repository change, and a failure releases the lock keeping the draft and its key', async () => {
+            const user = userEvent.setup();
+            const launch = held();
+            const { launches } = openWithAttachments({
+                repos: ['web', 'api'],
+                launch: (attempt) => (attempt === 1 ? launch.promise : { status: 201, body: { id: LAUNCHED_ID } }),
+            });
+            const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+            await user.type(prompt, 'go');
+            await user.upload(await attachInput(), textFile('a.txt'));
+            await screen.findByText('Ready');
+            await user.click(screen.getByRole('button', { name: 'Start task' }));
+            await waitFor(() => expect(prompt.readOnly).toBe(true));
+
+            await user.click(screen.getByRole('button', { name: /^Repository: / }));
+            await user.click(await screen.findByRole('option', { name: 'acme/api' }));
+            expect(screen.getByRole('button', { name: 'Repository: acme/web' })).toBeTruthy();
+
+            launch.release({ status: 500, body: { error: 'nope' } });
+            await screen.findByText('nope');
+            expect(prompt.readOnly).toBe(false);
+            expect(prompt.value).toBe('go');
+            expect(screen.getByText('a.txt')).toBeTruthy();
+            await user.click(screen.getByRole('button', { name: 'Start task' }));
+            await waitFor(() => expect(launches()).toHaveLength(2));
+            const [first, second] = launches();
+            expect(second!.headers['idempotency-key']).toBe(first!.headers['idempotency-key']);
+        });
     });
 });
