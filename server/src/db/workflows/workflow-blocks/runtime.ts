@@ -16,6 +16,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../../connection-bindings.js';
 import type { JobStorePrs } from '../../jobs/job-store-types.js';
+import { insertAdminActionEvent } from '../../jobs/job-store-admin-event.js';
 import { insertWorkflowSuccessor } from '../../jobs/job-store-rows.js';
 import { runtimeIsValid } from './runtime-params.js';
 import type { WorkflowNode } from '../workflow-schema.js';
@@ -237,6 +238,9 @@ async function insertWakeContinuation(
         where org_id = ${ctx.orgId} and root_job_id = ${ctx.rootJobId}
           and workflow_node = ${ctx.workflowNode} and woken_at is null
     `;
+    if (ctx.actor) {
+        await insertAdminActionEvent(tx, { orgId: ctx.orgId, jobId, action: 'wait-poke', actorId: ctx.actor.userId });
+    }
     return jobId;
 }
 

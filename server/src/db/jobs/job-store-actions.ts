@@ -6,6 +6,7 @@
 import type { Fragment, Sql, TransactionSql } from 'postgres';
 import { OBJECTIVE_MODE, USER_SCOPE, WORKFLOW_MODE } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../connection-bindings.js';
+import { cancelWaitsWithEvent, insertAdminActionEvent } from './job-store-admin-event.js';
 import {
     addFollowUpBindings,
     type BindConnectionResult,
@@ -536,6 +537,7 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
     if (rows[0]) {
         await addFollowUpBindings(tx, { orgId, rootJobId: label.root_job_id, createdBy, connectionIds });
         await stampKey(tx, orgId, rows[0].id, idem);
+        await insertAdminActionEvent(tx, { orgId, jobId: rows[0].id, action: 'follow-up', actorId: createdBy });
         return { id: rows[0].id };
     }
     // Nothing inserted — one of the preconditions failed, and which one decides the answer
@@ -701,6 +703,7 @@ export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promi
         `;
     if (rows[0]) {
         await stampKey(tx, orgId, rows[0].id, idem);
+        await insertAdminActionEvent(tx, { orgId, jobId: rows[0].id, action: 'retry', actorId: createdBy });
         return { id: rows[0].id };
     }
     // Nothing inserted — one of the preconditions failed, and which one decides the answer
@@ -1207,11 +1210,9 @@ export async function cancelThreadWait(
     cancelledBy: string | null,
     admin?: boolean
 ): ReturnType<JobStore['cancelWait']> {
-    const { prs } = ctx;
     const resolved = await resolveControlledRoot(ctx, id, cancelledBy, admin);
     if (!resolved.ok) return resolved.refusal;
-    if (!prs) return 'no_wait';
-    const cancelled = await prs.cancelWaitsForRoot(resolved.root, 'cancelled by user', undefined, cancelledBy);
+    const cancelled = await cancelWaitsWithEvent(ctx, resolved.root, cancelledBy);
     return cancelled > 0 ? { result: 'ok' } : 'no_wait';
 }
 

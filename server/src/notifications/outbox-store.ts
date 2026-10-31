@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import type { NotificationEventRow, NotificationKind, SendResult } from '@factory-ai/core';
+import type { AdminAction, NotificationEventRow, NotificationKind, SendResult } from '@factory-ai/core';
 import { backoffAt, MAX_FAILURES, RETRY_CAP_MS } from '../db/outbox-backoff.js';
 
 /**
@@ -54,6 +54,11 @@ interface LeasedRow {
     pr_url: string | null;
     question_id: string | null;
     questions: string[] | null;
+    action: AdminAction | null;
+    actor_user_id: string | null;
+    actor_login: string | null;
+    author_user_id: string | null;
+    author_login: string | null;
     occurred_at: Date;
 }
 
@@ -106,7 +111,8 @@ export function createNotificationOutboxStore({
                 const found = await tx<LeasedRow[]>`
                     select o.event_id, o.subscription_id, s.connector_kind, s.connector_config,
                            e.kind, e.job_id, e.root_job_id, e.repo, e.workflow, e.command, e.reason, e.pr_url,
-                           e.question_id, e.questions, e.occurred_at
+                           e.question_id, e.questions, e.action, e.actor_user_id, e.actor_login,
+                           e.author_user_id, e.author_login, e.occurred_at
                     from notification_outbox o
                     join notification_event e on e.org_id = o.org_id and e.id = o.event_id
                     join notification_subscription s on s.org_id = o.org_id and s.id = o.subscription_id
@@ -132,6 +138,9 @@ export function createNotificationOutboxStore({
                             prUrl: r.pr_url,
                             questionId: r.question_id,
                             questions: r.questions,
+                            action: r.action,
+                            actor: r.actor_user_id ? { id: r.actor_user_id, login: r.actor_login } : null,
+                            author: r.author_user_id ? { id: r.author_user_id, login: r.author_login } : null,
                             occurredAt: r.occurred_at.toISOString(),
                         },
                     })),

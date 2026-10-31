@@ -1,7 +1,16 @@
 import { taskTitleFromCommand } from './task-title.js';
 
-export const NOTIFICATION_KINDS = ['task.ready', 'task.blocked', 'task.question'] as const;
+export const NOTIFICATION_KINDS = ['task.ready', 'task.blocked', 'task.question', 'task.admin_action'] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+
+export const ADMIN_ACTIONS = ['follow-up', 'retry', 'wait-poke', 'wait-cancel'] as const;
+export type AdminAction = (typeof ADMIN_ACTIONS)[number];
+
+/** A user snapshot on an event: the id and the login as of emission. */
+export interface NotificationUser {
+    id: string;
+    login: string | null;
+}
 
 /** A `notification_event` row, as the columns read in camelCase; the command is the raw one. */
 export interface NotificationEventRow {
@@ -18,6 +27,10 @@ export interface NotificationEventRow {
     /** The asking question's id and its texts in ask order; null for every kind but task.question. */
     questionId: string | null;
     questions: string[] | null;
+    /** task.admin_action only: what the admin did, and who did it to whose task; null for every other kind. */
+    action: AdminAction | null;
+    actor: NotificationUser | null;
+    author: NotificationUser | null;
     occurredAt: string;
 }
 
@@ -36,6 +49,9 @@ export interface NotificationEvent {
     link: string;
     questionId: string | null;
     questions: string[] | null;
+    action: AdminAction | null;
+    actor: NotificationUser | null;
+    author: NotificationUser | null;
     occurredAt: string;
 }
 
@@ -54,6 +70,9 @@ export function notificationEventOf(row: NotificationEventRow, publicUrl: string
         link: new URL(`/tasks/${row.rootJobId}`, publicUrl).toString(),
         questionId: row.questionId,
         questions: row.questions,
+        action: row.action,
+        actor: row.actor,
+        author: row.author,
         occurredAt: row.occurredAt,
     };
 }

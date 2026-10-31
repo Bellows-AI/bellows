@@ -1,6 +1,6 @@
 # Notifications
 
-The durable event a delivery stage reads when a task becomes ready or blocked, or its agent asks a question; the connector contract and `deliver` classify a send; an org's subscriptions say who hears about it; the outbox fans an event out to them at emission and a delivery loop sends each row.
+The durable event a delivery stage reads when a task becomes ready or blocked, its agent asks a question, or an admin acts on another member's task; the connector contract and `deliver` classify a send; an org's subscriptions say who hears about it; the outbox fans an event out to them at emission and a delivery loop sends each row.
 
 | Concern | Code | Test |
 | --- | --- | --- |
@@ -8,6 +8,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked, o
 | Task title, the one derivation (first line of the command) | `core/src/task-title.ts` | `core/test/task-title.test.ts` |
 | Emission: table, function and deferred trigger on `job.status` | `server/migrations/102_notification_event.sql` | `server/test-db/notification-events.test.ts` |
 | Task-question emission: per-question id, text snapshot, insert trigger on `job_question` (107) | `server/migrations/107_notification_task_question.sql` | `server/test-db/notification-question.test.ts` |
+| Admin-action emission: columns, kind checks (111), in-transaction helper | `server/migrations/111_notification_admin_action.sql`, `server/src/db/jobs/job-store-admin-event.ts` | `server/test-db/notification-admin-action.test.ts` |
 | Delivery result (`SendResult`, reason lists, `isSendResult`) | `core/src/notifications.ts` | `core/test/notifications.test.ts` |
 | Connector contract, registry, `deliver` classification | `server/src/notifications/connector.ts` | `server/test/notifications.deliver.test.ts` |
 | Fake connector for delivery tests | `server/test/notifications-fake-connector.ts` | `server/test/notifications.deliver.test.ts` |
@@ -28,6 +29,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked, o
 - The event is written in the status write's transaction, judged on the status the transaction commits: `server/migrations/102_notification_event.sql`, `server/test-db/notification-events.test.ts`.
 - One event per (job, kind): the id is `md5(job_id || '/' || kind)::uuid` (`task.question` is one per (job, question): `md5(job_id || '/' || question_id || '/task.question')::uuid`) (a batch event's job is the thread head), so a policy refusal (`succeeded` then `failed` in one transaction) yields `task.blocked` only: `server/test-db/notification-events.test.ts`.
 - `task.question` is emitted once when a question is inserted pending and answerable at commit (running job, same lease, no stop requested), snapshotting its texts; answering, closing or expiring it never emits: `server/migrations/107_notification_task_question.sql`, `server/test-db/notification-question.test.ts`.
+- `task.admin_action` is written in the admin action's transaction, only when the actor is not the thread's `execution_user_id`, one per created job (one per cancelling transaction for a wait cancel); its recipients are the org's subscriptions to the kind, never a person, and it names the author: `server/src/db/jobs/job-store-admin-event.ts`, `server/test-db/notification-admin-action.test.ts`.
 - The row copies the raw command and the frozen `workflow_name`; the title is derived only in core: `core/src/notifications.ts`, `core/src/task-title.ts`.
 - A no-op or replayed settle, a takeover, a `running` to `queued` interruption, a stop, a batch automatic retry or repair, and a workflow failure whose verdict queued a successor or re-parked into an open wait emit nothing: `server/test-db/notification-events.test.ts`.
 - `task.ready` is emitted only for the row the board shows as Needs review: a succeeded thread head (newest by created_at, id) that is not a review and not done, open wait or not; it snapshots the thread's `job_pr.pr_url`: `server/migrations/105_notification_task_ready.sql`, `server/test-db/notification-events.test.ts`.
