@@ -145,7 +145,9 @@ export function createAttachmentRows({
                 select id, uploader_id, name, media_type, size_bytes::int as size_bytes, sha256, object_key, state
                 from input_attachment
                 where org_id = ${orgId} and id = ${id}
-                  and (state = 'bound' or (state = 'ready' and uploader_id = ${uploaderId}))
+                  and ((state = 'bound' and exists (
+                           select 1 from job j where j.org_id = input_attachment.org_id and j.id = input_attachment.bound_job_id))
+                       or (state = 'ready' and uploader_id = ${uploaderId}))
             `;
             return row ? rowOf(row) : null;
         },

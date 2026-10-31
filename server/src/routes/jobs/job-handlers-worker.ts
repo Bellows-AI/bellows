@@ -4,7 +4,7 @@ import { callerOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { refusedAsUnusable } from './executor-usable.js';
 import { type FairBoardScanner, boardsFor, executorsFor, reposFor, storeFor, workflowsFor } from './job-context.js';
-import { parseConnectionIds } from '../connections.js';
+import { taskRefsOf } from './job-task-refs.js';
 import { resolveLaunchWorkflow } from './job-workflow-resolution.js';
 import { createIdempotencyOf, guardKeyed, sendQueued } from './job-idempotency.js';
 import {
@@ -178,8 +178,8 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
         return bad(reply, ERROR_CODES.BAD_WORKFLOW_PARAMS, 'workflowParams requires a resolved workflow');
     }
 
-    const connectionIds = parseConnectionIds(fields.connections);
-    if (typeof connectionIds === 'string') return bad(reply, ERROR_CODES.BAD_CONNECTION, connectionIds);
+    const refs = taskRefsOf(reply, fields);
+    if (!refs) return reply;
 
     const created = await guardKeyed(
         reply,
@@ -190,7 +190,7 @@ export async function handleCreateJob(orgs: OrgRegistry, request: FastifyRequest
                 executor,
                 executorScope,
                 skills,
-                connectionIds,
+                ...refs,
                 ...(workflow ? { workflow } : {}),
                 idempotency: idempotency.value,
             })

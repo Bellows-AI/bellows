@@ -443,6 +443,40 @@ describe('reading and deleting a draft', () => {
     });
 });
 
+describe('reading a bound file', () => {
+    const bound = async () => {
+        const booted = await boot();
+        const response = await post(booted.instance, booted.cookie.owner, pngBytes());
+        const id = response.json().id as string;
+        booted.rows().find((row) => row.id === id)!.state = 'bound';
+        return { ...booted, id };
+    };
+    const read = (instance: FastifyInstance, cookie: string, path: string) =>
+        instance.inject({ method: 'GET', url: path, headers: { cookie } });
+
+    it('serves meta and content to any member of the org', async () => {
+        const { instance, cookie, id } = await bound();
+        for (const path of [`/api/attachments/${id}`, `/api/attachments/${id}/content`]) {
+            expect((await read(instance, cookie.stranger, path)).statusCode).toBe(HTTP_OK);
+        }
+    });
+
+    it('hides it from another org', async () => {
+        const { instance, cookie, id } = await bound();
+        for (const path of [`/api/attachments/${id}`, `/api/attachments/${id}/content`]) {
+            expect((await read(instance, cookie.outsider, path)).statusCode).toBe(HTTP_NOT_FOUND);
+        }
+    });
+
+    it('answers 404 once the thread was removed and the file is deleting', async () => {
+        const { instance, cookie, id, rows } = await bound();
+        rows().find((row) => row.id === id)!.state = 'deleting';
+        for (const path of [`/api/attachments/${id}`, `/api/attachments/${id}/content`]) {
+            expect((await read(instance, cookie.stranger, path)).statusCode).toBe(HTTP_NOT_FOUND);
+        }
+    });
+});
+
 describe('GET /api/attachments/limits', () => {
     it('serves the core constants and the formats table', async () => {
         const { instance, cookie } = await boot();

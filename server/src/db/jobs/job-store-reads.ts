@@ -5,6 +5,7 @@
 
 import type { Sql, Fragment } from 'postgres';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
+import { attachmentsOfThread } from './job-store-attachments.js';
 import { type JobRow, toJobRow, type TaskRow, toTask, userRef } from './job-store-rows.js';
 import type {
     Job,
@@ -156,7 +157,13 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         rows.map((row) => row.id)
     );
     const integrations = await integrationsOf(ctx, first.root_job_id);
-    return rows.map((row) => ({ ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [], ...integrations }));
+    const attachments = await attachmentsOfThread(sql, orgId, first.root_job_id);
+    return rows.map((row) => ({
+        ...toJobRow(ctx, row),
+        questions: questions.get(row.id) ?? [],
+        attachments: attachments.get(row.id) ?? [],
+        ...integrations,
+    }));
 }
 
 /** The thread root's bindings, revision and open requirements: the detail reads attach them to every row. */

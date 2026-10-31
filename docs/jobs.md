@@ -10,6 +10,7 @@ verdicts, and the driver is the only process that spawns anything. Graphs are
 | Concern | Code | Test |
 | --- | --- | --- |
 | Routes, validation, refusal codes | `server/src/routes/jobs/jobs.ts`, `job-handlers-worker.ts`, `job-handlers-actions.ts`, `job-field-validation.ts`, `job-refusals.ts`, `job-limits.ts` | `server/test/routes.jobs.test.ts` |
+| Files on a create or follow-up: bound atomically with the insert, part of the idempotency fingerprint, listed per request in the thread read, revoked with the thread | `server/src/db/jobs/job-store-attachments.ts`, `server/src/db/jobs/job-store-actions.ts`, `server/src/db/jobs/job-store-reads.ts` | `server/test-db/job-store.attachments.test.ts`, `server/test-db/job-store.idempotency.test.ts` |
 | Schema | `server/migrations/006_jobs.sql` and later `0*_job_*.sql` | `server/test-db/job-store.test.ts` |
 | `failure_cause` under a `gate`/`publish`/`helper` kind | `server/migrations/065_batch_recovery_evidence.sql`, `server/src/db/jobs/job-store-worker.ts`, `job-store-evidence.ts` | `server/test-db/job-store.test.ts` |
 | Claim, lease, fencing, `claim_seq`, settle long-poll; claim acquire never waits on a thread lock while it holds a row (a busy thread is skipped this poll) | `server/src/db/jobs/job-store-claim.ts` (`acquireCandidate`), `job-store-claim-row.ts`, `job-store.ts` | `server/test-db/job-store.test.ts`, `job-store.thread-claim.test.ts`, `job-store.thread-lock-order.test.ts`, `job-store.bind-lock-order.test.ts`, `job-store.settle.test.ts` |

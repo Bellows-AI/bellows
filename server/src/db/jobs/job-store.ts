@@ -272,7 +272,9 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
 
         // The rest tuple keeps the interface's five parameters (the params ceiling is for hand-written signatures).
         async createFollowUp(
-            ...[parentId, command, createdBy, idempotency, connectionIds]: Parameters<JobStore['createFollowUp']>
+            ...[parentId, command, createdBy, idempotency, connectionIds, attachmentIds]: Parameters<
+                JobStore['createFollowUp']
+            >
         ) {
             await gate();
             return createFollowUpRow(ctx.sql, {
@@ -282,6 +284,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
                 createdBy,
                 idempotency,
                 connectionIds,
+                attachmentIds,
             });
         },
 

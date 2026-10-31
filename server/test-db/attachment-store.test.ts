@@ -13,7 +13,7 @@ import {
     createAttachmentStore,
 } from '../src/attachments/attachment-store.js';
 import { createAttachmentRows } from '../src/attachments/attachment-rows.js';
-import { testOrg, testUser } from './fixtures.js';
+import { craftJob, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
 /** The attachment index (111) over a filesystem object store: the state machine and its scoping, on a real database. */
@@ -175,11 +175,27 @@ describe.skipIf(!enabled)('attachment store', () => {
         expect(new TextDecoder().decode((await storeOf(ORG).read(meta.id, OWNER.id))!.body)).toBe('private');
     });
 
+    const bindTo = async (id: string, jobId: string) =>
+        sql`update input_attachment set state = 'bound', bound_job_id = ${jobId}, root_job_id = ${jobId}
+            where org_id = ${ORG} and id = ${id}`;
+
     it('lets any member of the org read a bound file, and no other org', async () => {
         const { meta } = await storeOf(ORG).upload(upload('shared'));
-        await sql`update input_attachment set state = 'bound' where org_id = ${ORG} and id = ${meta.id}`;
+        await bindTo(meta.id, await craftJob({ sql, org: ORG, author: OWNER.id }));
         expect((await storeOf(ORG).meta(meta.id, STRANGER.id))?.state).toBe('bound');
         expect(await storeOf(OTHER_ORG).meta(meta.id, STRANGER.id)).toBeNull();
+    });
+
+    it('stops serving a bound file once its job row is gone, whatever deleted it', async () => {
+        const { meta } = await storeOf(ORG).upload(upload('orphaned'));
+        const jobId = await craftJob({ sql, org: ORG, author: OWNER.id });
+        await bindTo(meta.id, jobId);
+        expect(await storeOf(ORG).read(meta.id, STRANGER.id)).not.toBeNull();
+
+        await sql`delete from job where org_id = ${ORG} and id = ${jobId}`;
+
+        expect(await storeOf(ORG).meta(meta.id, STRANGER.id)).toBeNull();
+        expect(await storeOf(ORG).read(meta.id, STRANGER.id)).toBeNull();
     });
 
     it('deletes a draft through deleting, then the object, then deleted, and is idempotent', async () => {
