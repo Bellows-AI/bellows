@@ -179,54 +179,59 @@ function finish(held: ComposerDraftHeld, scope: SubmitScope, succeeded: boolean)
     return settled({ ...clearScope(released, scope), revisions: without(released.revisions, scope) });
 }
 
-export function composerDraftReducer(held: ComposerDraftHeld | null, action: DraftAction): ComposerDraftHeld | null {
-    // Another owner's draft is never merged into: the next account starts from nothing.
-    const base = (owner: string) => (held?.owner === owner ? held : emptyHeld(owner));
-    const refused = (scope: SubmitScope) => held?.submits[scope] !== undefined;
+/** The draft an action mutates; the lifecycle actions (`begin`, `finish`) mutate none. */
+function mutatedScope(action: DraftAction): SubmitScope | null {
     switch (action.type) {
         case 'save':
-            if (refused(TASK_SCOPE)) return held;
+        case 'clear':
+        case 'taskFiles':
+        case 'clearTaskFiles':
+            return TASK_SCOPE;
+        case 'followUp':
+        case 'clearFollowUp':
+            return threadScope(action.root);
+        default:
+            return null;
+    }
+}
+
+export function composerDraftReducer(held: ComposerDraftHeld | null, action: DraftAction): ComposerDraftHeld | null {
+    // The one guard: a draft with a request in flight refuses every mutation, whoever asks.
+    const target = mutatedScope(action);
+    if (target !== null && held?.submits[target] !== undefined) return held;
+    // Another owner's draft is never merged into: the next account starts from nothing.
+    const base = (owner: string) => (held?.owner === owner ? held : emptyHeld(owner));
+    switch (action.type) {
+        case 'save':
             return bump({ ...base(action.owner), task: action.next }, TASK_SCOPE);
         case 'clear':
-            if (held === null || refused(TASK_SCOPE)) return held;
-            return settled(bump({ ...held, task: null }, TASK_SCOPE));
+            return held && settled(bump({ ...held, task: null }, TASK_SCOPE));
         case 'taskFiles': {
-            if (refused(TASK_SCOPE)) return held;
             const current = base(action.owner);
             return settled(bump({ ...current, files: action.update(current.files) }, TASK_SCOPE));
         }
         case 'clearTaskFiles':
-            if (held === null || refused(TASK_SCOPE)) return held;
-            return settled(bump({ ...held, files: EMPTY_FILES }, TASK_SCOPE));
+            return held && settled(bump({ ...held, files: EMPTY_FILES }, TASK_SCOPE));
         case 'followUp': {
-            if (refused(threadScope(action.root))) return held;
             const current = base(action.owner);
             const before = current.followUps[action.root] ?? { text: '', ...EMPTY_FILES };
             const after = action.update(before);
             const others = without(current.followUps, action.root);
-            return settled(
-                bump(
-                    { ...current, followUps: followUpEmpty(after) ? others : { ...others, [action.root]: after } },
-                    threadScope(action.root)
-                )
-            );
+            const followUps = followUpEmpty(after) ? others : { ...others, [action.root]: after };
+            return settled(bump({ ...current, followUps }, threadScope(action.root)));
         }
         case 'clearFollowUp':
-            if (held === null || refused(threadScope(action.root))) return held;
-            return settled(
-                bump({ ...held, followUps: without(held.followUps, action.root) }, threadScope(action.root))
+            return (
+                held &&
+                settled(bump({ ...held, followUps: without(held.followUps, action.root) }, threadScope(action.root)))
             );
-        case 'begin':
-            if (held === null || refused(action.scope)) return held;
-            return {
-                ...held,
-                submits: {
-                    ...held.submits,
-                    [action.scope]: { key: action.key, revision: held.revisions[action.scope] ?? 0 },
-                },
-            };
+        case 'begin': {
+            if (held === null) return held;
+            const submit = { key: action.key, revision: held.revisions[action.scope] ?? 0 };
+            return { ...held, submits: { ...held.submits, [action.scope]: submit } };
+        }
         case 'finish':
-            return held === null ? null : finish(held, action.scope, action.succeeded);
+            return held && finish(held, action.scope, action.succeeded);
     }
 }
 
