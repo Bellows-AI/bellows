@@ -97,6 +97,8 @@ const readFile = async (entry, source) => {
 /** What this script leaves the target directory at: the next delivery reopens only a directory it sealed itself. */
 const SEALED_MODE = 0o555;
 const OPEN_MODE = 0o755;
+/** Every temp file is written writable and made read-only only before its rename, so an interrupted write is retried over. */
+const READ_ONLY_MODE = 0o444;
 
 /** Removes everything in `dir` that is not in `keep`: stale files and staging directories. */
 const sweep = (dir, keep) => {
@@ -126,14 +128,18 @@ async function main() {
         const staged = path.join(staging, pathOf(entry));
         if (holds(staged, entry)) continue;
         const tmp = staged + '.part';
-        fs.writeFileSync(tmp, await readFile(entry, source), { mode: 0o444 });
+        fs.rmSync(tmp, { force: true });
+        fs.writeFileSync(tmp, await readFile(entry, source));
+        fs.chmodSync(tmp, READ_ONLY_MODE);
         fs.renameSync(tmp, staged);
     }
     for (const entry of missing) fs.renameSync(path.join(staging, pathOf(entry)), path.join(target, pathOf(entry)));
 
     const manifest = { files: list.map((entry) => ({ ...entry, path: pathOf(entry) })) };
     const pending = path.join(target, MANIFEST_NAME + '.tmp');
-    fs.writeFileSync(pending, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o444 });
+    fs.rmSync(pending, { force: true });
+    fs.writeFileSync(pending, JSON.stringify(manifest, null, 2) + '\n');
+    fs.chmodSync(pending, READ_ONLY_MODE);
     fs.renameSync(pending, path.join(target, MANIFEST_NAME));
     sweep(target, new Set([MANIFEST_NAME, ...manifest.files.map((file) => file.path)]));
     fs.chmodSync(target, SEALED_MODE);

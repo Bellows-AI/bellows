@@ -183,6 +183,29 @@ describe('the attachment fetch script', () => {
         expect(statSync(target).mode & 0o777).toBe(0o555);
     });
 
+    it('retries over a read-only temp file an interrupted run left, inside a sealed directory', async () => {
+        const url = await serve();
+        const first = fileOf(ID_A, 'a.txt', Buffer.from('a'));
+        await fetchAll(url, [first]);
+        const second = fileOf(ID_B, 'b.txt', Buffer.from('b'));
+        const staging = join(target, '.staging-7');
+        chmodSync(target, 0o755);
+        mkdirSync(staging);
+        for (const stale of [join(target, 'manifest.json.tmp'), join(staging, `${ID_B}.txt.part`)]) {
+            writeFileSync(stale, 'half');
+            chmodSync(stale, 0o444);
+        }
+        chmodSync(target, 0o555);
+
+        await expect(fetchAll(url, [first, second])).resolves.toMatchObject({ ok: true, fetched: 1 });
+
+        const modeOf = (name: string) => statSync(join(target, name)).mode & 0o777;
+        expect([modeOf(`${ID_B}.txt`), modeOf('manifest.json'), statSync(target).mode & 0o777]).toEqual([
+            0o444, 0o444, 0o555,
+        ]);
+        expect(readFileSync(join(target, `${ID_B}.txt`), 'utf8')).toBe('b');
+    });
+
     it('keeps the valid files it already holds and fetches only the missing ones', async () => {
         const files = [fileOf(ID_A, 'a.txt', Buffer.from('aaa')), fileOf(ID_B, 'b.txt', Buffer.from('bbb'))];
         const url = await serve();
