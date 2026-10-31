@@ -17,7 +17,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked, o
 | Manual real-channel check, skipped unless `DISCORD_TEST_WEBHOOK_URL` is set | `server/test/notifications.discord-live.test.ts` | `server/test/notifications.discord-live.test.ts` |
 | Subscriptions: table (103) | `server/migrations/103_notification_subscription.sql` | `server/test-db/notification-subscriptions.test.ts` |
 | Subscription store, org-bound CRUD | `server/src/notifications/subscription-store.ts` | `server/test-db/notification-subscriptions.test.ts` |
-| Subscription credential: secret identity, fail-closed read, row columns (108) | `server/src/notifications/subscription-credential.ts`, `server/migrations/108_notification_credential.sql` | `server/test-db/notification-outbox.test.ts`, `server/test-db/notification-subscriptions.routes.test.ts` |
+| Subscription credential: secret identity, fail-closed read, row columns (111) | `server/src/notifications/subscription-credential.ts`, `server/migrations/111_notification_credential.sql` | `server/test-db/notification-outbox.test.ts`, `server/test-db/notification-subscriptions.routes.test.ts` |
 | Outbox: table, due index and fan-out at emission (104) | `server/migrations/104_notification_outbox.sql` | `server/test-db/notification-outbox.test.ts` |
 | Task-ready narrowing and PR link (105) | `server/migrations/105_notification_task_ready.sql` | `server/test-db/notification-events.test.ts` |
 | Task-blocked narrowing, batch attention trigger and shared fan-out function (106) | `server/migrations/106_notification_task_blocked.sql` | `server/test-db/notification-events.test.ts`, `server/test-db/notification-blocked.test.ts` |
