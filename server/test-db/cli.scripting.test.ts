@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import { run } from '../../cli/src/run.js';
 import { buildApp } from '../src/app.js';
 import { hashToken } from '../src/auth/session.js';
 import { createAuthStore } from '../src/auth/store.js';
+import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from '../src/db/jobs/job-store-org-resolvers.js';
 import { createOrgRegistry } from '../src/orgs.js';
 import { testSecretStore } from './env-secrets-harness.js';
@@ -84,6 +85,11 @@ beforeEach(async () => {
             withStores: true,
             secrets: testSecretStore(sql),
             secretLog: () => {},
+            artifacts: {
+                objects: createFilesystemStore(mkdtempSync(join(tmpdir(), 'cli-attach-store-'))),
+                prefix: '',
+                prepare: async () => '',
+            },
         }),
         auth,
         orgOfLease: createOrgOfLease({ sql, ready }),
@@ -120,6 +126,8 @@ interface CliOptions {
     stdin?: string;
     fetch?: typeof globalThis.fetch;
     env?: NodeJS.ProcessEnv;
+    /** The command prints progress on stderr (`--attach`); every other call must print nothing there. */
+    progress?: boolean;
 }
 
 /**
@@ -139,7 +147,7 @@ async function cli(argv: string[], options: CliOptions = {}): Promise<{ code: nu
         stdout: (text) => stdout.push(text),
         stderr: (text) => stderr.push(text),
     });
-    expect(stderr.join('')).toBe('');
+    if (!options.progress) expect(stderr.join('')).toBe('');
     const env = JSON.parse(stdout.join('')) as Envelope;
     expect(Object.keys(env).sort()).toEqual(ENVELOPE_KEYS);
     expect(env.exitCode).toBe(code);
@@ -302,6 +310,60 @@ describe.skipIf(!enabled)('CLI scripting against the real board', () => {
         const mismatched = await cli(['task', 'list', '--sort', 'oldest', '--cursor', firstCursor!, '--json']);
         expect(mismatched.code).toBe(1);
         expect(mismatched.env.error).toMatchObject({ code: 'BAD_CURSOR' });
+    });
+
+    it('attaches files to a create and a follow-up, stored byte for byte', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'cli-attach-'));
+        const files = {
+            'my notes.txt': 'first file\nwith ✓ text\n',
+            'data.csv': 'a,b\n1,2\n',
+            'later.md': '# later\n',
+        };
+        for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+        const at = (name: string) => join(dir, name);
+
+        const create = await cli(
+            [
+                'job',
+                'create',
+                '--repo',
+                repo,
+                'see files',
+                '--attach',
+                at('my notes.txt'),
+                '--attach',
+                at('data.csv'),
+                '--json',
+            ],
+            { progress: true }
+        );
+        expect(create.code, JSON.stringify(create.env)).toBe(0);
+        const root = created(create.env).id;
+        const lease = await claim(root);
+        await worker(`/api/jobs/${root}/complete`, { leaseToken: lease, status: 'succeeded', exitCode: 0 });
+
+        const followUp = await cli(['job', 'follow-up', root, 'and this', '--attach', at('later.md'), '--json'], {
+            progress: true,
+        });
+        expect(followUp.code, JSON.stringify(followUp.env)).toBe(0);
+
+        const thread = await fetch(`${boardUrl}/api/jobs/${root}/thread`, {
+            headers: { authorization: `Bearer ${token}` },
+        });
+        const rows = ((await thread.json()) as { jobs: { attachments: { id: string; name: string }[] }[] }).jobs;
+        expect(rows.map((row) => row.attachments.map((a) => a.name))).toEqual([
+            ['my notes.txt', 'data.csv'],
+            ['later.md'],
+        ]);
+        for (const row of rows) {
+            for (const attachment of row.attachments) {
+                const content = await fetch(`${boardUrl}/api/attachments/${attachment.id}/content`, {
+                    headers: { authorization: `Bearer ${token}` },
+                });
+                expect(content.status).toBe(200);
+                expect(Buffer.from(await content.arrayBuffer())).toEqual(readFileSync(at(attachment.name)));
+            }
+        }
     });
 
     it('runs through one npm layer, multiline stdin and all', async () => {

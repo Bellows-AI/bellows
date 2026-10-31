@@ -1,6 +1,6 @@
 /** The CLI's whole help text: `bellows help` prints it, and every usage error ends with it. */
 export const USAGE = `usage: bellows job create (<command...> | --file <path> | --stdin) [--repo owner/name] [--executor name] [--executor-scope user|org]
-                          [--skill name]... [--connection <id>]... [--idempotency-key <key>] [--json]
+                          [--skill name]... [--connection <id>]... [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job list [--status <status>] [--limit <n>] [--repo owner/name] [--json]
        bellows task list [--state attention|running|review|past] [--q <text>] [--author <login>] [--repo owner/name]
                          [--sort newest|oldest] [--limit <n>] [--cursor <cursor>] [--json]
@@ -10,7 +10,7 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
        bellows job read <id> [--stream <name>] [--attempt <n>] [--session <id>] [--executor <name>]
                         [--cursor <cursor>] [--limit <bytes>] [--all] [--json]
        bellows job wait <id> [--timeout <seconds>] [--json]
-       bellows job follow-up <id> (<command...> | --file <path> | --stdin) [--idempotency-key <key>] [--json]
+       bellows job follow-up <id> (<command...> | --file <path> | --stdin) [--attach <path>]... [--idempotency-key <key>] [--json]
        bellows job retry <id> [--idempotency-key <key>] [--json]
        bellows job edit <id> (<command...> | --file <path> | --stdin) [--json]
        bellows job questions <id> [--json]
@@ -40,6 +40,10 @@ export const USAGE = `usage: bellows job create (<command...> | --file <path> | 
                                          and who the token acts as
        bellows help | --help | -h          this text; bellows --version prints the CLI's version
                                            (neither reads any configuration)
+
+--attach uploads each file (png, jpg, webp, pdf, docx, txt, md, csv; 20 MiB each, 10 and 50 MiB per request)
+before the task is created, and submits nothing if any check or upload fails. Progress goes to stderr; under
+--idempotency-key K the uploads are keyed K.a1, K.a2, ... so repeating the command replays them.
 
 preflight checks a create's selection against the board's reads and only reads. It is advisory:
 the board rechecks at create and at claim, and its refusal is the answer.

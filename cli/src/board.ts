@@ -1,6 +1,7 @@
 import type { GateActivity, PrActivity } from './activity-types.js';
 import { batchRoutes } from './batch.js';
 import type { BatchRoutes } from './batch.js';
+import { attachRoutes } from './attach.js';
 import { CONTENT_TYPE_HEADER, IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_REPLAYED_HEADER, JSON_CONTENT_TYPE } from './http.js';
 import {
     BoardError,
@@ -312,6 +313,8 @@ export interface BoardClient extends BatchRoutes {
         idempotencyKey?: string | undefined;
         /** The managed connections the task selects; the board authorizes each against the author. */
         connections?: string[] | undefined;
+        /** The uploaded files the request carries, by id; absent carries none. */
+        attachments?: string[] | undefined;
     }): Promise<JobCreated>;
     listJobs(filters: {
         status?: string | undefined;
@@ -344,7 +347,9 @@ export interface BoardClient extends BatchRoutes {
     ): Promise<{ jobId: string; streams: readonly ArtifactStream[] }>;
     /** One page of the selected streams' text, in attempt, session, stream and offset order. */
     readArtifacts(id: string, filters: ArtifactFilters): Promise<ArtifactPage>;
-    followUp(id: string, command: string, idempotencyKey?: string): Promise<JobCreated>;
+    followUp(id: string, command: string, key?: string, attachments?: readonly string[]): Promise<JobCreated>;
+    /** Uploads one file as a draft; the key makes a repeat answer the first attempt's id. */
+    uploadAttachment(input: { name: string; bytes: Uint8Array; idempotencyKey: string }): Promise<{ id: string }>;
     /** Re-runs the thread head's own command as a fresh attempt; the board takes nothing from a body. */
     retry(id: string, idempotencyKey?: string): Promise<JobCreated>;
     /** Replaces a queued run's command in place; the board refuses anything else and any non-author. */
@@ -565,25 +570,13 @@ export function createBoardClient({
     };
 
     return {
-        async createJob(input) {
-            // Optional fields are omitted from the body when absent — the board is the validator,
+        async createJob({ idempotencyKey, ...fields }) {
+            // An absent optional field is `undefined`, which JSON leaves out: the board is the validator,
             // and a key that is not there is not a value it has to refuse.
-            const body: Record<string, unknown> = {
-                command: input.command,
-                ...(input.repo !== undefined ? { repo: input.repo } : {}),
-                ...(input.executor !== undefined ? { executor: input.executor } : {}),
-                ...(input.executorScope !== undefined ? { executorScope: input.executorScope } : {}),
-                ...(input.skills !== undefined ? { skills: input.skills } : {}),
-                ...(input.connections !== undefined ? { connections: input.connections } : {}),
-            };
             return created('/api/jobs', {
                 method: 'POST',
-                headers: {
-                    ...authHeaders(),
-                    ...keyHeader(input.idempotencyKey),
-                    [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE,
-                },
-                body: JSON.stringify(body),
+                headers: { ...authHeaders(), ...keyHeader(idempotencyKey), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
+                body: JSON.stringify(fields),
             });
         },
 
@@ -639,14 +632,16 @@ export function createBoardClient({
 
         ...batchRoutes((path, init, onResponse) => request(at(path), init, onResponse), authHeaders),
 
-        async followUp(id, command, idempotencyKey) {
+        ...attachRoutes(request, authHeaders),
+
+        async followUp(id, command, idempotencyKey, attachments) {
             // The command is the whole body: the repo, the executor and the session are copied
             // from the parent at insert, and sending them here would be a second opinion the
             // board does not ask for.
             return created(`${jobPath(id)}/follow-up`, {
                 method: 'POST',
                 headers: { ...authHeaders(), ...keyHeader(idempotencyKey), [CONTENT_TYPE_HEADER]: JSON_CONTENT_TYPE },
-                body: JSON.stringify({ command }),
+                body: JSON.stringify({ command, ...(attachments?.length ? { attachments } : {}) }),
             });
         },
 
