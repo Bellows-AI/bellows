@@ -4,7 +4,8 @@ import type { NavigateFunction } from 'react-router-dom';
 import { useThread } from '../api/useJobs.js';
 import type { Job } from '../api/useJobs.js';
 import { useThreadActivity } from '../api/useJobActivity.js';
-import type { UseTasks } from '../api/useTasks.js';
+import type { SubmittedFiles, UseTasks } from '../api/useTasks.js';
+import { useComposerDraftStore } from '../composer-draft.js';
 import { BatchBacklink } from '../components/BatchBacklink.js';
 import { TaskRemoveDialog } from '../components/TaskRemoveDialog.js';
 import { TaskHeader } from '../panels/TaskHeader.js';
@@ -44,7 +45,7 @@ function useTaskConversationActions(
         };
     }, [id]);
 
-    const followUp = async (command: string): Promise<string | null> => {
+    const followUp = async (command: string, files?: SubmittedFiles): Promise<string | null> => {
         if (latest === null) return 'No task to follow up on';
         const atStart = generation.current;
         setFollowUpError(null);
@@ -53,7 +54,7 @@ function useTaskConversationActions(
             // The adjustment continues the NEWEST run — it is the one that is finished and
             // carries the session the child inherits. No executor on the body: the board binds
             // the follow-up to the executor that ran the task.
-            const result = await tasks.actions.followUp(latest.id, command);
+            const result = await tasks.actions.followUp(latest.id, command, files);
             if (generation.current !== atStart) return result.error;
             if (result.error !== null) {
                 // Said inside the composer, beside the draft it refused — a 403 FORBIDDEN too.
@@ -195,6 +196,7 @@ export function TaskDetailPage() {
     const params = useParams();
     const id = params.id ?? null;
     const detail = useThread(id);
+    const draftStore = useComposerDraftStore();
 
     // A different id is a different conversation — the NEWEST run is the one the composer and
     // the Done verdict act on, the only one that is finished and not yet closed.
@@ -246,6 +248,7 @@ export function TaskDetailPage() {
                 followUpError={followUpError}
                 sending={sending}
                 onFollowUp={followUp}
+                draftStore={draftStore}
                 onAnswer={answerQuestion}
                 onConnectionChange={detail.refresh}
                 activity={activity}

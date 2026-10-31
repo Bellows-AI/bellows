@@ -12,6 +12,7 @@ import {
     trackRepos,
     withExecutor,
 } from './executor.js';
+import { stubAttachments } from './fixtures/attachments.js';
 
 const SHOTS = 'artifacts/ui';
 
@@ -381,5 +382,77 @@ test.describe('the draft survives the configuration detour (F1)', () => {
         await page.goto('/settings/executors?return=https://evil.example');
         await expect(page.getByRole('heading', { name: 'Executors' })).toBeVisible();
         await expect(page.getByText('You have a task draft in progress.')).toHaveCount(0);
+    });
+});
+
+test.describe('attachments in the composer', () => {
+    test.beforeEach(async ({ page }) => {
+        await withExecutor(page);
+        await trackRepos(page, [E2E_REPO]);
+        await stubLaunch(page);
+    });
+
+    const prompt = (page: Page) => page.getByLabel('What should the agent do?');
+    const chips = (page: Page) => page.getByRole('list', { name: 'Attached files' });
+    const file = (name: string) => ({ name, mimeType: 'text/plain', buffer: Buffer.from('hello') });
+
+    test('the picker, a drop and a paste each add a chip; a failed upload retries', async ({ page }) => {
+        const problems = watchConsole(page);
+        const board = await stubAttachments(page, { failFirst: ['flaky.txt'] });
+        await page.goto('/tasks/new');
+        await prompt(page).fill('use the files');
+
+        await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('picked.txt'));
+        await expect(chips(page).getByText('picked.txt')).toBeVisible();
+
+        await page.evaluate(() => {
+            const data = new DataTransfer();
+            data.items.add(new File(['x'], 'dropped.txt', { type: 'text/plain' }));
+            document
+                .querySelector('.composer-prompt')!
+                .dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+        });
+        await expect(chips(page).getByText('dropped.txt')).toBeVisible();
+
+        await prompt(page).evaluate((box) => {
+            const data = new DataTransfer();
+            data.items.add(new File(['x'], 'pasted.txt', { type: 'text/plain' }));
+            box.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+        });
+        await expect(chips(page).getByText('pasted.txt')).toBeVisible();
+
+        await page.getByLabel('Attach files', { exact: true }).setInputFiles(file('flaky.txt'));
+        const start = page.getByRole('button', { name: 'Start task' });
+        await expect(chips(page).getByText('Failed: Storage is busy, try again')).toBeVisible();
+        await expect(start).toBeDisabled();
+        await page.getByRole('button', { name: 'Retry flaky.txt' }).click();
+        await expect(chips(page).getByText('Ready')).toHaveCount(4);
+        await expect(start).toBeEnabled();
+        expect(board.uploads.filter((name) => name === 'flaky.txt')).toHaveLength(2);
+        await page.screenshot({ path: `${SHOTS}/composer-attachments.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('the Settings round trip keeps the files, and the launch carries both ids', async ({ page }) => {
+        const board = await stubAttachments(page);
+        const launches = countLaunches(page);
+        await page.goto('/tasks/new');
+        await prompt(page).fill('review these');
+        await page.getByLabel('Attach files', { exact: true }).setInputFiles([file('one.txt'), file('two.txt')]);
+        await expect(chips(page).getByText('Ready')).toHaveCount(2);
+
+        await detourToSettings(page);
+        await page.goBack();
+        await expect(prompt(page)).toHaveValue('review these');
+        await expect(chips(page).getByText('one.txt')).toBeVisible();
+        await expect(chips(page).getByText('Ready')).toHaveCount(2);
+
+        await page.getByRole('button', { name: 'Start task' }).click();
+        await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}/);
+        expect(launches.bodies).toHaveLength(1);
+        expect(launches.bodies[0]).toMatchObject({
+            command: 'review these',
+            attachments: [board.ids.get('one.txt'), board.ids.get('two.txt')],
+        });
     });
 });

@@ -316,12 +316,79 @@
         overflow-wrap: anywhere;
     }
 
+    /* ── attachments: the attach control and one chip per chosen file ── */
+    .attachment-add {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .attachment-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        list-style: none;
+        margin: 8px 0 0;
+        padding: 0;
+    }
+
+    .attachment-chip {
+        align-items: center;
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        display: flex;
+        gap: 12px;
+        padding: 8px 12px;
+    }
+
+    .attachment-chip[data-status='failed'] {
+        border-color: var(--lamp-stop);
+    }
+
+    .attachment-thumb {
+        border-radius: var(--radius-md);
+        flex: none;
+        height: 40px;
+        object-fit: cover;
+        width: 40px;
+    }
+
+    .attachment-body {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        min-width: 0;
+    }
+
+    .attachment-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .attachment-meta,
+    .attachment-state {
+        color: var(--ink-muted);
+        font-size: 12px;
+    }
+
+    .attachment-chip[data-status='failed'] .attachment-state {
+        color: var(--lamp-stop);
+    }
+
+    .attachment-action {
+        flex: none;
+    }
+
     /* ── composer touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .composer-start button,
         .composer-param-input,
         .composer-help-trigger,
-        .composer-notices-dismiss {
+        .composer-notices-dismiss,
+        .attachment-add,
+        .attachment-action {
             align-items: center;
             display: inline-flex;
             min-height: 44px;

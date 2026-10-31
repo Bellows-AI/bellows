@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { QueueTaskInput } from './api/useTasks.js';
+import type { Attachments } from './api/useAttachments.js';
 import type { ComposerDraftInput, ComposerDraftStore } from './composer-draft.js';
 import {
     type WorkflowParamChoice,
@@ -236,9 +237,21 @@ export function useComposerDraft(input: {
     onSend: (queued: QueueTaskInput) => Promise<string | null>;
     /** The shell's held draft (F1): read once at mount, then kept in step with the state. */
     draftStore: ComposerDraftStore;
+    /** The chosen files: held in the same store, apart from the fields below. */
+    files: Attachments;
 }): ComposerDraft {
-    const { repos, executors, executorsLoaded, defaultExecutor, workflows, onRepoChange, sending, onSend, draftStore } =
-        input;
+    const {
+        repos,
+        executors,
+        executorsLoaded,
+        defaultExecutor,
+        workflows,
+        onRepoChange,
+        sending,
+        onSend,
+        draftStore,
+        files,
+    } = input;
     const { save, clear } = draftStore;
     // The draft held for this member when the composer mounted — a return from Settings — read
     // exactly once: the state starts from it, and the store follows the state after that.
@@ -254,6 +267,15 @@ export function useComposerDraft(input: {
     // untouched empty field is a hint, not a painted failure.
     const [state, setState] = useState(() => initialComposerState(restored, { repos, executors, defaultExecutor }));
     const update = useCallback<Update>((patch) => setState((held) => ({ ...held, ...patch })), []);
+    const { updateTaskFiles, clearTaskFiles } = draftStore;
+    // Any edit makes the request a new one, so a failed submission's key no longer names it.
+    const edit = useCallback<Update>(
+        (patch) => {
+            update(patch);
+            updateTaskFiles((held) => (held.submissionKey === null ? held : { ...held, submissionKey: null }));
+        },
+        [update, updateTaskFiles]
+    );
 
     // The workflow whose inputs the composer shows: exactly the member's explicit choice, at the
     // scope the board would resolve. Nothing autoselects one — an unnamed task runs the raw
@@ -300,6 +322,7 @@ export function useComposerDraft(input: {
     const discard = () => {
         setState(initialComposerState(null, { repos, executors, defaultExecutor }));
         clear();
+        clearTaskFiles();
     };
 
     // The mirror of the board's check: a missing or malformed parameter must never reach the
@@ -310,12 +333,18 @@ export function useComposerDraft(input: {
             return;
         }
         // A launched task is no longer a draft; a refusal keeps every field for the retry.
-        if ((await onSend(queuedTask(state, declaredParams, paramValues))) === null) discard();
+        if (files.blocker !== null) return;
+        const ids = files.readyIds();
+        const queued = queuedTask(state, declaredParams, paramValues);
+        // Text-only stays exactly the old request: the files and their key ride only when there are some.
+        const withFiles =
+            ids.length === 0 ? queued : { ...queued, attachments: ids, idempotencyKey: files.submissionKey() };
+        if ((await onSend(withFiles)) === null) discard();
     };
 
     return {
         state,
-        update,
+        update: edit,
         declaredParams,
         chosenWorkflowId,
         paramValues,

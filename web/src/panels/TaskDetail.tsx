@@ -1,9 +1,14 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
+import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
+import type { SubmittedFiles } from '../api/useTasks.js';
+import type { ComposerDraftStore } from '../composer-draft.js';
 import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
+import { AttachmentChips } from './AttachmentList.js';
+import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
 import { TaskActivity } from './TaskActivity.js';
 import { TaskOutcome } from './TaskOutcome.js';
@@ -141,19 +146,36 @@ function Services({ services }: { services: readonly ServiceStatus[] }) {
  * beside the draft it refused, and the draft is kept.
  */
 function FollowUpComposer({
+    rootId,
+    draftStore,
     error,
     sending,
     onFollowUp,
 }: {
+    /** The thread's root run: the key of this thread's draft in the shell's store. */
+    rootId: string;
+    draftStore: ComposerDraftStore;
     error: string | null;
     sending: boolean;
-    onFollowUp: (command: string) => Promise<string | null>;
+    onFollowUp: OnFollowUp;
 }) {
-    const [draft, setDraft] = useState('');
+    // The text, the files and the submission key live in the shell's store, so a trip to
+    // Settings (or to another task) and back finds this thread's draft as it was left.
+    const held = draftStore.followUps[rootId];
+    const draft = held?.text ?? '';
+    const files = useAttachments({
+        draft: held ?? { attachments: [], submissionKey: null },
+        update: (change) => draftStore.updateFollowUp(rootId, (current) => ({ ...current, ...change(current) })),
+    });
+    const limits = useAttachmentLimits();
+    const dropAndPaste = attachmentHandlers(limits !== null, files.add);
+    const blocked = !draft.trim() || sending || files.blocker !== null;
     const send = async () => {
-        if (!draft.trim() || sending) return;
+        if (blocked) return;
         // No executor choice here: the adjustment is bound to the executor that ran the task.
-        if ((await onFollowUp(draft)) === null) setDraft('');
+        const ids = files.readyIds();
+        const submitted = ids.length === 0 ? undefined : { attachments: ids, idempotencyKey: files.submissionKey() };
+        if ((await onFollowUp(draft, submitted)) === null) draftStore.clearFollowUp(rootId);
     };
     return (
         <div className="composer">
@@ -167,26 +189,40 @@ function FollowUpComposer({
                 className="field composer-input"
                 placeholder="Describe the adjustment…"
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                {...dropAndPaste}
+                onChange={(e) =>
+                    draftStore.updateFollowUp(rootId, (current) => ({
+                        ...current,
+                        text: e.target.value,
+                        submissionKey: null,
+                    }))
+                }
                 onKeyDown={(e) => {
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
                 }}
             />
+            <AttachmentChips attachments={files.attachments} onRemove={files.remove} onRetry={files.retry} />
             <div className="composer-row">
+                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} />}
                 {/* The shortcut is written down, and it is the same guarded path the button takes. */}
                 <span className="composer-label">Ctrl/⌘ + Enter</span>
-                <button
-                    type="button"
-                    className="primary"
-                    disabled={!draft.trim() || sending}
-                    onClick={() => void send()}
-                >
+                <button type="button" className="primary" disabled={blocked} onClick={() => void send()}>
                     {sending ? 'Sending…' : 'Send follow-up'}
                 </button>
             </div>
+            {files.blocker === null ? null : (
+                <p className="composer-label" role="status">
+                    {files.blocker === 'uploading'
+                        ? 'Wait for the files to finish uploading.'
+                        : 'Remove or retry the failed files to continue.'}
+                </p>
+            )}
         </div>
     );
 }
+
+/** What the follow-up composer hands up: the words, and the uploaded files when it carries any. */
+type OnFollowUp = (command: string, files?: SubmittedFiles) => Promise<string | null>;
 
 /** The fallback notice (issue 226): the run ended on a question and nothing could ask it in place. */
 const ENDED_ON_QUESTION_REPLY = 'Claude ended with a question. Reply below to continue the same conversation.';
@@ -199,16 +235,20 @@ const ENDED_ON_QUESTION_AUTHOR = "Claude ended with a question. The task's autho
  */
 function FollowUp({
     latest,
+    rootId,
+    draftStore,
     viewer,
     error,
     sending,
     onFollowUp,
 }: {
     latest: Job;
+    rootId: string;
+    draftStore: ComposerDraftStore;
     viewer: FollowUpViewer;
     error: string | null;
     sending: boolean;
-    onFollowUp: (command: string) => Promise<string | null>;
+    onFollowUp: OnFollowUp;
 }) {
     const eligibility = followUpEligibility(latest, viewer);
     const asked = endedOnQuestion(latest);
@@ -217,7 +257,13 @@ function FollowUp({
         body = (
             <>
                 {asked ? <p className="status">{ENDED_ON_QUESTION_REPLY}</p> : null}
-                <FollowUpComposer error={error} sending={sending} onFollowUp={onFollowUp} />
+                <FollowUpComposer
+                    rootId={rootId}
+                    draftStore={draftStore}
+                    error={error}
+                    sending={sending}
+                    onFollowUp={onFollowUp}
+                />
             </>
         );
     } else if (eligibility === 'not-author') {
@@ -259,6 +305,7 @@ export function TaskDetail({
     followUpError,
     sending,
     onFollowUp,
+    draftStore,
     onAnswer,
     onConnectionChange,
     activity = NO_ACTIVITY,
@@ -274,7 +321,9 @@ export function TaskDetail({
     /** Why the last follow-up did not queue. Said inside the composer, beside the draft. */
     followUpError: string | null;
     sending: boolean;
-    onFollowUp: (command: string) => Promise<string | null>;
+    onFollowUp: OnFollowUp;
+    /** The shell's held drafts: this thread's follow-up draft lives there. */
+    draftStore: ComposerDraftStore;
     /** Answers a run's question; the page refreshes the thread once it settles. */
     onAnswer: OnAnswer;
     /** Re-reads the thread after a connection requirement was bound or dismissed. */
@@ -343,6 +392,8 @@ export function TaskDetail({
                     </section>
                     <FollowUp
                         latest={latestTask}
+                        rootId={jobs[0]?.id ?? latestTask.id}
+                        draftStore={draftStore}
                         viewer={viewer}
                         error={followUpError}
                         sending={sending}
