@@ -8,7 +8,7 @@ The durable event a delivery stage reads when a task becomes ready or blocked, i
 | Task title, the one derivation (first line of the command) | `core/src/task-title.ts` | `core/test/task-title.test.ts` |
 | Emission: table, function and deferred trigger on `job.status` | `server/migrations/102_notification_event.sql` | `server/test-db/notification-events.test.ts` |
 | Task-question emission: per-question id, text snapshot, insert trigger on `job_question` (107) | `server/migrations/107_notification_task_question.sql` | `server/test-db/notification-question.test.ts` |
-| Admin-action emission: columns, kind checks (111), in-transaction helper | `server/migrations/111_notification_admin_action.sql`, `server/src/db/jobs/job-store-admin-event.ts` | `server/test-db/notification-admin-action.test.ts` |
+| Admin-action emission: columns, kind checks (112), in-transaction helper | `server/migrations/112_notification_admin_action.sql`, `server/src/db/jobs/job-store-admin-event.ts` | `server/test-db/notification-admin-action.test.ts` |
 | Delivery result (`SendResult`, reason lists, `isSendResult`) | `core/src/notifications.ts` | `core/test/notifications.test.ts` |
 | Connector contract, registry, `deliver` classification | `server/src/notifications/connector.ts` | `server/test/notifications.deliver.test.ts` |
 | Fake connector for delivery tests | `server/test/notifications-fake-connector.ts` | `server/test/notifications.deliver.test.ts` |

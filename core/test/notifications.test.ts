@@ -105,7 +105,7 @@ describe('NOTIFICATION_KINDS', () => {
     it('lists the four kinds, and the latest migration check admits exactly them', () => {
         expect([...NOTIFICATION_KINDS]).toEqual(['task.ready', 'task.blocked', 'task.question', 'task.admin_action']);
         const sql = readFileSync(
-            new URL('../../server/migrations/111_notification_admin_action.sql', import.meta.url),
+            new URL('../../server/migrations/112_notification_admin_action.sql', import.meta.url),
             'utf8'
         );
         const check = /check \(kind in \(([^)]*)\)/.exec(sql);

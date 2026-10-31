@@ -11,6 +11,8 @@ import { createNotificationSubscriptionStore } from '../src/notifications/subscr
 import type { NotificationSubscriptionStore, SubscriptionFields } from '../src/notifications/subscription-store.js';
 import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.js';
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
+import type { SecretStore } from '../src/secrets/secret-store.js';
+import { testSecretStore } from './env-secrets-harness.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 
@@ -50,14 +52,18 @@ let sql: Sql;
 let store: JobStore;
 let prs: ReturnType<typeof createPrLifecycleStore>;
 let subs: NotificationSubscriptionStore;
+let secrets: SecretStore;
 
 beforeAll(() => {
     if (!enabled) return;
     sql = db.sql;
     prs = createPrLifecycleStore({ sql, orgId: ORG });
     store = createJobStore({ sql, orgId: ORG, prs });
-    subs = createNotificationSubscriptionStore({ sql, orgId: ORG });
+    secrets = testSecretStore(sql);
+    subs = createNotificationSubscriptionStore({ sql, orgId: ORG, secrets, secretLog: () => {} });
 });
+
+const credential = () => `https://hook.example.test/${randomUUID()}`;
 
 const fields = (eventKinds: SubscriptionFields['eventKinds']): SubscriptionFields => ({
     connectorKind: 'fake',
@@ -243,8 +249,8 @@ describe.skipIf(!enabled)('task.admin_action — database', () => {
     });
 
     it('an admin event fans out to task.admin_action subscriptions only', async () => {
-        const wanted = await subs.create(fields(['task.admin_action']));
-        const other = await subs.create(fields(['task.blocked']));
+        const wanted = await subs.create(fields(['task.admin_action']), credential());
+        const other = await subs.create(fields(['task.blocked']), credential());
         const root = await finishedTask();
         must(await store.createFollowUp(root, 'admin says', ADMIN, undefined, undefined, true));
 
@@ -257,11 +263,11 @@ describe.skipIf(!enabled)('task.admin_action — database', () => {
     });
 
     it('the outbox lease carries action, actor and author', async () => {
-        const sub = await subs.create(fields(['task.admin_action']));
+        const sub = await subs.create(fields(['task.admin_action']), credential());
         const root = await finishedTask();
         must(await store.createFollowUp(root, 'admin says', ADMIN, undefined, undefined, true));
 
-        const outbox = createNotificationOutboxStore({ sql, orgId: ORG });
+        const outbox = createNotificationOutboxStore({ sql, orgId: ORG, secrets });
         const lease = await outbox.lease(1000, 60_000);
         try {
             const item = lease!.items.find((i) => i.subscriptionId === sub.id && i.event.rootJobId === root);
@@ -278,6 +284,6 @@ describe.skipIf(!enabled)('task.admin_action — database', () => {
     });
 
     it('the widened checks accept the kind', async () => {
-        await expect(subs.create(fields(['task.admin_action']))).resolves.toBeTruthy();
+        await expect(subs.create(fields(['task.admin_action']), credential())).resolves.toBeTruthy();
     });
 });
