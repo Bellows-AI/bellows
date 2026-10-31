@@ -432,9 +432,9 @@ describe.runIf(enabled)('mutation idempotency with attachments', () => {
         const file = await readyFile(user);
         const input = idem('follow-up', freshKey());
 
-        const first = await store.createFollowUp(parent.id, 'again', user, input, [], [file]);
+        const first = await store.createFollowUp(parent.id, 'again', user, input, [], undefined, [file]);
         await finish((first as { id: string }).id);
-        const repeat = await store.createFollowUp(parent.id, 'again', user, input, [], [file]);
+        const repeat = await store.createFollowUp(parent.id, 'again', user, input, [], undefined, [file]);
 
         expect(repeat).toEqual({ id: (first as { id: string }).id, replayed: true });
         expect(await boundTo(file)).toBe((first as { id: string }).id);

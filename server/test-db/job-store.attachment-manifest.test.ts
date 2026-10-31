@@ -87,6 +87,7 @@ const followUp = async (rootId: string, files: { id: string }[]) =>
             ALICE.id,
             undefined,
             [],
+            undefined,
             files.map((f) => f.id)
         )
     );

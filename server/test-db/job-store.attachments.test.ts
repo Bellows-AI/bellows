@@ -176,7 +176,7 @@ describe.runIf(enabled)('binding files on a follow-up', () => {
         await finish(parent.id);
         const added = await file(ALICE.id);
 
-        const followUp = await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], [added]);
+        const followUp = await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], undefined, [added]);
 
         if (typeof followUp === 'string') throw new Error(followUp);
         expect(await rowOf(original)).toMatchObject({
@@ -191,7 +191,7 @@ describe.runIf(enabled)('binding files on a follow-up', () => {
         const parent = await create(ALICE.id, []);
         const added = await file(ALICE.id);
 
-        expect(await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], [added])).toBe('not_finished');
+        expect(await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], undefined, [added])).toBe('not_finished');
         expect((await rowOf(added)).state).toBe('ready');
     });
 });
@@ -202,7 +202,7 @@ describe.runIf(enabled)('thread history and removal', () => {
         const parent = await create(ALICE.id, [original]);
         await finish(parent.id);
         const added = await file(ALICE.id, { name: 'more.txt' });
-        const followUp = await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], [added]);
+        const followUp = await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], undefined, [added]);
         if (typeof followUp === 'string') throw new Error(followUp);
 
         const rows = (await store.thread(parent.id))!;
@@ -219,7 +219,7 @@ describe.runIf(enabled)('thread history and removal', () => {
         const parent = await create(ALICE.id, [original]);
         await finish(parent.id);
         const added = await file(ALICE.id);
-        const followUp = await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], [added]);
+        const followUp = await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], undefined, [added]);
         if (typeof followUp === 'string') throw new Error(followUp);
         await finish(followUp.id);
         const unrelated = await file(ALICE.id);
