@@ -174,12 +174,8 @@ export function createAttachmentStore({
         },
 
         async remove(id, uploaderId) {
-            const row = await rows.beginDelete(id, uploaderId);
-            if (!row) return 'not-found';
-            if (row.state === 'deleting') {
-                await confirmed('delete', () => objects.delete(row.objectKey));
-                await rows.markDeleted(id);
-            }
+            if (!(await rows.beginDelete(id, uploaderId))) return 'not-found';
+            // Only the row moves: the sweep deletes the object after its grace, so an upload still writing cannot outlive it.
             return 'deleted';
         },
     };

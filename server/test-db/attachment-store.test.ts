@@ -12,6 +12,7 @@ import {
     attachmentKey,
     createAttachmentStore,
 } from '../src/attachments/attachment-store.js';
+import { createAttachmentCollector } from '../src/attachments/attachment-collector.js';
 import { createAttachmentRows } from '../src/attachments/attachment-rows.js';
 import { craftJob, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
@@ -198,7 +199,7 @@ describe.skipIf(!enabled)('attachment store', () => {
         expect(await storeOf(ORG).read(meta.id, STRANGER.id)).toBeNull();
     });
 
-    it('deletes a draft through deleting, then the object, then deleted, and is idempotent', async () => {
+    it('flips a draft to deleting, leaves the object to the sweep, and is idempotent', async () => {
         const { meta } = await storeOf(ORG).upload(upload('gone'));
         const { object_key: key } = await rowOf(meta.id);
         expect(await storeOf(ORG).remove(meta.id, STRANGER.id)).toBe('not-found');
@@ -207,21 +208,31 @@ describe.skipIf(!enabled)('attachment store', () => {
 
         expect(await storeOf(ORG).remove(meta.id, OWNER.id)).toBe('deleted');
         const row = await rowOf(meta.id);
-        expect(row.state).toBe('deleted');
+        expect(row.state).toBe('deleting');
         expect(row.deleting_at).not.toBeNull();
-        expect(row.deleted_at).not.toBeNull();
+        expect(await objects.head(key)).not.toBeNull();
+        expect(await storeOf(ORG).meta(meta.id, OWNER.id)).toBeNull();
+        await sql`update input_attachment set deleting_at = now() - interval '1 day' where id = ${meta.id}`;
+        await createAttachmentCollector({
+            sql,
+            ready: Promise.resolve(),
+            objects,
+            prefix: PREFIX,
+            draftTtlHours: 24,
+        }).collect();
+        expect((await rowOf(meta.id)).state).toBe('deleted');
         expect(await objects.head(key)).toBeNull();
 
         expect(await storeOf(ORG).remove(meta.id, OWNER.id)).toBe('deleted');
         expect(await storeOf(ORG).meta(meta.id, OWNER.id)).toBeNull();
     });
 
-    it('resumes a delete interrupted after deleting committed', async () => {
+    it('answers deleted for a draft that is already deleting', async () => {
         const { meta } = await storeOf(ORG).upload(upload('half'));
         await sql`update input_attachment set state = 'deleting', deleting_at = now()
             where org_id = ${ORG} and id = ${meta.id}`;
         expect(await storeOf(ORG).remove(meta.id, OWNER.id)).toBe('deleted');
-        expect((await rowOf(meta.id)).state).toBe('deleted');
+        expect((await rowOf(meta.id)).state).toBe('deleting');
     });
 
     it('does not remove a bound file as a draft', async () => {
