@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { clearExecutors, E2E_REPO, saveExecutor, withExecutor } from './executor.js';
+import { stubAttachments } from './fixtures/attachments.js';
 import {
     authoredBy,
     CLOSING_GATE_STARTED_AT,
@@ -588,6 +589,48 @@ test.describe('the task detail page', () => {
         expect(sent).toEqual([{ command: followUp.command }]);
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-follow-up-sent.png`, fullPage: true });
+        expect(problems.join('\n')).toBe('');
+    });
+});
+
+test.describe('the follow-up composer attachments', () => {
+    test('the text and the file survive a trip to Settings, and the send carries both', async ({ page }) => {
+        const problems = watchConsole(page);
+        const me = await sessionAuthor(page);
+        const board = await stubAttachments(page);
+        const followUp = failedGateFollowUpThread[1]!;
+        await routeThread(page, authoredBy(failedGateThread, me));
+        const sent: { body: unknown; key: string | undefined }[] = [];
+        await page.route('**/api/jobs/*/follow-up', async (route) => {
+            const request = route.request();
+            sent.push({ body: request.postDataJSON(), key: request.headers()['idempotency-key'] });
+            await routeThread(page, authoredBy(failedGateFollowUpThread, me));
+            return route.fulfill({ status: 201, json: { id: followUp.id } });
+        });
+        await page.goto(`/tasks/${failedGateThread[0]!.id}`);
+
+        const box = page.getByLabel('Ask for a follow-up');
+        await box.fill('also check the export');
+        await page.getByLabel('Attach files', { exact: true }).setInputFiles({
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('hello'),
+        });
+        const chips = page.getByRole('list', { name: 'Attached files' });
+        await expect(chips.getByText('Ready')).toBeVisible();
+
+        await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
+        await expect(page).toHaveURL(/\/settings$/);
+        await page.goBack();
+        await expect(box).toHaveValue('also check the export');
+        await expect(chips.getByText('notes.txt')).toBeVisible();
+        await expect(chips.getByText('Ready')).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-detail-follow-up-attachments.png`, fullPage: true });
+
+        await page.getByRole('button', { name: 'Send follow-up' }).click();
+        await expect.poll(() => sent.length).toBe(1);
+        expect(sent[0]!.body).toEqual({ command: 'also check the export', attachments: [board.ids.get('notes.txt')] });
+        expect(sent[0]!.key).toMatch(/^[0-9a-f]{32}$/);
         expect(problems.join('\n')).toBe('');
     });
 });

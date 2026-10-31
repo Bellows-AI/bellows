@@ -147,7 +147,7 @@ export interface UseTasks {
     /** The task mutations, named as a group so the pages read `tasks.actions.queue(...)`. */
     actions: {
         queue: (input: QueueTaskInput) => Promise<QueueResult>;
-        followUp: (id: string, command: string) => Promise<QueueResult>;
+        followUp: (id: string, command: string, files?: SubmittedFiles) => Promise<QueueResult>;
         markDone: (id: string) => Promise<string | null>;
         stop: (id: string) => Promise<string | null>;
         remove: (id: string) => Promise<string | null>;
@@ -165,7 +165,19 @@ export interface QueueTaskInput {
     executorScope: ExecutorScope;
     workflow: string | null;
     workflowParams: Record<string, string> | null;
+    /** Completed upload ids; absent for a text-only task, so that body is unchanged. */
+    attachments?: string[];
+    /** Sent as the `Idempotency-Key` header, never in the body; set beside `attachments`. */
+    idempotencyKey?: string;
 }
+
+/** The uploaded files a submission carries, and the key that makes its retry safe. */
+export interface SubmittedFiles {
+    attachments: string[];
+    idempotencyKey: string;
+}
+
+const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
 
 /** The first-page failure: the retained refresh error with nothing beside it. Exported pure so
  * the offline suite pins the depth test — a failed refresh WITH rows keeps the rows beside the
@@ -370,10 +382,14 @@ function nextOrgPollDelay(moving: boolean): number {
 /** Starts a task. A 401 is handed to the gate rather than reported as this call's own error. */
 async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
     try {
+        const { idempotencyKey, ...body } = input;
         const response = await fetch('/api/jobs', {
             method: 'POST',
-            headers: JSON_HEADERS,
-            body: JSON.stringify(input),
+            headers:
+                idempotencyKey === undefined
+                    ? JSON_HEADERS
+                    : { ...JSON_HEADERS, [IDEMPOTENCY_KEY_HEADER]: idempotencyKey },
+            body: JSON.stringify(body),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
@@ -382,20 +398,23 @@ async function queueTask(input: QueueTaskInput): Promise<QueueResult> {
         if (!response.ok) {
             return { id: null, error: (await refusalOf(response, 'Could not queue the task')).error };
         }
-        const body = (await response.json()) as { id: string };
-        return { id: body.id, error: null };
+        const created = (await response.json()) as { id: string };
+        return { id: created.id, error: null };
     } catch (e) {
         return { id: null, error: (e as Error).message };
     }
 }
 
 /** Queues a follow-up on an existing thread — the same wire shape as `queueTask`, one thread id. */
-async function followUpOnTask(id: string, command: string): Promise<QueueResult> {
+async function followUpOnTask(id: string, command: string, files?: SubmittedFiles): Promise<QueueResult> {
     try {
         const response = await fetch(`/api/jobs/${id}/follow-up`, {
             method: 'POST',
-            headers: JSON_HEADERS,
-            body: JSON.stringify({ command }),
+            headers:
+                files === undefined
+                    ? JSON_HEADERS
+                    : { ...JSON_HEADERS, [IDEMPOTENCY_KEY_HEADER]: files.idempotencyKey },
+            body: JSON.stringify(files === undefined ? { command } : { command, attachments: files.attachments }),
         });
         if (response.status === HTTP_STATUS_UNAUTHORIZED) {
             reportUnauthenticated();
@@ -659,8 +678,8 @@ function useTaskActions(start: () => void): UseTasks['actions'] {
                 if (result.error === null) start();
                 return result;
             },
-            async followUp(id: string, command: string): Promise<QueueResult> {
-                const result = await followUpOnTask(id, command);
+            async followUp(id: string, command: string, files?: SubmittedFiles): Promise<QueueResult> {
+                const result = await followUpOnTask(id, command, files);
                 if (result.error === null) start();
                 return result;
             },

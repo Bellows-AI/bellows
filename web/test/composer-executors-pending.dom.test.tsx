@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import type { ComposerDraftInput } from '../src/composer-draft.js';
 import { TaskComposer } from '../src/panels/TaskComposer.js';
+import { inertDraftStore } from './tasks-fixtures.js';
 
 /**
  * The repositories and the executors are two reads now. A restored draft's executor must survive
@@ -40,11 +41,10 @@ describe('the composer while only the repositories have answered', () => {
                     actionError={null}
                     sending={false}
                     onSend={async () => null}
-                    draftStore={{
+                    draftStore={inertDraftStore({
                         state: { ...restored, owner: 'org-1:user-1' },
                         save: (next) => saved.push(next),
-                        clear: () => {},
-                    }}
+                    })}
                 />
             </MemoryRouter>
         );
