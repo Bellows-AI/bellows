@@ -40,7 +40,7 @@ async function boot(overrides: Record<string, unknown> = {}) {
             return { id: crypto.randomUUID() };
         },
         async createFollowUp(...args: unknown[]) {
-            followUps.push({ attachmentIds: args[5] as string[] | undefined });
+            followUps.push({ attachmentIds: args[6] as string[] | undefined });
             return { id: crypto.randomUUID() };
         },
         ...overrides,

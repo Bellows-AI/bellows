@@ -384,6 +384,7 @@
     /* ── composer touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .composer-start button,
+        .composer-row button,
         .composer-param-input,
         .composer-help-trigger,
         .composer-notices-dismiss,

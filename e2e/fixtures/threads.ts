@@ -150,6 +150,8 @@ export interface ThreadJob {
     integrationRequirements: ThreadRequirement[];
     /** The thread root's frozen execution user: who a requirement waits on. */
     executionUser: ThreadUser | null;
+    /** The owner when an admin queued this row on their behalf; null on every fixture the owner queued. */
+    actingFor: ThreadUser | null;
 }
 
 /** One open connection requirement as the job view shows it. */
@@ -266,6 +268,7 @@ function run(fields: RunFields): ThreadJob {
         ...fields,
         author,
         executionUser: fields.executionUser === undefined ? author : fields.executionUser,
+        actingFor: fields.actingFor === undefined ? null : fields.actingFor,
         createdBy: author?.id ?? null,
     };
 }

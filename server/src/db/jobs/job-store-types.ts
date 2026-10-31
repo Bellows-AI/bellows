@@ -366,7 +366,7 @@ export interface Job {
      * `get()` and `thread()`; the per-run lists answer an empty array.
      */
     questions: JobQuestion[];
-    /** The files this request carried (112), in the order named. `thread()` only; every other read answers an empty array. */
+    /** The files this request carried (115), in the order named. `thread()` only; every other read answers an empty array. */
     attachments: AttachmentMeta[];
     /**
      * The thread root's connection bindings (094), oldest first, including ones whose connection was since
@@ -379,6 +379,11 @@ export interface Job {
     integrationRequirements: JobIntegrationRequirement[];
     /** The thread root's frozen execution user: who a connection requirement waits on. `get()`/`thread()` only, else null. */
     executionUser: UserRef | null;
+    /**
+     * The thread's owner (`executionUser`) when this row was queued by someone else, an admin acting for them;
+     * null when the owner queued it. `get()`/`thread()` only, else null.
+     */
+    actingFor: UserRef | null;
 }
 
 /** One open requirement as the job view shows it. */
@@ -515,7 +520,7 @@ export interface Claim {
     id: string;
     command: string;
     /**
-     * The files this run carries (112), computed at read: the thread's files bound at or before the row's creation, oldest
+     * The files this run carries (115), computed at read: the thread's files bound at or before the row's creation, oldest
      * carrier first. A review carries the row it reviews. The runner fetches each through the lease-scoped worker route
      * and verifies its sha256.
      */

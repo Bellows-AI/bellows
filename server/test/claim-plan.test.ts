@@ -61,7 +61,7 @@ describe('resolveClaimPublish: the execution plan', () => {
 
 describe('resolveClaimGates: the plan reader', () => {
     const ctx = { orgId: 'o', rootJobId: 'root' };
-    const row = { created_by: null, repo: 'acme/web', base_branch: 'release' };
+    const row = { run_as: null, repo: 'acme/web', base_branch: 'release' };
 
     it('asks the reader for the repo at the thread base branch and carries the revision', async () => {
         const asked: unknown[][] = [];

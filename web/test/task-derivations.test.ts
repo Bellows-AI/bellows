@@ -565,7 +565,7 @@ describe('followUpEligibility', () => {
      */
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'other', name: null, avatarUrl: null };
-    const viewer = (id: string | null, loading = false) => ({ loading, id });
+    const viewer = (id: string | null, loading = false, admin = false) => ({ loading, id, admin });
 
     it('offers your own finished task', () => {
         expect(followUpEligibility(job({ author: me }), viewer(me.id))).toBe('eligible');
@@ -573,6 +573,24 @@ describe('followUpEligibility', () => {
 
     it("refuses another member's task", () => {
         expect(followUpEligibility(job({ author: other }), viewer(me.id))).toBe('not-author');
+    });
+
+    it("offers an admin another member's finished task, but never to an admin with no session", () => {
+        expect(followUpEligibility(job({ author: other }), viewer(me.id, false, true))).toBe('eligible');
+        expect(followUpEligibility(job({ author: other }), viewer(null, false, true))).toBe('not-author');
+    });
+
+    it('still refuses a member, and still answers closed before the admin check', () => {
+        expect(followUpEligibility(job({ author: other }), viewer(me.id, false, false))).toBe('not-author');
+        const closed = job({ author: other, doneAt: '2026-09-01T12:05:00.000Z' });
+        expect(followUpEligibility(closed, viewer(me.id, false, true))).toBe('closed');
+    });
+
+    it("takes the owner from the thread's executionUser, not the latest row's author", () => {
+        // An admin's turn is authored by the admin; the owner is who it is queued on behalf of.
+        const adminTurn = job({ author: other, executionUser: me, actingFor: me });
+        expect(followUpEligibility(adminTurn, viewer(me.id))).toBe('eligible');
+        expect(followUpEligibility(adminTurn, viewer(other.id))).toBe('not-author');
     });
 
     it('refuses a null author to a signed-in viewer, and offers it to a null viewer', () => {

@@ -12,7 +12,7 @@ both the route and the web editors render from. The driver keeps its own copy in
 | Concern | Code | Test |
 | --- | --- | --- |
 | The three scopes, the scope check, `stackEnv`, the write-only secret echo | `server/src/db/env-var-store.ts`, `server/migrations/017_env_vars.sql` | `server/test-db/env-var-store.test.ts` |
-| Where a secret's value lives: the row's reference, its identity, the batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql` | `server/test-db/env-var-store.test.ts`, `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
+| Where a secret's value lives: the row's reference, its identity, the batched fail-closed read | `server/src/db/env-secrets.ts`, `server/migrations/093_env_var_secret_ref.sql`, `server/migrations/113_env_var_secret_form.sql` | `server/test-db/env-var-store.test.ts`, `server/test-db/migration.093-env-secret-ref.test.ts`, `server/test-db/migration.113-env-secret-form.test.ts`, `server/test-db/env-secrets.claim.test.ts` |
 | The PUT's write path and its compensation: secrets through the store, creates reconciled or deleted when the PUT does not commit | `server/src/db/env-var-store.ts`, `server/src/db/env-secrets.ts` | `server/test-db/env-secrets.writes.test.ts` |
 | Whole-list PUT, validation codes, reserved names | `server/src/routes/env.ts`, `core/src/env.ts` | `server/test/routes.env.test.ts` |
 | Claim-time resolution, with `GITHUB_TOKEN`/`GH_TOKEN` dropped from it (`withoutGithubToken`) | `server/src/db/jobs/job-store-claim.ts`, `job-store-claim-executor.ts` | `server/test/job-store.env.test.ts`, `server/test-db/job-store.attribution.test.ts` |
@@ -33,20 +33,18 @@ both the route and the web editors render from. The driver keeps its own copy in
   row keeps `secret_ref` and `secret_version` (`093_env_var_secret_ref.sql`) with `value` null. The identity is rebuilt
   from the row's slot on every read, so a copied reference is `identity-mismatch` (`server/src/db/env-secrets.ts`).
   **Only `is_secret` entries ever reach the store**: a non-secret row always keeps its plaintext `value` with `secret_ref`
-  and `secret_version` null, in every scope (`server/test-db/env-secrets.writes.test.ts`). The claim reads both formats
-  until the contract follow-up removes the plaintext one; a row that is neither, an inconclusive or failed read, a
-  version other than the stored one, or bytes that are not UTF-8 throws and rolls the claim back, a secret is never
-  dropped (`server/test-db/env-var-store.test.ts`, `server/test-db/env-secrets.claim.test.ts`). Old-format secrets stay
-  plaintext until converted, and every list read nulls a secret's value in the SELECT.
+  and `secret_version` null, in every scope (`server/test-db/env-secrets.writes.test.ts`). `env_var_secret_form_ck`
+  (`113_env_var_secret_form.sql`) admits only those two shapes, and the claim reads no other; a row that is neither, an
+  inconclusive or failed read, a version other than the stored one, or bytes that are not UTF-8 throws and rolls the
+  claim back, a secret is never dropped (`server/test-db/env-var-store.test.ts`, `server/test-db/env-secrets.claim.test.ts`).
+  Every list read nulls a secret's value in the SELECT.
 - **A PUT that does not commit deletes only what a fresh read of its own scope shows unreferenced**, and every create that
   may have written is reconciled once; a changed value gets a new reference and the old one is deleted after the commit.
   An inconclusive read deletes nothing and reports the refs as `cleanup-failed` diagnostics (`server/src/main.ts`).
   `server/test-db/env-secrets.writes.test.ts`.
-- **Old-format secrets move with one operator step**: run `npm run secrets:convert-env` (Kubernetes: `kubectl exec
-  deploy/<release>-factory -c dashboard -- node server/dist/secrets/convert-env-cli.js`) after the v0.0.13 rollout
-  completes, and rerun until it exits 0. It selects and updates `is_secret` rows only, never a non-secret row. Oversized
-  rows are listed and must be re-entered by a member. A run killed mid-row leaves at most one unreferenced record, and
-  the row stays plaintext (`server/src/db/env-secret-conversion.ts`, `server/test-db/env-secret-conversion.test.ts`).
+- **An upgrade refuses to migrate while a plaintext secret row remains** (`113_env_var_secret_form.sql`): run
+  `npm run secrets:convert-env` on v0.0.13 until it exits 0, have a member re-enter each oversized row it lists, then
+  upgrade (`server/test-db/migration.113-env-secret-form.test.ts`).
 - **A secret entry carrying `value: null` on a whole-list PUT SURVIVES untouched**; an omitted name
   deletes. This is the one exception to "the body is the whole truth", and it is why a non-secret
   may never carry a null value. Same test, plus `server/test/routes.env.test.ts`.

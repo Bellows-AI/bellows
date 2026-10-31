@@ -279,7 +279,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
 
         // The rest tuple keeps the interface's five parameters (the params ceiling is for hand-written signatures).
         async createFollowUp(
-            ...[parentId, command, createdBy, idempotency, connectionIds, attachmentIds]: Parameters<
+            ...[parentId, command, createdBy, idempotency, connectionIds, admin, attachmentIds]: Parameters<
                 JobStore['createFollowUp']
             >
         ) {
@@ -291,6 +291,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
                 createdBy,
                 idempotency,
                 connectionIds,
+                admin,
                 attachmentIds,
             });
         },
@@ -305,9 +306,9 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return dismissRequirementRow(ctx.sql, { orgId: ctx.orgId, id, provider, userId });
         },
 
-        async createRetry(id, createdBy, idempotency) {
+        async createRetry(id, createdBy, idempotency, admin) {
             await gate();
-            return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy, idempotency });
+            return createRetryRow(ctx.sql, { orgId: ctx.orgId, id, createdBy, idempotency, admin });
         },
 
         async editCommand(id, command, caller) {
@@ -349,14 +350,14 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
             return removeJobThread(ctx, id, removedBy);
         },
 
-        async cancelWait(id, cancelledBy) {
+        async cancelWait(id, cancelledBy, admin) {
             await gate();
-            return cancelThreadWait(ctx, id, cancelledBy);
+            return cancelThreadWait(ctx, id, cancelledBy, admin);
         },
 
-        async pokeWait(id, pokedBy) {
+        async pokeWait(id, pokedBy, admin) {
             await gate();
-            return pokeThreadWait(ctx, id, pokedBy);
+            return pokeThreadWait(ctx, id, pokedBy, admin);
         },
 
         async reopen(id) {

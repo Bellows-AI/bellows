@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
-import type { NotificationEventRow, NotificationKind, SendResult } from '@factory-ai/core';
+import type { AdminAction, NotificationEventRow, NotificationKind, SendResult } from '@factory-ai/core';
 import { backoffAt, MAX_FAILURES, RETRY_CAP_MS } from '../db/outbox-backoff.js';
+import type { SecretStore } from '../secrets/secret-store.js';
+import { readSubscriptionCredential, subscriptionSecretIdentity } from './subscription-credential.js';
 
 /**
  * One org's notification outbox (104; docs/notifications.md): the (event, subscription) rows the job.status
@@ -15,9 +17,12 @@ export interface OutboxKey {
     subscriptionId: string;
 }
 
-/** One row to send: the event as stored and the subscription's target as read live at lease time. */
+/**
+ * One row to send: the event as stored and the subscription's target as read live at lease time. The credential
+ * is only the secret store's reference and version; `credentialOf` reads the value at send time.
+ */
 export interface OutboxItem extends OutboxKey {
-    target: { kind: string; config: unknown };
+    target: { kind: string; config: unknown; credential: { ref: string; version: string } };
     event: NotificationEventRow;
 }
 
@@ -37,6 +42,12 @@ export interface NotificationOutboxStore {
     settle(token: string, key: OutboxKey, result: SendResult): Promise<void>;
     /** Frees every row still under `token` without counting an attempt. */
     release(token: string): Promise<void>;
+    /**
+     * The item's credential, read from the secret store on every send and never cached. Null for every answer
+     * that is not a confirmed value of the stored version (a refusal, a throw, a lost race with `signal`): the
+     * caller retries, it never parks on an unconfirmed read.
+     */
+    credentialOf(item: OutboxItem, signal: AbortSignal): Promise<string | null>;
 }
 
 interface LeasedRow {
@@ -44,6 +55,8 @@ interface LeasedRow {
     subscription_id: string;
     connector_kind: string;
     connector_config: unknown;
+    secret_ref: string;
+    secret_version: string;
     kind: NotificationKind;
     job_id: string;
     root_job_id: string;
@@ -54,6 +67,11 @@ interface LeasedRow {
     pr_url: string | null;
     question_id: string | null;
     questions: string[] | null;
+    action: AdminAction | null;
+    actor_user_id: string | null;
+    actor_login: string | null;
+    author_user_id: string | null;
+    author_login: string | null;
     occurred_at: Date;
 }
 
@@ -61,11 +79,13 @@ export function createNotificationOutboxStore({
     sql,
     orgId,
     ready,
+    secrets,
     now = () => new Date(),
 }: {
     sql: Sql;
     orgId: string;
     ready?: Promise<unknown> | undefined;
+    secrets: SecretStore;
     now?: (() => Date) | undefined;
 }): NotificationOutboxStore {
     const gate = async () => {
@@ -104,9 +124,10 @@ export function createNotificationOutboxStore({
                       and s.org_id = o.org_id and s.id = o.subscription_id and not s.enabled
                 `;
                 const found = await tx<LeasedRow[]>`
-                    select o.event_id, o.subscription_id, s.connector_kind, s.connector_config,
+                    select o.event_id, o.subscription_id, s.connector_kind, s.connector_config, s.secret_ref, s.secret_version,
                            e.kind, e.job_id, e.root_job_id, e.repo, e.workflow, e.command, e.reason, e.pr_url,
-                           e.question_id, e.questions, e.occurred_at
+                           e.question_id, e.questions, e.action, e.actor_user_id, e.actor_login,
+                           e.author_user_id, e.author_login, e.occurred_at
                     from notification_outbox o
                     join notification_event e on e.org_id = o.org_id and e.id = o.event_id
                     join notification_subscription s on s.org_id = o.org_id and s.id = o.subscription_id
@@ -118,7 +139,11 @@ export function createNotificationOutboxStore({
                     items: found.map((r) => ({
                         eventId: r.event_id,
                         subscriptionId: r.subscription_id,
-                        target: { kind: r.connector_kind, config: r.connector_config },
+                        target: {
+                            kind: r.connector_kind,
+                            config: r.connector_config,
+                            credential: { ref: r.secret_ref, version: r.secret_version },
+                        },
                         event: {
                             id: r.event_id,
                             kind: r.kind,
@@ -132,6 +157,9 @@ export function createNotificationOutboxStore({
                             prUrl: r.pr_url,
                             questionId: r.question_id,
                             questions: r.questions,
+                            action: r.action,
+                            actor: r.actor_user_id ? { id: r.actor_user_id, login: r.actor_login } : null,
+                            author: r.author_user_id ? { id: r.author_user_id, login: r.author_login } : null,
                             occurredAt: r.occurred_at.toISOString(),
                         },
                     })),
@@ -178,5 +206,16 @@ export function createNotificationOutboxStore({
                 where org_id = ${orgId} and claim_token = ${token}::uuid
             `;
         },
+
+        credentialOf: ({ subscriptionId, target }, signal) =>
+            readSubscriptionCredential(
+                secrets,
+                {
+                    identity: subscriptionSecretIdentity(orgId, subscriptionId),
+                    ref: target.credential.ref,
+                    version: target.credential.version,
+                },
+                signal
+            ),
     };
 }

@@ -258,6 +258,8 @@ export interface Job {
     integrationRequirements: JobIntegrationRequirement[];
     /** The thread root's frozen execution user, who a requirement waits on; null on list responses. */
     executionUser: AuthorRef | null;
+    /** The thread owner this row was queued on behalf of: set when an admin acted on another member's task, else null. */
+    actingFor: AuthorRef | null;
 }
 
 /** One bound connection as the job view shows it: ids and labels only, never a credential. */

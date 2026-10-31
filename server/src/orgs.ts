@@ -74,7 +74,7 @@ export interface OrgRuntime {
     branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
     /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
     artifacts?: ArtifactStore | undefined;
-    /** The member uploads (111) over the same object store; present with the artifact index. */
+    /** The member uploads (114) over the same object store; present with the artifact index. */
     attachments?: AttachmentStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
@@ -180,8 +180,8 @@ function buildOrgStores({
     const connections = createConnectionStore({ sql, orgId, ready });
     const connectionGrants = createConnectionGrants({ sql, orgId, ready });
     const userExecutors = createUserExecutorStore({ sql, orgId, ready });
-    const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready });
-    const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready });
+    const notificationSubscriptions = createNotificationSubscriptionStore({ sql, orgId, ready, secrets, secretLog });
+    const notificationOutbox = createNotificationOutboxStore({ sql, orgId, ready, secrets });
     // The PR lifecycle store: the webhook's fold/cancel sweep targets it, and the verdict
     // transaction records the thread's publication identity through it.
     const prs = createPrLifecycleStore({ sql, orgId, ready });

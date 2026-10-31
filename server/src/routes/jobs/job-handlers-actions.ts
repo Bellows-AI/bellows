@@ -1,4 +1,4 @@
-import { ERROR_CODES, emptyBlock } from '@factory-ai/core';
+import { ADMIN_ROLE, ERROR_CODES, emptyBlock } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../../auth/plugin.js';
 import type { OrgRegistry } from '../../orgs.js';
@@ -37,6 +37,12 @@ import type { JobReadStore } from '../../db/jobs/job-store-reads.js';
 import type { JobReclaimStore } from '../../db/jobs/job-store-reclaims.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
 
+/**
+ * The role is the route's question, the org scoping the store's: an org admin may follow up, retry and control the wait
+ * of a thread another member owns. A request with no caller is never an admin.
+ */
+const adminOf = (request: FastifyRequest): boolean => callerOf(request)?.role === ADMIN_ROLE;
+
 // A person's action on a finished task: queue an adjustment as a continuation of the run it just
 // did. The store decides every refusal atomically with the insert, so a follow-up can never land
 // on a parent that turns out to be running or done. No lease token — the task is finished, nobody
@@ -71,7 +77,16 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job follow-up failed'),
-        () => store.createFollowUp(id, commandResult.value, createdBy, idempotency.value, connectionIds, attachmentIds)
+        () =>
+            store.createFollowUp(
+                id,
+                commandResult.value,
+                createdBy,
+                idempotency.value,
+                connectionIds,
+                adminOf(request),
+                attachmentIds
+            )
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return followUpRefusal(reply, created.value);
@@ -141,7 +156,7 @@ export async function handleRetry(orgs: OrgRegistry, request: FastifyRequest, re
     const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job retry failed'),
-        () => store.createRetry(id, createdBy, idempotency.value)
+        () => store.createRetry(id, createdBy, idempotency.value, adminOf(request))
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return retryRefusal(reply, created.value);
@@ -335,7 +350,7 @@ export async function handleWaitCancel(orgs: OrgRegistry, request: FastifyReques
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job wait-cancel failed'),
-        () => store.cancelWait(id, callerOf(request)?.user.id ?? null)
+        () => store.cancelWait(id, callerOf(request)?.user.id ?? null, adminOf(request))
     );
     if (!result.ok) return reply;
     // The string members are exactly the shared refusals; the object members differ per verb.
@@ -355,7 +370,7 @@ export async function handleWaitPoke(orgs: OrgRegistry, request: FastifyRequest,
     const result = await guard(
         reply,
         (e) => request.log.error({ err: e }, 'job wait-poke failed'),
-        () => store.pokeWait(id, callerOf(request)?.user.id ?? null)
+        () => store.pokeWait(id, callerOf(request)?.user.id ?? null, adminOf(request))
     );
     if (!result.ok) return reply;
     if (typeof result.value === 'string') return waitControlRefusal(reply, result.value);

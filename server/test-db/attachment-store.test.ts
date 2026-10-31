@@ -17,7 +17,7 @@ import { createAttachmentRows } from '../src/attachments/attachment-rows.js';
 import { craftJob, testOrg, testUser } from './fixtures.js';
 import { useTestDb } from './harness.js';
 
-/** The attachment index (111) over a filesystem object store: the state machine and its scoping, on a real database. */
+/** The attachment index (114) over a filesystem object store: the state machine and its scoping, on a real database. */
 const enabled = Boolean(process.env.DATABASE_URL);
 const ORG = testOrg();
 const OTHER_ORG = testOrg();

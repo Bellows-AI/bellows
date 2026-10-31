@@ -23,7 +23,6 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
 | Vault KV v2 adapter: `cas=0` write at `<mount>/data/<path>`, read at version 1, metadata delete; one classifier of every answer (write, read, delete, login); Kubernetes login with a single-flight, 80%-of-lease token cache and one re-login per call on a 403 | `server/src/secrets/vault-kv.ts`, `server/src/secrets/vault-answer.ts`, `server/src/secrets/vault-token.ts` | `server/test/secrets.vault.test.ts`, `server/test-db/secrets-vault.conformance.test.ts`, `server/test-db/secrets-vault.faults.test.ts` |
 | Provider faults for the external suites, injected at the adapter's `fetch`; the moto emulator (compose profile `secrets-aws`, CI service, `SECRETS_TEST_REQUIRE_AWS`) and the dev-mode Vault (compose profile `secrets-vault`, CI service, `SECRETS_TEST_REQUIRE_VAULT`) | `server/test-db/secrets-external-harness.ts`, `server/test-db/secrets-aws-provider.ts`, `server/test-db/secrets-vault-harness.ts`, `server/test-db/secrets-vault-provider.ts`, `docker-compose.yml`, `.github/workflows/ci.yml`, `.github/workflows/mirror-images.yml` | `core/test/ci-workflows.test.ts` |
 | Rotation command: `npm run secrets:rotate [-- --batch N]`, `-- --verify-retired <keyId>`; Kubernetes `kubectl exec deploy/<release>-factory -c dashboard -- node server/dist/secrets/rotate-cli.js` | `server/src/secrets/rotate-cli.ts`, `server/src/secrets/rotate-args.ts`, `package.json` | `server/test/secrets.rotate-cli.test.ts` |
-| Environment-secret conversion command: `npm run secrets:convert-env`; Kubernetes `kubectl exec deploy/<release>-factory -c dashboard -- node server/dist/secrets/convert-env-cli.js` | `server/src/secrets/convert-env-cli.ts`, `server/src/db/env-secret-conversion.ts`, `package.json` | `server/test-db/env-secret-conversion.test.ts` |
 | Key delivery: `secrets.env` (`npm run secrets:init`), compose `env_file` on the dashboard, chart `secretStore.*` Secret on the dashboard container | `scripts/secrets-init.mjs`, `secrets.env.example`, `docker-compose.yml`, `charts/factory/templates/secret.yaml`, `charts/factory/templates/deployment.yaml` | `server/test/secrets.environment.test.ts`, `server/test/secrets.init-script.test.ts`, `scripts/test-k8s.sh` |
 
 ## Invariants
@@ -32,7 +31,7 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
   nothing. Owner is an organization (`orgId`) or a user (`userId`, `orgId` or `null` for a personal executor
   profile); a different owner, org, scope, purpose or owning record is `identity-mismatch`. Changing any of
   them needs a new secret and reference. `server/src/secrets/secret-input.ts`, `server/test/secrets.input.test.ts`.
-- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the grant row is confirmed by `grantSecretIdentity` in `server/src/db/connection-grants.ts`, its writer is `server/src/integrations/grant-lineage.ts`, pinned by `server/test-db/integration-lineage.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/migrations/094_integration_connections.sql`):
+- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the grant row is confirmed by `grantSecretIdentity` in `server/src/db/connection-grants.ts`, its writer is `server/src/integrations/grant-lineage.ts`, pinned by `server/test-db/integration-lineage.test.ts`; the notification row is confirmed by `subscriptionSecretIdentity` in `server/src/notifications/subscription-credential.ts`, pinned by `server/test-db/notification-subscriptions.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/migrations/094_integration_connections.sql`):
 
   | Consumer | Owner | Scope | Purpose | Owning record |
   | --- | --- | --- | --- | --- |
@@ -41,6 +40,7 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
   | BEL-54 repository env secret | organization(orgId) | repository/owner/name | environment-secret | env-var (name) |
   | BEL-59..61 integration grant | user(principal_user_id, orgId) | integration-grant/id | connection-grant | integration-grant |
   | BEL-35 executor credential | user(userId, null) personal, organization(orgId) org | executor-profile/id | executor-credential | profile |
+  | BEL-132 notification credential | organization(orgId) | organization/orgId | notification-credential | notification-subscription (id) |
 
 - **The store owns a pool of its own**: `main.ts` builds it on a second pool, never the claim's, because the claim reads
   environment secrets while holding a pooled connection and a store call opens its own transaction; a shared pool

@@ -28,18 +28,18 @@ import { jiraRegistration } from './integrations/providers/jira.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
-import { createConnectorRegistry } from './notifications/connector.js';
 import { startNotificationDelivery } from './notifications/delivery-loop.js';
+import { productionConnectors } from './notifications/registry.js';
 import { createCommercePlanWriter } from './db/commerce-plan-writer.js';
 import { createSecretStore, loadSecretBackend } from './secrets/secret-backend.js';
 import type { SecretDiagnostic } from './secrets/secret-store.js';
 
 /** One registry: the subscription routes validate against it and delivery sends through it. */
-const connectors = createConnectorRegistry([]);
+const connectors = productionConnectors();
 
 /**
  * The outbox deliveries run on every replica: closed claims go to the commerce service, off by default
- * (docs/commerce.md); notification rows go through `connectors`, off until a channel ships (docs/notifications.md).
+ * (docs/commerce.md); notification rows go through `connectors`, on whenever a public URL is configured (docs/notifications.md).
  */
 function startDeliveries({
     config,

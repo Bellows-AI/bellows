@@ -11,8 +11,10 @@ export type FakeScript = (event: NotificationEvent, config: FakeConfig, signal: 
 export function fakeConnector(
     kind: string,
     script?: FakeScript
-): NotificationConnector<FakeConfig> & { sent: Array<{ event: NotificationEvent; config: FakeConfig }> } {
-    const sent: Array<{ event: NotificationEvent; config: FakeConfig }> = [];
+): NotificationConnector<FakeConfig> & {
+    sent: Array<{ event: NotificationEvent; config: FakeConfig; credential: string }>;
+} {
+    const sent: Array<{ event: NotificationEvent; config: FakeConfig; credential: string }> = [];
     return {
         kind,
         sent,
@@ -24,8 +26,13 @@ export function fakeConnector(
             }
             return { ok: false, problems: ['target must be a non-empty string'] };
         },
-        async send(event, config, signal) {
-            sent.push({ event, config });
+        validateCredential(raw) {
+            return typeof raw === 'string' && raw !== ''
+                ? { ok: true, config: raw }
+                : { ok: false, problems: ['credential must be a non-empty string'] };
+        },
+        async send(event, config, credential, signal) {
+            sent.push({ event, config, credential });
             if (script) return (await script(event, config, signal)) as never;
             return { status: 'delivered', externalId: `${kind}-${event.id}` };
         },

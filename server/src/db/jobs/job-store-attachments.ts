@@ -2,7 +2,7 @@ import { MAX_FILES_PER_REQUEST, MAX_REQUEST_BYTES, type AttachmentMeta } from '@
 import type { Sql, TransactionSql } from 'postgres';
 
 /**
- * The files a task carries (112): bound to a job in the transaction that inserts it, read back per thread, revoked
+ * The files a task carries (115): bound to a job in the transaction that inserts it, read back per thread, revoked
  * with the thread. Who may bind a file is the uploader's alone, and only while it is `ready`.
  */
 

@@ -17,11 +17,15 @@ const event: NotificationEvent = notificationEventOf(
         prUrl: null,
         questionId: null,
         questions: null,
+        action: null,
+        actor: null,
+        author: null,
         occurredAt: '2026-10-30T10:00:00.000Z',
     },
     'https://factory.example.com'
 );
 const ok = { target: 'room-1' };
+const CRED = 'cred-1';
 const live = () => new AbortController().signal;
 
 describe('createConnectorRegistry', () => {
@@ -37,11 +41,65 @@ describe('createConnectorRegistry', () => {
 describe('deliver', () => {
     it('delivers through the fake and passes event and config separately', async () => {
         const fake = fakeConnector('fake');
-        const result = await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, live());
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: CRED },
+            event,
+            live()
+        );
         expect(result).toEqual({ status: 'delivered', externalId: `fake-${event.id}` });
         expect(fake.sent[0]!.event).toBe(event);
         expect(fake.sent[0]!.config).toEqual(ok);
         expect('config' in event).toBe(false);
+    });
+
+    it('passes the credential to send separately from event and config', async () => {
+        const fake = fakeConnector('fake');
+        await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: 'hook-secret' },
+            event,
+            live()
+        );
+        expect(fake.sent[0]!.credential).toBe('hook-secret');
+        expect(JSON.stringify(event)).not.toContain('hook-secret');
+        expect(JSON.stringify(fake.sent[0]!.config)).not.toContain('hook-secret');
+    });
+
+    it('invalid credential is permanent config-invalid and never echoes it', async () => {
+        const fake = fakeConnector('fake');
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: '' },
+            event,
+            live()
+        );
+        expect(result).toEqual({ status: 'permanent', reason: 'config-invalid' });
+        expect(fake.sent).toEqual([]);
+        fake.validateCredential = () => ({ ok: false, problems: ['bad hook-secret'] });
+        const again = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: 'hook-secret' },
+            event,
+            live()
+        );
+        expect(again).toEqual({ status: 'permanent', reason: 'config-invalid' });
+        expect(JSON.stringify(again)).not.toContain('hook-secret');
+    });
+
+    it('validateCredential throwing is retryable connector-threw', async () => {
+        const fake = fakeConnector('fake');
+        fake.validateCredential = () => {
+            throw new Error('boom');
+        };
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: CRED },
+            event,
+            live()
+        );
+        expect(result).toEqual({ status: 'retryable', reason: 'connector-threw' });
+        expect(fake.sent).toEqual([]);
     });
 
     it('second kind needs no edit', async () => {
@@ -49,15 +107,20 @@ describe('deliver', () => {
         const b = fakeConnector('b');
         const registry = createConnectorRegistry([a, b]);
         const other = { ...event, id: '99999999-9999-4999-8999-999999999999' };
-        await deliver(registry, { kind: 'a', config: ok }, event, live());
-        await deliver(registry, { kind: 'b', config: ok }, other, live());
+        await deliver(registry, { kind: 'a', config: ok, credential: CRED }, event, live());
+        await deliver(registry, { kind: 'b', config: ok, credential: CRED }, other, live());
         expect(a.sent.map((s) => s.event)).toEqual([event]);
         expect(b.sent.map((s) => s.event)).toEqual([other]);
     });
 
     it('unknown kind is retryable', async () => {
         const fake = fakeConnector('fake');
-        const result = await deliver(createConnectorRegistry([fake]), { kind: 'nope', config: ok }, event, live());
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'nope', config: ok, credential: CRED },
+            event,
+            live()
+        );
         expect(result).toEqual({ status: 'retryable', reason: 'unknown-kind' });
         expect(fake.sent).toEqual([]);
     });
@@ -66,7 +129,7 @@ describe('deliver', () => {
         const fake = fakeConnector('fake');
         const result = await deliver(
             createConnectorRegistry([fake]),
-            { kind: 'fake', config: { target: '', secret: 'S3CRET' } },
+            { kind: 'fake', config: { target: '', secret: 'S3CRET' }, credential: CRED },
             event,
             live()
         );
@@ -80,7 +143,12 @@ describe('deliver', () => {
         fake.validateConfig = () => {
             throw new Error('boom');
         };
-        const result = await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, live());
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: CRED },
+            event,
+            live()
+        );
         expect(result).toEqual({ status: 'retryable', reason: 'connector-threw' });
         expect(fake.sent).toEqual([]);
     });
@@ -91,7 +159,12 @@ describe('deliver', () => {
             { status: 'permanent', reason: 'destination-refused' },
         ]) {
             const fake = fakeConnector('fake', async () => scripted);
-            const result = await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, live());
+            const result = await deliver(
+                createConnectorRegistry([fake]),
+                { kind: 'fake', config: ok, credential: CRED },
+                event,
+                live()
+            );
             expect(result).toEqual(scripted);
         }
     });
@@ -100,7 +173,12 @@ describe('deliver', () => {
         const fake = fakeConnector('fake', async () => {
             throw new Error('boom');
         });
-        const result = await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, live());
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: CRED },
+            event,
+            live()
+        );
         expect(result).toEqual({ status: 'retryable', reason: 'connector-threw' });
     });
 
@@ -111,7 +189,12 @@ describe('deliver', () => {
             { status: 'permanent', reason: 'nope' },
         ]) {
             const fake = fakeConnector('fake', async () => scripted);
-            const result = await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, live());
+            const result = await deliver(
+                createConnectorRegistry([fake]),
+                { kind: 'fake', config: ok, credential: CRED },
+                event,
+                live()
+            );
             expect(result).toEqual({ status: 'retryable', reason: 'malformed-result' });
         }
     });
@@ -120,7 +203,7 @@ describe('deliver', () => {
         const fake = fakeConnector('fake');
         const result = await deliver(
             createConnectorRegistry([fake]),
-            { kind: 'fake', config: ok },
+            { kind: 'fake', config: ok, credential: CRED },
             event,
             AbortSignal.abort()
         );
@@ -131,7 +214,12 @@ describe('deliver', () => {
     it('abort mid-send settles without waiting for the connector', async () => {
         const fake = fakeConnector('fake', () => new Promise(() => {}));
         const ac = new AbortController();
-        const pending = deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, ac.signal);
+        const pending = deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: CRED },
+            event,
+            ac.signal
+        );
         await Promise.resolve();
         ac.abort();
         expect(await pending).toEqual({ status: 'retryable', reason: 'aborted' });
@@ -144,7 +232,12 @@ describe('deliver', () => {
             ac.abort();
             throw new Error('cancelled');
         });
-        const result = await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, ac.signal);
+        const result = await deliver(
+            createConnectorRegistry([fake]),
+            { kind: 'fake', config: ok, credential: CRED },
+            event,
+            ac.signal
+        );
         expect(result).toEqual({ status: 'retryable', reason: 'aborted' });
     });
 
@@ -155,7 +248,7 @@ describe('deliver', () => {
             seen = s;
             return { status: 'delivered' };
         });
-        await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, signal);
+        await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok, credential: CRED }, event, signal);
         expect(seen).toBe(signal);
     });
 
@@ -186,7 +279,12 @@ describe('deliver', () => {
                 return remove(...a);
             }) as typeof remove;
             const fake = fakeConnector('fake', () => script(ac));
-            await deliver(createConnectorRegistry([fake]), { kind: 'fake', config: ok }, event, ac.signal);
+            await deliver(
+                createConnectorRegistry([fake]),
+                { kind: 'fake', config: ok, credential: CRED },
+                event,
+                ac.signal
+            );
             expect(added).toBeGreaterThan(0);
             expect(removed).toBe(added);
         }

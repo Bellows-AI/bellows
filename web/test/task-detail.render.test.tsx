@@ -89,9 +89,9 @@ describe('TaskDetail', () => {
 describe('TaskDetail — the follow-up composer states', () => {
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
-    const viewer = { loading: false, id: me.id };
-    const signedOut = { loading: false, id: null };
-    const loading = { loading: true, id: null };
+    const viewer = { loading: false, id: me.id, admin: false };
+    const signedOut = { loading: false, id: null, admin: false };
+    const loading = { loading: true, id: null, admin: false };
     const moving = { exitCode: null, finishedAt: null, startedAt: null, output: null };
 
     type Row = {
@@ -490,7 +490,30 @@ describe('TaskDetail — turn stats', () => {
 describe('TaskDetail — who may follow up', () => {
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
-    const viewer = { loading: false, id: me.id };
+    const viewer = { loading: false, id: me.id, admin: false };
+    const admin = { loading: false, id: other.id, admin: true };
+
+    it("shows the composer to an admin on another member's task", () => {
+        const html = renderDetail({ jobs: [job({ author: me })], viewer: admin });
+        expect(html).toContain('<h2>Follow up</h2>');
+        expect(html).not.toContain('can continue this session');
+    });
+
+    it("names the owner, not the latest turn's admin, to a member", () => {
+        const turn = job({ author: other, executionUser: me, actingFor: me });
+        const html = renderDetail({ jobs: [turn], viewer: { loading: false, id: 'cccccccc', admin: false } });
+        expect(html).toContain('Only me can continue this session.');
+    });
+
+    it('marks a turn queued on behalf of the owner', () => {
+        const turn = job({ author: other, executionUser: me, actingFor: me });
+        const html = renderDetail({ jobs: [turn], viewer: admin });
+        expect(html).toContain('queued by octo-reviewer on behalf of me');
+    });
+
+    it('marks nothing on an ordinary turn', () => {
+        expect(renderDetail({ jobs: [job({ author: me })], viewer: admin })).not.toContain('on behalf of');
+    });
 
     it('says the run ended with a question directly above the composer, for the author (issue #226)', () => {
         const html = renderDetail({ jobs: [job({ author: me, summary: 'Which one: Red or Blue?' })], viewer });

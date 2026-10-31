@@ -3,7 +3,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
 
 /**
- * The `input_attachment` rows (111) behind the attachment store. Every org-scoped query carries
+ * The `input_attachment` rows (114) behind the attachment store. Every org-scoped query carries
  * `org_id` from the runtime, never from a request. Every state change is a conditional UPDATE
  * naming the state it expects, so a racing sweep, bind or retry loses cleanly.
  */

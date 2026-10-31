@@ -20,6 +20,9 @@ const row = (over: Partial<NotificationEventRow> = {}): NotificationEventRow => 
     prUrl: null,
     questionId: null,
     questions: null,
+    action: null,
+    actor: null,
+    author: null,
     occurredAt: '2026-10-30T10:00:00.000Z',
     ...over,
 });
@@ -39,6 +42,9 @@ describe('notificationEventOf', () => {
             prUrl: null,
             questionId: null,
             questions: null,
+            action: null,
+            actor: null,
+            author: null,
             link: 'https://factory.example.com/tasks/33333333-3333-4333-8333-333333333333',
             occurredAt: '2026-10-30T10:00:00.000Z',
         });
@@ -69,6 +75,20 @@ describe('notificationEventOf', () => {
         expect(event.link).toBe(`https://x.example/tasks/${row().rootJobId}`);
     });
 
+    it('lists task.admin_action among the kinds', () => {
+        expect(NOTIFICATION_KINDS).toContain('task.admin_action');
+    });
+
+    it('passes the admin action, actor and author through', () => {
+        const actor = { id: 'u-admin', login: 'admin' };
+        const author = { id: 'u-author', login: 'author' };
+        const event = notificationEventOf(
+            row({ kind: 'task.admin_action', action: 'retry', actor, author }),
+            'https://x.example'
+        );
+        expect(event).toMatchObject({ kind: 'task.admin_action', action: 'retry', actor, author });
+    });
+
     it('derives the title from the command, for a multi-line and a CRLF command', () => {
         expect(notificationEventOf(row({ command: '  first  \nsecond' }), 'https://x.example').title).toBe('first');
         expect(notificationEventOf(row({ command: 'first\r\nsecond' }), 'https://x.example').title).toBe('first');
@@ -82,13 +102,13 @@ describe('notificationEventOf', () => {
 });
 
 describe('NOTIFICATION_KINDS', () => {
-    it('lists the three kinds, and the migration check admits exactly them', () => {
-        expect([...NOTIFICATION_KINDS]).toEqual(['task.ready', 'task.blocked', 'task.question']);
+    it('lists the four kinds, and the latest migration check admits exactly them', () => {
+        expect([...NOTIFICATION_KINDS]).toEqual(['task.ready', 'task.blocked', 'task.question', 'task.admin_action']);
         const sql = readFileSync(
-            new URL('../../server/migrations/102_notification_event.sql', import.meta.url),
+            new URL('../../server/migrations/112_notification_admin_action.sql', import.meta.url),
             'utf8'
         );
-        const check = /kind in \(([^)]*)\)/.exec(sql);
+        const check = /check \(kind in \(([^)]*)\)/.exec(sql);
         expect(check).not.toBeNull();
         expect([...check![1]!.matchAll(/'([^']+)'/g)].map((m) => m[1])).toEqual([...NOTIFICATION_KINDS]);
     });
@@ -101,6 +121,7 @@ describe('isSendResult', () => {
             { status: 'delivered', externalId: 'm1' },
             { status: 'retryable', reason: 'transport' },
             { status: 'retryable', reason: 'rate-limited', retryAfterMs: 0 },
+            { status: 'retryable', reason: 'credential-unavailable' },
             { status: 'permanent', reason: 'payload-refused' },
         ]) {
             expect(isSendResult(ok), JSON.stringify(ok)).toBe(true);

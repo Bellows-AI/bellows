@@ -216,6 +216,7 @@ describe('taskSummary', () => {
         attachments: [],
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
         ...overrides,
     });
 
