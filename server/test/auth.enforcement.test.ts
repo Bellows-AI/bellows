@@ -290,6 +290,11 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/credentials/connections', 'connector'],
     ['/api/jobs/:id/operations', 'connector'],
     ['/api/jobs/:id/operations/:receiptId', 'connector'],
+    // A member's own uploads: a person's act, so 'user' (an organization token is refused).
+    ['/api/attachments', 'user'],
+    ['/api/attachments/limits', 'user'],
+    ['/api/attachments/:id', 'user'],
+    ['/api/attachments/:id/content', 'user'],
     // Managing connections is a person's settings act; it falls through to 'user'.
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
