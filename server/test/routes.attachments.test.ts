@@ -85,7 +85,7 @@ async function boot({
     const config = testConfig({ auth: githubAuth() });
     const registry = staticRegistry({
         config,
-        repos: staticRepoSource([{ owner: 'Bellows-AI', name: 'bellows.ai' }]),
+        repos: staticRepoSource([{ owner: 'acme', name: 'web' }]),
         telemetry: stubTelemetryClient(),
         jobs: jobStoreSlice<JobActionStore>({
             async create(command: string) {
@@ -291,7 +291,7 @@ describe('POST /api/attachments', () => {
             method: 'POST',
             url: '/api/jobs',
             headers: { cookie: cookie.owner },
-            payload: { repo: 'Bellows-AI/bellows.ai', command: 'a text-only task' },
+            payload: { repo: 'acme/web', command: 'a text-only task' },
         });
         expect(job.statusCode).toBe(HTTP_CREATED);
         expect(created).toEqual(['a text-only task']);

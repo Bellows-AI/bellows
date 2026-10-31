@@ -188,6 +188,8 @@ function docxResult(bytes: Uint8Array): SniffResult {
 /** Markup that is valid UTF-8 and would execute or render if served: the one text shape refused by content. */
 const MARKUP = /^(<\?xml|<!doctype|<svg|<html|<head|<body|<script)/iu;
 const MARKUP_WINDOW = 512;
+/** Whitespace and markup comments before the first tag: a browser skips them, so the check does too. */
+const LEADING_COMMENTS = /^(?:\s|<!--[\s\S]*?-->)*/u;
 /** C0 controls other than tab, line feed, form feed and carriage return: a text file has none, a binary does. */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
 const CONTROL = /[\u0000-\u0008\u000b\u000e-\u001f]/u;
@@ -211,7 +213,7 @@ function textResult(bytes: Uint8Array, name: string | undefined): SniffResult {
             text
                 .slice(0, MARKUP_WINDOW)
                 .replace(/^\uFEFF/u, '')
-                .trimStart()
+                .replace(LEADING_COMMENTS, '')
         )
     )
         return unsupported;
