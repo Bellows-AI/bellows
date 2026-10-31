@@ -50,17 +50,26 @@ test("an admin sees the composer on another member's task", async ({ page }) => 
 });
 
 test('a turn an admin queued names the author it was queued on behalf of', async ({ page }) => {
-    const owner = otherAuthorThread[0]!.author!;
-    const onBehalf = otherAuthorThread.map((job) => ({
-        ...job,
+    const root = otherAuthorThread[0]!;
+    const owner = root.author!;
+    // The owner's root stays as it was; the admin's follow-up is appended as the thread's next turn.
+    const adminTurn = {
+        ...root,
+        id: 'aaaaaaaa-0000-4000-8000-000000000165',
+        command: 'resume after the node loss',
+        followUpTo: root.id,
+        createdAt: '2026-09-01T13:00:00.000Z',
         author: me,
         createdBy: me.id,
         executionUser: owner,
         actingFor: owner,
-    }));
+    };
+    const onBehalf = [root, adminTurn];
     await routeThread(page, onBehalf);
-    await page.goto(`/tasks/${onBehalf[0]!.id}`);
+    await page.goto(`/tasks/${root.id}`);
     await expect(page.getByText(`queued by ${me.login} on behalf of ${owner.login}`)).toBeVisible();
+    await expect(page.locator('.task-opened-by')).toContainText(owner.login);
+    await expect(page.locator('.task-opened-by')).not.toContainText(me.login);
     await expect(page.getByLabel('Ask for a follow-up')).toBeVisible();
     await page.screenshot({ path: 'artifacts/ui/task-detail-admin-on-behalf.png', fullPage: true });
 });

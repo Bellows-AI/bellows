@@ -12,7 +12,7 @@ import { useTestDb } from './harness.js';
 import { mustCreate, oauthConnection, testOrg, testUser } from './fixtures.js';
 
 /**
- * An org admin acts on another member's task (BEL-165): the row's `created_by` is the actor, the thread root's
+ * An org admin acts on another member's task: the row's `created_by` is the actor, the thread root's
  * `execution_user_id` stays the owner, and the claim runs every row of the thread as the owner.
  */
 

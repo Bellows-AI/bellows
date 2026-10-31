@@ -3,7 +3,7 @@ import type { AdminAction } from '@factory-ai/core';
 import type { JobStorePrs } from './job-store-types.js';
 
 /**
- * Emits `task.admin_action` (BEL-165) in the action's own transaction, after the write it records succeeded, so the
+ * Emits `task.admin_action` in the action's own transaction, after the write it records succeeded, so the
  * action never commits without its event. Nothing is written when the actor is the thread's owner (the root's
  * `execution_user_id`), so an owner's own action and a replay that reaches no insert emit nothing. `subject` is the
  * dedupe key: the created job id, or the root plus the transaction id for a wait cancel.

@@ -2418,7 +2418,7 @@ describe('lifecycle actor attribution', () => {
         expect(store.pokes).toEqual([{ id: ID, pokedBy: caller.user.id }]);
     });
 
-    // BEL-165: the role is the route's question; the store gets the verdict as a trailing flag.
+    // The role is the route's question; the store gets the verdict as a trailing flag.
     const adminVerbs = [
         ['follow-up', `/api/jobs/${ID}/follow-up`, { command: 'again, tighter' }],
         ['retry', `/api/jobs/${ID}/retry`, {}],

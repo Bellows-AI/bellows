@@ -15,7 +15,7 @@ import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 
 /**
- * BEL-165: an org admin's follow-up, retry, wait poke or wait cancel on another member's task emits one
+ * An org admin's follow-up, retry, wait poke or wait cancel on another member's task emits one
  * task.admin_action in the action's transaction, naming the actor and the author (docs/notifications.md).
  */
 const enabled = Boolean(process.env.DATABASE_URL);

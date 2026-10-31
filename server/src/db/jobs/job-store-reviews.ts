@@ -63,7 +63,7 @@ interface CallerRow {
     claimed_by: string | null;
     lease_expires_at: Date;
     root_job_id: string;
-    /** The thread root's `execution_user_id`: the review is authored by the owner, not by an admin acting for them (BEL-165). */
+    /** The thread root's `execution_user_id`: the review is authored by the owner, not by an admin acting for them. */
     owner_id: string | null;
     repo: string | null;
     executor: string | null;

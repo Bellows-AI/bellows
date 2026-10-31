@@ -1,5 +1,5 @@
 -- Notifications: task.admin_action when an org admin follows up, retries, pokes or cancels the wait of another
--- member's task (BEL-165). The event is written by the action's own transaction (job-store-admin-event.ts), not a
+-- member's task. The event is written by the action's own transaction (job-store-admin-event.ts), not a
 -- trigger, so it exists only when the actor is not the thread's execution_user_id. One event per created job (per
 -- cancelling transaction for a wait cancel): the id is md5(<subject> || '/task.admin_action'). It names the actor and
 -- the author; the logins are a snapshot like `command`, so a removed user still reads. No FK, as 102 has none.

@@ -169,7 +169,7 @@ type ThreadIntegrations = Pick<Job, 'connections' | 'bindingRevision' | 'integra
 
 /**
  * What the detail reads attach to a row from its thread root. The workspace is the owner's whoever queued the row, and
- * a row queued by someone else is an admin acting for the owner (BEL-165): `actingFor` names the owner there.
+ * a row queued by someone else is an admin acting for the owner: `actingFor` names the owner there.
  */
 function ownedBy(
     orgId: string,

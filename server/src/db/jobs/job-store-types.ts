@@ -375,7 +375,7 @@ export interface Job {
     /** The thread root's frozen execution user: who a connection requirement waits on. `get()`/`thread()` only, else null. */
     executionUser: UserRef | null;
     /**
-     * The thread's owner (`executionUser`) when this row was queued by someone else, an admin acting for them (BEL-165);
+     * The thread's owner (`executionUser`) when this row was queued by someone else, an admin acting for them;
      * null when the owner queued it. `get()`/`thread()` only, else null.
      */
     actingFor: UserRef | null;

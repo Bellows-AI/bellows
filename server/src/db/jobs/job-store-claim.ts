@@ -146,7 +146,7 @@ interface ReservedCandidate {
     id: string;
     root_job_id: string;
     claim_seq: string;
-    /** The thread root's `execution_user_id`: the identity every row of the thread runs as (BEL-165). */
+    /** The thread root's `execution_user_id`: the identity every row of the thread runs as. */
     run_as: string | null;
     repo: string | null;
     workflow_node: string | null;

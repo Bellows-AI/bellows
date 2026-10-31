@@ -218,7 +218,7 @@ async function insertWakeContinuation(
     const jobId = await insertWorkflowSuccessor(tx, {
         orgId: ctx.orgId,
         command: round.command,
-        // An admin's poke is the admin's turn (BEL-165); the claim still runs it as the thread's owner.
+        // An admin's poke is the admin's turn; the claim still runs it as the thread's owner.
         createdBy: ctx.actor ? ctx.actor.userId : root.created_by,
         repo: round.job_repo,
         executor: round.executor,

@@ -137,7 +137,7 @@ export interface JobActionStore {
         idempotency?: IdempotencyInput,
         /** Connections to append to the thread's bindings; `ConnectionRefusedError` when any is not the author's to bind. */
         connectionIds?: readonly string[],
-        /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else (BEL-165). */
+        /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else. */
         admin?: boolean
     ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal>;
 
@@ -175,7 +175,7 @@ export interface JobActionStore {
         id: string,
         createdBy: string | null,
         idempotency?: IdempotencyInput,
-        /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else (BEL-165). */
+        /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else. */
         admin?: boolean
     ): Promise<{ id: string; replayed?: boolean } | RetryRefusal>;
 
