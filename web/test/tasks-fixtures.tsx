@@ -70,6 +70,7 @@ export function job(overrides: Partial<Job> = {}): Job {
         bindingRevision: 0,
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
         ...overrides,
     };
 }
@@ -178,7 +179,7 @@ export interface DetailArgs {
 }
 
 /** The AUTH_MODE-agnostic default: a null viewer on a null-author row may follow up. */
-const ANONYMOUS_VIEWER: FollowUpViewer = { loading: false, id: null };
+const ANONYMOUS_VIEWER: FollowUpViewer = { loading: false, id: null, admin: false };
 
 export const renderDetail = ({
     jobs = [job()],

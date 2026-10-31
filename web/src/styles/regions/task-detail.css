@@ -807,6 +807,7 @@
         .task-actions button,
         .task-remove-actions button,
         .task-stats-head button,
+        .task-outcome section > button,
         .task-outcome > summary,
         .run-output > summary,
         .chat-gate-list summary,

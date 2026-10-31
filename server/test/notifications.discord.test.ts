@@ -38,6 +38,9 @@ const eventOf = (over: Partial<NotificationEvent> = {}): NotificationEvent => ({
             prUrl: null,
             questionId: null,
             questions: null,
+            action: null,
+            actor: null,
+            author: null,
             occurredAt: '2026-10-30T10:00:00.000Z',
         },
         'https://factory.example.com'
@@ -117,6 +120,7 @@ describe('discord embed', () => {
             ['task.ready', 'Task ready for review', 0x2ecc71],
             ['task.blocked', 'Task blocked', 0xe74c3c],
             ['task.question', 'Agent asked a question', 0xf1c40f],
+            ['task.admin_action', 'An admin acted on a task', 0x3498db],
         ];
         for (const [kind, title, color] of expected) {
             const event = eventOf({ kind });
@@ -142,6 +146,37 @@ describe('discord embed', () => {
         const empties = embedOf(eventOf({ repo: '', reason: '', questions: [''], title: '' }));
         expect(empties.fields).toBeUndefined();
         expect('description' in empties).toBe(false);
+    });
+
+    it('an admin action names what was done, by whom and for whose task', () => {
+        const embed = embedOf(
+            eventOf({
+                kind: 'task.admin_action',
+                reason: null,
+                action: 'follow-up',
+                actor: { id: 'u-admin', login: 'admin-cat' },
+                author: { id: 'u-author', login: '@author-dog' },
+            })
+        );
+        expect(embed.fields).toEqual([
+            { name: 'Repo', value: 'acme/widgets', inline: true },
+            { name: 'Action', value: 'follow-up', inline: true },
+            { name: 'By', value: 'admin-cat', inline: true },
+            { name: 'On behalf of', value: `@${ZWSP}author-dog`, inline: true },
+        ]);
+        const unknown = embedOf(
+            eventOf({
+                kind: 'task.admin_action',
+                reason: null,
+                action: 'retry',
+                actor: null,
+                author: { id: 'u', login: null },
+            })
+        );
+        expect(unknown.fields).toEqual([
+            { name: 'Repo', value: 'acme/widgets', inline: true },
+            { name: 'Action', value: 'retry', inline: true },
+        ]);
     });
 
     it('truncates title 256, description 4096, field 1024, total ≤ 6000; never splits a surrogate pair', () => {

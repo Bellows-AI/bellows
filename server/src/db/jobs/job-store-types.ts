@@ -374,6 +374,11 @@ export interface Job {
     integrationRequirements: JobIntegrationRequirement[];
     /** The thread root's frozen execution user: who a connection requirement waits on. `get()`/`thread()` only, else null. */
     executionUser: UserRef | null;
+    /**
+     * The thread's owner (`executionUser`) when this row was queued by someone else, an admin acting for them;
+     * null when the owner queued it. `get()`/`thread()` only, else null.
+     */
+    actingFor: UserRef | null;
 }
 
 /** One open requirement as the job view shows it. */

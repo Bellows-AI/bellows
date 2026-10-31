@@ -24,6 +24,9 @@ const eventRow = (n: number): NotificationEventRow => ({
     prUrl: null,
     questionId: null,
     questions: null,
+    action: null,
+    actor: null,
+    author: null,
     occurredAt: '2026-08-01T00:00:00.000Z',
 });
 

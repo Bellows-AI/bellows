@@ -93,11 +93,11 @@ export async function resolveClaimExecutor(
          */
         grant?: readonly string[];
     },
-    row: { created_by: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
+    row: { run_as: string | null; repo: string | null; executor: string | null; executor_scope: string | null }
 ): Promise<ResolvedClaimExecutor> {
     const { env, executorConfig, grant } = deps;
     const resolvedEnv = withoutGithubToken(
-        env ? await env.resolveFor({ userId: row.created_by, repo: row.repo }, tx) : undefined
+        env ? await env.resolveFor({ userId: row.run_as, repo: row.repo }, tx) : undefined
     );
     let claimEnv = grant !== undefined ? grantedEnv(resolvedEnv, grant) : resolvedEnv;
     // The executor label a task was queued with names a row in the STAMPED SCOPE's list (issue
@@ -110,9 +110,9 @@ export async function resolveClaimExecutor(
     // this selection's answer.
     let executorType: ExecutorType | null = null;
     let executorRefusal: string | null = null;
-    if (executorConfig && row.executor !== null && row.created_by !== null) {
+    if (executorConfig && row.executor !== null && row.run_as !== null) {
         const scope = (row.executor_scope ?? USER_SCOPE) as ExecutorScope;
-        const configured = await executorConfig.configFor(row.created_by, row.executor, scope, tx);
+        const configured = await executorConfig.configFor(row.run_as, row.executor, scope, tx);
         if (configured?.suspended) {
             // A suspended profile (issue 440) launches nothing and its config never reaches the
             // claim: the driver fails the task with this sentence before any runner starts, for a

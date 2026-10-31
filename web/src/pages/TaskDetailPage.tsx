@@ -1,3 +1,4 @@
+import { ADMIN_ROLE } from '@factory-ai/core';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { NavigateFunction } from 'react-router-dom';
@@ -208,8 +209,8 @@ export function TaskDetailPage() {
 
     const { sending, actionError, followUpError, stoppingId, doneId, followUp, doneTask, stopTask } =
         useTaskConversationActions(id, tasks, detail, latest);
-    // Who is looking: only the task's author may follow it up (the board checks the same row).
-    const viewer = { loading: sessionLoading, id: session?.user.id ?? null };
+    // Who is looking: the task owner or an org admin may follow it up (the board checks the same).
+    const viewer = { loading: sessionLoading, id: session?.user.id ?? null, admin: session?.role === ADMIN_ROLE };
     const { removingId, removeOpen, removeError, openRemove, closeRemove, removeTask } = useTaskRemoval(
         id,
         tasks,

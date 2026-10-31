@@ -236,6 +236,16 @@ function RunResponseBody({
 
 const COST_DECIMAL_PLACES = 4;
 
+/** An admin's turn on another member's task: who queued it, and on behalf of whom. */
+function ActingForNote({ job }: { job: Job }) {
+    if (job.actingFor === null) return null;
+    return (
+        <span className="muted">
+            queued by {job.author?.login ?? 'an admin'} on behalf of {job.actingFor.login}
+        </span>
+    );
+}
+
 /**
  * The run's quiet metadata footer: status, timestamps, attribution — everything that follows the
  * work it describes rather than leading the article. Split out of `TaskRun` because its many
@@ -264,6 +274,7 @@ function RunMetaFooter({ job, parked }: { job: Job; parked: boolean }) {
                         : ''}
                 </span>
             ) : null}
+            <ActingForNote job={job} />
             {job.stoppedBy !== null ? (
                 <span className="pill chat-stop">
                     {job.status === 'stopped' ? 'stopped by' : 'stop requested by'} {job.stoppedBy.login}

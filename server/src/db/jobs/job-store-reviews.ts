@@ -63,7 +63,8 @@ interface CallerRow {
     claimed_by: string | null;
     lease_expires_at: Date;
     root_job_id: string;
-    created_by: string | null;
+    /** The thread root's `execution_user_id`: the review is authored by the owner, not by an admin acting for them. */
+    owner_id: string | null;
     repo: string | null;
     executor: string | null;
     executor_scope: string | null;
@@ -123,7 +124,8 @@ async function lockedCaller(
     leaseToken: string
 ): Promise<CallerRow | undefined> {
     const [caller] = await tx<CallerRow[]>`
-        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, created_by, repo, executor, executor_scope, mode,
+        select id, claim_seq, claimed_by, lease_expires_at, root_job_id, repo, executor, executor_scope, mode,
+               (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as owner_id,
                reviewers
         from job
         where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
@@ -214,7 +216,7 @@ async function insertReview(
             status, claimed_by, lease_token, lease_expires_at, attempts, claim_seq, started_at,
             review_caller_seq
         )
-        select ${orgId}, ${command}, ${caller.created_by}, ${caller.repo}, ${caller.executor},
+        select ${orgId}, ${command}, ${caller.owner_id}, ${caller.repo}, ${caller.executor},
                ${caller.executor_scope ?? USER_SCOPE}, x, x, ${OBJECTIVE_MODE},
                ${caller.id}, ${request.key}, ${spec.name}, ${tx.json(spec as never)}, ${request.revision}, ${request.ref},
                'running', ${caller.claimed_by}, gen_random_uuid(), ${caller.lease_expires_at}, 1, 1, now(),
@@ -282,7 +284,7 @@ interface ReviewClaimRow {
     claim_seq: string;
     lease_token: string;
     lease_expires_at: Date;
-    created_by: string | null;
+    run_as: string | null;
     session_id: string | null;
     repo: string | null;
     parent_job_id: string | null;
@@ -308,7 +310,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
     const { orgId, env, executorConfig } = ctx;
     await recordExecution(tx, orgId, reviewId);
     const [row] = await tx<ReviewClaimRow[]>`
-        select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
+        select id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, execution_user_id as run_as,
                session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                review_spec, review_ref,
                (session_id is not null
@@ -332,7 +334,7 @@ async function reviewClaim(ctx: JobStoreContext, tx: TransactionSql, reviewId: s
         row!.id,
         {
             ...executor,
-            claimPath: workspacePathFor(orgId, row!.created_by),
+            claimPath: workspacePathFor(orgId, row!.run_as),
             claimGates: null,
             claimServices: [],
             planRevision: null,

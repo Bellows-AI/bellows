@@ -16,6 +16,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import { USER_SCOPE, type ExecutorScope } from '@factory-ai/core';
 import { lockThreadRootInTx } from '../../connection-bindings.js';
 import type { JobStorePrs } from '../../jobs/job-store-types.js';
+import { insertAdminActionEvent } from '../../jobs/job-store-admin-event.js';
 import { insertWorkflowSuccessor } from '../../jobs/job-store-rows.js';
 import { runtimeIsValid } from './runtime-params.js';
 import type { WorkflowNode } from '../workflow-schema.js';
@@ -121,6 +122,12 @@ interface RoundRow {
     parent_job_id: string;
 }
 
+/** Who poked a wait who does not own the thread: the acting admin and the thread's `execution_user_id`. */
+export interface WakeActor {
+    userId: string;
+    ownerId: string | null;
+}
+
 /**
  * The wake transaction one parked round runs, shared by the claim preamble's sweep and issue
  * #328's user poke: takes the thread's per-root advisory lock — the same serialization point a
@@ -138,12 +145,12 @@ interface RoundRow {
  * re-checked under the lock, the round already gone/woken, the wait terminal under the lock).
  */
 export async function wakeOneRound(
-    ctx: { sql: Sql; orgId: string; prs: JobStorePrs },
+    ctx: { sql: Sql; orgId: string; prs: JobStorePrs; actor?: WakeActor | undefined },
     rootJobId: string,
     workflowNode: string,
     requirePending: boolean
 ): Promise<string | null> {
-    const { sql, orgId, prs } = ctx;
+    const { sql, orgId, prs, actor } = ctx;
     return sql.begin(async (tx) => {
         // The root row, then the thread lock (BEL-161): a merge close holds the wait rows below after taking the root
         // row, so waiting on them while holding only the advisory lock is the inverted order. A removed root is not woken.
@@ -176,7 +183,7 @@ export async function wakeOneRound(
         if (requirePending) {
             const claimed = await prs.claimReview(rootJobId, workflowNode, tx);
             if (claimed.pending === 0) return null;
-            return insertWakeContinuation(tx, { orgId, rootJobId, workflowNode }, round, claimed);
+            return insertWakeContinuation(tx, { orgId, rootJobId, workflowNode, actor }, round, claimed);
         }
 
         // The poke's gate instead: the wait must still be OPEN under this lock — a cancel or a
@@ -189,14 +196,14 @@ export async function wakeOneRound(
         `;
         if (!open) return null;
         const claimed = await prs.claimReview(rootJobId, workflowNode, tx);
-        return insertWakeContinuation(tx, { orgId, rootJobId, workflowNode }, round, claimed);
+        return insertWakeContinuation(tx, { orgId, rootJobId, workflowNode, actor }, round, claimed);
     });
 }
 
 /** The wake's insert half: the continuation job, then the round's audit stamps. */
 async function insertWakeContinuation(
     tx: TransactionSql,
-    ctx: { orgId: string; rootJobId: string; workflowNode: string },
+    ctx: { orgId: string; rootJobId: string; workflowNode: string; actor?: WakeActor | undefined },
     round: RoundRow,
     claimed: { pending: number; lastDeliveryId: string | null }
 ): Promise<string | null> {
@@ -211,7 +218,8 @@ async function insertWakeContinuation(
     const jobId = await insertWorkflowSuccessor(tx, {
         orgId: ctx.orgId,
         command: round.command,
-        createdBy: root.created_by,
+        // An admin's poke is the admin's turn; the claim still runs it as the thread's owner.
+        createdBy: ctx.actor ? ctx.actor.userId : root.created_by,
         repo: round.job_repo,
         executor: round.executor,
         executorScope: (round.executor_scope ?? USER_SCOPE) as ExecutorScope,
@@ -230,6 +238,9 @@ async function insertWakeContinuation(
         where org_id = ${ctx.orgId} and root_job_id = ${ctx.rootJobId}
           and workflow_node = ${ctx.workflowNode} and woken_at is null
     `;
+    if (ctx.actor) {
+        await insertAdminActionEvent(tx, { orgId: ctx.orgId, jobId, action: 'wait-poke', actorId: ctx.actor.userId });
+    }
     return jobId;
 }
 
