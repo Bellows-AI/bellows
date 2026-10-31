@@ -5,6 +5,8 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
+import type { AttachmentMeta } from '@factory-ai/core';
+import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
@@ -67,6 +69,7 @@ export type FailureKind =
     | 'config'
     | 'policy'
     | 'checkpoint_unrestorable'
+    | 'attachment_unavailable'
     | 'runner_error';
 
 /**
@@ -363,6 +366,8 @@ export interface Job {
      * `get()` and `thread()`; the per-run lists answer an empty array.
      */
     questions: JobQuestion[];
+    /** The files this request carried (115), in the order named. `thread()` only; every other read answers an empty array. */
+    attachments: AttachmentMeta[];
     /**
      * The thread root's connection bindings (094), oldest first, including ones whose connection was since
      * disconnected (`live: false`). Served by `get()` and `thread()`; the per-run lists answer an empty array.
@@ -514,6 +519,12 @@ export interface ClaimHelperPlan {
 export interface Claim {
     id: string;
     command: string;
+    /**
+     * The files this run carries (115), computed at read: the thread's files bound at or before the row's creation, oldest
+     * carrier first. A review carries the row it reviews. The runner fetches each through the lease-scoped worker route
+     * and verifies its sha256.
+     */
+    attachments: ClaimAttachment[];
     attempts: number;
     maxAttempts: number;
     /**

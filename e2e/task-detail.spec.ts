@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
 import { E2E_DATABASE_URL } from '../playwright.config.js';
 import { clearExecutors, E2E_REPO, saveExecutor, withExecutor } from './executor.js';
+import { stubAttachments } from './fixtures/attachments.js';
 import {
     authoredBy,
     CLOSING_GATE_STARTED_AT,
@@ -589,5 +592,129 @@ test.describe('the task detail page', () => {
         await page.evaluate(() => window.scrollTo(0, 0));
         await page.screenshot({ path: `${SHOTS}/task-detail-gate-follow-up-sent.png`, fullPage: true });
         expect(problems.join('\n')).toBe('');
+    });
+});
+
+test.describe('the follow-up composer attachments', () => {
+    test('the text and the file survive a trip to Settings, and the send carries both', async ({ page }) => {
+        const problems = watchConsole(page);
+        const me = await sessionAuthor(page);
+        const board = await stubAttachments(page);
+        const followUp = failedGateFollowUpThread[1]!;
+        await routeThread(page, authoredBy(failedGateThread, me));
+        const sent: { body: unknown; key: string | undefined }[] = [];
+        await page.route('**/api/jobs/*/follow-up', async (route) => {
+            const request = route.request();
+            sent.push({ body: request.postDataJSON(), key: request.headers()['idempotency-key'] });
+            await routeThread(page, authoredBy(failedGateFollowUpThread, me));
+            return route.fulfill({ status: 201, json: { id: followUp.id } });
+        });
+        await page.goto(`/tasks/${failedGateThread[0]!.id}`);
+
+        const box = page.getByLabel('Ask for a follow-up');
+        await box.fill('also check the export');
+        await page.getByLabel('Attach files', { exact: true }).setInputFiles({
+            name: 'notes.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('hello'),
+        });
+        const chips = page.getByRole('list', { name: 'Attached files' });
+        await expect(chips.getByText('Ready')).toBeVisible();
+
+        await page.locator('.sidenav-link', { hasText: 'Settings' }).click();
+        await expect(page).toHaveURL(/\/settings$/);
+        await page.goBack();
+        await expect(box).toHaveValue('also check the export');
+        await expect(chips.getByText('notes.txt')).toBeVisible();
+        await expect(chips.getByText('Ready')).toBeVisible();
+        await page.screenshot({ path: `${SHOTS}/task-detail-follow-up-attachments.png`, fullPage: true });
+
+        await page.getByRole('button', { name: 'Send follow-up' }).click();
+        await expect.poll(() => sent.length).toBe(1);
+        expect(sent[0]!.body).toEqual({ command: 'also check the export', attachments: [board.ids.get('notes.txt')] });
+        expect(sent[0]!.key).toMatch(/^[0-9a-f]{32}$/);
+        expect(problems.join('\n')).toBe('');
+    });
+});
+
+test.describe('the attachments in the task history', () => {
+    const PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64'
+    );
+    const NOTES = Buffer.from('release notes, line one\n');
+    const meta = (id: string, name: string, mediaType: string, bytes: Buffer) => ({
+        id,
+        name,
+        mediaType,
+        size: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        state: 'bound' as const,
+    });
+
+    test('after a reload each request lists its own files; the download is the uploaded bytes', async ({ page }) => {
+        const problems = watchConsole(page);
+        const me = await sessionAuthor(page);
+        const image = meta('00000000-0000-4000-8000-0000000000b1', 'shot.png', 'image/png', PNG);
+        const notes = meta('00000000-0000-4000-8000-0000000000b2', 'notes.txt', 'text/plain', NOTES);
+        const later = meta('00000000-0000-4000-8000-0000000000b3', 'later.txt', 'text/plain', NOTES);
+        const thread = authoredBy(failedGateFollowUpThread, me).map((j, i) => ({
+            ...j,
+            attachments: i === 0 ? [image, notes] : [later],
+        }));
+        await routeThread(page, thread);
+        await page.route('**/api/attachments/*/content*', (route) => {
+            const url = new URL(route.request().url());
+            const png = url.pathname.includes(image.id);
+            return route.fulfill({
+                status: 200,
+                body: png ? PNG : NOTES,
+                headers: {
+                    'content-type': png ? 'image/png' : 'text/plain',
+                    'content-disposition': url.searchParams.get('disposition') === 'inline' ? 'inline' : 'attachment',
+                    'x-content-type-options': 'nosniff',
+                },
+            });
+        });
+        await page.goto(`/tasks/${thread[0]!.id}`);
+        await page.reload();
+
+        const exchanges = page.locator('.chat-exchange');
+        await expect(exchanges.nth(0).getByText('shot.png').first()).toBeVisible();
+        await expect(exchanges.nth(0).getByText('notes.txt')).toBeVisible();
+        await expect(exchanges.nth(1).getByText('later.txt')).toBeVisible();
+        await expect(exchanges.nth(1).getByText('notes.txt')).toHaveCount(0);
+        await expect
+            .poll(() =>
+                exchanges
+                    .nth(0)
+                    .locator('img.attachment-preview')
+                    .evaluate((i: HTMLImageElement) => i.naturalWidth)
+            )
+            .toBeGreaterThan(0);
+        await page.screenshot({ path: `${SHOTS}/task-detail-attachments.png`, fullPage: true });
+
+        const [download] = await Promise.all([
+            page.waitForEvent('download'),
+            exchanges
+                .nth(0)
+                .getByRole('link', { name: /Download notes\.txt/ })
+                .click(),
+        ]);
+        expect(download.suggestedFilename()).toBe('notes.txt');
+        const saved = await readFile((await download.path())!);
+        expect(createHash('sha256').update(saved).digest('hex')).toBe(notes.sha256);
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('an image whose read is refused says the preview is unavailable', async ({ page }) => {
+        const me = await sessionAuthor(page);
+        const image = meta('00000000-0000-4000-8000-0000000000b4', 'gone.png', 'image/png', PNG);
+        const thread = authoredBy(failedGateThread, me).map((j) => ({ ...j, attachments: [image] }));
+        await routeThread(page, thread);
+        await page.route('**/api/attachments/*/content*', (route) => route.fulfill({ status: 503, body: '' }));
+        await page.goto(`/tasks/${thread[0]!.id}`);
+        await expect(page.getByText('Preview unavailable')).toBeVisible();
+        await expect(page.getByRole('link', { name: /Download gone\.png/ })).toBeVisible();
     });
 });

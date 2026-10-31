@@ -7,6 +7,7 @@ import {
 import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
+import { type AttachmentContent, attachmentCalls, type ClaimAttachment } from './board-attachments.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
 import { BoardHttpError } from './board-retry.js';
 import { githubCredentialCall } from '../github-credential-call.js';
@@ -60,6 +61,7 @@ export interface DeclaredGate {
 
 export interface BoardJob {
     id: string;
+    attachments?: ClaimAttachment[];
     command: string;
     attempts: number;
     /** The attempts the board allows. */
@@ -426,6 +428,7 @@ export type FailureKind =
     | 'config'
     | 'policy'
     | 'checkpoint_unrestorable'
+    | 'attachment_unavailable'
     | 'runner_error';
 
 /**
@@ -521,6 +524,8 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
     checkpoint(job: BoardJob): Promise<CheckpointRead>;
     /** One chunk of that checkpoint's stream, its sha256 verified; null when the board has no such chunk. */
     checkpointChunk(job: BoardJob, offset: number): Promise<{ bytes: Uint8Array; sha256: string } | null>;
+    /** One task input's bytes under `job`'s lease (task or review row), sha256 verified; null when not in its set (see board-attachments.ts). */
+    attachmentContent: AttachmentContent;
     /** The thread's raw Claude transcript streams (issue #775), read under the live lease like `checkpoint`. */
     transcripts(job: BoardJob): Promise<TranscriptStream[]>;
     /** One chunk of one such stream, its sha256 verified; null when the board has no such chunk. */
@@ -954,6 +959,7 @@ export function createBoard({
         ...recordCalls(post),
         ...artifactCalls({ url, token, fetch }),
         ...checkpointCalls(post),
+        ...attachmentCalls(post),
         ...githubCredentialCall({ url, fetch }),
         ...connectionCalls(post),
 

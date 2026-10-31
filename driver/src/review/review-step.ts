@@ -6,6 +6,7 @@ import {
     reviewerDataName,
     reviewerTranscriptName,
     REVIEWER_TREE_PATH,
+    reviewerAttachmentsDir,
     runnerClaimEnv,
 } from '../claim.js';
 import { claudeExportScript, opencodeReadoutScript } from '../container-scripts.js';
@@ -32,6 +33,7 @@ import {
 } from '../supervised-steps.js';
 import { EXPORT_FLUSH_BYTES, EXPORT_FLUSH_MS, EXPORT_SPOOL_MAX_BYTES } from '../transcript-export.js';
 import { type StepResult, SUPERVISOR_ENV } from '../supervisor-contract.js';
+import { deliverTaskInputs } from '../task-inputs.js';
 
 /**
  * One named reviewer's run as supervised steps of its CALLER's task group (issue #774): the
@@ -213,6 +215,27 @@ function claudeExportRequest(
 }
 
 /**
+ * The reviewed request's files, from the review row's own manifest, before the reviewer is released. A refusal
+ * (`attachment_unavailable`) is the step's failed result; a fetch nothing confirmed throws (`InputsUnconfirmed`):
+ * no verdict, the lease redelivers the review.
+ */
+async function deliverReviewInputs(host: StepHost, toRun: ReviewRun, signal?: AbortSignal): Promise<StepResult | null> {
+    const { caller, review } = toRun;
+    const inputs = await deliverTaskInputs(host, review, {
+        delivery: review.id,
+        manifest: review.attachments,
+        targetDir: reviewerAttachmentsDir(review),
+        owner: caller,
+        signal,
+    });
+    if (inputs.ok) return null;
+    return {
+        ...failed(`the reviewed request's files were not delivered: ${inputs.reason ?? 'unknown'}`),
+        ...(inputs.kind ? { failureKind: inputs.kind } : {}),
+    };
+}
+
+/**
  * Runs one review in the caller's group and answers the review step's result: the home made, the
  * worktree restored, the executor run to its end. A step that could not be set up answers a
  * failed result with the reason; a lost supervisor rejects (`stepLost`), and an abort of `signal`
@@ -264,6 +287,9 @@ export async function runReviewSteps(host: StepHost, toRun: ReviewRun, signal?: 
                       : detailOf(restored, SYNC_DEADLINE_MS),
           }));
     if (restore.ok !== true) return failed(`the reviewer worktree was not restored: ${restore.reason ?? 'unknown'}`);
+
+    const refused = await deliverReviewInputs(host, toRun, signal);
+    if (refused) return refused;
 
     const step = stepRequest(review, 'review', {
         id: round > 1 ? `run-${round}` : 'run',

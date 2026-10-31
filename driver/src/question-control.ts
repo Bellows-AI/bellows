@@ -3,6 +3,7 @@ import type { ConnectionSlot } from './connection-control.js';
 import type { PublishRelay, PublishSlot } from './publish/publish-control.js';
 import type { ReviewRelay, ReviewSlot } from './review/review-control.js';
 import type { CheckpointSlot, ExportRelay, ExportSlot } from './export-control.js';
+import type { InputSlot } from './input-control.js';
 import { parseJsonObject } from './json-parse.js';
 import { QUESTION_ID, validateQuestionReport } from './question-validation.js';
 
@@ -65,6 +66,8 @@ export interface ControlEntry {
     checkpointing: CheckpointSlot;
     /** The connection route's relay (`connection-control.ts`), the agent's; null until the loop attaches it. */
     connecting: ConnectionSlot;
+    /** The task input route's deliveries (`input-control.ts`), the supervisor's fetch step; none until the loop registers one. */
+    inputs: InputSlot;
 }
 
 export const newControl = (
@@ -86,6 +89,7 @@ export const newControl = (
     exporting: { relay: exporter },
     checkpointing: { relay: null },
     connecting: { relay: null },
+    inputs: { deliveries: new Map() },
 });
 
 export interface QuestionAnswer {

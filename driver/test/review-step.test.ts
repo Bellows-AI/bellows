@@ -1,11 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob, ReviewClaim } from '../src/board/board.js';
-import { REVIEWER_HOME } from '../src/claim.js';
+import { REVIEWER_HOME, REVIEWER_TREE_PATH } from '../src/claim.js';
+import type { ClaimAttachment } from '../src/board/board-attachments.js';
 import { claudeExportScript, opencodeReadoutScript } from '../src/container-scripts.js';
 import { loadDriverConfig } from '../src/config.js';
 import { REVIEW_ROOTS_DIR, reviewWorktreeDir, checkoutDir } from '../src/publish/publish.js';
 import { reviewBudgetMs, reviewRestoreEnv, reviewStepEnv, runReviewSteps } from '../src/review/review-step.js';
+import { InputsUnconfirmed } from '../src/task-inputs.js';
 import type { StepSink } from '../src/step-control.js';
 import { type StepRequest, SUPERVISOR_ENV } from '../src/supervisor-contract.js';
 
@@ -190,6 +192,93 @@ describe('runReviewSteps', () => {
         });
         await runReviewSteps(stepHost, { caller, review, session: { id: 'sess-1', resume: false } }, stop.signal);
         expect(cancelled).toHaveLength(1);
+    });
+});
+
+describe('the reviewer’s input files', () => {
+    const FILE: ClaimAttachment = {
+        id: '99999999-9999-4999-8999-999999999999',
+        name: 'spec.txt',
+        mediaType: 'text/plain',
+        size: 5,
+        sha256: 'b'.repeat(64),
+        originJobId: CALLER_ROOT,
+    };
+    const withFiles = {
+        ...review,
+        leaseToken: 'review-lease',
+        claimSeq: 3,
+        attachments: [FILE],
+    } as unknown as ReviewClaim;
+    const caller = {
+        ...review,
+        id: '77777777-7777-4777-8777-777777777777',
+        supervisorEnv: { [SUPERVISOR_ENV.controlUrl]: 'http://driver:8130', [SUPERVISOR_ENV.controlToken]: 'tok' },
+    } as unknown as BoardJob;
+
+    function sinkOf(inputs: string) {
+        const steps: StepRequest[] = [];
+        const sink = {
+            submit: async (_token: string, step: StepRequest) => {
+                steps.push(step);
+                const stdout = step.id.endsWith('-inputs')
+                    ? inputs
+                    : step.kind === 'review'
+                      ? 'verdict'
+                      : '{"ok":true,"reason":null}';
+                return { exitCode: 0, stdout, stderr: '', timedOut: false };
+            },
+            cancel: () => {},
+        } as unknown as StepSink;
+        return { steps, host: { config: host.config, sink } };
+    }
+    const run = (stepHost: ReturnType<typeof sinkOf>['host'], row = withFiles) =>
+        runReviewSteps(stepHost, { caller, review: row, session: { id: 'sess-1', resume: false } });
+
+    it('delivers the review row’s manifest into the reviewer home after the restore and before the review', async () => {
+        const { steps, host: stepHost } = sinkOf('{"ok":true}');
+        await run(stepHost);
+        expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'sync', 'review']);
+        const inputs = steps[2]!;
+        expect(inputs.id).toMatch(/-inputs$/);
+        expect(inputs.id).toBe(steps[1]!.id.replace(/review-restore$/, 'inputs'));
+        expect(inputs.env).toMatchObject({
+            TARGET_DIR: `${REVIEWER_TREE_PATH}/attachments/${ROOT}`,
+            INPUT_DELIVERY: withFiles.id,
+            INPUT_FEED: '1',
+            MANIFEST: JSON.stringify([FILE]),
+        });
+        expect(inputs.env).not.toHaveProperty('RESTORE_URL');
+    });
+
+    it('names the inputs step by the review’s own lease, never the caller’s', async () => {
+        const a = sinkOf('{"ok":true}');
+        await run(a.host);
+        const b = sinkOf('{"ok":true}');
+        await run(b.host, { ...withFiles, leaseToken: 'other-lease' } as unknown as ReviewClaim);
+        expect(a.steps[2]!.id).not.toBe(b.steps[2]!.id);
+    });
+
+    it('fails the review with attachment_unavailable and runs no review when a file is gone for good', async () => {
+        const { steps, host: stepHost } = sinkOf('{"ok":false,"reason":"gone","kind":"attachment_unavailable"}');
+        const result = await run(stepHost);
+        expect(result).toMatchObject({ exitCode: 1, failureKind: 'attachment_unavailable' });
+        expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'sync']);
+    });
+
+    it.each(['', 'not json', '{"ok":false,"reason":"board 503","transient":true}'])(
+        'gives no verdict and runs no review when the fetch is unconfirmed (%j)',
+        async (stdout) => {
+            const { steps, host: stepHost } = sinkOf(stdout);
+            await expect(run(stepHost)).rejects.toBeInstanceOf(InputsUnconfirmed);
+            expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'sync']);
+        }
+    );
+
+    it('submits no inputs step for a review with no attachments', async () => {
+        const { steps, host: stepHost } = sinkOf('');
+        await run(stepHost, review);
+        expect(steps.map((step) => step.kind)).toEqual(['sync', 'sync', 'review']);
     });
 });
 

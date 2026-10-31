@@ -1,6 +1,7 @@
 import {
     COMMAND_LIMIT,
     ERROR_CODES,
+    MAX_FILES_PER_REQUEST,
     EXECUTOR_SCOPES,
     MAX_TASK_SKILLS,
     SKILL_NAME,
@@ -8,6 +9,7 @@ import {
     USER_SCOPE,
 } from '@factory-ai/core';
 import type { ExecutorScope } from '@factory-ai/core';
+import { UUID } from '../../identifiers.js';
 import { GATES_OUTCOMES, type RecordedEvidence } from '../../db/evidence-policy.js';
 import type { FailureCause, FailureKind, JobOutcome, JobStatus } from '../../db/jobs/job-store-types.js';
 import {
@@ -133,6 +135,22 @@ export function validateSkillsField(raw: unknown): { ok: true; value: string[] }
     return { ok: true, value: raw as string[] };
 }
 
+/**
+ * The uploads a create or follow-up carries: absent or null means none, otherwise an array of at most
+ * `MAX_FILES_PER_REQUEST` distinct file ids. Whose they are and whether they are ready is the store's.
+ */
+export function validateAttachmentsField(raw: unknown): { ok: true; value: string[] } | { ok: false; message: string } {
+    if (raw === undefined || raw === null) return { ok: true, value: [] };
+    if (!Array.isArray(raw) || !raw.every((id) => typeof id === 'string' && UUID.test(id))) {
+        return { ok: false, message: 'attachments must be an array of attachment ids' };
+    }
+    if (raw.length > MAX_FILES_PER_REQUEST) {
+        return { ok: false, message: `attachments takes at most ${MAX_FILES_PER_REQUEST} ids` };
+    }
+    if (new Set(raw).size !== raw.length) return { ok: false, message: 'attachments must not repeat an id' };
+    return { ok: true, value: raw as string[] };
+}
+
 export interface ResolvedWorkflow {
     id: string;
     name: string;
@@ -217,6 +235,7 @@ export const FAILURE_KINDS: readonly FailureKind[] = [
     'config',
     'policy',
     'checkpoint_unrestorable',
+    'attachment_unavailable',
     'runner_error',
 ];
 

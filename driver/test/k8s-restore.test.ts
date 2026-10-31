@@ -110,4 +110,106 @@ describe('the kubernetes runner restoring a task volume', () => {
         expect(claimsCreated(run.calls)).toEqual([taskVolumeName(job(), 1)]);
         expect(run.steps.some((s) => s.id.endsWith('-restore'))).toBe(false);
     });
+
+    describe('a repo-free continuing claim and its task inputs', () => {
+        const FILE = {
+            id: '66666666-6666-4666-8666-666666666666',
+            name: 'brief.pdf',
+            mediaType: 'application/pdf',
+            size: 3,
+            sha256: 'e'.repeat(64),
+            originJobId: ROOT,
+        };
+        const repoFree = (over: Partial<BoardJob> = {}) => job({ repo: null, ...over });
+        const stepNames = (steps: { id: string }[]) => steps.map((s) => s.id.replace(/^sync-[0-9a-f]+-/, ''));
+
+        it('rebuilds the Claude session on the new generation before release, with no attachments', async () => {
+            const run = await k8sSyncRun(repoFree(), { checkpoints: board({ state: 'none' }), answer: () => OK });
+            expect(run).toMatchObject({ value: { ok: true } });
+            expect(claimsCreated(run.calls)).toEqual([taskVolumeName(repoFree(), 2)]);
+            expect(stepNames(run.steps)).toEqual(['restore']);
+            expect(run.steps[0]?.env).toMatchObject({ RESTORE_FEED: '1' });
+            expect(run.steps[0]?.env).not.toHaveProperty('CHECKOUT');
+        });
+
+        it('then writes the inputs, in that order, when the claim carries attachments', async () => {
+            const run = await k8sSyncRun(repoFree({ attachments: [FILE] }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+            });
+            expect(run).toMatchObject({ value: { ok: true } });
+            expect(stepNames(run.steps)).toEqual(['restore', 'inputs']);
+            expect(run.steps[1]?.env).toMatchObject({ INPUT_FEED: '1', INPUT_DELIVERY: 'task' });
+            expect(JSON.parse(run.steps[1]?.env.MANIFEST ?? '')).toEqual([FILE]);
+        });
+
+        it('delivers the inputs of a first repo-free claim with a group and no restore', async () => {
+            const run = await k8sSyncRun(repoFree({ followUp: false, attachments: [FILE] }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+            });
+            expect(stepNames(run.steps)).toEqual(['inputs']);
+        });
+
+        it('starts nothing for a first repo-free claim without attachments', async () => {
+            const run = await k8sSyncRun(repoFree({ followUp: false }), { checkpoints: board({ state: 'none' }) });
+            expect(run).toMatchObject({ value: { ok: true } });
+            expect(run.steps).toEqual([]);
+        });
+
+        it('never releases the agent past a failed restore: the inputs step does not run', async () => {
+            const run = await k8sSyncRun(repoFree({ attachments: [FILE] }), {
+                checkpoints: board({ state: 'none' }),
+                answer: (step) => (step.id.endsWith('-restore') ? '{"ok":false,"reason":"no transcripts"}' : OK),
+            });
+            expect(run).toMatchObject({ value: { ok: false } });
+            expect(stepNames(run.steps)).toEqual(['restore']);
+        });
+
+        it('ends the attempt attachment_unavailable on a definitive refusal and throws on a transient one', async () => {
+            const refused = await k8sSyncRun(job({ attachments: [FILE] }), {
+                checkpoints: board(FOUND),
+                answer: (step) =>
+                    step.id.endsWith('-inputs') ? '{"ok":false,"reason":"gone","kind":"attachment_unavailable"}' : OK,
+            });
+            expect(refused).toMatchObject({ value: { ok: false, kind: 'attachment_unavailable' } });
+            const transient = await k8sSyncRun(job({ attachments: [FILE] }), {
+                checkpoints: board(FOUND),
+                answer: (step) => (step.id.endsWith('-inputs') ? '{"ok":false,"reason":"503","transient":true}' : OK),
+            });
+            expect(transient).toHaveProperty('error');
+        });
+
+        it.each([[true], [false]])(
+            'returns the checkout sync result, fingerprint and conflicts, with attachments %s',
+            async (withFiles) => {
+                const synced = '{"ok":true,"reason":null,"fingerprint":"fp-1","conflicts":["a.txt"]}';
+                const run = await k8sSyncRun(job({ followUp: false, ...(withFiles ? { attachments: [FILE] } : {}) }), {
+                    checkpoints: board({ state: 'none' }),
+                    answer: (step) => (step.id.endsWith('-inputs') ? '{"ok":true}' : synced),
+                });
+                expect(run).toMatchObject({ value: { ok: true, fingerprint: 'fp-1', conflicts: ['a.txt'] } });
+                expect(stepNames(run.steps).includes('inputs')).toBe(withFiles);
+            }
+        );
+
+        it('delivers the inputs of a repo job after its restore and sync steps', async () => {
+            const run = await k8sSyncRun(job({ attachments: [FILE] }), {
+                checkpoints: board(FOUND),
+                answer: () => OK,
+            });
+            expect(run).toMatchObject({ value: { ok: true } });
+            expect(stepNames(run.steps)).toEqual(['restore', '1', 'inputs']);
+        });
+
+        it('re-delivers on a retry of a repo-free thread whose volume survived (a fresh claim, an existing generation)', async () => {
+            const run = await k8sSyncRun(repoFree({ followUp: false, claimSeq: 2, attachments: [FILE] }), {
+                checkpoints: board({ state: 'none' }),
+                answer: () => OK,
+                volumes: [claim(1)],
+            });
+            expect(stepNames(run.steps)).toEqual(['inputs']);
+            expect(claimsCreated(run.calls)).toEqual([]);
+        });
+    });
 });

@@ -51,6 +51,7 @@ import {
     leasesOf,
     artifactScopeOf,
     restoreScopeOf,
+    attachmentSetOf,
 } from './job-store-reads.js';
 import {
     wallTickFragment,
@@ -100,6 +101,7 @@ function workerMethods(
     | 'leases'
     | 'artifactScope'
     | 'restoreScope'
+    | 'attachmentSet'
 > {
     return {
         async claim(worker, leaseSeconds, options) {
@@ -206,6 +208,11 @@ function workerMethods(
             await gate();
             return restoreScopeOf(ctx, id, leaseToken);
         },
+
+        async attachmentSet(id, leaseToken) {
+            await gate();
+            return attachmentSetOf(ctx, id, leaseToken);
+        },
     };
 }
 
@@ -272,7 +279,9 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
 
         // The rest tuple keeps the interface's five parameters (the params ceiling is for hand-written signatures).
         async createFollowUp(
-            ...[parentId, command, createdBy, idempotency, connectionIds, admin]: Parameters<JobStore['createFollowUp']>
+            ...[parentId, command, createdBy, idempotency, connectionIds, admin, attachmentIds]: Parameters<
+                JobStore['createFollowUp']
+            >
         ) {
             await gate();
             return createFollowUpRow(ctx.sql, {
@@ -283,6 +292,7 @@ function jobStoreMethods(ctx: JobStoreContext, gate: () => Promise<void>): JobSt
                 idempotency,
                 connectionIds,
                 admin,
+                attachmentIds,
             });
         },
 

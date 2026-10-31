@@ -48,6 +48,9 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
 - **The restore reads (`checkpoint`, `transcripts`) are worker routes whose credential is the job's live lease** in
   the body: a lost, foreign or unknown lease reads nothing. `server/src/routes/jobs/job-handlers-restore.ts`,
   `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`.
+- **Attachment content for a runner is a worker route whose credential is the live lease** in the body, and the file must be in
+  that job's effective set read fresh on every call; a review's lease reads only its own row's set.
+  `server/src/routes/jobs/job-handlers-attachment-content.ts`, `server/test/routes.attachment-content.test.ts`.
 - **The worker credential is one deployment-wide secret**, `JOB_BOARD_TOKEN` (fatal in github mode when missing
   or under 32 characters), so a claim is offered every org's queue. `server/src/config.ts`.
 - **`POST /api/sessions/branch` demands an org-bound credential in github mode** (the runner's lease pair or a

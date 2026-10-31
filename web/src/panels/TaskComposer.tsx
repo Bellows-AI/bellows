@@ -10,8 +10,11 @@ import {
 } from '@headlessui/react';
 import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
+import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
-import type { ComposerDraftInput, ComposerDraftStore } from '../composer-draft.js';
+import { AttachmentChips } from './AttachmentList.js';
+import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
+import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '../composer-draft.js';
 import { withDraftReturn } from '../components/DraftReturnBanner.js';
 import { Icon } from '../components/Icon.js';
 import { WorkflowParameterFields } from '../components/WorkflowParameterFields.js';
@@ -258,6 +261,10 @@ function describeQuietBlocker(blocker: StartBlocker | null): string | null {
             return 'Starting the task…';
         case 'empty-prompt':
             return 'Describe the task to continue.';
+        case 'files-uploading':
+            return 'Wait for the files to finish uploading.';
+        case 'files-failed':
+            return 'Remove or retry the failed files to continue.';
         default:
             return null;
     }
@@ -490,6 +497,10 @@ export function TaskComposer({
     /** The shell's held draft (F1): read once at mount, written on every change, cleared on launch. */
     draftStore: ComposerDraftStore;
 }) {
+    const limits = useAttachmentLimits();
+    const frozen = sending || draftStore.submits[TASK_SCOPE] !== undefined;
+    const files = useAttachments({ draft: draftStore.files, update: draftStore.updateTaskFiles }, limits, frozen);
+    const dropAndPaste = attachmentHandlers(limits !== null, files.add);
     const composer = useComposerDraft({
         repos,
         executors,
@@ -500,6 +511,7 @@ export function TaskComposer({
         sending,
         onSend,
         draftStore,
+        files,
     });
     const { state, update, declaredParams, paramValues } = composer;
     // Null while the list has not answered: that screen is the loading/error state, never the
@@ -508,13 +520,14 @@ export function TaskComposer({
 
     const promptTooLong = commandTooLong(state.draft);
     const blocker = startBlocker({
-        sending,
+        sending: frozen,
         executorMissing: state.executor === '',
         promptEmpty: state.draft.trim() === '',
         promptTooLong,
         ...(readiness !== undefined ? { repoReadiness: readiness } : {}),
         workflowUnresolved: composer.workflowPending,
         paramsInvalid: !composer.paramsReady,
+        files: files.blocker,
     });
     // The one path both the button and Ctrl/⌘+Enter walk — the shortcut is documentation of the
     // button, never a bypass. An invalid keyboard submission owes the member the same screen a
@@ -554,7 +567,7 @@ export function TaskComposer({
                     </p>
                 ) : null}
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
-                <section className="panel composer-prompt">
+                <section className="panel composer-prompt" {...dropAndPaste}>
                     <div className="composer-prompt-head">
                         <label htmlFor={PROMPT_ID}>What should the agent do?</label>
                     </div>
@@ -568,6 +581,7 @@ export function TaskComposer({
                         aria-invalid={promptTooLong || undefined}
                         placeholder={PROMPT_PLACEHOLDER}
                         value={state.draft}
+                        readOnly={frozen}
                         onChange={(e) => update({ draft: e.target.value })}
                     />
                     <p
@@ -576,6 +590,12 @@ export function TaskComposer({
                     >
                         {commandCount(state.draft)}
                     </p>
+                    <AttachmentChips
+                        attachments={files.attachments}
+                        onRemove={files.remove}
+                        onRetry={files.retry}
+                        locked={frozen}
+                    />
                     <div className="composer-bar">
                         <ComposerContextRow
                             repos={repos}
@@ -584,7 +604,10 @@ export function TaskComposer({
                             state={state}
                             update={update}
                         />
-                        <ComposerLaunch blocker={blocker} sending={sending} onStart={attemptStart} />
+                        {limits === null ? null : (
+                            <AttachmentPicker limits={limits} onPick={files.add} disabled={frozen} />
+                        )}
+                        <ComposerLaunch blocker={blocker} sending={frozen} onStart={attemptStart} />
                     </div>
                     {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
                     <ReadinessBanner blocker={blocker} workflow={state.workflow} />

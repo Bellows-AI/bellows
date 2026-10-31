@@ -14,6 +14,8 @@
 //      and each stream's length checked, any gap or mismatch `checkpoint_unrestorable`;
 //   5. OPENCODE_DB set and the stream carrying an OpenCode snapshot: writes it there, temp file then rename,
 //      the old database's WAL and SHM sidecars removed first.
+// CHECKOUT unset (a repository-free thread: no tree, no checkpoint) runs step 4 alone: a session file already on
+// the volume is kept, it may be newer than the board's streams; the missing ones are rebuilt. Nothing else is made.
 // The tree is built whole in a sibling directory and moved into place by one rename, so a kill leaves
 // a directory the next claim removes, never a half-made checkout. A checkout that already exists is
 // the restore's own earlier success: nothing is fetched and nothing is touched.
@@ -220,7 +222,7 @@ const downloadSession = async (file, streams) => {
 const temps = [];
 
 /** The session files, as `{temp, final}` pairs, all downloaded and verified; nothing is renamed yet. */
-const downloadSessions = async () => {
+const downloadSessions = async (keepExisting = false) => {
     const { streams } = await getJson('/checkpoint/transcripts');
     if (!Array.isArray(streams)) throw new Error('the transcript listing is unreadable');
     const rows = [...new Set(streams.map((s) => s.jobId))];
@@ -234,6 +236,7 @@ const downloadSessions = async () => {
     fs.mkdirSync(sessionsDir, { recursive: true });
     const files = [];
     for (const [session, parts] of bySession) {
+        if (keepExisting && exists(path.join(sessionsDir, `${session}.jsonl`))) continue;
         parts.sort((a, b) => rows.indexOf(a.jobId) - rows.indexOf(b.jobId) || a.claimSeq - b.claimSeq);
         const temp = path.join(sessionsDir, `.${session}.jsonl.restore`);
         files.push({ temp, final: path.join(sessionsDir, `${session}.jsonl`) });
@@ -385,7 +388,19 @@ const installDatabase = (temp) => {
     fs.renameSync(temp, opencodeDb);
 };
 
+const sessionsOnly = async () => {
+    if (!sessionsDir) throw new Error('no checkout and no sessions directory: nothing to restore');
+    try {
+        const sessions = await downloadSessions(true);
+        for (const file of sessions) fs.renameSync(file.temp, file.final);
+        return { ok: true, reason: null, restored: true };
+    } finally {
+        for (const temp of temps) fs.rmSync(temp, { force: true });
+    }
+};
+
 const main = async () => {
+    if (!checkout) return sessionsOnly();
     if (exists(path.join(checkout, '.git'))) return { ok: true, reason: null, restored: false };
     assertCredentialedOrigin();
     if (exists(checkout))
@@ -444,6 +459,8 @@ void main().then(say, (e) =>
                   kind: KIND_UNRESTORABLE,
                   ...(e instanceof Absent ? { absent: true } : {}),
               }
-            : { ok: false, reason: detail(e) }
+            : // Anything but a definitive verdict (a 5xx, a network or disk fault, a git failure) is unconfirmed: the
+              // driver interrupts the attempt on `transient`, never ends the thread on it.
+              { ok: false, reason: detail(e), transient: true }
     )
 );

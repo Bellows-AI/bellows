@@ -1,5 +1,7 @@
 import type { Sql } from 'postgres';
 import { createArtifactStore, type ArtifactStore } from './artifacts/artifact-store.js';
+import { createAttachmentRows } from './attachments/attachment-rows.js';
+import { createAttachmentStore, type AttachmentStore } from './attachments/attachment-store.js';
 import type { ArtifactBackend } from './artifacts/backend.js';
 import type { AppConfig } from './config.js';
 import { createBatchMerger, type BatchMerger } from './batch-merger.js';
@@ -72,6 +74,8 @@ export interface OrgRuntime {
     branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
     /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
     artifacts?: ArtifactStore | undefined;
+    /** The member uploads (114) over the same object store; present with the artifact index. */
+    attachments?: AttachmentStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;
     /** The integration grants (094) connections hang off: the refresh lineage store; present with the other stores. */
@@ -313,6 +317,27 @@ function artifactStoreOf({
     });
 }
 
+/** The org's attachment index over the process's object store, or undefined when none was configured. */
+function attachmentStoreOf({
+    sql,
+    orgId,
+    ready,
+    backend,
+}: {
+    sql: Sql;
+    orgId: string;
+    ready: Promise<unknown>;
+    backend: ArtifactBackend | undefined;
+}): AttachmentStore | undefined {
+    if (!backend) return undefined;
+    return createAttachmentStore({
+        rows: createAttachmentRows({ sql, orgId, ready }),
+        objects: backend.objects,
+        orgId,
+        prefix: backend.prefix,
+    });
+}
+
 export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
     const { sql, ready, config, artifacts, claimMetrics } = deps;
     const runtimes = new Map<string, Promise<OrgRuntime | null>>();
@@ -374,6 +399,7 @@ export function createOrgRegistry(deps: OrgRegistryDeps): OrgRegistry {
             });
             await attachOrgStores(runtime, stores);
             runtime.artifacts = artifactStoreOf({ sql, orgId, ready, config, backend: artifacts });
+            runtime.attachments = attachmentStoreOf({ sql, orgId, ready, backend: artifacts });
         }
 
         return runtime;

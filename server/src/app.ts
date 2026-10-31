@@ -10,6 +10,7 @@ import type { OrgRegistry } from './orgs.js';
 import type { AttemptOfLease, PairMatches } from './db/attempt-of-lease.js';
 import type { IntegrationRuntime } from './integrations/integration-recovery.js';
 import { batchRoutes } from './routes/batches/batches.js';
+import { attachmentRoutes } from './routes/attachments.js';
 import { connectionRoutes, type DestroyRevokedSecret } from './routes/connections.js';
 import { type ConnectionListing, connectionCredentialRoutes } from './routes/connection-credential.js';
 import type { OperationReceipts } from './db/operation-receipts.js';
@@ -132,6 +133,8 @@ export interface AppDeps {
     secrets?: SecretStore | undefined;
     /** Destroys the secret of a grant a disconnect revoked (BEL-138); absent, the `integrations` runtime's. */
     destroyRevokedSecret?: DestroyRevokedSecret | undefined;
+    /** Uploads one process buffers at once; absent takes the route's default. */
+    attachmentMaxInFlight?: number | undefined;
 }
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
@@ -244,6 +247,7 @@ export async function buildApp({
     operationReceipts,
     connectionListing,
     destroyRevokedSecret,
+    attachmentMaxInFlight,
     identity,
     appSlug,
     installationListing,
@@ -309,6 +313,7 @@ export async function buildApp({
     // answering 503 for an org the registry has no store for — the same bargain as the env routes.
     await app.register(jobRoutes({ orgs, ...(metrics ? { claimPoll: metrics.claimPoll } : {}) }));
     if (metrics) await app.register(prometheusRoutes(metrics));
+    await app.register(attachmentRoutes({ orgs, maxInFlight: attachmentMaxInFlight }));
     await app.register(taskRoutes({ orgs }));
     await app.register(workflowRoutes({ orgs }));
     // Batch plans (059): like the routes above, 503 for an org whose runtime carries no batch store.

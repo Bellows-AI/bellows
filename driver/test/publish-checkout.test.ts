@@ -4,9 +4,10 @@ import {
     PUBLISH_MOVED_REASON,
     type PublishOptions,
     type PublishStep,
+    checkoutDir,
     publishCheckout,
 } from '../src/publish/publish.js';
-import { TASK_MOUNT } from '../src/task-volume.js';
+import { attachmentsDir, TASK_MOUNT } from '../src/task-volume.js';
 
 /**
  * The publish workflow both executors run (`publishCheckout`), over a fake transport: every
@@ -135,6 +136,19 @@ const publish = (t: ReturnType<typeof transport>, options?: PublishOptions, job:
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
 
 describe('the publish workflow', () => {
+    it('never stages the task inputs: their directory lies outside the checkout and no step names it', async () => {
+        const t = transport(DIRTY_ON_MAIN);
+        await publish(t);
+        const inputs = attachmentsDir(ISSUE_JOB);
+        const checkout = checkoutDir(ISSUE_JOB) ?? '';
+
+        expect(inputs.startsWith(`${checkout}/`)).toBe(false);
+        expect(inputs).not.toBe(checkout);
+        expect(
+            t.steps.some((s) => [...s.args, ...Object.values(s.envLiterals ?? {})].some((x) => x.includes(inputs)))
+        ).toBe(false);
+    });
+
     it('branches, commits, pushes and opens the PR — in that order', async () => {
         const t = transport(DIRTY_ON_MAIN);
 

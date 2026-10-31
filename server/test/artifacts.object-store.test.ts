@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { chunkKey } from '../src/artifacts/keys.js';
+import { attachmentKey } from '../src/attachments/attachment-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
 import { BACKENDS } from './artifacts-backends.js';
 
@@ -87,5 +88,20 @@ describe.each(BACKENDS)('object store contract: $name', ({ make, prefix, skip })
         const results = await Promise.all(Array.from({ length: 6 }, (_, i) => store.put(key, bytes(`writer ${i}`))));
         expect(results.filter((r) => r === 'created')).toHaveLength(1);
         expect(results.filter((r) => r === 'exists')).toHaveLength(5);
+    });
+
+    it.skipIf(skip)('round-trips an object in the attachment namespace, apart from the artifact keys', async () => {
+        const { store, key } = await fresh();
+        const id = randomUUID();
+        const attachment = attachmentKey(prefix, 'org-1', id);
+        expect(attachment).not.toBe(key);
+        expect(attachment.startsWith(`${prefix}_attachments/org-1/`)).toBe(true);
+        expect(await store.put(attachment, bytes('draft'))).toBe('created');
+        expect(await store.put(attachment, bytes('other'))).toBe('exists');
+        expect(text(await store.get(attachment))).toBe('draft');
+        expect(await store.head(attachment)).toEqual({ size: 5 });
+        await store.delete(attachment);
+        expect(await store.get(attachment)).toBeNull();
+        await store.delete(attachment);
     });
 });

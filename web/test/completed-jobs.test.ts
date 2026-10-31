@@ -50,6 +50,7 @@ const job = (id: string): Job => ({
     questions: [],
     connections: [],
     bindingRevision: 0,
+    attachments: [],
     integrationRequirements: [],
     executionUser: null,
     actingFor: null,

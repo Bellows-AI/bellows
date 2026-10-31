@@ -12,12 +12,12 @@ import {
     handleInterrupt,
     handleConclusion,
 } from './job-handlers-worker.js';
+import { handleFollowUp } from './job-handlers-follow-up.js';
 import {
     handleCompleteJob,
     handleDone,
     handleEditJob,
     handleBindConnection,
-    handleFollowUp,
     handleGetJob,
     handleJobActivity,
     handleListJobs,

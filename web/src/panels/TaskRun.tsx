@@ -14,6 +14,7 @@ import {
     type ThreadPublish,
 } from '../task-outcome.js';
 import type { FollowUpViewer } from '../task-outcome.js';
+import { AttachmentHistory } from './AttachmentList.js';
 import { TaskConnect } from './TaskConnect.js';
 import { TaskQuestion } from './TaskQuestion.js';
 
@@ -322,6 +323,7 @@ export function TaskRun({
             <p className="run-label">{index === 1 ? 'Request' : 'Follow-up'}</p>
             {/* The member's words are prose, not code: normal text with its line breaks kept. */}
             <p className="msg-user">{job.command}</p>
+            <AttachmentHistory attachments={job.attachments} />
             <p className="run-label">{terminal ? `Agent response · Run ${index}` : 'Agent activity'}</p>
             <RunResponseBody
                 terminal={terminal}

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createJobStore } from '../src/db/jobs/job-store.js';
@@ -374,5 +375,68 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
             const refused = await store.createRetry(parent.id, stranger, idem('retry', key));
             expect(typeof refused).toBe('string');
         });
+    });
+});
+
+describe.runIf(enabled)('mutation idempotency with attachments', () => {
+    const readyFile = async (uploader: string): Promise<string> => {
+        const id = randomUUID();
+        await sql`
+            insert into input_attachment (org_id, id, uploader_id, name, media_type, size_bytes, sha256, object_key, state)
+            values (${ORG}, ${id}, ${uploader}, 'a.txt', 'text/plain', 10, ${randomUUID()}, ${`k/${id}`}, 'ready')
+        `;
+        return id;
+    };
+    const boundTo = async (id: string): Promise<string | null> => {
+        const [row] = await sql<{ bound_job_id: string | null }[]>`
+            select bound_job_id from input_attachment where id = ${id}
+        `;
+        return row!.bound_job_id;
+    };
+
+    it('replays a create with the same files as the same task and binds nothing twice', async () => {
+        const user = await account();
+        const file = await readyFile(user);
+        const input = idem('create', freshKey());
+        const target = { ...TARGET, attachmentIds: [file], idempotency: input };
+
+        const first = await store.create('look', user, target);
+        const repeat = await store.create('look', user, target);
+
+        if (typeof first === 'string' || typeof repeat === 'string') throw new Error('refused');
+        expect(repeat).toEqual({ id: first.id, replayed: true });
+        expect(await boundTo(file)).toBe(first.id);
+        expect(await jobCount()).toBe(1);
+    });
+
+    it('refuses the same key for a different set of files', async () => {
+        const user = await account();
+        const [a, b] = [await readyFile(user), await readyFile(user)];
+        const key = freshKey();
+        await store.create('look', user, {
+            ...TARGET,
+            attachmentIds: [a, b],
+            idempotency: idem('create', key, 'fp-ab'),
+        });
+
+        await expect(
+            store.create('look', user, { ...TARGET, attachmentIds: [b, a], idempotency: idem('create', key, 'fp-ba') })
+        ).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+        expect(await jobCount()).toBe(1);
+    });
+
+    it('replays a follow-up with the same files as the same task', async () => {
+        const user = await account();
+        const parent = await createdOk(store, 'first', user);
+        await finish(parent.id);
+        const file = await readyFile(user);
+        const input = idem('follow-up', freshKey());
+
+        const first = await store.createFollowUp(parent.id, 'again', user, input, [], undefined, [file]);
+        await finish((first as { id: string }).id);
+        const repeat = await store.createFollowUp(parent.id, 'again', user, input, [], undefined, [file]);
+
+        expect(repeat).toEqual({ id: (first as { id: string }).id, replayed: true });
+        expect(await boundTo(file)).toBe((first as { id: string }).id);
     });
 });

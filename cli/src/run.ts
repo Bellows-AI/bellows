@@ -1,8 +1,9 @@
 import { parseArgs } from 'node:util';
+import { ATTACH_OPTION, attachedIds } from './attach.js';
 import { batchCommands } from './batch-commands.js';
 import { createBoardClient, HTTP_OK, QUESTION_ANSWERED_CODE } from './board.js';
 import { TASK_LIST_OPTIONS, taskListFilters } from './tasks.js';
-import type { BoardClient, JobCreated, JobWait, QuestionRecord } from './board.js';
+import type { BoardClient, JobWait, QuestionRecord } from './board.js';
 import { activityCommand, readCommand, streamsCommand } from './artifacts.js';
 import { CliConfigError, loadCliConfig, type SettingsFile, takeConfigFlag } from './config.js';
 import { envelopeOf, OUTCOME } from './outcome.js';
@@ -16,11 +17,11 @@ import { BoardError, MALFORMED_RESPONSE_CODE, NO_RESPONSE_STATUS, realClock } fr
 import type { BoardClock } from './transport.js';
 import { SELECTION_OPTIONS, selectionOf } from './selection.js';
 import { USAGE } from './usage.js';
+import { createdResult, recoverable } from './writes.js';
 import { readCliVersion } from './version.js';
 import {
     renderAnswered,
     renderConnections,
-    renderCreated,
     renderDone,
     renderEdited,
     renderExecutors,
@@ -44,7 +45,8 @@ import {
  *
  * A command never prints: it returns a `CommandResult`, and `run` alone decides how that is shown.
  * That is what keeps `--json` clean — one envelope on stdout, nothing on stderr, for success,
- * refusal, network failure, interruption and a command line that never parsed alike. The outcome
+ * refusal, network failure, interruption and a command line that never parsed alike — except `--attach`,
+ * whose upload progress goes to stderr as it happens. The outcome
  * and exit-code vocabulary lives in `outcome.ts`.
  */
 
@@ -130,40 +132,6 @@ function ok(data: unknown, text: string): CommandResult {
 
 const IDEMPOTENCY_KEY_OPTION = { 'idempotency-key': { type: 'string' } } as const;
 
-/** The status from which a board failure says nothing about whether the write was applied. */
-const SERVER_ERROR_STATUS = 500;
-
-/**
- * A write the board may or may not have applied: no answer arrived, the board failed, or its
- * answer could not be read. The error says so and names how to recover — repeating the command
- * under the same key is safe, repeating it with none could queue a second task.
- */
-async function recoverable(write: () => Promise<JobCreated>, key: string | undefined): Promise<JobCreated> {
-    try {
-        return await write();
-    } catch (error) {
-        const uncertain =
-            error instanceof BoardError &&
-            (error.status === NO_RESPONSE_STATUS ||
-                error.status >= SERVER_ERROR_STATUS ||
-                error.code === MALFORMED_RESPONSE_CODE);
-        if (!uncertain) throw error;
-        const hint =
-            key === undefined
-                ? 'the write may have been applied — check the task list before repeating it; pass --idempotency-key so a repeat cannot queue a second task'
-                : `the write may have been applied — repeat the same command with --idempotency-key ${key} to recover its result`;
-        throw new BoardError(`${error.message} (${hint})`, error.status, error.code);
-    }
-}
-
-/** A create-shaped answer: the usual line, and — on stderr, so stdout stays parseable — a replay's note. */
-function createdResult(created: JobCreated): CommandResult {
-    const result = ok(created, renderCreated(created));
-    return created.replayed
-        ? { ...result, stderr: 'replayed: the board already made this task for this idempotency key\n' }
-        : result;
-}
-
 /** The prompt text of a create or follow-up: one resolver, its refusals carry the usage text. */
 async function commandOf(
     positionals: readonly string[],
@@ -183,15 +151,24 @@ async function runCreate(args: readonly string[], io: RunIo): Promise<CommandRes
         parseArgs({
             args: [...args],
             allowPositionals: true,
-            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...SELECTION_OPTIONS, ...IDEMPOTENCY_KEY_OPTION },
+            options: {
+                ...JSON_OPTION,
+                ...INPUT_OPTIONS,
+                ...SELECTION_OPTIONS,
+                ...IDEMPOTENCY_KEY_OPTION,
+                ...ATTACH_OPTION,
+            },
         })
     );
     const command = await commandOf(parsed.positionals, parsed.values, io);
     const selection = selectionOf(parsed.values);
     const key = parsed.values['idempotency-key'];
+    const paths = parsed.values.attach ?? [];
+    const attachments = await attachedIds(paths, key, boardFor(io), io.stderr);
     const created = await recoverable(
-        () => boardFor(io).createJob({ ...selection, command, idempotencyKey: key }),
-        key
+        () => boardFor(io).createJob({ ...selection, command, idempotencyKey: key, attachments }),
+        key,
+        paths.length > 0
     );
     return createdResult(created);
 }
@@ -331,7 +308,7 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
         parseArgs({
             args: [...args],
             allowPositionals: true,
-            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...IDEMPOTENCY_KEY_OPTION },
+            options: { ...JSON_OPTION, ...INPUT_OPTIONS, ...IDEMPOTENCY_KEY_OPTION, ...ATTACH_OPTION },
         })
     );
     const [id, ...rest] = parsed.positionals;
@@ -341,7 +318,13 @@ async function runFollowUp(args: readonly string[], io: RunIo): Promise<CommandR
     const command = await commandOf(rest, parsed.values, io);
     // Only the command travels: the repo, the executor and the session come from the parent.
     const key = parsed.values['idempotency-key'];
-    const created = await recoverable(() => boardFor(io).followUp(id, command, key), key);
+    const paths = parsed.values.attach ?? [];
+    const attachments = await attachedIds(paths, key, boardFor(io), io.stderr);
+    const created = await recoverable(
+        () => boardFor(io).followUp(id, command, key, attachments),
+        key,
+        paths.length > 0
+    );
     return createdResult(created);
 }
 

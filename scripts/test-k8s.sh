@@ -750,6 +750,9 @@ expect_contains 'the IRSA role annotation lands on the dashboard ServiceAccount'
     "$(grep -c '^kind: ServiceAccount' <<<"$gh")" ] && ok 'serviceAccount.create=false renders no dashboard ServiceAccount' ||
     bad 'serviceAccount.create=false renders no dashboard ServiceAccount' 'the ServiceAccount count did not drop'
 expect_contains 'the s3 backend reaches the dashboard as environment' "$gh" 'name: ARTIFACTS_S3_BUCKET'
+expect_contains 'the attachment draft TTL reaches the dashboard as environment' "$gh" 'name: ATTACHMENTS_DRAFT_TTL_HOURS'
+expect_contains 'a configured attachment draft TTL is rendered' \
+    "$(gh_render --set artifacts.attachmentDraftTtlHours=6)" 'value: "6"'
 expect_contains 'a credentials Secret becomes the static keys' \
     "$(gh_render --set artifacts.credentialsExistingSecret=store-keys)" 'key: secret-access-key'
 expect_not_contains 'no credentials Secret leaves Pod Identity and IRSA to the credential chain' "$gh" 'ARTIFACTS_ACCESS_KEY_ID'

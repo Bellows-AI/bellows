@@ -37,7 +37,7 @@ import type {
     JobStorePrs,
     ReviewerSpec,
 } from './job-store-types.js';
-import { type ClaimCandidateRow, rootRowFree } from './job-store-claim-row.js';
+import { type ClaimCandidateRow, rootRowFree, withClaimAttachments } from './job-store-claim-row.js';
 import { claimCommand } from '../follow-up-recap.js';
 import { resolveMasterPrompt, resolveTurnContext } from '../master-prompt.js';
 import { skillCatalog } from '../../skills.js';
@@ -503,7 +503,7 @@ async function acquireCandidate(
         if (await settleCancelledContinuation(ctx, tx, row, rootJobId)) return NEXT_CANDIDATE;
         await recordExecution(tx, orgId, row.id);
         const connections = await claimConnectionsInTx(tx, { orgId, rootJobId }, row, locked.status === 'running');
-        return assembleClaim(ctx, tx, row, { rootJobId, gates, connections });
+        return withClaimAttachments(tx, orgId, await assembleClaim(ctx, tx, row, { rootJobId, gates, connections }));
     });
     // Only a transaction that resolved reports: a throw above rolled back and observed nothing.
     probe.done(result !== NEXT_CANDIDATE && result !== REFUSED);
@@ -557,7 +557,7 @@ async function assembleClaim(
         mode: JobMode;
     },
     prepared: { rootJobId: string; gates: ResolvedClaimGates; connections: ClaimConnections }
-): Promise<Claim> {
+): Promise<Omit<Claim, 'attachments'>> {
     const { orgId, env, githubApp, executorConfig, prs } = ctx;
     const { rootJobId } = prepared;
     const { connections } = prepared;
@@ -922,7 +922,7 @@ export function buildClaimResult(
             turnContext: string | null;
             skillRefusal: string | null;
         }
-): Claim {
+): Omit<Claim, 'attachments'> {
     const {
         claimEnv,
         executorType,

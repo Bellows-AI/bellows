@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ConnectionRefusedError } from '../../db/connection-bindings.js';
+import { AttachmentRefusedError } from '../../db/jobs/job-store-attachments.js';
 import { canonical, IdempotencyKeyReusedError } from '../../db/jobs/job-store-idempotency.js';
 import type { IdempotentOperation } from '../../db/jobs/job-store-idempotency.js';
 import { bad, guard } from '../helpers.js';
-import { HTTP_CONFLICT, HTTP_CREATED, HTTP_FORBIDDEN } from './job-limits.js';
+import { HTTP_CONFLICT, HTTP_CREATED, HTTP_FORBIDDEN, HTTP_PAYLOAD_TOO_LARGE } from './job-limits.js';
 
 /**
  * The request side of durable mutation idempotency (issue #589; docs/jobs.md): the key header,
@@ -50,7 +51,8 @@ export function idempotencyOf<Operation extends string = IdempotentOperation>(
 
 /** The create's idempotency input: every body field the create acts on, as the client spelled it. */
 export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply, fields: Record<string, unknown>) {
-    const { command, repo, executor, executorScope, skills, workflow, workflowParams, connections } = fields;
+    const { command, repo, executor, executorScope, skills, workflow, workflowParams, connections, attachments } =
+        fields;
     return idempotencyOf(request, reply, 'create', {
         command,
         repo,
@@ -60,6 +62,7 @@ export function createIdempotencyOf(request: FastifyRequest, reply: FastifyReply
         workflow,
         workflowParams,
         connections,
+        attachments,
     });
 }
 
@@ -77,13 +80,17 @@ export async function guardKeyed<T>(
             return { value: await run() };
         } catch (error) {
             if (error instanceof IdempotencyKeyReusedError) return null;
-            if (error instanceof ConnectionRefusedError) return error;
+            if (error instanceof ConnectionRefusedError || error instanceof AttachmentRefusedError) return error;
             throw error;
         }
     });
     if (!result.ok) return { ok: false };
     if (result.value instanceof ConnectionRefusedError) {
         await refuseConnections(reply, result.value);
+        return { ok: false };
+    }
+    if (result.value instanceof AttachmentRefusedError) {
+        await refuseAttachments(reply, result.value);
         return { ok: false };
     }
     if (result.value === null) {
@@ -107,6 +114,29 @@ async function refuseConnections(reply: FastifyReply, refusal: ConnectionRefused
         'A connection does not exist or is not available to you. Pick one from GET /api/connections.',
         HTTP_FORBIDDEN
     );
+}
+
+/** The store refused the `attachments` a create or follow-up named: the reply is sent. */
+async function refuseAttachments(reply: FastifyReply, refusal: AttachmentRefusedError) {
+    switch (refusal.reason) {
+        case 'not-authorized':
+            return bad(
+                reply,
+                ERROR_CODES.ATTACHMENT_NOT_AUTHORIZED,
+                'An attachment does not exist, is not yours or is no longer available. Upload it again.',
+                HTTP_FORBIDDEN
+            );
+        case 'too-large':
+            return bad(
+                reply,
+                ERROR_CODES.ATTACHMENT_TOO_LARGE,
+                'The attachments together exceed the request limit',
+                HTTP_PAYLOAD_TOO_LARGE
+            );
+        case 'too-many':
+        case 'duplicate':
+            return bad(reply, ERROR_CODES.BAD_ATTACHMENT, `attachments refused: ${refusal.reason}`);
+    }
 }
 
 /** The 201 a create-shaped mutation answers; a replay is the same body, marked. */
