@@ -5,7 +5,7 @@
 
 import type { Sql, Fragment } from 'postgres';
 import { bindingsOf, requirementsOf } from '../connection-bindings.js';
-import { type JobRow, toJobRow, type TaskRow, toTask, userRef } from './job-store-rows.js';
+import { type JobRow, toJobRow, type TaskRow, toTask, userRef, workspacePathFor } from './job-store-rows.js';
 import type {
     Job,
     JobArtifactScope,
@@ -156,25 +156,50 @@ export async function threadOf(ctx: JobStoreContext, id: string): Promise<Job[] 
         rows.map((row) => row.id)
     );
     const integrations = await integrationsOf(ctx, first.root_job_id);
-    return rows.map((row) => ({ ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [], ...integrations }));
+    return rows.map((row) => ({
+        ...toJobRow(ctx, row),
+        questions: questions.get(row.id) ?? [],
+        ...ownedBy(ctx.orgId, row.created_by, integrations),
+    }));
 }
 
+type ThreadIntegrations = Pick<Job, 'connections' | 'bindingRevision' | 'integrationRequirements' | 'executionUser'> & {
+    ownerId: string | null;
+};
+
+/**
+ * What the detail reads attach to a row from its thread root. The workspace is the owner's whoever queued the row, and
+ * a row queued by someone else is an admin acting for the owner: `actingFor` names the owner there.
+ */
+function ownedBy(
+    orgId: string,
+    createdBy: string | null,
+    { ownerId, ...integrations }: ThreadIntegrations
+): ThreadIntegrationsForRow {
+    const acting = ownerId !== null && createdBy !== null && createdBy !== ownerId;
+    return {
+        ...integrations,
+        workspacePath: ownerId === null ? workspacePathFor(orgId, createdBy) : workspacePathFor(orgId, ownerId),
+        actingFor: acting ? integrations.executionUser : null,
+    };
+}
+
+type ThreadIntegrationsForRow = Omit<ThreadIntegrations, 'ownerId'> & Pick<Job, 'workspacePath' | 'actingFor'>;
+
 /** The thread root's bindings, revision and open requirements: the detail reads attach them to every row. */
-async function integrationsOf(
-    ctx: JobStoreContext,
-    rootJobId: string
-): Promise<Pick<Job, 'connections' | 'bindingRevision' | 'integrationRequirements' | 'executionUser'>> {
+async function integrationsOf(ctx: JobStoreContext, rootJobId: string): Promise<ThreadIntegrations> {
     const { sql, orgId } = ctx;
     const [root] = await sql<
         {
             binding_revision: number;
+            owner_id: string | null;
             exec_id: string | null;
             exec_login: string | null;
             exec_name: string | null;
             exec_avatar_url: string | null;
         }[]
     >`
-        select job.binding_revision, eu.id as exec_id, eu.github_login as exec_login,
+        select job.binding_revision, job.execution_user_id as owner_id, eu.id as exec_id, eu.github_login as exec_login,
                eu.display_name as exec_name, eu.avatar_url as exec_avatar_url
         from job left join app_user eu on eu.id = job.execution_user_id
         where job.org_id = ${orgId} and job.id = ${rootJobId}
@@ -194,6 +219,7 @@ async function integrationsOf(
         bindingRevision: root?.binding_revision ?? 0,
         integrationRequirements: open,
         executionUser: root ? userRef(root.exec_id, root.exec_login, root.exec_name, root.exec_avatar_url) : null,
+        ownerId: root?.owner_id ?? null,
     };
 }
 
@@ -218,7 +244,11 @@ export async function getJob(ctx: JobStoreContext, id: string): Promise<Job | nu
     if (!row) return null;
     const questions = await questionsOfJobs(ctx, [row.id]);
     const integrations = await integrationsOf(ctx, row.root_job_id);
-    return { ...toJobRow(ctx, row), questions: questions.get(row.id) ?? [], ...integrations };
+    return {
+        ...toJobRow(ctx, row),
+        questions: questions.get(row.id) ?? [],
+        ...ownedBy(ctx.orgId, row.created_by, integrations),
+    };
 }
 
 /**

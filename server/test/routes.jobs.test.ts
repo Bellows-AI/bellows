@@ -135,6 +135,8 @@ interface StoreStub extends JobStore {
     removed: { id: string; removedBy: string | null }[];
     cancelledWaits: { id: string; cancelledBy: string | null }[];
     pokes: { id: string; pokedBy: string | null }[];
+    /** The `admin` argument each verb received, in call order (kept apart so the per-verb captures stay exact). */
+    adminFlags: { verb: 'follow-up' | 'retry' | 'wait-cancel' | 'wait-poke'; admin: boolean | undefined }[];
     reopened: string[];
     reclaimClaims: { worker: string; leaseSeconds: number }[];
     reclaimAcks: { id: string; token: string }[];
@@ -262,6 +264,7 @@ function stubStore(
         removed: [],
         cancelledWaits: [],
         pokes: [],
+        adminFlags: [],
         reopened: [],
         reclaimClaims: [],
         reclaimAcks: [],
@@ -302,8 +305,10 @@ function stubStore(
             reuse();
             return { id: ID, ...(options.replayed ? { replayed: true } : {}) };
         },
-        async createFollowUp(parentId, command, createdBy, idempotency) {
+        // The rest tuple keeps the interface's six parameters (the params ceiling is for hand-written signatures).
+        async createFollowUp(...[parentId, command, createdBy, idempotency, , admin]) {
             boom();
+            stub.adminFlags.push({ verb: 'follow-up', admin });
             stub.followUps.push({ parentId, command, createdBy: createdBy ?? null });
             stub.idempotencies.push(idempotency);
             reuse();
@@ -321,8 +326,9 @@ function stubStore(
             boom();
             return { result: 'ok' as const, answer: 'waiting' as const };
         },
-        async createRetry(id, createdBy, idempotency) {
+        async createRetry(id, createdBy, idempotency, admin) {
             boom();
+            stub.adminFlags.push({ verb: 'retry', admin });
             stub.retries.push({ id, createdBy: createdBy ?? null });
             stub.idempotencies.push(idempotency);
             reuse();
@@ -386,13 +392,15 @@ function stubStore(
             stub.removed.push({ id, removedBy: removedBy ?? null });
             return options.remove ?? { result: 'ok', rootJobId: ID, repo: null, workspacePath: null };
         },
-        async cancelWait(id, cancelledBy) {
+        async cancelWait(id, cancelledBy, admin) {
             boom();
+            stub.adminFlags.push({ verb: 'wait-cancel', admin });
             stub.cancelledWaits.push({ id, cancelledBy: cancelledBy ?? null });
             return options.cancelWait ?? { result: 'ok' };
         },
-        async pokeWait(id, pokedBy) {
+        async pokeWait(id, pokedBy, admin) {
             boom();
+            stub.adminFlags.push({ verb: 'wait-poke', admin });
             stub.pokes.push({ id, pokedBy: pokedBy ?? null });
             return options.pokeWait ?? { result: 'ok', woken: true };
         },
@@ -2295,7 +2303,7 @@ describe('lifecycle actor attribution', () => {
     // session — never a body — on the create route's exact rule. Without an auth store the actor
     // is null, the state every AUTH_MODE=none deployment is in; the captures above pin that.
 
-    const signedInHarness = async () => {
+    const signedInHarness = async (role: 'admin' | 'member' = 'member') => {
         const auth = memoryAuthStore();
         const config = testConfig({ auth: githubAuth() });
         const store = stubStore();
@@ -2310,7 +2318,7 @@ describe('lifecycle actor attribution', () => {
             auth,
         });
         track(instance);
-        const caller = auth.seedMember('test-org', 'octocat');
+        const caller = auth.seedMember('test-org', 'octocat', role);
         const cookie = await signedIn(auth, caller);
         return { instance, store, caller, cookie };
     };
@@ -2408,6 +2416,75 @@ describe('lifecycle actor attribution', () => {
 
         expect(response.statusCode).toBe(200);
         expect(store.pokes).toEqual([{ id: ID, pokedBy: caller.user.id }]);
+    });
+
+    // The role is the route's question; the store gets the verdict as a trailing flag.
+    const adminVerbs = [
+        ['follow-up', `/api/jobs/${ID}/follow-up`, { command: 'again, tighter' }],
+        ['retry', `/api/jobs/${ID}/retry`, {}],
+        ['wait-cancel', `/api/jobs/${ID}/wait/cancel`, {}],
+        ['wait-poke', `/api/jobs/${ID}/wait/poke`, {}],
+    ] as const;
+
+    it.each(adminVerbs)('%s forwards admin=true for an admin caller', async (verb, url, payload) => {
+        const { instance, store, cookie } = await signedInHarness('admin');
+
+        const response = await postAs(instance, url, cookie, payload);
+
+        expect(response.statusCode).toBeLessThan(300);
+        expect(store.adminFlags).toEqual([{ verb, admin: true }]);
+    });
+
+    it.each(adminVerbs)('%s forwards admin=false for a member caller', async (verb, url, payload) => {
+        const { instance, store, cookie } = await signedInHarness('member');
+
+        const response = await postAs(instance, url, cookie, payload);
+
+        expect(response.statusCode).toBeLessThan(300);
+        expect(store.adminFlags).toEqual([{ verb, admin: false }]);
+    });
+
+    it('the idempotency key on an admin follow-up is forwarded unchanged', async () => {
+        const { instance, store, cookie } = await signedInHarness('admin');
+
+        const response = await instance.inject({
+            method: 'POST',
+            url: `/api/jobs/${ID}/follow-up`,
+            payload: { command: 'again, tighter' },
+            headers: { cookie, 'idempotency-key': 'admin-key-1' },
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(store.adminFlags).toEqual([{ verb: 'follow-up', admin: true }]);
+        expect(store.idempotencies[0]).toMatchObject({ key: 'admin-key-1' });
+    });
+
+    it.each([
+        ['follow-up', `/api/jobs/${ID}/follow-up`, { command: 'again' }, { followUp: 'forbidden' as const }],
+        ['retry', `/api/jobs/${ID}/retry`, {}, { retry: 'forbidden' as const }],
+        ['wait cancel', `/api/jobs/${ID}/wait/cancel`, {}, { cancelWait: 'forbidden' as const }],
+        ['wait poke', `/api/jobs/${ID}/wait/poke`, {}, { pokeWait: 'forbidden' as const }],
+    ])('%s refusal names the admin path', async (_verb, url, payload, options) => {
+        const auth = memoryAuthStore();
+        const config = testConfig({ auth: githubAuth() });
+        const instance = await buildApp({
+            config,
+            orgs: staticRegistry({
+                config,
+                jobs: stubStore(options),
+                telemetry: stubTelemetryClient(),
+                repos: staticRepoSource([TRACKED]),
+            }),
+            auth,
+        });
+        track(instance);
+        const cookie = await signedIn(auth, auth.seedMember('test-org', 'octocat'));
+
+        const response = await postAs(instance, url, cookie, payload);
+
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toMatchObject({ code: 'FORBIDDEN' });
+        expect(response.json().error).toContain('or an organization admin can');
     });
 });
 
@@ -3036,6 +3113,7 @@ describe('GET /api/jobs', () => {
         bindingRevision: 0,
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
     };
 
     const author = {
@@ -3213,6 +3291,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         bindingRevision: 0,
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
     };
 
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -3436,6 +3515,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         bindingRevision: 0,
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
     };
 
     const jobOf = (id: string, rootJobId: string, over: Partial<Job> = {}): Job => ({

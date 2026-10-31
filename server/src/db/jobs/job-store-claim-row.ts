@@ -10,7 +10,8 @@ export interface ClaimCandidateRow {
     claim_seq: string;
     lease_token: string;
     lease_expires_at: Date;
-    created_by: string | null;
+    /** The thread root's `execution_user_id`: who the row runs as, whoever queued it. */
+    run_as: string | null;
     session_id: string | null;
     repo: string | null;
     parent_job_id: string | null;

@@ -435,7 +435,7 @@ describe('TaskOutcome — services and the placeholder sweep', () => {
 describe('TaskOutcome — next action on a failure', () => {
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'octo-reviewer', name: null, avatarUrl: null };
-    const viewer = { loading: false, id: me.id };
+    const viewer = { loading: false, id: me.id, admin: false };
     const failedGate = [{ name: 'lint', status: 'failed' as const, exitCode: 1, output: 'nope' }];
 
     it('asks for another pass when the viewer may send one', () => {
@@ -456,7 +456,10 @@ describe('TaskOutcome — next action on a failure', () => {
 
     it('says nothing while the session loads', () => {
         const rail = railOf(
-            renderDetail({ jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null } })
+            renderDetail({
+                jobs: [job({ status: 'failed', author: me })],
+                viewer: { loading: true, id: null, admin: false },
+            })
         );
         expect(rail).not.toContain('Next action');
     });

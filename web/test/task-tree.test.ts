@@ -215,6 +215,7 @@ describe('taskSummary', () => {
         bindingRevision: 0,
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
         ...overrides,
     });
 

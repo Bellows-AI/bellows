@@ -23,6 +23,9 @@ const eventOf = (kind: NotificationKind) =>
             prUrl: null,
             questionId: kind === 'task.question' ? 'q1' : null,
             questions: kind === 'task.question' ? ['Which database?'] : null,
+            action: kind === 'task.admin_action' ? 'follow-up' : null,
+            actor: kind === 'task.admin_action' ? { id: 'u-admin', login: 'live-admin' } : null,
+            author: kind === 'task.admin_action' ? { id: 'u-author', login: 'live-author' } : null,
             occurredAt: new Date().toISOString(),
         },
         'https://factory.example.com'

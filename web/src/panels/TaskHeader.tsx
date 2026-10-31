@@ -14,6 +14,7 @@ import {
     followUpEligibility,
     gateCounts,
     isWaitingForReview,
+    threadOwnerOf,
 } from '../task-outcome.js';
 import {
     type TaskTone,
@@ -41,7 +42,7 @@ export function needsAnotherPass(latest: Job): boolean {
 
 /** Why the viewer gets no composer on another member's task — one sentence, said the same everywhere. */
 export const notAuthorMessage = (latest: Job): string =>
-    `Only ${latest.author?.login ?? 'the task author'} can continue this session. You can still mark it done.`;
+    `Only ${threadOwnerOf(latest)?.login ?? 'the task author'} can continue this session. You can still mark it done.`;
 
 /**
  * Each tone's pill, per the status table in `docs/design-system.md`: the class, then the mark —

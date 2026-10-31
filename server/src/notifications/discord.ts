@@ -41,11 +41,13 @@ const TITLES: Record<NotificationKind, string> = {
     'task.ready': 'Task ready for review',
     'task.blocked': 'Task blocked',
     'task.question': 'Agent asked a question',
+    'task.admin_action': 'An admin acted on a task',
 };
 const COLORS: Record<NotificationKind, number> = {
     'task.ready': 0x2ecc71,
     'task.blocked': 0xe74c3c,
     'task.question': 0xf1c40f,
+    'task.admin_action': 0x3498db,
 };
 
 export interface DiscordField {
@@ -80,6 +82,9 @@ function fieldsOf(event: NotificationEvent): DiscordField[] {
         { name: 'Repo', value: event.repo ?? '', inline: true },
         { name: 'Reason', value: event.reason ?? '' },
         { name: 'Question', value: (event.questions ?? []).join('\n\n') },
+        { name: 'Action', value: event.action ?? '', inline: true },
+        { name: 'By', value: event.actor?.login ?? '', inline: true },
+        { name: 'On behalf of', value: event.author?.login ?? '', inline: true },
     ];
     return candidates
         .map((f) => ({

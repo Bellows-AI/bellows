@@ -17,6 +17,9 @@ const event: NotificationEvent = notificationEventOf(
         prUrl: null,
         questionId: null,
         questions: null,
+        action: null,
+        actor: null,
+        author: null,
         occurredAt: '2026-10-30T10:00:00.000Z',
     },
     'https://factory.example.com'

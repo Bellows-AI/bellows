@@ -237,6 +237,7 @@ export function toJob(orgId: string, row: JobRow): Job {
         bindingRevision: 0,
         integrationRequirements: [],
         executionUser: null,
+        actingFor: null,
     };
 }
 
