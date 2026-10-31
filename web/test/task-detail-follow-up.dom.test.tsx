@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -131,5 +131,24 @@ describe('the follow-up composer drafts', () => {
         await waitFor(() => expect(sent()).toHaveLength(1));
         expect(sent()[0]!.body).toEqual({ command: 'just words' });
         expect(sent()[0]!.headers['idempotency-key']).toBeUndefined();
+    });
+
+    it('freezes while the follow-up is in flight: a late drop is not accepted', async () => {
+        const user = userEvent.setup();
+        let release: (reply: unknown) => void = () => undefined;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        board({ followUp: () => held });
+        renderApp(`/tasks/${A[0]!.id}`);
+        const text = await box();
+        await user.type(text, 'go');
+        await screen.findByLabelText('Attach files');
+        await user.click(screen.getByRole('button', { name: 'Send follow-up' }));
+        await waitFor(() => expect(text.readOnly).toBe(true));
+        fireEvent.drop(text, { dataTransfer: { files: [file('late.txt')], types: ['Files'] } });
+        expect(screen.queryByText('late.txt')).toBeNull();
+        release({ status: 201, body: { id: SENT_ID } });
+        await waitFor(() => expect(text.value).toBe(''));
     });
 });

@@ -163,11 +163,15 @@ function FollowUpComposer({
     // Settings (or to another task) and back finds this thread's draft as it was left.
     const held = draftStore.followUps[rootId];
     const draft = held?.text ?? '';
-    const files = useAttachments({
-        draft: held ?? { attachments: [], submissionKey: null },
-        update: (change) => draftStore.updateFollowUp(rootId, (current) => ({ ...current, ...change(current) })),
-    });
     const limits = useAttachmentLimits();
+    const files = useAttachments(
+        {
+            draft: held ?? { attachments: [], submissionKey: null },
+            update: (change) => draftStore.updateFollowUp(rootId, (current) => ({ ...current, ...change(current) })),
+        },
+        limits,
+        sending
+    );
     const dropAndPaste = attachmentHandlers(limits !== null, files.add);
     const blocked = !draft.trim() || sending || files.blocker !== null;
     const send = async () => {
@@ -189,6 +193,7 @@ function FollowUpComposer({
                 className="field composer-input"
                 placeholder="Describe the adjustment…"
                 value={draft}
+                readOnly={sending}
                 {...dropAndPaste}
                 onChange={(e) =>
                     draftStore.updateFollowUp(rootId, (current) => ({
@@ -201,9 +206,14 @@ function FollowUpComposer({
                     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void send();
                 }}
             />
-            <AttachmentChips attachments={files.attachments} onRemove={files.remove} onRetry={files.retry} />
+            <AttachmentChips
+                attachments={files.attachments}
+                onRemove={files.remove}
+                onRetry={files.retry}
+                locked={sending}
+            />
             <div className="composer-row">
-                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} />}
+                {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} disabled={sending} />}
                 {/* The shortcut is written down, and it is the same guarded path the button takes. */}
                 <span className="composer-label">Ctrl/⌘ + Enter</span>
                 <button type="button" className="primary" disabled={blocked} onClick={() => void send()}>

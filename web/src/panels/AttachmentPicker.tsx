@@ -11,11 +11,19 @@ export const acceptOf = (limits: AttachmentLimits): string =>
  * that carries its own accessible name. Drop and paste are handled by the surface that owns the
  * text field; this is only the picker.
  */
-export function AttachmentPicker({ limits, onPick }: { limits: AttachmentLimits; onPick: (files: File[]) => void }) {
+export function AttachmentPicker({
+    limits,
+    onPick,
+    disabled = false,
+}: {
+    limits: AttachmentLimits;
+    onPick: (files: File[]) => void;
+    disabled?: boolean;
+}) {
     const input = useRef<HTMLInputElement>(null);
     return (
         <>
-            <button type="button" className="attachment-add" onClick={() => input.current?.click()}>
+            <button type="button" className="attachment-add" disabled={disabled} onClick={() => input.current?.click()}>
                 <Icon name="plus" />
                 Attach files
             </button>
@@ -23,6 +31,7 @@ export function AttachmentPicker({ limits, onPick }: { limits: AttachmentLimits;
                 ref={input}
                 type="file"
                 hidden
+                disabled={disabled}
                 multiple
                 accept={acceptOf(limits)}
                 aria-label="Attach files"

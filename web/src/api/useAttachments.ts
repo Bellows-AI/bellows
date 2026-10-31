@@ -9,6 +9,7 @@ import {
 import type { DraftAttachment, FileDraft } from '../composer-draft.js';
 import { refusalOf } from './refusal.js';
 import { newIdempotencyKey } from './useBatches.js';
+import { sizeLabel } from '../panels/AttachmentList.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
 const IDEMPOTENCY_KEY_HEADER = 'Idempotency-Key';
@@ -84,7 +85,33 @@ export interface Attachments {
 
 const IMAGE_PREFIX = 'image/';
 
-export function useAttachments(binding: FileBinding): Attachments {
+/** A new chip: uploading, or failed up front with the reason the limits gave. */
+function chipFor(file: File, why: string | null): DraftAttachment {
+    return {
+        localId: newIdempotencyKey(),
+        file,
+        objectUrl: file.type.startsWith(IMAGE_PREFIX) ? URL.createObjectURL(file) : null,
+        uploadKey: newIdempotencyKey(),
+        ...(why === null ? { status: 'uploading' } : { status: 'failed', error: why }),
+    };
+}
+
+/** Why `file` cannot join `others` under the board's limits, or null. Failed chips are not part of the set. */
+function refusal(file: File, others: readonly DraftAttachment[], limits: AttachmentLimits | null): string | null {
+    if (limits === null) return null;
+    const kept = others.filter((a) => a.status !== 'failed');
+    if (file.size > limits.maxFileBytes) return `Larger than the ${sizeLabel(limits.maxFileBytes)} limit per file`;
+    if (kept.length >= limits.maxFilesPerRequest) return `At most ${limits.maxFilesPerRequest} files per request`;
+    const total = kept.reduce((sum, a) => sum + a.file.size, 0) + file.size;
+    if (total > limits.maxRequestBytes) return `Over the ${sizeLabel(limits.maxRequestBytes)} limit for all files`;
+    return null;
+}
+
+/**
+ * `limits` is checked against the accumulated selection; `locked` freezes every mutation while a
+ * submission is in flight, so nothing added then can be wiped by the success clear unsent.
+ */
+export function useAttachments(binding: FileBinding, limits: AttachmentLimits | null, locked: boolean): Attachments {
     const { draft, update } = binding;
     const patch = (localId: string, change: Partial<DraftAttachment>) =>
         update((files) => ({
@@ -93,10 +120,23 @@ export function useAttachments(binding: FileBinding): Attachments {
         }));
     const upload = async (item: DraftAttachment) => {
         const result = await uploadAttachment(item.file, item.uploadKey);
-        patch(
-            item.localId,
-            result.ok ? { status: 'done', meta: result.meta } : { status: 'failed', error: result.error }
-        );
+        // The chip may have been removed, or its draft cleared or handed to another owner, while
+        // the bytes were going up: the board then holds a file nothing will ever bind.
+        let present = false;
+        update((files) => {
+            present = files.attachments.some((a) => a.localId === item.localId);
+            return {
+                ...files,
+                attachments: files.attachments.map((a) =>
+                    a.localId === item.localId
+                        ? result.ok
+                            ? { ...a, status: 'done', meta: result.meta }
+                            : { ...a, status: 'failed', error: result.error }
+                        : a
+                ),
+            };
+        });
+        if (result.ok && !present) deleteUploaded(result.meta.id);
     };
     return {
         attachments: draft.attachments,
@@ -106,21 +146,17 @@ export function useAttachments(binding: FileBinding): Attachments {
               ? 'failed'
               : null,
         add(files) {
-            const added = files.map<DraftAttachment>((file) => ({
-                localId: newIdempotencyKey(),
-                file,
-                objectUrl: file.type.startsWith(IMAGE_PREFIX) ? URL.createObjectURL(file) : null,
-                uploadKey: newIdempotencyKey(),
-                status: 'uploading',
-            }));
-            if (added.length === 0) return;
+            if (locked || files.length === 0) return;
+            const added: DraftAttachment[] = [];
+            for (const file of files)
+                added.push(chipFor(file, refusal(file, [...draft.attachments, ...added], limits)));
             // The set changed, so a failed submission's key no longer names this request.
             update((held) => ({ attachments: [...held.attachments, ...added], submissionKey: null }));
-            for (const item of added) void upload(item);
+            for (const item of added) if (item.status === 'uploading') void upload(item);
         },
         remove(localId) {
             const gone = draft.attachments.find((a) => a.localId === localId);
-            if (gone === undefined) return;
+            if (locked || gone === undefined) return;
             if (gone.objectUrl !== null) URL.revokeObjectURL(gone.objectUrl);
             if (gone.meta !== undefined) deleteUploaded(gone.meta.id);
             update((held) => ({
@@ -130,7 +166,10 @@ export function useAttachments(binding: FileBinding): Attachments {
         },
         retry(localId) {
             const item = draft.attachments.find((a) => a.localId === localId);
-            if (item === undefined || item.status !== 'failed') return;
+            if (locked || item === undefined || item.status !== 'failed') return;
+            const others = draft.attachments.filter((a) => a.localId !== localId);
+            const why = refusal(item.file, others, limits);
+            if (why !== null) return patch(localId, { error: why });
             patch(localId, { status: 'uploading', error: undefined });
             void upload(item);
         },

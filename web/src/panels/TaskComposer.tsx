@@ -497,8 +497,8 @@ export function TaskComposer({
     /** The shell's held draft (F1): read once at mount, written on every change, cleared on launch. */
     draftStore: ComposerDraftStore;
 }) {
-    const files = useAttachments({ draft: draftStore.files, update: draftStore.updateTaskFiles });
     const limits = useAttachmentLimits();
+    const files = useAttachments({ draft: draftStore.files, update: draftStore.updateTaskFiles }, limits, sending);
     const dropAndPaste = attachmentHandlers(limits !== null, files.add);
     const composer = useComposerDraft({
         repos,
@@ -580,6 +580,7 @@ export function TaskComposer({
                         aria-invalid={promptTooLong || undefined}
                         placeholder={PROMPT_PLACEHOLDER}
                         value={state.draft}
+                        readOnly={sending}
                         onChange={(e) => update({ draft: e.target.value })}
                     />
                     <p
@@ -588,7 +589,12 @@ export function TaskComposer({
                     >
                         {commandCount(state.draft)}
                     </p>
-                    <AttachmentChips attachments={files.attachments} onRemove={files.remove} onRetry={files.retry} />
+                    <AttachmentChips
+                        attachments={files.attachments}
+                        onRemove={files.remove}
+                        onRetry={files.retry}
+                        locked={sending}
+                    />
                     <div className="composer-bar">
                         <ComposerContextRow
                             repos={repos}
@@ -597,7 +603,9 @@ export function TaskComposer({
                             state={state}
                             update={update}
                         />
-                        {limits === null ? null : <AttachmentPicker limits={limits} onPick={files.add} />}
+                        {limits === null ? null : (
+                            <AttachmentPicker limits={limits} onPick={files.add} disabled={sending} />
+                        )}
                         <ComposerLaunch blocker={blocker} sending={sending} onStart={attemptStart} />
                     </div>
                     {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}

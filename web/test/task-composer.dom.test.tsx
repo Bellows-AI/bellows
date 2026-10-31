@@ -207,6 +207,7 @@ const metaFor = (name: string, index: number) => ({
 function openWithAttachments(options: {
     upload?: (name: string, attempt: number) => FetchReply;
     launch?: (attempt: number) => FetchReply;
+    limits?: Partial<typeof LIMITS>;
 }) {
     const attempts = new Map<string, number>();
     let launches = 0;
@@ -216,7 +217,7 @@ function openWithAttachments(options: {
         if (url === '/api/workspace') return workspace;
         if (url === '/api/repos') return reposReply(['web']);
         if (url === '/api/auth/me') return OPEN_BOARD_SESSION;
-        if (url === '/api/attachments/limits') return LIMITS;
+        if (url === '/api/attachments/limits') return { ...LIMITS, ...options.limits };
         if (method === 'POST' && url === '/api/attachments') {
             const name = decodeURIComponent(call.headers['x-attachment-name'] ?? '');
             const attempt = (attempts.get(name) ?? 0) + 1;
@@ -388,5 +389,73 @@ describe('the composer attachments', () => {
         );
         expect(screen.getByText('keep.txt')).toBeTruthy();
         expect(screen.getByText('Ready')).toBeTruthy();
+    });
+
+    it('refuses the eleventh file and keeps Start dark while the set is invalid', async () => {
+        const user = userEvent.setup();
+        openWithAttachments({});
+        await user.type(await screen.findByLabelText('What should the agent do?'), 'many');
+        const names = Array.from({ length: 11 }, (_, i) => `f${i}.txt`);
+        await user.upload(await attachInput(), names.map(textFile));
+        await screen.findByText('Failed: At most 10 files per request');
+        await waitFor(() => expect(screen.getAllByText('Ready')).toHaveLength(10));
+        expect((screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement).disabled).toBe(true);
+        await user.click(screen.getByRole('button', { name: 'Remove f10.txt' }));
+        expect((screen.getByRole('button', { name: 'Start task' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('refuses a file over the size limit and one that pushes the total over the request limit', async () => {
+        const user = userEvent.setup();
+        openWithAttachments({ limits: { maxFileBytes: 8, maxRequestBytes: 12 } });
+        await user.upload(await attachInput(), [
+            new File(['1234567'], 'a.txt'),
+            new File(['1234567'], 'b.txt'),
+            new File(['123456789'], 'big.txt'),
+        ]);
+        await screen.findByText('Failed: Over the 12 B limit for all files');
+        await screen.findByText('Failed: Larger than the 8 B limit per file');
+        expect(screen.getAllByText('Ready')).toHaveLength(1);
+    });
+
+    it('freezes the draft while a submission is in flight, so nothing added then is wiped unsent', async () => {
+        const user = userEvent.setup();
+        let release: (reply: unknown) => void = () => undefined;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        openWithAttachments({ launch: () => held });
+        const prompt = (await screen.findByLabelText('What should the agent do?')) as HTMLTextAreaElement;
+        await user.type(prompt, 'go');
+        await user.upload(await attachInput(), textFile('a.txt'));
+        await screen.findByText('Ready');
+        await user.click(screen.getByRole('button', { name: 'Start task' }));
+        await waitFor(() => expect(prompt.readOnly).toBe(true));
+
+        fireEvent.drop(prompt, { dataTransfer: { files: [textFile('late.txt')], types: ['Files'] } });
+        expect(screen.queryByText('late.txt')).toBeNull();
+        expect((screen.getByRole('button', { name: 'Remove a.txt' }) as HTMLButtonElement).disabled).toBe(true);
+        release({ status: 500, body: { error: 'nope' } });
+        await screen.findByText('nope');
+        expect(prompt.readOnly).toBe(false);
+        fireEvent.drop(prompt, { dataTransfer: { files: [textFile('late.txt')], types: ['Files'] } });
+        await screen.findByText('late.txt');
+    });
+
+    it('deletes an upload that finishes after its chip was removed', async () => {
+        const user = userEvent.setup();
+        let release: (reply: unknown) => void = () => undefined;
+        const held = new Promise((resolve) => {
+            release = resolve;
+        });
+        const { calls } = openWithAttachments({ upload: () => held });
+        await user.upload(await attachInput(), textFile('slow.txt'));
+        await user.click(await screen.findByRole('button', { name: 'Remove slow.txt' }));
+        expect(screen.queryByText('slow.txt')).toBeNull();
+        release({ status: 201, body: metaFor('slow.txt', 7) });
+        await waitFor(() =>
+            expect(
+                calls.some((c) => c.method === 'DELETE' && c.url === `/api/attachments/${metaFor('slow.txt', 7).id}`)
+            ).toBe(true)
+        );
     });
 });

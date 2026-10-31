@@ -25,10 +25,13 @@ export function AttachmentChips({
     attachments,
     onRemove,
     onRetry,
+    locked = false,
 }: {
     attachments: readonly DraftAttachment[];
     onRemove: (localId: string) => void;
     onRetry: (localId: string) => void;
+    /** A submission is in flight: the set is frozen. */
+    locked?: boolean;
 }) {
     if (attachments.length === 0) return null;
     return (
@@ -55,6 +58,7 @@ export function AttachmentChips({
                         <button
                             type="button"
                             className="attachment-action"
+                            disabled={locked}
                             aria-label={`Retry ${item.file.name}`}
                             onClick={() => onRetry(item.localId)}
                         >
@@ -64,6 +68,7 @@ export function AttachmentChips({
                     <button
                         type="button"
                         className="attachment-action"
+                        disabled={locked}
                         aria-label={`Remove ${item.file.name}`}
                         onClick={() => onRemove(item.localId)}
                     >
