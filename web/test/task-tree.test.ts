@@ -213,6 +213,7 @@ describe('taskSummary', () => {
         questions: [],
         connections: [],
         bindingRevision: 0,
+        attachments: [],
         integrationRequirements: [],
         executionUser: null,
         ...overrides,

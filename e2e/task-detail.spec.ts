@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import postgres from 'postgres';
@@ -632,5 +634,87 @@ test.describe('the follow-up composer attachments', () => {
         expect(sent[0]!.body).toEqual({ command: 'also check the export', attachments: [board.ids.get('notes.txt')] });
         expect(sent[0]!.key).toMatch(/^[0-9a-f]{32}$/);
         expect(problems.join('\n')).toBe('');
+    });
+});
+
+test.describe('the attachments in the task history', () => {
+    const PNG = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64'
+    );
+    const NOTES = Buffer.from('release notes, line one\n');
+    const meta = (id: string, name: string, mediaType: string, bytes: Buffer) => ({
+        id,
+        name,
+        mediaType,
+        size: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex'),
+        state: 'bound' as const,
+    });
+
+    test('after a reload each request lists its own files; the download is the uploaded bytes', async ({ page }) => {
+        const problems = watchConsole(page);
+        const me = await sessionAuthor(page);
+        const image = meta('00000000-0000-4000-8000-0000000000b1', 'shot.png', 'image/png', PNG);
+        const notes = meta('00000000-0000-4000-8000-0000000000b2', 'notes.txt', 'text/plain', NOTES);
+        const later = meta('00000000-0000-4000-8000-0000000000b3', 'later.txt', 'text/plain', NOTES);
+        const thread = authoredBy(failedGateFollowUpThread, me).map((j, i) => ({
+            ...j,
+            attachments: i === 0 ? [image, notes] : [later],
+        }));
+        await routeThread(page, thread);
+        await page.route('**/api/attachments/*/content*', (route) => {
+            const url = new URL(route.request().url());
+            const png = url.pathname.includes(image.id);
+            return route.fulfill({
+                status: 200,
+                body: png ? PNG : NOTES,
+                headers: {
+                    'content-type': png ? 'image/png' : 'text/plain',
+                    'content-disposition': url.searchParams.get('disposition') === 'inline' ? 'inline' : 'attachment',
+                    'x-content-type-options': 'nosniff',
+                },
+            });
+        });
+        await page.goto(`/tasks/${thread[0]!.id}`);
+        await page.reload();
+
+        const exchanges = page.locator('.chat-exchange');
+        await expect(exchanges.nth(0).getByText('shot.png').first()).toBeVisible();
+        await expect(exchanges.nth(0).getByText('notes.txt')).toBeVisible();
+        await expect(exchanges.nth(1).getByText('later.txt')).toBeVisible();
+        await expect(exchanges.nth(1).getByText('notes.txt')).toHaveCount(0);
+        await expect
+            .poll(() =>
+                exchanges
+                    .nth(0)
+                    .locator('img.attachment-preview')
+                    .evaluate((i: HTMLImageElement) => i.naturalWidth)
+            )
+            .toBeGreaterThan(0);
+        await page.screenshot({ path: `${SHOTS}/task-detail-attachments.png`, fullPage: true });
+
+        const [download] = await Promise.all([
+            page.waitForEvent('download'),
+            exchanges
+                .nth(0)
+                .getByRole('link', { name: /Download notes\.txt/ })
+                .click(),
+        ]);
+        expect(download.suggestedFilename()).toBe('notes.txt');
+        const saved = await readFile((await download.path())!);
+        expect(createHash('sha256').update(saved).digest('hex')).toBe(notes.sha256);
+        expect(problems.join('\n')).toBe('');
+    });
+
+    test('an image whose read is refused says the preview is unavailable', async ({ page }) => {
+        const me = await sessionAuthor(page);
+        const image = meta('00000000-0000-4000-8000-0000000000b4', 'gone.png', 'image/png', PNG);
+        const thread = authoredBy(failedGateThread, me).map((j) => ({ ...j, attachments: [image] }));
+        await routeThread(page, thread);
+        await page.route('**/api/attachments/*/content*', (route) => route.fulfill({ status: 503, body: '' }));
+        await page.goto(`/tasks/${thread[0]!.id}`);
+        await expect(page.getByText('Preview unavailable')).toBeVisible();
+        await expect(page.getByRole('link', { name: /Download gone\.png/ })).toBeVisible();
     });
 });
