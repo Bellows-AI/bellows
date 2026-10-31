@@ -92,6 +92,19 @@ export function createAttachmentStore({
     /** Normalized: empty or one trailing slash (`ArtifactBackend.prefix`). */
     prefix: string;
 }): AttachmentStore {
+    /**
+     * The sweep took the row while this upload was in flight, and may already have passed the key: the object just
+     * written is removed here, or the row is put back in `deleting` so the next pass removes it.
+     */
+    async function discardLate(row: AttachmentRow): Promise<void> {
+        try {
+            await objects.delete(row.objectKey);
+        } catch (error) {
+            await rows.reopenDelete(row.id);
+            throw new AttachmentUnavailableError('the upload expired and its object could not be removed yet', error);
+        }
+    }
+
     /** Brings a `pending` row to `ready`: the create-only put, the exists arbitration, the size check. */
     async function finish(row: AttachmentRow, bytes: Uint8Array): Promise<AttachmentRow> {
         const put = await confirmed('put', () => objects.put(row.objectKey, bytes));
@@ -106,8 +119,9 @@ export function createAttachmentStore({
         if (head.size !== row.sizeBytes)
             throw new AttachmentIntegrityError('the stored size differs from the recorded size');
         const marked = await rows.markReady(row.id);
-        if (!marked) throw new AttachmentUnavailableError('the row left the pending state');
-        return marked;
+        if (marked) return marked;
+        await discardLate(row);
+        throw new AttachmentGoneError();
     }
 
     return {
@@ -127,6 +141,8 @@ export function createAttachmentStore({
                 objectKey: attachmentKey(prefix, orgId, id),
                 ...(input.idempotencyKey ? { idempotency: { key: input.idempotencyKey, fingerprint } } : {}),
             });
+            // A replay of a row the sweep took never writes: the object would outlive its finished row.
+            if (row.state === 'deleting' || row.state === 'deleted') throw new AttachmentGoneError();
             if (row.state !== 'pending') return { meta: metaOf(row), replayed };
             return { meta: metaOf(await finish(row, input.bytes)), replayed };
         },

@@ -43,6 +43,8 @@ export interface AttachmentRows {
     beginDelete(id: string, uploaderId: string): Promise<AttachmentRow | null>;
     /** `deleting` to `deleted`. */
     markDeleted(id: string): Promise<void>;
+    /** A `deleted` tombstone back to `deleting` (an upload wrote its object after the sweep finished the row); `deleting` stays. */
+    reopenDelete(id: string): Promise<void>;
 }
 
 /** How long a recorded upload key keeps replaying; past it the key is cleared and may be reused. */
@@ -178,6 +180,14 @@ export function createAttachmentRows({
                 where org_id = ${orgId} and id = ${id} and uploader_id = ${uploaderId} and state = 'deleted'
             `;
             return settled ? rowOf(settled) : null;
+        },
+
+        async reopenDelete(id) {
+            await ready;
+            await sql`
+                update input_attachment set state = 'deleting', deleting_at = now(), deleted_at = null
+                where org_id = ${orgId} and id = ${id} and state in ('deleting', 'deleted')
+            `;
         },
 
         async markDeleted(id) {

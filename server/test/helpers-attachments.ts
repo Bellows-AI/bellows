@@ -191,5 +191,9 @@ export function memoryAttachmentRows(): AttachmentRows & { all: AttachmentRow[] 
             const row = byId(id);
             if (row?.state === 'deleting') row.state = 'deleted';
         },
+        async reopenDelete(id) {
+            const row = byId(id);
+            if (row && (row.state === 'deleting' || row.state === 'deleted')) row.state = 'deleting';
+        },
     };
 }

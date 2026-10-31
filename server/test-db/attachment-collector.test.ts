@@ -7,7 +7,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
 import { createAttachmentCollector } from '../src/attachments/attachment-collector.js';
-import { attachmentKey } from '../src/attachments/attachment-store.js';
+import { createAttachmentRows } from '../src/attachments/attachment-rows.js';
+import {
+    AttachmentGoneError,
+    AttachmentUnavailableError,
+    attachmentKey,
+    createAttachmentStore,
+} from '../src/attachments/attachment-store.js';
 import { createJobStore } from '../src/db/jobs/job-store.js';
 import type { JobStore } from '../src/db/jobs/job-store-types.js';
 import { testOrg, testUser } from './fixtures.js';
@@ -236,5 +242,84 @@ describe.runIf(enabled)('attachment collector', () => {
                 expect(await present(row.key)).toBe(false);
             }
         }
+    });
+
+    const storeOf = (over: Partial<ObjectStore> = {}) =>
+        createAttachmentStore({
+            rows: createAttachmentRows({ sql, orgId: ORG, ready: Promise.resolve() }),
+            objects: { ...objects, ...over } as ObjectStore,
+            orgId: ORG,
+            prefix: PREFIX,
+        });
+    const input = (text: string, idempotencyKey?: string) => ({
+        uploaderId: ALICE.id,
+        name: 'a.txt',
+        mediaType: 'text/plain',
+        bytes: new TextEncoder().encode(text),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+    });
+    const lastRowOf = async (key: string) => {
+        const [row] = await sql<{ id: string; object_key: string }[]>`
+            select id, object_key from input_attachment where idempotency_key = ${key}
+        `;
+        return row!;
+    };
+
+    it('refuses the replay of an upload the sweep already took, and writes nothing', async () => {
+        const key = `idem-${randomUUID()}`;
+        const broken = storeOf({
+            put: async () => {
+                throw new Error('store down');
+            },
+        });
+        await expect(broken.upload(input('late', key))).rejects.toBeInstanceOf(AttachmentUnavailableError);
+        const row = await lastRowOf(key);
+        await sql`update input_attachment set created_at = now() - interval '100 hours' where id = ${row.id}`;
+        await collectorOf().collect();
+        expect(await stateOf(row.id)).toBe('deleted');
+
+        await expect(storeOf().upload(input('late', key))).rejects.toBeInstanceOf(AttachmentGoneError);
+
+        expect(await present(row.object_key)).toBe(false);
+    });
+
+    it.each(['deleting', 'deleted'])(
+        'removes the object an upload wrote after the sweep moved its row to %s',
+        async (to) => {
+            const key = `idem-${randomUUID()}`;
+            const racing = storeOf({
+                put: async (k, body) => {
+                    await sql`update input_attachment set state = ${to} where idempotency_key = ${key}`;
+                    return objects.put(k, body);
+                },
+            });
+
+            await expect(racing.upload(input('raced', key))).rejects.toBeInstanceOf(AttachmentGoneError);
+
+            const row = await lastRowOf(key);
+            expect(await present(row.object_key)).toBe(false);
+        }
+    );
+
+    it('leaves the row deleting for the next pass when the late object cannot be removed', async () => {
+        const key = `idem-${randomUUID()}`;
+        const racing = storeOf({
+            put: async (k, body) => {
+                await sql`update input_attachment set state = 'deleted' where idempotency_key = ${key}`;
+                return objects.put(k, body);
+            },
+            delete: async () => {
+                throw new Error('store down');
+            },
+        });
+
+        await expect(racing.upload(input('raced', key))).rejects.toBeInstanceOf(AttachmentUnavailableError);
+
+        const row = await lastRowOf(key);
+        expect(await stateOf(row.id)).toBe('deleting');
+        expect(await present(row.object_key)).toBe(true);
+        await collectorOf().collect();
+        expect(await stateOf(row.id)).toBe('deleted');
+        expect(await present(row.object_key)).toBe(false);
     });
 });
