@@ -127,6 +127,64 @@ describe('planTaskVolume', () => {
         expect(job.taskRestore).toBeUndefined();
     });
 
+    describe('a repository-free continuing claim on a lost volume', () => {
+        const repoFree = (over: Partial<BoardJob> = {}) =>
+            continuing({ repo: null, executorType: 'claude-code', ...over });
+        const lost = { live: [], highest: 2, unschedulable: [] };
+
+        it('creates the next generation and restores the Claude sessions only, with no checkpoint', async () => {
+            const job = repoFree();
+            expect(await planTaskVolume(board({ state: 'none' }), job, lost)).toEqual({ create: true });
+            expect(job.taskGeneration).toBe(3);
+            expect(job.taskRestore).toEqual({ checkpoint: null, older: [], restored: false, sessionsOnly: true });
+        });
+
+        it('never goes below the second generation', async () => {
+            const job = repoFree();
+            await planTaskVolume(board({ state: 'none' }), job, { live: [], highest: 0, unschedulable: [] });
+            expect(job.taskGeneration).toBe(2);
+        });
+
+        it('still prefers an unschedulable generation, label cleared', async () => {
+            const job = repoFree();
+            expect(await planTaskVolume(board({ state: 'none' }), job, { ...lost, unschedulable: [2] })).toEqual({
+                create: false,
+                unlabel: 2,
+            });
+            expect(job.taskGeneration).toBe(2);
+            expect(job.taskRestore).toBeUndefined();
+        });
+
+        it('owes an adopted restored generation a sessions-only check, reading no checkpoint', async () => {
+            const job = repoFree();
+            const source = board({ state: 'none' });
+            expect(await planTaskVolume(source, job, { live: [3, 2], highest: 3, unschedulable: [] })).toEqual({
+                create: false,
+            });
+            expect(job.taskRestore).toEqual({ checkpoint: null, older: [2], restored: false, sessionsOnly: true });
+            expect(source.checkpoint).not.toHaveBeenCalled();
+        });
+
+        it('keeps the refusal for OpenCode: no session database is stored', async () => {
+            await expect(
+                planTaskVolume(board({ state: 'none' }), repoFree({ executorType: 'opencode' }), lost)
+            ).rejects.toBeInstanceOf(CheckpointUnrestorable);
+        });
+
+        it('hands the claim back when the checkpoint read throws, never creating fresh', async () => {
+            const job = repoFree();
+            const source = { checkpoint: vi.fn(async () => Promise.reject(new Error('board down'))) };
+            await expect(planTaskVolume(source, job, lost)).rejects.toThrow('board down');
+            expect(job.taskRestore).toBeUndefined();
+        });
+    });
+
+    it('still refuses a repo continuing claim with no checkpoint', async () => {
+        await expect(
+            planTaskVolume(board({ state: 'none' }), continuing(), { live: [], highest: 2, unschedulable: [] })
+        ).rejects.toBeInstanceOf(CheckpointUnrestorable);
+    });
+
     it('refuses a continuing claim with no checkpoint source rather than starting it empty', async () => {
         await expect(
             planTaskVolume(undefined, continuing(), { live: [], highest: 0, unschedulable: [] })
@@ -207,6 +265,34 @@ describe('restoreTaskTree', () => {
         const env = steps[0]?.env;
         expect(env).toMatchObject({ SESSIONS_DIR: `/task/.factory/transcripts/${ROOT}/projects/-task-widgets` });
         expect(env).not.toHaveProperty('OPENCODE_DB');
+    });
+
+    it('submits the restore for a repo-free Claude job with the sessions directory and no tree', async () => {
+        const { steps, host } = sink(() => ({ stdout: OK }));
+        const job = continuing({ repo: null, executorType: 'claude-code' });
+        job.taskRestore = { checkpoint: null, older: [1], restored: false, sessionsOnly: true };
+        const removeOlder = vi.fn(async () => undefined);
+        expect(await restoreTaskTree(host, job, { removeOlder })).toEqual({ ok: true, reason: null });
+        expect(steps).toHaveLength(1);
+        const env = steps[0]?.env;
+        expect(env).toMatchObject({ SESSIONS_DIR: `/task/.factory/transcripts/${ROOT}/projects/-task`, CHUNKS: '[]' });
+        expect(env).not.toHaveProperty('CHECKOUT');
+        expect(env).not.toHaveProperty('REMOTE');
+        expect(removeOlder).toHaveBeenCalledExactlyOnceWith([1]);
+        expect(job.taskRestore.restored).toBe(true);
+    });
+
+    it('returns the refusal of a failed sessions-only restore and deletes nothing', async () => {
+        const { host } = sink(() => ({ stdout: '{"ok":false,"reason":"gap","kind":"checkpoint_unrestorable"}' }));
+        const job = continuing({ repo: null, executorType: 'claude-code' });
+        job.taskRestore = { checkpoint: null, older: [1], restored: false, sessionsOnly: true };
+        const removeOlder = vi.fn(async () => undefined);
+        expect(await restoreTaskTree(host, job, { removeOlder })).toMatchObject({
+            ok: false,
+            kind: 'checkpoint_unrestorable',
+        });
+        expect(removeOlder).not.toHaveBeenCalled();
+        expect(job.taskRestore.restored).toBe(false);
     });
 
     it('names the OpenCode database an opencode run reads, and no sessions directory', async () => {

@@ -50,6 +50,11 @@ Executor profiles, `.bellows.yaml` plans and per-thread task volumes. The board 
   its parent session, so `<session>/subagents/<name>.jsonl` comes back beside the sessions. A resumed session's streams
   keep the exporter's byte offsets and must run on without a gap. `driver/src/scripts/checkpoint-restore.cjs`,
   `driver/test/scripts-checkpoint-restore.test.ts`.
+- **A repository-free continuing Claude claim on a lost volume is not unrestorable**: with the checkpoint confirmed `none`
+  it gets the next generation and a sessions-only `restore` step (no `CHECKOUT`, no tree; a session file already on the
+  volume is kept). Stated limit: a repository-free OpenCode thread has no stored session database, so it stays
+  `checkpoint_unrestorable`. `driver/src/task-restore.ts`, `driver/src/scripts/checkpoint-restore.cjs`,
+  `driver/test/task-restore.test.ts`, `driver/test/scripts-checkpoint-restore.test.ts`.
 - **Stated limit: a task volume can still be reaped in one narrow window, and a docker race can leave one empty
   volume behind.** The reaper re-reads a thread's facts immediately before each delete, and every docker container
   that mounts the volume after `ensureTaskVolume` is created only once `taskVolumeIsOurs` holds (a gone volume is a

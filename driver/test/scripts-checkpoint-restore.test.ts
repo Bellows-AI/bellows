@@ -363,6 +363,50 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             expect(readdirSync(sessionsDir()).sort()).toEqual(['alpha.jsonl', 'beta.jsonl']);
         });
 
+        // A repository-free thread has no tree and no checkpoint: only the transcripts rebuild the session.
+        it('rebuilds the sessions alone when no checkout is named, creating no tree', async () => {
+            const { transcripts, original } = thread();
+            const { url } = await serve(Buffer.alloc(0), { transcripts });
+            mkdirSync(restoreDir(), { recursive: true });
+            const { stdout } = await run('node', ['--no-warnings', join(SCRIPTS, 'checkpoint-restore.cjs')], {
+                env: {
+                    ...process.env,
+                    ...SCRIPT_IDENTITY,
+                    CHUNKS: '[]',
+                    RESTORE_URL: url,
+                    RESTORE_TOKEN: TOKEN,
+                    SESSIONS_DIR: sessionsDir(),
+                },
+                encoding: 'utf8',
+            });
+
+            expect(JSON.parse(stdout.trim().split('\n').pop()!)).toMatchObject({ ok: true, restored: true });
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl')).equals(original.alpha!)).toBe(true);
+            expect(readFileSync(join(sessionsDir(), 'beta.jsonl')).equals(original.beta!)).toBe(true);
+            expect(readdirSync(restoreDir())).toEqual([]);
+        });
+
+        it('keeps a session file already on the volume when no checkout is named: it may be newer', async () => {
+            const { transcripts, original } = thread();
+            const { url } = await serve(Buffer.alloc(0), { transcripts });
+            mkdirSync(sessionsDir(), { recursive: true });
+            writeFileSync(join(sessionsDir(), 'alpha.jsonl'), 'newer than the board\n');
+            const { stdout } = await run('node', ['--no-warnings', join(SCRIPTS, 'checkpoint-restore.cjs')], {
+                env: {
+                    ...process.env,
+                    CHUNKS: '[]',
+                    RESTORE_URL: url,
+                    RESTORE_TOKEN: TOKEN,
+                    SESSIONS_DIR: sessionsDir(),
+                },
+                encoding: 'utf8',
+            });
+
+            expect(JSON.parse(stdout.trim().split('\n').pop()!)).toMatchObject({ ok: true });
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl'), 'utf8')).toBe('newer than the board\n');
+            expect(readFileSync(join(sessionsDir(), 'beta.jsonl')).equals(original.beta!)).toBe(true);
+        });
+
         // A limit, not a goal (docs/workspace.md): the stream identity carries no parent session, so a subagent
         // transcript the exporter found under <session>/subagents/ is restored beside the sessions.
         it('restores a subagent transcript as a session file of its own, beside the sessions', async () => {

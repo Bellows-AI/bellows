@@ -29,6 +29,8 @@ export interface TaskRestore {
      */
     held?: number;
     restored: boolean;
+    /** A repository-free thread: no tree and no checkpoint, only the Claude sessions are rebuilt from transcripts. */
+    sessionsOnly?: boolean;
 }
 
 /** The thread's volumes as the executor listed them: a CONFIRMED listing, never a guess. */
@@ -67,12 +69,25 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
  * in reserve, for the step's confirmed answer that the live one is empty (`restoreTaskTree`).
  */
 async function owedRestore(
-    source: Pick<Board, 'checkpoint'>,
+    source: Pick<Board, 'checkpoint'> | undefined,
     job: BoardJob,
     live: number[],
     unschedulable: number[]
 ): Promise<void> {
     const [, ...older] = live;
+    if (!checkoutDir(job)) {
+        // Repository-free: no tree and no checkpoint, so an adopted generation only needs its sessions checked
+        // (a restore that failed after creating it left them missing; the step keeps any it finds).
+        if (job.executorType !== CLAUDE_CODE) return;
+        job.taskRestore = {
+            checkpoint: null,
+            older: [...older, ...unschedulable],
+            restored: false,
+            sessionsOnly: true,
+        };
+        return;
+    }
+    if (!source) return;
     const read = await source.checkpoint(job);
     if (read.state === 'found' && !read.checkpoint.truncated) {
         job.taskRestore = { checkpoint: read.checkpoint, older: [...older, ...unschedulable], restored: false };
@@ -86,6 +101,13 @@ async function owedRestore(
         restored: false,
     };
 }
+
+/**
+ * A repository-free thread never stores a checkpoint, so `none` is its confirmed answer and the Claude session is
+ * rebuilt from the board's transcripts. OpenCode keeps its session in a database nothing stores (a stated limit).
+ */
+const repoFreeSessions = (job: BoardJob, read: CheckpointRead): boolean =>
+    !checkoutDir(job) && job.executorType === CLAUDE_CODE && read.state === 'none';
 
 /**
  * Decides which volume the attempt runs on and what it owes it, setting `job.taskGeneration` and
@@ -106,7 +128,7 @@ export async function planTaskVolume(
     const current = live[0];
     if (current !== undefined) {
         job.taskGeneration = current;
-        if (current > FIRST_GENERATION && claimContinuesSession(job) && source && !job.taskRestore?.restored) {
+        if (current > FIRST_GENERATION && claimContinuesSession(job) && !job.taskRestore?.restored) {
             await owedRestore(source, job, live, listing.unschedulable);
         }
         return { create: false };
@@ -124,7 +146,10 @@ export async function planTaskVolume(
             job.taskGeneration = held;
             return { create: false, unlabel: held };
         }
-        throw unrestorable(read);
+        if (!repoFreeSessions(job, read)) throw unrestorable(read);
+        job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
+        job.taskRestore = { checkpoint: null, older: [], restored: false, sessionsOnly: true };
+        return { create: true };
     }
     job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
     job.taskRestore = { checkpoint: read.checkpoint, older: [...listing.unschedulable], restored: false };
@@ -168,7 +193,8 @@ export async function restoreTaskTree(
     const pending = job.taskRestore;
     const checkout = checkoutDir(job);
     const remote = remoteUrl(host.config, job);
-    if (!pending || pending.restored || !checkout || !remote) return null;
+    if (!pending || pending.restored) return null;
+    if (!pending.sessionsOnly && (!checkout || !remote)) return null;
     const result = await submitStep(
         host,
         job,
@@ -177,9 +203,9 @@ export async function restoreTaskTree(
             argv: ['node', '-e', checkpointRestoreScript],
             env: {
                 ...claimStepEnv(job, options.githubToken),
-                CHECKOUT: checkout,
-                REMOTE: remote,
-                BRANCH: worktreeBranch(job),
+                ...(pending.sessionsOnly || !checkout || !remote
+                    ? {}
+                    : { CHECKOUT: checkout, REMOTE: remote, BRANCH: worktreeBranch(job) }),
                 CHUNKS: JSON.stringify(pending.checkpoint?.chunks ?? []),
                 ...sessionEnv(job),
                 // The supervisor lays its control endpoint and token over this one step only.
