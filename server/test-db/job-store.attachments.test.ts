@@ -191,7 +191,9 @@ describe.runIf(enabled)('binding files on a follow-up', () => {
         const parent = await create(ALICE.id, []);
         const added = await file(ALICE.id);
 
-        expect(await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], undefined, [added])).toBe('not_finished');
+        expect(await store.createFollowUp(parent.id, 'again', ALICE.id, undefined, [], undefined, [added])).toBe(
+            'not_finished'
+        );
         expect((await rowOf(added)).state).toBe('ready');
     });
 });
