@@ -225,6 +225,27 @@ describe('the attachment extract script', () => {
         ['a body cut after a paragraph', Buffer.from(`<w:document xmlns:w="w"><w:body>${paragraph(SENTENCE)}`)],
         ['a document with no closing body', Buffer.from(`<w:document xmlns:w="w">${paragraph(SENTENCE)}</w:document>`)],
         [
+            'mismatched nesting inside a closed body',
+            Buffer.from(
+                '<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>VISIBLE</w:t><w:t>OMITTED</w:r></w:p></w:body></w:document>'
+            ),
+        ],
+        ['a stray end tag', Buffer.from('<w:document xmlns:w="w"><w:body></w:p></w:body></w:document>')],
+        ['an element left open', Buffer.from('<w:document xmlns:w="w"><w:body><w:p><w:r></w:body></w:document>')],
+        [
+            'an unknown entity',
+            Buffer.from('<w:document xmlns:w="w"><w:body><w:p><w:t>a &nbsp; b</w:t></w:p></w:body></w:document>'),
+        ],
+        [
+            'a bare ampersand',
+            Buffer.from('<w:document xmlns:w="w"><w:body><w:p><w:t>a & b</w:t></w:p></w:body></w:document>'),
+        ],
+        ['a second root element', Buffer.from('<w:document xmlns:w="w"><w:body></w:body></w:document><w:document/>')],
+        [
+            'a DOCTYPE',
+            Buffer.from('<!DOCTYPE x [<!ENTITY e "v">]><w:document xmlns:w="w"><w:body></w:body></w:document>'),
+        ],
+        [
             'a tag cut off at the end',
             Buffer.from(`<w:document xmlns:w="w"><w:body>${paragraph(SENTENCE)}</w:body></w:docu`),
         ],
@@ -235,6 +256,19 @@ describe('the attachment extract script', () => {
 
         expect(entries[0]).toMatchObject({ status: 'unreadable', reason: 'malformed' });
         expect(entries[0]!.derived).toBeUndefined();
+    });
+
+    it('decodes entities and numeric references, keeps CDATA, skips comments and processing instructions', async () => {
+        const xml = Buffer.from(
+            '<?xml version="1.0"?><w:document xmlns:w="w"><!-- <w:t>NOPE</w:t> --><w:body><w:p><w:r>' +
+                '<w:t>&lt;a&gt; &amp; &quot;b&quot; &apos;c&apos; &#65;&#x42;</w:t><w:tab/><w:t><![CDATA[<raw & text>]]></w:t>' +
+                '<w:br/><w:t a="x>y">after</w:t></w:r></w:p><?pi ignored?></w:body></w:document>'
+        );
+        const { entries } = await extract([
+            { id: ID(1), name: 'a.docx', mediaType: DOCX, bytes: zipOf({ 'word/document.xml': xml }) },
+        ]);
+
+        expect(text(entries[0]!.derived!.path)).toBe('<a> & "b" \'c\' AB\t<raw & text>\nafter\n');
     });
 
     it('a malformed header makes the whole DOCX unreadable', async () => {

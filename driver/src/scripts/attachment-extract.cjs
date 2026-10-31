@@ -29,6 +29,8 @@ const TEXT_CAP_MIB = 4;
 const TEXT_CAP_BYTES = TEXT_CAP_MIB * MIB;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_CODE_POINT = 0x10ffff;
+const SURROGATE_FIRST = 0xd800;
+const SURROGATE_LAST = 0xdfff;
 const READ_ONLY_MODE = 0o444;
 const ENCRYPT_TAIL_BYTES = 8192;
 const CENTRAL_SIG = 0x02014b50;
@@ -118,31 +120,122 @@ const textParts = (zip) => {
     return parts.sort((x, y) => rank(x) - rank(y) || (x.name < y.name ? -1 : 1));
 };
 
-/** Throws Unreadable('malformed') unless `xml` is one closed root element with no tag cut off. */
-const requireWellFormed = (xml, name) => {
-    const root = /^\s*(?:<\?[\s\S]*?\?>\s*)?<([\w:.-]+)/.exec(xml);
-    const closed = root && xml.trimEnd().endsWith(`</${root[1]}>`);
-    const cut = /<[^>]*</.test(xml);
-    const bodyless = name === DOCUMENT_PART && !xml.includes('</w:body>');
-    if (!closed || cut || bodyless) throw malformed();
-};
-
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+/** `text` with its five named entities and numeric character references decoded; anything else is malformed. */
 const decode = (text) =>
-    text.replace(/&(?:#x([0-9a-f]+)|#(\d+)|(amp|lt|gt|quot|apos));/gi, (_, hex, dec, named) => {
-        if (named) return ENTITIES[named.toLowerCase()];
-        const code = hex ? parseInt(hex, 16) : parseInt(dec, 10);
-        return code > 0 && code <= MAX_CODE_POINT ? String.fromCodePoint(code) : '';
+    text.replace(/&([^;&\s]*);|&/g, (_, ref) => {
+        if (ref === undefined) throw malformed();
+        const numeric = /^#(?:x([0-9a-f]+)|(\d+))$/i.exec(ref);
+        if (!numeric) {
+            if (!Object.hasOwn(ENTITIES, ref)) throw malformed();
+            return ENTITIES[ref];
+        }
+        const code = numeric[1] ? parseInt(numeric[1], 16) : parseInt(numeric[2], 10);
+        if (!(code > 0 && code <= MAX_CODE_POINT) || (code >= SURROGATE_FIRST && code <= SURROGATE_LAST))
+            throw malformed();
+        return String.fromCodePoint(code);
     });
 
-/** The text runs of a WordprocessingML body: runs concatenated, a paragraph end or break a newline, a tab a tab. */
-const textOfXml = (xml) => {
-    let out = '';
-    for (const m of xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab\s*\/>|<w:br\s*\/>|<\/w:p>/g)) {
-        if (m[1] !== undefined) out += decode(m[1]);
-        else out += m[0].startsWith('<w:tab') ? '\t' : '\n';
+const NAME = /^[\w:.-]+$/;
+/** A start tag from `at` (just past its `<`) to its `>`, quotes respected: [inner text, index after `>`]. */
+const START_TAG = /(?:[^>"']|"[^"]*"|'[^']*')*>/y;
+const readStart = (xml, at) => {
+    START_TAG.lastIndex = at;
+    if (!START_TAG.test(xml)) throw malformed();
+    return [xml.slice(at, START_TAG.lastIndex - 1), START_TAG.lastIndex];
+};
+
+/** The index after `close`, searched from `at`; the markup is unterminated when it is missing. */
+const skipPast = (xml, at, close) => {
+    const found = xml.indexOf(close, at);
+    if (found < 0) throw malformed();
+    return found + close.length;
+};
+
+const SELF_CLOSED_TEXT = { 'w:tab': '\t', 'w:br': '\n', 'w:cr': '\n' };
+const COMMENT = { open: '!--', close: '-->' };
+const CDATA = { open: '![CDATA[', close: ']]>' };
+const INSTRUCTION = { open: '?', close: '?>' };
+
+/**
+ * ONE pass over a WordprocessingML part that both validates and reads it: tokens are walked with an element stack
+ * (every end tag must close the top element, nothing may be left open, unterminated or after the root), and text is
+ * collected only from `w:t` (a tab is a tab, a break or a paragraph end a newline). What it accepts is exactly what it
+ * extracts, so a part cannot be "valid" and read short. A DOCTYPE or any unknown entity is malformed.
+ */
+class PartReader {
+    constructor(xml) {
+        this.xml = xml;
+        this.at = 0;
+        this.stack = [];
+        this.out = '';
+        this.rootClosed = false;
+        this.closedNames = new Set();
     }
-    return out;
+
+    get top() {
+        return this.stack[this.stack.length - 1];
+    }
+
+    /** Text up to the next `<`: decoded (so a bad entity fails anywhere), kept only inside `w:t`. Returns false at EOF. */
+    text() {
+        const lt = this.xml.indexOf('<', this.at);
+        const text = decode(this.xml.slice(this.at, lt < 0 ? this.xml.length : lt));
+        if (this.stack.length === 0 && text.trim() !== '') throw malformed();
+        if (this.top === 'w:t') this.out += text;
+        this.at = lt + 1;
+        return lt >= 0;
+    }
+
+    /** A comment, CDATA section or processing instruction at `at`; false when the token is something else. */
+    special() {
+        const { xml, at } = this;
+        const kind = [COMMENT, CDATA, INSTRUCTION].find((each) => xml.startsWith(each.open, at));
+        if (!kind) return false;
+        const from = at + kind.open.length;
+        this.at = skipPast(xml, from, kind.close);
+        if (kind !== CDATA) return true;
+        if (this.stack.length === 0) throw malformed();
+        if (this.top === 'w:t') this.out += xml.slice(from, this.at - kind.close.length);
+        return true;
+    }
+
+    endTag() {
+        const [inner, next] = readStart(this.xml, this.at + 1);
+        if (inner.trim() !== this.top) throw malformed();
+        const closed = this.stack.pop();
+        this.closedNames.add(closed);
+        if (closed === 'w:p') this.out += '\n';
+        if (this.stack.length === 0) this.rootClosed = true;
+        this.at = next;
+    }
+
+    startTag() {
+        const [inner, next] = readStart(this.xml, this.at);
+        const selfClosing = inner.endsWith('/');
+        const tag = (selfClosing ? inner.slice(0, -1) : inner).split(/\s/, 1)[0];
+        if (!NAME.test(tag) || this.rootClosed) throw malformed();
+        if (!selfClosing) this.stack.push(tag);
+        else if (this.stack.length === 0) this.rootClosed = true;
+        else this.out += SELF_CLOSED_TEXT[tag] ?? '';
+        this.at = next;
+    }
+
+    read() {
+        while (this.at < this.xml.length && this.text()) {
+            if (this.special()) continue;
+            if (this.xml.startsWith('/', this.at)) this.endTag();
+            else this.startTag();
+        }
+        return this;
+    }
+}
+
+const readPart = (xml, name) => {
+    const reader = new PartReader(xml).read();
+    if (reader.stack.length > 0 || !reader.rootClosed) throw malformed();
+    if (name === DOCUMENT_PART && !reader.closedNames.has('w:body')) throw malformed();
+    return reader.out;
 };
 
 /**
@@ -161,8 +254,7 @@ const fromDocx = (bytes) => {
             continue;
         }
         budget -= xml.length;
-        requireWellFormed(xml.toString('utf8'), part.name);
-        texts.push(textOfXml(xml.toString('utf8')));
+        texts.push(readPart(xml.toString('utf8'), part.name));
     }
     return { text: texts.join(''), truncated };
 };
