@@ -101,3 +101,6 @@ export const serviceRestartArgv = (mode: 'acked' | 'bump', names: readonly strin
     SERVICE_GENERATIONS.ackRoot,
     ...names,
 ];
+
+/** A task's input files delivered into a directory from the control endpoint: see scripts/attachment-fetch.cjs. */
+export const attachmentFetchScript = script('attachment-fetch.cjs');

@@ -618,12 +618,13 @@ const keepTail = (text) => (text.length <= STEP_OUTPUT_LIMIT ? text : text.slice
  * answer, and `interrupted` says the supervisor killed it on its way out (`run.inflight`).
  */
 /**
- * The control endpoint and its bearer, for the one step that asks for them (issue #775): the checkpoint
- * restore reads the thread's checkpoint through the driver's `/checkpoint/restore` route. A step that does
- * not set RESTORE_FEED=1 — every publish, helper and sync — never sees the supervisor's token.
+ * The control endpoint and its bearer, for the steps that ask for them: the checkpoint restore (RESTORE_FEED=1,
+ * issue #775) reads the thread's checkpoint through the driver's `/checkpoint/restore` route, and the input fetch
+ * (INPUT_FEED=1) reads the task's files through `/input`. A step that sets neither — every publish, helper and
+ * other sync — never sees the supervisor's token.
  */
-function restoreFeed(run, step) {
-    if (!step.env || step.env.RESTORE_FEED !== '1') return {};
+function controlFeed(run, step) {
+    if (!step.env || (step.env.RESTORE_FEED !== '1' && step.env.INPUT_FEED !== '1')) return {};
     return { RESTORE_URL: run.settings.url || '', RESTORE_TOKEN: run.settings.token || '' };
 }
 
@@ -666,7 +667,7 @@ function gitShimOf(settings) {
 
 /** A step's environment: the image's, the step's own, and the hardened git first on PATH. */
 function stepEnv(run, step) {
-    const env = { ...run.settings.childEnv, ...step.env, ...restoreFeed(run, step) };
+    const env = { ...run.settings.childEnv, ...step.env, ...controlFeed(run, step) };
     const shim = gitShimOf(run.settings);
     if (!shim) return env;
     return { ...env, PATH: `${shim.dir}${path.delimiter}${env.PATH ?? ''}`, GIT_HARDEN_REAL: shim.real };
