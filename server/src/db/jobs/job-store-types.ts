@@ -69,6 +69,7 @@ export type FailureKind =
     | 'config'
     | 'policy'
     | 'checkpoint_unrestorable'
+    | 'attachment_unavailable'
     | 'runner_error';
 
 /**

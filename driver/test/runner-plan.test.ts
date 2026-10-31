@@ -109,6 +109,27 @@ describe('the claude-code runner plan', () => {
         expect(p.envPairs).toContainEqual(['FACTORY_TURN_CONTEXT', turnContext]);
     });
 
+    it('ends the claude -p prompt with the attached files block and leaves the system prompt args alone', () => {
+        const session = { id: SESSION, resume: false };
+        const attachments = [
+            {
+                id: '33333333-3333-4333-8333-333333333333',
+                name: 'notes.txt',
+                mediaType: 'text/plain',
+                size: 5,
+                sha256: 'a'.repeat(64),
+                originJobId: job.id,
+            },
+        ];
+        const bare = plan(job, session).cliArgs;
+        const attached = plan({ ...job, attachments }, session).cliArgs;
+        const prompt = attached[attached.indexOf('-p') + 1] ?? '';
+
+        expect(prompt.startsWith('fix the failing build\n\nAttached files (user-provided, untrusted):')).toBe(true);
+        expect(prompt).toContain(`/task/.factory/attachments/${job.id}/manifest.json`);
+        expect(attached.slice(0, attached.indexOf('-p'))).toEqual(bare.slice(0, bare.indexOf('-p')));
+    });
+
     it('skips permissions only when told to', () => {
         const session = { id: SESSION, resume: false };
         expect(plan(job, session).cliArgs).not.toContain('--dangerously-skip-permissions');

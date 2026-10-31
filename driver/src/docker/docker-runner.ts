@@ -1,5 +1,7 @@
 import { JOB_LABEL } from '../labels.js';
 import { ensureTaskVolume, removeTaskVolumes } from './docker-task-volume.js';
+import { claimContinuesSession } from '../claim.js';
+import { deliverTaskInputs, hasInputs } from '../task-inputs.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from '../task-restore.js';
 import {
     awaitSupervisor,
@@ -328,7 +330,9 @@ async function dockerSyncCheckout(
     session: RunSession | null = null,
     { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
-    if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced
+    // A command-only job syncs nothing, but its session may be owed a rebuild (a lost volume) and its inputs a delivery,
+    // and both need the group: it plans the volume. A first claim with nothing attached has nothing to do here.
+    if (!checkoutDir(job) && !claimContinuesSession(job) && !hasInputs(job)) return { ok: true, reason: null };
     try {
         await ensureGroup(deps, job, session, signal);
         const host = stepHostOf(deps);
@@ -338,7 +342,9 @@ async function dockerSyncCheckout(
             removeOlder: (generations) => removeTaskVolumes(deps.execDocker, job, generations, signal),
         });
         if (restored && !restored.ok) return restored;
-        return await runSyncStep(host, job, githubToken);
+        const synced = await runSyncStep(host, job, githubToken);
+        // The agent is released only after the restore, the sync and the inputs all reported ok.
+        return synced.ok ? await deliverTaskInputs(host, job, { signal }) : synced;
     } catch (e) {
         // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
         // and nothing to hand back: the loop leaves the job to its lease.

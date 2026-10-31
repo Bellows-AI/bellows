@@ -754,6 +754,7 @@ export function stubGateStack(
                 const control = stack.controls.get(token);
                 if (control) control.connecting.relay = connection;
             },
+            attachInputs: () => {},
             controlPolled: () => options.polled ?? true,
             raiseKill: (token: string) => {
                 stack.killsRaised.push(token);

@@ -72,7 +72,7 @@ export const RULES = [
     [/^driver\/src\/scripts\/(review-[a-z-]+\.(cjs|sh)|git-review-snapshot\.cjs)$/, ['review'], 'reviewer'],
     [/^driver\/src\/(connection-control|loop\/loop-connection)\.ts$/, ['driver', 'cooperative-stop'], 'runtime connection requirement'],
     [/^driver\/src\/(question-control|question-validation|loop\/loop-questions)\.ts$/, ['ask-user-question', 'question-round-trip'], 'questions'],
-    [/^driver\/src\/(input-control\.ts|scripts\/attachment-fetch\.cjs)$/, ['driver'], 'task input delivery'],
+    [/^driver\/src\/(input-control\.ts|task-inputs\.ts|loop\/loop-inputs\.ts|scripts\/attachment-fetch\.cjs)$/, ['driver'], 'task input delivery'],
     [/^driver\/src\/(publish\/publish|publish\/publish-[a-z]+|loop\/loop-publish|loop\/loop-pr-operation)\.ts$/, ['driver', 'driver-kill', 'compose-driver'], 'publish'],
     [/^driver\/src\/scripts\/(pr-summary|merge-conflict-probe)\.cjs$/, ['driver'], 'publish helpers'],
     [/^driver\/src\/(loop\/loop-gates|gates|gate-cause|docker\/docker-gate|loop\/loop-agentless|loop\/loop-phase|loop\/loop-phase-checkpoints|loop\/gate-reuse|gate-record|gate-identity|gate-admission|gate-request|board\/board-phase-checkpoints|board\/board-gate-runs)\.ts$/, ['driver', 'workflows'], 'gates and phases'],
