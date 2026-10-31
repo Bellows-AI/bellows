@@ -12,7 +12,7 @@ import { createOrgOfJob, createOrgOfLease, createOrgOfReclaim } from './db/jobs/
 import { createAppSlugProvider } from './github/app-token.js';
 import { startBatchPrObserver } from './batch-pr-observer.js';
 import { startBatchReconciler } from './batch-reconciler.js';
-import { createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
+import { type ArtifactBackend, createArtifactBackend, prepareArtifactBackend } from './artifacts/backend.js';
 import { admissionOccupancy } from './db/jobs/job-store-admission.js';
 import { createServerMetrics, type ServerMetrics } from './metrics.js';
 import { createOrgRegistry, type OrgRegistry } from './orgs.js';
@@ -25,6 +25,7 @@ import {
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
 import { jiraRegistration } from './integrations/providers/jira.js';
+import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
 import { createConnectorRegistry } from './notifications/connector.js';
@@ -53,6 +54,31 @@ function startDeliveries({
 }): void {
     startCommerceDelivery({ commerce: config.commerce, orgs, metrics, ready });
     startNotificationDelivery({ connectors, publicUrl: config.integrations.callbackOrigin, orgs, metrics, ready });
+}
+
+/**
+ * The garbage collectors run on every replica: unreferenced secret versions and finished operations; abandoned
+ * uploads and the files of a removed task. Each delete re-checks its own guard.
+ */
+function startCollectors({
+    sql,
+    ready,
+    secrets,
+    artifacts,
+    config,
+    metrics,
+}: {
+    sql: Sql;
+    ready: Promise<unknown>;
+    secrets: { collect(): Promise<unknown> };
+    artifacts: ArtifactBackend;
+    config: AppConfig;
+    metrics: ServerMetrics;
+}): void {
+    void ready.then(() =>
+        startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
+    );
+    void ready.then(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }));
 }
 
 /** The attempt checks behind the runner credential routes, and the lanes' optional mint and revoke stand-ins. */
@@ -258,10 +284,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         })
     );
 
-    // Unreferenced versions and finished operations are swept on every replica; each delete re-checks its own guard.
-    void ready.then(() =>
-        startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
-    );
+    startCollectors({ sql, ready, secrets, artifacts, config, metrics });
 
     // What a lost board pod left mid-exchange or mid-persistence is adopted on every replica; each row is re-checked.
     void ready.then(() =>
