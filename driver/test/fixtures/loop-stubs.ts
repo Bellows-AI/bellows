@@ -214,6 +214,9 @@ export function stubBoard(
         async checkpointChunk() {
             return null;
         },
+        async attachmentContent() {
+            return null;
+        },
         async transcripts() {
             return [];
         },

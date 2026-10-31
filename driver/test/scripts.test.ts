@@ -20,6 +20,7 @@ import {
     reviewReplyScript,
 } from '../src/review/review.js';
 import {
+    attachmentFetchScript,
     bindingWriteScript,
     checkpointRestoreScript,
     checkpointScript,
@@ -66,6 +67,7 @@ const FILES: [string, 'node' | 'sh'][] = [
     ['git-harden.cjs', 'node'],
     ['checkpoint.cjs', 'node'],
     ['checkpoint-restore.cjs', 'node'],
+    ['attachment-fetch.cjs', 'node'],
     ['opencode-cache-probe.cjs', 'node'],
     ['credential-helper.sh', 'sh'],
     ['gate-shell.sh', 'sh'],
@@ -132,6 +134,7 @@ describe('the container scripts', () => {
         expect(checkpointScript).toBe(readFileSync(pathOf('checkpoint.cjs'), 'utf8'));
         expect(gitHardenScript).toBe(readFileSync(pathOf('git-harden.cjs'), 'utf8'));
         expect(checkpointRestoreScript).toBe(readFileSync(pathOf('checkpoint-restore.cjs'), 'utf8'));
+        expect(attachmentFetchScript).toBe(readFileSync(pathOf('attachment-fetch.cjs'), 'utf8'));
         expect(opencodeCacheProbeScript).toBe(readFileSync(pathOf('opencode-cache-probe.cjs'), 'utf8'));
         expect(CREDENTIAL_HELPER).toBe(readFileSync(pathOf('credential-helper.sh'), 'utf8').trim());
         expect(gateShellScript).toBe(readFileSync(pathOf('gate-shell.sh'), 'utf8'));
