@@ -187,9 +187,9 @@ export function memoryAttachmentRows(): AttachmentRows & { all: AttachmentRow[] 
             if (row.state === 'pending' || row.state === 'ready' || row.state === 'deleting') row.state = 'deleting';
             return row.state === 'deleting' || row.state === 'deleted' ? { ...row } : null;
         },
-        async markDeleted(id) {
+        async beginAttempt(id) {
             const row = byId(id);
-            if (row?.state === 'deleting') row.state = 'deleted';
+            return row?.state === 'pending' ? { ...row } : null;
         },
     };
 }

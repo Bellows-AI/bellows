@@ -41,8 +41,8 @@ export interface AttachmentRows {
     findBound(id: string): Promise<AttachmentRow | null>;
     /** The uploader's draft moved to `deleting` (or already `deleting`/`deleted`); null for any other row. */
     beginDelete(id: string, uploaderId: string): Promise<AttachmentRow | null>;
-    /** `deleting` to `deleted`. */
-    markDeleted(id: string): Promise<void>;
+    /** Stamps `last_attempt_at` on a still-`pending` row before its object is written; null when the row has left `pending`. */
+    beginAttempt(id: string): Promise<AttachmentRow | null>;
 }
 
 /** How long a recorded upload key keeps replaying; past it the key is cleared and may be reused. */
@@ -180,12 +180,14 @@ export function createAttachmentRows({
             return settled ? rowOf(settled) : null;
         },
 
-        async markDeleted(id) {
+        async beginAttempt(id) {
             await ready;
-            await sql`
-                update input_attachment set state = 'deleted', deleted_at = now()
-                where org_id = ${orgId} and id = ${id} and state = 'deleting'
+            const [row] = await sql<DbRow[]>`
+                update input_attachment set last_attempt_at = now()
+                where org_id = ${orgId} and id = ${id} and state = 'pending'
+                returning id, uploader_id, name, media_type, size_bytes::int as size_bytes, sha256, object_key, state
             `;
+            return row ? rowOf(row) : null;
         },
     };
 }

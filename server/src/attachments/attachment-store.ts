@@ -35,6 +35,13 @@ export class AttachmentGoneError extends Error {
     }
 }
 
+/**
+ * An upload's object write (put and head) is aborted this long after the attempt stamp. It is far above a 20 MiB
+ * transfer and the board has no request timeout of its own (the body is read before the stamp), so the bound is the
+ * write's only deadline; the sweep waits this plus a margin after `deleting_at` before it deletes an object.
+ */
+export const UPLOAD_WRITE_BOUND_MS = 600_000;
+
 /** `<prefix>_attachments/<org>/<id>`: the leading `_` fails the artifact key segment rule, so no artifact key can collide. */
 export const attachmentKey = (prefix: string, orgId: string, id: string): string =>
     `${prefix}_attachments/${orgId}/${id}`;
@@ -85,29 +92,40 @@ export function createAttachmentStore({
     objects,
     orgId,
     prefix,
+    writeBoundMs = UPLOAD_WRITE_BOUND_MS,
 }: {
     rows: AttachmentRows;
     objects: ObjectStore;
     orgId: string;
     /** Normalized: empty or one trailing slash (`ArtifactBackend.prefix`). */
     prefix: string;
+    /** Tests only: the upload write's bound. */
+    writeBoundMs?: number;
 }): AttachmentStore {
+    /** The key was already taken: the body there must be the one this row recorded. */
+    async function verifyHeld(row: AttachmentRow): Promise<void> {
+        const held = await confirmed('get', () => objects.get(row.objectKey));
+        if (held === null) throw new AttachmentUnavailableError('the stored object could not be read back');
+        if (sha256Of(held) !== row.sha256)
+            throw new AttachmentIntegrityError('the stored body differs from the recorded sha256');
+    }
+
     /** Brings a `pending` row to `ready`: the create-only put, the exists arbitration, the size check. */
     async function finish(row: AttachmentRow, bytes: Uint8Array): Promise<AttachmentRow> {
-        const put = await confirmed('put', () => objects.put(row.objectKey, bytes));
-        if (put === 'exists') {
-            const held = await confirmed('get', () => objects.get(row.objectKey));
-            if (held === null) throw new AttachmentUnavailableError('the stored object could not be read back');
-            if (sha256Of(held) !== row.sha256)
-                throw new AttachmentIntegrityError('the stored body differs from the recorded sha256');
-        }
-        const head = await confirmed('head', () => objects.head(row.objectKey));
+        // The deadline is taken before the stamp is issued, so a slow stamp can only shorten the write window (docs/persistence.md).
+        const deadline = Date.now() + writeBoundMs;
+        const stamped = await rows.beginAttempt(row.id);
+        if (!stamped) throw new AttachmentGoneError();
+        const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+        const put = await confirmed('put', () => objects.put(row.objectKey, bytes, { signal }));
+        if (put === 'exists') await verifyHeld(row);
+        const head = await confirmed('head', () => objects.head(row.objectKey, { signal }));
         if (head === null) throw new AttachmentUnavailableError('the stored object is not visible yet');
         if (head.size !== row.sizeBytes)
             throw new AttachmentIntegrityError('the stored size differs from the recorded size');
         const marked = await rows.markReady(row.id);
-        if (!marked) throw new AttachmentUnavailableError('the row left the pending state');
-        return marked;
+        if (marked) return marked;
+        throw new AttachmentUnavailableError('the row left the pending state');
     }
 
     return {
@@ -127,6 +145,8 @@ export function createAttachmentStore({
                 objectKey: attachmentKey(prefix, orgId, id),
                 ...(input.idempotencyKey ? { idempotency: { key: input.idempotencyKey, fingerprint } } : {}),
             });
+            // A replay of a row the sweep took never writes: the object would outlive its finished row.
+            if (row.state === 'deleting' || row.state === 'deleted') throw new AttachmentGoneError();
             if (row.state !== 'pending') return { meta: metaOf(row), replayed };
             return { meta: metaOf(await finish(row, input.bytes)), replayed };
         },
@@ -155,12 +175,8 @@ export function createAttachmentStore({
         },
 
         async remove(id, uploaderId) {
-            const row = await rows.beginDelete(id, uploaderId);
-            if (!row) return 'not-found';
-            if (row.state === 'deleting') {
-                await confirmed('delete', () => objects.delete(row.objectKey));
-                await rows.markDeleted(id);
-            }
+            if (!(await rows.beginDelete(id, uploaderId))) return 'not-found';
+            // Only the row moves: the sweep deletes the object after its grace, so an upload still writing cannot outlive it.
             return 'deleted';
         },
     };

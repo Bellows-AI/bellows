@@ -13,7 +13,11 @@ import {
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
-import { AttachmentIntegrityError, AttachmentUnavailableError } from '../attachments/attachment-store.js';
+import {
+    AttachmentGoneError,
+    AttachmentIntegrityError,
+    AttachmentUnavailableError,
+} from '../attachments/attachment-store.js';
 import { normalizeAttachmentName } from '../attachments/name.js';
 import { sniffAttachment } from '../attachments/sniff.js';
 import { IdempotencyKeyReusedError } from '../db/jobs/job-store-idempotency.js';
@@ -28,6 +32,7 @@ const HTTP_BAD_REQUEST = 400;
 const HTTP_UNAUTHORIZED = 401;
 const HTTP_NOT_FOUND = 404;
 const HTTP_CONFLICT = 409;
+const HTTP_GONE = 410;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
 const HTTP_UNAVAILABLE = 503;
@@ -77,6 +82,10 @@ async function storing<T>(request: FastifyRequest, reply: FastifyReply, run: () 
     } catch (error) {
         if (error instanceof IdempotencyKeyReusedError) {
             await bad(reply, ERROR_CODES.IDEMPOTENCY_KEY_REUSED, error.message, HTTP_CONFLICT);
+            return undefined;
+        }
+        if (error instanceof AttachmentGoneError) {
+            await bad(reply, ERROR_CODES.ATTACHMENT_GONE, 'The upload expired; upload the file again', HTTP_GONE);
             return undefined;
         }
         request.log.error({ err: error });
