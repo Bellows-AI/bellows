@@ -211,9 +211,9 @@ function textResult(bytes: Uint8Array, name: string | undefined): SniffResult {
     if (
         MARKUP.test(
             text
-                .slice(0, MARKUP_WINDOW)
                 .replace(/^\uFEFF/u, '')
                 .replace(LEADING_COMMENTS, '')
+                .slice(0, MARKUP_WINDOW)
         )
     )
         return unsupported;

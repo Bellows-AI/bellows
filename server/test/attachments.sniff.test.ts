@@ -58,6 +58,8 @@ describe('sniffAttachment', () => {
         expect(typeOf(textBytes('  <!DOCTYPE html><html></html>'))).toBe('unsupported');
         expect(typeOf(textBytes('<HTML><script>x</script>'))).toBe('unsupported');
         expect(typeOf(textBytes('<!-- a --> \n<!--b--><svg/>'))).toBe('unsupported');
+        expect(typeOf(textBytes(`<!--${'a'.repeat(600)}--><svg/>`))).toBe('unsupported');
+        expect(typeOf(textBytes(`${' '.repeat(600)}<html></html>`))).toBe('unsupported');
         expect(typeOf(zipBytes(['a.txt']))).toBe('unsupported');
         expect(typeOf(Uint8Array.from([0x4d, 0x5a, 0x90, 0x00, 0x03, 0x00]))).toBe('unsupported');
         expect(typeOf(Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01]))).toBe('unsupported');
