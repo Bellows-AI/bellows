@@ -1,6 +1,15 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    writeFileSync,
+} from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -34,6 +43,7 @@ interface Verdict {
     fetched?: number;
 }
 
+const MANIFEST = 'manifest.json';
 const ID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const ID_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const ID_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -200,7 +210,7 @@ describe('the attachment fetch script', () => {
         expect(existsSync(join(target, `${ID_A}.txt`))).toBe(true);
     });
 
-    it.each([410, 422, 404])(
+    it.each([410, 422])(
         'a board %i is {ok:false, kind:attachment_unavailable}, with no manifest and no final file',
         async (status) => {
             const files = [fileOf(ID_A, 'a.txt', Buffer.from('a')), fileOf(ID_B, 'b.txt', Buffer.from('b'))];
@@ -215,15 +225,39 @@ describe('the attachment fetch script', () => {
         }
     );
 
-    it.each([502, 503])('a %i is {ok:false, transient:true}, with no manifest and no final file', async (status) => {
-        overrides.set(ID_A, status);
+    it.each([502, 503, 404, 401])(
+        'a %i is {ok:false, transient:true}, with no manifest and no final file',
+        async (status) => {
+            overrides.set(ID_A, status);
+            const url = await serve();
+
+            const verdict = await fetchAll(url, [fileOf(ID_A, 'a.txt', Buffer.from('a'))]);
+
+            expect(verdict).toMatchObject({ ok: false, transient: true });
+            expect(verdict.kind).toBeUndefined();
+            expect(names().filter((n) => !n.startsWith('.staging-'))).toEqual([]);
+        }
+    );
+
+    it('a filesystem fault is transient, never a verdict on the files', async () => {
+        mkdirSync(target, { recursive: true });
+        chmodSync(target, 0o500);
         const url = await serve();
 
         const verdict = await fetchAll(url, [fileOf(ID_A, 'a.txt', Buffer.from('a'))]);
+        chmodSync(target, 0o700);
 
         expect(verdict).toMatchObject({ ok: false, transient: true });
         expect(verdict.kind).toBeUndefined();
-        expect(names().filter((n) => !n.startsWith('.staging-'))).toEqual([]);
+        expect(existsSync(join(target, MANIFEST))).toBe(false);
+    });
+
+    it('an unreadable claim list is transient too: nothing local is a definitive answer', async () => {
+        const url = await serve();
+
+        const verdict = await fetchAll(url, [], { MANIFEST: 'not json' });
+
+        expect(verdict).toMatchObject({ ok: false, transient: true });
     });
 
     it('a timeout is transient', async () => {

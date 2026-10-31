@@ -11,10 +11,10 @@
 //
 // One JSON verdict on the last line, exit 0:
 //   {ok:true, files:N, fetched:M}
-//   {ok:false, reason, kind:'attachment_unavailable'}   the board will not serve a file (404/410/422) or the bytes
-//                 do not match the claim's digest: no retry fixes it;
-//   {ok:false, reason, transient:true}                  a 5xx, a refusal, a timeout or a dropped connection: retry;
-//   {ok:false, reason}                                  anything else (a bad environment, a full disk).
+//   {ok:false, reason, kind:'attachment_unavailable'}   only the board's definitive answers: 410, 422, or bytes it served
+//                 that do not match the claim's sha256/size: no retry fixes it;
+//   {ok:false, reason, transient:true}                  every other failure (a 404 or other status, a timeout, a dropped
+//                 connection, any filesystem error): inconclusive, the step is interrupted and retried, never failed.
 //
 // Environment (set by the driver and the supervisor):
 //   TARGET_DIR    — where the files go (a task's inputs directory, or a reviewer's: the script serves both);
@@ -31,16 +31,14 @@ const KIND_UNAVAILABLE = 'attachment_unavailable';
 const MANIFEST_NAME = 'manifest.json';
 const STAGING_PREFIX = '.staging-';
 const DEFAULT_TIMEOUT_MS = 60_000;
-const HTTP_NOT_FOUND = 404;
 const HTTP_GONE = 410;
 const HTTP_UNPROCESSABLE = 422;
-const UNAVAILABLE_STATUSES = new Set([HTTP_NOT_FOUND, HTTP_GONE, HTTP_UNPROCESSABLE]);
+const UNAVAILABLE_STATUSES = new Set([HTTP_GONE, HTTP_UNPROCESSABLE]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
 const EXTENSION = /^\.[A-Za-z0-9]{1,16}$/;
 
 class Unavailable extends Error {}
-class Transient extends Error {}
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const readIfFile = (file) => {
@@ -84,12 +82,12 @@ const readFile = async (entry, source) => {
         });
         if (response.ok) bytes = Buffer.from(await response.arrayBuffer());
     } catch (e) {
-        throw new Transient(`the control endpoint could not be read for ${entry.id}: ${e.message}`);
+        throw new Error(`the control endpoint could not be read for ${entry.id}: ${e.message}`);
     }
     if (UNAVAILABLE_STATUSES.has(response.status)) {
         throw new Unavailable(`the board does not serve ${entry.id} (${response.status})`);
     }
-    if (!response.ok) throw new Transient(`the control endpoint answered ${response.status} for ${entry.id}`);
+    if (!response.ok) throw new Error(`the control endpoint answered ${response.status} for ${entry.id}`);
     if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256) {
         throw new Unavailable(`the bytes of ${entry.id} do not match the claim's sha256`);
     }
@@ -138,8 +136,9 @@ const say = (verdict) => process.stdout.write(JSON.stringify(verdict) + '\n');
 
 const failure = (e) => {
     const reason = String((e && e.message) || e);
-    if (e instanceof Unavailable) return { ok: false, reason, kind: KIND_UNAVAILABLE };
-    return e instanceof Transient ? { ok: false, reason, transient: true } : { ok: false, reason };
+    return e instanceof Unavailable
+        ? { ok: false, reason, kind: KIND_UNAVAILABLE }
+        : { ok: false, reason, transient: true };
 };
 
 void main().then(say, (e) => say(failure(e)));
