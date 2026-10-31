@@ -393,4 +393,34 @@ describe.runIf(enabled)('attachment collector', () => {
         await expect(objects.put(key, new Uint8Array([1]), { signal: AbortSignal.abort() })).rejects.toThrow();
         expect(await objects.head(key)).toBeNull();
     });
+
+    it('aborts the write at the deadline taken before the stamp, not a fresh window after it', async () => {
+        const base = createAttachmentRows({ sql, orgId: ORG, ready: Promise.resolve() });
+        const slowStamp = createAttachmentStore({
+            rows: {
+                ...base,
+                beginAttempt: async (id) => {
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    return base.beginAttempt(id);
+                },
+            },
+            objects: {
+                ...objects,
+                put: (_k, _body, call) =>
+                    new Promise((_resolve, reject) => {
+                        call?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+                    }),
+            } as ObjectStore,
+            orgId: ORG,
+            prefix: PREFIX,
+            writeBoundMs: 500,
+        });
+        const started = Date.now();
+
+        await expect(slowStamp.upload(input('slow stamp'))).rejects.toBeInstanceOf(AttachmentUnavailableError);
+
+        const elapsed = Date.now() - started;
+        expect(elapsed).toBeGreaterThanOrEqual(480);
+        expect(elapsed).toBeLessThan(750);
+    });
 });

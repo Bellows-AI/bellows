@@ -112,10 +112,11 @@ export function createAttachmentStore({
 
     /** Brings a `pending` row to `ready`: the create-only put, the exists arbitration, the size check. */
     async function finish(row: AttachmentRow, bytes: Uint8Array): Promise<AttachmentRow> {
-        // Stamped before the write and aborted a fixed bound later, so the sweep can wait that bound out (docs/persistence.md).
+        // The deadline is taken before the stamp is issued, so a slow stamp can only shorten the write window (docs/persistence.md).
+        const deadline = Date.now() + writeBoundMs;
         const stamped = await rows.beginAttempt(row.id);
         if (!stamped) throw new AttachmentGoneError();
-        const signal = AbortSignal.timeout(writeBoundMs);
+        const signal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
         const put = await confirmed('put', () => objects.put(row.objectKey, bytes, { signal }));
         if (put === 'exists') await verifyHeld(row);
         const head = await confirmed('head', () => objects.head(row.objectKey, { signal }));
