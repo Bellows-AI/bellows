@@ -5,9 +5,10 @@ import type { SubscriptionFields } from './subscription-store.js';
 
 type Refusal = { ok: false; code: string; message: string; problems?: string[] };
 
-export type ParsedSubscription = { ok: true; fields: SubscriptionFields } | Refusal;
+/** `credential` is the write-only secret half, kept out of `fields` so no store path can echo it; null = keep. */
+export type ParsedSubscription = { ok: true; fields: SubscriptionFields; credential: string | null } | Refusal;
 
-const KEYS = new Set(['connectorKind', 'connectorConfig', 'eventKinds', 'repos', 'workflows', 'enabled']);
+const KEYS = new Set(['connectorKind', 'connectorConfig', 'credential', 'eventKinds', 'repos', 'workflows', 'enabled']);
 
 const refuse = (message: string, code: string = ERROR_CODES.BAD_BODY): Refusal => ({
     ok: false,
@@ -40,14 +41,15 @@ function problemsOf(check: Record<string, unknown>): string[] | undefined {
 }
 
 /**
- * The connector's verdict on a config, or the refusal. A throw or an answer that is not exactly
- * `{ ok: true, config }` / `{ ok: false, ... }` refuses the write; `problems` only when well-formed.
+ * The connector's verdict on a config or a credential, or the refusal. A throw or an answer that is not exactly
+ * `{ ok: true, config }` / `{ ok: false, ... }` refuses the write; `problems` only when well-formed. The refusal
+ * never carries the input, so a credential cannot leak through it.
  */
-function checkConfig(connector: NotificationConnector, raw: unknown): { ok: true; config: unknown } | Refusal {
-    const unchecked = () => refuse('the connector could not check the config', ERROR_CODES.BAD_CONNECTOR_CONFIG);
+function checkWith(what: 'config' | 'credential', verdictOf: () => unknown): { ok: true; config: unknown } | Refusal {
+    const unchecked = () => refuse(`the connector could not check the ${what}`, ERROR_CODES.BAD_CONNECTOR_CONFIG);
     let check: unknown;
     try {
-        check = connector.validateConfig(raw);
+        check = verdictOf();
     } catch {
         return unchecked();
     }
@@ -59,17 +61,37 @@ function checkConfig(connector: NotificationConnector, raw: unknown): { ok: true
     return {
         ok: false,
         code: ERROR_CODES.BAD_CONNECTOR_CONFIG,
-        message: 'the connector refused the config',
+        message: `the connector refused the ${what}`,
         ...(problems ? { problems } : {}),
     };
 }
 
+/** The credential's normalized form, null when absent and optional; absent and required is a BAD_BODY. */
+function checkCredential(
+    connector: NotificationConnector,
+    raw: unknown,
+    required: boolean
+): { ok: true; value: string | null } | Refusal {
+    if (raw === undefined || raw === null)
+        return required ? refuse('credential is required') : { ok: true, value: null };
+    const verdict = checkWith('credential', () => connector.validateCredential(raw));
+    if (!verdict.ok) return verdict;
+    if (typeof verdict.config !== 'string') {
+        return refuse('the connector could not check the credential', ERROR_CODES.BAD_CONNECTOR_CONFIG);
+    }
+    return { ok: true, value: verdict.config };
+}
+
 /**
- * A subscription write's body against the registered connectors. Pure: the stored config is what the
- * connector's own `validateConfig` returned, so a row always holds a value `deliver` will accept. A
- * connector that throws or answers malformed refuses the write (nothing is persisted).
+ * A subscription write's body against the registered connectors. Pure: the stored config and credential are what
+ * the connector's own `validateConfig` / `validateCredential` returned, so a row always holds a value `deliver`
+ * will accept. A connector that throws or answers malformed refuses the write (nothing is persisted).
  */
-export function parseSubscriptionFields(raw: unknown, registry: ConnectorRegistry): ParsedSubscription {
+export function parseSubscriptionFields(
+    raw: unknown,
+    registry: ConnectorRegistry,
+    { credentialRequired }: { credentialRequired: boolean }
+): ParsedSubscription {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return refuse('body must be an object');
     const o = raw as Record<string, unknown>;
     const unknown = Object.keys(o).find((key) => !KEYS.has(key));
@@ -94,8 +116,11 @@ export function parseSubscriptionFields(raw: unknown, registry: ConnectorRegistr
     const connector = registry.get(o.connectorKind);
     if (!connector) return refuse(`no connector of kind "${o.connectorKind}"`, ERROR_CODES.UNKNOWN_CONNECTOR);
 
-    const checked = checkConfig(connector, o.connectorConfig);
+    const checked = checkWith('config', () => connector.validateConfig(o.connectorConfig));
     if (!checked.ok) return checked;
+
+    const credential = checkCredential(connector, o.credential, credentialRequired);
+    if (!credential.ok) return credential;
 
     return {
         ok: true,
@@ -107,5 +132,6 @@ export function parseSubscriptionFields(raw: unknown, registry: ConnectorRegistr
             workflows: workflows.value,
             enabled: o.enabled,
         },
+        credential: credential.value,
     };
 }
