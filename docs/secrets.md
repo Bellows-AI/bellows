@@ -31,7 +31,7 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
   nothing. Owner is an organization (`orgId`) or a user (`userId`, `orgId` or `null` for a personal executor
   profile); a different owner, org, scope, purpose or owning record is `identity-mismatch`. Changing any of
   them needs a new secret and reference. `server/src/secrets/secret-input.ts`, `server/test/secrets.input.test.ts`.
-- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the grant row is confirmed by `grantSecretIdentity` in `server/src/db/connection-grants.ts`, its writer is `server/src/integrations/grant-lineage.ts`, pinned by `server/test-db/integration-lineage.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/migrations/094_integration_connections.sql`):
+- **Consumer mappings** (the BEL-54 rows are confirmed by `envSecretIdentity` in `server/src/db/env-secrets.ts`, pinned by `server/test-db/env-var-store.test.ts`; the grant row is confirmed by `grantSecretIdentity` in `server/src/db/connection-grants.ts`, its writer is `server/src/integrations/grant-lineage.ts`, pinned by `server/test-db/integration-lineage.test.ts`; the notification row is confirmed by `subscriptionSecretIdentity` in `server/src/notifications/subscription-credential.ts`, pinned by `server/test-db/notification-subscriptions.test.ts`; the consumer issue confirms each of the others; `server/src/db/env-var-store.ts`, `server/migrations/094_integration_connections.sql`):
 
   | Consumer | Owner | Scope | Purpose | Owning record |
   | --- | --- | --- | --- | --- |
@@ -40,6 +40,7 @@ payload bytes through; the interface, the conformance suite and three PostgreSQL
   | BEL-54 repository env secret | organization(orgId) | repository/owner/name | environment-secret | env-var (name) |
   | BEL-59..61 integration grant | user(principal_user_id, orgId) | integration-grant/id | connection-grant | integration-grant |
   | BEL-35 executor credential | user(userId, null) personal, organization(orgId) org | executor-profile/id | executor-credential | profile |
+  | BEL-132 notification credential | organization(orgId) | organization/orgId | notification-credential | notification-subscription (id) |
 
 - **The store owns a pool of its own**: `main.ts` builds it on a second pool, never the claim's, because the claim reads
   environment secrets while holding a pooled connection and a store call opens its own transaction; a shared pool

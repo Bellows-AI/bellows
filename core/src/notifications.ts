@@ -66,6 +66,7 @@ export const SEND_RETRYABLE_REASONS = [
     'unknown-kind',
     'connector-threw',
     'malformed-result',
+    'credential-unavailable',
 ] as const;
 export type SendRetryableReason = (typeof SEND_RETRYABLE_REASONS)[number];
 
