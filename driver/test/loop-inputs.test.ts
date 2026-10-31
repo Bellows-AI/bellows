@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { BoardJob } from '../src/board/board.js';
 import type { ClaimAttachment } from '../src/board/board-attachments.js';
-import { attachTaskInputs } from '../src/loop/loop-inputs.js';
+import { attachReviewInputs, attachTaskInputs } from '../src/loop/loop-inputs.js';
 
 const FILE: ClaimAttachment = {
     id: '33333333-3333-4333-8333-333333333333',
@@ -38,5 +38,33 @@ describe('attaching the task inputs to a control token', () => {
 
     it('registers nothing where the run has no control endpoint', () => {
         expect(() => attachTaskInputs({ rt: { board: {} } as never, job: job([FILE]) }, 'token')).not.toThrow();
+    });
+});
+
+describe('attaching a review’s input files to the caller’s control token', () => {
+    const review = { id: 'rev-1', leaseToken: 'rev-lease', attachments: [FILE] } as unknown as BoardJob;
+
+    it('registers the delivery under the review’s id, read under the review’s own lease', async () => {
+        const attach = vi.fn();
+        const attachmentContent = vi.fn(async () => ({ bytes: Buffer.from('x'), sha256: 'a'.repeat(64) }));
+        const rt = { gates: { server: { attachInputs: attach } }, board: { attachmentContent } } as never;
+
+        attachReviewInputs({ rt, review }, 'caller-token');
+
+        expect(attach).toHaveBeenCalledWith('caller-token', 'rev-1', expect.objectContaining({ manifest: [FILE] }));
+        await attach.mock.calls[0]?.[2].read(FILE.id);
+        expect(attachmentContent).toHaveBeenCalledWith({ id: 'rev-1', leaseToken: 'rev-lease' }, FILE.id);
+    });
+
+    it('registers nothing for a review with no attachments', () => {
+        const attach = vi.fn();
+        attachReviewInputs(
+            {
+                rt: { gates: { server: { attachInputs: attach } }, board: {} } as never,
+                review: { ...review, attachments: [] },
+            },
+            'caller-token'
+        );
+        expect(attach).not.toHaveBeenCalled();
     });
 });

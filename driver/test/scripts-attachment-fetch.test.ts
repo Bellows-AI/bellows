@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
     chmodSync,
+    statSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -76,6 +77,10 @@ describe('the attachment fetch script', () => {
         server?.closeAllConnections();
         server?.close();
         server = null;
+        // A delivered directory is read-only: the test's own cleanup needs every one writable again.
+        for (const dir of readdirSync(root, { recursive: true, withFileTypes: true }).filter((e) => e.isDirectory()))
+            chmodSync(join(dir.parentPath, dir.name), 0o755);
+        chmodSync(root, 0o755);
         rmSync(root, { recursive: true, force: true });
     });
 
@@ -161,6 +166,46 @@ describe('the attachment fetch script', () => {
         expect(names()).toEqual([`${ID_A}.txt`, 'manifest.json']);
     });
 
+    // Uid isolation (#814): the agent's tool uid and the reviewer uid read what the step's uid wrote and never change it.
+    it('leaves the files 0444 and the directory 0555, after a first delivery and after a redelivery', async () => {
+        const url = await serve();
+        const first = fileOf(ID_A, 'a.txt', Buffer.from('a'));
+        const modeOf = (name: string) => statSync(join(target, name)).mode & 0o777;
+
+        await fetchAll(url, [first]);
+        expect([modeOf(`${ID_A}.txt`), modeOf('manifest.json'), statSync(target).mode & 0o777]).toEqual([
+            0o444, 0o444, 0o555,
+        ]);
+
+        const second = fileOf(ID_B, 'b.txt', Buffer.from('b'));
+        await expect(fetchAll(url, [first, second])).resolves.toMatchObject({ ok: true, fetched: 1 });
+        expect([modeOf(`${ID_A}.txt`), modeOf(`${ID_B}.txt`), modeOf('manifest.json')]).toEqual([0o444, 0o444, 0o444]);
+        expect(statSync(target).mode & 0o777).toBe(0o555);
+    });
+
+    it('retries over a read-only temp file an interrupted run left, inside a sealed directory', async () => {
+        const url = await serve();
+        const first = fileOf(ID_A, 'a.txt', Buffer.from('a'));
+        await fetchAll(url, [first]);
+        const second = fileOf(ID_B, 'b.txt', Buffer.from('b'));
+        const staging = join(target, '.staging-7');
+        chmodSync(target, 0o755);
+        mkdirSync(staging);
+        for (const stale of [join(target, 'manifest.json.tmp'), join(staging, `${ID_B}.txt.part`)]) {
+            writeFileSync(stale, 'half');
+            chmodSync(stale, 0o444);
+        }
+        chmodSync(target, 0o555);
+
+        await expect(fetchAll(url, [first, second])).resolves.toMatchObject({ ok: true, fetched: 1 });
+
+        const modeOf = (name: string) => statSync(join(target, name)).mode & 0o777;
+        expect([modeOf(`${ID_B}.txt`), modeOf('manifest.json'), statSync(target).mode & 0o777]).toEqual([
+            0o444, 0o444, 0o555,
+        ]);
+        expect(readFileSync(join(target, `${ID_B}.txt`), 'utf8')).toBe('b');
+    });
+
     it('keeps the valid files it already holds and fetches only the missing ones', async () => {
         const files = [fileOf(ID_A, 'a.txt', Buffer.from('aaa')), fileOf(ID_B, 'b.txt', Buffer.from('bbb'))];
         const url = await serve();
@@ -189,6 +234,7 @@ describe('the attachment fetch script', () => {
     it('removes a stale file the manifest no longer lists, only once the new manifest is published', async () => {
         const url = await serve();
         await fetchAll(url, [fileOf(ID_A, 'a.txt', Buffer.from('a')), fileOf(ID_B, 'b.txt', Buffer.from('b'))]);
+        chmodSync(target, 0o755); // a delivered directory is sealed; the test plants the stray file by hand
         writeFileSync(join(target, 'stray.bin'), 'x');
 
         await fetchAll(url, [fileOf(ID_A, 'a.txt', Buffer.from('a'))]);

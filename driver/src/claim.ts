@@ -60,6 +60,12 @@ export const REVIEWER_TREE_PATH = `${TASK_MOUNT}/${REVIEWER_TREE_DIR}`;
 /** A review's transcript store, in the reviewer's home, named by the thread root. */
 export const reviewerTranscriptName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
     `${REVIEWER_TRANSCRIPTS}/${review.rootJobId ?? review.id}`;
+/** The reviewed request's input files, in the reviewer's home, named by the review root: the review row's own manifest, never the caller's. */
+export const reviewerAttachmentsName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
+    `attachments/${review.rootJobId ?? review.id}`;
+/** That directory on the task volume, where the supervisor's inputs step writes it. */
+export const reviewerAttachmentsDir = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
+    `${REVIEWER_TREE_PATH}/${reviewerAttachmentsName(review)}`;
 /** A review's opencode data directory, in the reviewer's home, named by the review root: one session database per review, so a readout never exports another review's rows. */
 export const reviewerDataName = (review: Pick<BoardJob, 'id' | 'rootJobId'>): string =>
     `${REVIEWER_DATA}/${review.rootJobId ?? review.id}`;
