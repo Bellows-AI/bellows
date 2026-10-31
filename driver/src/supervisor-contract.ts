@@ -254,6 +254,8 @@ export interface StepResult {
     stderr: string;
     timedOut: boolean;
     replayed?: boolean;
+    /** Set by the driver's own pre-flight steps, never by the supervisor: why the run was refused (a review's missing input file). */
+    failureKind?: string;
 }
 
 /**

@@ -307,3 +307,37 @@ describe('the reviewer plan', () => {
         expect(dataHome({ ...first, claimSeq: 2, leaseToken: 'new' })).toBe(dataHome(first));
     });
 });
+
+describe('the reviewer plan with the reviewed request’s files', () => {
+    const files = [
+        {
+            id: '99999999-9999-4999-8999-999999999999',
+            name: 'spec.txt',
+            mediaType: 'text/plain',
+            size: 5,
+            sha256: 'b'.repeat(64),
+            originJobId: '11111111-1111-4111-8111-111111111111',
+        },
+    ];
+    const withFiles = { ...job, attachments: files } as BoardJob;
+
+    it.each(['claude-code', 'opencode'] as const)('names the reviewer-home paths in a %s prompt', (executorType) => {
+        const plan = reviewerPlan(
+            loadDriverConfig({}),
+            { ...withFiles, executorType },
+            executorType === 'opencode' ? null : { id: 'sess-1', resume: false }
+        );
+        const prompt = [...plan.argv, ...plan.env.map(([, v]) => v)].join('\n');
+        const root = withFiles.rootJobId ?? withFiles.id;
+        expect(prompt).toContain(`/home/reviewer/attachments/${root}/${files[0]!.id}.txt`);
+        expect(prompt).not.toContain('/.factory/attachments/');
+    });
+
+    it('never carries the restore feed in its env', () => {
+        const names = reviewerPlan(loadDriverConfig({}), withFiles, { id: 'sess-1', resume: false }).env.map(
+            ([name]) => name
+        );
+        expect(names).not.toContain('RESTORE_URL');
+        expect(names).not.toContain('RESTORE_TOKEN');
+    });
+});

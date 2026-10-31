@@ -94,6 +94,10 @@ const readFile = async (entry, source) => {
     return bytes;
 };
 
+/** What this script leaves the target directory at: the next delivery reopens only a directory it sealed itself. */
+const SEALED_MODE = 0o555;
+const OPEN_MODE = 0o755;
+
 /** Removes everything in `dir` that is not in `keep`: stale files and staging directories. */
 const sweep = (dir, keep) => {
     for (const name of fs.readdirSync(dir)) {
@@ -112,6 +116,9 @@ async function main() {
         timeoutMs: Number(process.env.FETCH_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
     };
     const staging = path.join(target, STAGING_PREFIX + (process.env.STAGING_SEQ || '0'));
+    // The directory is left read-only (0555) and the files 0444: the agent's and the reviewer's uids read them and
+    // never change them. A redelivery reopens it for this step's own uid first.
+    if (fs.existsSync(target) && (fs.statSync(target).mode & 0o777) === SEALED_MODE) fs.chmodSync(target, OPEN_MODE);
     fs.mkdirSync(staging, { recursive: true });
 
     const missing = list.filter((entry) => !holds(path.join(target, pathOf(entry)), entry));
@@ -119,16 +126,17 @@ async function main() {
         const staged = path.join(staging, pathOf(entry));
         if (holds(staged, entry)) continue;
         const tmp = staged + '.part';
-        fs.writeFileSync(tmp, await readFile(entry, source));
+        fs.writeFileSync(tmp, await readFile(entry, source), { mode: 0o444 });
         fs.renameSync(tmp, staged);
     }
     for (const entry of missing) fs.renameSync(path.join(staging, pathOf(entry)), path.join(target, pathOf(entry)));
 
     const manifest = { files: list.map((entry) => ({ ...entry, path: pathOf(entry) })) };
     const pending = path.join(target, MANIFEST_NAME + '.tmp');
-    fs.writeFileSync(pending, JSON.stringify(manifest, null, 2) + '\n');
+    fs.writeFileSync(pending, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o444 });
     fs.renameSync(pending, path.join(target, MANIFEST_NAME));
     sweep(target, new Set([MANIFEST_NAME, ...manifest.files.map((file) => file.path)]));
+    fs.chmodSync(target, SEALED_MODE);
     return { ok: true, files: list.length, fetched: missing.length };
 }
 

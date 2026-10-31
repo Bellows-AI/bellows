@@ -12,6 +12,14 @@ export const INPUTS_DEADLINE_MS = 600_000;
 /** The delivery name a task's inputs are served under (`INPUT_DELIVERY` of the inputs step). */
 export const TASK_DELIVERY = 'task';
 
+/** A fetch nothing confirmed either way (a board failure, a timeout, an unreadable answer): no verdict on the run. */
+export class InputsUnconfirmed extends Error {
+    constructor(reason: string) {
+        super(`the task inputs step failed: ${reason}`);
+        this.name = 'InputsUnconfirmed';
+    }
+}
+
 /** Whether the claim carries task inputs to deliver. */
 export const hasInputs = (job: Pick<BoardJob, 'attachments'>): boolean => (job.attachments?.length ?? 0) > 0;
 
@@ -37,6 +45,8 @@ export async function deliverTaskInputs(
         delivery?: string;
         manifest?: readonly ClaimAttachment[] | undefined;
         targetDir?: string;
+        /** The row whose control channel hosts the step, when it is not `job` itself (a review in its caller's group). */
+        owner?: BoardJob;
         signal?: AbortSignal | undefined;
     } = {}
 ): Promise<SyncResult> {
@@ -44,7 +54,7 @@ export async function deliverTaskInputs(
     if (manifest.length === 0) return { ok: true, reason: null };
     const result = await submitStep(
         host,
-        job,
+        options.owner ?? job,
         stepRequest(job, 'sync', {
             id: 'inputs',
             argv: ['node', '--no-warnings', '-e', attachmentFetchScript],
@@ -60,12 +70,12 @@ export async function deliverTaskInputs(
         }),
         options.signal
     );
-    if (result.timedOut) throw new Error(`the task inputs step failed: ${detailOf(result, INPUTS_DEADLINE_MS)}`);
+    if (result.timedOut) throw new InputsUnconfirmed(detailOf(result, INPUTS_DEADLINE_MS));
     const unreadable: InputsVerdict = { ok: false, reason: detailOf(result, INPUTS_DEADLINE_MS) };
     const verdict = parseLastJsonLine<InputsVerdict>(result.stdout, () => unreadable);
     if (verdict.ok) return { ok: true, reason: null };
     if (verdict.kind === 'attachment_unavailable') {
         return { ok: false, reason: verdict.reason ?? 'an attachment is no longer available', kind: verdict.kind };
     }
-    throw new Error(`the task inputs step failed: ${verdict.reason ?? detailOf(result, INPUTS_DEADLINE_MS)}`);
+    throw new InputsUnconfirmed(verdict.reason ?? detailOf(result, INPUTS_DEADLINE_MS));
 }
