@@ -22,10 +22,13 @@
 //   INPUT_DELIVERY — the delivery name on the control route (`task`, or a review row's id);
 //   STAGING_SEQ   — the claim sequence, naming the staging directory;
 //   RESTORE_URL / RESTORE_TOKEN — the control endpoint and its bearer (the supervisor adds them to a step with INPUT_FEED=1);
-//   FETCH_TIMEOUT_MS — optional: the bound of one file's read.
+//   FETCH_TIMEOUT_MS — optional: the bound of one file's read;
+//   EXTRACT_SCRIPT — optional: scripts/attachment-extract.cjs, run once over the published directory (text beside
+//                 PDF and Word files, `unreadable` entries). Its own failure is transient like any other.
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const KIND_UNAVAILABLE = 'attachment_unavailable';
 const MANIFEST_NAME = 'manifest.json';
@@ -100,6 +103,36 @@ const OPEN_MODE = 0o755;
 /** Every temp file is written writable and made read-only only before its rename, so an interrupted write is retried over. */
 const READ_ONLY_MODE = 0o444;
 
+const EXTRACT_TIMEOUT_MS = 300_000;
+const EXTRACT_ENV_DROPPED = ['RESTORE_URL', 'RESTORE_TOKEN', 'MANIFEST', 'EXTRACT_SCRIPT'];
+
+/** Runs the extract script over `target` in a child that never sees the control endpoint's bearer. */
+const extract = (target) => {
+    const code = process.env.EXTRACT_SCRIPT;
+    if (!code) return;
+    const env = { ...process.env, TARGET_DIR: target };
+    for (const name of EXTRACT_ENV_DROPPED) delete env[name];
+    const run = spawnSync(process.execPath, ['--no-warnings', '-e', code], {
+        env,
+        encoding: 'utf8',
+        timeout: EXTRACT_TIMEOUT_MS,
+        killSignal: 'SIGKILL',
+    });
+    const last = String(run.stdout || '')
+        .trim()
+        .split('\n')
+        .pop();
+    let verdict = null;
+    try {
+        verdict = JSON.parse(last);
+    } catch {}
+    if (run.error || !verdict || !verdict.ok) {
+        throw new Error(
+            `the attachment text extraction failed: ${(run.error && run.error.message) || (verdict && verdict.reason) || run.stderr}`
+        );
+    }
+};
+
 /** Removes everything in `dir` that is not in `keep`: stale files and staging directories. */
 const sweep = (dir, keep) => {
     for (const name of fs.readdirSync(dir)) {
@@ -142,6 +175,7 @@ async function main() {
     fs.chmodSync(pending, READ_ONLY_MODE);
     fs.renameSync(pending, path.join(target, MANIFEST_NAME));
     sweep(target, new Set([MANIFEST_NAME, ...manifest.files.map((file) => file.path)]));
+    extract(target);
     fs.chmodSync(target, SEALED_MODE);
     return { ok: true, files: list.length, fetched: missing.length };
 }

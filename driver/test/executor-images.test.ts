@@ -1790,10 +1790,18 @@ describe('the executor image tools (issue #1022)', () => {
             read(file)
         );
 
-    it('installs python3 and procps in the apt layer, byte-identical in both images', () => {
+    // poppler-utils: `pdftotext` for scripts/attachment-extract.cjs, so both executors derive PDF text the same way.
+    it('installs python3, procps and poppler-utils in the apt layer, byte-identical in both images', () => {
         const claude = aptLayer('docker/claude-executor/Dockerfile');
         const opencode = aptLayer('docker/opencode-executor/Dockerfile');
-        expect(claude?.[1]?.split(' ')).toEqual(['ca-certificates', 'curl', 'git', 'procps', 'python3']);
+        expect(claude?.[1]?.split(' ')).toEqual([
+            'ca-certificates',
+            'curl',
+            'git',
+            'poppler-utils',
+            'procps',
+            'python3',
+        ]);
         expect(opencode?.[0]).toBe(claude?.[0]);
     });
 

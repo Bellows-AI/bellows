@@ -139,6 +139,17 @@ describe('the attached files block', () => {
         expect(agentPrompt(job({}))).toBe('summarise the notes');
     });
 
+    it('marks image entries for a model that may not see them, and tells how derived and unreadable entries read', () => {
+        const image = { ...file('shot.png'), mediaType: 'image/png' };
+        const text = agentPrompt(job({ attachments: [image, file('a.md', '44444444-4444-4444-8444-444444444444')] }));
+        const [shot, note] = text.split('\n').slice(-2);
+
+        expect(shot).toContain('image: view it if your model accepts images; otherwise say you cannot see it');
+        expect(note).not.toContain('image:');
+        expect(text).toContain('`derived.path`');
+        expect(text).toContain('"unreadable"');
+    });
+
     it('names the directory it is given, for a review', () => {
         const text = agentPrompt(job({ attachments: [file('a.md')] }), '/home/reviewer/attachments');
         expect(text).toContain('/home/reviewer/attachments/manifest.json');

@@ -51,6 +51,30 @@ const ID_C = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ORIGIN = '11111111-1111-4111-8111-111111111111';
 const sha = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 
+const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+/** A one-part zip (stored) holding word/document.xml. */
+const docxBytes = (xml: string): Buffer => {
+    const name = Buffer.from('word/document.xml');
+    const data = Buffer.from(xml);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    const end = Buffer.alloc(22);
+    end.writeUInt32LE(0x06054b50, 0);
+    end.writeUInt16LE(1, 8);
+    end.writeUInt16LE(1, 10);
+    end.writeUInt32LE(46 + name.length, 12);
+    end.writeUInt32LE(30 + name.length + data.length, 16);
+    return Buffer.concat([local, name, data, central, name, end]);
+};
+
 const BODIES = new Map<string, Buffer>();
 const fileOf = (id: string, name: string, body: Buffer): Entry => {
     BODIES.set(id, body);
@@ -324,6 +348,35 @@ describe('the attachment fetch script', () => {
 
         expect(verdict).toMatchObject({ ok: false, kind: 'attachment_unavailable' });
         expect(names().filter((n) => !n.startsWith('.staging-'))).toEqual([]);
+    });
+
+    it('runs the extract script over the published directory: derived text 0444 inside the sealed dir, a redelivery redoes it', async () => {
+        const extractor = readFileSync(join(SCRIPTS, 'attachment-extract.cjs'), 'utf8');
+        const xml =
+            '<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>sealed sentence</w:t></w:r></w:p></w:body></w:document>';
+        const zip = docxBytes(xml);
+        const entry = { ...fileOf(ID_A, 'brief.docx', zip), mediaType: DOCX };
+        const url = await serve();
+
+        for (const delivery of [1, 2]) {
+            const verdict = await fetchAll(url, [entry], { EXTRACT_SCRIPT: extractor });
+            expect(verdict, `delivery ${delivery}`).toMatchObject({ ok: true });
+            expect(names()).toEqual([`${ID_A}.docx`, `${ID_A}.txt`, 'manifest.json']);
+            expect(readFileSync(join(target, `${ID_A}.txt`), 'utf8')).toBe('sealed sentence\n');
+            expect(statSync(join(target, `${ID_A}.txt`)).mode & 0o777).toBe(0o444);
+            expect(statSync(target).mode & 0o777).toBe(0o555);
+            expect(manifestOnDisk().files[0]).toMatchObject({ derived: { path: `${ID_A}.txt`, kind: 'text' } });
+        }
+    });
+
+    it('a failing extract script is a transient failure, never a verdict on the files', async () => {
+        const url = await serve();
+
+        const verdict = await fetchAll(url, [fileOf(ID_A, 'a.txt', Buffer.from('a'))], {
+            EXTRACT_SCRIPT: 'process.exit(3)',
+        });
+
+        expect(verdict).toMatchObject({ ok: false, transient: true });
     });
 
     it('serves a reviewer delivery from env alone: the target directory and the delivery name', async () => {

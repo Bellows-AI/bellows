@@ -1,6 +1,6 @@
 import type { BoardJob } from './board/board.js';
 import type { ClaimAttachment } from './board/board-attachments.js';
-import { attachmentFetchScript } from './container-scripts.js';
+import { attachmentExtractScript, attachmentFetchScript } from './container-scripts.js';
 import { parseLastJsonLine } from './json-parse.js';
 import type { SyncResult } from './publish/publish.js';
 import { detailOf, stepRequest, submitStep, type StepHost } from './supervised-steps.js';
@@ -65,6 +65,8 @@ export async function deliverTaskInputs(
                 STAGING_SEQ: String(job.claimSeq),
                 // The supervisor lays its control endpoint and token over this one step only.
                 INPUT_FEED: '1',
+                // Run by the fetch script over the published directory, so task and reviewer deliveries both extract.
+                EXTRACT_SCRIPT: attachmentExtractScript,
             },
             timeoutMs: INPUTS_DEADLINE_MS,
         }),
