@@ -5,6 +5,7 @@
  * behavior is in the sibling `job-store-*.ts` files, which job-store.ts's header maps.
  */
 
+import type { AttachmentMeta } from '@factory-ai/core';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
@@ -363,6 +364,8 @@ export interface Job {
      * `get()` and `thread()`; the per-run lists answer an empty array.
      */
     questions: JobQuestion[];
+    /** The files this request carried (112), in the order named. `thread()` only; every other read answers an empty array. */
+    attachments: AttachmentMeta[];
     /**
      * The thread root's connection bindings (094), oldest first, including ones whose connection was since
      * disconnected (`live: false`). Served by `get()` and `thread()`; the per-run lists answer an empty array.

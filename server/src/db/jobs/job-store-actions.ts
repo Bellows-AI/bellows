@@ -12,6 +12,7 @@ import {
     bindOnCreate,
     type DismissRequirementResult,
 } from './job-store-connections.js';
+import { bindAttachmentsInTx, revokeThreadAttachmentsInTx } from './job-store-attachments.js';
 import {
     backsBatchTask,
     batchThreadState,
@@ -89,6 +90,11 @@ export interface JobActionStore {
              */
             connectionIds?: readonly string[];
             /**
+             * Completed uploads (112) the task carries, bound to the new job in the create transaction in the order named:
+             * each must be a ready file of the author or the create is refused with `AttachmentRefusedError`. Absent is none.
+             */
+            attachmentIds?: readonly string[];
+            /**
              * When the task runs a workflow: the resolved workflow — the id, the NAME frozen on
              * the root row as workflow_name, the ENTRY node the thread's first run walks, the
              * definition SNAPSHOT frozen onto the root row, and the validated launch parameter
@@ -135,7 +141,9 @@ export interface JobActionStore {
         createdBy: string | null,
         idempotency?: IdempotencyInput,
         /** Connections to append to the thread's bindings; `ConnectionRefusedError` when any is not the author's to bind. */
-        connectionIds?: readonly string[]
+        connectionIds?: readonly string[],
+        /** Uploads to bind to the follow-up itself; `AttachmentRefusedError` when any is not the author's ready file. */
+        attachmentIds?: readonly string[]
     ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal>;
 
     /**
@@ -373,6 +381,8 @@ export async function insertJobInTx(
             returning id
         `;
     await bindOnCreate(tx, { orgId, rootJobId: rows[0]!.id, createdBy, target });
+    const jobId = rows[0]!.id;
+    await bindAttachmentsInTx(tx, { orgId, jobId, rootJobId: jobId, createdBy, ids: target.attachmentIds ?? [] });
     await stampKey(tx, orgId, rows[0]!.id, idem);
     return { id: rows[0]!.id };
 }
@@ -403,6 +413,7 @@ export async function insertJobInTx(
  */
 export interface FollowUpRowInput {
     connectionIds?: readonly string[] | undefined;
+    attachmentIds?: readonly string[] | undefined;
     orgId: string;
     parentId: string;
     command: string;
@@ -446,7 +457,7 @@ async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: stri
 
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
-    const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [] } = input;
+    const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [], attachmentIds = [] } = input;
     // The read resolves the thread root the advisory lock below is keyed by.
     const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
@@ -519,6 +530,8 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
         `;
     if (rows[0]) {
         await addFollowUpBindings(tx, { orgId, rootJobId: label.root_job_id, createdBy, connectionIds });
+        const ref = { orgId, jobId: rows[0].id, rootJobId: label.root_job_id, createdBy };
+        await bindAttachmentsInTx(tx, { ...ref, ids: attachmentIds });
         await stampKey(tx, orgId, rows[0].id, idem);
         return { id: rows[0].id };
     }
@@ -1117,6 +1130,7 @@ export async function removeJobThread(
         // Any parked or already-woken block-wait round (issue #231) is this thread's audit data
         // too — cancelWaitsForRoot above already makes it permanently unwakeable, this is just not
         // leaving it behind forever.
+        await revokeThreadAttachmentsInTx(tx, orgId, rootJobId);
         await tx`delete from workflow_round where org_id = ${orgId} and root_job_id = ${rootJobId}`;
         // The merge-closure marker (issue #390) is the thread's audit data the same way: the rows
         // it discriminates are gone.

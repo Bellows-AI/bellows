@@ -16,7 +16,7 @@ import {
 import { bad, body, guard } from '../helpers.js';
 import { resolveClaimRoute, resolveJobRoute } from '../route-guards.js';
 import { UUID } from '../../identifiers.js';
-import { parseConnectionIds } from '../connections.js';
+import { taskRefsOf } from './job-task-refs.js';
 import type { Job, SettleOutcome } from '../../db/jobs/job-store-types.js';
 import {
     HTTP_ACCEPTED,
@@ -56,20 +56,22 @@ export async function handleFollowUp(orgs: OrgRegistry, request: FastifyRequest,
     // impersonation applies word for word here.
     const createdBy = callerOf(request)?.user.id ?? null;
 
-    const connectionIds = parseConnectionIds(fields.connections);
-    if (typeof connectionIds === 'string') return bad(reply, ERROR_CODES.BAD_CONNECTION, connectionIds);
+    const refs = taskRefsOf(reply, fields);
+    if (!refs) return reply;
+    const { connectionIds, attachmentIds } = refs;
 
     const idempotency = idempotencyOf(request, reply, 'follow-up', {
         id,
         command: commandResult.value,
         connections: fields.connections,
+        attachments: fields.attachments,
     });
     if (!idempotency.ok) return reply;
 
     const created = await guardKeyed(
         reply,
         (e) => request.log.error({ err: e }, 'job follow-up failed'),
-        () => store.createFollowUp(id, commandResult.value, createdBy, idempotency.value, connectionIds)
+        () => store.createFollowUp(id, commandResult.value, createdBy, idempotency.value, connectionIds, attachmentIds)
     );
     if (!created.ok) return reply;
     if (typeof created.value === 'string') return followUpRefusal(reply, created.value);
