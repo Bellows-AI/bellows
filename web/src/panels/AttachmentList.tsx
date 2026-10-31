@@ -121,8 +121,13 @@ function HistoryFile({ file }: { file: AttachmentMeta }) {
                 ) : null}
             </span>
             {removed ? null : (
-                <a className="attachment-action" href={contentUrl(file.id)} download={file.name}>
-                    Download {file.name}
+                <a
+                    className="attachment-action"
+                    href={contentUrl(file.id)}
+                    download={file.name}
+                    aria-label={`Download ${file.name}`}
+                >
+                    Download
                 </a>
             )}
         </li>
