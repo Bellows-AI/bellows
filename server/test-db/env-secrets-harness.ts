@@ -62,21 +62,6 @@ export async function seedEncryptedRow(
     return { ref, version: created.version };
 }
 
-/** A row written the old way: the value in `env_var.value`, no reference. A secret only until the conversion reaches it. */
-export async function seedPlaintextRow(sql: Sql, slot: EnvSlot, value: string, isSecret: boolean): Promise<void> {
-    const { scope } = slot;
-    await sql`
-        insert into env_var (org_id, user_id, repo_owner, repo_name, name, value, is_secret)
-        values (
-            ${slot.orgId},
-            ${scope.kind === 'workspace' ? scope.userId : null},
-            ${scope.kind === 'repo' ? scope.owner : null},
-            ${scope.kind === 'repo' ? scope.name : null},
-            ${slot.name}, ${value}, ${isSecret}
-        )
-    `;
-}
-
 export interface SecretCalls {
     creates: { ref: string; name: string }[];
     deletes: { ref: string; name: string }[];
