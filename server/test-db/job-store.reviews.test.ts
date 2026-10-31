@@ -138,6 +138,31 @@ const completeCaller = (store: JobStore, caller: Claim, treeAfter: string) =>
     });
 
 describe.runIf(enabled)('named reviewer invocation on the job store', () => {
+    it('a review of an admin’s turn runs as the thread author', async () => {
+        const store = storeWith({ reviewers: [SECURITY] });
+        const author = await account();
+        const admin = await account();
+        const created = await store.create('ship it', author, { repo: 'acme/web', executor: null });
+        if (typeof created === 'string') throw new Error(`create refused: ${created}`);
+        const first = await store.claim('driver-1', LEASE_SECONDS);
+        await store.session(created.id, first!.leaseToken, 'session-1');
+        await store.complete(created.id, first!.leaseToken, { status: 'succeeded', exitCode: 0, output: 'done' });
+        const turn = await store.createFollowUp(created.id, 'adjust it', admin, undefined, undefined, true);
+        if (typeof turn === 'string') throw new Error(`follow-up refused: ${turn}`);
+        const caller = await store.claim('driver-1', LEASE_SECONDS);
+        expect(caller?.id).toBe(turn.id);
+
+        const asked = await ask(caller!);
+
+        if (!('claim' in asked) || !asked.claim) throw new Error('no live review claim');
+        const [review] = await sql<{ created_by: string | null; execution_user_id: string | null }[]>`
+            select created_by, execution_user_id from job where org_id = ${ORG} and id = ${asked.review.id}
+        `;
+        expect(review).toEqual({ created_by: author, execution_user_id: author });
+        expect(asked.claim.userId).toBe(author);
+        expect(asked.claim.workspacePath).toBe(`${ORG}/${author}`);
+    });
+
     it('stamps the declared profiles on the caller’s row at every claim, and none when none are declared', async () => {
         const declared = await claimed(storeWith({ reviewers: [SECURITY] }));
         expect((await rowOf(declared.id)).reviewers).toEqual([SECURITY]);

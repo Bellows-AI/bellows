@@ -41,7 +41,10 @@ posture: [security.md](security.md) · routes and codes: [api.md](api.md).
   unless `AUTH_ALLOW_PUBLIC_BIND=1`, and `docker-compose.yml` pins `github`. `server/src/config.ts`,
   `server/src/db/migrate.ts` (`LOCAL_LOGIN`), `server/test/config.auth.test.ts`.
 - **An idempotency key is scoped to org, caller and operation**, and a replay re-passes the route's credential
-  and author check. `server/src/db/jobs/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
+  and author-or-admin check. `server/src/db/jobs/job-store-idempotency.ts`, `server/test-db/job-store.idempotency.test.ts`.
+- **An org admin may follow up, retry and control the wait of another member's task**; the row's `created_by` is the
+  admin, the run executes as the thread root's `execution_user_id`. `server/src/db/jobs/job-store-actions.ts`,
+  `server/test-db/job-store.admin-actions.test.ts`.
 - **The restore reads (`checkpoint`, `transcripts`) are worker routes whose credential is the job's live lease** in
   the body: a lost, foreign or unknown lease reads nothing. `server/src/routes/jobs/job-handlers-restore.ts`,
   `server/test/auth.enforcement.test.ts`, `server/test/routes.restore.test.ts`.

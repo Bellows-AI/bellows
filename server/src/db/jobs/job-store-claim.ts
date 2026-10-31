@@ -146,7 +146,8 @@ interface ReservedCandidate {
     id: string;
     root_job_id: string;
     claim_seq: string;
-    created_by: string | null;
+    /** The thread root's `execution_user_id`: the identity every row of the thread runs as (BEL-165). */
+    run_as: string | null;
     repo: string | null;
     workflow_node: string | null;
     base_branch: string | null;
@@ -273,7 +274,8 @@ async function reserveCandidate(
         update job set claim_deferred_until = now() + make_interval(secs => ${CLAIM_PREPARE_SECONDS}::int)
         from picked
         where job.org_id = ${orgId} and job.id = picked.id
-        returning job.id, job.root_job_id, job.claim_seq, job.created_by, job.repo, job.workflow_node,
+        returning job.id, job.root_job_id, job.claim_seq, job.repo, job.workflow_node,
+                  (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                   ${baseBranch} as base_branch, picked.prior_deferral
     `;
     return reserved ?? null;
@@ -464,7 +466,8 @@ async function acquireCandidate(
             -- least once with its command in the transcript". A fresh or crashed follow-up has
             -- never been parked, so its command still has to go out; a suspended one settles
             -- stopped, and is never claimed again.
-            returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at, created_by,
+            returning id, command, attempts, max_attempts, claim_seq, lease_token, lease_expires_at,
+                      (select r.execution_user_id from job r where r.org_id = job.org_id and r.id = job.root_job_id) as run_as,
                       session_id, repo, parent_job_id, executor, executor_scope, workflow_node, workflow_name, mode,
                       -- The post-update row: whether this attempt's loss would retire the job.
                       ${exhausted} as last_attempt,
@@ -545,7 +548,6 @@ async function assembleClaim(
     ctx: JobStoreContext,
     tx: TransactionSql,
     row: ClaimCandidateRow & {
-        created_by: string | null;
         repo: string | null;
         base_branch: string | null;
         executor: string | null;
@@ -560,7 +562,7 @@ async function assembleClaim(
     const { rootJobId } = prepared;
     const { connections } = prepared;
     const executor = await resolveClaimExecutor(tx, { env, executorConfig }, row);
-    const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.created_by) };
+    const gates = { ...prepared.gates, claimPath: workspacePathFor(orgId, row.run_as) };
     const workflow = await resolveClaimWorkflow(tx, { orgId, rootJobId, prs }, row, gates);
     const evidence = await resolveClaimEvidence(tx, { orgId, rootJobId }, row, gates);
     const command = await claimCommand(tx, orgId, rootJobId, row);
@@ -716,9 +718,9 @@ export interface ResolvedClaimEvidence {
 export async function resolveClaimGates(
     planReader: CreateJobStoreDeps['plan'],
     ctx: { orgId: string; rootJobId: string },
-    row: { created_by: string | null; repo: string | null; base_branch: string | null }
+    row: { run_as: string | null; repo: string | null; base_branch: string | null }
 ): Promise<ResolvedClaimGates> {
-    const claimPath = workspacePathFor(ctx.orgId, row.created_by);
+    const claimPath = workspacePathFor(ctx.orgId, row.run_as);
     if (!planReader || !row.repo) {
         return {
             claimGates: null,
@@ -953,7 +955,7 @@ export function buildClaimResult(
         executorRefusal,
         skillRefusal,
         planRefusal,
-        userId: row.created_by,
+        userId: row.run_as,
         masterPrompt,
         turnContext,
         // Built here rather than in the route, because this is where the org is bound. Null for

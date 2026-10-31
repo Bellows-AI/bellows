@@ -23,7 +23,7 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
             return bad(
                 reply,
                 ERROR_CODES.FORBIDDEN,
-                'Only the account that queued the task can follow it up',
+                'Only the account that queued the task or an organization admin can follow it up',
                 HTTP_FORBIDDEN
             );
     }
@@ -43,7 +43,7 @@ export function retryRefusal(reply: FastifyReply, reason: RetryRefusal) {
             return bad(
                 reply,
                 ERROR_CODES.FORBIDDEN,
-                'Only the account that queued the task can retry it',
+                'Only the account that queued the task or an organization admin can retry it',
                 HTTP_FORBIDDEN
             );
     }
@@ -58,7 +58,7 @@ export function waitControlRefusal(reply: FastifyReply, reason: WaitControlRefus
             return notFoundJob(reply);
         case 'forbidden':
             return reply.code(HTTP_FORBIDDEN).send({
-                error: 'Only the account that queued the task can control its wait',
+                error: 'Only the account that queued the task or an organization admin can control its wait',
                 code: ERROR_CODES.FORBIDDEN,
             });
         case 'no_wait':

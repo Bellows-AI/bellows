@@ -269,14 +269,65 @@ describe.runIf(enabled)('mutation idempotency (#589)', () => {
 
         it('does not let a stored result bypass the author check once the parent changed hands', async () => {
             const owner = await account();
-            const stranger = await account();
             const parent = await createdOk(store, 'first', owner);
             await finish(parent.id);
             const input = idem('follow-up', freshKey());
             await store.createFollowUp(parent.id, 'again', owner, input);
-            await sql`update job set created_by = ${stranger} where id = ${parent.id}`;
+            // The thread's owner is its root's frozen execution user; the one change the column allows is to null,
+            // which is what deleting the account does.
+            await sql`update job set execution_user_id = null where id = ${parent.id}`;
 
             expect(await store.createFollowUp(parent.id, 'again', owner, input)).toBe('forbidden');
+        });
+
+        it('replays an admin follow-up under the admin’s key', async () => {
+            const owner = await account();
+            const admin = await account();
+            const parent = await createdOk(store, 'first', owner);
+            await finish(parent.id);
+            const input = idem('follow-up', freshKey());
+
+            const first = await store.createFollowUp(parent.id, 'again', admin, input, undefined, true);
+            const repeat = await store.createFollowUp(parent.id, 'again', admin, input, undefined, true);
+
+            expect(first).toMatchObject({ id: expect.any(String) });
+            expect(repeat).toEqual({ id: (first as { id: string }).id, replayed: true });
+        });
+
+        it('refuses a changed body under an admin’s reused key', async () => {
+            const owner = await account();
+            const admin = await account();
+            const parent = await createdOk(store, 'first', owner);
+            await finish(parent.id);
+            const key = freshKey();
+            await store.createFollowUp(parent.id, 'again', admin, idem('follow-up', key, 'fp-a'), undefined, true);
+
+            await expect(
+                store.createFollowUp(parent.id, 'different', admin, idem('follow-up', key, 'fp-b'), undefined, true)
+            ).rejects.toBeInstanceOf(IdempotencyKeyReusedError);
+        });
+
+        it('never replays an admin’s key for the author', async () => {
+            const owner = await account();
+            const admin = await account();
+            const parent = await createdOk(store, 'first', owner);
+            await finish(parent.id);
+            const key = freshKey();
+            await store.createFollowUp(parent.id, 'again', admin, idem('follow-up', key), undefined, true);
+
+            // The key is scoped to its caller: the author has none stored, and the thread is busy with the admin's turn.
+            expect(await store.createFollowUp(parent.id, 'again', owner, idem('follow-up', key))).toBe('not_finished');
+        });
+
+        it('re-passes the admin check at replay', async () => {
+            const owner = await account();
+            const admin = await account();
+            const parent = await createdOk(store, 'first', owner);
+            await finish(parent.id);
+            const input = idem('follow-up', freshKey());
+            await store.createFollowUp(parent.id, 'again', admin, input, undefined, true);
+
+            expect(await store.createFollowUp(parent.id, 'again', admin, input, undefined, false)).toBe('forbidden');
         });
     });
 

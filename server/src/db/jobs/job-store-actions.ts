@@ -135,7 +135,9 @@ export interface JobActionStore {
         createdBy: string | null,
         idempotency?: IdempotencyInput,
         /** Connections to append to the thread's bindings; `ConnectionRefusedError` when any is not the author's to bind. */
-        connectionIds?: readonly string[]
+        connectionIds?: readonly string[],
+        /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else (BEL-165). */
+        admin?: boolean
     ): Promise<{ id: string; replayed?: boolean } | FollowUpRefusal>;
 
     /**
@@ -171,7 +173,9 @@ export interface JobActionStore {
     createRetry(
         id: string,
         createdBy: string | null,
-        idempotency?: IdempotencyInput
+        idempotency?: IdempotencyInput,
+        /** The route's verdict that the caller is an org admin: it admits a thread whose owner is someone else (BEL-165). */
+        admin?: boolean
     ): Promise<{ id: string; replayed?: boolean } | RetryRefusal>;
 
     /**
@@ -249,7 +253,7 @@ export interface JobActionStore {
      * row (045) with the same first-writer coalesce as the 025 actors, and used for the
      * author-scoping check. `id` may be ANY member of the thread: the wait belongs to the root.
      */
-    cancelWait(id: string, cancelledBy: string | null): Promise<CancelWaitResult>;
+    cancelWait(id: string, cancelledBy: string | null, admin?: boolean): Promise<CancelWaitResult>;
 
     /**
      * The user's poke (issue #328): re-evaluates the thread's parked PR wait NOW — the wake
@@ -264,7 +268,7 @@ export interface JobActionStore {
      * queues a continuation that runs in the author's worktree under the author's executor.
      * `id` may be ANY member of the thread.
      */
-    pokeWait(id: string, pokedBy: string | null): Promise<PokeWaitResult>;
+    pokeWait(id: string, pokedBy: string | null, admin?: boolean): Promise<PokeWaitResult>;
 
     /**
      * The user's reopening of a done task (issue #327): clears the done stamp on EVERY member of
@@ -408,7 +412,16 @@ export interface FollowUpRowInput {
     command: string;
     createdBy: string | null;
     idempotency?: IdempotencyInput | undefined;
+    /** The route's org-admin verdict; ignored for a null caller. */
+    admin?: boolean | undefined;
 }
+
+/**
+ * Whether the route's admin verdict counts: a caller with no account is never an admin. The thread's owner is its
+ * root's `execution_user_id`; `created_by` on a row is the ACTOR, which differs from the owner on an admin's turn.
+ */
+const adminActs = (createdBy: string | null, admin: boolean | undefined): boolean =>
+    admin === true && createdBy !== null;
 
 export type FollowUpRowResult = CreatedRef | 'missing' | 'task_done' | 'not_finished' | 'forbidden';
 
@@ -447,13 +460,14 @@ async function threadBusyInTx(tx: TransactionSql, orgId: string, rootJobId: stri
 /** createFollowUpRow's body, for a caller that already holds a transaction (the batch scheduler's repair). */
 export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput): Promise<FollowUpRowResult> {
     const { orgId, parentId, command, createdBy, idempotency: idem, connectionIds = [] } = input;
+    const admin = adminActs(createdBy, input.admin);
     // The read resolves the thread root the advisory lock below is keyed by.
     const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${parentId}
         `;
     if (!label) return 'missing';
     const replayed = await replayOf(tx, orgId, createdBy, idem);
-    if (replayed) return replayedFor(tx, { orgId, parentId, createdBy }, replayed);
+    if (replayed) return replayedFor(tx, { orgId, parentId, createdBy, admin }, replayed);
     // The root row, then the thread lock (the bind's order; the claim only tries): the eligibility check and the insert
     // must be atomic with a racing done on ANY member — not only on the parent row the CTE below locks — or a done
     // could commit between the check and the insert and leave queued work in a thread the user closed.
@@ -467,7 +481,9 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
                 from job
                 where org_id = ${orgId} and id = ${parentId}
                   and status in ('succeeded','failed','dead','stopped')
-                  and created_by is not distinct from ${createdBy}
+                  and (${admin}::boolean or (
+                      select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
+                  ) is not distinct from ${createdBy})
                   -- A named-profile review is not a task: a follow-up of it would run as an
                   -- ordinary job with the author's full env and token (issue #549).
                   and review_of is null
@@ -537,13 +553,16 @@ export async function followUpInTx(tx: TransactionSql, input: FollowUpRowInput):
  */
 async function replayedFor(
     tx: TransactionSql,
-    source: { orgId: string; parentId: string; createdBy: string | null },
+    source: { orgId: string; parentId: string; createdBy: string | null; admin: boolean },
     id: string
 ): Promise<CreatedRef | 'forbidden'> {
-    const { orgId, parentId, createdBy } = source;
+    const { orgId, parentId, createdBy, admin } = source;
     const [parent] = await tx<{ id: string }[]>`
         select id from job
-        where org_id = ${orgId} and id = ${parentId} and created_by is not distinct from ${createdBy}
+        where org_id = ${orgId} and id = ${parentId}
+          and (${admin}::boolean or (
+              select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
+          ) is not distinct from ${createdBy})
     `;
     return parent ? { id, replayed: true } : 'forbidden';
 }
@@ -602,28 +621,32 @@ async function threadRefusalOf(
  * `resumeSessionId: null, followUp: false` — with no claim-side rule added, and it lands in the
  * thread's own worktree because the worktree is keyed by `root_job_id`.
  */
-export async function createRetryRow(
-    sql: Sql,
-    input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
-): Promise<RetryRowResult> {
+export async function createRetryRow(sql: Sql, input: RetryRowInput): Promise<RetryRowResult> {
     return sql.begin((tx) => retryInTx(tx, input));
+}
+
+export interface RetryRowInput {
+    orgId: string;
+    id: string;
+    createdBy: string | null;
+    idempotency?: IdempotencyInput | undefined;
+    /** The route's org-admin verdict; ignored for a null caller. */
+    admin?: boolean | undefined;
 }
 
 export type RetryRowResult = CreatedRef | 'missing' | 'not_finished' | 'task_done' | 'forbidden';
 
 /** createRetryRow's body, for a caller that already holds a transaction (the batch scheduler). */
-export async function retryInTx(
-    tx: TransactionSql,
-    input: { orgId: string; id: string; createdBy: string | null; idempotency?: IdempotencyInput | undefined }
-): Promise<RetryRowResult> {
+export async function retryInTx(tx: TransactionSql, input: RetryRowInput): Promise<RetryRowResult> {
     const { orgId, id, createdBy, idempotency: idem } = input;
+    const admin = adminActs(createdBy, input.admin);
     // The read resolves the thread root the advisory lock below is keyed by.
     const [label] = await tx<{ repo: string | null; root_job_id: string }[]>`
             select repo, root_job_id from job where org_id = ${orgId} and id = ${id}
         `;
     if (!label) return 'missing';
     const replayed = await replayOf(tx, orgId, createdBy, idem);
-    if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy }, replayed);
+    if (replayed) return replayedFor(tx, { orgId, parentId: id, createdBy, admin }, replayed);
     // The root row, then the thread lock (the bind's order; the claim only tries): the eligibility check and the
     // insert must be atomic with a racing done on ANY member and with a claim of the head, or a done could commit
     // between the check and the insert and leave a fresh attempt queued into a closed thread.
@@ -638,7 +661,9 @@ export async function retryInTx(
                 select id, root_job_id
                 from job
                 where org_id = ${orgId} and id = ${id}
-                  and created_by is not distinct from ${createdBy}
+                  and (${admin}::boolean or (
+                      select r.execution_user_id from job r where r.org_id = ${orgId} and r.id = job.root_job_id
+                  ) is not distinct from ${createdBy})
                   -- A named-profile review is not a task: a retry of it would run as an ordinary
                   -- job with the author's full env and token, in the reviewer's worktree (#549).
                   and review_of is null
@@ -1147,21 +1172,25 @@ export async function removeJobThread(
  * woken continuation runs in the author's worktree): only the account that queued the thread —
  * or an anonymous caller on a thread with no author — gets past here.
  */
-type ControlledRoot = { ok: true; root: string } | { ok: false; refusal: 'missing' | 'forbidden' };
+type ControlledRoot =
+    | { ok: true; root: string; ownerId: string | null }
+    | { ok: false; refusal: 'missing' | 'forbidden' };
 
 async function resolveControlledRoot(
-    sql: Sql,
-    orgId: string,
+    { sql, orgId }: JobStoreContext,
     id: string,
-    caller: string | null
+    caller: string | null,
+    admin: boolean | undefined
 ): Promise<ControlledRoot> {
-    const [named] = await sql<{ root_job_id: string; created_by: string | null }[]>`
-        select root_job_id, created_by from job
-        where org_id = ${orgId} and id = ${id}
+    const [named] = await sql<{ root_job_id: string; owner_id: string | null }[]>`
+        select n.root_job_id, r.execution_user_id as owner_id
+        from job n
+        join job r on r.org_id = n.org_id and r.id = n.root_job_id
+        where n.org_id = ${orgId} and n.id = ${id}
     `;
     if (!named) return { ok: false, refusal: 'missing' };
-    if (named.created_by !== caller) return { ok: false, refusal: 'forbidden' };
-    return { ok: true, root: named.root_job_id };
+    if (named.owner_id !== caller && !adminActs(caller, admin)) return { ok: false, refusal: 'forbidden' };
+    return { ok: true, root: named.root_job_id, ownerId: named.owner_id };
 }
 
 /**
@@ -1175,10 +1204,11 @@ async function resolveControlledRoot(
 export async function cancelThreadWait(
     ctx: JobStoreContext,
     id: string,
-    cancelledBy: string | null
+    cancelledBy: string | null,
+    admin?: boolean
 ): ReturnType<JobStore['cancelWait']> {
-    const { sql, orgId, prs } = ctx;
-    const resolved = await resolveControlledRoot(sql, orgId, id, cancelledBy);
+    const { prs } = ctx;
+    const resolved = await resolveControlledRoot(ctx, id, cancelledBy, admin);
     if (!resolved.ok) return resolved.refusal;
     if (!prs) return 'no_wait';
     const cancelled = await prs.cancelWaitsForRoot(resolved.root, 'cancelled by user', undefined, cancelledBy);
@@ -1198,10 +1228,11 @@ export async function cancelThreadWait(
 export async function pokeThreadWait(
     ctx: JobStoreContext,
     id: string,
-    pokedBy: string | null
+    pokedBy: string | null,
+    admin?: boolean
 ): ReturnType<JobStore['pokeWait']> {
     const { sql, orgId, prs } = ctx;
-    const resolved = await resolveControlledRoot(sql, orgId, id, pokedBy);
+    const resolved = await resolveControlledRoot(ctx, id, pokedBy, admin);
     if (!resolved.ok) return resolved.refusal;
     if (!prs) return 'no_wait';
     const root = resolved.root;
@@ -1233,7 +1264,13 @@ export async function pokeThreadWait(
 
     let woken = false;
     for (const round of parked) {
-        const jobId = await wakeOneRound({ sql, orgId, prs }, root, round.workflow_node, false);
+        // An admin's poke is an admin's turn on the owner's thread: the actor rides into the wake transaction, which
+        // stamps the continuation row with it. The slice-2 notification joins that same transaction.
+        const actor =
+            pokedBy !== null && pokedBy !== resolved.ownerId
+                ? { userId: pokedBy, ownerId: resolved.ownerId }
+                : undefined;
+        const jobId = await wakeOneRound({ sql, orgId, prs, actor }, root, round.workflow_node, false);
         woken = woken || jobId !== null;
     }
     return { result: 'ok', woken };
