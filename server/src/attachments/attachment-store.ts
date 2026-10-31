@@ -27,6 +27,14 @@ export class AttachmentIntegrityError extends Error {
     }
 }
 
+/** A `bound` file whose object the store definitively does not hold: no retry will bring it back. */
+export class AttachmentGoneError extends Error {
+    constructor() {
+        super('attachment gone: the stored object is absent');
+        this.name = 'AttachmentGoneError';
+    }
+}
+
 /** `<prefix>_attachments/<org>/<id>`: the leading `_` fails the artifact key segment rule, so no artifact key can collide. */
 export const attachmentKey = (prefix: string, orgId: string, id: string): string =>
     `${prefix}_attachments/${orgId}/${id}`;
@@ -44,6 +52,12 @@ export interface AttachmentStore {
     meta(id: string, uploaderId: string): Promise<AttachmentMeta | null>;
     read(id: string, uploaderId: string): Promise<{ meta: AttachmentMeta; body: Uint8Array } | null>;
     remove(id: string, uploaderId: string): Promise<'deleted' | 'not-found'>;
+    /**
+     * A bound file's bytes for the worker route, whoever uploaded it, verified against the recorded sha256. Null when the
+     * row is not `bound`; `AttachmentGoneError` when the store answers that the object is absent; an unconfirmed read
+     * throws `AttachmentUnavailableError`.
+     */
+    readBound(id: string): Promise<{ meta: AttachmentMeta; body: Uint8Array } | null>;
 }
 
 const metaOf = (row: AttachmentRow): AttachmentMeta => ({
@@ -127,6 +141,16 @@ export function createAttachmentStore({
             if (!row) return null;
             const body = await confirmed('get', () => objects.get(row.objectKey));
             if (body === null) throw new AttachmentUnavailableError('the stored object could not be read');
+            return { meta: metaOf(row), body };
+        },
+
+        async readBound(id) {
+            const row = await rows.findBound(id);
+            if (!row) return null;
+            const body = await confirmed('get', () => objects.get(row.objectKey));
+            if (body === null) throw new AttachmentGoneError();
+            if (sha256Of(body) !== row.sha256)
+                throw new AttachmentIntegrityError('the stored body differs from the recorded sha256');
             return { meta: metaOf(row), body };
         },
 

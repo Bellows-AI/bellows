@@ -84,3 +84,64 @@ export async function revokeThreadAttachmentsInTx(tx: TransactionSql, orgId: str
         where org_id = ${orgId} and root_job_id = ${rootJobId} and state = 'bound'
     `;
 }
+
+/** One file of a run's manifest: what the runner fetches and verifies, and the task that carried it. */
+export interface ClaimAttachment {
+    id: string;
+    name: string;
+    mediaType: string;
+    size: number;
+    sha256: string;
+    originJobId: string;
+}
+
+/**
+ * Whose files a job carries: the thread root and the `created_at` cutoff, read in one statement. An ordinary row is
+ * its own thread's root at its own creation; a review is a thread of its own that binds nothing, so it takes the row it
+ * reviews. An unknown job, or a review whose reviewed row is gone, throws: an unconfirmed read never becomes "no files".
+ * The cutoff stays text, and is cast through text, because the driver serializes a timestamptz parameter at millisecond precision.
+ */
+export async function effectiveAttachmentScope(
+    sql: Sql | TransactionSql,
+    orgId: string,
+    jobId: string
+): Promise<{ scopeRoot: string; cutoff: string }> {
+    const [row] = await sql<{ scope_root: string | null; cutoff: string | null; reviewed_missing: boolean }[]>`
+        select coalesce(r.root_job_id, j.root_job_id)::text as scope_root,
+               coalesce(r.created_at, j.created_at)::text as cutoff,
+               (j.review_of is not null and r.id is null) as reviewed_missing
+        from job j
+        left join job r on r.org_id = j.org_id and r.id = j.review_of
+        where j.org_id = ${orgId} and j.id = ${jobId}
+    `;
+    if (!row) throw new Error(`attachment scope: no such job ${jobId}`);
+    if (row.reviewed_missing) throw new Error(`attachment scope: the job ${jobId} reviews a row that is gone`);
+    return { scopeRoot: row.scope_root!, cutoff: row.cutoff! };
+}
+
+/** The files the job's run carries, computed at read: the oldest carrier first, each file in the order named. */
+export async function effectiveAttachments(
+    sql: Sql | TransactionSql,
+    orgId: string,
+    jobId: string
+): Promise<ClaimAttachment[]> {
+    const { scopeRoot, cutoff } = await effectiveAttachmentScope(sql, orgId, jobId);
+    const rows = await sql<
+        { bound_job_id: string; id: string; name: string; media_type: string; size: number; sha256: string }[]
+    >`
+        select a.bound_job_id, a.id, a.name, a.media_type, a.size_bytes::float8 as size, a.sha256
+        from input_attachment a
+        join job b on b.org_id = a.org_id and b.id = a.bound_job_id
+        where a.org_id = ${orgId} and a.root_job_id = ${scopeRoot} and a.state = 'bound'
+          and b.created_at <= (${cutoff}::text)::timestamptz
+        order by b.created_at, a.position
+    `;
+    return rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        mediaType: row.media_type,
+        size: row.size,
+        sha256: row.sha256,
+        originJobId: row.bound_job_id,
+    }));
+}

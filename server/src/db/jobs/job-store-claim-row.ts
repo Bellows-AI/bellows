@@ -1,5 +1,7 @@
 import type { JobMode } from '@factory-ai/core';
 import type { TransactionSql } from 'postgres';
+import { effectiveAttachments } from './job-store-attachments.js';
+import type { Claim } from './job-store-types.js';
 
 /** The claimed row as the acquisition's RETURNING reads it (`job-store-claim.ts`): what `buildClaimResult` turns into a `Claim`. */
 export interface ClaimCandidateRow {
@@ -44,4 +46,16 @@ export async function rootRowFree(tx: TransactionSql, orgId: string, id: string,
     const rows =
         await tx`select id from job where org_id = ${orgId} and id = ${rootJobId} for no key update skip locked`;
     return rows.length > 0;
+}
+
+/**
+ * The claim with the files its run carries, read inside the claim transaction. A read that throws fails the claim (it is
+ * retried): a claim never goes out with a manifest that is silently empty.
+ */
+export async function withClaimAttachments(
+    tx: TransactionSql,
+    orgId: string,
+    claim: Omit<Claim, 'attachments'>
+): Promise<Claim> {
+    return { ...claim, attachments: await effectiveAttachments(tx, orgId, claim.id) };
 }

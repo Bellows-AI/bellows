@@ -11,6 +11,7 @@ import { isKeySegment, type StreamRef } from '../../artifacts/keys.js';
 import type { RestoreScope } from '../../db/restore-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { artifactsFor } from './job-context.js';
+import { registerAttachmentContentRoute } from './job-handlers-attachment-content.js';
 import { CONTROL_BODY_LIMIT, HTTP_NOT_FOUND, HTTP_OK, HTTP_UNAVAILABLE, leaseLost, notFoundJob } from './job-limits.js';
 import { bad, body, guard } from '../helpers.js';
 import { resolveJobRoute } from '../route-guards.js';
@@ -259,11 +260,12 @@ export async function handleTranscriptChunk(orgs: OrgRegistry, request: FastifyR
     return sendChunk(request, reply, { artifacts: r.artifacts, ref, offset });
 }
 
-/** Registers the four restore reads; `jobRoutes` calls it once. */
+/** Registers the four restore reads and the runner's attachment read, which shares their lease credential; `jobRoutes` calls it once. */
 export function registerRestoreRoutes(app: FastifyInstance, orgs: OrgRegistry) {
     const limit = { bodyLimit: CONTROL_BODY_LIMIT };
     app.post('/api/jobs/:id/checkpoint', limit, (request, reply) => handleCheckpoint(orgs, request, reply));
     app.post('/api/jobs/:id/checkpoint/chunk', limit, (request, reply) => handleCheckpointChunk(orgs, request, reply));
     app.post('/api/jobs/:id/transcripts', limit, (request, reply) => handleTranscripts(orgs, request, reply));
     app.post('/api/jobs/:id/transcripts/chunk', limit, (request, reply) => handleTranscriptChunk(orgs, request, reply));
+    registerAttachmentContentRoute(app, orgs);
 }

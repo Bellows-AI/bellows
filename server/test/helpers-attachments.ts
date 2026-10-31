@@ -177,6 +177,10 @@ export function memoryAttachmentRows(): AttachmentRows & { all: AttachmentRow[] 
             if (row.state === 'bound') return { ...row };
             return row.state === 'ready' && row.uploaderId === uploaderId ? { ...row } : null;
         },
+        async findBound(id) {
+            const row = byId(id);
+            return row?.state === 'bound' ? { ...row } : null;
+        },
         async beginDelete(id, uploaderId) {
             const row = byId(id);
             if (!row || row.uploaderId !== uploaderId) return null;

@@ -429,6 +429,10 @@ function stubStore(
             boom();
             return { result: 'missing' };
         },
+        async attachmentSet() {
+            boom();
+            return { result: 'missing' };
+        },
         async session(id, _token, sessionId, evidence) {
             boom();
             stub.sessions.push({ id, sessionId });

@@ -6,6 +6,7 @@
  */
 
 import type { AttachmentMeta } from '@factory-ai/core';
+import type { ClaimAttachment } from './job-store-attachments.js';
 import type { GateRunStore } from './job-store-gate-runs.js';
 import type { PrOperationStore } from './job-store-pr-operations.js';
 import type { TranscriptToolStore } from './job-store-transcript-tools.js';
@@ -512,6 +513,12 @@ export interface ClaimHelperPlan {
 export interface Claim {
     id: string;
     command: string;
+    /**
+     * The files this run carries (112), computed at read: the thread's files bound at or before the row's creation, oldest
+     * carrier first. A review carries the row it reviews. The runner fetches each through the lease-scoped worker route
+     * and verifies its sha256.
+     */
+    attachments: ClaimAttachment[];
     attempts: number;
     maxAttempts: number;
     /**
