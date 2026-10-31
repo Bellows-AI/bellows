@@ -119,7 +119,7 @@ interface Entry {
     id: string;
     path: string;
     mediaType: string;
-    derived?: { path: string; kind: string };
+    derived?: { path: string; kind: string; truncated?: boolean };
     status?: string;
     reason?: string;
 }
@@ -168,10 +168,86 @@ describe('the attachment extract script', () => {
         ]);
 
         expect(verdict).toMatchObject({ ok: true, derived: 1, unreadable: 0 });
-        expect(entries[0]!.derived).toEqual({ path: `${ID(1)}.txt`, kind: 'text' });
-        expect(text(`${ID(1)}.txt`)).toBe(`Heading\n${SENTENCE} & more\n`);
-        expect(statSync(join(target, `${ID(1)}.txt`)).mode & 0o777).toBe(0o444);
+        expect(entries[0]!.derived).toEqual({ path: `${ID(1)}.derived.txt`, kind: 'text' });
+        expect(text(`${ID(1)}.derived.txt`)).toBe(`Heading\n${SENTENCE} & more\n`);
+        expect(statSync(join(target, `${ID(1)}.derived.txt`)).mode & 0o777).toBe(0o444);
         expect(sha(readFileSync(join(target, `${ID(1)}.docx`)))).toBe(sha(original));
+    });
+
+    it('never overwrites an original: a DOCX delivered at <id>.txt keeps its bytes, the text goes to <id>.derived.txt', async () => {
+        const original = docx(paragraph(SENTENCE));
+        const { entries } = await extract([{ id: ID(9), name: 'x.txt', mediaType: DOCX, bytes: original }]);
+
+        expect(entries[0]!.path).toBe(`${ID(9)}.txt`);
+        expect(entries[0]!.derived!.path).toBe(`${ID(9)}.derived.txt`);
+        expect(sha(readFileSync(join(target, `${ID(9)}.txt`)))).toBe(sha(original));
+        expect(text(`${ID(9)}.derived.txt`)).toContain(SENTENCE);
+    });
+
+    it('reads headers, footers and footnotes too, after the body', async () => {
+        const part = (root: string, inner: string) =>
+            Buffer.from(`<?xml version="1.0"?><w:${root} xmlns:w="w">${inner}</w:${root}>`);
+        const original = docx(paragraph('BODY-TEXT'), {
+            'word/header1.xml': part('hdr', paragraph('HEADER-TEXT')),
+            'word/footer1.xml': part('ftr', paragraph('FOOTER-TEXT')),
+            'word/footnotes.xml': part('footnotes', paragraph('FOOTNOTE-TEXT')),
+            'word/endnotes.xml': part('endnotes', paragraph('ENDNOTE-TEXT')),
+        });
+        const { entries } = await extract([{ id: ID(1), name: 'a.docx', mediaType: DOCX, bytes: original }]);
+        const derived = text(entries[0]!.derived!.path);
+
+        expect(derived.split('\n').filter(Boolean)).toEqual([
+            'BODY-TEXT',
+            'ENDNOTE-TEXT',
+            'FOOTER-TEXT',
+            'FOOTNOTE-TEXT',
+            'HEADER-TEXT',
+        ]);
+        expect(entries[0]!.derived!.truncated).toBeUndefined();
+    });
+
+    it('marks the derived text truncated when a later part does not fit the shared cap', async () => {
+        const huge = Buffer.from(`<w:hdr xmlns:w="w">${paragraph('y'.repeat(17 * 1024 * 1024))}</w:hdr>`);
+        const { entries } = await extract([
+            {
+                id: ID(1),
+                name: 'a.docx',
+                mediaType: DOCX,
+                bytes: docx(paragraph(SENTENCE), { 'word/header1.xml': huge }),
+            },
+        ]);
+
+        expect(entries[0]!.derived).toEqual({ path: `${ID(1)}.derived.txt`, kind: 'text', truncated: true });
+        expect(text(`${ID(1)}.derived.txt`)).toContain(SENTENCE);
+    });
+
+    it.each([
+        ['a body cut after a paragraph', Buffer.from(`<w:document xmlns:w="w"><w:body>${paragraph(SENTENCE)}`)],
+        ['a document with no closing body', Buffer.from(`<w:document xmlns:w="w">${paragraph(SENTENCE)}</w:document>`)],
+        [
+            'a tag cut off at the end',
+            Buffer.from(`<w:document xmlns:w="w"><w:body>${paragraph(SENTENCE)}</w:body></w:docu`),
+        ],
+    ])('%s is unreadable (malformed), never partial text', async (_, xml) => {
+        const { entries } = await extract([
+            { id: ID(1), name: 'a.docx', mediaType: DOCX, bytes: zipOf({ 'word/document.xml': xml }) },
+        ]);
+
+        expect(entries[0]).toMatchObject({ status: 'unreadable', reason: 'malformed' });
+        expect(entries[0]!.derived).toBeUndefined();
+    });
+
+    it('a malformed header makes the whole DOCX unreadable', async () => {
+        const { entries } = await extract([
+            {
+                id: ID(1),
+                name: 'a.docx',
+                mediaType: DOCX,
+                bytes: docx(paragraph(SENTENCE), { 'word/header1.xml': Buffer.from('<w:hdr xmlns:w="w"><w:p>') }),
+            },
+        ]);
+
+        expect(entries[0]).toMatchObject({ status: 'unreadable', reason: 'malformed' });
     });
 
     it('never opens a macro part: a .docm-style package yields only its document text', async () => {
@@ -197,7 +273,7 @@ describe('the attachment extract script', () => {
         expect(entries[0]).toMatchObject({ status: 'unreadable', reason: 'limit' });
         expect(entries[0]!.derived).toBeUndefined();
         expect(Date.now() - started).toBeLessThan(20_000);
-        expect(readdirSync(target).some((name) => name === `${ID(3)}.txt`)).toBe(false);
+        expect(readdirSync(target).some((name) => name === `${ID(3)}.derived.txt`)).toBe(false);
     });
 
     it('a malformed zip is unreadable and its original stays', async () => {
@@ -227,8 +303,8 @@ describe('the attachment extract script', () => {
             const original = pdfOf(SENTENCE);
             const { entries } = await extract([{ id: ID(7), name: 'doc.pdf', mediaType: PDF, bytes: original }]);
 
-            expect(entries[0]!.derived).toEqual({ path: `${ID(7)}.txt`, kind: 'text' });
-            expect(text(`${ID(7)}.txt`)).toContain(SENTENCE);
+            expect(entries[0]!.derived).toEqual({ path: `${ID(7)}.derived.txt`, kind: 'text' });
+            expect(text(`${ID(7)}.derived.txt`)).toContain(SENTENCE);
             expect(sha(readFileSync(join(target, `${ID(7)}.pdf`)))).toBe(sha(original));
         }
     );

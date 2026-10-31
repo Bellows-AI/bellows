@@ -2,8 +2,8 @@
 // Delivers a task's input files into a directory: each file of the claim's list is read from the control
 // endpoint's `/input/<delivery>/<id>` route and lands at `<id><ext>`, behind a `manifest.json` written last.
 //
-// A display name is data, not a path: only its extension (when it is plain) reaches a file name, and the name
-// itself lives in manifest.json alone. Files already present with the right sha256 are kept; the rest are
+// A display name is data, not a path: it never reaches a file name (the extension comes from the media type), and
+// the name itself lives in manifest.json alone. Files already present with the right sha256 are kept; the rest are
 // fetched into `.staging-<seq>/`, checked against the claim's digest, and renamed into place only once every
 // one of them is in hand, so a failed run leaves no partial file at a final path. The new manifest is renamed
 // in last, and only after it is published does the script remove what it no longer lists (stale files and
@@ -39,7 +39,6 @@ const HTTP_UNPROCESSABLE = 422;
 const UNAVAILABLE_STATUSES = new Set([HTTP_GONE, HTTP_UNPROCESSABLE]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256 = /^[0-9a-f]{64}$/;
-const EXTENSION = /^\.[A-Za-z0-9]{1,16}$/;
 
 class Unavailable extends Error {}
 
@@ -58,10 +57,18 @@ const holds = (file, entry) => {
     return bytes !== null && bytes.length === entry.size && sha256(bytes) === entry.sha256;
 };
 
-const pathOf = (entry) => {
-    const ext = path.extname(String(entry.name));
-    return entry.id + (EXTENSION.test(ext) ? ext : '');
+/** The one extension a delivered file keeps: decided by its validated media type, never by its display name. */
+const EXTENSIONS = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp',
+    'application/pdf': '.pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'text/plain': '.txt',
+    'text/markdown': '.md',
+    'text/csv': '.csv',
 };
+const pathOf = (entry) => entry.id + (EXTENSIONS[entry.mediaType] || '');
 
 const listOf = (raw) => {
     const list = JSON.parse(raw || '');

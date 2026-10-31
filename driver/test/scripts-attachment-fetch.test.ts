@@ -150,18 +150,21 @@ describe('the attachment fetch script', () => {
 
     it('lands every file at <id><ext> with exact bytes and writes manifest.json last', async () => {
         const binary = Buffer.from(Array.from({ length: 300 }, (_, i) => i % 256));
-        const files = [fileOf(ID_A, 'notes.txt', Buffer.from('hello\n')), fileOf(ID_B, 'photo.PNG', binary)];
+        const files = [
+            fileOf(ID_A, 'notes.txt', Buffer.from('hello\n')),
+            { ...fileOf(ID_B, 'photo.PNG', binary), mediaType: 'image/png' },
+        ];
         const url = await serve();
 
         const verdict = await fetchAll(url, files);
 
         expect(verdict).toMatchObject({ ok: true, files: 2, fetched: 2 });
-        expect(names()).toEqual([`${ID_A}.txt`, `${ID_B}.PNG`, 'manifest.json']);
+        expect(names()).toEqual([`${ID_A}.txt`, `${ID_B}.png`, 'manifest.json']);
         expect(readFileSync(join(target, `${ID_A}.txt`))).toEqual(Buffer.from('hello\n'));
-        expect(readFileSync(join(target, `${ID_B}.PNG`))).toEqual(binary);
+        expect(readFileSync(join(target, `${ID_B}.png`))).toEqual(binary);
         expect(manifestOnDisk().files).toEqual([
             { ...files[0], path: `${ID_A}.txt` },
-            { ...files[1], path: `${ID_B}.PNG` },
+            { ...files[1], path: `${ID_B}.png` },
         ]);
     });
 
@@ -175,9 +178,19 @@ describe('the attachment fetch script', () => {
 
         expect(await fetchAll(url, files)).toMatchObject({ ok: true });
 
-        expect(names()).toEqual([ID_A, `${ID_B}.txt`, `${ID_C}.txt`, 'manifest.json']);
+        // the extension follows the media type, so even a traversal name lands at <id>.txt
+        expect(names()).toEqual([`${ID_A}.txt`, `${ID_B}.txt`, `${ID_C}.txt`, 'manifest.json']);
         expect(manifestOnDisk().files.map((f) => f.name)).toEqual(['../../etc/passwd', 'quote".txt', 'quote".txt']);
         expect(existsSync(join(root, 'etc'))).toBe(false);
+    });
+
+    it('takes the extension from the media type: a PDF displayed as x.txt lands at <id>.pdf', async () => {
+        const entry = { ...fileOf(ID_A, 'x.txt', Buffer.from('%PDF-1.4')), mediaType: 'application/pdf' };
+        const url = await serve();
+
+        expect(await fetchAll(url, [entry])).toMatchObject({ ok: true });
+
+        expect(names()).toEqual([`${ID_A}.pdf`, 'manifest.json']);
     });
 
     it('fills an empty target directory with the full set', async () => {
@@ -361,11 +374,11 @@ describe('the attachment fetch script', () => {
         for (const delivery of [1, 2]) {
             const verdict = await fetchAll(url, [entry], { EXTRACT_SCRIPT: extractor });
             expect(verdict, `delivery ${delivery}`).toMatchObject({ ok: true });
-            expect(names()).toEqual([`${ID_A}.docx`, `${ID_A}.txt`, 'manifest.json']);
-            expect(readFileSync(join(target, `${ID_A}.txt`), 'utf8')).toBe('sealed sentence\n');
-            expect(statSync(join(target, `${ID_A}.txt`)).mode & 0o777).toBe(0o444);
+            expect(names()).toEqual([`${ID_A}.derived.txt`, `${ID_A}.docx`, 'manifest.json']);
+            expect(readFileSync(join(target, `${ID_A}.derived.txt`), 'utf8')).toBe('sealed sentence\n');
+            expect(statSync(join(target, `${ID_A}.derived.txt`)).mode & 0o777).toBe(0o444);
             expect(statSync(target).mode & 0o777).toBe(0o555);
-            expect(manifestOnDisk().files[0]).toMatchObject({ derived: { path: `${ID_A}.txt`, kind: 'text' } });
+            expect(manifestOnDisk().files[0]).toMatchObject({ derived: { path: `${ID_A}.derived.txt`, kind: 'text' } });
         }
     });
 
