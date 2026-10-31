@@ -37,6 +37,8 @@ export interface AttachmentRows {
     markReady(id: string): Promise<AttachmentRow | null>;
     /** A readable row: a `ready` draft of this uploader, or any `bound` file of the org. */
     find(id: string, uploaderId: string): Promise<AttachmentRow | null>;
+    /** A `bound` file of the org, whoever uploaded it: the worker route's read, after the job's set named it. */
+    findBound(id: string): Promise<AttachmentRow | null>;
     /** The uploader's draft moved to `deleting` (or already `deleting`/`deleted`); null for any other row. */
     beginDelete(id: string, uploaderId: string): Promise<AttachmentRow | null>;
     /** `deleting` to `deleted`. */
@@ -148,6 +150,15 @@ export function createAttachmentRows({
                   and ((state = 'bound' and exists (
                            select 1 from job j where j.org_id = input_attachment.org_id and j.id = input_attachment.bound_job_id))
                        or (state = 'ready' and uploader_id = ${uploaderId}))
+            `;
+            return row ? rowOf(row) : null;
+        },
+
+        async findBound(id) {
+            await ready;
+            const [row] = await sql<DbRow[]>`
+                select id, uploader_id, name, media_type, size_bytes::int as size_bytes, sha256, object_key, state
+                from input_attachment where org_id = ${orgId} and id = ${id} and state = 'bound'
             `;
             return row ? rowOf(row) : null;
         },
