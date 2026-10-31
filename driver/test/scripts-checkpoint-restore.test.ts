@@ -37,6 +37,7 @@ interface Transcripts {
     }[];
     data: Map<string, Buffer>;
     corrupt?: string;
+    unavailable?: string;
 }
 
 const JOB_A = '11111111-1111-4111-8111-111111111111';
@@ -139,6 +140,10 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             if (transcripts && path === '/checkpoint/transcripts/chunk') {
                 const q = url.searchParams;
                 const key = `${q.get('jobId')}/${q.get('claimSeq')}/${q.get('session')}`;
+                if (transcripts.unavailable === key) {
+                    reply.writeHead(503).end('{}');
+                    return;
+                }
                 const whole = transcripts.data.get(key);
                 const first = transcripts.streams.find((s) => `${s.jobId}/${s.claimSeq}/${s.session}` === key)
                     ?.chunks[0]?.offset;
@@ -363,6 +368,50 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             expect(readdirSync(sessionsDir()).sort()).toEqual(['alpha.jsonl', 'beta.jsonl']);
         });
 
+        // A repository-free thread has no tree and no checkpoint: only the transcripts rebuild the session.
+        it('rebuilds the sessions alone when no checkout is named, creating no tree', async () => {
+            const { transcripts, original } = thread();
+            const { url } = await serve(Buffer.alloc(0), { transcripts });
+            mkdirSync(restoreDir(), { recursive: true });
+            const { stdout } = await run('node', ['--no-warnings', join(SCRIPTS, 'checkpoint-restore.cjs')], {
+                env: {
+                    ...process.env,
+                    ...SCRIPT_IDENTITY,
+                    CHUNKS: '[]',
+                    RESTORE_URL: url,
+                    RESTORE_TOKEN: TOKEN,
+                    SESSIONS_DIR: sessionsDir(),
+                },
+                encoding: 'utf8',
+            });
+
+            expect(JSON.parse(stdout.trim().split('\n').pop()!)).toMatchObject({ ok: true, restored: true });
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl')).equals(original.alpha!)).toBe(true);
+            expect(readFileSync(join(sessionsDir(), 'beta.jsonl')).equals(original.beta!)).toBe(true);
+            expect(readdirSync(restoreDir())).toEqual([]);
+        });
+
+        it('keeps a session file already on the volume when no checkout is named: it may be newer', async () => {
+            const { transcripts, original } = thread();
+            const { url } = await serve(Buffer.alloc(0), { transcripts });
+            mkdirSync(sessionsDir(), { recursive: true });
+            writeFileSync(join(sessionsDir(), 'alpha.jsonl'), 'newer than the board\n');
+            const { stdout } = await run('node', ['--no-warnings', join(SCRIPTS, 'checkpoint-restore.cjs')], {
+                env: {
+                    ...process.env,
+                    CHUNKS: '[]',
+                    RESTORE_URL: url,
+                    RESTORE_TOKEN: TOKEN,
+                    SESSIONS_DIR: sessionsDir(),
+                },
+                encoding: 'utf8',
+            });
+
+            expect(JSON.parse(stdout.trim().split('\n').pop()!)).toMatchObject({ ok: true });
+            expect(readFileSync(join(sessionsDir(), 'alpha.jsonl'), 'utf8')).toBe('newer than the board\n');
+            expect(readFileSync(join(sessionsDir(), 'beta.jsonl')).equals(original.beta!)).toBe(true);
+        });
+
         // A limit, not a goal (docs/workspace.md): the stream identity carries no parent session, so a subagent
         // transcript the exporter found under <session>/subagents/ is restored beside the sessions.
         it('restores a subagent transcript as a session file of its own, beside the sessions', async () => {
@@ -454,6 +503,27 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
             expect(existsSync(restoredTree())).toBe(false);
             expect(readdirSync(restoreDir())).toEqual([]);
+        });
+
+        // Infrastructure loss interrupts a restore; only a confirmed corrupt or dropped stream is a verdict.
+        it('answers transient, not a verdict, when the transcript endpoint keeps answering 503', async () => {
+            const { transcripts } = thread();
+
+            const verdict = await restoreSessions({ ...transcripts, unavailable: `${JOB_B}/1/beta` });
+
+            expect(verdict).toMatchObject({ ok: false, transient: true });
+            expect(verdict).not.toHaveProperty('kind');
+        });
+
+        it('answers transient when the control endpoint cannot be reached', async () => {
+            workedTree();
+            const { transcripts } = thread();
+            const { chunks } = checkpointStream();
+
+            const verdict = await restore(chunks, 'http://127.0.0.1:1', { SESSIONS_DIR: sessionsDir() });
+
+            expect(verdict).toMatchObject({ ok: false, transient: true });
+            expect(transcripts.streams.length).toBeGreaterThan(0);
         });
 
         it.each([

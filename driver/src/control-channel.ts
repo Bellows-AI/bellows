@@ -448,3 +448,19 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
         },
     };
 }
+
+/** What a control token is given after it opens: the relays and the task inputs it serves (`GET /input/<name>/<id>`). */
+export const attachersOf = ({
+    attachExporter,
+    attachCheckpoint,
+    attachConnection,
+    attachInputs,
+}: ControlChannel): Pick<
+    ControlChannel,
+    'attachExporter' | 'attachCheckpoint' | 'attachConnection' | 'attachInputs'
+> => ({
+    attachExporter,
+    attachCheckpoint,
+    attachConnection,
+    attachInputs,
+});

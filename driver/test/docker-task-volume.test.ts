@@ -247,7 +247,7 @@ describe("the thread's docker task volume (issue #775)", () => {
 });
 
 const POINTER = { bytes: 10, truncated: false, chunks: [{ offset: 0, length: 10, sha256: 'a'.repeat(64) }] };
-const continuing = { ...job, followUp: true } as BoardJob;
+const continuing = { ...job, repo: 'acme/widgets', followUp: true } as BoardJob;
 
 describe("the thread's docker task volume across generations (issue #775)", () => {
     const board = (

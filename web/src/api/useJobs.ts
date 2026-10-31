@@ -35,6 +35,7 @@ export type FailureKind =
     | 'config'
     | 'policy'
     | 'checkpoint_unrestorable'
+    | 'attachment_unavailable'
     | 'runner_error';
 
 /** Where one declared verification gate stands. The board stores current/last only — no history. */

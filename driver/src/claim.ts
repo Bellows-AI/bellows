@@ -14,6 +14,7 @@ import { TASK_MOUNT, UUID, taskRootOf } from './task-volume.js';
 import { SUPERVISOR_ENV } from './supervisor-contract.js';
 
 export { UUID };
+export { attachmentsDir } from './task-volume.js';
 
 /**
  * What an agent session id may look like before it is interpolated into runner argv — claude's

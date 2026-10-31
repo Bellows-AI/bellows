@@ -18,6 +18,8 @@ import { killedOutcome, ledgerOf, RunnerAbandoned, RunnerKilled, RunnerVanished,
 import { jobPath, jobPodsPath } from './k8s-auxspec.js';
 import { acquireClaim, releaseClaimAfterGroupEnd } from './k8s-fence.js';
 import { removeTaskVolumes } from './k8s-task-volume.js';
+import { claimContinuesSession } from '../claim.js';
+import { deliverTaskInputs, hasInputs } from '../task-inputs.js';
 import { CheckpointUnrestorable, restoreTaskTree, unrestorableResult } from '../task-restore.js';
 import { ensureGroup, finishGroup, forgetGroup, groupsOf, runnerGroupOf, takeGroupDown } from './k8s-group.js';
 import { claudeTurnsStep, opencodeReadoutStep, runnerName } from './k8s-podspec.js';
@@ -500,9 +502,13 @@ async function syncCheckout(
     session: RunSession | null = null,
     { githubToken, signal }: { githubToken?: string | undefined; signal?: AbortSignal | undefined } = {}
 ): Promise<SyncResult> {
-    if (!checkoutDir(job)) return { ok: true, reason: null }; // nothing synced, nothing to fail either
+    const repoJob = checkoutDir(job) !== null;
+    // A command-only job syncs nothing, but its session may be owed a rebuild (a lost volume) and its inputs a delivery,
+    // and both need the group: it plans the volume. A first claim with nothing attached has nothing to do here.
+    if (!repoJob && !claimContinuesSession(job) && !hasInputs(job)) return { ok: true, reason: null };
 
-    await acquireClaim(deps, job);
+    // The checkout fence is the repo job's: the sync is the first writer on its worktree.
+    if (repoJob) await acquireClaim(deps, job);
     // A group that could not come up is thrown, typed when the pod's words prove why (`StartupRefused`,
     // the loop's one startup decision, #824 D11) and plain for the lease otherwise. The claim goes
     // back only once nothing of this group can still write the worktree (`takeGroupDown`).
@@ -522,7 +528,13 @@ async function syncCheckout(
             githubToken,
             removeOlder: (generations) => removeTaskVolumes(signal ? withSignal(deps, signal) : deps, job, generations),
         });
-        const result = restored && !restored.ok ? restored : await runSyncStep(host, job, githubToken);
+        // The agent is released only after the restore, the sync and the inputs all reported ok.
+        let result = restored && !restored.ok ? restored : await runSyncStep(host, job, githubToken);
+        if (result.ok) {
+            // The checkout result (fingerprint, conflicts) is the sync's to return; delivery only refuses.
+            const delivered = await deliverTaskInputs(host, job, { signal });
+            if (!delivered.ok) result = delivered;
+        }
         // A failed sync means no runner follows — nobody else would give the checkout back.
         if (!result.ok) await failed();
         return result;

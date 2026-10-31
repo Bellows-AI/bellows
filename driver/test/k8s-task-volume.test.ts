@@ -27,7 +27,7 @@ const job = (over: Partial<BoardJob> = {}) =>
         workspacePath: 'acme/33333333-3333-4333-8333-333333333333',
         ...over,
     }) as BoardJob;
-const continuing = () => job({ followUp: true });
+const continuing = () => job({ repo: 'acme/widgets', followUp: true });
 const name = (generation: number) => taskVolumeName(job(), generation);
 const claim = (generation: number, terminating = false) => ({
     metadata: {
