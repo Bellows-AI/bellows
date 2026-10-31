@@ -217,9 +217,9 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
     /** The action matrix: stoppable = queued/running, done = the one primary, closed = text. */
     const me = { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', login: 'me', name: null, avatarUrl: null };
     const other = { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', login: 'kim', name: null, avatarUrl: null };
-    const viewer = { loading: false, id: me.id };
-    const someoneElse = { loading: false, id: 'someone-else' };
-    const stranger = { loading: false, id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' };
+    const viewer = { loading: false, id: me.id, admin: false };
+    const someoneElse = { loading: false, id: 'someone-else', admin: false };
+    const stranger = { loading: false, id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', admin: false };
     const moving = { exitCode: null, finishedAt: null, output: null };
     const unstarted = { ...moving, startedAt: null };
     const wait = { waitReason: 'review', waitingSince: '2026-09-01T12:30:00.000Z' };
@@ -347,7 +347,7 @@ describe('the task page header — the action matrix (plan §3.2)', () => {
         },
         {
             label: 'failed and not eligible, a session still loading: Mark done',
-            args: { jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null } },
+            args: { jobs: [job({ status: 'failed', author: me })], viewer: { loading: true, id: null, admin: false } },
             primary: 'Mark done',
             lacks: ['Ask for another pass'],
         },

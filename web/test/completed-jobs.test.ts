@@ -52,6 +52,7 @@ const job = (id: string): Job => ({
     bindingRevision: 0,
     integrationRequirements: [],
     executionUser: null,
+    actingFor: null,
 });
 
 const json = (body: unknown, status = 200): Response =>

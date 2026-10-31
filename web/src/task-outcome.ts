@@ -280,22 +280,29 @@ export function isWaitingForReview(job: Job): boolean {
 export interface FollowUpViewer {
     loading: boolean;
     id: string | null;
+    /** The session's role is admin: an admin may continue another member's task. */
+    admin: boolean;
 }
 
 /** Whether the viewer may continue the task, or the one reason they may not. */
 export type FollowUpEligibility = 'pending' | 'not-finished' | 'closed' | 'not-author' | 'eligible';
 
+/** Who owns the thread: the root's frozen execution user, else the row's author. An admin's turn is authored by the admin. */
+export const threadOwnerOf = (job: Job) => job.executionUser ?? job.author;
+
 /**
  * Whether the viewer may send a follow-up on `latest` — the row the follow-up is posted to. The
- * author check mirrors the board's null-safe one on that row (`job-store-actions.ts`,
- * `created_by is not distinct from`): a null author matches only a null viewer. A loading session
+ * owner check mirrors the board's null-safe one on the thread root (`job-store-actions.ts`,
+ * `execution_user_id is not distinct from`): a null owner matches only a null viewer, and a
+ * signed-in admin may continue any member's task. A loading session
  * answers `pending` first, so the author's own task never flashes a refusal.
  */
 export function followUpEligibility(latest: Job, viewer: FollowUpViewer): FollowUpEligibility {
     if (viewer.loading) return 'pending';
     if (!isTerminal(latest.status)) return 'not-finished';
     if (latest.doneAt !== null) return 'closed';
-    if ((latest.author?.id ?? null) !== viewer.id) return 'not-author';
+    if (viewer.admin && viewer.id !== null) return 'eligible';
+    if ((threadOwnerOf(latest)?.id ?? null) !== viewer.id) return 'not-author';
     return 'eligible';
 }
 
