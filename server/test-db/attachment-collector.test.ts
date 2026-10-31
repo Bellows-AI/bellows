@@ -42,13 +42,14 @@ beforeAll(async () => {
     store = createJobStore({ sql, orgId: ORG });
 });
 
-const collectorOf = (over: Partial<ObjectStore> = {}, prefix = PREFIX) =>
+const collectorOf = (over: Partial<ObjectStore> = {}, graceMs = 0, prefix = PREFIX) =>
     createAttachmentCollector({
         sql,
         ready: Promise.resolve(),
         objects: { ...objects, ...over } as ObjectStore,
         prefix,
         draftTtlHours: TTL_HOURS,
+        graceMs,
     });
 
 /** One attachment row with its object written, `ageHours` old. */
@@ -244,12 +245,13 @@ describe.runIf(enabled)('attachment collector', () => {
         }
     });
 
-    const storeOf = (over: Partial<ObjectStore> = {}) =>
+    const storeOf = (over: Partial<ObjectStore> = {}, writeBoundMs?: number) =>
         createAttachmentStore({
             rows: createAttachmentRows({ sql, orgId: ORG, ready: Promise.resolve() }),
             objects: { ...objects, ...over } as ObjectStore,
             orgId: ORG,
             prefix: PREFIX,
+            ...(writeBoundMs === undefined ? {} : { writeBoundMs }),
         });
     const input = (text: string, idempotencyKey?: string) => ({
         uploaderId: ALICE.id,
@@ -264,6 +266,10 @@ describe.runIf(enabled)('attachment collector', () => {
         `;
         return row!;
     };
+    const age = (id: string) =>
+        sql`update input_attachment set created_at = now() - interval '100 hours', last_attempt_at = null where id = ${id}`;
+    const ageFlip = (id: string) =>
+        sql`update input_attachment set deleting_at = now() - interval '1 day' where id = ${id}`;
 
     it('refuses the replay of an upload the sweep already took, and writes nothing', async () => {
         const key = `idem-${randomUUID()}`;
@@ -274,7 +280,7 @@ describe.runIf(enabled)('attachment collector', () => {
         });
         await expect(broken.upload(input('late', key))).rejects.toBeInstanceOf(AttachmentUnavailableError);
         const row = await lastRowOf(key);
-        await sql`update input_attachment set created_at = now() - interval '100 hours' where id = ${row.id}`;
+        await age(row.id);
         await collectorOf().collect();
         expect(await stateOf(row.id)).toBe('deleted');
 
@@ -283,43 +289,108 @@ describe.runIf(enabled)('attachment collector', () => {
         expect(await present(row.object_key)).toBe(false);
     });
 
-    it.each(['deleting', 'deleted'])(
-        'removes the object an upload wrote after the sweep moved its row to %s',
-        async (to) => {
-            const key = `idem-${randomUUID()}`;
-            const racing = storeOf({
-                put: async (k, body) => {
-                    await sql`update input_attachment set state = ${to} where idempotency_key = ${key}`;
-                    return objects.put(k, body);
-                },
-            });
-
-            await expect(racing.upload(input('raced', key))).rejects.toBeInstanceOf(AttachmentGoneError);
-
-            const row = await lastRowOf(key);
-            expect(await present(row.object_key)).toBe(false);
-        }
-    );
-
-    it('leaves the row deleting for the next pass when the late object cannot be removed', async () => {
+    it('refuses a write after the flip, and deletes a write that landed inside the bound once the grace passed', async () => {
         const key = `idem-${randomUUID()}`;
         const racing = storeOf({
-            put: async (k, body) => {
-                await sql`update input_attachment set state = 'deleted' where idempotency_key = ${key}`;
-                return objects.put(k, body);
-            },
-            delete: async () => {
-                throw new Error('store down');
+            put: async (k, body, call) => {
+                await sql`update input_attachment set state = 'deleting', deleting_at = now() where idempotency_key = ${key}`;
+                return objects.put(k, body, call);
             },
         });
 
         await expect(racing.upload(input('raced', key))).rejects.toBeInstanceOf(AttachmentUnavailableError);
 
         const row = await lastRowOf(key);
+        expect(await present(row.object_key)).toBe(true);
+        await collectorOf({}, 600_000 + 120_000).collect();
         expect(await stateOf(row.id)).toBe('deleting');
         expect(await present(row.object_key)).toBe(true);
-        await collectorOf().collect();
+        await ageFlip(row.id);
+        await collectorOf({}, 600_000 + 120_000).collect();
         expect(await stateOf(row.id)).toBe('deleted');
         expect(await present(row.object_key)).toBe(false);
+        await expect(storeOf().upload(input('raced', key))).rejects.toBeInstanceOf(AttachmentGoneError);
+    });
+
+    it.each(['put response lost', 'head failed'])(
+        'removes the object after %s once the grace passed',
+        async (failure) => {
+            const key = `idem-${randomUUID()}`;
+            const failing = storeOf(
+                failure === 'head failed'
+                    ? {
+                          head: async () => {
+                              throw new Error('timeout');
+                          },
+                      }
+                    : {
+                          put: async (k, body) => {
+                              await objects.put(k, body);
+                              throw new Error('response lost');
+                          },
+                      }
+            );
+            await expect(failing.upload(input('orphan', key))).rejects.toBeInstanceOf(AttachmentUnavailableError);
+            const row = await lastRowOf(key);
+            expect(await present(row.object_key)).toBe(true);
+
+            await age(row.id);
+            await collectorOf({}, 600_000 + 120_000).collect();
+            expect(await stateOf(row.id)).toBe('deleting');
+            await ageFlip(row.id);
+            await collectorOf({}, 600_000 + 120_000).collect();
+
+            expect(await stateOf(row.id)).toBe('deleted');
+            expect(await present(row.object_key)).toBe(false);
+        }
+    );
+
+    it('keeps a draft with a recent upload attempt out of the expiry', async () => {
+        const row = await file('pending', TTL_HOURS + 1);
+        await sql`update input_attachment set last_attempt_at = now() where id = ${row.id}`;
+
+        await collectorOf().collect();
+
+        expect(await stateOf(row.id)).toBe('pending');
+    });
+
+    it('does not finalize a row that was re-flipped after the collector read it', async () => {
+        const row = await file('ready');
+        await sql`update input_attachment set state = 'deleting', deleting_at = now() - interval '1 day' where id = ${row.id}`;
+        const slow = collectorOf({
+            delete: async (k) => {
+                await sql`update input_attachment set deleting_at = now() where id = ${row.id}`;
+                return objects.delete(k);
+            },
+        });
+
+        await slow.collect();
+
+        expect(await stateOf(row.id)).toBe('deleting');
+    });
+
+    it('aborts an upload write that outlives the bound and leaves no ready row', async () => {
+        const key = `idem-${randomUUID()}`;
+        const hanging = storeOf(
+            {
+                put: (_k, _body, call) =>
+                    new Promise((_resolve, reject) => {
+                        call?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+                    }),
+            },
+            50
+        );
+
+        await expect(hanging.upload(input('slow', key))).rejects.toBeInstanceOf(AttachmentUnavailableError);
+
+        const row = await lastRowOf(key);
+        expect(await stateOf(row.id)).toBe('pending');
+        expect(await present(row.object_key)).toBe(false);
+    });
+
+    it('stops a filesystem write that was aborted before it began', async () => {
+        const key = `${PREFIX}${randomUUID()}`;
+        await expect(objects.put(key, new Uint8Array([1]), { signal: AbortSignal.abort() })).rejects.toThrow();
+        expect(await objects.head(key)).toBeNull();
     });
 });

@@ -3,6 +3,7 @@ import type { ArtifactBackend } from '../artifacts/backend.js';
 import type { ObjectStore } from '../artifacts/object-store.js';
 import type { ArtifactsConfig } from '../config-artifacts.js';
 import type { ServerMetrics } from '../metrics.js';
+import { UPLOAD_WRITE_BOUND_MS } from './attachment-store.js';
 
 /**
  * The attachment sweep (docs/persistence.md): abandoned drafts expire, files whose task is gone are
@@ -14,7 +15,10 @@ import type { ServerMetrics } from '../metrics.js';
 /** How often a replica runs a pass. */
 export const ATTACHMENT_COLLECT_INTERVAL_MS = 600_000;
 const PASS_DEADLINE_MS = 300_000;
+/** Beyond the upload write bound: covers a stamp's commit latency and a store that finishes a request just after its abort. */
+const DELETE_MARGIN_MS = 120_000;
 const BATCH = 100;
+const MS_PER_SECOND = 1000;
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 /** Rows carry a generated key; only keys under this segment are ever deleted, whatever a row says. */
 const ATTACHMENT_SEGMENT = '_attachments/';
@@ -30,6 +34,7 @@ interface DeletingRow {
     org_id: string;
     id: string;
     object_key: string;
+    deleting_at: string | null;
 }
 
 export interface AttachmentCollector {
@@ -42,12 +47,15 @@ export function createAttachmentCollector({
     objects,
     prefix,
     draftTtlHours,
+    graceMs = UPLOAD_WRITE_BOUND_MS + DELETE_MARGIN_MS,
 }: {
     sql: Sql;
     ready: Promise<unknown>;
     objects: ObjectStore;
     prefix: string;
     draftTtlHours: number;
+    /** How long after `deleting_at` an object waits before it is deleted; tests only shorten it. */
+    graceMs?: number;
 }): AttachmentCollector {
     const namespace = `${prefix}${ATTACHMENT_SEGMENT}`;
 
@@ -59,6 +67,7 @@ export function createAttachmentCollector({
                 from (
                     select org_id, id from input_attachment
                     where state in ('pending', 'ready') and created_at < now() - make_interval(hours => ${draftTtlHours})
+                      and coalesce(last_attempt_at, created_at) < now() - make_interval(hours => ${draftTtlHours})
                     order by created_at limit ${BATCH} for update skip locked
                 ) c
                 where a.org_id = c.org_id and a.id = c.id and a.state in ('pending', 'ready')
@@ -106,6 +115,7 @@ export function createAttachmentCollector({
         const done = await sql`
             update input_attachment set state = 'deleted', deleted_at = now()
             where org_id = ${row.org_id} and id = ${row.id} and state = 'deleting'
+              and deleting_at is not distinct from ${row.deleting_at}::text::timestamptz
             returning id
         `;
         return done.length;
@@ -124,8 +134,10 @@ export function createAttachmentCollector({
             let last = NIL_UUID;
             for (let more = true; more && live(); ) {
                 const batch = await sql<DeletingRow[]>`
-                    select org_id, id, object_key from input_attachment
-                    where state = 'deleting' and id > ${last} order by id limit ${BATCH}
+                    select org_id, id, object_key, deleting_at::text as deleting_at from input_attachment
+                    where state = 'deleting' and id > ${last}
+                      and (deleting_at is null or deleting_at < now() - make_interval(secs => ${graceMs / MS_PER_SECOND}))
+                    order by id limit ${BATCH}
                 `;
                 more = batch.length === BATCH;
                 for (const row of batch) {

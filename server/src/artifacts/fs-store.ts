@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
-import type { ObjectStore, PutResult } from './object-store.js';
+import type { ObjectCallOptions, ObjectStore, PutResult } from './object-store.js';
 
 const NOT_FOUND = 'ENOENT';
 const ALREADY_EXISTS = 'EEXIST';
@@ -23,12 +23,13 @@ export function createFilesystemStore(root: string): ObjectStore {
         return path;
     };
     return {
-        async put(key, body): Promise<PutResult> {
+        async put(key, body, options?: ObjectCallOptions): Promise<PutResult> {
             const path = pathOf(key);
             await mkdir(dirname(path), { recursive: true });
             const temp = `${path}.${randomUUID()}.tmp`;
-            await writeFile(temp, body);
             try {
+                await writeFile(temp, body, options?.signal ? { signal: options.signal } : {});
+                options?.signal?.throwIfAborted();
                 await link(temp, path);
                 return 'created';
             } catch (error) {
