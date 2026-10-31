@@ -8,6 +8,8 @@ import type { AskedQuestion, Claim, JobStore } from '../src/db/jobs/job-store-ty
 import { createNotificationOutboxStore } from '../src/notifications/outbox-store.js';
 import { createNotificationSubscriptionStore } from '../src/notifications/subscription-store.js';
 import type { NotificationSubscriptionStore, SubscriptionFields } from '../src/notifications/subscription-store.js';
+import type { SecretStore } from '../src/secrets/secret-store.js';
+import { testSecretStore } from './env-secrets-harness.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 
@@ -24,12 +26,14 @@ const db = useTestDb({ orgs: [ORG], users: [ANSWERER], max: 4 });
 let sql: Sql;
 let store: JobStore;
 let subs: NotificationSubscriptionStore;
+let secrets: SecretStore;
 
 beforeAll(() => {
     if (!enabled) return;
     sql = db.sql;
     store = createJobStore({ sql, orgId: ORG });
-    subs = createNotificationSubscriptionStore({ sql, orgId: ORG });
+    secrets = testSecretStore(sql);
+    subs = createNotificationSubscriptionStore({ sql, orgId: ORG, secrets, secretLog: () => {} });
 });
 
 const asked = (...texts: string[]): AskedQuestion[] =>
@@ -168,8 +172,8 @@ describe.skipIf(!enabled)('task.question — database', () => {
     });
 
     it('a question fans out to task.question subscriptions only', async () => {
-        const wanted = await subs.create(fields(['task.question']));
-        const other = await subs.create(fields(['task.blocked']));
+        const wanted = await subs.create(fields(['task.question']), `https://hook.example.test/${randomUUID()}`);
+        const other = await subs.create(fields(['task.blocked']), `https://hook.example.test/${randomUUID()}`);
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1');
         await store.answerQuestion(id, 'toolu_1', { 'Which db?': 'ok' }, ANSWERER.id);
@@ -183,11 +187,11 @@ describe.skipIf(!enabled)('task.question — database', () => {
     });
 
     it('the outbox lease carries the question id and texts', async () => {
-        const sub = await subs.create(fields(['task.question']));
+        const sub = await subs.create(fields(['task.question']), `https://hook.example.test/${randomUUID()}`);
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1', 'Which db?', 'Which cache?');
 
-        const outbox = createNotificationOutboxStore({ sql, orgId: ORG });
+        const outbox = createNotificationOutboxStore({ sql, orgId: ORG, secrets });
         const lease = await outbox.lease(1000, 60_000);
         try {
             const item = lease!.items.find((i) => i.subscriptionId === sub.id && i.event.jobId === id);

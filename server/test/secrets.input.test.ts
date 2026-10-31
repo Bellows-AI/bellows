@@ -94,6 +94,17 @@ describe('identity', () => {
         }
     });
 
+    it('accepts the notification-credential purpose', () => {
+        expect(
+            validateIdentity({
+                ...base,
+                scope: { type: 'organization', id: 'org-1' },
+                purpose: 'notification-credential',
+                owningRecord: { type: 'notification-subscription', id: 'sub-1' },
+            })
+        ).toBeNull();
+    });
+
     it('treats every field as part of the identity', () => {
         expect(sameIdentity(base, structuredClone(base))).toBe(true);
         const variants: SecretIdentity[] = [

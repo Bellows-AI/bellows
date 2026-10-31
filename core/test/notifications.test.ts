@@ -121,6 +121,7 @@ describe('isSendResult', () => {
             { status: 'delivered', externalId: 'm1' },
             { status: 'retryable', reason: 'transport' },
             { status: 'retryable', reason: 'rate-limited', retryAfterMs: 0 },
+            { status: 'retryable', reason: 'credential-unavailable' },
             { status: 'permanent', reason: 'payload-refused' },
         ]) {
             expect(isSendResult(ok), JSON.stringify(ok)).toBe(true);

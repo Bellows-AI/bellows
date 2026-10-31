@@ -3,7 +3,7 @@ import { ADMIN_ROLE, ERROR_CODES } from '@factory-ai/core';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { ConnectorRegistry } from '../notifications/connector.js';
 import { parseSubscriptionFields } from '../notifications/subscription-fields.js';
-import type { NotificationSubscriptionStore } from '../notifications/subscription-store.js';
+import type { NotificationSubscriptionStore, SubscriptionView } from '../notifications/subscription-store.js';
 import type { OrgRegistry } from '../orgs.js';
 import { bad, guard } from './helpers.js';
 
@@ -82,9 +82,10 @@ export const notificationSubscriptionRoutes =
         app.post(PATH, { bodyLimit: BODY_LIMIT }, async (request, reply) => {
             const ctx = await gate(orgs, request, reply, { write: true });
             if (!ctx) return reply;
-            const parsed = parseSubscriptionFields(request.body, connectors);
+            const parsed = parseSubscriptionFields(request.body, connectors, { credentialRequired: true });
             if (!parsed.ok) return refusal(reply, parsed);
-            const saved = await guard(reply, log(request), () => ctx.store.create(parsed.fields));
+            const { fields, credential } = parsed;
+            const saved = await guard(reply, log(request), () => ctx.store.create(fields, credential as string));
             if (!saved.ok) return reply;
             return reply.code(HTTP_CREATED).send(saved.value);
         });
@@ -94,12 +95,12 @@ export const notificationSubscriptionRoutes =
             if (!ctx) return reply;
             const id = idOf(request);
             if (!id) return noSuchSubscription(reply);
-            const parsed = parseSubscriptionFields(request.body, connectors);
+            const parsed = parseSubscriptionFields(request.body, connectors, { credentialRequired: false });
             if (!parsed.ok) return refusal(reply, parsed);
-            const saved = await guard(reply, log(request), () => ctx.store.update(id, parsed.fields));
+            const { fields, credential } = parsed;
+            const saved = await guard(reply, log(request), () => ctx.store.update(id, fields, credential));
             if (!saved.ok) return reply;
-            if (!saved.value) return noSuchSubscription(reply);
-            return reply.code(HTTP_OK).send(saved.value);
+            return replaced(reply, saved.value);
         });
 
         app.delete(`${PATH}/:id`, { bodyLimit: CONTROL_BODY_LIMIT }, async (request, reply) => {
@@ -113,6 +114,15 @@ export const notificationSubscriptionRoutes =
             return reply.code(HTTP_OK).send({ id, removed: true });
         });
     };
+
+/** A PUT's outcome: the row, a missing row, or a kind change that needs a new credential. */
+function replaced(reply: FastifyReply, value: SubscriptionView | null | 'kind-changed') {
+    if (value === 'kind-changed') {
+        return bad(reply, ERROR_CODES.BAD_BODY, 'credential required when connectorKind changes');
+    }
+    if (!value) return noSuchSubscription(reply);
+    return reply.code(HTTP_OK).send(value);
+}
 
 function refusal(reply: FastifyReply, parsed: { code: string; message: string; problems?: string[] }) {
     if (!parsed.problems) return bad(reply, parsed.code, parsed.message);
