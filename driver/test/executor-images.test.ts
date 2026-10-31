@@ -1235,6 +1235,17 @@ describe('the shared executor skills', () => {
         }
     });
 
+    it('ships the runtime connection ask byte-identical, root-owned and executable, in both images', () => {
+        expect(read('docker/opencode-executor/connection-ask.cjs')).toBe(
+            read('docker/claude-executor/connection-ask.cjs')
+        );
+        for (const image of ['claude', 'opencode']) {
+            const dockerfile = read(`docker/${image}-executor/Dockerfile`);
+            expect(dockerfile, image).toContain('COPY connection-ask.cjs /usr/local/bin/connection-ask.cjs');
+            expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/connection-ask\.cjs/);
+        }
+    });
+
     it('keeps the repo dev skills in .claude/skills, the directory both tools read', () => {
         expect(existsSync(join(ROOT, '.opencode/skills'))).toBe(false);
         expect(readdirSync(join(ROOT, '.claude/skills'))).toEqual(

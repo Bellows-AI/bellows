@@ -203,6 +203,9 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/jobs/:id/retry', 'user'],
     // The owner binds a connection of their own to the thread (BEL-59): a person's action, never a worker's.
     ['/api/jobs/:id/connections', 'user'],
+    // The same owner declines a provider the thread asked for; the runner's own ask is a worker route.
+    ['/api/jobs/:id/requirements/:provider/dismiss', 'user'],
+    ['/api/jobs/:id/requirements', 'worker'],
     ['/api/jobs/:id/done', 'user'],
     // Reopen (issue #327) is done's inverse and a person's verdict the same way: a worker
     // token un-closing tasks it never held would move audit rows for no run it owns.

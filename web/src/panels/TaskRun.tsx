@@ -13,6 +13,8 @@ import {
     prNumber,
     type ThreadPublish,
 } from '../task-outcome.js';
+import type { FollowUpViewer } from '../task-outcome.js';
+import { TaskConnect } from './TaskConnect.js';
 import { TaskQuestion } from './TaskQuestion.js';
 
 /**
@@ -106,11 +108,32 @@ function RawOutput({
 /** How the page answers a question: the board's answer POST, settled to the state it shows. */
 export type OnAnswer = (jobId: string, questionId: string, answers: Record<string, string>) => Promise<AnswerOutcome>;
 
-/** The run's AskUserQuestion calls, oldest first — each one its own form or its settled record. */
-function RunQuestions({ job, onAnswer }: { job: Job; onAnswer: OnAnswer }) {
+/** What the newest run needs to raise the thread's connection requirements. */
+export interface ConnectContext {
+    viewer: FollowUpViewer;
+    /** Re-reads the thread once a requirement was bound or dismissed. */
+    onChanged: () => void;
+}
+
+/**
+ * The run's decisions: the thread's open connection requirements first (only the newest run carries
+ * `connect`), then its AskUserQuestion calls, oldest first — each one its own form or its settled record.
+ */
+function RunQuestions({
+    job,
+    onAnswer,
+    connect,
+}: {
+    job: Job;
+    onAnswer: OnAnswer;
+    connect?: ConnectContext | undefined;
+}) {
     const asked = [...job.questions].sort((a, b) => a.askedAt.localeCompare(b.askedAt));
     return (
         <>
+            {connect !== undefined ? (
+                <TaskConnect job={job} viewer={connect.viewer} onChanged={connect.onChanged} />
+            ) : null}
             {asked.map((question) => (
                 <TaskQuestion
                     key={question.id}
@@ -265,6 +288,7 @@ export function TaskRun({
     index,
     liveRef,
     onAnswer,
+    connect,
 }: {
     /** The run's row. */
     job: Job;
@@ -273,6 +297,8 @@ export function TaskRun({
     /** Ref for the newest non-terminal run's output pre; absent everywhere else. */
     liveRef?: Ref<HTMLPreElement> | undefined;
     onAnswer: OnAnswer;
+    /** Present on the newest run only: the thread's connection requirements render there. */
+    connect?: ConnectContext | undefined;
 }) {
     const terminal = isTerminal(job.status);
     const parked = job.status === 'queued';
@@ -292,7 +318,7 @@ export function TaskRun({
                 open={open}
                 onOpenChange={setOpen}
                 liveRef={liveRef}
-                questions={<RunQuestions job={job} onAnswer={onAnswer} />}
+                questions={<RunQuestions job={job} onAnswer={onAnswer} connect={connect} />}
             />
             <RunMetaFooter job={job} parked={parked} />
         </article>

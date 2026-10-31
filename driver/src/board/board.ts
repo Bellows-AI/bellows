@@ -1,3 +1,10 @@
+import {
+    type ConnectionOutcome,
+    connectionCalls,
+    connectionOutcomesOf,
+    type RequirementVerdict,
+} from './board-connection.js';
+import { heldBeat } from './board-heartbeat.js';
 import type { Interruption } from './board-interruption.js';
 import { artifactCalls } from '../artifact-calls.js';
 import { type CheckpointRead, checkpointCalls, type TranscriptRef, type TranscriptStream } from './board-checkpoint.js';
@@ -135,6 +142,8 @@ export interface BoardJob {
      * adoption mark, helper receipts and commit title read the same text on each.
      */
     continuesInterrupted: boolean;
+    /** What became of the connection requirement an earlier attempt raised; told to the resumed agent. */
+    connectionOutcomes?: ConnectionOutcome[];
     /**
      * The account that queued the job, or null for an unattributed one.
      *
@@ -278,6 +287,7 @@ export interface BoardJob {
 export type LeaseState = 'held' | 'lost';
 
 export type { Interruption } from './board-interruption.js';
+export type { ConnectionOutcome, RequirementAnswer, RequirementVerdict } from './board-connection.js';
 
 /**
  * The job statuses the board answers a lease lookup with — the row statuses of
@@ -325,7 +335,13 @@ export const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
  * on every beat — the driver applies them idempotently.
  */
 export type HeartbeatVerdict =
-    | { result: 'held'; cancelRequested: boolean; answeredQuestions?: AnsweredQuestion[] }
+    | {
+          result: 'held';
+          cancelRequested: boolean;
+          answeredQuestions?: AnsweredQuestion[];
+          /** An open runtime connection requirement this job's attempt raised: hand the attempt back. */
+          requirementWait?: boolean;
+      }
     | 'lost'
     | 'removed';
 
@@ -589,6 +605,8 @@ export interface Board extends PhaseCheckpointBoard, RecordBoard {
      * the lease is no longer this attempt's, or the job is gone.
      */
     interrupt(job: BoardJob, interruption: Interruption): Promise<LeaseState | 'exhausted'>;
+    /** Tells the board the task lacks a connection its helper needs (docs/connections.md); a throw is no answer. */
+    requireConnection(job: BoardJob, provider: string, target?: string): Promise<RequirementVerdict>;
     /**
      * Asks the board what it thinks of a batch of job ids (issue #301): each known id's status
      * and CURRENT lease token. Unknown ids are ABSENT from the answer — that absence is the
@@ -747,13 +765,6 @@ const servicePlanOf = (value: unknown): Pick<BoardJob, 'services'> & { refusal: 
     return { refusal: null, services: value };
 };
 
-/** A heartbeat the board held: the stop flag, and every question of the lease the board has an answer for. */
-async function heldBeat(response: Response): Promise<HeartbeatVerdict> {
-    const body = (await response.json()) as { cancelRequested?: boolean; answeredQuestions?: unknown };
-    const answered = Array.isArray(body.answeredQuestions) ? (body.answeredQuestions as AnsweredQuestion[]) : [];
-    return { result: 'held', cancelRequested: body.cancelRequested === true, answeredQuestions: answered };
-}
-
 /** The board's answer to a question report, read as a verdict. */
 function questionVerdictOf(response: Response): QuestionVerdict {
     if (response.status === HTTP_TOO_MANY_REQUESTS) return 'refused';
@@ -770,13 +781,14 @@ function claimOf(wire: Partial<BoardJob>): BoardJob {
     // must not survive under exactOptionalPropertyTypes, which refuses assigning
     // `undefined` to this optional property directly — the conditional spread below is
     // the only way to represent "absent".
-    const { helperPlans, turnContext, services, reviewerProfiles, ...claimed } = wire;
+    const { helperPlans, turnContext, services, reviewerProfiles, connectionOutcomes, ...claimed } = wire;
     const plan = servicePlanOf(services);
     return {
         ...(claimed as BoardJob),
         ...(Array.isArray(helperPlans) ? { helperPlans } : {}),
         ...(plan.services ? { services: plan.services } : {}),
         ...reviewerProfilesOf(reviewerProfiles),
+        ...connectionOutcomesOf(connectionOutcomes),
         ...knownTurnContext(turnContext),
         masterPrompt: textOrNull(claimed.masterPrompt),
         resumeSessionId: claimed.resumeSessionId ?? null,
@@ -943,6 +955,7 @@ export function createBoard({
         ...artifactCalls({ url, token, fetch }),
         ...checkpointCalls(post),
         ...githubCredentialCall({ url, fetch }),
+        ...connectionCalls(post),
 
         ...reclaimCalls(post, leaseSeconds),
 

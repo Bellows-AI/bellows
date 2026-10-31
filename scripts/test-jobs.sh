@@ -3823,6 +3823,85 @@ ask_roundtrip_lane() {
     stop_driver
 }
 
+# the runtime connection requirement, end to end. The real claude-executor runs the Jira helper
+# (a scripted Bash step) for a task that has no Jira connection: the helper asks on the control socket, the
+# driver relays it to the board, the board holds the task queued behind an open requirement, and the driver
+# ends the run as a hand-back (not failed). Binding a connection through the API releases the claim: the next
+# run resumes the SAME session and the scripted model ends it. The connection is seeded only after the task
+# waits: a user with a lone Jira connection would have it bound by default.
+connection_roundtrip_lane() {
+    local image=claude-executor ask_pid ask_port id body_json waited org user conn rev i
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        bad 'a runtime connection requirement holds the task' "the $image image is missing — run make runners"
+        return
+    fi
+    stop_driver
+    # Auto mode asks the model to classify a Bash call; the scripted endpoint cannot, and the call is blocked.
+    # The helper reaches the board from inside the container, where the driver's loopback URL is not the host's.
+    RUNNER_SKIP_PERMISSIONS=1 RUNNER_STATS_URL="http://host.docker.internal:$PORT" start_driver "$image"
+
+    node scripts/fake-model-endpoint.mjs --steps '[{"tool":"Bash","input":{"command":"node /usr/local/share/factory-skills/jira/jira.cjs issue ABC-1; echo helper-exit=$?"}}]' >"$work/fake-connect.port" &
+    ask_pid=$!
+    lane_endpoint_started "$ask_pid"
+    for _ in $(seq 1 20); do
+        [ -s "$work/fake-connect.port" ] && break
+        sleep 0.25
+    done
+    ask_port="$(cat "$work/fake-connect.port")"
+    point_runners_at "$ask_port"
+    id="$(create_job 'use jira, which this task has no connection for')"
+
+    waited=''
+    for i in $(seq 1 150); do
+        body_json="$(body "$(api GET "/api/jobs/$id")")"
+        case "$(field "$body_json" status)" in
+        failed | dead | succeeded | stopped) break ;;
+        esac
+        if [ "$(field "$body_json" status)" = queued ] && [ "$(node -e 'try { process.stdout.write(String(JSON.parse(process.argv[1]).integrationRequirements.length)); } catch { process.stdout.write("0"); }' "$body_json")" = 1 ]; then
+            waited=1
+            break
+        fi
+        sleep 1
+    done
+    [ -n "$waited" ] && ok 'the asking task is queued behind one open requirement, not failed' ||
+        bad 'the asking task is queued behind one open requirement, not failed' \
+            "$(field "$body_json" status); the helper's result: $(curl -s --max-time 5 "http://127.0.0.1:$ask_port/steps" | node -e 'let s="";process.stdin.on("data",(d)=>s+=d).on("end",()=>{try{process.stdout.write(String(JSON.parse(s).results[0].text).replace(/\n/g,"|").slice(-330))}catch{}})'); driver: $(grep -F "job $id" "$work/driver.log" | grep -i 'connect\|requirement' | tail -4 | cut -c1-300); board: $(grep -E 'requirements|credentials/connections|/attempt' "$work/server.log" | tail -6 | cut -c1-300)"
+    expect_field 'the hand-back refunds the attempt' "$body_json" attempts 0
+    local session
+    session="$(field "$body_json" sessionId)"
+    [ -n "$session" ] && ok 'the waiting task kept its session' || bad 'the waiting task kept its session' "$body_json"
+
+    org="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -c "select org_id from job where id = '$id'" | tr -d '\r')"
+    user="$(compose exec -T postgres psql -U factory -d "$DB" -qtA -c "select id from app_user where github_login = '__local__'" | tr -d '\r')"
+    conn="$(DATABASE_URL="$DATABASE_URL" LANE_ORG="$org" LANE_USER="$user" node --input-type=module -e '
+import postgres from "postgres";
+import { createConnectionGrants } from "./server/dist/db/connection-grants.js";
+const sql = postgres(process.env.DATABASE_URL, { max: 1 });
+const made = await createConnectionGrants({ sql, orgId: process.env.LANE_ORG }).attachGrantConnection({
+    principal: { kind: "user", userId: process.env.LANE_USER },
+    provider: "jira",
+    externalAccountId: "lane-account",
+    authority: { scopes: ["read:jira-work"] },
+    resource: { id: "lane-cloud", label: "example.atlassian.net" },
+    access: "read",
+});
+await sql.end();
+process.stdout.write(made.ok ? made.connectionId : "");
+')"
+    [ -n "$conn" ] && ok 'a Jira connection is seeded for the task owner' || bad 'a Jira connection is seeded for the task owner' "org=$org user=$user"
+    rev="$(field "$body_json" bindingRevision)"
+    expect_status 'the owner binds the connection to the waiting task' 200 POST "/api/jobs/$id/connections" "{\"connectionId\":\"$conn\",\"bindingRevision\":${rev:-0}}"
+
+    expect_contains 'the released task runs again and succeeds' "$(await_settled "$id" 180)" succeeded
+    body_json="$(body "$(api GET "/api/jobs/$id")")"
+    expect_field 'the resumed run is the same session' "$body_json" sessionId "$session"
+    expect_field 'the requirement is closed' "$(node -e 'process.stdout.write(JSON.stringify({ open: JSON.parse(process.argv[1]).integrationRequirements.length }))' "$body_json")" open 0
+    lane_endpoint_stop "$ask_pid"
+    stop_driver
+}
+
+connection_roundtrip_lane
+
 ask_roundtrip_lane
 
 fi

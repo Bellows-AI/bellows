@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { CONNECTION_BODY_LIMIT, CONNECTION_PATH, type ConnectionRelay, serveConnection } from './connection-control.js';
 import { readBody, respondJson } from './http.js';
 import { PUBLISH_BODY_LIMIT, type PublishRelay, servePublish } from './publish/publish-control.js';
 import {
@@ -36,7 +37,8 @@ import {
  *  - the EXPORTER token — all the transcript exporter holds — carries the transcript chunks
  *    (`/export`) and nothing else;
  *  - the AGENT token — all the agent container holds — reaches only the draft publication
- *    (`POST /publish`) and the named reviewers (`/review`), the two routes the baked skills call.
+ *    (`POST /publish`), the named reviewers (`/review`) and the connection ask (`POST /connection`),
+ *    the routes the baked skills call.
  *
  * A token used on another's route is 403; a gate token is no key here, and an unknown or closed
  * token is 401. One entry per attempt, so one per lease.
@@ -50,6 +52,7 @@ export const PUBLISH_PATH = '/publish';
 export const QUESTION_PATH = '/question';
 /** The reviewer routes beside them (issue #549): `POST /review`, `GET /review/:key`. */
 export const REVIEW_PATH = '/review';
+export { CONNECTION_PATH };
 
 const HTTP_OK = 200;
 const HTTP_UNAUTHORIZED = 401;
@@ -77,6 +80,8 @@ export interface ControlChannel {
     attachExporter(token: string, exporter: ExportRelay): void;
     /** Gives an open token the relay of its supervisor's checkpoint (issue #775): the `/checkpoint` routes answer 400 until then. */
     attachCheckpoint(token: string, checkpoint: CheckpointRelay): void;
+    /** Gives an open token the relay of its agent's connection ask: `/connection` answers 503 until then. */
+    attachConnection(token: string, connection: ConnectionRelay): void;
     /** Whether the supervisor has contacted this token — its control poll, or a question POST. */
     polled(token: string): boolean;
     /** Raises the stop; repeated calls and unknown tokens do nothing. */
@@ -103,7 +108,7 @@ export interface ControlChannel {
     serve(request: IncomingMessage, reply: ServerResponse, auth: string): Promise<boolean>;
 }
 
-type Route = 'checkpoint' | 'control' | 'export' | 'publish' | 'question' | 'report' | 'review' | 'step';
+type Route = 'checkpoint' | 'connection' | 'control' | 'export' | 'publish' | 'question' | 'report' | 'review' | 'step';
 
 /** A path that is a POST of its own, or a GET of `<path>/<id>`: the shape the question and review routes share. */
 const isPostOrGetOf = (request: IncomingMessage, path: string): boolean => {
@@ -127,6 +132,7 @@ function routeOf(request: IncomingMessage): Route | null {
     if (url === EXPORT_PATH || url.startsWith(`${EXPORT_PATH}/`)) return 'export';
     if (url === CHECKPOINT_PATH || url.startsWith(`${CHECKPOINT_PATH}/`)) return 'checkpoint';
     if (request.method === 'POST' && url === PUBLISH_PATH) return 'publish';
+    if (request.method === 'POST' && url === CONNECTION_PATH) return 'connection';
     if (isPostOrGetOf(request, QUESTION_PATH)) return 'question';
     const stepRoute = stepRouteOf(request, url);
     if (stepRoute) return stepRoute;
@@ -136,7 +142,7 @@ function routeOf(request: IncomingMessage): Route | null {
 /** The routes each token opens: the supervisor's, the exporter's one and the agent's two. */
 const SUPERVISOR_ROUTES: readonly Route[] = ['checkpoint', 'control', 'question', 'report', 'step'];
 const EXPORTER_ROUTES: readonly Route[] = ['export'];
-const AGENT_ROUTES: readonly Route[] = ['publish', 'review'];
+const AGENT_ROUTES: readonly Route[] = ['connection', 'publish', 'review'];
 
 /** `GET /step`, `POST /step/:id` and `POST /report`: the supervised steps' routes, under the supervisor token. */
 function serveSupervisorStep(
@@ -216,6 +222,10 @@ const serveQuestion = (control: ControlEntry, request: IncomingMessage, stale: S
 /** `POST /publish`: the body names nothing and is only drained, bounded. */
 const serveDraftPublish = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
     afterBody(request, PUBLISH_BODY_LIMIT, stale, () => servePublish(control.publishing, control.publisher));
+
+/** `POST /connection`: the provider the agent's helper needs, relayed to the board. */
+const serveConnectionAsk = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
+    afterBody(request, CONNECTION_BODY_LIMIT, stale, (raw) => serveConnection(control.connecting, raw));
 
 /** `POST /review` / `GET /review/:key`, once the token is known. */
 const serveReview = (control: ControlEntry, request: IncomingMessage, stale: Stale) =>
@@ -310,6 +320,7 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
         revokeExporter: (exporterToken) => void exporters.delete(exporterToken),
         attachExporter: (token, exporter) => attachRelay(controls.get(token)?.exporting, exporter),
         attachCheckpoint: (token, checkpoint) => attachRelay(controls.get(token)?.checkpointing, checkpoint),
+        attachConnection: (token, connection) => attachRelay(controls.get(token)?.connecting, connection),
         polled: (token) => controls.get(token)?.polled ?? false,
         raiseStop(token) {
             const control = controls.get(token);
@@ -383,6 +394,7 @@ export function createControlChannel(steps: StepBroker = createStepBroker()): Co
                 serveSupervisorStep(route === 'report' ? 'report' : 'step', { steps, token: auth }, request, reply);
             const serveRoute = {
                 publish: serveDraftPublish,
+                connection: serveConnectionAsk,
                 review: serveReview,
                 question: serveQuestion,
                 step: serveStep,

@@ -122,6 +122,21 @@ for arg in "$@"; do
         env | grep -q -e '^GITHUB_TOKEN=' -e '^GH_TOKEN=' || echo 'github no env token'
         break
         ;;
+    *factory-stub-connect*)
+        # `factory-stub-connect`: the Jira helper for a task with no Jira connection asks the board on the
+        # supervisor's agent socket and exits 3; the driver ends this run as a requirement wait. The stub keeps no
+        # session, so the run a bind releases is a plain re-run (the resumed prompt is the docker lane's).
+        connect_exit=0
+        FACTORY_CONTROL_SOCKET="$FACTORY_CTL_OUT/control.sock" node /usr/local/bin/jira.cjs issue ABC-1 || connect_exit=$?
+        echo "connect exit $connect_exit"
+        # The real CLI keeps working until the driver's cooperative Stop (the grace before a kill is minutes): so does
+        # the stub, then leaves; the hand-back ends this run, never the exit.
+        if [ "$connect_exit" -eq 3 ]; then
+            connect_deadline=$(($(date +%s) + ${FACTORY_STUB_TIMEOUT_SECONDS:-120}))
+            while [ ! -f "${FACTORY_CTL_IN:-/nonexistent}/stop" ] && [ "$(date +%s)" -lt "$connect_deadline" ]; do sleep 0.2; done
+        fi
+        break
+        ;;
     *factory-stub-review*)
         # `factory-stub-review` (issue #774): ask the declared `audit` reviewer for key `rv-k` on the
         # control endpoint and wait for its verdict. A re-claimed run asks the same key again.

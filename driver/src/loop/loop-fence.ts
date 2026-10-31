@@ -5,7 +5,7 @@
  * #472, steps 3 and 4 of #433, #828).
  */
 
-import { down } from './loop-attempt.js';
+import { down, type JobState } from './loop-attempt.js';
 import { lostOf } from './loop-phase.js';
 import type { BoardJob } from '../board/board.js';
 import { LeftoverTerminating, type RunOutcome } from '../runner.js';
@@ -144,6 +144,8 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
     if (state.ending?.kind === 'handover') {
         return { kind: 'interrupt', reason: state.handoverReason ?? 'the driver was drained', exitCode: null };
     }
+    // A requirement wait is handed back like a drain's handover, but held by the board until it closes.
+    if (state.ending?.kind === 'requirement') return requirementDecision(state, beforePark);
     if (lostOf(state)) {
         return {
             kind: 'none',
@@ -155,6 +157,21 @@ export function standDown(ctx: AttemptCtx, phase: string, beforePark?: () => Pro
     }
     return beforePark ? { kind: 'park', phase, beforePark } : { kind: 'park', phase };
 }
+
+/** Why a requirement wait hands the attempt back: names the provider where the ask did. */
+export const requirementReason = (state: Pick<JobState, 'requirement'>): string => {
+    const provider = state.requirement?.provider;
+    return provider ? `the task waits for a ${provider} connection` : 'the task waits for a connection';
+};
+
+/** The hand-back of an attempt the board holds for a connection: released outside the interruption budget. */
+const requirementDecision = (state: JobState, beforeInterrupt?: () => Promise<void>): EndDecision => ({
+    kind: 'interrupt',
+    reason: requirementReason(state),
+    exitCode: null,
+    requirement: true,
+    ...(beforeInterrupt ? { beforeInterrupt } : {}),
+});
 
 /**
  * A setup conclusion as the ending it decides: a fault or a conclusion lands its verdict, an

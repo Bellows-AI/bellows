@@ -249,7 +249,10 @@ async function interrupt(
     after: Promise<void>
 ): Promise<LeaseState | null> {
     const { rt, job, state } = ctx;
-    const { reason, exitCode, refused, blocked } = decision;
+    const { reason, exitCode, refused, blocked, requirement, beforeInterrupt } = decision;
+    await beforeInterrupt?.().catch((e: Error) =>
+        rt.log(`job ${job.id}: the work before the hand-back failed, handing back anyway: ${e.message}`)
+    );
     const recorded =
         reason.length > INTERRUPTION_REASON_MAX ? `${reason.slice(0, INTERRUPTION_REASON_MAX - 1)}…` : reason;
     const answer = await withBoardRetry(rt, `job ${job.id}: the interruption was not accepted`, () =>
@@ -258,6 +261,7 @@ async function interrupt(
             release: true,
             ...(refused ? { refused } : {}),
             ...(blocked ? { blocked } : {}),
+            ...(requirement ? { requirement } : {}),
         })
     ).catch((e: Error) => {
         rt.log(`job ${job.id}: could not report the interruption: ${e.message}`);

@@ -10,7 +10,7 @@ import { createGrantLineage } from '../src/integrations/grant-lineage.js';
 import { createSecretRef } from '../src/secrets/secret-input.js';
 import type { Claim, JobStore } from '../src/db/jobs/job-store-types.js';
 import { useTestDb } from './harness.js';
-import { oauthConnection, testOrg, testUser } from './fixtures.js';
+import { oauthConnection, testOrg, testUser, withoutTransitionGuard } from './fixtures.js';
 import { attachJira } from './integration-store-faults.js';
 import {
     DEADLINE_MS,
@@ -287,5 +287,33 @@ describe.skipIf(!enabled)('connection lock order — database', () => {
         const [claim, gone] = await settledWithin([claimed, disconnected]);
         expect(value(claim)).toMatchObject({ ok: true });
         expect(value(gone).disconnected).toBe(true);
+    });
+
+    it('T10: the runtime ask, a bind and a dismiss on one thread never deadlock', async () => {
+        for (let round = 0; round < 3; round++) {
+            const root = await create();
+            const lease = randomUUID();
+            await withoutTransitionGuard(
+                sql,
+                (tx) => tx`update job set status = 'running', lease_token = ${lease}, claimed_by = ${WORKER},
+                                          lease_expires_at = now() + interval '60 seconds', claim_seq = 1
+                           where id = ${root}`
+            );
+            const fresh = await connect();
+            const [asked, bound, dismissed] = await settledWithin([
+                createJobStore({ sql: claimPool, orgId: ORG }).requireConnection(root, lease, 'jira'),
+                bindConnectionRow(binderPool, {
+                    orgId: ORG,
+                    id: root,
+                    connectionId: fresh,
+                    bindingRevision: await revisionOf(root),
+                    userId: ALICE.id,
+                }),
+                createJobStore({ sql: binderPool, orgId: ORG }).dismissRequirement(root, 'jira', ALICE.id),
+            ]);
+            expect(value(asked)).toMatchObject({ result: 'ok' });
+            expect(value(bound)).toBeDefined();
+            expect(value(dismissed)).toBeDefined();
+        }
     });
 });

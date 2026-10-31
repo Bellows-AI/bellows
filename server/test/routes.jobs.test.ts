@@ -313,6 +313,14 @@ function stubStore(
             boom();
             return { ok: true as const, revision: 1 };
         },
+        async dismissRequirement() {
+            boom();
+            return { ok: true as const };
+        },
+        async requireConnection() {
+            boom();
+            return { result: 'ok' as const, answer: 'waiting' as const };
+        },
         async createRetry(id, createdBy, idempotency) {
             boom();
             stub.retries.push({ id, createdBy: createdBy ?? null });
@@ -345,6 +353,7 @@ function stubStore(
                 leaseExpiresAt: result === 'ok' ? '2026-08-21T12:05:00.000Z' : null,
                 cancelRequested: result === 'ok' ? (options.heartbeatCancelRequested ?? false) : false,
                 answeredQuestions: result === 'ok' ? (options.answeredQuestions ?? []) : [],
+                requirementWait: false,
             };
         },
         async askQuestion(id, _token, ask) {
@@ -3026,6 +3035,7 @@ describe('GET /api/jobs', () => {
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],
+        executionUser: null,
     };
 
     const author = {
@@ -3202,6 +3212,7 @@ describe('GET /api/jobs/:id?waitFor=terminal — the settle long-poll (issue #32
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],
+        executionUser: null,
     };
 
     const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -3424,6 +3435,7 @@ describe('GET /api/jobs/:id/activity — the run-activity read (issue #339)', ()
         connections: [],
         bindingRevision: 0,
         integrationRequirements: [],
+        executionUser: null,
     };
 
     const jobOf = (id: string, rootJobId: string, over: Partial<Job> = {}): Job => ({

@@ -53,7 +53,7 @@ export function JiraConnectionsSection({ session }: { session: Session | null })
         setError(null);
         setNotice(null);
         setSaving(true);
-        const started = await startAuthorization(input);
+        const started = await startAuthorization('jira', input);
         if (started.ok) {
             window.location.assign(started.authorizeUrl);
             return null;

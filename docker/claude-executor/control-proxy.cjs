@@ -5,10 +5,11 @@
  * run-control credential at all: the supervisor serves a relay socket in the agent's own mailbox
  * (`$FACTORY_CTL_OUT/control.sock`, owner-only) that adds the agent's token and follows whichever
  * driver holds the run (issue #829). This proxy, started by the entrypoint only where that socket
- * exists, lets the tools reach it, and the two routes the baked skills call are all that cross:
+ * exists, lets the tools reach it, and the routes the baked skills call are all that cross:
  *
  *   POST /publish        the draft publication (the github skill)
  *   POST /review         a named reviewer (the review skill)
+ *   POST /connection     a connection the task lacks (the helpers; connection-ask.cjs)
  *   GET  /review/<key>   that review's result
  *
  * Listens on /run/factory-control/control.sock, in a directory of the CLI uid's group, so a tool —
@@ -24,9 +25,10 @@ const SOCKET = '/run/factory-control/control.sock';
 const SOCKET_MODE = 0o660;
 /** The supervisor's relay in the agent's mailbox (`MAILBOX_FILES.relay` of driver/src/supervisor-contract.ts). */
 const RELAY_SOCKET = 'control.sock';
-/** `PUBLISH_PATH` and `REVIEW_PATH` of driver/src/control-channel.ts. */
+/** `PUBLISH_PATH`, `REVIEW_PATH` and `CONNECTION_PATH` of driver/src/control-channel.ts. */
 const PUBLISH_PATH = '/publish';
 const REVIEW_PATH = '/review';
+const CONNECTION_PATH = '/connection';
 /** The supervisor's answer to which lease pair the agent holds now (`relayRequest`, #1045): read by `attempt-pair.cjs`. */
 const ATTEMPT_PATH = '/attempt';
 const REVIEW_KEY = /^[A-Za-z0-9_-]{1,64}$/;
@@ -36,10 +38,10 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_TOO_LARGE = 413;
 const HTTP_BAD_GATEWAY = 502;
 
-/** Whether this method and path is one of the four the skills and helpers call. */
+/** Whether this method and path is one of the five the skills and helpers call. */
 function allowed(method, url) {
     if (method === 'GET' && url === ATTEMPT_PATH) return true;
-    if (method === 'POST' && (url === PUBLISH_PATH || url === REVIEW_PATH)) return true;
+    if (method === 'POST' && (url === PUBLISH_PATH || url === REVIEW_PATH || url === CONNECTION_PATH)) return true;
     if (method !== 'GET' || !url.startsWith(`${REVIEW_PATH}/`)) return false;
     return REVIEW_KEY.test(url.slice(REVIEW_PATH.length + 1));
 }
@@ -135,4 +137,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { serve, allowed, SOCKET, PUBLISH_PATH, REVIEW_PATH };
+module.exports = { serve, allowed, SOCKET, PUBLISH_PATH, REVIEW_PATH, CONNECTION_PATH };

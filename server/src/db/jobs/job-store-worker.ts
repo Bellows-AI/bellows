@@ -6,8 +6,9 @@
 
 import type { TransactionSql } from 'postgres';
 import { USER_SCOPE, WORKFLOW_MODE, type ExecutorScope, type JobMode } from '@factory-ai/core';
-import { lockRootRowsInTx } from '../connection-bindings.js';
+import { lockRootRowsInTx, requirementWaitOf } from '../connection-bindings.js';
 import type { EvidencePolicy } from '../evidence-policy.js';
+import type { RequireConnectionResult } from './job-store-connections.js';
 import { enforceCompletionPolicy } from './job-store-evidence.js';
 import { recordReportedSession, type SessionEvidence } from './job-store-provenance.js';
 import { answeredQuestionsOf } from './job-store-questions.js';
@@ -52,7 +53,25 @@ export interface JobWorkerStore {
         cancelRequested: boolean;
         /** Every `answered` question of this lease token — applied idempotently by the driver. */
         answeredQuestions: { questionId: string; answers: Record<string, string> }[];
+        /**
+         * An open runtime requirement on the thread was asked by THIS row: the run ends and is handed back.
+         * Keyed by job, not claim: a takeover of the asker carries it too.
+         */
+        requirementWait: boolean;
     }>;
+
+    /**
+     * The running attempt asks for a connection it needs, lease-fenced: `bound` (the thread has a usable
+     * binding, or the lone candidate was just bound), `unavailable` (nobody can bind, or the owner dismissed it) or
+     * `waiting` (an open requirement now holds the next claim; the caller ends the run). `lost` / `missing` as every
+     * lease-fenced write.
+     */
+    requireConnection(
+        id: string,
+        leaseToken: string,
+        provider: string,
+        target?: string
+    ): Promise<RequireConnectionResult>;
 
     /**
      * Records the agent session the running attempt is using, so a reader can open it. Lease-guarded
@@ -198,6 +217,7 @@ export async function heartbeatJob(
             // The answers ride the beat the driver already sends (050): every answered question
             // of THIS lease, re-listed each beat — the driver applies them idempotently.
             answeredQuestions: await answeredQuestionsOf(ctx, id, leaseToken),
+            requirementWait: await requirementWaitOf(sql, orgId, id),
         };
     }
     return {
@@ -205,6 +225,7 @@ export async function heartbeatJob(
         leaseExpiresAt: null,
         cancelRequested: false,
         answeredQuestions: [],
+        requirementWait: false,
     };
 }
 

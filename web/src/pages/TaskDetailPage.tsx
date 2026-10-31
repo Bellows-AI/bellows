@@ -247,6 +247,7 @@ export function TaskDetailPage() {
                 sending={sending}
                 onFollowUp={followUp}
                 onAnswer={answerQuestion}
+                onConnectionChange={detail.refresh}
                 activity={activity}
             />
             {detail.jobs !== null && detail.jobs.length > 0 ? (

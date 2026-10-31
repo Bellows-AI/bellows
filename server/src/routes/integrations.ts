@@ -20,7 +20,7 @@ const HTTP_UNAVAILABLE = 503;
 
 const START_BODY_LIMIT = 4096;
 const QUERY_VALUE_LIMIT = 2048;
-const START_KEYS = new Set(['connectionId', 'returnTo', 'interactionId', 'access', 'site']);
+const START_KEYS = new Set(['connectionId', 'returnTo', 'interactionId', 'access', 'site', 'jobId']);
 const NOT_CONFIGURED =
     'Jira OAuth is not configured on this deployment: the operator sets ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET (docs/jira-app-runbook.md)';
 /** Only the path, query and fragment of a redirect are ever used; the host is a placeholder for the URL parser. */

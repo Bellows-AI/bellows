@@ -295,7 +295,7 @@ async function startDriver({
             };
             driver.calls += 1;
             if (driver.silent) return request.socket.destroy();
-            if (/^\/(publish|review|export)(\/|\?|$)/.test(request.url ?? '')) {
+            if (/^\/(publish|review|export|connection)(\/|\?|$)/.test(request.url ?? '')) {
                 const entry = {
                     method: request.method ?? '',
                     url: request.url ?? '',
@@ -2326,6 +2326,7 @@ describe('the supervisor run: the agent and export relay (#829 S3c)', () => {
         ['POST', '/publish', '{}'],
         ['POST', '/review', '{"profile":"a"}'],
         ['GET', '/review/key-1', undefined],
+        ['POST', '/connection', '{"provider":"jira"}'],
     ])('relays the agent route %s %s under the agent token, the answer unchanged', async (method, url, body) => {
         const driver = await startDriver();
         const supervised = relayed(driver);

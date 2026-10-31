@@ -12,9 +12,16 @@ import {
     applyResolutionInTx,
     BINDABLE_PROVIDERS,
     ConnectionRefusedError,
+    dismissedProvidersInTx,
+    dismissRequirementInTx,
     lockThreadInTx,
     recordMissingInTx,
+    requirementMatches,
+    requireAtRuntimeInTx,
     resolveBindingsInTx,
+    type ConnectionOutcome,
+    type RuntimeAnswer,
+    takeConnectionOutcomesInTx,
     unboundProvidersInTx,
 } from '../connection-bindings.js';
 
@@ -115,8 +122,92 @@ export async function bindConnectionRow(
 }
 
 /**
- * True when the root's selected skills require a provider with no live binding, after recording a `missing`
- * requirement for each. The skills are the root's (a follow-up or retry reads them there). A read that
+ * The OAuth return binds the new connection to the task it was started from. The revision is read here,
+ * under the thread lock, never carried through the browser: the person named the connection, not a revision. Answers
+ * what the owner's own bind would: refusals are values.
+ */
+export async function bindAuthorizedConnectionRow(
+    sql: Sql,
+    args: { orgId: string; jobId: string; connectionId: string; userId: string }
+): Promise<BindConnectionResult> {
+    const { orgId, jobId, connectionId, userId } = args;
+    return sql.begin(async (tx) => {
+        const [job] = await tx<
+            { root_job_id: string }[]
+        >`select root_job_id from job where org_id = ${orgId} and id = ${jobId}`;
+        if (!job) return { ok: false, reason: 'missing' };
+        const [root] = await tx<
+            { binding_revision: number }[]
+        >`select binding_revision from job where org_id = ${orgId} and id = ${job.root_job_id}`;
+        const added = await addBindingsInTx(tx, {
+            orgId,
+            rootJobId: job.root_job_id,
+            expectedRevision: root!.binding_revision,
+            connectionIds: [connectionId],
+            actor: { userId },
+            source: 'requirement',
+        });
+        if (added.ok) return added;
+        return {
+            ok: false,
+            reason: added.reason === 'not-found' || added.reason === 'not-execution-user' ? 'missing' : added.reason,
+        };
+    });
+}
+
+/**
+ * What an open requirement of the task's thread asks of `provider` (the site a helper needs), or null when it names
+ * none or none is open. Read for the execution user only: anyone else's callback changes nothing.
+ */
+export async function openRequirementTargetRow(
+    sql: Sql,
+    args: { orgId: string; jobId: string; provider: string; userId: string }
+): Promise<string | null> {
+    const { orgId, jobId, provider, userId } = args;
+    const [row] = await sql<{ target: string | null }[]>`
+        select r.target
+        from job j join job root on root.org_id = j.org_id and root.id = j.root_job_id
+        join job_integration_requirement r on r.org_id = root.org_id and r.root_job_id = root.id
+        where j.org_id = ${orgId} and j.id = ${jobId} and root.execution_user_id = ${userId}
+          and r.provider = ${provider} and r.satisfied_at is null
+    `;
+    return row?.target ?? null;
+}
+
+/** The ids of `connectionIds` that serve a requirement with `target`. */
+export async function connectionsAtSite(
+    sql: Sql,
+    args: { orgId: string; connectionIds: readonly string[]; target: string | null }
+): Promise<string[]> {
+    if (args.connectionIds.length === 0) return [];
+    const rows = await sql<{ id: string; site: string | null }[]>`
+        select id, site from connector_connection
+        where org_id = ${args.orgId} and id in ${sql(args.connectionIds)}
+    `;
+    return rows.filter((r) => requirementMatches(args.target, r.site)).map((r) => r.id);
+}
+
+/**
+ * An authorization made several usable connections for a task's open requirement: none is picked for the person, so
+ * the requirement asks them to choose (`ambiguous`). Only the execution user's own `missing` requirement changes.
+ */
+export async function markRequirementAmbiguousRow(
+    sql: Sql,
+    args: { orgId: string; jobId: string; provider: string; userId: string }
+): Promise<void> {
+    const { orgId, jobId, provider, userId } = args;
+    await sql`
+        update job_integration_requirement r set reason = 'ambiguous'
+        from job j join job root on root.org_id = j.org_id and root.id = j.root_job_id
+        where j.org_id = ${orgId} and j.id = ${jobId} and root.execution_user_id = ${userId}
+          and r.org_id = j.org_id and r.root_job_id = root.id and r.provider = ${provider}
+          and r.satisfied_at is null and r.reason = 'missing'
+    `;
+}
+
+/**
+ * True when the root's selected skills require a provider with no live binding (and none dismissed), after
+ * recording a `missing` requirement for each. The skills are the root's (a follow-up or retry reads them there). A read that
  * throws propagates and rolls the claim back; only a confirmed empty answer records anything.
  */
 export async function recordUnboundRequirements(
@@ -131,9 +222,96 @@ export async function recordUnboundRequirements(
     const [root] = await tx<
         { skills: string[] }[]
     >`select skills from job where org_id = ${orgId} and id = ${rootJobId}`;
-    const required = requiredProviders(skillCatalog(), root?.skills ?? []);
+    // A provider the owner dismissed at this binding revision is absent by choice: the task launches without it.
+    const dismissed = await dismissedProvidersInTx(tx, orgId, rootJobId);
+    const required = requiredProviders(skillCatalog(), root?.skills ?? []).filter((p) => !dismissed.includes(p));
     const unbound = await unboundProvidersInTx(tx, { orgId, rootJobId, required });
     if (unbound.length === 0) return false;
     await recordMissingInTx(tx, { orgId, rootJobId, providers: unbound });
     return true;
+}
+
+export type RequireConnectionResult = { result: 'ok'; answer: RuntimeAnswer } | { result: 'lost' | 'missing' };
+
+/**
+ * requireConnection's body: the running attempt asks for a provider. Lock order: the asker's own running
+ * row (a settle of the caller's own row), then the thread root and its advisory lock, then grant and connection
+ * (`lockRootRowsInTx`). A row not running under that lease is `lost`, an unknown one `missing`.
+ */
+export async function requireConnectionRow(
+    sql: Sql,
+    args: { orgId: string; id: string; leaseToken: string; provider: string; target?: string | undefined }
+): Promise<RequireConnectionResult> {
+    const { orgId, id, leaseToken, provider, target } = args;
+    return sql.begin(async (tx) => {
+        const [held] = await tx<{ root_job_id: string; claim_seq: string }[]>`
+            select root_job_id, claim_seq from job
+            where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+            for update
+        `;
+        if (!held) {
+            const [known] = await tx<{ id: string }[]>`select id from job where org_id = ${orgId} and id = ${id}`;
+            return { result: known ? 'lost' : 'missing' } as const;
+        }
+        const answer = await requireAtRuntimeInTx(tx, {
+            orgId,
+            rootJobId: held.root_job_id,
+            askedJobId: id,
+            claimSeq: Number(held.claim_seq),
+            provider,
+            target: target ?? null,
+        });
+        return { result: 'ok', answer } as const;
+    });
+}
+
+export type DismissRequirementResult = { ok: true } | { ok: false; reason: 'missing' | 'none-open' };
+
+/** dismissRequirement's body: the owner declines a provider for the thread `id` belongs to. */
+export async function dismissRequirementRow(
+    sql: Sql,
+    args: { orgId: string; id: string; provider: string; userId: string }
+): Promise<DismissRequirementResult> {
+    const { orgId, id, provider, userId } = args;
+    return sql.begin(async (tx) => {
+        const [job] = await tx<
+            { root_job_id: string }[]
+        >`select root_job_id from job where org_id = ${orgId} and id = ${id}`;
+        if (!job) return { ok: false, reason: 'missing' } as const;
+        const closed = await dismissRequirementInTx(tx, { orgId, rootJobId: job.root_job_id, provider, userId });
+        return closed === 'ok' ? ({ ok: true } as const) : ({ ok: false, reason: closed } as const);
+    });
+}
+
+export interface ClaimConnections {
+    /** Providers the owner dismissed at the root's current revision: absent by choice, the skill check passes. */
+    dismissed: string[];
+    /** What the requirements this job asked for came to, to tell the continuing claim. */
+    outcomes: ConnectionOutcome[];
+}
+
+/**
+ * What the claim's transaction reads of the thread's connection choices, for the claimed `job` (its
+ * `claim_seq` is the post-update one): the dismissed providers and the outcomes to tell. A read that throws
+ * rolls the claim back.
+ */
+export async function claimConnectionsInTx(
+    tx: TransactionSql,
+    { orgId, rootJobId }: { orgId: string; rootJobId: string },
+    job: { id: string; claim_seq: string },
+    takeover: boolean
+): Promise<ClaimConnections> {
+    const claimSeq = Number(job.claim_seq);
+    // An ordinary re-claim of an answered requirement means the run was released some other way: nothing is owed.
+    if (!takeover) {
+        await tx`
+            update job_integration_requirement set hand_back_pending = false
+            where org_id = ${orgId} and source = 'runtime' and asked_job_id = ${job.id} and hand_back_pending
+              and satisfied_at is not null
+        `;
+    }
+    return {
+        dismissed: await dismissedProvidersInTx(tx, orgId, rootJobId),
+        outcomes: await takeConnectionOutcomesInTx(tx, { orgId, jobId: job.id, claimSeq, takeover }),
+    };
 }

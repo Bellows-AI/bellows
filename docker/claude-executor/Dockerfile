@@ -182,8 +182,9 @@ COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
 COPY github-credential.cjs /usr/local/bin/github-credential.cjs
 COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs
 COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
+COPY connection-ask.cjs /usr/local/bin/connection-ask.cjs
 COPY gh-wrapper.sh /usr/local/bin/gh
-RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
+RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
 # the broker to run each command as factory-tool, 1001 in node's group. Only node is in

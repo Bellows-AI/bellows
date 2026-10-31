@@ -1,6 +1,6 @@
 import type { AskedQuestion, BoardJob } from '../board/board.js';
 import { withBoardRetry } from '../board/board-retry.js';
-import { applyHeartbeatVerdict, down, updateQuestionDeadline } from './loop-attempt.js';
+import { applyHeartbeatVerdict, down, settling, updateQuestionDeadline } from './loop-attempt.js';
 import type { JobState } from './loop-attempt.js';
 import type { LoopRuntime } from './loop-types.js';
 import type { QuestionRelay } from '../question-control.js';
@@ -28,7 +28,7 @@ export function createQuestionRelay(rt: LoopRuntime, job: BoardJob, state: JobSt
             }
             // A Stop or the end of the run landed during the board call and already cleaned up:
             // nothing is waiting, so the runtime budget stays unchanged.
-            if (state.phase === 'ended' || state.draining || down(state)) return 'accepted';
+            if (state.phase === 'ended' || settling(state) || down(state)) return 'accepted';
             await updateQuestionDeadline(rt, job, state);
             return 'accepted';
         },
