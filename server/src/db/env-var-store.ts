@@ -79,15 +79,14 @@ const scopeOfRow = (row: ResolveRow): Scope => {
 };
 
 /**
- * Which of the two stored formats a row is in; anything else throws. Old format: a value and no
- * reference (a non-secret, or a secret written before 093). New: a secret with a reference and
- * version and no value.
+ * One stored format per kind (112_env_var_secret_form.sql); anything else throws. A non-secret holds
+ * its value and no reference; a secret holds a reference and version and no value.
  */
 const storedForm = (
     orgId: string,
     row: ResolveRow
 ): { plaintext: string; encrypted?: undefined } | { plaintext?: undefined; encrypted: EncryptedEnvRow } => {
-    if (row.secret_ref === null && row.value !== null) return { plaintext: row.value };
+    if (!row.is_secret && row.secret_ref === null && row.value !== null) return { plaintext: row.value };
     if (row.is_secret && row.secret_ref !== null && row.value === null && row.secret_version !== null) {
         return {
             encrypted: {
@@ -310,10 +309,9 @@ export function createEnvVarStore({
     };
 
     /**
-     * Every row's real value, in the rows' order. Two stored formats exist until the contract
-     * follow-up (docs/env.md): a secret's reference, decrypted here, or the old plaintext. A row
-     * that is neither, a failed or inconclusive read, a version other than the stored one, or bytes
-     * that are not UTF-8 throws: a secret is never dropped from an environment.
+     * Every row's real value, in the rows' order: a non-secret's value, or a secret's reference
+     * decrypted here. A row that is neither, a failed or inconclusive read, a version other than the
+     * stored one, or bytes that are not UTF-8 throws: a secret is never dropped from an environment.
      */
     const valuesOf = async (rows: readonly ResolveRow[]): Promise<string[]> => {
         const values: string[] = new Array(rows.length);
