@@ -54,6 +54,7 @@ const job = (over: Partial<Job> = {}): Job => ({
     questions: [],
     connections: [],
     bindingRevision: 0,
+    attachments: [],
     integrationRequirements: [],
     executionUser: null,
     ...over,

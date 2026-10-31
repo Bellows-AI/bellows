@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { JobMode } from '@factory-ai/core';
+import type { AttachmentMeta, JobMode } from '@factory-ai/core';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 
@@ -250,6 +250,8 @@ export interface Job {
     questions: JobQuestion[];
     /** The thread root's connection bindings, oldest first; empty on list responses. */
     connections: JobConnection[];
+    /** The files this request carried; thread reads only, empty elsewhere. */
+    attachments: AttachmentMeta[];
     /** The thread root's `binding_revision`: what `POST /api/jobs/:id/connections` must echo. */
     bindingRevision: number;
     /** The open requirements holding the thread; empty on list responses. */
