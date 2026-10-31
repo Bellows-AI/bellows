@@ -48,6 +48,10 @@ const job = (id: string): Job => ({
     waitingSince: null,
     waitTerminalReason: null,
     questions: [],
+    connections: [],
+    bindingRevision: 0,
+    integrationRequirements: [],
+    executionUser: null,
 });
 
 const json = (body: unknown, status = 200): Response =>

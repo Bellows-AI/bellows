@@ -1,11 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { safeReturnPath } from '../auth/session.js';
-import {
-    completeAuthorization as complete,
-    hashState,
-    recoverAuthorization as recover,
-    requireTrusted,
-} from './authorization-complete.js';
+import { hashState, recoverAuthorization as recover, requireTrusted } from './authorization-complete.js';
+import { completeAndBind } from './authorization-bind.js';
 import { connectionTarget, insertAuthorization } from './authorization-store.js';
 import { jiraSiteHost } from './providers/jira.js';
 import {
@@ -66,6 +62,7 @@ export interface AuthorizationFlow {
 /** The consent and the named site a start asks for, or null when any input is malformed. */
 function askedOf(input: StartAuthorizationInput): { access: 'read' | 'write'; site: string | null } | null {
     if (input.interactionId !== undefined && !UUID.test(input.interactionId)) return null;
+    if (input.jobId !== undefined && !UUID.test(input.jobId)) return null;
     const access = input.access ?? 'read';
     if (access !== 'read' && access !== 'write') return null;
     if (input.site === undefined) return { access, site: null };
@@ -118,6 +115,7 @@ async function start(
         verifier,
         returnTo: safeReturnPath(input.returnTo),
         interactionId: input.interactionId ?? null,
+        bindJobId: input.jobId ?? null,
         requestedAccess: access,
         expectedSite: site,
         ttlMs: fc.ttlMs,
@@ -149,7 +147,7 @@ export function createAuthorizationFlow(deps: AuthorizationFlowDeps): Authorizat
     };
     return {
         startAuthorization: (ctx, input) => start(fc, ctx, input),
-        completeAuthorization: (ctx, input, options) => complete(fc, ctx, input, options?.signal),
+        completeAuthorization: (ctx, input, options) => completeAndBind(fc, ctx, input, options?.signal),
         recoverAuthorization: (id) => recover(fc, id),
     };
 }

@@ -211,6 +211,10 @@ describe('taskSummary', () => {
         waitingSince: null,
         waitTerminalReason: null,
         questions: [],
+        connections: [],
+        bindingRevision: 0,
+        integrationRequirements: [],
+        executionUser: null,
         ...overrides,
     });
 

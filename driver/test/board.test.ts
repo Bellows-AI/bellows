@@ -364,6 +364,85 @@ describe('reporting an interrupted attempt (issue #792)', () => {
     });
 });
 
+describe('the runtime connection requirement', () => {
+    const job = boardJob();
+
+    it('posts what the helper needs beside the provider', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ answer: 'waiting' }, { status: 200 }));
+        await boardOn(fetch).requireConnection(job, 'jira', 'b.example.net');
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', provider: 'jira', target: 'b.example.net' });
+    });
+
+    it('posts the provider under the lease and reads the board’s three answers', async () => {
+        for (const answer of ['bound', 'unavailable', 'waiting'] as const) {
+            const { calls, fetch } = recorder(() => Response.json({ answer }, { status: 200 }));
+            expect(await boardOn(fetch).requireConnection(job, 'jira')).toBe(answer);
+            expect(calls[0]!.url).toBe('http://board/api/jobs/job-1/requirements');
+            expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', provider: 'jira' });
+        }
+    });
+
+    it('reads 409 as lost, 404 as removed and 400 as a provider the board does not bind', async () => {
+        const lost = recorder(() => Response.json({ code: 'LEASE_LOST' }, { status: 409 }));
+        expect(await boardOn(lost.fetch).requireConnection(job, 'jira')).toBe('lost');
+        const gone = recorder(() => Response.json({ error: 'No such job' }, { status: 404 }));
+        expect(await boardOn(gone.fetch).requireConnection(job, 'jira')).toBe('removed');
+        const refused = recorder(() => Response.json({ code: 'BAD_CONNECTION' }, { status: 400 }));
+        expect(await boardOn(refused.fetch).requireConnection(job, 'nope')).toBe('refused');
+    });
+
+    it.each([{}, { answer: 'maybe' }, { answer: 1 }])(
+        'throws on a 200 that is no answer (%j), never decides',
+        async (body) => {
+            const { fetch } = recorder(() => Response.json(body, { status: 200 }));
+            await expect(boardOn(fetch).requireConnection(job, 'jira')).rejects.toThrow();
+        }
+    );
+
+    it('throws on a 5xx, which the caller retries', async () => {
+        const { fetch } = recorder(() => new Response('later', { status: 503 }));
+        await expect(boardOn(fetch).requireConnection(job, 'jira')).rejects.toThrow('503');
+    });
+
+    it('sends requirement on a requirement interruption', async () => {
+        const { calls, fetch } = recorder(() => Response.json({ id: 'job-1', status: 'queued' }, { status: 200 }));
+
+        await boardOn(fetch).interrupt(job, { reason: 'waits', release: true, requirement: true });
+
+        expect(calls[0]!.body).toEqual({ leaseToken: 'token-1', reason: 'waits', release: true, requirement: true });
+    });
+
+    it('carries requirementWait on a held heartbeat, and omits it where the board did not say so', async () => {
+        const waiting = recorder(() => Response.json({ cancelRequested: false, requirementWait: true }));
+        expect(await boardOn(waiting.fetch).heartbeat(job)).toEqual({
+            result: 'held',
+            cancelRequested: false,
+            answeredQuestions: [],
+            requirementWait: true,
+        });
+        const plain = recorder(() => Response.json({ cancelRequested: false }));
+        expect(await boardOn(plain.fetch).heartbeat(job)).not.toHaveProperty('requirementWait');
+    });
+
+    it('carries the claim’s connection outcomes, keeping the well-formed entries only', async () => {
+        const { fetch } = recorder(() =>
+            claimed({
+                connectionOutcomes: [
+                    { provider: 'jira', label: 'Jira', outcome: 'bound' },
+                    { provider: 'jira', label: 'Jira', outcome: 'maybe' },
+                    { provider: 7 },
+                    'nope',
+                ],
+            })
+        );
+        expect((await boardOn(fetch).claim('worker-1'))?.connectionOutcomes).toEqual([
+            { provider: 'jira', label: 'Jira', outcome: 'bound' },
+        ]);
+        const bare = recorder(() => claimed());
+        expect(await boardOn(bare.fetch).claim('worker-1')).not.toHaveProperty('connectionOutcomes');
+    });
+});
+
 describe('asking the board for the orphan reaper lease lookups', () => {
     // Issue #301: one batched worker route, so a reaper sweep is one request per 100 job ids,
     // not one per object. Null — a refused, lost, or failed answer — means "board cannot

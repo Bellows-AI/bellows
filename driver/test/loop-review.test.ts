@@ -41,6 +41,7 @@ function opened() {
                     calls[0]?.push(exporterToken);
                 },
                 attachCheckpoint: () => {},
+                attachConnection: () => {},
             },
             advertiseUrl: (port: number) => `http://driver:${port}`,
         },

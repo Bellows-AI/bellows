@@ -111,20 +111,45 @@ async function check(deps: Settings, ctx: TrustedIntegrationContext, request: Re
     return refusal(row, ctx) ?? grantOf(row);
 }
 
+/** The columns of a binding row that say whether its connection and grant still stand. */
+export interface StandingRow {
+    b_grant_id: string | null;
+    c_status: string | null;
+    c_credential: string | null;
+    c_grant_id: string | null;
+    g_id: string | null;
+    g_status: string | null;
+}
+
+/** A binding with no active OAuth connection or no grant behind it: nothing to reconnect, the connection is gone. */
+const grantless = (row: StandingRow): boolean =>
+    row.c_status !== 'active' || row.c_credential !== 'oauth_grant' || !row.g_id;
+
+/** What a grant-backed binding stands for: usable, or which sentence its holder needs (`missing` is gone for good). */
+function grantStanding(row: StandingRow): 'usable' | 'missing' | 'reconnect' {
+    if (row.b_grant_id !== row.c_grant_id) return 'reconnect';
+    if (row.g_status === 'revoked') return 'missing';
+    if (row.g_status !== 'active') return 'reconnect';
+    return 'usable';
+}
+
+/**
+ * The one predicate for "this binding can serve a credential": the resolver's refusal and the runtime ask
+ * (`requireAtRuntimeInTx`) both read it, so a binding the broker would refuse is never answered `bound`.
+ */
+export const bindingStanding = (row: StandingRow): 'usable' | 'missing' | 'reconnect' =>
+    grantless(row) ? 'missing' : grantStanding(row);
+
 /** Who may use this binding, and whether its connection and grant still stand. */
 function refusal(row: BindingRow, ctx: TrustedIntegrationContext): Refusal | null {
     const provider = row.provider;
-    if (row.c_status !== 'active' || row.c_credential !== 'oauth_grant' || !row.g_id) {
-        return required('missing', provider);
-    }
+    if (grantless(row)) return required('missing', provider);
     if (ctx.principal.kind !== 'user') return forbidden('service-principal-unsupported');
     if (row.c_principal !== ctx.principal.userId || row.g_principal !== ctx.principal.userId) {
         return forbidden('principal-mismatch');
     }
-    if (row.b_grant_id !== row.c_grant_id) return required('reconnect', provider);
-    if (row.g_status === 'revoked') return required('missing', provider);
-    if (row.g_status !== 'active') return required('reconnect', provider);
-    return null;
+    const standing = grantStanding(row);
+    return standing === 'usable' ? null : required(standing, provider);
 }
 
 /** The grant a request may use: a stored credential, and an authority inside the binding's frozen ceiling. */

@@ -21,7 +21,7 @@ import {
 import { drainTranscriptExport } from './loop-export.js';
 import { openChain, replayGates, runClaimSeqOf } from './loop-phase-checkpoints.js';
 import { runPostHelpersAndPublish } from './loop-post-run.js';
-import { lostOf, logRefusal, transition, transitionLine } from './loop-phase.js';
+import { lostOf, logRefusal, recordEnding, transition, transitionLine } from './loop-phase.js';
 import {
     confirmOnProof,
     heartbeat,
@@ -398,6 +398,8 @@ async function runAttempt(ctx: AttemptCtx, inputs: RunInputs): Promise<RunPhaseD
     // A draining attempt settles as stopped even after a clean exit: the agent stopped because it
     // was asked to, so no gates, helpers, publish or `complete` follow (issue #442). A stop after
     // the run still reports the session and uploads the artifacts BEFORE the park.
+    // The board holds the task for a connection its helper asked for: the attempt stood down for it.
+    if (state.requirement !== null && !state.draining) recordEnding(state, 'requirement');
     stopIfDraining(state);
     const lastWords = () => pump.flush(outcome.output).then(() => reportRunTail(ctx, executorType, outcome));
     if (await endIfDown(ctx, 'its run', lastWords)) return { done: true };

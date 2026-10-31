@@ -157,7 +157,17 @@ export interface AdoptedRecord {
 export type EndDecision =
     | { kind: 'verdict'; verdict: VerdictBody; log?: string }
     | { kind: 'park'; phase: string; beforePark?: () => Promise<void> }
-    | { kind: 'interrupt'; reason: string; exitCode: number | null; refused?: true; blocked?: true }
+    | {
+          kind: 'interrupt';
+          reason: string;
+          exitCode: number | null;
+          refused?: true;
+          blocked?: true;
+          /** The agent's helper asked for a connection the task lacks: released outside the budget, held by the board. */
+          requirement?: true;
+          /** The work that must land while the lease still lets it, before the hand-back (the output tail, the session). */
+          beforeInterrupt?: () => Promise<void>;
+      }
     | { kind: 'leave'; log: string }
     | { kind: 'none'; log: string };
 

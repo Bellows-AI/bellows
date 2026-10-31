@@ -103,6 +103,7 @@ The primary executor — runners are Jobs the driver reconciles itself, no CRD �
 - Stated limit: the kubernetes question round trip (a real claude CLI through the bridge)
   is not run on a kind cluster — the cluster lane installs the stub executor image. The relay is pinned offline in
   `driver/test/k8s/` and run through the supervisor with the stub's question (`--phase control`); docker's lane is `ask_roundtrip_lane` in `scripts/test-jobs.sh`.
+- The runtime connection ask has no kubernetes-only path: it rides the mailbox `control.sock` beside publish and review, and the kind lane runs it with the stub's `factory-stub-connect` (`scripts/k8s-stub.sh`, `# runtime connection requirement` in `scripts/test-k8s.sh`).
 - `make reset` destroys the local state release and its data; the `volumeClaimTemplate` claim survives `helm uninstall`.
 - `EXECUTOR=kubernetes` with `RUNNER_CACHE_WATCH=1` is fatal at startup (`driver/src/config.ts`).
 - Deliberate docker divergences: no cpu-request flag, no node scheduling, no `imagePullSecrets` twin, no admission

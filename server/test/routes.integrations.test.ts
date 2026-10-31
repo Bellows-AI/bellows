@@ -136,6 +136,16 @@ describe('POST /api/integrations/:provider/authorizations', () => {
         expect(isTrustedContext(ctx.started[0]!.ctx)).toBe(true);
     });
 
+    it('passes a jobId to the flow, and a refusal of it is a 400', async () => {
+        const ctx = await boot();
+        const jobId = '33333333-3333-4333-8333-333333333333';
+        expect((await post(ctx, { jobId, returnTo: '/tasks/x' })).statusCode).toBe(HTTP_CREATED);
+        expect(ctx.started[0]!.input).toEqual({ provider: 'jira', jobId, returnTo: '/tasks/x' });
+        expect((await post(ctx, { jobId: 7 })).statusCode).toBe(HTTP_BAD_REQUEST);
+        const refused = await boot({ start: () => ({ ok: false, reason: 'bad-input' }) });
+        expect((await post(refused, { jobId: 'nope' })).statusCode).toBe(HTTP_BAD_REQUEST);
+    });
+
     it('answers 400 for an unknown key or a refusal of the input, 404 for an unknown provider, 401 without a session', async () => {
         const ctx = await boot();
         expect((await post(ctx, { surprise: 1 })).statusCode).toBe(HTTP_BAD_REQUEST);
