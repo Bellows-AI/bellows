@@ -11,14 +11,14 @@ import { assertTestDatabase } from './harness.js';
 import { randomGithubId } from './fixtures.js';
 
 /**
- * BEL-150: 112 is the contract for 093. A database still holding a plaintext secret refuses it, naming the
+ * BEL-150: 113 is the contract for 093. A database still holding a plaintext secret refuses it, naming the
  * conversion command; once every secret is a store reference it applies, and the row admits only the two forms.
  */
 const url = process.env.DATABASE_URL;
 if (url) assertTestDatabase(url);
 const enabled = Boolean(url);
 
-const VERSION = '112_env_var_secret_form.sql';
+const VERSION = '113_env_var_secret_form.sql';
 const DIR = new URL('../migrations/', import.meta.url);
 let admin: Sql;
 let pool: Sql;
@@ -86,7 +86,7 @@ const rejection = async (p: Promise<unknown>): Promise<Error> => {
     throw new Error('expected a rejection');
 };
 
-describe.skipIf(!enabled)('112_env_var_secret_form', () => {
+describe.skipIf(!enabled)('113_env_var_secret_form', () => {
     let org: string;
     let user: string;
     let secrets: ReturnType<typeof testSecretStore>;
@@ -169,7 +169,7 @@ describe.skipIf(!enabled)('112_env_var_secret_form', () => {
         ['a secret with a reference and no version', `true, null, 'REF', null`],
         ['a non-secret with no value', `false, null, null, null`],
         ['a non-secret holding a reference', `false, 'v', 'REF', null`],
-    ])('after 112 the row refuses %s', async (_label, values) => {
+    ])('after 113 the row refuses %s', async (_label, values) => {
         const error = await rejection(
             pool.unsafe(
                 `insert into env_var (org_id, name, is_secret, value, secret_ref, secret_version)
@@ -180,7 +180,7 @@ describe.skipIf(!enabled)('112_env_var_secret_form', () => {
         expect(error.message).toMatch(/env_var_secret_form_ck/);
     });
 
-    it('after 112 the two stored forms still insert', async () => {
+    it('after 113 the two stored forms still insert', async () => {
         await pool`insert into env_var (org_id, name, value, is_secret) values (${org}, 'PLAIN_OK', 'ok', false)`;
         await seedEncryptedRow(pool, secrets, { orgId: org, scope: { kind: 'org' }, name: 'SEALED_OK' }, 'k');
         expect(await constraintExists()).toBe(true);

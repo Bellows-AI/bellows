@@ -79,7 +79,7 @@ const scopeOfRow = (row: ResolveRow): Scope => {
 };
 
 /**
- * One stored format per kind (112_env_var_secret_form.sql); anything else throws. A non-secret holds
+ * One stored format per kind (113_env_var_secret_form.sql); anything else throws. A non-secret holds
  * its value and no reference; a secret holds a reference and version and no value.
  */
 const storedForm = (
