@@ -439,6 +439,22 @@ describe('the docker runner restoring a task volume', () => {
             ).rejects.toThrow();
         });
 
+        it.each([[true], [false]])(
+            'returns the checkout sync result, fingerprint and conflicts, with attachments %s',
+            async (withFiles) => {
+                const synced = '{"ok":true,"reason":null,"fingerprint":"fp-1","conflicts":["a.txt"]}';
+                const steps = fakeSteps((step) => ok(step.id.endsWith('-inputs') ? '{"ok":true}' : synced));
+                const result = await runner([1], steps, NONE).runner.syncCheckout(
+                    restoreJob({ followUp: false, ...(withFiles ? { attachments: [FILE] } : {}) }),
+                    undefined,
+                    null,
+                    'ghs_x'
+                );
+                expect(result).toMatchObject({ ok: true, fingerprint: 'fp-1', conflicts: ['a.txt'] });
+                expect(names(steps).includes('inputs')).toBe(withFiles);
+            }
+        );
+
         it('delivers the inputs of a repo job after its sync step, and again on a retry', async () => {
             const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
             await runner([1], steps, NONE).runner.syncCheckout(

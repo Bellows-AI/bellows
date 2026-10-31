@@ -179,7 +179,14 @@ export const unrestorableResult = (e: CheckpointUnrestorable): SyncResult => ({
 });
 
 /** The restore script's verdict: a sync result, `absent` when it confirmed the volume holds no tree. */
-type RestoreVerdict = SyncResult & { absent?: boolean };
+type RestoreVerdict = SyncResult & { absent?: boolean; transient?: boolean };
+
+/** A failed restore as the refusal the loop reports; an unconfirmed one (a 5xx, a network or disk fault) throws, so the lease hands the claim back. */
+const refusalOf = (verdict: RestoreVerdict): SyncResult => {
+    if (verdict.transient === true) throw new Error(verdict.reason ?? 'the checkpoint restore failed');
+    const { absent: _absent, transient: _transient, ...refused } = verdict;
+    return refused;
+};
 
 /**
  * Runs the owed restore as a supervised step, then deletes the older generations through `removeOlder`.
@@ -232,10 +239,7 @@ export async function restoreTaskTree(
                 'may, and is adopted again by the next claim'
         );
     }
-    if (!verdict.ok) {
-        const { absent: _absent, ...refused } = verdict;
-        return refused;
-    }
+    if (!verdict.ok) return refusalOf(verdict);
     pending.restored = true;
     // Durable before destructive: only now may the volume it replaces go. A delete that fails leaves an
     // older generation the next claim sees beside the current one and removes then.

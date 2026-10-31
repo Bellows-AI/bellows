@@ -530,7 +530,11 @@ async function syncCheckout(
         });
         // The agent is released only after the restore, the sync and the inputs all reported ok.
         let result = restored && !restored.ok ? restored : await runSyncStep(host, job, githubToken);
-        if (result.ok) result = await deliverTaskInputs(host, job, { signal });
+        if (result.ok) {
+            // The checkout result (fingerprint, conflicts) is the sync's to return; delivery only refuses.
+            const delivered = await deliverTaskInputs(host, job, { signal });
+            if (!delivered.ok) result = delivered;
+        }
         // A failed sync means no runner follows — nobody else would give the checkout back.
         if (!result.ok) await failed();
         return result;

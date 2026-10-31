@@ -180,6 +180,19 @@ describe('the kubernetes runner restoring a task volume', () => {
             expect(transient).toHaveProperty('error');
         });
 
+        it.each([[true], [false]])(
+            'returns the checkout sync result, fingerprint and conflicts, with attachments %s',
+            async (withFiles) => {
+                const synced = '{"ok":true,"reason":null,"fingerprint":"fp-1","conflicts":["a.txt"]}';
+                const run = await k8sSyncRun(job({ followUp: false, ...(withFiles ? { attachments: [FILE] } : {}) }), {
+                    checkpoints: board({ state: 'none' }),
+                    answer: (step) => (step.id.endsWith('-inputs') ? '{"ok":true}' : synced),
+                });
+                expect(run).toMatchObject({ value: { ok: true, fingerprint: 'fp-1', conflicts: ['a.txt'] } });
+                expect(stepNames(run.steps).includes('inputs')).toBe(withFiles);
+            }
+        );
+
         it('delivers the inputs of a repo job after its restore and sync steps', async () => {
             const run = await k8sSyncRun(job({ attachments: [FILE] }), {
                 checkpoints: board(FOUND),

@@ -305,6 +305,17 @@ describe('restoreTaskTree', () => {
         expect(env).not.toHaveProperty('SESSIONS_DIR');
     });
 
+    it('throws on a transient verdict, so the lease hands the claim back, and keeps the older generations', async () => {
+        const { host } = sink(() => ({
+            stdout: '{"ok":false,"reason":"the control endpoint answered 503","transient":true}',
+        }));
+        const removeOlder = vi.fn(async () => undefined);
+        const job = owed();
+        await expect(restoreTaskTree(host, job, { removeOlder })).rejects.toThrow(/answered 503/);
+        expect(removeOlder).not.toHaveBeenCalled();
+        expect(job.taskRestore?.restored).toBe(false);
+    });
+
     it.each([
         ['a failed verdict', { stdout: '{"ok":false,"reason":"boom"}' }],
         ['a timeout', { timedOut: true }],

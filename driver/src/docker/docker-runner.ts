@@ -344,7 +344,10 @@ async function dockerSyncCheckout(
         if (restored && !restored.ok) return restored;
         const synced = await runSyncStep(host, job, githubToken);
         // The agent is released only after the restore, the sync and the inputs all reported ok.
-        return synced.ok ? await deliverTaskInputs(host, job, { signal }) : synced;
+        if (!synced.ok) return synced;
+        // The checkout result (fingerprint, conflicts) is the sync's to return; delivery only refuses.
+        const delivered = await deliverTaskInputs(host, job, { signal });
+        return delivered.ok ? synced : delivered;
     } catch (e) {
         // A group that cannot exist, or a channel that closed under the sync, leaves nothing behind
         // and nothing to hand back: the loop leaves the job to its lease.

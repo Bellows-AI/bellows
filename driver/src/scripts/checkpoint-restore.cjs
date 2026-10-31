@@ -459,6 +459,8 @@ void main().then(say, (e) =>
                   kind: KIND_UNRESTORABLE,
                   ...(e instanceof Absent ? { absent: true } : {}),
               }
-            : { ok: false, reason: detail(e) }
+            : // Anything but a definitive verdict (a 5xx, a network or disk fault, a git failure) is unconfirmed: the
+              // driver interrupts the attempt on `transient`, never ends the thread on it.
+              { ok: false, reason: detail(e), transient: true }
     )
 );

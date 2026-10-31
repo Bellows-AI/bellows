@@ -37,6 +37,7 @@ interface Transcripts {
     }[];
     data: Map<string, Buffer>;
     corrupt?: string;
+    unavailable?: string;
 }
 
 const JOB_A = '11111111-1111-4111-8111-111111111111';
@@ -139,6 +140,10 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             if (transcripts && path === '/checkpoint/transcripts/chunk') {
                 const q = url.searchParams;
                 const key = `${q.get('jobId')}/${q.get('claimSeq')}/${q.get('session')}`;
+                if (transcripts.unavailable === key) {
+                    reply.writeHead(503).end('{}');
+                    return;
+                }
                 const whole = transcripts.data.get(key);
                 const first = transcripts.streams.find((s) => `${s.jobId}/${s.claimSeq}/${s.session}` === key)
                     ?.chunks[0]?.offset;
@@ -498,6 +503,27 @@ describe.skipIf(!hasGit())('the checkpoint restore script', () => {
             expect(verdict).toMatchObject({ ok: false, kind: 'checkpoint_unrestorable' });
             expect(existsSync(restoredTree())).toBe(false);
             expect(readdirSync(restoreDir())).toEqual([]);
+        });
+
+        // Infrastructure loss interrupts a restore; only a confirmed corrupt or dropped stream is a verdict.
+        it('answers transient, not a verdict, when the transcript endpoint keeps answering 503', async () => {
+            const { transcripts } = thread();
+
+            const verdict = await restoreSessions({ ...transcripts, unavailable: `${JOB_B}/1/beta` });
+
+            expect(verdict).toMatchObject({ ok: false, transient: true });
+            expect(verdict).not.toHaveProperty('kind');
+        });
+
+        it('answers transient when the control endpoint cannot be reached', async () => {
+            workedTree();
+            const { transcripts } = thread();
+            const { chunks } = checkpointStream();
+
+            const verdict = await restore(chunks, 'http://127.0.0.1:1', { SESSIONS_DIR: sessionsDir() });
+
+            expect(verdict).toMatchObject({ ok: false, transient: true });
+            expect(transcripts.streams.length).toBeGreaterThan(0);
         });
 
         it.each([
