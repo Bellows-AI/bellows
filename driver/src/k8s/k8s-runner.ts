@@ -526,6 +526,7 @@ async function syncCheckout(
         // A volume made by a restore is filled before the sync looks at it; the generation it replaces goes after.
         const restored = await restoreTaskTree(host, job, {
             githubToken,
+            signal,
             removeOlder: (generations) => removeTaskVolumes(signal ? withSignal(deps, signal) : deps, job, generations),
         });
         // The agent is released only after the restore, the sync and the inputs all reported ok.

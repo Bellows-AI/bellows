@@ -317,18 +317,43 @@ describe('restoreTaskTree', () => {
     });
 
     it.each([
-        ['a failed verdict', { stdout: '{"ok":false,"reason":"boom"}' }],
         ['a timeout', { timedOut: true }],
         ['an unparseable result', { stdout: 'garbage', exitCode: 1 }],
-    ])('keeps the older generations on %s', async (_name, outcome) => {
+        ['a failed verdict without a kind', { stdout: '{"ok":false,"reason":"boom"}' }],
+        ['a non-boolean ok', { stdout: '{"ok":"yes"}' }],
+    ])('throws on %s, keeps the older generations and stays owed', async (_name, outcome) => {
         const { host } = sink(() => outcome);
         const removeOlder = vi.fn(async () => undefined);
         const job = owed();
-        const result = await restoreTaskTree(host, job, { removeOlder });
-        expect(result).toMatchObject({ ok: false });
-        expect(result?.reason).toMatch(/checkpoint restore failed|boom/);
+        await expect(restoreTaskTree(host, job, { removeOlder })).rejects.toThrow(/unconfirmed|boom/);
         expect(removeOlder).not.toHaveBeenCalled();
         expect(job.taskRestore?.restored).toBe(false);
+    });
+
+    it('returns a refusal only for checkpoint_unrestorable, and deletes nothing', async () => {
+        const { host } = sink(() => ({ stdout: '{"ok":false,"reason":"gap","kind":"checkpoint_unrestorable"}' }));
+        const removeOlder = vi.fn(async () => undefined);
+        const job = owed();
+        expect(await restoreTaskTree(host, job, { removeOlder })).toEqual({
+            ok: false,
+            reason: 'gap',
+            kind: 'checkpoint_unrestorable',
+        });
+        expect(removeOlder).not.toHaveBeenCalled();
+        expect(job.taskRestore?.restored).toBe(false);
+    });
+
+    it("hands the attempt's signal to the restore step", async () => {
+        const seen: (AbortSignal | undefined)[] = [];
+        const { host } = sink(() => ({ stdout: OK }));
+        const submit = host.sink.submit;
+        host.sink.submit = async (token, step, signal) => {
+            seen.push(signal);
+            return submit(token, step, signal);
+        };
+        const signal = new AbortController().signal;
+        await restoreTaskTree(host, owed(), { removeOlder: async () => undefined, signal });
+        expect(seen).toEqual([signal]);
     });
 
     it('swallows a failed delete: the restore stands and the next claim removes the leftover', async () => {
