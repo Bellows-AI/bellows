@@ -12,6 +12,7 @@ import { Link } from 'react-router-dom';
 import { useDownwardAnchor } from '../anchor.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { QueueTaskInput } from '../api/useTasks.js';
+import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { AttachmentChips } from './AttachmentList.js';
 import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
 import { type ComposerDraftInput, type ComposerDraftStore, TASK_SCOPE } from '../composer-draft.js';
@@ -567,7 +568,11 @@ export function TaskComposer({
                     </p>
                 ) : null}
                 <RestoredNotices notices={composer.notices} onDismiss={composer.dismissNotices} />
-                <section className="panel composer-prompt" {...dropAndPaste}>
+                <AttachmentDropZone
+                    className="panel composer-prompt"
+                    accepts={() => limits !== null}
+                    onFiles={files.add}
+                >
                     <div className="composer-prompt-head">
                         <label htmlFor={PROMPT_ID}>What should the agent do?</label>
                     </div>
@@ -582,6 +587,7 @@ export function TaskComposer({
                         placeholder={PROMPT_PLACEHOLDER}
                         value={state.draft}
                         readOnly={frozen}
+                        {...dropAndPaste}
                         onChange={(e) => update({ draft: e.target.value })}
                     />
                     <p
@@ -611,7 +617,7 @@ export function TaskComposer({
                     </div>
                     {workflows === null ? null : <ComposerWorkflowDetails composer={composer} />}
                     <ReadinessBanner blocker={blocker} workflow={state.workflow} />
-                </section>
+                </AttachmentDropZone>
             </div>
         </>
     );

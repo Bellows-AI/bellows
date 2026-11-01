@@ -241,14 +241,14 @@
         word-break: break-word;
     }
 
-    /* A recorded request's image, read from the original: bounded so a large screenshot cannot
-       push the exchange off the page. */
+    /* A recorded request's image, read from the original: it fills its square tile, cropped, so a
+       large screenshot cannot push the exchange off the page. */
     .attachment-preview {
-        border-radius: var(--radius-md);
-        flex: none;
-        max-height: 160px;
-        max-width: 160px;
-        object-fit: contain;
+        height: 100%;
+        inset: 0;
+        object-fit: cover;
+        position: absolute;
+        width: 100%;
     }
 
     /* The stored agent summary — the terminal response, flowing prose like the prompt. */

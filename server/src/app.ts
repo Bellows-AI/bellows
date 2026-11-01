@@ -142,7 +142,7 @@ export interface AppDeps {
 
 // Set as a response header rather than a <meta> tag so dev can allow the Vite HMR
 // websocket without a different index.html.
-function csp(dev: boolean): string {
+export function csp(dev: boolean): string {
     const connect = dev ? "'self' ws:" : "'self'";
     return [
         "default-src 'none'",
@@ -150,8 +150,9 @@ function csp(dev: boolean): string {
         "style-src 'self'",
         `connect-src ${connect}`,
         // avatars.githubusercontent.com is where GitHub serves the profile pictures the user menu
-        // and settings page render. One pinned host, never a wildcard.
-        "img-src 'self' data: https://avatars.githubusercontent.com",
+        // and settings page render. One pinned host, never a wildcard. blob: is the composer chip's
+        // thumbnail of a chosen file (an object URL); images only, never scripts.
+        "img-src 'self' data: blob: https://avatars.githubusercontent.com",
         "font-src 'self'",
         "base-uri 'none'",
         "form-action 'none'",
