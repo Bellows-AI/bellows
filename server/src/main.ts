@@ -25,6 +25,7 @@ import {
     startIntegrationRecovery,
 } from './integrations/integration-recovery.js';
 import { jiraRegistration } from './integrations/providers/jira.js';
+import { startTempSweep } from './artifacts/fs-store.js';
 import { startAttachmentSweep } from './attachments/attachment-collector.js';
 import { startSecretCollector } from './secrets/secret-collector.js';
 import { startCommerceDelivery } from './commerce/commerce-loop.js';
@@ -78,6 +79,8 @@ function startCollectors({
     void ready.then(() =>
         startSecretCollector({ collect: () => metrics.timedPass('secret_collect', () => secrets.collect()) })
     );
+    const { sweepTemps } = artifacts;
+    if (sweepTemps) startTempSweep(sweepTemps, { log: (m) => console.log(`[artifacts] ${m}`) });
     void ready.then(() => startAttachmentSweep({ sql, ready, artifacts, config: config.artifacts, metrics }));
 }
 
