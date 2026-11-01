@@ -8,8 +8,8 @@ import { commitDate } from '../format.js';
 import { IntegrationsCatalog } from './IntegrationsCatalog.js';
 
 /**
- * The member's own Jira connections: one row per connected site with its Atlassian account and
- * access, and its `RowActions`: Allow adding comments (a read row only) or Reconnect inline, the rest
+ * The member's own managed connections: one row per authorized site with its account and
+ * access. Jira rows retain their `RowActions`: Allow adding comments (a read row only) or Reconnect inline, the rest
  * in the overflow menu with Disconnect last. Presentational, like
  * `MembersPanel` — the section owns the list and the writes; Connect opens `JiraConnectionDialog`.
  * Every start is a reconnect or a connect through `onStart`, which resolves to a refusal or null
@@ -106,71 +106,71 @@ export function JiraConnectionsPanel({
                     These accounts belong to you. Tasks can use an eligible connection when one is available, or let
                     you choose between several. Permissions are managed per connection.
                 </p>
-            {notice ? (
-                <div className={`banner-${notice.tone}`} role={notice.tone === 'info' ? undefined : 'alert'}>
-                    <Icon name={NOTICE_ICON[notice.tone]} size={24} />
-                    <p>{notice.message}</p>
-                </div>
-            ) : null}
-            {failure || error ? (
-                <p className="status" role="alert">
-                    {failure ?? error}
-                </p>
-            ) : null}
-            {connections.length === 0 ? (
-                <p className="muted">{NO_CONNECTIONS_NOTE}</p>
-            ) : (
-                <section className="table-wrap">
-                    <table className="data table-cards">
-                        <thead>
-                            <tr>
-                                <th scope="col">Service</th>
-                                <th scope="col">Site</th>
-                                <th scope="col">Account</th>
-                                <th scope="col">Access</th>
-                                <th scope="col">Connected</th>
-                                <th scope="col">
-                                    <span className="visually-hidden">Actions</span>
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {connections.map((connection) => (
-                                <tr key={connection.id}>
-                                    <td data-label="Service">
-                                        {connection.provider === 'jira' ? 'Jira' : connection.provider}
-                                    </td>
-                                    <td data-label="Site">{connection.site}</td>
-                                    <td data-label="Account">{connection.account}</td>
-                                    <td data-label="Access">{connection.access}</td>
-                                    <td data-label="Connected">{commitDate(connection.createdAt)}</td>
-                                    <td data-label="Actions">
-                                        <RowActions
-                                            rowName={`${connection.site} for ${connection.account}`}
-                                            {...rowActions(connection)}
-                                            disabled={saving}
-                                        />
-                                    </td>
+                {notice ? (
+                    <div className={`banner-${notice.tone}`} role={notice.tone === 'info' ? undefined : 'alert'}>
+                        <Icon name={NOTICE_ICON[notice.tone]} size={24} />
+                        <p>{notice.message}</p>
+                    </div>
+                ) : null}
+                {failure || error ? (
+                    <p className="status" role="alert">
+                        {failure ?? error}
+                    </p>
+                ) : null}
+                {connections.length === 0 ? (
+                    <p className="muted">{NO_CONNECTIONS_NOTE}</p>
+                ) : (
+                    <section className="table-wrap">
+                        <table className="data table-cards">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Service</th>
+                                    <th scope="col">Site</th>
+                                    <th scope="col">Account</th>
+                                    <th scope="col">Access</th>
+                                    <th scope="col">Connected</th>
+                                    <th scope="col">
+                                        <span className="visually-hidden">Actions</span>
+                                    </th>
                                 </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </section>
-            )}
-            <JiraConnectionDialog
-                open={connecting}
-                saving={saving}
-                onClose={() => setConnecting(false)}
-                onStart={onStart}
-            />
-            <JiraWriteConsentDialog
-                connection={granting}
-                busy={saving}
-                onClose={() => setGranting(null)}
-                onConfirm={() => {
-                    if (granting) void reconnect({ connectionId: granting.id, access: 'write' });
-                }}
-            />
+                            </thead>
+                            <tbody>
+                                {connections.map((connection) => (
+                                    <tr key={connection.id}>
+                                        <td data-label="Service">
+                                            {connection.provider === 'jira' ? 'Jira' : connection.provider}
+                                        </td>
+                                        <td data-label="Site">{connection.site}</td>
+                                        <td data-label="Account">{connection.account}</td>
+                                        <td data-label="Access">{connection.access}</td>
+                                        <td data-label="Connected">{commitDate(connection.createdAt)}</td>
+                                        <td data-label="Actions">
+                                            <RowActions
+                                                rowName={`${connection.site} for ${connection.account}`}
+                                                {...rowActions(connection)}
+                                                disabled={saving}
+                                            />
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </section>
+                )}
+                <JiraConnectionDialog
+                    open={connecting}
+                    saving={saving}
+                    onClose={() => setConnecting(false)}
+                    onStart={onStart}
+                />
+                <JiraWriteConsentDialog
+                    connection={granting}
+                    busy={saving}
+                    onClose={() => setGranting(null)}
+                    onConfirm={() => {
+                        if (granting) void reconnect({ connectionId: granting.id, access: 'write' });
+                    }}
+                />
             </section>
         </>
     );
