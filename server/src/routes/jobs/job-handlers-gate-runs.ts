@@ -10,7 +10,7 @@ import {
     type GateRunWrite,
 } from '../../db/jobs/job-store-gate-runs.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { bad, body, guard } from '../helpers.js';
+import { bad, guard } from '../helpers.js';
 import {
     CONTROL_BODY_LIMIT,
     GATE_NAME_LIMIT,
@@ -20,7 +20,7 @@ import {
     notFoundJob,
     nullableTimestamp,
 } from './job-limits.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute } from '../route-guards.js';
 
 /** HMAC-SHA256 hex: the driver's gate identity. Anything else is not a digest and is never stored. */
 const IDENTITY = /^[0-9a-f]{64}$/;
@@ -113,15 +113,9 @@ function validateWrite(fields: Record<string, unknown>): Checked<GateRunWrite> {
  * recorded" — and for the running row, as a refusal to start the gate.
  */
 export async function handleGateRun(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof GateRunStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof GateRunStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const checked = validateWrite(fields);
     if (!checked.ok) return bad(reply, ERROR_CODES.BAD_BODY, checked.message);
 
@@ -141,15 +135,9 @@ export async function handleGateRun(orgs: OrgRegistry, request: FastifyRequest, 
 
 /** The latest row per gate of the run claim `runClaimSeq` started, under the caller's lease. */
 export async function handleGateRuns(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof GateRunStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof GateRunStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const runClaimSeq = runClaimSeqOf(fields.runClaimSeq);
     if (runClaimSeq === null) return bad(reply, ERROR_CODES.BAD_BODY, 'runClaimSeq must be a positive integer');
 

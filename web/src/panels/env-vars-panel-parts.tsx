@@ -1,4 +1,4 @@
-import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { countActive, SECRET_STATE_LABEL, secretState } from './env-draft.js';
 import type { EnvRowState, RowFieldErrors } from './env-draft.js';
 
@@ -210,6 +210,32 @@ export function EnvTable({
     );
 }
 
+/** One kind's table and the action row beneath it: the Add button, then any `children` the kind adds. */
+function EnvRows({
+    addLabel,
+    onAdd,
+    addButtonRef,
+    children,
+    ...table
+}: {
+    addLabel: string;
+    onAdd: () => void;
+    addButtonRef: (el: HTMLButtonElement | null) => void;
+    children?: ReactNode;
+} & Parameters<typeof EnvTable>[0]) {
+    return (
+        <>
+            <EnvTable {...table} />
+            <div className="env-row-actions">
+                <button type="button" className="env-add" onClick={onAdd} disabled={table.locked} ref={addButtonRef}>
+                    {addLabel}
+                </button>
+                {children}
+            </div>
+        </>
+    );
+}
+
 /** The tablist switching Variables and Secrets, with live counts. Split out of `EnvVarsPanel` so
  * its own markup does not add to the panel's line count. */
 export function EnvTabsBar({
@@ -407,21 +433,11 @@ export function VariablesTabPanel({
             {/* The table holds the pending-removal strips too, so it renders while ANY row of
                 this type exists — removing the last active row must leave its strip and Undo
                 visible, not an empty scope claiming nothing is configured. */}
-            <EnvTable
-                rows={rows}
+            <EnvRows
                 kind="variable"
-                errors={errors}
-                locked={locked}
-                onUpdate={onUpdate}
-                onRemove={onRemove}
-                onUndoRemove={onUndoRemove}
-                nameRefs={nameRefs}
-                undoRefs={undoRefs}
-            />
-            <div className="env-row-actions">
-                <button type="button" className="env-add" onClick={onAdd} disabled={locked} ref={addButtonRef}>
-                    Add variable
-                </button>
+                addLabel="Add variable"
+                {...{ rows, errors, locked, onAdd, addButtonRef, onUpdate, onRemove, onUndoRemove, nameRefs, undoRefs }}
+            >
                 <button
                     type="button"
                     className="env-advanced-toggle"
@@ -433,7 +449,7 @@ export function VariablesTabPanel({
                 >
                     Edit variables as .env
                 </button>
-            </div>
+            </EnvRows>
             {advancedOpen ? (
                 <AdvancedEnvEditor
                     uid={uid}
@@ -488,22 +504,11 @@ export function SecretsTabPanel({
             aria-labelledby={`${uid}-tab-secrets`}
             hidden={tab !== 'secrets'}
         >
-            <EnvTable
-                rows={rows}
+            <EnvRows
                 kind="secret"
-                errors={errors}
-                locked={locked}
-                onUpdate={onUpdate}
-                onRemove={onRemove}
-                onUndoRemove={onUndoRemove}
-                nameRefs={nameRefs}
-                undoRefs={undoRefs}
+                addLabel="Add secret"
+                {...{ rows, errors, locked, onAdd, addButtonRef, onUpdate, onRemove, onUndoRemove, nameRefs, undoRefs }}
             />
-            <div className="env-row-actions">
-                <button type="button" className="env-add" onClick={onAdd} disabled={locked} ref={addButtonRef}>
-                    Add secret
-                </button>
-            </div>
         </div>
     );
 }

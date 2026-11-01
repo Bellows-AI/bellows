@@ -4,7 +4,7 @@
  * id the driver minted, so a replayed write adds nothing.
  */
 
-import { exists } from './job-store-rows.js';
+import { lockRunningAttempt } from './job-store-rows.js';
 import type { JobStoreContext } from './job-store-types.js';
 
 export const PR_OPERATIONS = ['created', 'reused'] as const;
@@ -41,12 +41,8 @@ export async function writePrOperation(
     const { sql, orgId } = ctx;
     const { id, leaseToken } = attempt;
     return sql.begin(async (tx) => {
-        const [row] = await tx<{ claim_seq: string }[]>`
-            select claim_seq from job
-            where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
-            for update
-        `;
-        if (!row) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
+        const row = await lockRunningAttempt(tx, orgId, id, leaseToken);
+        if ('result' in row) return row;
         await tx`
             insert into job_pr_operation (org_id, job_id, operation_id, claim_seq, operation, repo, pr_number, pr_url, branch)
             values (

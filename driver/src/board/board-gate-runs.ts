@@ -6,9 +6,8 @@
  */
 
 import type { BoardJob } from './board.js';
+import { leasedWriter, type Post } from './board-lease-write.js';
 
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
 const CONFLICT_CODE = 'GATE_RUN_CONFLICT';
 
 /** Where a gate run came from: the agent's ad-hoc call, or the end-of-run gates pass. */
@@ -52,13 +51,6 @@ export interface GateRunRecord extends GateRunWrite {
     claimSeq: number;
 }
 
-type Post = (
-    path: string,
-    body: unknown,
-    allow404?: boolean,
-    options?: { signal?: AbortSignal | undefined; allow?: readonly number[] }
-) => Promise<Response>;
-
 const isString = (v: unknown): v is string => typeof v === 'string';
 const nullable = (v: unknown, check: (x: unknown) => boolean): boolean => v === null || check(v);
 const isInteger = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v);
@@ -95,23 +87,10 @@ export interface GateRunBoard {
 }
 
 export function gateRunCalls(post: Post): GateRunBoard {
+    const leased = leasedWriter(post, CONFLICT_CODE);
     return {
         async gateRun(job, write, signal) {
-            try {
-                const response = await post(
-                    `/api/jobs/${job.id}/gate-run`,
-                    { leaseToken: job.leaseToken, ...write },
-                    true,
-                    { signal }
-                );
-                if (response.ok) return 'ok';
-                if (response.status === HTTP_NOT_FOUND) return 'lost';
-                if (response.status !== HTTP_CONFLICT) return 'rejected';
-                const code = ((await response.json().catch(() => ({}))) as { code?: unknown }).code;
-                return code === CONFLICT_CODE ? 'rejected' : 'lost';
-            } catch {
-                return 'rejected';
-            }
+            return leased(`/api/jobs/${job.id}/gate-run`, job, write, signal);
         },
 
         async gateRuns(job, runClaimSeq, signal) {

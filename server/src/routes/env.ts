@@ -8,6 +8,7 @@ import {
 } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
+import type { Caller } from '../auth/store.js';
 import { bad, badSegment, body as jsonBody, checkReposVisible, guard } from './helpers.js';
 import type { EnvVarEntry, EnvVarStore } from '../db/env-var-store.js';
 import { MAX_SECRET_BYTES } from '../secrets/secret-input.js';
@@ -174,6 +175,31 @@ export const envRoutes =
             return { envVars: rt.envVars, repos: rt.repos };
         };
 
+        /** A scope PUT: the caller, the store and the parsed list, then `write`'s result as `{ vars }`. */
+        const putScope = async (
+            request: FastifyRequest,
+            reply: FastifyReply,
+            write: (store: EnvVarStore, vars: EnvVarEntry[], caller: Caller) => Promise<unknown>
+        ) => {
+            const caller = callerOf(request);
+            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
+            const rt = await runtimeOf(request);
+            if (!rt) return noEnvStore(reply);
+
+            const vars = parseVars(request.body);
+            if (typeof vars === 'string') {
+                return bad(reply, varsCode(vars), vars);
+            }
+
+            const saved = await guard(
+                reply,
+                (e) => request.log.error({ err: e }),
+                () => write(rt.envVars, vars, caller)
+            );
+            if (!saved.ok) return reply;
+            return reply.code(HTTP_OK).send({ vars: saved.value });
+        };
+
         app.get('/api/env', async (request, reply) => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
@@ -202,52 +228,18 @@ export const envRoutes =
         // The "Core secrets" scope: one list for the whole organization. Written by any member —
         // installation access is membership, and there are no roles above member to gate it with.
         app.put('/api/env/org', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-            const rt = await runtimeOf(request);
-            if (!rt) return noEnvStore(reply);
-            const store = rt.envVars;
-
-            const vars = parseVars(request.body);
-            if (typeof vars === 'string') {
-                return bad(reply, varsCode(vars), vars);
-            }
-
-            const saved = await guard(
-                reply,
-                (e) => request.log.error({ err: e }),
-                async () => {
-                    await store.replaceOrg(vars);
-                    return store.listOrg();
-                }
-            );
-            if (!saved.ok) return reply;
-            return reply.code(HTTP_OK).send({ vars: saved.value });
+            return putScope(request, reply, async (store, vars) => {
+                await store.replaceOrg(vars);
+                return store.listOrg();
+            });
         });
 
         // The caller's own scope. Any member may write it — it is their runners' environment.
         app.put('/api/env/workspace', { bodyLimit: BODY_LIMIT }, async (request, reply) => {
-            const caller = callerOf(request);
-            if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-            const rt = await runtimeOf(request);
-            if (!rt) return noEnvStore(reply);
-            const store = rt.envVars;
-
-            const vars = parseVars(request.body);
-            if (typeof vars === 'string') {
-                return bad(reply, varsCode(vars), vars);
-            }
-
-            const saved = await guard(
-                reply,
-                (e) => request.log.error({ err: e }),
-                async () => {
-                    await store.replaceWorkspace(caller.user.id, vars);
-                    return store.listWorkspace(caller.user.id);
-                }
-            );
-            if (!saved.ok) return reply;
-            return reply.code(HTTP_OK).send({ vars: saved.value });
+            return putScope(request, reply, async (store, vars, caller) => {
+                await store.replaceWorkspace(caller.user.id, vars);
+                return store.listWorkspace(caller.user.id);
+            });
         });
 
         // Org-wide per-repository scope: one configuration per repository, applied to every

@@ -1,5 +1,4 @@
-import { useRef } from 'react';
-import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
+import { ConfirmDialog } from './ConfirmDialog.js';
 import {
     confirmBody,
     confirmBusyLabel,
@@ -27,41 +26,19 @@ export function OrgExecutorConfirmDialog({
     onClose: () => void;
     onConfirm: () => void;
 }) {
-    const cancelRef = useRef<HTMLButtonElement>(null);
     return (
-        <Dialog
+        <ConfirmDialog
             open={confirm !== null}
-            onClose={() => {
-                if (!busy) onClose();
-            }}
-            className="dialog-layer"
-            initialFocus={cancelRef}
+            busy={busy}
+            title={confirm ? confirmTitle(confirm) : ''}
+            // Only the delete is destructive. A red "Make personal" would overstate a scope move an
+            // admin can undo by promoting the row back.
+            confirmClassName={confirm?.action === 'demote' ? 'primary' : 'chat-remove'}
+            confirmText={confirm ? (busy ? confirmBusyLabel(confirm) : confirmLabel(confirm)) : ''}
+            onClose={onClose}
+            onConfirm={onConfirm}
         >
-            <DialogBackdrop className="dialog-backdrop" />
-            <div className="dialog-position">
-                <DialogPanel className="dialog task-remove">
-                    {/* The page's one h1 is the header's; a dialog title is an h2. */}
-                    <DialogTitle as="h2" className="task-remove-title">
-                        {confirm ? confirmTitle(confirm) : ''}
-                    </DialogTitle>
-                    <p>{confirm ? confirmBody(confirm) : ''}</p>
-                    <div className="task-remove-actions">
-                        <button ref={cancelRef} type="button" className="chat-resume" onClick={onClose} disabled={busy}>
-                            Cancel
-                        </button>
-                        {/* Only the delete is destructive. A red "Make personal" would overstate a
-                            scope move an admin can undo by promoting the row back. */}
-                        <button
-                            type="button"
-                            className={confirm?.action === 'demote' ? 'primary' : 'chat-remove'}
-                            onClick={onConfirm}
-                            disabled={busy}
-                        >
-                            {confirm ? (busy ? confirmBusyLabel(confirm) : confirmLabel(confirm)) : ''}
-                        </button>
-                    </div>
-                </DialogPanel>
-            </div>
-        </Dialog>
+            <p>{confirm ? confirmBody(confirm) : ''}</p>
+        </ConfirmDialog>
     );
 }

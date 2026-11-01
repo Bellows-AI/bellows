@@ -1,7 +1,6 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf } from '../../auth/plugin.js';
-import { UUID } from '../../identifiers.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { bad, body, guard } from '../helpers.js';
 import { validateAnswerBody, validateQuestionBody } from './job-field-validation-questions.js';
@@ -14,7 +13,7 @@ import {
     leaseLost,
     notFoundJob,
 } from './job-limits.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute, resolveJobRoute } from '../route-guards.js';
 import type { JobQuestionStore } from '../../db/jobs/job-store-questions.js';
 
 /**
@@ -25,15 +24,9 @@ import type { JobQuestionStore } from '../../db/jobs/job-store-questions.js';
 // The driver reports a question the agent asked: lease-fenced like every worker write, and a 409
 // from it is not a kill order (the artifact rule) — the question is retention for the member.
 export async function handleQuestion(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobQuestionStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobQuestionStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const parsed = validateQuestionBody(fields);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
 
