@@ -8,6 +8,7 @@ import { BatchNewPage } from './pages/BatchNewPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
+import { SettingsIntegrationsPage } from './pages/SettingsIntegrationsPage.js';
 import { SettingsLayout } from './pages/SettingsLayout.js';
 import { SettingsOrganizationPage } from './pages/SettingsOrganizationPage.js';
 import { SettingsOverviewPage } from './pages/SettingsOverviewPage.js';
@@ -53,6 +54,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                 <Route index element={<SettingsOverviewPage />} />
                 <Route path="organization" element={<SettingsOrganizationPage />} />
                 <Route path="workspace" element={<SettingsWorkspacePage />} />
+                <Route path="integrations" element={<SettingsIntegrationsPage />} />
                 <Route path="repos" element={<SettingsRepositoriesPage />} />
                 <Route path="executors" element={<SettingsExecutorsPage />} />
                 {/* Workflows are dormant: no route, no nav entry, no composer selector. The API,
