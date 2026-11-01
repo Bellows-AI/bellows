@@ -809,6 +809,7 @@
         .unsaved-actions button,
         .env-add,
         .org-executor-add,
+        button.notification-subscription-add,
         .integration-actions button,
         .env-advanced-toggle,
         .env-raw input,

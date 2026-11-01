@@ -342,7 +342,13 @@ export async function buildApp({
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));
     // Notification subscriptions (BEL-131): the org's settings for who hears about a task verdict.
-    await app.register(notificationSubscriptionRoutes({ orgs, connectors: notificationConnectors }));
+    await app.register(
+        notificationSubscriptionRoutes({
+            orgs,
+            connectors: notificationConnectors,
+            publicUrl: config.integrations.callbackOrigin,
+        })
+    );
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
     if (auth) await app.register(orgMemberRoutes({ store: auth }));

@@ -4,6 +4,7 @@ import { KeyValues } from '../components/KeyValues.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
 import { MembersSection } from '../panels/MembersSection.js';
+import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
 /**
@@ -44,6 +45,8 @@ export function SettingsOrganizationPage() {
             {/* The roster and its role writes (issue 410): the section owns its state and CRUD,
                 the way OrgExecutorsSection does — the page composes. */}
             <MembersSection session={session} />
+
+            <NotificationSubscriptionsSection session={session} scope="org" />
 
             <ConfigurationScope scope="organization" />
 
