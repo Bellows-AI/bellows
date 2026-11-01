@@ -55,9 +55,7 @@ function JiraState({
                     </button>
                 </>
             ) : null}
-            {jira === false ? (
-                <span className="muted">Not configured on this deployment</span>
-            ) : null}
+            {jira === false ? <span className="muted">Not configured on this deployment</span> : null}
             {jira === true ? (
                 <button type="button" onClick={onConnect}>
                     {label}

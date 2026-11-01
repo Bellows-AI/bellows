@@ -132,11 +132,11 @@ async function getJson(fetchFn: FetchFn, url: string, accessToken: string, signa
 }
 
 /** What main.ts registers with the runtime: the hooks and the OAuth client for Jira, or nothing when unconfigured. */
-export function jiraRegistration(cfg: JiraHooksConfig | null) {
+export function jiraRegistration(cfg: JiraHooksConfig | null, callbackOrigin: string | null) {
     const hooks = cfg ? createJiraHooks(cfg) : undefined;
     return {
-        /** The provider ids this registration can connect: Jira exactly when it is configured. */
-        configured: cfg ? ['jira'] : [],
+        /** The provider ids this registration can connect: Jira when configured AND the board has a callback origin. */
+        configured: cfg && callbackOrigin !== null ? ['jira'] : [],
         providers: (provider: string) => (provider === 'jira' ? hooks : undefined),
         clients: (provider: string) =>
             provider === 'jira' && cfg ? { clientId: cfg.clientId, scopesFor: jiraScopesFor } : undefined,
