@@ -19,7 +19,7 @@ Reasoning: [docs/kubernetes.md](kubernetes.md), "EKS prerequisites".
 
 ## 2. Storage: an EBS class for the task volumes
 
-Prerequisites: [docs/kubernetes.md](kubernetes.md#the-task-volume). Install the EBS CSI driver add-on, create this
+Prerequisites: [docs/kubernetes.md](kubernetes.md#eks-prerequisites). Install the EBS CSI driver add-on, create this
 StorageClass, then set `taskVolume.storageClass: ebs-gp3`:
 
 ```yaml
@@ -34,8 +34,7 @@ parameters:
     type: gp3
 ```
 
-Observe: a task's claim binds once its first pod is scheduled. An install that predates this chart keeps its
-`<release>-workspaces` claim; delete it and its EFS file system by hand.
+Observe: a task's claim binds once its first pod is scheduled.
 
 ## 3. Images: one registry prefix
 
@@ -44,10 +43,8 @@ Bare defaults resolve to `docker.io/library/*` and every pod lands in `ImagePull
 private — then set `global.imageRegistry` once.
 
 - `database.waitImage` is the one reference the prefix never touches: mirror it, set it whole.
-- **Tag the two executor values.** They are bare repository strings, so a packaged chart cannot
-  resolve them from `AppVersion`; tagless reads `:latest` and the node reuses its first cached pull.
-- The same tag publishes the chart to `oci://ghcr.io/<owner>/charts/factory`, versioned with the
-  tag minus its leading `v` — what a GitOps controller resolves.
+- **Tag the two executor values.** They are bare repository strings; tagless reads `:latest` and the node reuses its first cached pull.
+- The same tag publishes the chart to `oci://ghcr.io/<owner>/charts/factory`, versioned without the leading `v`.
 
 Observe: a wrong executor reference fails the run fast naming the image (`readImagePullStatus`).
 
@@ -57,12 +54,10 @@ Set `database.url` — RDS and Aurora both work, the schema loads no extension
 ([persistence.md](persistence.md)). Observe: the `pg_isready` init container passes and
 `GET /api/ready` answers 200 once migrations land.
 
-**`charts/factory-local-state` cannot back a cloud install.** It mounts its claim at
-`/var/lib/postgresql/data`; a real ext4 volume carries a `lost+found`, `initdb` refuses, and the
-StatefulSet crash-loops — kind's hostPath provisioner hides this. Use a managed instance, or set
-`PGDATA=/var/lib/postgresql/data/pgdata`, which the next `helm upgrade` reverts. A private-address
-database sits inside `isolation.blockedCidrs` and the runner never needs it; a runner that must
-reach another private host needs it as a /32 in `isolation.allowedCidrs`.
+**`charts/factory-local-state` cannot back a cloud install.** A real ext4 volume carries a `lost+found`, `initdb`
+refuses, and the StatefulSet crash-loops (kind's hostPath hides this). Use a managed instance. A private-address
+database sits inside `isolation.blockedCidrs`; a runner that must reach a private host needs it as a /32 in
+`isolation.allowedCidrs`.
 
 ## 5. Install: the values shape
 
@@ -83,8 +78,7 @@ is a bug in one of them.
   the controller's events, not the ExternalSecret's status; a missing remote key fails the whole
   sync, so spell optional keys `{{ default "" (index . "SOME_KEY") }}`; and one remote per owner,
   since Terraform owns an entire `SecretString` and its next apply deletes a hand-written key
-  beside it. `GITHUB_APP_PRIVATE_KEY` may be raw or base64 (`loadConfig` discriminates on
-  `-----BEGIN`), and a tool reading that secret must do the same.
+  beside it. `GITHUB_APP_PRIVATE_KEY` may be raw or base64 (`loadConfig`), and a tool reading that secret must do the same.
 
 ## 6. Isolation: enforced, not just admitted
 
@@ -117,10 +111,7 @@ record are outside the chart; `ingress.hosts` must contain the host of `auth.pub
 
 Observe: the ALB provisions, `http://` redirects to `https://`, `/api/health` passes, sign-in
 completes. Then add an executor and queue a task — the runner pod schedules onto the runner node
-group, `kubectl get pod -o yaml` carries no credential values, vitals render, output and status
-arrive, a follow-up resumes the session. Stop one mid-run if you can afford the redo: the lease
-expires, the board re-offers, the replacement fences the checkout and resumes the session; one
-interruption is the trace.
+group, `kubectl get pod -o yaml` carries no credential values, vitals render, a follow-up resumes the session.
 An offline deployment's driver 503s with `JOBS_UNAVAILABLE` (no org materialized yet); a 401 there
 would be the credential instead.
 
@@ -130,8 +121,8 @@ The cloud half of `scripts/test-k8s.sh --phase acceptance`. `CLI` is
 `npm run dev -w cli --`, `NS` the release namespace, `T` a task id. Record each row's outcome in the header.
 
 Walked 2026-10-23 on a staging EKS deployment (v0.0.9-rc), runner nodes shared with other workloads:
-1–6 and 8 pass; 7 passes mid-run, during publish not walked; 9 not walked (#954); 10 survival passes,
-TTL expiry not walked. A runner pod lost during gates stalls the task until the step timeout (#967).
+1–6 and 8 pass; 7 passes mid-run, during publish not walked; 9 not walked; 10 survival passes,
+TTL expiry not walked. A runner pod lost during gates stalls the task until the step timeout.
 
 1. No shared file system anywhere — every claim is the state DB's or a task's, none `ReadWriteMany`:
    `kubectl -n $NS get pvc -o custom-columns=NAME:.metadata.name,MODES:.spec.accessModes,CLASS:.spec.storageClassName`

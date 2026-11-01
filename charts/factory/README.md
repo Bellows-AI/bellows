@@ -34,8 +34,7 @@ commented in `values.yaml`; the executor, EKS prerequisites and isolation residu
 
 `taskVolume.storageClass` names the class each thread's volume is created with; empty is the cluster default.
 On EKS: the EBS CSI driver add-on and a class with `provisioner: ebs.csi.aws.com` and
-`volumeBindingMode: WaitForFirstConsumer`. Recipe: [docs/kubernetes.md](../../docs/kubernetes.md#the-task-volume).
-The chart has **never been installed on EKS**.
+`volumeBindingMode: WaitForFirstConsumer`. Recipe: [docs/kubernetes.md](../../docs/kubernetes.md#eks-prerequisites).
 
 ## Commands
 
