@@ -30,6 +30,8 @@ const PAGES: ReadonlyArray<[string, string]> = [
     ['/settings/repos', 'page-settings-repos'],
     ['/settings/executors', 'page-settings-executors'],
     ['/settings/organization', 'page-settings-organization'],
+    ['/settings/integrations', 'page-settings-integrations'],
+    ['/settings/integrations/available', 'page-settings-integrations-available'],
     ['/account', 'page-account'],
 ];
 
@@ -55,6 +57,11 @@ async function settle(page: Page, path: string): Promise<void> {
         return;
     }
     await page.locator('main#main-content').waitFor();
+    if (path === '/settings/integrations/available') {
+        // The catalog is a card list, not a panel: its list is the settled layout.
+        await page.locator('.integration-list').first().waitFor();
+        return;
+    }
     // Every other routed page mounts its sections below the shell; a panel is the difference
     // between a skeleton and the layout the route settles into.
     await page.locator('main .composer, main section.panel').first().waitFor();
