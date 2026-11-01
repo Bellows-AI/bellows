@@ -12,6 +12,7 @@ const ROUTES = [
     '/tasks/new',
     '/settings',
     '/settings/workspace',
+    '/settings/integrations',
     '/settings/repos',
     '/settings/executors',
     '/settings/organization',
