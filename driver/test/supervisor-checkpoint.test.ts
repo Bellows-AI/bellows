@@ -123,7 +123,9 @@ function fakeScript(parts: Record<string, string>, verdict: string, before = '')
     return `
         const fs = require('node:fs'); const path = require('node:path');
         fs.mkdirSync(process.env.OUT_DIR, { recursive: true });
-        fs.writeFileSync(path.join(process.env.OUT_DIR, 'seen-env.json'), JSON.stringify(process.env));
+        // Written then renamed, so the test never reads it half-written.
+        fs.writeFileSync(path.join(process.env.OUT_DIR, 'seen-env.json.part'), JSON.stringify(process.env));
+        fs.renameSync(path.join(process.env.OUT_DIR, 'seen-env.json.part'), path.join(process.env.OUT_DIR, 'seen-env.json'));
         const parts = ${JSON.stringify(parts)};
         for (const [name, text] of Object.entries(parts)) fs.writeFileSync(path.join(process.env.OUT_DIR, name), text);
         const dir = process.env.OUT_DIR;
