@@ -117,6 +117,7 @@ describe('the integrations catalog', () => {
         ['a 401', { status: 401, body: { error: 'no session' } }],
         ['a malformed body', { integrations: [{ provider: 'jira', configured: 'yes' }] }],
         ['a body that is not a list', { integrations: 'nope' }],
+        ['an answer with no Jira entry', { integrations: [] }],
     ])(
         'says it could not check, with a retry and neither Connect nor Not configured, after %s',
         async (_name, config) => {

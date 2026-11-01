@@ -35,16 +35,19 @@ function JiraState({
     const healthy = rows.some((row) => connectionState(row) === 'connected');
     const pill = rows.length > 0 ? STATE_PILL[healthy ? 'connected' : 'needs-reconnect'] : null;
     const label = rows.length > 0 ? 'Connect another' : 'Connect';
+    // An answer that names no Jira entry did not answer the question: it reads as a failed check, never "not configured".
+    const jira = config.state === 'ok' ? config.configured.jira : undefined;
+    const state = config.state === 'ok' && jira === undefined ? 'error' : config.state;
     return (
         <>
             {pill ? <span className={pill.className}>{pill.text}</span> : null}
             {rows.length > 0 ? <Link to={RETURN_TO}>Manage</Link> : null}
-            {config.state === 'loading' ? (
+            {state === 'loading' ? (
                 <button type="button" disabled>
                     Checking…
                 </button>
             ) : null}
-            {config.state === 'error' ? (
+            {state === 'error' ? (
                 <>
                     <span className="muted">Could not check whether Jira is available</span>
                     <button type="button" onClick={config.retry}>
@@ -52,10 +55,10 @@ function JiraState({
                     </button>
                 </>
             ) : null}
-            {config.state === 'ok' && !config.configured.jira ? (
+            {jira === false ? (
                 <span className="muted">Not configured on this deployment</span>
             ) : null}
-            {config.state === 'ok' && config.configured.jira ? (
+            {jira === true ? (
                 <button type="button" onClick={onConnect}>
                     {label}
                 </button>
