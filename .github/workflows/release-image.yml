@@ -111,13 +111,13 @@ jobs:
                     - name: factory-driver
                       context: .
                       args: -f docker/driver.Dockerfile
-                    # The build context the two executors share, the same flag `make runners` passes.
+                    # The build contexts the two executors share, the same flags `make runners` passes.
                     - name: claude-executor
                       context: docker/claude-executor
-                      args: --build-context skills=docker/skills
+                      args: --build-context skills=docker/skills --build-context common=docker/executor-common
                     - name: opencode-executor
                       context: docker/opencode-executor
-                      args: --build-context skills=docker/skills
+                      args: --build-context skills=docker/skills --build-context common=docker/executor-common
                 arch: [amd64, arm64]
                 include:
                     - arch: amd64

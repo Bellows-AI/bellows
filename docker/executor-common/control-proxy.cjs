@@ -16,7 +16,7 @@
  * group 1000 — reaches it and reads nothing else of the CLI's. Reads FACTORY_CTL_OUT. Status and
  * body come back as the relay sent them; a relay that is missing or hangs up is a 502.
  *
- * Kept byte-identical in both executor images (driver/test/control-proxy.test.ts).
+ * One file, built into both executor images (driver/test/control-proxy.test.ts).
  */
 const fs = require('node:fs');
 const http = require('node:http');

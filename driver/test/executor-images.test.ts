@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
     chmodSync,
+    copyFileSync,
     existsSync,
     mkdirSync,
     mkdtempSync,
@@ -15,10 +16,31 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TOOL_UID } from '../src/claim.js';
 import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.js';
+
+const STAGED = new Map<string, string>();
+/**
+ * An entrypoint where the image has it: beside the helpers it finds by its own directory. The
+ * helpers shared by both images live in docker/executor-common, so run in place the entrypoint
+ * would not find them; the image's top-level files and the shared ones are staged together.
+ */
+const stagedEntrypoint = (executorDir: string): string => {
+    let staged = STAGED.get(executorDir);
+    if (!staged) {
+        staged = mkdtempSync(join(tmpdir(), 'executor-staged-'));
+        for (const dir of [executorDir, 'docker/executor-common']) {
+            for (const entry of readdirSync(join(ROOT, dir), { withFileTypes: true })) {
+                if (entry.isFile()) copyFileSync(join(ROOT, dir, entry.name), join(staged, entry.name));
+            }
+        }
+        STAGED.set(executorDir, staged);
+        process.on('exit', () => rmSync(staged!, { recursive: true, force: true }));
+    }
+    return join(staged, 'entrypoint.sh');
+};
 
 /*
  * The executor images carry the branch reporter — the in-container twin of
@@ -28,23 +50,50 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
  * un-attributing every executor run.
  */
 
-const CLAUDE_REPORTER = 'docker/claude-executor/branch-reporter.cjs';
-const OPENCODE_REPORTER = 'docker/opencode-executor/branch-reporter.cjs';
+const REPORTER = 'docker/executor-common/branch-reporter.cjs';
 const CLAUDE_PROGRESS = 'docker/claude-executor/claude-progress.cjs';
 const requireCjs = createRequire(import.meta.url);
 
+describe('the files both executor images share', () => {
+    const SHARED = readdirSync(join(ROOT, 'docker/executor-common')).sort();
+
+    it('live once in docker/executor-common, never copied into an image directory', () => {
+        expect(SHARED.length).toBeGreaterThan(0);
+        for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
+            for (const file of SHARED) expect(existsSync(join(ROOT, dir, file)), `${dir}/${file}`).toBe(false);
+        }
+    });
+
+    it('arrive in both images through the common build context, each copied exactly once', () => {
+        for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
+            const dockerfile = read(`${dir}/Dockerfile`);
+            for (const file of SHARED) {
+                expect(
+                    dockerfile.match(new RegExp(`^COPY --from=common ${file.replace('.', '\\.')} `, 'gm')),
+                    `${dir} ${file}`
+                ).toHaveLength(1);
+                expect(dockerfile, `${dir} ${file}`).not.toMatch(new RegExp(`^COPY ${file.replace('.', '\\.')} `, 'm'));
+            }
+        }
+    });
+});
+
 describe('the executor branch reporter', () => {
-    // Deliberate copies, like the collector's per-branch blocks: one file per image, byte-equal
-    // after the agent constant, so a fix to one lands in the other by construction. The agent
-    // values are exactly the ones agentOf() derives from the OTLP metric names — a mismatch here
-    // would report branch spans no session summary would ever join to.
-    it('ships in both images, identical except the agent it reports as', () => {
-        const claude = read(CLAUDE_REPORTER);
-        const opencode = read(OPENCODE_REPORTER);
-        const stripAgent = (s: string) => s.replace(/const AGENT = '[^']+';/, "const AGENT = 'X';");
-        expect(stripAgent(opencode)).toBe(stripAgent(claude));
-        expect(claude).toContain("const AGENT = 'claude-code';");
-        expect(opencode).toContain("const AGENT = 'opencode';");
+    // One file in docker/executor-common, the agent from the image's ENV. The values are exactly the
+    // ones agentOf() derives from the OTLP metric names — a mismatch here would report branch spans
+    // no session summary would ever join to.
+    it('is one shared file; each image bakes the agent it reports as in a read-only file, not env', () => {
+        expect(read(REPORTER)).not.toContain('process.env.BRANCH_REPORTER_AGENT');
+        for (const [dir, agent] of [
+            ['claude', 'claude-code'],
+            ['opencode', 'opencode'],
+        ]) {
+            const dockerfile = read(`docker/${dir}-executor/Dockerfile`);
+            expect(dockerfile, dir).toContain(
+                `RUN printf '%s\\n' ${agent} >/usr/local/bin/branch-reporter-agent && chmod 0444 /usr/local/bin/branch-reporter-agent\n`
+            );
+            expect(dockerfile, dir).not.toContain('BRANCH_REPORTER_AGENT');
+        }
     });
 
     // claude-home/ cannot hold it: the transcript redirect moves CLAUDE_CONFIG_DIR onto the
@@ -52,7 +101,9 @@ describe('the executor branch reporter', () => {
     it('is copied to /usr/local/bin by both Dockerfiles, never into a config home', () => {
         for (const dir of ['docker/claude-executor', 'docker/opencode-executor']) {
             const dockerfile = read(`${dir}/Dockerfile`);
-            expect(dockerfile).toMatch(/COPY[^\n]*branch-reporter\.cjs \/usr\/local\/bin\/branch-reporter\.cjs/);
+            expect(dockerfile).toMatch(
+                /COPY --from=common branch-reporter\.cjs \/usr\/local\/bin\/branch-reporter\.cjs/
+            );
             expect(dockerfile).not.toMatch(/home\/COPY[^\n]*branch-reporter/);
             expect(dockerfile).not.toMatch(/branch-reporter[^\n]*-home\//);
         }
@@ -224,7 +275,7 @@ describe('the executor branch reporter', () => {
     it('discovers the opencode session with the shipped readout’s exact query', () => {
         const query =
             'select id from session where parent_id is null and directory = ? order by time_created desc limit 1';
-        expect(read(OPENCODE_REPORTER)).toContain(query);
+        expect(read(REPORTER)).toContain(query);
         expect(read('driver/src/scripts/opencode-readout.cjs')).toContain(query);
     });
 });
@@ -450,7 +501,7 @@ afterEach(() => {
 });
 
 const runEntrypoint = (entrypoint: string, sandbox: Sandbox, stubEnv: Record<string, string>) =>
-    spawnDetached([join(ROOT, entrypoint), '-p', 'test run'], { ...sandbox.env, ...stubEnv });
+    spawnDetached([stagedEntrypoint(dirname(entrypoint)), '-p', 'test run'], { ...sandbox.env, ...stubEnv });
 
 const whenExited = (child: ReturnType<typeof spawn>, ms: number): Promise<number | null> =>
     new Promise((resolve, reject) => {
@@ -716,7 +767,7 @@ describe('the opencode entrypoint resumed session', () => {
         try {
             mkdirSync(join(data, 'opencode'), { recursive: true });
             seed(join(data, 'opencode', 'opencode.db'));
-            const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), ...resumeArgv], {
+            const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), ...resumeArgv], {
                 ...sandbox.env,
                 XDG_DATA_HOME: data,
                 BELLOWS_SESSION_ID: KNOWN,
@@ -814,7 +865,7 @@ describe('the opencode entrypoint resumed session', () => {
                 mkdirSync(dir, { recursive: true });
                 withSessions(KNOWN)(join(dir, 'opencode.db'));
                 chmodSync(dir, 0o000);
-                const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), ...resumeArgv], {
+                const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), ...resumeArgv], {
                     ...sandbox.env,
                     XDG_DATA_HOME: data,
                     BELLOWS_SESSION_ID: KNOWN,
@@ -859,7 +910,7 @@ describe('the opencode entrypoint resumed session', () => {
         async () => {
             const sandbox = makeSandbox();
             try {
-                const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run', 'go'], {
+                const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), 'run', 'go'], {
                     ...sandbox.env,
                 });
                 expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
@@ -1191,6 +1242,7 @@ describe('the shared executor skills', () => {
             for (const line of invocations.filter((build) => !/\s-f\s/.test(build))) {
                 builds++;
                 expect(line, `${file}: ${line}`).toContain('--build-context skills=');
+                expect(line, `${file}: ${line}`).toContain('--build-context common=');
             }
         }
         expect(builds).toBeGreaterThan(0);
@@ -1215,33 +1267,33 @@ describe('the shared executor skills', () => {
         }
     );
 
-    it('ships the attempt pair helper byte-identical, root-owned and executable, in both images (#1045)', () => {
-        expect(read('docker/opencode-executor/attempt-pair.cjs')).toBe(read('docker/claude-executor/attempt-pair.cjs'));
+    it('ships the attempt pair helper one shared file, root-owned and executable, in both images (#1045)', () => {
+        expect(read('docker/executor-common/attempt-pair.cjs').length).toBeGreaterThan(0);
         for (const image of ['claude', 'opencode']) {
             const dockerfile = read(`docker/${image}-executor/Dockerfile`);
-            expect(dockerfile, image).toContain('COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs');
+            expect(dockerfile, image).toContain('COPY --from=common attempt-pair.cjs /usr/local/bin/attempt-pair.cjs');
             expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/attempt-pair\.cjs/);
         }
     });
 
-    it('ships the credential broker client byte-identical, root-owned and executable, in both images (BEL-60)', () => {
-        expect(read('docker/opencode-executor/credential-broker.cjs')).toBe(
-            read('docker/claude-executor/credential-broker.cjs')
-        );
+    it('ships the credential broker client one shared file, root-owned and executable, in both images (BEL-60)', () => {
+        expect(read('docker/executor-common/credential-broker.cjs').length).toBeGreaterThan(0);
         for (const image of ['claude', 'opencode']) {
             const dockerfile = read(`docker/${image}-executor/Dockerfile`);
-            expect(dockerfile, image).toContain('COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs');
+            expect(dockerfile, image).toContain(
+                'COPY --from=common credential-broker.cjs /usr/local/bin/credential-broker.cjs'
+            );
             expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/credential-broker\.cjs/);
         }
     });
 
-    it('ships the runtime connection ask byte-identical, root-owned and executable, in both images', () => {
-        expect(read('docker/opencode-executor/connection-ask.cjs')).toBe(
-            read('docker/claude-executor/connection-ask.cjs')
-        );
+    it('ships the runtime connection ask one shared file, root-owned and executable, in both images', () => {
+        expect(read('docker/executor-common/connection-ask.cjs').length).toBeGreaterThan(0);
         for (const image of ['claude', 'opencode']) {
             const dockerfile = read(`docker/${image}-executor/Dockerfile`);
-            expect(dockerfile, image).toContain('COPY connection-ask.cjs /usr/local/bin/connection-ask.cjs');
+            expect(dockerfile, image).toContain(
+                'COPY --from=common connection-ask.cjs /usr/local/bin/connection-ask.cjs'
+            );
             expect(dockerfile, image).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/connection-ask\.cjs/);
         }
     });
@@ -1344,7 +1396,7 @@ describe('the opencode-executor permission policy', () => {
                 git('symbolic-ref', 'refs/remotes/origin/HEAD', `refs/remotes/origin/${opts.defaultBranch}`);
             }
             const env = { ...sandbox.env, GIT_CONFIG_GLOBAL: join(sandbox.env.HOME!, '.gitconfig'), ...opts.env };
-            const child = spawnDetached([join(ROOT, 'docker/opencode-executor/entrypoint.sh'), 'run'], env);
+            const child = spawnDetached([stagedEntrypoint('docker/opencode-executor'), 'run'], env);
             expect(await whenExited(child, EXIT_TIMEOUT_MS)).toBe(0);
             return readFileSync(join(sandbox.bin, 'opencode-config-content'), 'utf8');
         } finally {
@@ -1547,7 +1599,7 @@ describe('the gate filter and the pre-push gate run in the agent instructions (i
 // entrypoint starts the tool broker as root and drops for good; the entrypoints keep the CLI's own
 // state from the tool uid, which shares its group and its umask.
 describe('the agent launcher (issue #814)', () => {
-    const LAUNCH = read('docker/claude-executor/factory-launch.sh');
+    const LAUNCH = read('docker/executor-common/factory-launch.sh');
 
     it.each([
         ['claude', 'docker/claude-executor/Dockerfile'],
@@ -1557,9 +1609,11 @@ describe('the agent launcher (issue #814)', () => {
         expect(dockerfile).toContain(
             `ENTRYPOINT ["/usr/local/bin/factory-launch", "/usr/local/bin/${cli}-executor"]\n`
         );
-        expect(dockerfile).toContain('COPY factory-launch.sh /usr/local/bin/factory-launch\n');
-        expect(dockerfile).toContain('COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs\n');
-        expect(dockerfile).toContain('COPY tool-bash.sh /usr/local/libexec/factory-tool/bash\n');
+        expect(dockerfile).toContain('COPY --from=common factory-launch.sh /usr/local/bin/factory-launch\n');
+        expect(dockerfile).toContain(
+            'COPY --from=common factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs\n'
+        );
+        expect(dockerfile).toContain('COPY --from=common tool-bash.sh /usr/local/libexec/factory-tool/bash\n');
         // The mailbox mount points a docker volume takes its mode from, closed to the tool uid.
         expect(dockerfile).toContain('chmod 0700 /factory/in /factory/out\n');
         // The image's last USER stays node: every other container the driver starts from it.
@@ -1571,7 +1625,7 @@ describe('the agent launcher (issue #814)', () => {
             const text = read(file);
             return text.slice(
                 text.indexOf('RUN groupadd -g 1002 factory-agent'),
-                text.indexOf('COPY factory-launch.sh')
+                text.indexOf('COPY --from=common factory-launch.sh')
             );
         };
         const claude = block('docker/claude-executor/Dockerfile');
@@ -1604,7 +1658,7 @@ describe('the agent launcher (issue #814)', () => {
     it('runs its argument unchanged when it is not root, as an image run by hand', () => {
         const ran = spawnSync(
             '/bin/sh',
-            [join(ROOT, 'docker/claude-executor/factory-launch.sh'), 'sh', '-c', 'echo "$0 ran"'],
+            [join(ROOT, 'docker/executor-common/factory-launch.sh'), 'sh', '-c', 'echo "$0 ran"'],
             {
                 encoding: 'utf8',
             }
@@ -1612,10 +1666,9 @@ describe('the agent launcher (issue #814)', () => {
         expect(ran.stdout).toBe('sh ran\n');
     });
 
-    it('is byte-identical in both images, and nothing sets a shell prefix the hooks would run through', () => {
-        expect(read('docker/opencode-executor/factory-launch.sh')).toBe(LAUNCH);
+    it('is one shared file, and nothing sets a shell prefix the hooks would run through', () => {
         for (const file of [
-            'docker/claude-executor/factory-launch.sh',
+            'docker/executor-common/factory-launch.sh',
             'docker/claude-executor/managed-settings.json',
             'docker/claude-executor/entrypoint.sh',
             'docker/claude-executor/claude-home/settings.json',
@@ -1635,7 +1688,7 @@ describe('the agent launcher (issue #814)', () => {
     });
 
     it('leaves no skill or guide the run-control token: the two skills that call the board use the proxy', () => {
-        const proxy = createRequire(import.meta.url)(join(ROOT, 'docker/claude-executor/control-proxy.cjs')) as {
+        const proxy = createRequire(import.meta.url)(join(ROOT, 'docker/executor-common/control-proxy.cjs')) as {
             SOCKET: string;
         };
         for (const dir of [
@@ -1648,7 +1701,7 @@ describe('the agent launcher (issue #814)', () => {
             ).toBe('');
         }
         // The skills reach it through `factory-control` (#1061), which dials the proxy's own socket.
-        expect(read('docker/claude-executor/factory-control.cjs')).toContain(`'${proxy.SOCKET}'`);
+        expect(read('docker/executor-common/factory-control.cjs')).toContain(`'${proxy.SOCKET}'`);
         for (const skill of ['docker/skills/review/SKILL.md', 'docker/skills/github/SKILL.md']) {
             expect(read(skill)).toContain('factory-control ');
         }
@@ -1659,10 +1712,13 @@ describe('the entrypoints under the tool uid (issue #814)', () => {
     const ENTRYPOINTS = ['docker/claude-executor/entrypoint.sh', 'docker/opencode-executor/entrypoint.sh'];
     /** The entrypoint as factory-launch leaves it: under umask 002. */
     const runShared = (entrypoint: string, sandbox: Sandbox, stubEnv: Record<string, string>) =>
-        spawnDetached(['-c', 'umask 002 && exec /bin/sh "$0" "$@"', join(ROOT, entrypoint), '-p', 'test run'], {
-            ...sandbox.env,
-            ...stubEnv,
-        });
+        spawnDetached(
+            ['-c', 'umask 002 && exec /bin/sh "$0" "$@"', stagedEntrypoint(dirname(entrypoint)), '-p', 'test run'],
+            {
+                ...sandbox.env,
+                ...stubEnv,
+            }
+        );
 
     it.each(ENTRYPOINTS)(
         '%s starts the control proxy only where the supervisor’s relay socket exists, and holds no token to hand the CLI',

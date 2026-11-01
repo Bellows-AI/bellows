@@ -15,7 +15,7 @@
  * The answer body reaches stdout unchanged. Exit codes: 0 a 2xx answer, 22 any other status (body
  * still printed, status on stderr), 1 no answer or no socket, 2 a usage error.
  *
- * Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+ * One file, built into both executor images (driver/test/executor-images.test.ts).
  */
 const fs = require('node:fs');
 const http = require('node:http');

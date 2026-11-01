@@ -13,7 +13,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * supervisor relays when it follows a newer holder, else the env the container started with, and
  * never a verdict of its own. Driven against a real unix socket.
  */
-const MODULE = join(ROOT, 'docker/claude-executor/attempt-pair.cjs');
+const MODULE = join(ROOT, 'docker/executor-common/attempt-pair.cjs');
 const pairing = createRequire(import.meta.url)(MODULE) as {
     currentPair: (
         env: Record<string, string | undefined>,

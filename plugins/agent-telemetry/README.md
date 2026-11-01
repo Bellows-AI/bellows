@@ -1,7 +1,7 @@
 # agent-telemetry
 
 A Claude Code plugin that posts `session → (repo, branch)` to a Factory dashboard, so token usage
-is attributed to the repo. In-container twin: `docker/claude-executor/branch-reporter.cjs`.
+is attributed to the repo. In-container twin: `docker/executor-common/branch-reporter.cjs`.
 
 | Concern | Code |
 | --- | --- |

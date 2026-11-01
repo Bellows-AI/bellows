@@ -34,7 +34,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "building $IMAGE"
-docker build -q --build-context skills=../skills -t "$IMAGE" . >/dev/null || {
+docker build -q --build-context skills=../skills --build-context common=../executor-common -t "$IMAGE" . >/dev/null || {
     echo 'test.sh: build failed'
     exit 1
 }

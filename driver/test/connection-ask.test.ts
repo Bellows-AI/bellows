@@ -13,7 +13,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * a hang-up, a 5xx, a body that is not an answer — is inconclusive and never reads as a verdict. Driven
  * against a real unix socket.
  */
-const MODULE = join(ROOT, 'docker/claude-executor/connection-ask.cjs');
+const MODULE = join(ROOT, 'docker/executor-common/connection-ask.cjs');
 type Asked =
     | { kind: 'answer'; answer: 'bound' | 'unavailable' | 'waiting' }
     | { kind: 'absent' | 'refused' | 'inconclusive' };

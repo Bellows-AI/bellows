@@ -13,9 +13,8 @@
 // entrypoint, which forwards it to the CLI exactly as a runtime stop would. A sibling of the CLI,
 // never its parent: it kills nothing itself. With no mailbox (an image run by hand) it exits.
 //
-// Deliberate copy: docker/claude-executor/ and docker/opencode-executor/ each hold this file, byte
-// for byte (driver/test/executor-images.test.ts), because each image's build context is its own
-// directory.
+// One file, built into both executor images through the `common` build context
+// (driver/test/executor-images.test.ts).
 const fs = require('node:fs');
 const path = require('node:path');
 

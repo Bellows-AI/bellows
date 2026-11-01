@@ -13,7 +13,7 @@
  * As a command it prints the pair as a curl config on stdout (`node attempt-pair.cjs | curl -K - …`),
  * so the lease rides neither argv nor stderr.
  *
- * Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+ * One file, built into both executor images (driver/test/executor-images.test.ts).
  */
 const http = require('node:http');
 

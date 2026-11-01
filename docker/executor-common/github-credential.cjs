@@ -17,7 +17,7 @@
  * never to stderr, which carries only guidance a person can act on. A refusal exits non-zero, and
  * git then falls back to no credential.
  *
- * Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+ * One file, built into both executor images (driver/test/executor-images.test.ts).
  */
 const broker = require('./credential-broker.cjs');
 

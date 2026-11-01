@@ -37,7 +37,7 @@ precedence and `OTEL_LOG_*`: [docs/security.md](../../docs/security.md).
 
 ```bash
 # The shared skills arrive as the named `skills` build context. CLAUDE_CODE_VERSION pins the CLI.
-docker build --build-context skills=docker/skills -t claude-executor docker/claude-executor
+docker build --build-context skills=docker/skills --build-context common=docker/executor-common -t claude-executor docker/claude-executor
 make runners                                      # both executor images
 docker/claude-executor/test.sh                    # builds claude-executor-test, checks it
 

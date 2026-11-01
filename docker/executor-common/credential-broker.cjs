@@ -14,7 +14,7 @@
  * Callers pass `deps` (see `defaultDeps`) and receive `{ok:true, token, ...}` or `{ok:false, reason}`;
  * a token goes nowhere but the result, never to stderr, which carries guidance a person can act on.
  *
- * Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+ * One file, built into both executor images (driver/test/executor-images.test.ts).
  */
 const fs = require('node:fs');
 const path = require('node:path');

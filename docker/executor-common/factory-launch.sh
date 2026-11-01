@@ -10,7 +10,7 @@
 # broker starts under an empty one. The loader's own variables are refused before they get here
 # (RESERVED_ENV_NAMES, driver/src/claim.ts).
 #
-# Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+# One file, built into both executor images (driver/test/executor-images.test.ts).
 set -eu
 
 if [ "$(/usr/bin/id -u)" != 0 ]; then
