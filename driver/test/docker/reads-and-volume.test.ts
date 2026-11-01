@@ -377,6 +377,20 @@ describe('the docker runner restoring a task volume', () => {
             expect(restoreStep(steps)?.step.env).not.toHaveProperty('CHECKOUT');
         });
 
+        it('rebuilds a repo-free OpenCode session on the new generation before release', async () => {
+            const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
+            const { d, runner: r } = runner([], steps, { checkpoint: async () => POINTER });
+            const j = repoFree({ executorType: 'opencode' });
+            expect(await r.syncCheckout(j, undefined, null)).toEqual({ ok: true, reason: null });
+            expect(j.taskGeneration).toBe(2);
+            expect(taskCreates(d.calls)).toEqual([named(2)]);
+            expect(names(steps)).toEqual(['restore']);
+            const env = restoreStep(steps)?.step.env;
+            expect(env).toMatchObject({ OPENCODE_DB: expect.stringContaining('opencode.db') });
+            expect(env).toHaveProperty('CHUNKS', JSON.stringify(POINTER.checkpoint.chunks));
+            expect(env).not.toHaveProperty('CHECKOUT');
+        });
+
         it('then writes the inputs, in that order, when the claim carries attachments', async () => {
             const steps = fakeSteps(() => ok('{"ok":true,"reason":null}'));
             const { runner: r } = runner([], steps, NONE);

@@ -308,14 +308,16 @@ function checkpointOf(env) {
     const checkout = env.SUPERVISOR_CHECKPOINT_CHECKOUT;
     const branch = env.SUPERVISOR_CHECKPOINT_BRANCH;
     const dir = env.SUPERVISOR_CHECKPOINT_DIR;
-    if (!script || !checkout || !branch || !dir) return null;
+    const opencodeDb = env.SUPERVISOR_CHECKPOINT_OPENCODE_DB || '';
+    // A repository-free OpenCode task carries no tree or branch: its session database alone is checkpointed.
+    if (!script || !dir || !((checkout && branch) || opencodeDb)) return null;
     return {
         script,
-        checkout,
-        branch,
+        checkout: checkout || '',
+        branch: branch || '',
         dir,
         base: env.SUPERVISOR_CHECKPOINT_BASE || '',
-        opencodeDb: env.SUPERVISOR_CHECKPOINT_OPENCODE_DB || '',
+        opencodeDb,
     };
 }
 
@@ -1830,8 +1832,7 @@ async function checkpointStage(run) {
         const made = await spawnStep(run, {
             argv: ['node', '-e', checkpoint.script],
             env: {
-                CHECKOUT: checkpoint.checkout,
-                BRANCH: checkpoint.branch,
+                ...(checkpoint.checkout ? { CHECKOUT: checkpoint.checkout, BRANCH: checkpoint.branch } : {}),
                 ...(checkpoint.base ? { BASE: checkpoint.base } : {}),
                 OUT_DIR: checkpoint.dir,
                 ...(checkpoint.opencodeDb ? { OPENCODE_DB: checkpoint.opencodeDb } : {}),

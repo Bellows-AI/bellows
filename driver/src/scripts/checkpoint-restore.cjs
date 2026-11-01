@@ -14,7 +14,8 @@
 //      and each stream's length checked, any gap or mismatch `checkpoint_unrestorable`;
 //   5. OPENCODE_DB set and the stream carrying an OpenCode snapshot: writes it there, temp file then rename,
 //      the old database's WAL and SHM sidecars removed first.
-// CHECKOUT unset (a repository-free thread: no tree, no checkpoint) runs step 4 alone: a session file already on
+// CHECKOUT unset with OPENCODE_DB (a repository-free OpenCode thread) keeps the database on the volume, else installs it
+// from the checkpoint, else is unrestorable. CHECKOUT unset otherwise (a Claude thread: no tree, no checkpoint) runs step 4 alone: a session file already on
 // the volume is kept, it may be newer than the board's streams; the missing ones are rebuilt. Nothing else is made.
 // The tree is built whole in a sibling directory and moved into place by one rename, so a kill leaves
 // a directory the next claim removes, never a half-made checkout. A checkout that already exists is
@@ -388,7 +389,36 @@ const installDatabase = (temp) => {
     fs.renameSync(temp, opencodeDb);
 };
 
+/**
+ * A repository-free OpenCode thread: its session database alone. One already on the volume is kept (never overwritten
+ * by an older checkpoint). Absent, it comes from a complete checkpoint; with none carrying it, the thread is
+ * unrestorable, said only after the stat above confirmed the file is not there (any other fault is transient).
+ */
+const databaseOnly = async () => {
+    if (exists(opencodeDb)) return { ok: true, reason: null, restored: false };
+    const chunks = JSON.parse(process.env.CHUNKS || '[]');
+    if (chunks.length === 0) throw unrestorable('no checkpoint carries the session database');
+    const work = opencodeDb + '.restore-work';
+    fs.rmSync(work, { recursive: true, force: true });
+    fs.mkdirSync(work, { recursive: true });
+    try {
+        const stream = path.join(work, 'stream');
+        await download(stream, chunks);
+        const line = readUntil(stream, 0, '\n', HEADER_MAX_BYTES);
+        const header = JSON.parse(line.toString('utf8'));
+        if (header.truncated || !(header.sqliteBytes > 0)) {
+            throw unrestorable('the checkpoint carries no session database');
+        }
+        installDatabase(stageDatabase(stream, header, line.length + 1));
+        return { ok: true, reason: null, restored: true };
+    } finally {
+        for (const temp of temps) fs.rmSync(temp, { force: true });
+        fs.rmSync(work, { recursive: true, force: true });
+    }
+};
+
 const sessionsOnly = async () => {
+    if (opencodeDb && !sessionsDir) return databaseOnly();
     if (!sessionsDir) throw new Error('no checkout and no sessions directory: nothing to restore');
     try {
         const sessions = await downloadSessions(true);

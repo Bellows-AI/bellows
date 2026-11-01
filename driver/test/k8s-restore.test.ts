@@ -146,6 +146,17 @@ describe('the kubernetes runner restoring a task volume', () => {
             expect(run.steps[0]?.env).not.toHaveProperty('CHECKOUT');
         });
 
+        it('rebuilds a repo-free OpenCode session on the new generation before release', async () => {
+            const opencode = repoFree({ executorType: 'opencode' });
+            const run = await k8sSyncRun(opencode, { checkpoints: board(FOUND), answer: () => OK });
+            expect(run).toMatchObject({ value: { ok: true } });
+            expect(claimsCreated(run.calls)).toEqual([taskVolumeName(opencode, 2)]);
+            expect(stepNames(run.steps)).toEqual(['restore']);
+            expect(run.steps[0]?.env).toMatchObject({ OPENCODE_DB: expect.stringContaining('opencode.db') });
+            expect(run.steps[0]?.env).toHaveProperty('CHUNKS', JSON.stringify(FOUND.checkpoint.chunks));
+            expect(run.steps[0]?.env).not.toHaveProperty('CHECKOUT');
+        });
+
         it('then writes the inputs, in that order, when the claim carries attachments', async () => {
             const run = await k8sSyncRun(repoFree({ attachments: [FILE] }), {
                 checkpoints: board({ state: 'none' }),

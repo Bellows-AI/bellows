@@ -165,9 +165,13 @@ describe('planTaskVolume', () => {
             expect(source.checkpoint).not.toHaveBeenCalled();
         });
 
-        it('keeps the refusal for OpenCode: no session database is stored', async () => {
+        it.each([
+            ['none', { state: 'none' } as CheckpointRead],
+            ['gone', { state: 'gone' } as CheckpointRead],
+            ['truncated', found({ ...POINTER, truncated: true })],
+        ])('refuses OpenCode on a lost volume when the checkpoint is %s', async (_n, read) => {
             await expect(
-                planTaskVolume(board({ state: 'none' }), repoFree({ executorType: 'opencode' }), lost)
+                planTaskVolume(board(read), repoFree({ executorType: 'opencode' }), lost)
             ).rejects.toBeInstanceOf(CheckpointUnrestorable);
         });
 

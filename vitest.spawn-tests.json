@@ -47,6 +47,7 @@
         "driver/test/scripts-attachment-fetch.test.ts",
         "driver/test/scripts-binding-write.test.ts",
         "driver/test/scripts-checkpoint-restore.test.ts",
+        "driver/test/scripts-checkpoint-treeless.test.ts",
         "driver/test/scripts-checkpoint.test.ts",
         "driver/test/scripts-claude-export.test.ts",
         "driver/test/scripts-claude-turns.test.ts",
