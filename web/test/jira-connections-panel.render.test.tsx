@@ -59,6 +59,28 @@ describe('the Jira connections panel', () => {
         expect(html).toContain('Connected accounts');
     });
 
+    it('makes the integration catalog discoverable without fake Slack, Discord or MCP actions', () => {
+        const html = render();
+        for (const provider of ['Jira', 'Slack', 'Discord', 'MCP servers']) {
+            expect(html).toContain(`<h3>${provider}</h3>`);
+        }
+        expect(html.match(/>Planned<\/span>/g)).toHaveLength(3);
+        expect(html.match(/>Not available yet<\/p>/g)).toHaveLength(3);
+        expect(html).not.toContain('Connect Slack');
+        expect(html).not.toContain('Connect Discord');
+        expect(html).not.toContain('Connect MCP');
+    });
+
+    it('renders other providers without offering Jira-specific privileges or reconnect', () => {
+        const html = render({
+            connections: [connection('other.example.test', { provider: 'slack', account: 'other@example.test' })],
+        });
+        expect(html).toContain('data-label="Service">slack</td>');
+        expect(html).not.toContain('Allow adding comments</button>');
+        expect(html).not.toContain('Reconnect</button>');
+        expect(html).toContain('Actions for other.example.test for other@example.test');
+    });
+
     it('says so when the list is empty', () => {
         const html = render({ connections: [] });
         expect(html).toContain(NO_CONNECTIONS_NOTE);
