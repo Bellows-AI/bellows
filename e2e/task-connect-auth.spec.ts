@@ -83,8 +83,8 @@ test('Connect Jira goes through consent, returns to the task and binds the requi
 });
 
 test('an existing connection is listed, picked and bound', async ({ page }) => {
-    await page.goto('/settings/workspace');
-    await page.getByRole('button', { name: 'Connect Jira' }).click();
+    await page.goto('/settings/integrations/available');
+    await page.getByRole('listitem', { name: 'Jira' }).getByRole('button', { name: 'Connect', exact: true }).click();
     await page
         .getByRole('dialog', { name: 'Connect Jira' })
         .getByRole('button', { name: 'Continue to Atlassian' })

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createJiraHooks, jiraSiteHost } from '../src/integrations/providers/jira.js';
+import { createJiraHooks, jiraRegistration, jiraSiteHost } from '../src/integrations/providers/jira.js';
 import {
     FAKE_ACCESS_TOKEN,
     FAKE_ACCOUNT_ID,
@@ -247,5 +247,22 @@ describe('jiraSiteHost', () => {
         expect(jiraSiteHost('evil.example.test')).toBeNull();
         expect(jiraSiteHost('acme.atlassian.net.evil.test')).toBeNull();
         expect(jiraSiteHost('')).toBeNull();
+    });
+});
+
+describe('jiraRegistration: what the board reports as connectable', () => {
+    const cfg = {
+        clientId: 'client-1',
+        clientSecret: 'client-secret-1',
+        authorizeUrl: 'https://auth.example.test/authorize',
+        tokenUrl: 'https://auth.example.test/token',
+        apiOrigin: 'https://api.example.test',
+    };
+
+    it('reports Jira only when it is configured and the board has a callback origin', () => {
+        expect(jiraRegistration(cfg, 'https://board.example.test').configured).toEqual(['jira']);
+        // Without a callback origin every start refuses, so Connect must not be offered.
+        expect(jiraRegistration(cfg, null).configured).toEqual([]);
+        expect(jiraRegistration(null, 'https://board.example.test').configured).toEqual([]);
     });
 });

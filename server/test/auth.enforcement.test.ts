@@ -151,6 +151,8 @@ const PERSON_ROUTES: readonly (readonly [string, string])[] = [
     ['POST', '/api/org/executors'],
     ['GET', '/api/org/notification-subscriptions'],
     ['POST', '/api/org/notification-subscriptions'],
+    ['GET', '/api/workspace/notification-subscriptions'],
+    ['POST', '/api/workspace/notification-subscriptions'],
     ['GET', '/api/org/members'],
     ['PUT', `/api/org/members/${JOB_ID}/role`],
     ['GET', '/api/workflows'],
@@ -193,6 +195,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // baked image served it. The not-found handler in app.ts sends index.html for it, and the
     // wall is on /api/* rather than on the document — see docs/auth.md.
     ['/settings/workspace', 'open'],
+    // A pin, not a fix: these pass without the integrations pages (the not-found handler already serves them), and
+    // stay here so a wall on the document can never hide the new client routes.
+    ['/settings/integrations', 'open'],
+    ['/settings/integrations/jira/00000000-0000-4000-8000-000000000001', 'open'],
     ['/api/stats', 'user'],
     ['/api/jobs', 'user'],
     ['/api/jobs/:id', 'user'],
@@ -301,6 +307,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
     // Starting and finishing an outbound OAuth connect is a person's act in their own browser session.
+    ['/api/integrations', 'user'],
     ['/api/integrations/:provider/authorizations', 'user'],
     ['/api/integrations/:provider/callback', 'user'],
     ['/api/otlp/v1/logs', 'ingest'],
@@ -339,7 +346,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
         '/api/org/executors/:id',
         '/api/org/executors/:id/suspension',
         '/api/org/executors/:id/scope',
+        '/api/workspace/notification-subscriptions/:id',
+        '/api/workspace/notification-subscriptions/:id/test',
         '/api/org/notification-subscriptions/:id',
+        '/api/org/notification-subscriptions/:id/test',
         '/api/org/members/:userId/role',
     ].map((path) => [path, 'user'] as [string, string]),
     ['/api/otlp/v1/metrics', 'ingest'],

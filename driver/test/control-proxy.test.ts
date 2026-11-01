@@ -14,7 +14,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * through this socket, which forwards them to the supervisor's relay (#829 S3c), where the token is
  * added. Driven against a fake relay over scratch sockets.
  */
-const PROXY = join(ROOT, 'docker/claude-executor/control-proxy.cjs');
+const PROXY = join(ROOT, 'docker/executor-common/control-proxy.cjs');
 const proxy = createRequire(import.meta.url)(PROXY) as {
     serve: (deps: { fs: unknown; socket: string; relay: string }) => Promise<Server>;
     PUBLISH_PATH: string;

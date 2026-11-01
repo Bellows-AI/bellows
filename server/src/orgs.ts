@@ -74,7 +74,7 @@ export interface OrgRuntime {
     branchHead?: ((repo: string, branch: string) => Promise<string | null>) | undefined;
     /** The artifact index over the object store (070): the org's chunks and manifests; present with the other stores. */
     artifacts?: ArtifactStore | undefined;
-    /** The member uploads (114) over the same object store; present with the artifact index. */
+    /** The member uploads (115) over the same object store; present with the artifact index. */
     attachments?: AttachmentStore | undefined;
     /** The managed connector connections (054) a task may select; present with the other stores. */
     connections?: ConnectionStore | undefined;

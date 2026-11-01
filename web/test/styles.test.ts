@@ -3,6 +3,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { INTEGRATION_PROVIDERS } from '../src/settings/integration-providers.js';
 
 const webSrc = fileURLToPath(new URL('../src', import.meta.url));
 const docPath = fileURLToPath(new URL('../../docs/design-system.md', import.meta.url));
@@ -341,6 +342,17 @@ describe('the stylesheet', () => {
         const light = names[1]!;
         expect([...light].filter((token) => !dark.has(token))).toEqual([]);
         expect([...dark].filter((token) => !light.has(token))).toEqual([]);
+    });
+
+    it('defines a --brand-<provider> color for every integration provider, in both theme blocks', () => {
+        // A provider mark is filled with this token (ProviderMark), so a provider without one would draw
+        // transparent; the lightened dark values keep the mark above 3:1 on the tile surface in both themes.
+        const css = stripComments(shippedCss());
+        const blocks = tokenSpans(css).map(([start, end]) => css.slice(start, end));
+        expect(blocks.length, 'expected exactly two theme blocks').toBe(2);
+        for (const provider of INTEGRATION_PROVIDERS) {
+            for (const block of blocks) expect(block, provider.id).toMatch(new RegExp(`--brand-${provider.id}\\s*:`));
+        }
     });
 
     it('is the Tailwind v4 entry with the andon theme adopted (#148)', () => {

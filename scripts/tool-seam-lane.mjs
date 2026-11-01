@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** The tool's TMPDIR (docker/claude-executor/factory-tool.cjs SHARED_TMP). */
+/** The tool's TMPDIR (docker/executor-common/factory-tool.cjs SHARED_TMP). */
 const SHARED_TMP = '/tmp/factory-tmp';
 const TOOL_HOME = '/home/factory-tool';
 const CLI_CACHE = '/tmp/node-compile-cache';

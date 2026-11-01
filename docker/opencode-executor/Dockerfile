@@ -4,7 +4,7 @@
 # the CLI, the config under opencode-home/ and the skills shared with claude-executor, which arrive
 # as the named `skills` context:
 #
-#   docker build --build-context skills=docker/skills -t opencode-executor docker/opencode-executor
+#   docker build --build-context skills=docker/skills --build-context common=docker/executor-common -t opencode-executor docker/opencode-executor
 #
 # The driver selects this image when a task's chosen executor profile has type `opencode`.
 #
@@ -186,20 +186,22 @@ RUN mkdir -p /tmp/opencode /tmp/node-compile-cache && chown node:node /tmp/openc
 COPY entrypoint.sh /usr/local/bin/opencode-executor
 # The branch reporter and the rate-limit watch, beside the entrypoint in /usr/local/bin:
 # siblings of the CLI, outside the config directory nothing mounted at run time can shadow.
-COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
+COPY --from=common branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
+# The agent it reports as: a root-owned read-only file, not env a task could override.
+RUN printf '%s\n' opencode >/usr/local/bin/branch-reporter-agent && chmod 0444 /usr/local/bin/branch-reporter-agent
 COPY rate-limit-watch.cjs /usr/local/bin/rate-limit-watch.cjs
 # The cooperative Stop (issue #442): the mailbox agent copies the task supervisor's Stop into the
 # stop marker, the baked factory-stop plugin (registered in opencode.json) reads it at each step
 # boundary. Root-owned like the other baked plugins, so the agent cannot edit the plugin out of its
 # own run.
-COPY ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
+COPY --from=common ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
 # The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
 # wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
-COPY github-credential.cjs /usr/local/bin/github-credential.cjs
-COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs
-COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
-COPY connection-ask.cjs /usr/local/bin/connection-ask.cjs
-COPY gh-wrapper.sh /usr/local/bin/gh
+COPY --from=common github-credential.cjs /usr/local/bin/github-credential.cjs
+COPY --from=common credential-broker.cjs /usr/local/bin/credential-broker.cjs
+COPY --from=common attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
+COPY --from=common connection-ask.cjs /usr/local/bin/connection-ask.cjs
+COPY --from=common gh-wrapper.sh /usr/local/bin/gh
 COPY stop-plugin/ /usr/local/lib/node_modules/factory-stop-plugin/
 RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/opencode-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/rate-limit-watch.cjs /usr/local/bin/ctl-agent.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
@@ -223,14 +225,14 @@ RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
 # (driver/src/publish/publish.ts): /etc/gitconfig is system scope, so both uids read it whatever HOME
 # a run mounts, and a repository's own, a member's global or a GIT_AUTHOR_* env identity still wins.
 RUN printf '[user]\n\tname = factory-ai\n\temail = factory-ai@users.noreply.github.com\n' > /etc/gitconfig
-COPY factory-launch.sh /usr/local/bin/factory-launch
-COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
-COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
-COPY control-proxy.cjs /usr/local/bin/control-proxy.cjs
+COPY --from=common factory-launch.sh /usr/local/bin/factory-launch
+COPY --from=common factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
+COPY --from=common tool-bash.sh /usr/local/libexec/factory-tool/bash
+COPY --from=common control-proxy.cjs /usr/local/bin/control-proxy.cjs
 # The skills' gate-server and run-control calls (issue #1061): fixed-destination commands the managed
 # allowlist can name, root-owned so the agent cannot rewrite where they go.
-COPY factory-gate.cjs /usr/local/bin/factory-gate
-COPY factory-control.cjs /usr/local/bin/factory-control
+COPY --from=common factory-gate.cjs /usr/local/bin/factory-gate
+COPY --from=common factory-control.cjs /usr/local/bin/factory-control
 RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to

@@ -49,10 +49,10 @@ RUNNER_OPENCODE ?= opencode-executor
 .PHONY: runners runners-build claude-executor opencode-executor
 
 claude-executor:
-	docker build --build-context skills=docker/skills -t $(RUNNER_CLAUDE) docker/claude-executor
+	docker build --build-context skills=docker/skills --build-context common=docker/executor-common -t $(RUNNER_CLAUDE) docker/claude-executor
 
 opencode-executor:
-	docker build --build-context skills=docker/skills -t $(RUNNER_OPENCODE) docker/opencode-executor
+	docker build --build-context skills=docker/skills --build-context common=docker/executor-common -t $(RUNNER_OPENCODE) docker/opencode-executor
 
 runners-build: claude-executor opencode-executor
 

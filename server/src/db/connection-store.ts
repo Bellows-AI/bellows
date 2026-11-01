@@ -16,6 +16,8 @@ export interface ConnectionView {
     account: string;
     access: ConnectionAccess;
     status: ConnectionStatus;
+    /** The grant behind it is no longer active (`reconnect_required`): the member has to connect again. */
+    needsReconnect: boolean;
     createdAt: string;
 }
 
@@ -49,6 +51,7 @@ interface Row {
     email: string;
     access: ConnectionAccess;
     status: ConnectionStatus;
+    needs_reconnect: boolean;
     created_at: Date;
 }
 
@@ -63,6 +66,7 @@ const toView = (row: Row): ConnectionView => ({
     account: row.email,
     access: row.access,
     status: row.status,
+    needsReconnect: row.needs_reconnect,
     createdAt: row.created_at.toISOString(),
 });
 
@@ -124,22 +128,26 @@ export function createConnectionStore({
         async list(userId) {
             await gate();
             const rows = await sql<Row[]>`
-                select id, provider, credential, site, email, access, status, created_at
-                from connector_connection
-                where org_id = ${orgId} and status = 'active' and credential = 'oauth_grant'
-                  and principal_user_id = ${userId}
-                order by created_at desc
+                select c.id, c.provider, c.credential, c.site, c.email, c.access, c.status, c.created_at,
+                       (g.status is distinct from 'active') as needs_reconnect
+                from connector_connection c
+                left join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
+                where c.org_id = ${orgId} and c.status = 'active' and c.credential = 'oauth_grant'
+                  and c.principal_user_id = ${userId}
+                order by c.created_at desc
             `;
             return rows.map(toView);
         },
         async candidates(userId, provider) {
             await gate();
             const rows = await sql<Row[]>`
-                select id, provider, credential, site, email, access, status, created_at
-                from connector_connection
-                where org_id = ${orgId} and status = 'active' and provider = ${provider}
-                  and credential = 'oauth_grant' and principal_user_id = ${userId}
-                order by created_at desc, id
+                select c.id, c.provider, c.credential, c.site, c.email, c.access, c.status, c.created_at,
+                       (g.status is distinct from 'active') as needs_reconnect
+                from connector_connection c
+                left join integration_grant g on g.id = c.grant_id and g.org_id = c.org_id
+                where c.org_id = ${orgId} and c.status = 'active' and c.provider = ${provider}
+                  and c.credential = 'oauth_grant' and c.principal_user_id = ${userId}
+                order by c.created_at desc, c.id
             `;
             return rows.map(toView);
         },

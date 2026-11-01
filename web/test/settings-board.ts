@@ -1,6 +1,7 @@
 import { ADMIN_ROLE, CLAUDE_CODE, type Role } from '@factory-ai/core';
 import type { ConnectionView } from '../src/api/connections.js';
 import type { OrgExecutorFull } from '../src/api/orgExecutors.js';
+import type { SubscriptionScope, SubscriptionView } from '../src/api/notificationSubscriptions.js';
 import type { InstallationRepo } from '../src/api/useRepos.js';
 import type { Session } from '../src/api/useSession.js';
 import type { WorkspaceExecutorFull, WorkspacePayload } from '../src/api/useWorkspace.js';
@@ -18,6 +19,11 @@ export interface SettingsBoard {
     executors: WorkspaceExecutorFull[];
     orgExecutors: (OrgExecutorFull & { suspended: boolean })[];
     connections: ConnectionView[];
+    /** The notification subscriptions of each scope, and the channel kinds the board can send through. */
+    subscriptions: Record<SubscriptionScope, SubscriptionView[]>;
+    connectorKinds: string[];
+    /** Whether `GET /api/integrations` reports Jira as configured on this deployment. */
+    jiraConfigured: boolean;
 }
 
 const AT = '2026-09-01T00:00:00.000Z';
@@ -31,6 +37,9 @@ export function settingsBoard(overrides: Partial<SettingsBoard> = {}): SettingsB
         executors: [],
         orgExecutors: [],
         connections: [],
+        subscriptions: { org: [], workspace: [] },
+        connectorKinds: ['discord'],
+        jiraConfigured: true,
         ...overrides,
     };
 }
@@ -78,7 +87,21 @@ export const connection = (site: string, overrides: Partial<ConnectionView> = {}
     account: 'stub-account-a@example.com',
     access: 'read',
     status: 'active',
+    needsReconnect: false,
     createdAt: AT,
+    ...overrides,
+});
+
+export const subscription = (overrides: Partial<SubscriptionView> = {}): SubscriptionView => ({
+    id: id(),
+    connectorKind: 'discord',
+    connectorConfig: {},
+    eventKinds: ['task.ready'],
+    repos: [],
+    workflows: [],
+    enabled: true,
+    createdAt: AT,
+    updatedAt: AT,
     ...overrides,
 });
 
@@ -167,12 +190,43 @@ function routes(board: SettingsBoard, { method, url, body }: FetchCall): FetchRe
         }
         return { status: 204 };
     }
+    if (method === 'GET' && path === '/api/integrations') {
+        return { integrations: [{ provider: 'jira', configured: board.jiraConfigured }] };
+    }
     if (method === 'GET' && path === '/api/connections') return { connections: board.connections };
     if (method === 'DELETE' && path.startsWith('/api/connections/')) {
         board.connections = board.connections.filter((row) => !path.endsWith(`/${row.id}`));
         return { status: 204 };
     }
-    return undefined;
+    return subscriptionRoutes(board, path, method, body);
+}
+
+const SUBSCRIPTION_PATH = /^\/api\/(org|workspace)\/notification-subscriptions(?:\/([^/]+)(\/test)?)?$/;
+
+/** The org and personal subscription routes: a list that answers the board's rows, writes that change them. */
+function subscriptionRoutes(board: SettingsBoard, path: string, method: string, body: unknown): FetchReply | undefined {
+    const match = SUBSCRIPTION_PATH.exec(path);
+    if (!match) return undefined;
+    const scope = match[1] as SubscriptionScope;
+    const rowId = match[2];
+    const rows = board.subscriptions[scope];
+    if (!rowId && method === 'GET') return { subscriptions: rows, connectorKinds: board.connectorKinds };
+    if (!rowId && method === 'POST') {
+        const { credential: _credential, ...fields } = body as Record<string, unknown>;
+        const created = subscription(fields as Partial<SubscriptionView>);
+        rows.push(created);
+        return { status: 201, body: created };
+    }
+    const index = rows.findIndex((row) => row.id === rowId);
+    if (index < 0) return { status: 404, body: { error: 'No such notification subscription' } };
+    if (match[3] && method === 'POST') return { result: { status: 'delivered' } };
+    if (method === 'PUT') {
+        const { credential: _credential, ...fields } = body as Record<string, unknown>;
+        rows[index] = { ...rows[index]!, ...(fields as Partial<SubscriptionView>) };
+        return rows[index];
+    }
+    if (method === 'DELETE') rows.splice(index, 1);
+    return { status: 204 };
 }
 
 /** The board as a `stubFetch` handler; `override` answers first, and `undefined` falls through. */

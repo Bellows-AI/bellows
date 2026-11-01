@@ -10,6 +10,7 @@ import { createNotificationSubscriptionStore } from '../src/notifications/subscr
 import type { NotificationSubscriptionStore, SubscriptionFields } from '../src/notifications/subscription-store.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { testSecretStore } from './env-secrets-harness.js';
+import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { useTestDb } from './harness.js';
 import { testOrg, testUser } from './fixtures.js';
 
@@ -172,8 +173,16 @@ describe.skipIf(!enabled)('task.question — database', () => {
     });
 
     it('a question fans out to task.question subscriptions only', async () => {
-        const wanted = await subs.create(fields(['task.question']), `https://hook.example.test/${randomUUID()}`);
-        const other = await subs.create(fields(['task.blocked']), `https://hook.example.test/${randomUUID()}`);
+        const wanted = await subs.create(
+            ORG_OWNER,
+            fields(['task.question']),
+            `https://hook.example.test/${randomUUID()}`
+        );
+        const other = await subs.create(
+            ORG_OWNER,
+            fields(['task.blocked']),
+            `https://hook.example.test/${randomUUID()}`
+        );
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1');
         await store.answerQuestion(id, 'toolu_1', { 'Which db?': 'ok' }, ANSWERER.id);
@@ -187,7 +196,11 @@ describe.skipIf(!enabled)('task.question — database', () => {
     });
 
     it('the outbox lease carries the question id and texts', async () => {
-        const sub = await subs.create(fields(['task.question']), `https://hook.example.test/${randomUUID()}`);
+        const sub = await subs.create(
+            ORG_OWNER,
+            fields(['task.question']),
+            `https://hook.example.test/${randomUUID()}`
+        );
         const { id, claim } = await running();
         await ask(id, claim.leaseToken, 'toolu_1', 'Which db?', 'Which cache?');
 

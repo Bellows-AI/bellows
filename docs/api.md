@@ -35,7 +35,7 @@ codes, query parameters and error codes are read there, never restated here.
 | Workspace payload, personal executors | `server/src/routes/workspace.ts` | `server/test/routes.workspace.test.ts`, `server/test/routes.executor-lifecycle.test.ts` |
 | Organization executor profiles, member roster | `server/src/routes/org-executors.ts`, `server/src/routes/org-members.ts` | `server/test/routes.org-executors.test.ts`, `server/test/routes.org-members.test.ts` |
 | Workflow definitions and the block catalog | `server/src/routes/workflows.ts` | `server/test/routes.workflows.test.ts` |
-| Notification subscriptions ([notifications.md](notifications.md)) | `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-subscriptions.routes.test.ts` |
+| Notification subscriptions, org and personal, test send ([notifications.md](notifications.md)) | `server/src/routes/notification-subscriptions.ts` | `server/test-db/notification-subscriptions.routes.test.ts`, `server/test-db/notification-workspace-subscriptions.routes.test.ts` |
 | Commerce, registered only with `COMMERCE_ENABLED` ([commerce.md](commerce.md)) | `server/src/routes/commerce.ts` | `server/test/routes.commerce.test.ts` |
 | GitHub webhook deliveries | `server/src/routes/webhook.ts` | `server/test/webhook.test.ts` |
 | Which credential a path needs | `server/src/auth/plugin.ts` (`requirementFor`) | `server/test/auth.enforcement.test.ts` |

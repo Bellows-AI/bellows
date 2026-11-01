@@ -49,9 +49,19 @@ const body = (over: Record<string, unknown> = {}) => ({
     ...over,
 });
 
-const registryOf = () => createConnectorRegistry([fakeConnector('fake'), fakeConnector('other')]);
+let fake = fakeConnector('fake');
+const registryOf = (connector = fakeConnector('fake')) => {
+    fake = connector;
+    return createConnectorRegistry([connector, fakeConnector('other')]);
+};
 
-async function boot(connectors?: ReturnType<typeof createConnectorRegistry>, wrap?: (s: SecretStore) => SecretStore) {
+const ORIGIN = 'http://127.0.0.1:9';
+
+async function boot(
+    connectors?: ReturnType<typeof createConnectorRegistry>,
+    wrap?: (s: SecretStore) => SecretStore,
+    callbackOrigin: string | null = ORIGIN
+) {
     const sql = db.sql;
     secrets = testSecretStore(sql);
     const [orgId, otherOrgId] = [testOrg(), testOrg()];
@@ -81,7 +91,7 @@ async function boot(connectors?: ReturnType<typeof createConnectorRegistry>, wra
     outsider = await tokenFor(otherOrgId);
 
     const ready = Promise.resolve();
-    const config = testConfig({ auth: githubAuth() });
+    const config = testConfig({ auth: githubAuth(), integrations: { callbackOrigin, jira: null } });
     app = await buildApp({
         config,
         orgs: createOrgRegistry({
@@ -133,7 +143,11 @@ const storedValue = async (id: string) => {
     const row = await rowOf(id);
     return readSubscriptionCredential(
         secrets,
-        { identity: subscriptionSecretIdentity(orgOfAdmin, id), ref: row!.secret_ref, version: row!.secret_version },
+        {
+            identity: subscriptionSecretIdentity(orgOfAdmin, id, null),
+            ref: row!.secret_ref,
+            version: row!.secret_version,
+        },
         AbortSignal.timeout(3000)
     );
 };
@@ -253,6 +267,15 @@ describe('notification subscription routes', () => {
         expect(await listed(admin)).toEqual([created.json]);
     });
 
+    it('GET carries the registered connectorKinds', async () => {
+        const response = await app.inject({
+            method: 'GET',
+            url: PATH,
+            headers: { authorization: `Bearer ${member}` },
+        });
+        expect((response.json() as { connectorKinds: string[] }).connectorKinds.sort()).toEqual(['fake', 'other']);
+    });
+
     it('the webhook URL appears in no response (POST, PUT, GET as admin and member) and not in connector_config', async () => {
         const first = credential();
         const second = credential();
@@ -308,5 +331,98 @@ describe('notification subscription routes', () => {
 
         expect(refused).toMatchObject({ status: BAD_REQUEST, json: { code: 'UNKNOWN_CONNECTOR' } });
         expect(await listed(admin)).toEqual([]);
+    });
+    describe('POST /:id/test', () => {
+        const outboxRows = async () =>
+            (await db.sql`select count(*)::int as n from notification_outbox where org_id = ${orgOfAdmin}`)[0]!.n;
+
+        it('an admin test send is 200 delivered: one send with the stored credential, no outbox row', async () => {
+            const value = credential();
+            const { id } = (await call(admin, 'POST', PATH, body({ credential: value }))).json;
+
+            const sent = await call(admin, 'POST', `${PATH}/${id}/test`);
+
+            expect(sent).toMatchObject({ status: OK, json: { result: { status: 'delivered' } } });
+            expect(fake.sent).toHaveLength(1);
+            expect(fake.sent[0]).toMatchObject({ credential: value, config: { target: 'room-1' } });
+            expect(fake.sent[0]!.event).toMatchObject({
+                kind: 'task.ready',
+                link: `${ORIGIN}/settings/organization`,
+            });
+            expect(await outboxRows()).toBe(0);
+        });
+
+        it('a member is 403 and nothing is sent', async () => {
+            const { id } = (await call(admin, 'POST', PATH, body())).json;
+
+            const refused = await call(member, 'POST', `${PATH}/${id}/test`);
+
+            expect(refused.status).toBe(FORBIDDEN);
+            expect(fake.sent).toEqual([]);
+        });
+
+        it('a missing, foreign-org, non-uuid or personal-row id is 404 and nothing is sent', async () => {
+            const foreign = (await call(outsider, 'POST', PATH, body())).json.id;
+            const personal = (await call(admin, 'POST', '/api/workspace/notification-subscriptions', body())).json.id;
+
+            for (const id of [randomUUID(), foreign, 'not-a-uuid', personal]) {
+                expect((await call(admin, 'POST', `${PATH}/${id}/test`)).status).toBe(NOT_FOUND);
+            }
+            expect(fake.sent).toEqual([]);
+        });
+
+        it('a permanent verdict is returned as a 200 result', async () => {
+            await app.close();
+            await boot(
+                registryOf(fakeConnector('fake', async () => ({ status: 'permanent', reason: 'destination-refused' })))
+            );
+            const { id } = (await call(admin, 'POST', PATH, body())).json;
+
+            const sent = await call(admin, 'POST', `${PATH}/${id}/test`);
+
+            expect(sent).toMatchObject({
+                status: OK,
+                json: { result: { status: 'permanent', reason: 'destination-refused' } },
+            });
+        });
+
+        it('an unreadable credential is 200 credential-unavailable and the row survives', async () => {
+            await app.close();
+            await boot(registryOf(), (store) =>
+                faultySecrets(store, {
+                    readActive: async () => ({ ok: false, error: { code: 'unavailable' } }) as never,
+                })
+            );
+            const { id } = (await call(admin, 'POST', PATH, body())).json;
+
+            const sent = await call(admin, 'POST', `${PATH}/${id}/test`);
+
+            expect(sent).toMatchObject({
+                status: OK,
+                json: { result: { status: 'retryable', reason: 'credential-unavailable' } },
+            });
+            expect(fake.sent).toEqual([]);
+            expect(await rowOf(id)).toBeDefined();
+        });
+
+        it('PUBLIC_URL unset is 503 UNAVAILABLE and nothing is sent', async () => {
+            await app.close();
+            await boot(registryOf(), undefined, null);
+            const { id } = (await call(admin, 'POST', PATH, body())).json;
+
+            const refused = await call(admin, 'POST', `${PATH}/${id}/test`);
+
+            expect(refused).toMatchObject({ status: 503, json: { code: 'UNAVAILABLE' } });
+            expect(fake.sent).toEqual([]);
+        });
+
+        it('a disabled subscription can be tested', async () => {
+            const { id } = (await call(admin, 'POST', PATH, body({ enabled: false }))).json;
+
+            const sent = await call(admin, 'POST', `${PATH}/${id}/test`);
+
+            expect(sent).toMatchObject({ status: OK, json: { result: { status: 'delivered' } } });
+            expect(fake.sent).toHaveLength(1);
+        });
     });
 });

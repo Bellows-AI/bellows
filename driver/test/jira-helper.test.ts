@@ -16,7 +16,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  */
 
 const HELPER = join(ROOT, 'docker/skills/jira/jira.cjs');
-const BROKER = join(ROOT, 'docker/claude-executor/credential-broker.cjs');
+const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
 const require_ = createRequire(import.meta.url);
 
 type Json = Record<string, unknown>;

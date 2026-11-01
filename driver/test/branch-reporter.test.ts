@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -15,8 +15,26 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * whatever wire shape it pins, because one stderr line from the reporter would corrupt the
  * run output the driver tails.
  */
-const CLAUDE_REPORTER = join(ROOT, 'docker/claude-executor/branch-reporter.cjs');
-const OPENCODE_REPORTER = join(ROOT, 'docker/opencode-executor/branch-reporter.cjs');
+const REPORTER = join(ROOT, 'docker/executor-common/branch-reporter.cjs');
+// What each executor image bakes (`ENV BRANCH_REPORTER_AGENT`); the one reporter reads it.
+// as a file beside the script, so the reporter under test sits staged in a directory of its own.
+const CLAUDE_AGENT = { STAGE_AGENT: 'claude-code' };
+const OPENCODE_AGENT = { STAGE_AGENT: 'opencode' };
+const STAGED = new Map<string, string>();
+/** The reporter beside its helper and the agent file the image bakes; `''` stages no agent file. */
+const stagedReporter = (agent: string): string => {
+    let dir = STAGED.get(agent);
+    if (!dir) {
+        dir = mkdtempSync(join(tmpdir(), 'branch-reporter-staged-'));
+        for (const file of ['branch-reporter.cjs', 'attempt-pair.cjs']) {
+            copyFileSync(join(ROOT, 'docker/executor-common', file), join(dir, file));
+        }
+        if (agent) writeFileSync(join(dir, 'branch-reporter-agent'), `${agent}\n`);
+        STAGED.set(agent, dir);
+        process.on('exit', () => rmSync(dir!, { recursive: true, force: true }));
+    }
+    return join(dir, 'branch-reporter.cjs');
+};
 
 const SESSION = '33333333-3333-4333-8333-333333333333';
 
@@ -126,11 +144,16 @@ const run = (
     args: string[] = ['--once']
 ): Promise<{ status: number | null; stdout: string; stderr: string }> =>
     new Promise((resolve) => {
-        const child = spawn(process.execPath, [...NODE_ARGS, script, ...args], {
-            cwd: env.WORKDIR ?? process.cwd(),
-            env: { ...OUTER_ENV, ...env },
-            stdio: ['ignore', 'pipe', 'pipe'],
-        });
+        const { STAGE_AGENT, ...childEnv } = env;
+        const child = spawn(
+            process.execPath,
+            [...NODE_ARGS, STAGE_AGENT === undefined ? script : stagedReporter(STAGE_AGENT), ...args],
+            {
+                cwd: env.WORKDIR ?? process.cwd(),
+                env: { ...OUTER_ENV, ...childEnv },
+                stdio: ['ignore', 'pipe', 'pipe'],
+            }
+        );
         let stdout = '';
         let stderr = '';
         child.stdout.on('data', (chunk) => (stdout += chunk));
@@ -138,12 +161,42 @@ const run = (
         child.on('close', (status) => resolve({ status, stdout, stderr }));
     });
 
+describe('the branch reporter: the baked agent name', () => {
+    it('refuses to start without the baked file, loudly, whatever the environment says', async () => {
+        const out = await run(REPORTER, {
+            STAGE_AGENT: '',
+            BRANCH_REPORTER_AGENT: 'claude-code',
+            FACTORY_STATS_URL: 'http://127.0.0.1:9',
+        });
+        expect(out.status).toBe(1);
+        expect(out.stderr).toContain('branch-reporter-agent');
+    });
+
+    it('reports the baked name, not the task environment’s', async () => {
+        const { url, requests } = await board();
+        const dir = gitRepo();
+        try {
+            await run(REPORTER, {
+                ...OPENCODE_AGENT,
+                BRANCH_REPORTER_AGENT: 'claude-code',
+                FACTORY_STATS_URL: url,
+                BELLOWS_SESSION_ID: SESSION,
+                WORKDIR: dir,
+            });
+            expect(requests[0]!.body).toMatchObject({ agent: 'opencode' });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
+
 describe('the branch reporter: wire shape and redirects', () => {
     it('posts the plugin’s exact wire shape for the session it was given', async () => {
         const { url, requests } = await board();
         const dir = gitRepo();
         try {
-            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+            const { status, stdout, stderr } = await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 FACTORY_STATS_URL: url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -176,7 +229,8 @@ describe('the branch reporter: wire shape and redirects', () => {
         const withoutPair = await board();
         const dir = gitRepo();
         try {
-            await run(CLAUDE_REPORTER, {
+            await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 FACTORY_STATS_URL: withPair.url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -189,7 +243,8 @@ describe('the branch reporter: wire shape and redirects', () => {
             // A credential never travels as a query parameter — it lands in access logs.
             expect(paired.path).toBe('/api/sessions/branch');
 
-            await run(CLAUDE_REPORTER, {
+            await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 FACTORY_STATS_URL: withoutPair.url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -205,9 +260,9 @@ describe('the branch reporter: wire shape and redirects', () => {
     // An adopting claim rotates the lease under a container whose env stays as it was (#1045): the
     // supervisor's answer on the control socket is the lease the board now accepts.
     it.each([
-        ['claude', CLAUDE_REPORTER],
-        ['opencode', OPENCODE_REPORTER],
-    ])('sends the lease the supervisor relays, not the stale env one (%s)', async (_image, reporter) => {
+        ['claude', CLAUDE_AGENT],
+        ['opencode', OPENCODE_AGENT],
+    ])('sends the lease the supervisor relays, not the stale env one (%s)', async (_image, agent) => {
         const target = await board();
         const dir = gitRepo();
         const sockDir = mkdtempSync(join(tmpdir(), 'branch-reporter-sock-'));
@@ -219,7 +274,8 @@ describe('the branch reporter: wire shape and redirects', () => {
         boards.push(relay);
         await new Promise<void>((resolve) => relay.listen(socket, resolve));
         try {
-            const out = await run(reporter, {
+            const out = await run(REPORTER, {
+                ...agent,
                 FACTORY_STATS_URL: target.url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -248,7 +304,8 @@ describe('the branch reporter: wire shape and redirects', () => {
         ]);
         const dir = gitRepo();
         try {
-            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+            const { status, stdout, stderr } = await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 FACTORY_STATS_URL: url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -288,7 +345,8 @@ describe('the branch reporter: timeout overrides', () => {
             const { url, requests } = await board();
             const dir = gitRepo();
             try {
-                const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+                const { status, stdout, stderr } = await run(REPORTER, {
+                    ...CLAUDE_AGENT,
                     FACTORY_STATS_URL: url,
                     BELLOWS_SESSION_ID: SESSION,
                     WORKDIR: dir,
@@ -311,7 +369,8 @@ describe('the branch reporter: endpoint and git state', () => {
         const { requests } = await board();
         const dir = gitRepo();
         try {
-            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+            const { status, stdout, stderr } = await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
             });
@@ -332,7 +391,8 @@ describe('the branch reporter: endpoint and git state', () => {
         const { url, requests } = await board(refused);
         const dir = gitRepo();
         try {
-            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+            const { status, stdout, stderr } = await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 FACTORY_STATS_URL: url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -350,7 +410,8 @@ describe('the branch reporter: endpoint and git state', () => {
         const { url, requests } = await board();
         const dir = tempDir();
         try {
-            const { status, stdout, stderr } = await run(CLAUDE_REPORTER, {
+            const { status, stdout, stderr } = await run(REPORTER, {
+                ...CLAUDE_AGENT,
                 FACTORY_STATS_URL: url,
                 BELLOWS_SESSION_ID: SESSION,
                 WORKDIR: dir,
@@ -371,11 +432,7 @@ describe('the branch reporter: endpoint and git state', () => {
         const dir = gitRepo();
         execFileSync('git', ['checkout', '-q', '--detach', 'HEAD'], { cwd: dir, stdio: 'ignore' });
         try {
-            await run(CLAUDE_REPORTER, {
-                FACTORY_STATS_URL: url,
-                BELLOWS_SESSION_ID: SESSION,
-                WORKDIR: dir,
-            });
+            await run(REPORTER, { ...CLAUDE_AGENT, FACTORY_STATS_URL: url, BELLOWS_SESSION_ID: SESSION, WORKDIR: dir });
             const seen = await waitForRequest();
             expect(seen.body?.branch).toBeNull();
             expect(seen.body?.headSha).toMatch(/^[0-9a-f]{40}$/);
@@ -413,7 +470,8 @@ describe('the branch reporter: opencode session discovery', () => {
         );
         db.close();
         try {
-            const { status, stdout, stderr } = await run(OPENCODE_REPORTER, {
+            const { status, stdout, stderr } = await run(REPORTER, {
+                ...OPENCODE_AGENT,
                 FACTORY_STATS_URL: url,
                 XDG_DATA_HOME: data,
                 WORKDIR: dir,
@@ -447,7 +505,8 @@ describe('the branch reporter: opencode session discovery', () => {
         );
         db.close();
         try {
-            await run(OPENCODE_REPORTER, {
+            await run(REPORTER, {
+                ...OPENCODE_AGENT,
                 FACTORY_STATS_URL: url,
                 BELLOWS_SESSION_ID: SESSION,
                 XDG_DATA_HOME: data,
@@ -485,8 +544,8 @@ describe('the branch reporter: opencode session discovery', () => {
             sessionDb(dir, data).close();
             try {
                 const { status, stdout } = await run(
-                    OPENCODE_REPORTER,
-                    { FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
+                    REPORTER,
+                    { ...OPENCODE_AGENT, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
                     ['--prior']
                 );
                 expect(status).toBe(0);
@@ -510,7 +569,7 @@ describe('the branch reporter: opencode session discovery', () => {
                 BRANCH_REPORTER_PRIOR_SESSION: 'ses_prior',
             };
             try {
-                await run(OPENCODE_REPORTER, env);
+                await run(REPORTER, { ...OPENCODE_AGENT, ...env });
                 expect(requests).toHaveLength(0);
 
                 db.prepare('insert into session values (?, ?, ?, ?)').run(
@@ -519,7 +578,7 @@ describe('the branch reporter: opencode session discovery', () => {
                     '2026-01-02 00:00:00.000',
                     dir
                 );
-                await run(OPENCODE_REPORTER, env);
+                await run(REPORTER, { ...OPENCODE_AGENT, ...env });
                 expect(requests.map((r) => r.body?.sessionId)).toEqual(['ses_run']);
             } finally {
                 db.close();
@@ -536,9 +595,11 @@ describe('the branch reporter: opencode session discovery', () => {
             mkdirSync(join(data, 'opencode'), { recursive: true });
             writeFileSync(join(data, 'opencode', 'opencode.db'), 'not a database');
             try {
-                const { status, stdout } = await run(OPENCODE_REPORTER, { XDG_DATA_HOME: data, WORKDIR: dir }, [
-                    '--prior',
-                ]);
+                const { status, stdout } = await run(
+                    REPORTER,
+                    { ...OPENCODE_AGENT, XDG_DATA_HOME: data, WORKDIR: dir },
+                    ['--prior']
+                );
                 expect(status).toBe(1);
                 expect(stdout).toBe('');
             } finally {
@@ -551,9 +612,11 @@ describe('the branch reporter: opencode session discovery', () => {
             const dir = gitRepo();
             const data = tempDir();
             try {
-                const { status, stdout } = await run(OPENCODE_REPORTER, { XDG_DATA_HOME: data, WORKDIR: dir }, [
-                    '--prior',
-                ]);
+                const { status, stdout } = await run(
+                    REPORTER,
+                    { ...OPENCODE_AGENT, XDG_DATA_HOME: data, WORKDIR: dir },
+                    ['--prior']
+                );
                 expect(status).toBe(0);
                 expect(stdout).toBe('');
             } finally {
@@ -571,9 +634,11 @@ describe('the branch reporter: opencode session discovery', () => {
                 sessionDb(dir, data).close();
                 chmodSync(join(data, 'opencode'), 0o000);
                 try {
-                    const { status, stdout } = await run(OPENCODE_REPORTER, { XDG_DATA_HOME: data, WORKDIR: dir }, [
-                        '--prior',
-                    ]);
+                    const { status, stdout } = await run(
+                        REPORTER,
+                        { ...OPENCODE_AGENT, XDG_DATA_HOME: data, WORKDIR: dir },
+                        ['--prior']
+                    );
                     expect(status).toBe(1);
                     expect(stdout).toBe('');
                 } finally {
@@ -598,10 +663,10 @@ describe('the branch reporter: opencode session discovery', () => {
                 BRANCH_REPORTER_PRIOR_UNKNOWN: '1',
             };
             try {
-                await run(OPENCODE_REPORTER, env);
+                await run(REPORTER, { ...OPENCODE_AGENT, ...env });
                 expect(requests).toHaveLength(0);
 
-                await run(OPENCODE_REPORTER, { ...env, BELLOWS_SESSION_ID: SESSION });
+                await run(REPORTER, { ...OPENCODE_AGENT, ...env, BELLOWS_SESSION_ID: SESSION });
                 expect(requests.map((r) => r.body?.sessionId)).toEqual([SESSION]);
             } finally {
                 rmSync(dir, { recursive: true, force: true });
@@ -622,8 +687,14 @@ describe('the branch reporter: --has-session', () => {
             mkdirSync(join(data, 'opencode'), { recursive: true });
             seed(join(data, 'opencode', 'opencode.db'));
             const result = await run(
-                OPENCODE_REPORTER,
-                { FACTORY_STATS_URL: url, XDG_DATA_HOME: data, BELLOWS_SESSION_ID: 'ses_handed', ...env },
+                REPORTER,
+                {
+                    ...OPENCODE_AGENT,
+                    FACTORY_STATS_URL: url,
+                    XDG_DATA_HOME: data,
+                    BELLOWS_SESSION_ID: 'ses_handed',
+                    ...env,
+                },
                 ['--has-session', 'ses_known']
             );
             return { ...result, requests };
@@ -673,9 +744,14 @@ describe('the branch reporter: loop mode', () => {
         const dir = gitRepo();
         let child: ReturnType<typeof spawn> | undefined;
         try {
-            child = spawn(process.execPath, [...NODE_ARGS, CLAUDE_REPORTER], {
+            child = spawn(process.execPath, [...NODE_ARGS, stagedReporter('claude-code')], {
                 cwd: dir,
-                env: { ...OUTER_ENV, FACTORY_STATS_URL: url, BELLOWS_SESSION_ID: SESSION, WORKDIR: dir },
+                env: {
+                    ...OUTER_ENV,
+                    FACTORY_STATS_URL: url,
+                    BELLOWS_SESSION_ID: SESSION,
+                    WORKDIR: dir,
+                },
                 stdio: ['ignore', 'pipe', 'pipe'],
             });
             let stdout = '';
@@ -734,7 +810,7 @@ describe('the branch reporter: loop mode', () => {
                     poll();
                 });
             try {
-                const child = spawn(process.execPath, [...NODE_ARGS, OPENCODE_REPORTER], {
+                const child = spawn(process.execPath, [...NODE_ARGS, stagedReporter('opencode')], {
                     cwd: dir,
                     env: { ...OUTER_ENV, FACTORY_STATS_URL: url, XDG_DATA_HOME: data, WORKDIR: dir },
                     stdio: ['ignore', 'pipe', 'pipe'],

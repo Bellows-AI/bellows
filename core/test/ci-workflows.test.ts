@@ -379,6 +379,7 @@ describe('ci workflows', () => {
         // The executors read a shared context; without the flag the build fails inside the image.
         for (const name of ['claude-executor', 'opencode-executor']) {
             expect(byName.get(name)!.args).toContain('--build-context skills=docker/skills');
+            expect(byName.get(name)!.args).toContain('--build-context common=docker/executor-common');
             expect(byName.get(name)!.context).toBe(`docker/${name}`);
         }
     });

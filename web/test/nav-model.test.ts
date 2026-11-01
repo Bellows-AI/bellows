@@ -46,6 +46,7 @@ describe('nav model', () => {
             ['/settings', 'Overview', true],
             ['/settings/organization', 'Organization', false],
             ['/settings/workspace', 'Workspace', false],
+            ['/settings/integrations', 'Integrations', false],
             ['/settings/repos', 'Repositories', false],
             ['/settings/executors', 'Executors', false],
         ]);

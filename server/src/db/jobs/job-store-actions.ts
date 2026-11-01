@@ -92,7 +92,7 @@ export interface JobActionStore {
              */
             connectionIds?: readonly string[];
             /**
-             * Completed uploads (115) the task carries, bound to the new job in the create transaction in the order named:
+             * Completed uploads (116) the task carries, bound to the new job in the create transaction in the order named:
              * each must be a ready file of the author or the create is refused with `AttachmentRefusedError`. Absent is none.
              */
             attachmentIds?: readonly string[];

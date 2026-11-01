@@ -1628,9 +1628,9 @@ begin_phase images
 # starts through scripts/stub-agent.sh, beside ctl-agent.cjs, over the node-owned mailbox mount
 # points: the task supervisor's agent contract (driver/test/lane-stubs.test.ts), which the real
 # entrypoints honor.
-cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \
-    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
-cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs docker/claude-executor/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"
+cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \
+    docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"
+cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"
 cp scripts/k8s-stub.sh "$work/stub.sh"
 printf 'FROM %s\nCOPY stub.sh /stub.sh\nCOPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\nENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh","sh","/stub.sh"]\n' "$STUB_IMAGE-base" >"$work/stub.Dockerfile"
 # Two Docker builds at once. Each process owns its log and is joined even if a sibling fails.

@@ -323,13 +323,16 @@ describe.skipIf(!enabled)('jira authorization', () => {
             ok: false,
             reason: 'unknown-provider',
         });
-        const registration = jiraRegistration({
-            clientId: 'client-1',
-            clientSecret: 'client-secret-1',
-            authorizeUrl: fake.authorizeUrl,
-            tokenUrl: fake.tokenUrl,
-            apiOrigin: fake.origin,
-        });
+        const registration = jiraRegistration(
+            {
+                clientId: 'client-1',
+                clientSecret: 'client-secret-1',
+                authorizeUrl: fake.authorizeUrl,
+                tokenUrl: fake.tokenUrl,
+                apiOrigin: fake.origin,
+            },
+            'https://board.example.test'
+        );
         const noClient = createIntegrationRuntime({
             sql: db.sql,
             secrets: lineageHarness(db.sql).open(),

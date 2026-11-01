@@ -22,7 +22,13 @@ export interface OutboxKey {
  * is only the secret store's reference and version; `credentialOf` reads the value at send time.
  */
 export interface OutboxItem extends OutboxKey {
-    target: { kind: string; config: unknown; credential: { ref: string; version: string } };
+    target: {
+        kind: string;
+        config: unknown;
+        /** The owning member of a personal subscription; null for an org row. */
+        userId: string | null;
+        credential: { ref: string; version: string };
+    };
     event: NotificationEventRow;
 }
 
@@ -56,6 +62,7 @@ interface LeasedRow {
     connector_kind: string;
     connector_config: unknown;
     secret_ref: string;
+    user_id: string | null;
     secret_version: string;
     kind: NotificationKind;
     job_id: string;
@@ -124,7 +131,7 @@ export function createNotificationOutboxStore({
                       and s.org_id = o.org_id and s.id = o.subscription_id and not s.enabled
                 `;
                 const found = await tx<LeasedRow[]>`
-                    select o.event_id, o.subscription_id, s.connector_kind, s.connector_config, s.secret_ref, s.secret_version,
+                    select o.event_id, o.subscription_id, s.connector_kind, s.connector_config, s.secret_ref, s.secret_version, s.user_id,
                            e.kind, e.job_id, e.root_job_id, e.repo, e.workflow, e.command, e.reason, e.pr_url,
                            e.question_id, e.questions, e.action, e.actor_user_id, e.actor_login,
                            e.author_user_id, e.author_login, e.occurred_at
@@ -142,6 +149,7 @@ export function createNotificationOutboxStore({
                         target: {
                             kind: r.connector_kind,
                             config: r.connector_config,
+                            userId: r.user_id,
                             credential: { ref: r.secret_ref, version: r.secret_version },
                         },
                         event: {
@@ -211,7 +219,7 @@ export function createNotificationOutboxStore({
             readSubscriptionCredential(
                 secrets,
                 {
-                    identity: subscriptionSecretIdentity(orgId, subscriptionId),
+                    identity: subscriptionSecretIdentity(orgId, subscriptionId, target.userId),
                     ref: target.credential.ref,
                     version: target.credential.version,
                 },

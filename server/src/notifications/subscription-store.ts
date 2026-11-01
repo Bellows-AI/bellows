@@ -9,7 +9,8 @@ import {
     retireEnvSecrets,
 } from '../db/env-secrets.js';
 import type { SecretDiagnostic, SecretRef, SecretStore, SecretVersion } from '../secrets/secret-store.js';
-import { subscriptionSecretIdentity } from './subscription-credential.js';
+import { readSubscriptionCredential, subscriptionSecretIdentity } from './subscription-credential.js';
+import type { TestTarget } from './test-send.js';
 
 /** What a write carries; the row's id and stamps are the store's. */
 export interface SubscriptionFields {
@@ -30,22 +31,35 @@ export interface SubscriptionView extends SubscriptionFields {
     updatedAt: string;
 }
 
+/** Whose rows a call sees: the org's (`user_id` null) or one member's own. The two scopes never overlap. */
+export type SubscriptionOwner = { kind: 'org' } | { kind: 'user'; userId: string };
+
+export const ORG_OWNER: SubscriptionOwner = { kind: 'org' };
+
+const userIdOf = (owner: SubscriptionOwner): string | null => (owner.kind === 'user' ? owner.userId : null);
+
 export interface NotificationSubscriptionStore {
-    list(): Promise<SubscriptionView[]>;
+    list(owner: SubscriptionOwner): Promise<SubscriptionView[]>;
     /** The credential goes to the secret store first; the row keeps only its reference and version. */
-    create(fields: SubscriptionFields, credential: string): Promise<SubscriptionView>;
+    create(owner: SubscriptionOwner, fields: SubscriptionFields, credential: string): Promise<SubscriptionView>;
     /**
-     * Full replacement; null when this org has no such row. A credential rotates the secret (the old one is
+     * Full replacement; null when this owner has no such row. A credential rotates the secret (the old one is
      * retired after the commit); null keeps the stored one, which a change of `connectorKind` cannot do:
      * that writes nothing and answers `'kind-changed'`.
      */
     update(
+        owner: SubscriptionOwner,
         id: string,
         fields: SubscriptionFields,
         credential: string | null
     ): Promise<SubscriptionView | null | 'kind-changed'>;
-    /** False when this org has no such row. The credential is retired with it. */
-    remove(id: string): Promise<boolean>;
+    /** False when this owner has no such row. The credential is retired with it. */
+    remove(owner: SubscriptionOwner, id: string): Promise<boolean>;
+    /**
+     * What a test send needs of one row, enabled or not; null only when a successful read found no such row. A
+     * credential that cannot be confirmed is `credential: null` (inconclusive), a failed query throws.
+     */
+    testTarget(owner: SubscriptionOwner, id: string, signal: AbortSignal): Promise<TestTarget | null>;
 }
 
 interface Row {
@@ -102,17 +116,20 @@ export function createNotificationSubscriptionStore({
     const gate = async () => {
         if (ready) await ready;
     };
+    /** One scope predicate for every statement: org rows have no user, a personal row only its own. */
+    const ownerClause = (owner: SubscriptionOwner) =>
+        owner.kind === 'org' ? sql`user_id is null` : sql`user_id = ${owner.userId}::uuid`;
     const cleanup = () => ({ signal: AbortSignal.timeout(cleanupDeadlineMs), diagnose: secretLog });
 
     /** Writes the credential; a failed write releases whatever it may have written and throws. */
-    const mint = async (id: string, credential: string): Promise<CreatedEnvSecret> => {
+    const mint = async (owner: SubscriptionOwner, id: string, credential: string): Promise<CreatedEnvSecret> => {
         const { created, unknown, failure } = await createEnvSecrets(
             secrets,
-            [{ name: id, identity: subscriptionSecretIdentity(orgId, id), value: credential }],
+            [{ name: id, identity: subscriptionSecretIdentity(orgId, id, userIdOf(owner)), value: credential }],
             { signal: AbortSignal.timeout(writeDeadlineMs) }
         );
         if (failure || !created[0]) {
-            await release(id, [...created, ...unknown]);
+            await release(owner, id, [...created, ...unknown]);
             throw new Error(
                 `notification credential unavailable: ${failure ? `${failure.code}/${failure.reason}` : 'not created'}`
             );
@@ -121,31 +138,36 @@ export function createNotificationSubscriptionStore({
     };
 
     /** Compensation: deletes only what a fresh read of the subscription's own row shows nothing naming. */
-    const release = (id: string, candidates: Parameters<typeof releaseEnvSecrets>[1]) =>
+    const release = (owner: SubscriptionOwner, id: string, candidates: Parameters<typeof releaseEnvSecrets>[1]) =>
         releaseEnvSecrets(secrets, candidates, {
             ...cleanup(),
             referencedInScope: () =>
                 sql<{ secret_ref: string | null }[]>`
-                    select secret_ref from notification_subscription where org_id = ${orgId} and id = ${id}
+                    select secret_ref from notification_subscription
+                    where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
                 `,
         });
 
-    const retired = (id: string, row: { secret_ref: string; secret_version: string }): RetiredEnvSecret => ({
+    const retired = (
+        owner: SubscriptionOwner,
+        id: string,
+        row: { secret_ref: string; secret_version: string }
+    ): RetiredEnvSecret => ({
         ref: row.secret_ref as SecretRef,
         version: row.secret_version as SecretVersion,
-        identity: subscriptionSecretIdentity(orgId, id),
+        identity: subscriptionSecretIdentity(orgId, id, userIdOf(owner)),
     });
 
     /** One transaction: lock the row, refuse a kind change without a credential, update, swap the reference. */
     const replaceRow = async (
         tx: TransactionSql,
-        id: string,
+        { owner, id }: { owner: SubscriptionOwner; id: string },
         f: SubscriptionFields,
         made: CreatedEnvSecret | null
     ): Promise<Replaced> => {
         const [current] = await tx<{ connector_kind: string; secret_ref: string; secret_version: string }[]>`
             select connector_kind, secret_ref, secret_version from notification_subscription
-            where org_id = ${orgId} and id = ${id}
+            where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
             for update
         `;
         if (!current) return undefined;
@@ -156,49 +178,49 @@ export function createNotificationSubscriptionStore({
                 event_kinds = ${f.eventKinds}::text[], repos = ${f.repos}::text[],
                 workflows = ${f.workflows}::text[], enabled = ${f.enabled}, updated_at = now()
                 ${made ? sql`, secret_ref = ${made.ref}, secret_version = ${made.version}` : sql``}
-            where org_id = ${orgId} and id = ${id}
+            where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
             returning ${COLUMNS(sql)}
         `;
-        return row && { row, old: made ? retired(id, current) : undefined };
+        return row && { row, old: made ? retired(owner, id, current) : undefined };
     };
 
     return {
-        async list() {
+        async list(owner) {
             await gate();
             const rows = await sql<Row[]>`
                 select ${COLUMNS(sql)} from notification_subscription
-                where org_id = ${orgId}
+                where org_id = ${orgId} and ${ownerClause(owner)}
                 order by created_at, id
             `;
             return rows.map(toView);
         },
-        async create(f, credential) {
+        async create(owner, f, credential) {
             await gate();
             const id = randomUUID();
-            const made = await mint(id, credential);
+            const made = await mint(owner, id, credential);
             try {
                 const [row] = await sql<Row[]>`
                     insert into notification_subscription
-                        (org_id, id, connector_kind, connector_config, event_kinds, repos, workflows, enabled,
-                         secret_ref, secret_version)
-                    values (${orgId}, ${id}, ${f.connectorKind}, ${sql.json(f.connectorConfig as never)},
+                        (org_id, id, user_id, connector_kind, connector_config, event_kinds, repos, workflows,
+                         enabled, secret_ref, secret_version)
+                    values (${orgId}, ${id}, ${userIdOf(owner)}::uuid, ${f.connectorKind}, ${sql.json(f.connectorConfig as never)},
                             ${f.eventKinds}::text[], ${f.repos}::text[], ${f.workflows}::text[], ${f.enabled},
                             ${made.ref}, ${made.version})
                     returning ${COLUMNS(sql)}
                 `;
                 return toView(row!);
             } catch (error) {
-                await release(id, [made]);
+                await release(owner, id, [made]);
                 throw error;
             }
         },
-        async update(id, f, credential) {
+        async update(owner, id, f, credential) {
             await gate();
-            const made = credential === null ? null : await mint(id, credential);
-            const dropMade = () => (made ? release(id, [made]) : undefined);
+            const made = credential === null ? null : await mint(owner, id, credential);
+            const dropMade = () => (made ? release(owner, id, [made]) : undefined);
             let replaced: Replaced;
             try {
-                replaced = await sql.begin((tx) => replaceRow(tx, id, f, made));
+                replaced = await sql.begin((tx) => replaceRow(tx, { owner, id }, f, made));
             } catch (error) {
                 await dropMade();
                 throw error;
@@ -211,14 +233,43 @@ export function createNotificationSubscriptionStore({
             if (replaced.old) await retireEnvSecrets(secrets, [replaced.old], cleanup());
             return toView(replaced.row);
         },
-        async remove(id) {
+        async remove(owner, id) {
             await gate();
             const rows = await sql<{ secret_ref: string; secret_version: string }[]>`
-                delete from notification_subscription where org_id = ${orgId} and id = ${id}
+                delete from notification_subscription
+                where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
                 returning secret_ref, secret_version
             `;
-            if (rows[0]) await retireEnvSecrets(secrets, [retired(id, rows[0])], cleanup());
+            if (rows[0]) await retireEnvSecrets(secrets, [retired(owner, id, rows[0])], cleanup());
             return rows.length > 0;
+        },
+        async testTarget(owner, id, signal) {
+            await gate();
+            const [row] = await sql<
+                (Pick<Row, 'connector_kind' | 'connector_config' | 'event_kinds'> & {
+                    secret_ref: string;
+                    secret_version: string;
+                })[]
+            >`
+                select connector_kind, connector_config, event_kinds, secret_ref, secret_version
+                from notification_subscription
+                where org_id = ${orgId} and id = ${id} and ${ownerClause(owner)}
+            `;
+            if (!row) return null;
+            return {
+                kind: row.connector_kind,
+                config: row.connector_config,
+                eventKinds: row.event_kinds,
+                credential: await readSubscriptionCredential(
+                    secrets,
+                    {
+                        identity: subscriptionSecretIdentity(orgId, id, userIdOf(owner)),
+                        ref: row.secret_ref,
+                        version: row.secret_version,
+                    },
+                    signal
+                ),
+            };
         },
     };
 }

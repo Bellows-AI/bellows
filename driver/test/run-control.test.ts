@@ -15,8 +15,8 @@ import { REPO_ROOT as ROOT, readRepoFile as read } from './fixtures/repo-files.j
  */
 const path = (rel: string): string => join(ROOT, rel);
 
-const CLAUDE_AGENT = 'docker/claude-executor/ctl-agent.cjs';
-const OPENCODE_AGENT = 'docker/opencode-executor/ctl-agent.cjs';
+const CLAUDE_AGENT = 'docker/executor-common/ctl-agent.cjs';
+const OPENCODE_AGENT = 'docker/executor-common/ctl-agent.cjs';
 const CLAUDE_HOOK = 'docker/claude-executor/stop-hook.cjs';
 const OPENCODE_PLUGIN = 'docker/opencode-executor/stop-plugin/index.js';
 
