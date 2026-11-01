@@ -103,6 +103,9 @@ export interface FlowCtx {
     log: (event: AuthorizationEvent['event'], authorizationId: string, failure?: AuthorizationFailure) => void;
 }
 
+/** Where a callback that has no stored destination sends the person: the settings page that shows the outcome. */
+export const INTEGRATIONS_RETURN_PATH = '/settings/integrations';
+
 /** Ten minutes. */
 export const DEFAULT_AUTHORIZATION_TTL_MS = 600_000;
 

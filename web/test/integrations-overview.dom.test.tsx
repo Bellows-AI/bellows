@@ -75,22 +75,54 @@ describe('the Integrations overview', () => {
         expect(screen.queryByText('No integrations connected yet.')).toBeNull();
     });
 
-    it('offers the way to connect when nothing is connected', async () => {
+    it('offers Browse as the way to connect when nothing is connected', async () => {
         stubFetch(withConnections({ connections: [] }));
         renderApp(PATH);
 
         expect(await screen.findByText('No integrations connected yet.')).toBeTruthy();
-        const link = screen.getByRole('link', { name: 'Connect Jira in Workspace' });
-        expect(link.getAttribute('href')).toBe('/settings/workspace');
+        const links = screen.getAllByRole('link', { name: /Browse integrations/ });
+        expect(links.length).toBeGreaterThan(1);
+        for (const link of links) expect(link.getAttribute('href')).toBe('/settings/integrations/available');
     });
 
-    it('never shows a planned provider as connected', async () => {
+    it('has a Browse integrations call to action in the header', async () => {
         stubFetch(withConnections({ connections: [connection('acme-example.atlassian.net')] }));
         renderApp(PATH);
 
         await screen.findByRole('link', { name: /acme-example\.atlassian\.net/ });
-        const text = document.body.textContent ?? '';
-        for (const planned of ['Slack', 'Discord', 'MCP']) expect(text).not.toContain(planned);
+        const browse = screen.getByRole('link', { name: 'Browse integrations' });
+        expect(browse.getAttribute('href')).toBe('/settings/integrations/available');
+    });
+
+    it('previews planned providers read-only, and never lists one as connected', async () => {
+        stubFetch(withConnections({ connections: [connection('acme-example.atlassian.net')] }));
+        renderApp(PATH);
+
+        await screen.findByRole('link', { name: /acme-example\.atlassian\.net/ });
+        const connected = within(screen.getByRole('list', { name: 'Connected integrations' }));
+        for (const planned of ['Slack', 'Discord', 'MCP']) expect(connected.queryByText(planned)).toBeNull();
+        const preview = within(screen.getByRole('list', { name: 'Available integrations' }));
+        expect(preview.getByText('Slack')).toBeTruthy();
+        expect(preview.getAllByText('Planned').length).toBeGreaterThan(0);
+        expect(preview.queryByRole('button')).toBeNull();
+        expect(preview.queryByRole('link')).toBeNull();
+    });
+
+    it('shows the connected sentence once for a successful callback, then drops it from the URL', async () => {
+        stubFetch(withConnections({ connections: [] }));
+        const { router } = renderApp(`${PATH}?integration=jira&result=connected`);
+
+        expect(await screen.findByText('Jira connected.')).toBeTruthy();
+        await waitFor(() => expect(router.state.location.search).toBe(''));
+        expect(screen.getAllByText('Jira connected.')).toHaveLength(1);
+    });
+
+    it.each(['error', 'state-mismatch'])('shows a failed callback (%s) in the bad banner', async (result) => {
+        stubFetch(withConnections({ connections: [] }));
+        renderApp(`${PATH}?integration=jira&result=${result}`);
+
+        const banner = await screen.findByText(`Jira connection failed (${result}).`);
+        expect(banner.closest('.banner-bad')).not.toBeNull();
     });
 
     it('reads and renders the list for the open-mode local caller', async () => {

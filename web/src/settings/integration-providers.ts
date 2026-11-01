@@ -7,7 +7,7 @@ import type { ConnectionView } from '../api/connections.js';
  */
 
 /** The closed list a provider is filed under. */
-export const INTEGRATION_CATEGORIES = ['Issue tracking', 'Messaging', 'Source control', 'Agent tools'] as const;
+export const INTEGRATION_CATEGORIES = ['Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps'] as const;
 export type IntegrationCategory = (typeof INTEGRATION_CATEGORIES)[number];
 
 /**
@@ -35,37 +35,37 @@ export const INTEGRATION_PROVIDERS: readonly IntegrationProvider[] = [
     {
         id: 'slack',
         label: 'Slack',
-        category: 'Messaging',
+        category: 'Communication',
         availability: 'planned',
         description: 'Follow tasks from Slack.',
     },
     {
         id: 'discord',
         label: 'Discord',
-        category: 'Messaging',
+        category: 'Communication',
         availability: 'planned',
         description: 'Follow tasks from Discord.',
     },
     {
         id: 'github',
         label: 'GitHub',
-        category: 'Source control',
+        category: 'CI / DevOps',
         availability: 'organization',
         description: "The organization's GitHub App installation.",
     },
     {
         id: 'gitlab',
         label: 'GitLab',
-        category: 'Source control',
+        category: 'CI / DevOps',
         availability: 'planned',
         description: 'Work on GitLab repositories.',
     },
     {
         id: 'mcp',
-        label: 'MCP',
+        label: 'MCP servers',
         category: 'Agent tools',
         availability: 'planned',
-        description: 'Give tasks tools from an MCP server.',
+        description: 'Remote MCP tool servers your agents call.',
     },
 ];
 
