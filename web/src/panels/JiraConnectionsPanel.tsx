@@ -17,7 +17,7 @@ import { IntegrationsCatalog } from './IntegrationsCatalog.js';
  */
 
 export { ALLOW_COMMENTS_LABEL };
-export const CONNECT_JIRA_LABEL = 'Connect Jira';
+export { CONNECT_JIRA_LABEL } from './IntegrationsCatalog.js';
 export const NO_CONNECTIONS_NOTE = 'No connections yet. Connect a service to make it available to your tasks.';
 
 /** A callback result: the sentence and the banner it is shown in (`banner-info` success, `banner-warn` declined, `banner-bad` failed). */
