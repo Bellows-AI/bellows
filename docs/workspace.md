@@ -53,9 +53,12 @@ Executor profiles, `.bellows.yaml` plans and per-thread task volumes. The board 
   `driver/test/scripts-checkpoint-restore.test.ts`.
 - **A repository-free continuing Claude claim on a lost volume is not unrestorable**: with the checkpoint confirmed `none`
   it gets the next generation and a sessions-only `restore` step (no `CHECKOUT`, no tree; a session file already on the
-  volume is kept). Stated limit: a repository-free OpenCode thread has no stored session database, so it stays
-  `checkpoint_unrestorable`. `driver/src/task-restore.ts`, `driver/src/scripts/checkpoint-restore.cjs`,
-  `driver/test/task-restore.test.ts`, `driver/test/scripts-checkpoint-restore.test.ts`.
+  volume is kept). A repository-free OpenCode thread checkpoints its session database at finalize (header `tip: null`,
+  no bundle) and gets it back on the next generation; an adopted generation always schedules the check, keeps a
+  database already there, and refuses `checkpoint_unrestorable` only once the step confirms it absent with no complete
+  checkpoint to install. `driver/src/task-restore.ts`, `driver/src/scripts/checkpoint.cjs`,
+  `driver/src/scripts/checkpoint-restore.cjs`, `driver/test/task-restore.test.ts`,
+  `driver/test/task-restore-opencode.test.ts`, `driver/test/scripts-checkpoint-treeless.test.ts`.
 - **Stated limit: a task volume can still be reaped in one narrow window, and a docker race can leave one empty
   volume behind.** The reaper re-reads a thread's facts immediately before each delete, and every docker container
   that mounts the volume after `ensureTaskVolume` is created only once `taskVolumeIsOurs` holds (a gone volume is a

@@ -262,6 +262,29 @@ describe('the supervisor’s finalize stage: the checkpoint', () => {
         expect(Object.keys(seen).filter((name) => name.startsWith('SUPERVISOR_'))).toEqual([]);
     });
 
+    it('checkpoints a treeless OpenCode run: the script gets the database and no CHECKOUT, and the stream closes complete', async () => {
+        const driver = await startDriver();
+        const script = fakeScript({ 'opencode.db': 'SQLITE' }, completeVerdict(['opencode.db']));
+        const supervised = run(driver, script, {
+            [SUPERVISOR_ENV.checkpointCheckout]: '',
+            [SUPERVISOR_ENV.checkpointBranch]: '',
+        });
+        const dir = supervised.outDir;
+        let seen: Record<string, string> = {};
+        for (let i = 0; i < 200 && !existsSync(join(dir, 'seen-env.json')); i += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        if (existsSync(join(dir, 'seen-env.json'))) seen = JSON.parse(readFileSync(join(dir, 'seen-env.json'), 'utf8'));
+        await supervised.done;
+
+        expect(seen).toMatchObject({ OPENCODE_DB: '/task/.factory/opencode/root/opencode/opencode.db' });
+        expect(seen).not.toHaveProperty('CHECKOUT');
+        expect(seen).not.toHaveProperty('BRANCH');
+        const stream = Buffer.concat(driver.calls.filter((c) => c.kind === 'chunk').map((c) => c.bytes!));
+        expect(stream.toString().endsWith('\nSQLITE')).toBe(true);
+        expect(driver.calls.at(-1)!.manifest).toMatchObject({ state: 'complete' });
+    });
+
     it('retries a chunk the board could not take until it is stored', async () => {
         const driver = await startDriver();
         driver.answer = (n) =>

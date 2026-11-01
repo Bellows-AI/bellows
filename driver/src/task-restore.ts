@@ -30,7 +30,10 @@ export interface TaskRestore {
      */
     held?: number;
     restored: boolean;
-    /** A repository-free thread: no tree and no checkpoint, only the Claude sessions are rebuilt from transcripts. */
+    /**
+     * A repository-free thread: no tree. Claude sessions are rebuilt from transcripts; an OpenCode database already
+     * on the volume is kept, else installed from `checkpoint` when it carries one.
+     */
     sessionsOnly?: boolean;
 }
 
@@ -61,6 +64,35 @@ function unrestorable(read: CheckpointRead): CheckpointUnrestorable {
     return new CheckpointUnrestorable("the thread's checkpoint was cut at its size cap and carries no tree");
 }
 
+/** The restore a repository-free adopted generation owes: its sessions checked, never a tree. */
+async function owedSessions(
+    source: Pick<Board, 'checkpoint'> | undefined,
+    job: BoardJob,
+    older: number[],
+    unschedulable: number[]
+): Promise<void> {
+    // A restore that failed after creating the generation left the sessions missing; the step keeps any it finds.
+    // An OpenCode database is checkpointed: the step installs it from a complete one, and refuses only once it
+    // confirms the database is absent.
+    if (job.executorType === OPENCODE) {
+        if (!source) throw new Error(`job ${job.id}: no checkpoint source to verify the thread's session database`);
+        const read = await source.checkpoint(job);
+        job.taskRestore = {
+            checkpoint: read.state === 'found' && !read.checkpoint.truncated ? read.checkpoint : null,
+            older: [...older, ...unschedulable],
+            restored: false,
+            sessionsOnly: true,
+        };
+    } else if (job.executorType === CLAUDE_CODE) {
+        job.taskRestore = {
+            checkpoint: null,
+            older: [...older, ...unschedulable],
+            restored: false,
+            sessionsOnly: true,
+        };
+    }
+}
+
 /**
  * The restore an adopted restored generation (`live[0]`) still owes. A volume made by an earlier restore may not
  * have been filled, and the plan cannot tell: the restore step does (the checkout is there, or it is not), so a
@@ -76,18 +108,7 @@ async function owedRestore(
     unschedulable: number[]
 ): Promise<void> {
     const [, ...older] = live;
-    if (!checkoutDir(job)) {
-        // Repository-free: no tree and no checkpoint, so an adopted generation only needs its sessions checked
-        // (a restore that failed after creating it left them missing; the step keeps any it finds).
-        if (job.executorType !== CLAUDE_CODE) return;
-        job.taskRestore = {
-            checkpoint: null,
-            older: [...older, ...unschedulable],
-            restored: false,
-            sessionsOnly: true,
-        };
-        return;
-    }
+    if (!checkoutDir(job)) return owedSessions(source, job, older, unschedulable);
     if (!source) return;
     const read = await source.checkpoint(job);
     if (read.state === 'found' && !read.checkpoint.truncated) {
@@ -104,8 +125,9 @@ async function owedRestore(
 }
 
 /**
- * A repository-free thread never stores a checkpoint, so `none` is its confirmed answer and the Claude session is
- * rebuilt from the board's transcripts. OpenCode keeps its session in a database nothing stores (a stated limit).
+ * A repository-free Claude thread never stores a checkpoint, so `none` is its confirmed answer and the session is
+ * rebuilt from the board's transcripts. A repository-free OpenCode thread checkpoints its session database: without
+ * a complete one there is nothing to rebuild it from.
  */
 const repoFreeSessions = (job: BoardJob, read: CheckpointRead): boolean =>
     !checkoutDir(job) && job.executorType === CLAUDE_CODE && read.state === 'none';
@@ -153,7 +175,12 @@ export async function planTaskVolume(
         return { create: true };
     }
     job.taskGeneration = Math.max(FIRST_GENERATION + 1, listing.highest + 1);
-    job.taskRestore = { checkpoint: read.checkpoint, older: [...listing.unschedulable], restored: false };
+    job.taskRestore = {
+        checkpoint: read.checkpoint,
+        older: [...listing.unschedulable],
+        restored: false,
+        ...(checkoutDir(job) ? {} : { sessionsOnly: true }),
+    };
     return { create: true };
 }
 
