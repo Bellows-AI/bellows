@@ -610,36 +610,73 @@
         }
     }
 
-    /* The configuration overview's readiness items (issue 180) and the scope context block every
-       environment editor opens with. Status text carries the meaning; the tone class only tints
-       the item's edge, so no state is ever color alone. */
+    /* The settings content column and the configuration overview's compact rows, and below them the
+       scope context block every environment editor opens with. Status text carries the meaning; only
+       attention and pending wear a pill, so no state is ever color alone. */
 
-    .readiness {
-        display: grid;
-        gap: 12px;
-        grid-template-columns: 1fr;
+    .settings-content {
+        max-width: 880px;
+    }
+
+    .settings-content .page-header-leading h1 {
+        font-size: 26px;
+        line-height: 34px;
+    }
+
+    .settings-group {
+        margin: 0 0 24px;
+    }
+
+    .settings-rows {
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
         list-style: none;
         margin: 0;
         padding: 0;
     }
 
-    .readiness-item {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-lg);
-        min-width: 0;
-        padding: 14px 16px;
+    .settings-row-item + .settings-row-item {
+        border-top: 1px solid var(--line);
     }
 
-    /* The item's status is a toned pill — ok, bad or warn from the tone set — so the card's own
-       edge stays the neutral hairline. Its own row, so the action never rides beside it. */
-    .readiness-status {
+    .settings-row {
+        align-items: center;
+        color: inherit;
         display: flex;
-        margin: 0 0 8px;
-        width: fit-content;
+        gap: 12px;
+        min-height: 44px;
+        padding: 10px 16px;
+        text-decoration: none;
     }
 
-    .readiness-fact {
+    a.settings-row:hover {
+        background: var(--surface-strong);
+    }
+
+    .settings-row-icon,
+    .settings-row-chevron {
+        color: var(--ink-muted);
+        display: inline-flex;
+        flex: none;
+    }
+
+    .settings-row-text {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+    }
+
+    .settings-row-text h3 {
+        font-size: 15px;
+        line-height: 22px;
+        margin: 0;
+    }
+
+    .settings-row-status,
+    .settings-row-fact {
         color: var(--ink-muted);
         font-size: 13px;
         margin: 0;
@@ -647,15 +684,17 @@
         overflow-wrap: anywhere;
     }
 
-    .readiness-action {
-        display: inline-block;
-        margin-top: 10px;
+    .settings-row-status.pill {
+        width: fit-content;
     }
 
-    @media (min-width: 701px) {
-        .readiness {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
+    /* The environment's per-scope edits: siblings of the row's link, indented under its text. */
+    .settings-row-scopes {
+        color: var(--ink-muted);
+        font-size: 13px;
+        list-style: none;
+        margin: 0;
+        padding: 0 16px 10px 44px;
     }
 
     .scope-context {
