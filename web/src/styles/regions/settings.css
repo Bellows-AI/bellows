@@ -616,6 +616,10 @@
 
     .settings-content {
         max-width: 880px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        min-width: 0;
     }
 
     .settings-content .page-header-leading h1 {
