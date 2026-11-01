@@ -332,6 +332,11 @@
         padding: 0;
     }
 
+    /* In a task's history the list sits between two labelled blocks. */
+    .attachment-list-history {
+        margin-bottom: 16px;
+    }
+
     .attachment-chip {
         align-items: center;
         background: var(--surface-sunken);

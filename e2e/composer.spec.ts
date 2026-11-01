@@ -430,7 +430,10 @@ test.describe('attachments in the composer', () => {
         await expect(start).toBeEnabled();
         expect(board.uploads.filter((name) => name === 'flaky.txt')).toHaveLength(2);
         await page.screenshot({ path: `${SHOTS}/composer-attachments.png`, fullPage: true });
-        expect(problems.join('\n')).toBe('');
+        // The one 503 is the failure this test injects; anything else is a problem.
+        expect(problems).toEqual([
+            'console: Failed to load resource: the server responded with a status of 503 (Service Unavailable)',
+        ]);
     });
 
     test('the Settings round trip keeps the files, and the launch carries both ids', async ({ page }) => {

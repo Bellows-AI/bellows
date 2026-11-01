@@ -138,7 +138,7 @@ function HistoryFile({ file }: { file: AttachmentMeta }) {
 export function AttachmentHistory({ attachments }: { attachments: readonly AttachmentMeta[] }) {
     if (attachments.length === 0) return null;
     return (
-        <ul className="attachment-list" aria-label="Files on this request">
+        <ul className="attachment-list attachment-list-history" aria-label="Files on this request">
             {attachments.map((file) => (
                 <HistoryFile key={file.id} file={file} />
             ))}

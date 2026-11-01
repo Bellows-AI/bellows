@@ -33,7 +33,7 @@ Classes defined here: `composer-row`, `composer-input`, `composer-label`, `compo
 `composer-notices-body`, `composer-notices-dismiss`, `composer-skeleton-block`,
 `composer-skeleton-line`, `task-compose`, `attachment-add`, `attachment-list`, `attachment-chip`,
 `attachment-thumb`, `attachment-body`, `attachment-name`, `attachment-meta`, `attachment-state`,
-`attachment-action`.
+`attachment-action`, `attachment-list-history`.
 - Start and Send follow-up stay dark while any file is uploading or failed; a submission carries the
   completed ids and one `Idempotency-Key` kept in the draft store until it succeeds
   (`web/test/task-composer.dom.test.tsx`, `web/test/task-detail-follow-up.dom.test.tsx`).

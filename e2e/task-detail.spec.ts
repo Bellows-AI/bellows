@@ -656,7 +656,14 @@ test.describe('the attachments in the task history', () => {
         const problems = watchConsole(page);
         const me = await sessionAuthor(page);
         const image = meta('00000000-0000-4000-8000-0000000000b1', 'shot.png', 'image/png', PNG);
-        const notes = meta('00000000-0000-4000-8000-0000000000b2', 'notes.txt', 'text/plain', NOTES);
+        // A real upload: Chromium never routes an `<a download>` request through page.route, so the download
+        // reaches the board, which serves the uploader's own ready draft.
+        const uploaded = await page.request.post('/api/attachments', {
+            data: NOTES,
+            headers: { 'content-type': 'application/octet-stream', 'x-attachment-name': 'notes.txt' },
+        });
+        expect(uploaded.status()).toBe(201);
+        const notes = meta((await uploaded.json()).id, 'notes.txt', 'text/plain', NOTES);
         const later = meta('00000000-0000-4000-8000-0000000000b3', 'later.txt', 'text/plain', NOTES);
         const thread = authoredBy(failedGateFollowUpThread, me).map((j, i) => ({
             ...j,
