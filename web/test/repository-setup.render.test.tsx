@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { InstallationRepo } from '../src/api/useRepos.js';
 import {
     RepositoryConfigDetail,
+    RepositoryHeaderMeta,
     RepositoryListNotices,
     RepositorySetupList,
 } from '../src/components/RepositorySetup.js';
@@ -28,7 +29,7 @@ const repo = (overrides: Partial<InstallationRepo> = {}): InstallationRepo => ({
 const render = (node: React.ReactNode) => renderToStaticMarkup(<MemoryRouter>{node}</MemoryRouter>);
 
 const notices = (overrides: Record<string, unknown> = {}) =>
-    render(<RepositoryListNotices installation={null} cachedError={null} listNotice={null} {...overrides} />);
+    render(<RepositoryListNotices cachedError={null} listNotice={null} {...overrides} />);
 
 const list = (overrides: Record<string, unknown> = {}) =>
     render(
@@ -45,9 +46,18 @@ const list = (overrides: Record<string, unknown> = {}) =>
     );
 
 describe('RepositoryListNotices', () => {
-    it('names the installation it reads from', () => {
-        const html = notices({ installation: { account: 'acme', repositorySelection: 'selected' } });
+    it('organization and installation access render as inline header meta, not a key-value card', () => {
+        const html = render(
+            <RepositoryHeaderMeta
+                organization="Acme"
+                installation={{ account: 'acme', repositorySelection: 'selected' }}
+            />
+        );
+        expect(html).toContain('Organization: Acme');
         expect(html).toContain('Installation: acme — access to selected repositories.');
+        expect(html).not.toContain('<dl');
+        expect(html).not.toContain('repo-scope');
+        expect(render(<RepositoryHeaderMeta organization={null} installation={null} />)).toBe('');
     });
 
     it('says the list is cached, and why, when the last refresh failed', () => {
@@ -62,7 +72,7 @@ describe('RepositoryListNotices', () => {
     });
 
     it('draws no selection cards, root banner or checkout staleness', () => {
-        const html = notices({ installation: { account: 'acme', repositorySelection: 'all' } });
+        const html = notices();
         for (const gone of ['repo-card', 'Selection summary', 'ORG_WORKSPACE_ROOT', 'Checkout status is stale']) {
             expect(html, gone).not.toContain(gone);
         }
@@ -75,8 +85,31 @@ describe('RepositorySetupList', () => {
         expect(html).toContain('aria-label="Tracked repositories"');
         expect(html).toContain('acme/web');
         expect(html).toContain('>main<');
-        expect(html).toMatch(/<button[^>]*>Configure<\/button>/);
+        expect(html).toMatch(/<button[^>]*>Configure<svg/);
         for (const label of ['Repository', 'Branch']) expect(html).toContain(`<th scope="col">${label}</th>`);
+    });
+
+    it('a row shows owner/name, a Public or Private tag and the branch beside its icon', () => {
+        const html = list({
+            repos: [repo(), repo({ name: 'api', private: true })],
+            shown: [repo(), repo({ name: 'api', private: true })],
+        });
+        expect(html).toMatch(/<span class="pill">Public<\/span>/);
+        expect(html).toMatch(/<span class="pill">Private<\/span>/);
+        expect(html).not.toContain('>private<');
+        expect(html.match(/<td data-label="Repository">.*?<\/td>/)?.[0]).toContain('class="icon"');
+        expect(html.match(/<td data-label="Branch">.*?<\/td>/)?.[0]).toContain('class="icon"');
+    });
+
+    it('search is an icon field, and Configure keeps one button per row with no nested interactive element', () => {
+        const html = list();
+        expect(html).toContain('class="search-field"');
+        expect(html).toContain('for="repo-setup-search"');
+        const row = html.match(/<tbody>.*<\/tbody>/)?.[0] ?? '';
+        expect(row.match(/<button/g)).toHaveLength(1);
+        expect(row).not.toMatch(/<a[ >]/);
+        expect(row).toMatch(/<button[^>]*>Configure<svg/);
+        expect(html).toContain('data-compact');
     });
 
     it('has no selection, save, ceiling, checkout or size surface', () => {
@@ -102,7 +135,7 @@ describe('RepositorySetupList', () => {
             shown: [repo({ private: true })],
             configured: 'acme/web',
         });
-        expect(html).toContain('class="pill">private<');
+        expect(html).toContain('class="pill">Private<');
         expect(html).toContain('aria-current="true"');
     });
 

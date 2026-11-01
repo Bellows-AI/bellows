@@ -72,6 +72,18 @@ test('the workspace page carries no checkout state; the repositories page lists 
     for (const gone of ['Checkout status', 'Last commit', 'ORG_WORKSPACE_ROOT', 'Not checked out']) {
         expect(reposText, gone).not.toContain(gone);
     }
+    // The compact table keeps its cells in the sans face: branch, tag and Configure never inherit the
+    // monospace the shared table gives non-first cells.
+    const firstRow = tracked.locator('tbody tr').first();
+    for (const target of [
+        firstRow.locator('td[data-label="Branch"]'),
+        firstRow.locator('.pill'),
+        firstRow.getByRole('button', { name: 'Configure' }),
+    ]) {
+        expect(await target.evaluate((node) => getComputedStyle(node).fontFamily)).not.toMatch(
+            /IBM Plex Mono|monospace/
+        );
+    }
     await page.screenshot({ path: `${SHOTS}/settings-repos-tracked.png`, fullPage: true });
 });
 

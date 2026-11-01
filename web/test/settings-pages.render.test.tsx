@@ -405,7 +405,7 @@ describe('Settings repositories page', () => {
         expect(html).toContain('acme/web');
         expect(html).toContain('acme/api');
         expect(html).toContain('>main<');
-        expect(html.match(/<button[^>]*>Configure<\/button>/g)?.length).toBe(2);
+        expect(html.match(/<button[^>]*>Configure<svg/g)?.length).toBe(2);
         for (const gone of [
             'type="checkbox"',
             'Save selection',
@@ -473,7 +473,7 @@ describe('Settings repositories page', () => {
 
     it('states the scope context in the header: the organization the repositories belong to', () => {
         const html = render('/settings/repos');
-        expect(html).toMatch(/class="page-header-meta"[\s\S]*<dt>Organization<\/dt><dd>Bellows AI<\/dd>/);
+        expect(html).toMatch(/class="page-header-meta"[\s\S]*Organization: Bellows AI/);
     });
 
     it('keeps the repositories table full width — no master/detail split', () => {

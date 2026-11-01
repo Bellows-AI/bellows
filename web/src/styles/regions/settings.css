@@ -186,13 +186,6 @@
        scope context, a labeled search row, the full-width table of tracked repositories, and
        the selected repository's environment detail below it — the DOM order is the
        reading order at every width. */
-    .repo-scope {
-        background: var(--surface-raised);
-        border: 1px solid var(--line);
-        border-radius: var(--radius-xl);
-        padding: 12px 16px;
-    }
-
     .repo-search {
         align-items: center;
         display: flex;
@@ -201,14 +194,35 @@
         margin: 8px 0;
     }
 
-    .repo-search label {
-        color: var(--ink-muted);
-        font-size: 12px;
+    /* The search field is the shared `.search-field`; the page only caps its width. */
+    .repo-search .search-field {
+        flex: 0 1 360px;
+        min-width: 12ch;
     }
 
-    .repo-search input {
-        flex: 1;
-        min-width: 12ch;
+    /* Identity and branch each sit beside their glyph; a long name wraps instead of widening the row. */
+    .repo-name,
+    .repo-branch {
+        align-items: center;
+        display: inline-flex;
+        gap: 6px;
+    }
+
+    .repo-name {
+        font-weight: 600;
+        overflow-wrap: anywhere;
+    }
+
+    .repo-name .icon,
+    .repo-branch .icon {
+        color: var(--ink-muted);
+        flex: none;
+    }
+
+    .repo-table button {
+        align-items: center;
+        display: inline-flex;
+        gap: 4px;
     }
 
     /* An unmeasured fact, in words: quieter than a measurement, never a zero. */
@@ -899,8 +913,8 @@
             display: flex;
         }
 
-        .repo-search input {
-            min-width: 12ch;
+        .repo-search .search-field {
+            flex-basis: 100%;
         }
     }
 }
