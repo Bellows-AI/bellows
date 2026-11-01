@@ -6,7 +6,7 @@ import type { Sql } from 'postgres';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createFilesystemStore } from '../src/artifacts/fs-store.js';
 import type { ObjectStore } from '../src/artifacts/object-store.js';
-import { createAttachmentCollector } from '../src/attachments/attachment-collector.js';
+import { createAttachmentCollector, SECOND_DELETE_AFTER_MS } from '../src/attachments/attachment-collector.js';
 import { createAttachmentRows } from '../src/attachments/attachment-rows.js';
 import {
     AttachmentGoneError,
@@ -224,6 +224,75 @@ describe.runIf(enabled)('attachment collector', () => {
 
         expect(await present(foreign)).toBe(true);
         expect(await stateOf(id)).toBe('deleting');
+    });
+
+    /** A `deleted` tombstone whose `deleted_at` is `ageMs` old, with a late write's object present again. */
+    const tombstone = async (ageMs: number, key?: string): Promise<{ id: string; key: string }> => {
+        const row = await file('deleted');
+        const target = key ?? row.key;
+        await objects.put(target, new TextEncoder().encode('late'));
+        await sql`
+            update input_attachment set object_key = ${target}, deleted_at = now() - make_interval(secs => ${ageMs / 1000})
+            where id = ${row.id}
+        `;
+        return { id: row.id, key: target };
+    };
+    const purgedOf = async (id: string): Promise<boolean> => {
+        const [row] = await sql<
+            { purged_at: string | null }[]
+        >`select purged_at::text from input_attachment where id = ${id}`;
+        return row!.purged_at !== null;
+    };
+
+    it("re-deletes a tombstone's key once after the quarantine", async () => {
+        const row = await tombstone(SECOND_DELETE_AFTER_MS + 60_000);
+
+        const summary = await collectorOf().collect();
+
+        expect(summary.purged).toBeGreaterThanOrEqual(1);
+        expect(await present(row.key)).toBe(false);
+        expect(await purgedOf(row.id)).toBe(true);
+
+        await objects.put(row.key, new TextEncoder().encode('later'));
+        await collectorOf().collect();
+        expect(await present(row.key)).toBe(true);
+    });
+
+    it('leaves a tombstone inside the quarantine alone', async () => {
+        const row = await tombstone(60_000);
+
+        await collectorOf().collect();
+
+        expect(await present(row.key)).toBe(true);
+        expect(await purgedOf(row.id)).toBe(false);
+    });
+
+    it('keeps purged_at null when the second delete throws, and the next pass completes it', async () => {
+        const row = await tombstone(SECOND_DELETE_AFTER_MS + 60_000);
+
+        const summary = await collectorOf({
+            delete: async () => {
+                throw new Error('store down');
+            },
+        }).collect();
+        expect(summary.failed).toBeGreaterThanOrEqual(1);
+        expect(await purgedOf(row.id)).toBe(false);
+        expect(await present(row.key)).toBe(true);
+
+        await collectorOf().collect();
+        expect(await purgedOf(row.id)).toBe(true);
+        expect(await present(row.key)).toBe(false);
+    });
+
+    it('never second-deletes a key outside the attachment namespace', async () => {
+        const foreign = `${PREFIX}${ORG}/job/${randomUUID()}`;
+        const row = await tombstone(SECOND_DELETE_AFTER_MS + 60_000, foreign);
+
+        const summary = await collectorOf().collect();
+
+        expect(summary.failed).toBeGreaterThanOrEqual(1);
+        expect(await present(foreign)).toBe(true);
+        expect(await purgedOf(row.id)).toBe(false);
     });
 
     it('serializes a bind against an expiry of the same row: exactly one wins', async () => {
