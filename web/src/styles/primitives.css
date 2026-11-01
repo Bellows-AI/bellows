@@ -257,6 +257,28 @@
         border-color: var(--lamp-stop);
     }
 
+    /* A text field with a leading glyph: the icon sits inside the input's left padding and never
+       takes the pointer. The input keeps its own focus ring. */
+    .search-field {
+        display: inline-flex;
+        position: relative;
+    }
+
+    .search-field > .icon {
+        color: var(--ink-muted);
+        left: 12px;
+        pointer-events: none;
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+
+    .search-field > .field {
+        flex: 1;
+        min-width: 0;
+        padding-left: 36px;
+    }
+
     /* Keyboard focus is visible everywhere (issue 160): a two-pixel accent ring with a two-pixel
        gap, in both themes. `:where` holds the specificity at zero, so nothing that skins its own
        focus has to fight this rule, and mouse clicks do not ring (only `:focus-visible`). The
