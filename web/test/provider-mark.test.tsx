@@ -28,3 +28,13 @@ describe('ProviderMark', () => {
         expect(html).not.toContain('evenodd');
     });
 });
+
+describe('ProviderMark decorative', () => {
+    it('a decorative mark is aria-hidden with no img role', () => {
+        const html = renderToStaticMarkup(<ProviderMark provider="discord" decorative />);
+        expect(html).toContain('aria-hidden="true"');
+        expect(html).not.toContain('role="img"');
+        expect(html).not.toContain('aria-label');
+        expect(html).toContain('fill="var(--brand-discord)"');
+    });
+});

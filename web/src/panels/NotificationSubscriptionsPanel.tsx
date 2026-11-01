@@ -1,5 +1,6 @@
 import { channelLabel, EVENT_KIND_LABELS, type SubscriptionView } from '../api/notificationSubscriptions.js';
-import { Icon } from '../components/Icon.js';
+import { Icon, type IconName } from '../components/Icon.js';
+import { ProviderMark } from '../components/ProviderMark.js';
 import { RowActions } from '../components/RowActions.js';
 
 export const ADD_SUBSCRIPTION_LABEL = 'Add notification';
@@ -17,9 +18,14 @@ const OUTCOME_ICON = { info: 'info', warn: 'alert-triangle', bad: 'alert-circle'
 
 const eventsOf = (row: SubscriptionView) => row.eventKinds.map((kind) => EVENT_KIND_LABELS[kind]).join(', ');
 const rowName = (row: SubscriptionView) => `${channelLabel(row.connectorKind)} for ${eventsOf(row)}`;
-/** One item per line, so a long filter stacks instead of widening the table; empty reads "All". */
-const lines = (items: readonly string[]) =>
-    items.length === 0 ? 'All' : items.map((item) => <div key={item}>{item}</div>);
+
+/** An event's tag: its icon and tone. Purple is the Question tag's alone; an admin action stays neutral. */
+const EVENT_TAGS: Record<SubscriptionView['eventKinds'][number], { icon: IconName; tone: string }> = {
+    'task.ready': { icon: 'check-circle', tone: 'pill pill-ok' },
+    'task.blocked': { icon: 'alert-triangle', tone: 'pill pill-warn' },
+    'task.question': { icon: 'info', tone: 'pill pill-question' },
+    'task.admin_action': { icon: 'users', tone: 'pill' },
+};
 
 /**
  * One scope's notification subscriptions: a row per channel with its events, repo filter, the
@@ -64,14 +70,13 @@ export function NotificationSubscriptionsPanel({
     return (
         <section className="panel" aria-label={heading}>
             <div className="panel-head">
-                <h2>{heading}</h2>
+                <h2>
+                    {heading}
+                    <span className="count">{subscriptions.length}</span>
+                </h2>
                 {canWrite ? (
-                    <button
-                        type="button"
-                        className="primary notification-subscription-add"
-                        disabled={busy}
-                        onClick={onAdd}
-                    >
+                    <button type="button" className="notification-subscription-add" disabled={busy} onClick={onAdd}>
+                        <Icon name="plus" />
                         {ADD_SUBSCRIPTION_LABEL}
                     </button>
                 ) : null}
@@ -87,7 +92,7 @@ export function NotificationSubscriptionsPanel({
                 <p className="muted">{NO_SUBSCRIPTIONS_NOTE}</p>
             ) : (
                 <section className="table-wrap">
-                    <table className="data table-cards" aria-label={tableLabel}>
+                    <table className="data data-compact table-cards" aria-label={tableLabel}>
                         <thead>
                             <tr>
                                 <th scope="col">Channel</th>
@@ -104,15 +109,43 @@ export function NotificationSubscriptionsPanel({
                         <tbody>
                             {subscriptions.map((row) => (
                                 <tr key={row.id}>
-                                    <td data-label="Channel">{channelLabel(row.connectorKind)}</td>
-                                    <td data-label="Events">
-                                        {lines(row.eventKinds.map((kind) => EVENT_KIND_LABELS[kind]))}
+                                    <td data-label="Channel">
+                                        <ProviderMark provider={row.connectorKind} decorative />
+                                        {channelLabel(row.connectorKind)}
                                     </td>
-                                    <td data-label="Repos">{lines(row.repos)}</td>
+                                    <td data-label="Events">
+                                        <div className="pill-list">
+                                            {row.eventKinds.map((kind) => (
+                                                <span key={kind} className={EVENT_TAGS[kind].tone}>
+                                                    <Icon name={EVENT_TAGS[kind].icon} size={14} />
+                                                    {EVENT_KIND_LABELS[kind]}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </td>
+                                    <td data-label="Repos">
+                                        <div className="pill-list">
+                                            {row.repos.length === 0 ? (
+                                                <span className="pill">
+                                                    <Icon name="git-branch" size={14} />
+                                                    All repositories
+                                                </span>
+                                            ) : (
+                                                row.repos.map((repo) => (
+                                                    <span key={repo} className="pill" title={repo}>
+                                                        {repo}
+                                                    </span>
+                                                ))
+                                            )}
+                                        </div>
+                                    </td>
                                     <td data-label="Enabled">
                                         <label className="settings-toggle">
                                             <input
                                                 type="checkbox"
+                                                role="switch"
+                                                aria-checked={row.enabled}
+                                                className="switch"
                                                 checked={row.enabled}
                                                 disabled={!canWrite || busy}
                                                 aria-label={`Enabled, ${rowName(row)}`}

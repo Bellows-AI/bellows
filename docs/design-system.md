@@ -41,7 +41,7 @@ never utilities, and every color it renders resolves through a token.
   controls belong to `touch-targets.css`, and `web/test/styles.test.ts` holds the owner map and the
   lists' disjointness.
 - Status color carries one meaning everywhere: blue is your turn, green the machine working or
-  finished well, red failed, grey parked, amber warnings only. The text label always renders and
+  finished well, red failed, grey parked, amber warnings only, purple a question and only on the Question notification event tag. The text label always renders and
   the icon is `aria-hidden`. The per-state maps are `TONE` in `web/src/panels/TaskHeader.tsx` and
   `STATE_PILL` in `web/src/pages/TaskInboxPage.tsx`, keyed by `taskTone` in `web/src/task-tree.ts`.
 - The light washes are opaque tints mixed into `--surface-raised`; the dark ones are translucent.
@@ -85,10 +85,10 @@ Controls and overlays: `primary`, `danger`, `select-trigger`, `popover-option`, 
 
 Surfaces and feedback: `panel-head`, `panel-actions`, `status`, `alert`, `error`, `muted`,
 `badge-warn`, `banner-warn`, `banner-bad`, `banner-info`, `banner-title`, `pill-ok`, `pill-warn`,
-`pill-bad`, `pill-done`, `pill-accent`, `inbox-chip`.
+`pill-bad`, `pill-done`, `pill-accent`, `pill-question`, `pill-list`, `count`, `switch`, `inbox-chip`.
 
 Data display: `table-wrap`, `data`, `sortable`, `align-end`, `asc`, `kv`, `by-user-user`,
-`table-cards`, `updated-at`, `icon`.
+`table-cards`, `data-compact`, `updated-at`, `icon`.
 
 Token usage: `usage-figures`, `usage-figure`, `usage-figure-label`, `usage-precision`,
 `usage-precision-words`, `usage-coverage`, `usage-breakdown`, `usage-breakdown-toggle`,

@@ -477,6 +477,18 @@
         font-family: var(--font-mono);
     }
 
+    /* A compact table: hairline rows, no mono. Placed after the mono rule so every cell, pills and
+       buttons included, reads in the inherited sans face. */
+    table.data.data-compact td {
+        font-family: inherit;
+    }
+
+    table.data.data-compact th,
+    table.data.data-compact td {
+        padding: 8px 12px;
+        vertical-align: middle;
+    }
+
     /* A row's actions, with a hierarchy (issue 411): the common action as a visible button, the
         rest behind one overflow trigger whose panel is the shared `popover`. Shared rather than
         lane-owned because the pattern is the table's, not any one page's — the repos, workflows
@@ -986,6 +998,72 @@
         background: var(--accent-wash);
         border-color: transparent;
         color: var(--accent);
+    }
+
+    /* Purple means "question" and nothing else: the Question notification event tag. */
+    .pill-question {
+        background: var(--question-wash);
+        border-color: var(--question-border);
+        color: var(--question);
+    }
+
+    /* Tags in a row wrap rather than overlap what follows. */
+    .pill-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+    }
+
+    /* A small neutral number beside a heading: how many rows the list below holds. */
+    .count {
+        background: var(--surface-sunken);
+        border-radius: var(--radius-md);
+        color: var(--ink-muted);
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 16px;
+        margin-left: 8px;
+        padding: 0 6px;
+    }
+
+    /* A checkbox skinned as a track and thumb. No transition: a state change is one paint. */
+    .switch {
+        appearance: none;
+        background: var(--surface-strong);
+        border: 1px solid var(--line-strong);
+        border-radius: 999px;
+        cursor: pointer;
+        flex: none;
+        height: 20px;
+        margin: 0;
+        position: relative;
+        width: 36px;
+    }
+
+    .switch::after {
+        background: var(--ink-muted);
+        border-radius: 50%;
+        content: '';
+        height: 14px;
+        left: 2px;
+        position: absolute;
+        top: 2px;
+        width: 14px;
+    }
+
+    .switch:checked {
+        background: var(--accent);
+        border-color: var(--accent);
+    }
+
+    .switch:checked::after {
+        background: var(--ink-inverse);
+        left: 18px;
+    }
+
+    .switch:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
     }
 
     /* An applied filter, "Label: value" plus its remove button: a capsule on the accent wash. */

@@ -238,6 +238,37 @@ const CELLS: Record<Row, Partial<Record<Column, ReactNode>>> = {
         Disabled: <Checkbox label="Publish a pull request" disabled />,
         'Long content': <Checkbox label={LONG_LABEL} />,
     },
+    Switch: {
+        Default: (
+            <label className="settings-toggle">
+                <input type="checkbox" role="switch" className="switch" aria-label="Enabled" aria-checked={false} />
+            </label>
+        ),
+        Selected: (
+            <label className="settings-toggle">
+                <input
+                    type="checkbox"
+                    role="switch"
+                    className="switch"
+                    aria-label="Enabled, on"
+                    aria-checked
+                    defaultChecked
+                />
+            </label>
+        ),
+        Disabled: (
+            <label className="settings-toggle">
+                <input
+                    type="checkbox"
+                    role="switch"
+                    className="switch"
+                    aria-label="Enabled, disabled"
+                    aria-checked={false}
+                    disabled
+                />
+            </label>
+        ),
+    },
     Pill: {
         Default: (
             <>
@@ -269,6 +300,10 @@ const CELLS: Record<Row, Partial<Record<Column, ReactNode>>> = {
                 <span className="pill pill-done">
                     <Icon name="check-circle" size={14} />
                     Done
+                </span>
+                <span className="pill pill-question">
+                    <Icon name="info" size={14} />
+                    Question
                 </span>
             </>
         ),

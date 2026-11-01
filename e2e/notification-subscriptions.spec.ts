@@ -86,8 +86,31 @@ async function lifecycle(page: Page, scope: Scope) {
     const row = rowOf(page, scope, REPO);
     await expect(row).toContainText('Discord');
     await expect(row).toContainText('Task ready');
-    await expect(row.getByRole('checkbox', { name: /^Enabled/ })).toBeChecked();
+    await expect(row.getByRole('switch', { name: /^Enabled/ })).toBeChecked();
     await expect(page.getByText(WEBHOOK)).toHaveCount(0);
+
+    // One compact row at desktop width: the event tags share a line, and no cell falls back to the table's mono face.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const tags = row.locator('[data-label="Events"] .pill');
+    const tops = await tags.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().y)));
+    expect(new Set(tops).size).toBe(1);
+    expect((await row.boundingBox())!.height).toBeLessThanOrEqual(72);
+    const mono = await page.evaluate(() =>
+        getComputedStyle(document.documentElement).getPropertyValue('--font-mono').split(',')[0]!.trim()
+    );
+    for (const target of [
+        tags.first(),
+        row.getByRole('button', { name: 'Send test notification' }),
+        row.locator('[data-label="Channel"]'),
+    ]) {
+        expect(await target.evaluate((node) => getComputedStyle(node).fontFamily)).not.toContain(
+            mono.replace(/['"]/g, '')
+        );
+    }
+    // Phone width: the tags wrap instead of running under the row's actions.
+    await page.setViewportSize({ width: 390, height: 800 });
+    await page.screenshot({ path: `${SHOTS}/${scope.shot}-phone.png`, fullPage: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.screenshot({ path: `${SHOTS}/${scope.shot}-list.png`, fullPage: true });
 
     // Edit with the webhook left blank: the stored one stays, so the save needs no credential.
@@ -102,11 +125,11 @@ async function lifecycle(page: Page, scope: Scope) {
 
     // A click, not `uncheck()`: the box is controlled, so it flips only once the write and re-read land.
     await rowOf(page, scope, REPO)
-        .getByRole('checkbox', { name: /^Enabled/ })
+        .getByRole('switch', { name: /^Enabled/ })
         .click();
-    await expect(rowOf(page, scope, REPO).getByRole('checkbox', { name: /^Enabled/ })).not.toBeChecked();
+    await expect(rowOf(page, scope, REPO).getByRole('switch', { name: /^Enabled/ })).not.toBeChecked();
     await page.reload();
-    await expect(rowOf(page, scope, REPO).getByRole('checkbox', { name: /^Enabled/ })).not.toBeChecked();
+    await expect(rowOf(page, scope, REPO).getByRole('switch', { name: /^Enabled/ })).not.toBeChecked();
 
     // Test send, faked at the browser: the request goes to this scope's row, and the verdict reads as a sentence.
     const tested: string[] = [];

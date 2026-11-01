@@ -27,7 +27,7 @@ const COPY: Record<SubscriptionScope, { heading: string; tableLabel: string; int
     workspace: {
         heading: 'My notifications',
         tableLabel: 'My notification subscriptions',
-        intro: 'Send your own task events to a channel only you manage: it delivers tasks you started and actions taken by you.',
+        intro: 'Updates for tasks you start and actions you take.',
     },
 };
 
