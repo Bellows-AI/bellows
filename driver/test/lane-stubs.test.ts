@@ -21,8 +21,8 @@ const COPY = 'COPY ctl-agent.cjs stub-agent.sh /usr/local/bin/\n';
 // the tool broker, the executor images' own launcher.
 const ENTRY = 'ENTRYPOINT ["/usr/local/bin/factory-launch","sh","/usr/local/bin/stub-agent.sh",';
 const STAGE =
-    'cp docker/claude-executor/ctl-agent.cjs docker/claude-executor/factory-launch.sh docker/claude-executor/factory-tool.cjs \\\n' +
-    '    docker/claude-executor/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"';
+    'cp docker/executor-common/ctl-agent.cjs docker/executor-common/factory-launch.sh docker/executor-common/factory-tool.cjs \\\n' +
+    '    docker/executor-common/tool-bash.sh scripts/stub-agent.sh scripts/lane-gh.sh scripts/stub-runner.Dockerfile "$work/"';
 const BASE = read('scripts/stub-runner.Dockerfile');
 
 /** The one printf line that writes `target`. */
@@ -69,7 +69,7 @@ describe('the lane stub executor images', () => {
         }
         // The credential helper requires attempt-pair.cjs beside it: copying one without the other fails at require.
         expect(script).toContain(
-            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs "$work/github/"'
+            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs "$work/github/"'
         );
         expect(dockerfile(script, '"$work/github/Dockerfile"')).toContain(
             'COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs\\n'
@@ -89,7 +89,7 @@ describe('the lane stub executor images', () => {
         const line = dockerfile(script, '"$work/stub.Dockerfile"');
         expect(line).toContain(`${ENTRY}"sh","/stub.sh"]`);
         expect(script).toContain(
-            'cp docker/claude-executor/github-credential.cjs docker/claude-executor/credential-broker.cjs docker/claude-executor/attempt-pair.cjs docker/claude-executor/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"'
+            'cp docker/executor-common/github-credential.cjs docker/executor-common/credential-broker.cjs docker/executor-common/attempt-pair.cjs docker/executor-common/connection-ask.cjs docker/skills/jira/jira.cjs "$work/"'
         );
         expect(line).toContain(
             'COPY github-credential.cjs credential-broker.cjs attempt-pair.cjs connection-ask.cjs jira.cjs /usr/local/bin/\\n'
@@ -144,7 +144,7 @@ const sandbox = () => {
     const outDir = join(root, 'out');
     for (const dir of [bin, inDir, outDir]) mkdirSync(dir);
     copyFileSync(join(ROOT, 'scripts/stub-agent.sh'), join(bin, 'stub-agent.sh'));
-    copyFileSync(join(ROOT, 'docker/claude-executor/ctl-agent.cjs'), join(bin, 'ctl-agent.cjs'));
+    copyFileSync(join(ROOT, 'docker/executor-common/ctl-agent.cjs'), join(bin, 'ctl-agent.cjs'));
     return { wrapper: join(bin, 'stub-agent.sh'), inDir, outDir };
 };
 

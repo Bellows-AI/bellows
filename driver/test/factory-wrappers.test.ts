@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,8 +12,8 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * whose `*` would take any URL. Driven as real processes against a loopback gate server and a unix
  * socket; the destination is fixed, the arguments only fill a JSON an encoder builds.
  */
-const GATE = join(ROOT, 'docker/claude-executor/factory-gate.cjs');
-const CONTROL = join(ROOT, 'docker/claude-executor/factory-control.cjs');
+const GATE = join(ROOT, 'docker/executor-common/factory-gate.cjs');
+const CONTROL = join(ROOT, 'docker/executor-common/factory-control.cjs');
 
 interface Seen {
     method: string;
@@ -194,16 +194,15 @@ describe('factory-control', () => {
 describe('in the images', () => {
     const IMAGES = ['claude-executor', 'opencode-executor'];
 
-    it.each(['factory-gate', 'factory-control'])('%s is byte-identical in both images', (name) => {
-        const [a, b] = IMAGES.map((image) => readFileSync(join(ROOT, `docker/${image}/${name}.cjs`), 'utf8'));
-        expect(a).toBeTruthy();
-        expect(a).toBe(b);
+    it.each(['factory-gate', 'factory-control'])('%s is one shared file, in neither image directory', (name) => {
+        expect(readFileSync(join(ROOT, `docker/executor-common/${name}.cjs`), 'utf8')).toBeTruthy();
+        for (const image of IMAGES) expect(existsSync(join(ROOT, `docker/${image}/${name}.cjs`)), image).toBe(false);
     });
 
     it.each(IMAGES)('%s installs both root-owned and executable on the PATH, with no extension', (image) => {
         const dockerfile = readFileSync(join(ROOT, `docker/${image}/Dockerfile`), 'utf8');
         for (const name of ['factory-gate', 'factory-control']) {
-            expect(dockerfile).toContain(`COPY ${name}.cjs /usr/local/bin/${name}\n`);
+            expect(dockerfile).toContain(`COPY --from=common ${name}.cjs /usr/local/bin/${name}\n`);
             expect(dockerfile).toMatch(new RegExp(`chmod 0755 [^\\n]*/usr/local/bin/${name}\\b`));
         }
         expect(dockerfile).not.toMatch(/--chown[^\n]*factory-(gate|control)/);

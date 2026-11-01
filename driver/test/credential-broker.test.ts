@@ -20,8 +20,8 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * with a fake clock and a fake board; the process-level channel pins live in github-credential.test.ts.
  */
 
-const BROKER = join(ROOT, 'docker/claude-executor/credential-broker.cjs');
-const FRONT_END = join(ROOT, 'docker/claude-executor/github-credential.cjs');
+const BROKER = join(ROOT, 'docker/executor-common/credential-broker.cjs');
+const FRONT_END = join(ROOT, 'docker/executor-common/github-credential.cjs');
 
 interface Pair {
     jobId: string;

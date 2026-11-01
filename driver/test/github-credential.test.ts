@@ -22,7 +22,7 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * token on stdout only, guidance on stderr only.
  */
 
-const HELPER = join(ROOT, 'docker/claude-executor/github-credential.cjs');
+const HELPER = join(ROOT, 'docker/executor-common/github-credential.cjs');
 interface Deps {
     env: Record<string, string | undefined>;
     dir: string;
@@ -41,7 +41,7 @@ const helper = createRequire(import.meta.url)(HELPER) as {
     RENEW_SKEW_MS: number;
     CACHE_DIR: string;
 };
-const broker = createRequire(import.meta.url)(join(ROOT, 'docker/claude-executor/credential-broker.cjs')) as {
+const broker = createRequire(import.meta.url)(join(ROOT, 'docker/executor-common/credential-broker.cjs')) as {
     DEADLINE_MS: number;
     CACHE_DIR: string;
 };
@@ -319,35 +319,39 @@ describe('the gh wrapper and the helper in both images', () => {
     const IMAGES = ['docker/claude-executor', 'docker/opencode-executor'];
     const read = (path: string) => readFileSync(join(ROOT, path), 'utf8');
 
-    it('ships byte-identical copies of the helper and the wrapper', () => {
-        for (const file of ['github-credential.cjs', 'credential-broker.cjs']) {
-            expect(read(`docker/opencode-executor/${file}`), file).toBe(read(`docker/claude-executor/${file}`));
+    it('ships one shared copy of the helper and the wrapper', () => {
+        for (const file of ['github-credential.cjs', 'credential-broker.cjs', 'gh-wrapper.sh']) {
+            expect(read(`docker/executor-common/${file}`), file).toBeTruthy();
+            for (const dir of IMAGES) expect(existsSync(join(ROOT, dir, file)), `${dir}/${file}`).toBe(false);
         }
-        expect(read('docker/opencode-executor/gh-wrapper.sh')).toBe(read('docker/claude-executor/gh-wrapper.sh'));
     });
 
     it.each(IMAGES)('%s installs the real gh in libexec and the wrapper as /usr/local/bin/gh', (dir) => {
         const dockerfile = read(`${dir}/Dockerfile`);
         expect(dockerfile).toMatch(/mv "[^"]*\/bin\/gh" \/usr\/local\/libexec\/gh/);
-        expect(dockerfile).toMatch(/^COPY gh-wrapper\.sh \/usr\/local\/bin\/gh$/m);
-        expect(dockerfile).toMatch(/^COPY github-credential\.cjs \/usr\/local\/bin\/github-credential\.cjs$/m);
-        expect(dockerfile).toMatch(/^COPY credential-broker\.cjs \/usr\/local\/bin\/credential-broker\.cjs$/m);
+        expect(dockerfile).toMatch(/^COPY --from=common gh-wrapper\.sh \/usr\/local\/bin\/gh$/m);
+        expect(dockerfile).toMatch(
+            /^COPY --from=common github-credential\.cjs \/usr\/local\/bin\/github-credential\.cjs$/m
+        );
+        expect(dockerfile).toMatch(
+            /^COPY --from=common credential-broker\.cjs \/usr\/local\/bin\/credential-broker\.cjs$/m
+        );
         expect(dockerfile).toMatch(/chmod 0755 [^\n]*\/usr\/local\/bin\/credential-broker\.cjs/);
         expect(dockerfile).toMatch(/chmod 0755 \/usr\/local\/bin\/gh \/usr\/local\/bin\/github-credential\.cjs /);
     });
 
     it('hands gh the helper token only when no token is already set', async () => {
-        const wrapper = read('docker/claude-executor/gh-wrapper.sh');
+        const wrapper = read('docker/executor-common/gh-wrapper.sh');
         expect(wrapper).toMatch(/^if \[ -z "\$\{GH_TOKEN:-\}" \] && \[ -z "\$\{GITHUB_TOKEN:-\}" \]; then$/m);
         expect(wrapper).toContain('GH_TOKEN="$(node /usr/local/bin/github-credential.cjs token)"');
         expect(wrapper.trimEnd().split('\n').at(-1)).toBe('exec /usr/local/libexec/gh "$@"');
         // POSIX sh: the images ship dash.
-        await expect(run('sh', ['-n', join(ROOT, 'docker/claude-executor/gh-wrapper.sh')])).resolves.toBeDefined();
+        await expect(run('sh', ['-n', join(ROOT, 'docker/executor-common/gh-wrapper.sh')])).resolves.toBeDefined();
     });
 
     it('needs no write to anything but the cache directory it is given', () => {
         // The cache path is a constant, never an env name a member could point at a shared volume.
-        const source = read('docker/claude-executor/credential-broker.cjs');
+        const source = read('docker/executor-common/credential-broker.cjs');
         expect(source).toContain("const CACHE_DIR = '/run/factory-credentials';");
         expect(source).not.toMatch(/process\.env\.[A-Z_]*DIR/);
     });

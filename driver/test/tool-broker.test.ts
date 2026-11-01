@@ -17,8 +17,8 @@ import { REPO_ROOT as ROOT } from './fixtures/repo-files.js';
  * scratch directory, as this test's own uid — the uid switch itself is the images' to prove
  * (docker/*-executor/test.sh) — with the spawn options the broker passes pinned on the side.
  */
-const BROKER = join(ROOT, 'docker/claude-executor/factory-tool.cjs');
-const WRAPPER = join(ROOT, 'docker/claude-executor/tool-bash.sh');
+const BROKER = join(ROOT, 'docker/executor-common/factory-tool.cjs');
+const WRAPPER = join(ROOT, 'docker/executor-common/tool-bash.sh');
 /** Far past every pipe and socket buffer between the command and the reader. */
 const BIG_OUTPUT = 32 * 1024 * 1024;
 /** The client's streams' high-water mark, and what one nobody reads may hold: one read's frames. */
@@ -526,11 +526,12 @@ describe('the tool client', () => {
 
 describe('the tool shell files', () => {
     it.each(['factory-tool.cjs', 'tool-bash.sh', 'control-proxy.cjs', 'factory-launch.sh'])(
-        '%s is byte-identical in both images',
+        '%s is one shared file, in neither image directory',
         (name) => {
-            expect(readFileSync(join(ROOT, 'docker/opencode-executor', name), 'utf8')).toBe(
-                readFileSync(join(ROOT, 'docker/claude-executor', name), 'utf8')
-            );
+            expect(readFileSync(join(ROOT, 'docker/executor-common', name), 'utf8')).toBeTruthy();
+            for (const image of ['claude-executor', 'opencode-executor']) {
+                expect(existsSync(join(ROOT, 'docker', image, name)), image).toBe(false);
+            }
         }
     );
 });

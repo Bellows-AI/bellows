@@ -39,7 +39,7 @@ guard as a guardrail): [claude-executor](../claude-executor/README.md).
 
 ```bash
 # The shared skills arrive as the named `skills` build context. OPENCODE_VERSION overrides the pin.
-docker build --build-context skills=docker/skills -t opencode-executor docker/opencode-executor
+docker build --build-context skills=docker/skills --build-context common=docker/executor-common -t opencode-executor docker/opencode-executor
 make runners                                       # both executor images
 docker/opencode-executor/test.sh                   # builds opencode-executor-test, checks it
 docker run --rm -e ANTHROPIC_API_KEY -v "$PWD:/workspace" \

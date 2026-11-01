@@ -18,7 +18,7 @@ import { CLAUDE_CODE, OPENCODE, type ExecutorType } from './executors.js';
 const READ_ONLY = 0o444;
 const DIRECTORY = 0o755;
 
-/** The agent CLI's shell in both executor images (docker/claude-executor/tool-bash.sh). */
+/** The agent CLI's shell in both executor images (docker/executor-common/tool-bash.sh). */
 const TOOL_SHELL = '/usr/local/libexec/factory-tool/bash';
 
 export function claudeManagedSettings(endpoint: string): string {

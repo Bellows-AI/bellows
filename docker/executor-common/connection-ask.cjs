@@ -18,7 +18,7 @@
  *   { kind: 'inconclusive' }     anything else - a hang-up, a timeout, a 5xx, a body that is no answer.
  *                                Never a verdict: the caller asks again inside its own deadline.
  *
- * Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+ * One file, built into both executor images (driver/test/executor-images.test.ts).
  */
 const http = require('node:http');
 

@@ -13,7 +13,7 @@
  * a 2xx answer, 22 any other status (curl -f's code, body still printed, status on stderr), 1 no
  * answer at all, 2 a usage error, 3 no gate server in this environment.
  *
- * Kept byte-identical in both executor images (driver/test/executor-images.test.ts).
+ * One file, built into both executor images (driver/test/executor-images.test.ts).
  */
 const http = require('node:http');
 const https = require('node:https');

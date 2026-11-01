@@ -24,7 +24,7 @@
  * code the CLI must never load; and nothing of the CLI's: its config dir, credentials and mailboxes
  * stay closed.
  *
- * Kept byte-identical in both executor images (driver/test/tool-broker.test.ts).
+ * One file, built into both executor images (driver/test/tool-broker.test.ts).
  */
 const fs = require('node:fs');
 const net = require('node:net');

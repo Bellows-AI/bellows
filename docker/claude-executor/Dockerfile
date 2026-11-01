@@ -4,7 +4,7 @@
 # the CLI, the config under claude-home/ and the skills shared with opencode-executor, which arrive
 # as the named `skills` context:
 #
-#   docker build --build-context skills=docker/skills -t claude-executor docker/claude-executor
+#   docker build --build-context skills=docker/skills --build-context common=docker/executor-common -t claude-executor docker/claude-executor
 #
 # debian rather than alpine: the CLI ships prebuilt glibc binaries (ripgrep among them) that fail
 # at runtime on musl, and the failure surfaces as an empty search result rather than an error.
@@ -107,6 +107,8 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     && npm cache clean --force
 
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
+# The agent the shared docker/executor-common/branch-reporter.cjs reports as.
+ENV BRANCH_REPORTER_AGENT=claude-code
 
 # The CLI's bundled skills (dataviz, loop, schedule, code-review, …) are interactive tools a
 # headless run cannot use, listed to the model on every turn. This drops them; docker/skills and
@@ -165,25 +167,25 @@ COPY entrypoint.sh /usr/local/bin/claude-executor
 # The branch reporter lives in /usr/local/bin, NOT claude-home/: the transcript store moves
 # CLAUDE_CONFIG_DIR off the baked home, so a script there is not a fixed path. The settings.json
 # hooks below are in the same boat and for the same reason: each hook command names an absolute path.
-COPY branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
+COPY --from=common branch-reporter.cjs /usr/local/bin/branch-reporter.cjs
 COPY claude-progress.cjs /usr/local/bin/claude-progress.cjs
 # The AskUserQuestion bridge (issue #226): the entrypoint execs it in place of the bare CLI.
 COPY claude-bridge.cjs /usr/local/bin/claude-bridge.cjs
 # The cooperative Stop (issue #442): the mailbox agent copies the task supervisor's Stop into the
 # stop marker, the PostToolUse hook in settings.json reads it. Absolute paths in /usr/local/bin for
 # the same reason as the branch reporter.
-COPY ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
+COPY --from=common ctl-agent.cjs /usr/local/bin/ctl-agent.cjs
 COPY stop-hook.cjs /usr/local/bin/stop-hook.cjs
 # The claim's turn context (issue #509): settings.json's UserPromptSubmit hook answers it from
 # FACTORY_TURN_CONTEXT. Absolute path for the same reason as the branch reporter.
 COPY turn-context-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The runner's GitHub token (docs/connections.md): the helper git's credential.helper and the gh
 # wrapper ask, which renews from the board; the real gh sits in /usr/local/libexec behind it.
-COPY github-credential.cjs /usr/local/bin/github-credential.cjs
-COPY credential-broker.cjs /usr/local/bin/credential-broker.cjs
-COPY attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
-COPY connection-ask.cjs /usr/local/bin/connection-ask.cjs
-COPY gh-wrapper.sh /usr/local/bin/gh
+COPY --from=common github-credential.cjs /usr/local/bin/github-credential.cjs
+COPY --from=common credential-broker.cjs /usr/local/bin/credential-broker.cjs
+COPY --from=common attempt-pair.cjs /usr/local/bin/attempt-pair.cjs
+COPY --from=common connection-ask.cjs /usr/local/bin/connection-ask.cjs
+COPY --from=common gh-wrapper.sh /usr/local/bin/gh
 RUN chmod 0755 /usr/local/bin/gh /usr/local/bin/github-credential.cjs /usr/local/bin/credential-broker.cjs /usr/local/bin/attempt-pair.cjs /usr/local/bin/connection-ask.cjs /usr/local/bin/claude-executor /usr/local/bin/branch-reporter.cjs /usr/local/bin/claude-progress.cjs /usr/local/bin/claude-bridge.cjs /usr/local/bin/ctl-agent.cjs /usr/local/bin/stop-hook.cjs /usr/local/bin/turn-context-hook.cjs
 # The agent's tools run as their own uid (issue #814). factory-launch, the ENTRYPOINT below, starts
 # the tool broker as root and drops to node for the CLI, whose shell (CLAUDE_CODE_SHELL, SHELL) asks
@@ -206,14 +208,14 @@ RUN groupadd -g 1002 factory-agent && usermod -aG factory-agent node \
 # (driver/src/publish/publish.ts): /etc/gitconfig is system scope, so both uids read it whatever HOME
 # a run mounts, and a repository's own, a member's global or a GIT_AUTHOR_* env identity still wins.
 RUN printf '[user]\n\tname = factory-ai\n\temail = factory-ai@users.noreply.github.com\n' > /etc/gitconfig
-COPY factory-launch.sh /usr/local/bin/factory-launch
-COPY factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
-COPY tool-bash.sh /usr/local/libexec/factory-tool/bash
-COPY control-proxy.cjs /usr/local/bin/control-proxy.cjs
+COPY --from=common factory-launch.sh /usr/local/bin/factory-launch
+COPY --from=common factory-tool.cjs /usr/local/lib/factory-tool/factory-tool.cjs
+COPY --from=common tool-bash.sh /usr/local/libexec/factory-tool/bash
+COPY --from=common control-proxy.cjs /usr/local/bin/control-proxy.cjs
 # The skills' gate-server and run-control calls (issue #1061): fixed-destination commands the managed
 # allowlist can name, root-owned so the agent cannot rewrite where they go.
-COPY factory-gate.cjs /usr/local/bin/factory-gate
-COPY factory-control.cjs /usr/local/bin/factory-control
+COPY --from=common factory-gate.cjs /usr/local/bin/factory-gate
+COPY --from=common factory-control.cjs /usr/local/bin/factory-control
 RUN chmod 0755 /usr/local/bin/factory-launch /usr/local/libexec/factory-tool/bash /usr/local/bin/control-proxy.cjs /usr/local/bin/factory-gate /usr/local/bin/factory-control
 # The task supervisor's mailbox mount points (driver/src/supervisor-contract.ts). Baked and node-
 # owned so a docker volume mounted over them inherits the owner and mode — the agent's two closed to
