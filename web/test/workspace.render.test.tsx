@@ -27,6 +27,7 @@ describe('the executors panel', () => {
             <WorkspaceExecutorsPanel
                 executors={[executor('main', 'claude-code'), executor('oc', 'opencode')]}
                 defaultExecutor={null}
+                onAdd={noop}
                 onEdit={noop}
                 onMakeDefault={noop}
                 onSuspend={noop}
@@ -36,17 +37,20 @@ describe('the executors panel', () => {
             />
         );
 
-    it('scopes the list under "My workspace" and carries task-routing guidance', () => {
-        const html = renderPanel({ executors: [] });
-        expect(html).toContain('<h2>My workspace</h2>');
-        expect(html).toContain('Each task runs with its selected executor');
-        expect(html).toContain('type chooses Claude Code or OpenCode');
+    it('heads the list "My workspace" with a count and its own Add executor, and repeats no guidance', () => {
+        const html = renderPanel();
+        expect(html).toContain('<div class="panel-head"><h2>My workspace<span class="count">2</span></h2>');
+        expect(html).toMatch(/<button[^>]*>(<svg.*?<\/svg>)?Add executor<\/button>/);
+        // The guidance is the page's single disclosure, not a paragraph under every scope head.
+        expect(html).not.toContain('Each task runs with its selected executor');
     });
 
-    it('says an executor is selectable when the list is empty, the org scope included', () => {
+    it('an empty personal scope is one line with Add executor, no table', () => {
         const html = renderPanel({ executors: [] });
-        expect(html).toContain('No personal executors configured');
+        expect(html).toContain('No personal executors.');
         expect(html).toContain('select an organization executor');
+        expect(html).toContain('Add executor');
+        expect(html).not.toContain('<table');
         expect(html).not.toContain('No executors configured');
     });
 
@@ -56,21 +60,30 @@ describe('the executors panel', () => {
         expect(html).toContain('OpenCode');
         // The stored union value is for the API, not for the member.
         expect(html).not.toContain('claude-code');
-        expect(html).not.toContain('No personal executors configured');
+        expect(html).not.toContain('No personal executors.');
         expectNoPlaceholder(html);
     });
 
-    it('carries no row caption when nothing is selectable — a poll without a resolved default', () => {
+    it('carries no Default tag when nothing is selectable — a poll without a resolved default', () => {
         const html = renderPanel();
+        expect(html).not.toContain('>Default<');
         expect(html).not.toContain('Default — selected on new tasks');
-        expect(html).not.toContain('Selected first on new tasks');
     });
 
-    it('captions the row the resolved default names, even when it is not first', () => {
+    it('the personal default shows a Default tag, not a caption paragraph', () => {
         const html = renderPanel({ defaultExecutor: { scope: 'user', name: 'oc' } });
-        expect(html).toContain('Default — selected on new tasks');
-        // Exactly one row wears the caption.
-        expect(html.match(/Default — selected on new tasks/g)?.length).toBe(1);
+        // Exactly one row wears the tag, and it is a pill beside the name, never a paragraph.
+        expect(html.match(/<span class="pill">Default<\/span>/g)?.length).toBe(1);
+        expect(html).not.toContain('Default — selected on new tasks');
+        expect(html).not.toMatch(/<p[^>]*>Default/);
+    });
+
+    it('is a compact table whose cells stay sans', () => {
+        const html = renderPanel();
+        expect(html).toContain('<table class="data data-compact table-cards"');
+        for (const label of ['Name', 'Type', 'Gate repair', 'Added', 'Actions']) {
+            expect(html, label).toContain(`data-label="${label}"`);
+        }
     });
 
     it('never carries a row config — the poll payload has none, and the type enforces it', () => {
@@ -83,7 +96,7 @@ describe('the executors panel', () => {
     it('uses the real table primitives, focusable wrapper included', () => {
         const html = renderPanel({ executors: [executor('main', 'claude-code')] });
         expect(html).toContain('table-wrap');
-        expect(html).toContain('<table class="data"');
+        expect(html).toContain('<table class="data data-compact table-cards"');
         expect(html).toContain('scope="col"');
     });
 
@@ -92,15 +105,13 @@ describe('the executors panel', () => {
         expect(html.match(/>Edit</g)?.length).toBe(2);
     });
 
-    it('renders Make default on every non-default row, and not on the default row', () => {
-        const html = renderPanel({ defaultExecutor: { scope: 'user', name: 'oc' } });
-        expect(html.match(/>Make default</g)?.length).toBe(1);
-    });
-
-    it('disables Make default while a save is in flight', () => {
-        const html = renderPanel({ saving: true });
-        expect(html).toMatch(/>Make default<\/button>/);
-        expect(html).toContain('disabled');
+    it('keeps only Edit inline and puts the other actions behind one trigger naming the row', () => {
+        const html = renderPanel();
+        expect(html).toContain('aria-label="Actions for main"');
+        expect(html).toContain('aria-label="Actions for oc"');
+        for (const word of ['Make default', 'Suspend', 'Remove']) {
+            expect(html).not.toContain(`>${word}<`);
+        }
     });
 });
 
