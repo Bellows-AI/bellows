@@ -412,7 +412,7 @@ describe('the redesigned composer (#280)', () => {
             workflows: [{ id: 'w1', name: 'fix-issue', scope: 'org' }],
         });
         const order = [
-            'class="panel composer-prompt"',
+            'class="panel composer-prompt drop-zone"',
             '<textarea',
             'class="composer-bar"',
             'aria-label="Repository: acme/web"',

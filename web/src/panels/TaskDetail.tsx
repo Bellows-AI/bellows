@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from 'react';
+import { type MutableRefObject, type ReactNode, useEffect, useRef } from 'react';
 import { isTerminal, type Job, type ServiceStatus } from '../api/useJobs.js';
 import { useAttachmentLimits, useAttachments } from '../api/useAttachments.js';
 import type { SubmittedFiles } from '../api/useTasks.js';
@@ -7,6 +7,7 @@ import type { ThreadActivity } from '../api/useJobActivity.js';
 import { KeyValues } from '../components/KeyValues.js';
 import { RelativeTime } from '../components/RelativeTime.js';
 import { endedOnQuestion, type FollowUpViewer, followUpEligibility, threadPublish } from '../task-outcome.js';
+import { AttachmentDropZone } from './AttachmentDropZone.js';
 import { AttachmentChips } from './AttachmentList.js';
 import { AttachmentPicker, attachmentHandlers } from './AttachmentPicker.js';
 import { FOLLOW_UP_INPUT_ID, notAuthorMessage } from './TaskHeader.js';
@@ -151,6 +152,7 @@ function FollowUpComposer({
     error,
     sending,
     onFollowUp,
+    adder,
 }: {
     /** The thread's root run: the key of this thread's draft in the shell's store. */
     rootId: string;
@@ -158,6 +160,8 @@ function FollowUpComposer({
     error: string | null;
     sending: boolean;
     onFollowUp: OnFollowUp;
+    /** Where this composer publishes its `add`, so a drop anywhere on the conversation reaches it. */
+    adder: MutableRefObject<((files: File[]) => void) | null>;
 }) {
     // The text, the files and the submission key live in the shell's store, so a trip to
     // Settings (or to another task) and back finds this thread's draft as it was left.
@@ -175,6 +179,13 @@ function FollowUpComposer({
         frozen
     );
     const dropAndPaste = attachmentHandlers(limits !== null, files.add);
+    const { add } = files;
+    useEffect(() => {
+        adder.current = limits === null ? null : add;
+        return () => {
+            adder.current = null;
+        };
+    }, [adder, limits, add]);
     const blocked = !draft.trim() || frozen || files.blocker !== null;
     const send = async () => {
         if (blocked) return;
@@ -262,6 +273,7 @@ function FollowUp({
     error,
     sending,
     onFollowUp,
+    adder,
 }: {
     latest: Job;
     rootId: string;
@@ -270,6 +282,7 @@ function FollowUp({
     error: string | null;
     sending: boolean;
     onFollowUp: OnFollowUp;
+    adder: MutableRefObject<((files: File[]) => void) | null>;
 }) {
     const eligibility = followUpEligibility(latest, viewer);
     const asked = endedOnQuestion(latest);
@@ -284,6 +297,7 @@ function FollowUp({
                     error={error}
                     sending={sending}
                     onFollowUp={onFollowUp}
+                    adder={adder}
                 />
             </>
         );
@@ -356,6 +370,7 @@ export function TaskDetail({
     activity?: ThreadActivity;
 }) {
     const outputRef = useRef<HTMLPreElement | null>(null);
+    const followUpAdd = useRef<((files: File[]) => void) | null>(null);
 
     // The conversation continues on the newest run: the composer, the live-output tail and the
     // Done verdict all belong to it. Computed before the early return, because the scroll effect
@@ -393,7 +408,11 @@ export function TaskDetail({
             {actionError !== null ? <p className="status">{actionError}</p> : null}
             <div className="task-layout">
                 <TaskOutcome jobs={jobs} viewer={viewer} />
-                <div className="task-main">
+                <AttachmentDropZone
+                    className="task-main"
+                    accepts={() => followUpAdd.current !== null}
+                    onFiles={(dropped) => followUpAdd.current?.(dropped)}
+                >
                     <section className="task-conversation panel">
                         <div className="panel-head">
                             <h2>Conversation</h2>
@@ -419,8 +438,9 @@ export function TaskDetail({
                         error={followUpError}
                         sending={sending}
                         onFollowUp={onFollowUp}
+                        adder={followUpAdd}
                     />
-                </div>
+                </AttachmentDropZone>
                 <div className="task-support">
                     {services !== null && services.length > 0 ? <Services services={services} /> : null}
                     {/* The latest run's pulse and the thread's statistics modal (issue 530). */}

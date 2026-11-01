@@ -221,6 +221,8 @@
         font-weight: 600;
         height: 22px;
         justify-content: center;
+        min-height: 0;
+        min-width: 0;
         padding: 0;
         width: 22px;
     }
@@ -316,16 +318,38 @@
         overflow-wrap: anywhere;
     }
 
-    /* ── attachments: the attach control and one chip per chosen file ── */
+    /* ── attachments: the attach control, the drop overlay and one tile per file ── */
     .attachment-add {
         align-items: center;
         display: inline-flex;
         gap: 6px;
     }
 
-    .attachment-list {
+    /* A zone that takes dropped files; the overlay shows only while files are dragged over it. */
+    .drop-zone {
+        position: relative;
+    }
+
+    .drop-overlay {
+        align-items: center;
+        background: var(--surface-raised);
+        opacity: 0.94;
+        border: 2px dashed var(--accent);
+        border-radius: var(--radius-md);
+        color: var(--ink);
         display: flex;
-        flex-direction: column;
+        font-weight: 600;
+        inset: 0;
+        justify-content: center;
+        pointer-events: none;
+        position: absolute;
+        z-index: 2;
+    }
+
+    .attachment-list {
+        align-items: flex-start;
+        display: flex;
+        flex-wrap: wrap;
         gap: 8px;
         list-style: none;
         margin: 8px 0 0;
@@ -338,35 +362,49 @@
     }
 
     .attachment-chip {
-        align-items: center;
         background: var(--surface-sunken);
         border: 1px solid var(--line);
         border-radius: var(--radius-md);
         display: flex;
-        gap: 12px;
-        padding: 8px 12px;
+        flex-direction: column;
+        gap: 6px;
+        padding: 6px;
+        position: relative;
+        width: 112px;
     }
 
     .attachment-chip[data-status='failed'] {
         border-color: var(--lamp-stop);
     }
 
-    .attachment-thumb {
+    .attachment-media {
+        align-items: center;
+        background: var(--surface-raised);
         border-radius: var(--radius-md);
-        flex: none;
-        height: 40px;
+        color: var(--ink-muted);
+        display: flex;
+        aspect-ratio: 1;
+        justify-content: center;
+        overflow: hidden;
+        position: relative;
+    }
+
+    .attachment-thumb {
+        height: 100%;
+        inset: 0;
         object-fit: cover;
-        width: 40px;
+        position: absolute;
+        width: 100%;
     }
 
     .attachment-body {
         display: flex;
-        flex: 1;
         flex-direction: column;
         min-width: 0;
     }
 
     .attachment-name {
+        font-size: 13px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -376,6 +414,11 @@
     .attachment-state {
         color: var(--ink-muted);
         font-size: 12px;
+        overflow-wrap: anywhere;
+    }
+
+    .attachment-chip[data-status='done'] .attachment-state {
+        opacity: 0.7;
     }
 
     .attachment-chip[data-status='failed'] .attachment-state {
@@ -383,7 +426,25 @@
     }
 
     .attachment-action {
-        flex: none;
+        font-size: 12px;
+        padding: 2px 8px;
+        text-align: center;
+    }
+
+    .attachment-remove {
+        align-items: center;
+        background: var(--surface-raised);
+        border-radius: 999px;
+        display: inline-flex;
+        height: 22px;
+        justify-content: center;
+        min-height: 0;
+        min-width: 0;
+        padding: 0;
+        position: absolute;
+        right: 10px;
+        top: 10px;
+        width: 22px;
     }
 
     /* ── composer touch targets (44px, issue 189) ── */

@@ -19,9 +19,10 @@ const STATE_LABEL: Record<DraftAttachment['status'], string> = {
 };
 
 /**
- * The chosen files of a draft, one chip each: thumbnail or glyph, name, type and size, the
- * upload's state, and Remove (and Retry once it failed). The server's refusal sits on the chip
- * it refused, so the other files stay as they were.
+ * The chosen files of a draft, one tile each in a wrapping row: a square thumbnail or a file
+ * glyph, the name (truncated; whole in the tooltip), the size, the upload's state, and Remove
+ * (and Retry once it failed). The server's refusal sits on the tile it refused, so the other
+ * files stay as they were.
  */
 export function AttachmentChips({
     attachments,
@@ -39,17 +40,23 @@ export function AttachmentChips({
     return (
         <ul className="attachment-list" aria-label="Attached files">
             {attachments.map((item) => (
-                <li key={item.localId} className="attachment-chip" data-status={item.status}>
-                    {item.objectUrl === null ? (
-                        <Icon name="file" size={24} />
-                    ) : (
-                        <img className="attachment-thumb" src={item.objectUrl} alt="" />
-                    )}
+                <li
+                    key={item.localId}
+                    className="attachment-chip"
+                    data-status={item.status}
+                    data-kind={item.objectUrl === null ? 'file' : 'image'}
+                    title={`${item.file.name} · ${(item.meta?.mediaType ?? item.file.type) || 'file'}`}
+                >
+                    <span className="attachment-media">
+                        {item.objectUrl === null ? (
+                            <Icon name="file" size={24} />
+                        ) : (
+                            <img className="attachment-thumb" src={item.objectUrl} alt="" />
+                        )}
+                    </span>
                     <span className="attachment-body">
                         <span className="attachment-name">{item.file.name}</span>
-                        <span className="attachment-meta">
-                            {(item.meta?.mediaType ?? item.file.type) || 'file'} · {sizeLabel(item.file.size)}
-                        </span>
+                        <span className="attachment-meta">{sizeLabel(item.file.size)}</span>
                         <span className="attachment-state" role={item.status === 'failed' ? 'alert' : undefined}>
                             {item.status === 'failed'
                                 ? `${STATE_LABEL.failed}: ${item.error ?? 'upload failed'}`
@@ -59,7 +66,7 @@ export function AttachmentChips({
                     {item.status === 'failed' ? (
                         <button
                             type="button"
-                            className="attachment-action"
+                            className="attachment-action attachment-retry"
                             disabled={locked}
                             aria-label={`Retry ${item.file.name}`}
                             onClick={() => onRetry(item.localId)}
@@ -69,7 +76,7 @@ export function AttachmentChips({
                     ) : null}
                     <button
                         type="button"
-                        className="attachment-action"
+                        className="attachment-action attachment-remove"
                         disabled={locked}
                         aria-label={`Remove ${item.file.name}`}
                         onClick={() => onRemove(item.localId)}
@@ -96,23 +103,28 @@ function HistoryFile({ file }: { file: AttachmentMeta }) {
     const [broken, setBroken] = useState(false);
     const removed = file.state === 'deleting' || file.state === 'deleted';
     const image = PREVIEWABLE.has(file.mediaType);
+    const showImage = image && !broken && !removed;
     return (
-        <li className="attachment-chip">
-            {image && !broken && !removed ? (
-                <img
-                    className="attachment-preview"
-                    src={`${contentUrl(file.id)}?disposition=inline`}
-                    alt={file.name}
-                    onError={() => setBroken(true)}
-                />
-            ) : (
-                <Icon name="file" size={24} />
-            )}
+        <li
+            className="attachment-chip"
+            data-kind={showImage ? 'image' : 'file'}
+            title={`${file.name} · ${file.mediaType}`}
+        >
+            <span className="attachment-media">
+                {showImage ? (
+                    <img
+                        className="attachment-preview"
+                        src={`${contentUrl(file.id)}?disposition=inline`}
+                        alt={file.name}
+                        onError={() => setBroken(true)}
+                    />
+                ) : (
+                    <Icon name="file" size={24} />
+                )}
+            </span>
             <span className="attachment-body">
                 <span className="attachment-name">{file.name}</span>
-                <span className="attachment-meta">
-                    {file.mediaType} · {sizeLabel(file.size)}
-                </span>
+                <span className="attachment-meta">{sizeLabel(file.size)}</span>
                 {removed ? <span className="attachment-state">File removed</span> : null}
                 {image && broken && !removed ? (
                     <span className="attachment-state" role="status">
@@ -122,7 +134,7 @@ function HistoryFile({ file }: { file: AttachmentMeta }) {
             </span>
             {removed ? null : (
                 <a
-                    className="attachment-action"
+                    className="attachment-action attachment-download"
                     href={contentUrl(file.id)}
                     download={file.name}
                     aria-label={`Download ${file.name}`}

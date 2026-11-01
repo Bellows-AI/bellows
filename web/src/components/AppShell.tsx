@@ -12,6 +12,7 @@ import { SideNav } from './SideNav.js';
 import { AppBar } from './AppBar.js';
 import { MobileNavDialog } from './MobileNavDialog.js';
 import { ComposerDraftProvider } from '../composer-draft.js';
+import { useFileDropGuard } from '../panels/AttachmentDropZone.js';
 
 /**
  * Everything both pages share: the range, the scope, the one `/api/stats` poll, and the chrome
@@ -43,6 +44,7 @@ export function useShell(): ShellContext {
 }
 
 export function AppShell() {
+    useFileDropGuard();
     // The range is state because it is an INPUT the user changes and that must ride the next
     // request. The organization is not: with one config-defined org it is server-reported identity,
     // read straight off `meta`, so a useState here would need a value before the first payload
