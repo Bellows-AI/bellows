@@ -5,6 +5,7 @@ import { Icon } from '../components/Icon.js';
 import { JiraWriteConsentDialog } from '../components/JiraWriteConsentDialog.js';
 import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
+import { IntegrationsCatalog } from './IntegrationsCatalog.js';
 
 /**
  * The member's own Jira connections: one row per connected site with its Atlassian account and
@@ -17,7 +18,7 @@ import { commitDate } from '../format.js';
 
 export { ALLOW_COMMENTS_LABEL };
 export const CONNECT_JIRA_LABEL = 'Connect Jira';
-export const NO_CONNECTIONS_NOTE = 'No Jira connections yet.';
+export const NO_CONNECTIONS_NOTE = 'No connections yet. Connect a service to make it available to your tasks.';
 
 /** A callback result: the sentence and the banner it is shown in (`banner-info` success, `banner-warn` declined, `banner-bad` failed). */
 export interface IntegrationNotice {
@@ -75,6 +76,7 @@ export function JiraConnectionsPanel({
         const allow = { label: ALLOW_COMMENTS_LABEL, onSelect: () => setGranting(connection) };
         const reconnectAction: RowAction = { label: 'Reconnect', onSelect: reconnectNow };
         const disconnect: RowAction = { label: 'Disconnect', onSelect: () => onDisconnect(connection), danger: true };
+        if (connection.provider !== 'jira') return { primary: null, actions: [disconnect] };
         // One inline action: Allow adding comments leads a read row (its Reconnect moves into the menu).
         return connection.access === 'read'
             ? { primary: allow, actions: [reconnectAction, disconnect] }
@@ -89,22 +91,21 @@ export function JiraConnectionsPanel({
     };
 
     return (
-        <section className="panel" aria-label="Jira connections">
-            <div className="panel-head">
-                <h2>Jira connections</h2>
-                <button
-                    type="button"
-                    className="primary jira-connection-add"
-                    disabled={saving}
-                    onClick={() => setConnecting(true)}
-                >
-                    {CONNECT_JIRA_LABEL}
-                </button>
-            </div>
-            <p className="muted">
-                Your own Atlassian accounts. A lone connection is bound to your tasks by default; with several, a task
-                names the one it uses. Tasks can only add comments through a connection that allows it.
-            </p>
+        <>
+            <IntegrationsCatalog
+                jiraCount={connections.filter((connection) => connection.provider === 'jira').length}
+                saving={saving}
+                onConnectJira={() => setConnecting(true)}
+            />
+            <section className="panel" aria-label="Connected accounts">
+                <div className="panel-head">
+                    <h2>Connected accounts</h2>
+                    <span className="muted">{connections.length} connected</span>
+                </div>
+                <p className="muted">
+                    These accounts belong to you. Tasks can use an eligible connection when one is available, or let
+                    you choose between several. Permissions are managed per connection.
+                </p>
             {notice ? (
                 <div className={`banner-${notice.tone}`} role={notice.tone === 'info' ? undefined : 'alert'}>
                     <Icon name={NOTICE_ICON[notice.tone]} size={24} />
@@ -123,6 +124,7 @@ export function JiraConnectionsPanel({
                     <table className="data table-cards">
                         <thead>
                             <tr>
+                                <th scope="col">Service</th>
                                 <th scope="col">Site</th>
                                 <th scope="col">Account</th>
                                 <th scope="col">Access</th>
@@ -135,6 +137,9 @@ export function JiraConnectionsPanel({
                         <tbody>
                             {connections.map((connection) => (
                                 <tr key={connection.id}>
+                                    <td data-label="Service">
+                                        {connection.provider === 'jira' ? 'Jira' : connection.provider}
+                                    </td>
                                     <td data-label="Site">{connection.site}</td>
                                     <td data-label="Account">{connection.account}</td>
                                     <td data-label="Access">{connection.access}</td>
@@ -166,6 +171,7 @@ export function JiraConnectionsPanel({
                     if (granting) void reconnect({ connectionId: granting.id, access: 'write' });
                 }}
             />
-        </section>
+            </section>
+        </>
     );
 }
