@@ -89,8 +89,8 @@ export function SettingsIntegrationDetailPage() {
             <PageHeader
                 eyebrow="Integrations"
                 title={connection ? label : 'Integration'}
+                description={connection ? <ProviderMark provider={connection.provider} /> : undefined}
                 actions={<BackLink />}
-                meta={connection ? <ProviderMark provider={connection.provider} /> : undefined}
             />
             {notice ? <IntegrationNoticeBanner notice={notice} /> : null}
             {lifecycle.error ? (

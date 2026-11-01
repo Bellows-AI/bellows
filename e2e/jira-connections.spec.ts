@@ -222,6 +222,13 @@ test('the overview, the catalog and the Jira page hold at mobile and desktop in 
                     () => document.documentElement.scrollWidth - document.documentElement.clientWidth
                 );
                 expect(overflow, `${name} overflows at ${size} ${theme}`).toBeLessThanOrEqual(0);
+                // No card squeezes its text beside its actions (a column a few characters wide breaks mid-word).
+                const narrow = await page.evaluate(() =>
+                    [...document.querySelectorAll('.integration-card-site')]
+                        .filter((el) => el.getBoundingClientRect().width < 160)
+                        .map((el) => el.textContent)
+                );
+                expect(narrow, `${name} has squeezed text at ${size} ${theme}`).toEqual([]);
                 await page.screenshot({
                     path: `${SHOTS}/settings-integrations-${name}-${size}-${theme}.png`,
                     fullPage: true,

@@ -708,6 +708,7 @@
         border-radius: var(--radius-lg);
         color: var(--ink);
         display: flex;
+        flex-wrap: wrap;
         gap: 12px;
         min-width: 0;
         padding: 14px 16px;
@@ -718,9 +719,10 @@
         background: var(--surface-strong);
     }
 
+    /* A basis the actions cannot squeeze below: when they do not fit beside it they wrap under it. */
     .integration-card-text {
         display: grid;
-        flex: 1;
+        flex: 1 1 11rem;
         min-width: 0;
     }
 
@@ -772,6 +774,7 @@
         flex-wrap: wrap;
         gap: 8px;
         justify-content: flex-end;
+        margin-left: auto;
     }
 
     .integration-actions {
