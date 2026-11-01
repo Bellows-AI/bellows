@@ -8,7 +8,8 @@ import {
     type StartAuthorizationInput,
 } from '../api/connections.js';
 import type { Session } from '../api/useSession.js';
-import { integrationNotice, JiraConnectionsPanel, type IntegrationNotice } from './JiraConnectionsPanel.js';
+import { integrationNotice, type IntegrationNotice } from '../settings/integration-providers.js';
+import { JiraConnectionsPanel } from './JiraConnectionsPanel.js';
 
 /**
  * The member's Jira connections bound to their data (`MembersSection`'s shape): the section owns

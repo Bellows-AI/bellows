@@ -127,6 +127,8 @@ describe('the route table', () => {
         expect(all).toContain('settings');
         expect(all).toContain('settings/organization');
         expect(all).toContain('settings/workspace');
+        expect(all).toContain('settings/integrations');
+        expect(all).toContain('settings/integrations/:provider/:connectionId');
         expect(all).toContain('settings/repos');
         expect(all).toContain('settings/executors');
         // Workflows are dormant: the page exists, but no address serves it.

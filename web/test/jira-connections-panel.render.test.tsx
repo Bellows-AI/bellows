@@ -4,10 +4,10 @@ import type { ConnectionView } from '../src/api/connections.js';
 import {
     ALLOW_COMMENTS_LABEL,
     CONNECT_JIRA_LABEL,
-    integrationNotice,
     JiraConnectionsPanel,
     NO_CONNECTIONS_NOTE,
 } from '../src/panels/JiraConnectionsPanel.js';
+import { integrationNotice } from '../src/settings/integration-providers.js';
 
 const connection = (site: string, overrides: Partial<ConnectionView> = {}): ConnectionView => ({
     id: `00000000-0000-4000-8000-${site.length.toString().padStart(12, '0')}`,
@@ -16,6 +16,7 @@ const connection = (site: string, overrides: Partial<ConnectionView> = {}): Conn
     account: 'stub-account-a@example.com',
     access: 'read',
     status: 'active',
+    needsReconnect: false,
     createdAt: '2026-09-01T00:00:00.000Z',
     ...overrides,
 });

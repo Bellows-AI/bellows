@@ -21,6 +21,8 @@ export interface ConnectionView {
     account: string;
     access: ConnectionAccess;
     status: 'active' | 'disconnected';
+    /** The grant behind the connection is no longer active: the member has to connect again. */
+    needsReconnect: boolean;
     createdAt: string;
 }
 
@@ -46,6 +48,7 @@ const isConnectionView = (row: unknown): row is ConnectionView => {
         typeof view.account === 'string' &&
         CONNECTION_ACCESS.includes(view.access) &&
         (view.status === 'active' || view.status === 'disconnected') &&
+        typeof view.needsReconnect === 'boolean' &&
         typeof view.createdAt === 'string'
     );
 };
