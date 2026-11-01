@@ -11,7 +11,7 @@ import type { Session } from '../api/useSession.js';
 import { integrationNotice, JiraConnectionsPanel, type IntegrationNotice } from './JiraConnectionsPanel.js';
 
 /**
- * The member's Jira connections bound to their data (`MembersSection`'s shape): the section owns
+ * The member's managed connections bound to their data (`MembersSection`'s shape): the section owns
  * the list, the start and the disconnect, the panel the markup. A start's refusal lands beside
  * the control that made it; a list or disconnect failure in the panel's alert. The
  * callback returns here with `?integration=jira&result=…`, which the panel shows once as a toned banner and the URL then drops.
@@ -77,8 +77,8 @@ export function JiraConnectionsSection({ session }: { session: Session | null })
     return (
         <>
             {connections === null ? (
-                <section className="panel">
-                    <h2>Jira connections</h2>
+                <section className="panel" aria-label="Connected accounts">
+                    <h2>Connected accounts</h2>
                     {error ? (
                         <p className="status" role="alert">
                             {error}
