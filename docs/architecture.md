@@ -46,8 +46,7 @@ Then: [api.md](api.md) · [auth.md](auth.md) · [organizations.md](organizations
   never drops ([repos.md](repos.md)).
 - **Polling is the authority; no notification is load-bearing.** A webhook, a kick or a heartbeat answer
   only makes convergence faster; each has a periodic read behind it, and the source holds no
-  `pg_notify`, `LISTEN` or Kubernetes watch. The PR follower reads the PRs the webhook alone used to move
-  (a parked wait, a merged non-batch thread). `core/test/polling-authority.test.ts`,
+  `pg_notify`, `LISTEN` or Kubernetes watch. `core/test/polling-authority.test.ts`,
   `server/test-db/pr-follow.test.ts`, `server/test/batch-reconciler.test.ts`,
   `server/test-db/job-store.settle.test.ts`, `driver/test/loop/`.
 - Metric definitions live in `../factory-stats/SPEC.md`, outside this repo.
