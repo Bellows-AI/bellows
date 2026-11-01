@@ -65,6 +65,15 @@
        painted beneath it read; --accent-wash is opaque in the light theme. */
     --selection-wash: color-mix(in oklab, var(--accent) 30%, transparent);
     --shadow-float: color-mix(in oklab, black 40%, transparent);
+
+    /* Provider marks (ProviderMark): each brand's own color, lightened where it would fall under 3:1 on the
+       tile surface (--surface-sunken). GitHub and MCP carry no brand hue; they follow the ink. */
+    --brand-jira: oklch(0.685 0.168 256);
+    --brand-slack: oklch(0.725 0.164 324);
+    --brand-discord: oklch(0.713 0.151 277);
+    --brand-github: oklch(0.970 0.010 248);
+    --brand-gitlab: oklch(0.702 0.191 43);
+    --brand-mcp: oklch(0.869 0.020 253);
 }
 
 /* ---------- Semantic tokens: light ---------- */
@@ -121,6 +130,13 @@
     --accent-wash: color-mix(in oklab, var(--accent) 8%, var(--surface-raised));
     --selection-wash: color-mix(in oklab, var(--accent) 30%, transparent);
     --shadow-float: color-mix(in oklab, var(--ink) 14%, transparent);
+
+    --brand-jira: oklch(0.480 0.201 260);
+    --brand-slack: oklch(0.374 0.136 323);
+    --brand-discord: oklch(0.577 0.209 274);
+    --brand-github: oklch(0.254 0.011 254);
+    --brand-gitlab: oklch(0.611 0.200 32);
+    --brand-mcp: oklch(0.372 0.039 257);
 }
 
 /* ---------- Expose semantic tokens as utilities ----------

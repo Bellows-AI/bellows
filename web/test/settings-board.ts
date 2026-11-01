@@ -78,6 +78,7 @@ export const connection = (site: string, overrides: Partial<ConnectionView> = {}
     account: 'stub-account-a@example.com',
     access: 'read',
     status: 'active',
+    needsReconnect: false,
     createdAt: AT,
     ...overrides,
 });

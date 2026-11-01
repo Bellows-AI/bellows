@@ -5,6 +5,7 @@ import { Icon } from '../components/Icon.js';
 import { JiraWriteConsentDialog } from '../components/JiraWriteConsentDialog.js';
 import { RowActions, type RowAction } from '../components/RowActions.js';
 import { commitDate } from '../format.js';
+import type { IntegrationNotice } from '../settings/integration-providers.js';
 
 /**
  * The member's own Jira connections: one row per connected site with its Atlassian account and
@@ -18,32 +19,6 @@ import { commitDate } from '../format.js';
 export { ALLOW_COMMENTS_LABEL };
 export const CONNECT_JIRA_LABEL = 'Connect Jira';
 export const NO_CONNECTIONS_NOTE = 'No Jira connections yet.';
-
-/** A callback result: the sentence and the banner it is shown in (`banner-info` success, `banner-warn` declined, `banner-bad` failed). */
-export interface IntegrationNotice {
-    message: string;
-    tone: 'info' | 'warn' | 'bad';
-}
-
-const RESULT_NOTICE: Record<string, IntegrationNotice> = {
-    connected: { message: 'Jira connected.', tone: 'info' },
-    denied: { message: 'Atlassian consent was denied; nothing was connected.', tone: 'warn' },
-    'identity-mismatch': {
-        message:
-            'That Atlassian account is not the account this connection was made with. Reconnect with the original account, or disconnect and connect again.',
-        tone: 'bad',
-    },
-    'site-mismatch': {
-        message: 'The Atlassian account cannot reach that site, so nothing was connected.',
-        tone: 'bad',
-    },
-};
-
-/** The notice for the `?integration=…&result=…` the callback redirected back with, or null when there is none to show. */
-export const integrationNotice = (integration: string | null, result: string | null): IntegrationNotice | null => {
-    if (integration !== 'jira' || !result) return null;
-    return RESULT_NOTICE[result] ?? { message: `Jira connection failed (${result}).`, tone: 'bad' };
-};
 
 const NOTICE_ICON = { info: 'info', warn: 'alert-triangle', bad: 'alert-circle' } as const;
 

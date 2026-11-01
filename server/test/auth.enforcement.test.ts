@@ -193,6 +193,10 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     // baked image served it. The not-found handler in app.ts sends index.html for it, and the
     // wall is on /api/* rather than on the document — see docs/auth.md.
     ['/settings/workspace', 'open'],
+    // A pin, not a fix: these pass without the integrations pages (the not-found handler already serves them), and
+    // stay here so a wall on the document can never hide the new client routes.
+    ['/settings/integrations', 'open'],
+    ['/settings/integrations/jira/00000000-0000-4000-8000-000000000001', 'open'],
     ['/api/stats', 'user'],
     ['/api/jobs', 'user'],
     ['/api/jobs/:id', 'user'],
