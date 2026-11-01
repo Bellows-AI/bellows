@@ -2,6 +2,7 @@ import { taskTitleFromCommand } from '@factory-ai/core';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { Avatar } from '../components/Avatar.js';
 import { Icon } from '../components/Icon.js';
 import type { IconName } from '../components/Icon.js';
 import { PageHeader } from '../components/PageHeader.js';
@@ -286,13 +287,7 @@ function Author({ author }: { author: TaskSummary['author'] }) {
     }
     return (
         <span className="inbox-author">
-            {author.avatarUrl !== null ? (
-                <img className="avatar" src={author.avatarUrl} alt="" width={28} height={28} />
-            ) : (
-                <span className="avatar avatar-fallback" aria-hidden="true">
-                    {author.login.slice(0, 1).toUpperCase()}
-                </span>
-            )}
+            <Avatar author={author} size={28} />
             <span className="inbox-cell-text">{author.login}</span>
         </span>
     );

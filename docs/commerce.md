@@ -15,10 +15,7 @@ Optional link to an external commerce service, off by default: the service pushe
 | `GET /api/commerce`, `PUT /api/commerce/orgs/:orgId/plan` | `server/src/routes/commerce.ts`, `server/src/app.ts` | `server/test/routes.commerce.test.ts` |
 | The `commerce` credential class | `server/src/auth/plugin.ts` | `server/test/auth.enforcement.test.ts` |
 
-## Contract
-
-- Outbound: bearer `COMMERCE_TOKEN`, body `{records:[{jobId, claimSeq, rootJobId, requestingJobId, launch, adoptsClaimSeq, startedAt, endedAt, durationMs}]}`. The service dedupes on `(orgId, jobId, claimSeq)` and answers `{accepted:[{jobId, claimSeq}]}`.
-- Inbound: `PUT` with the same bearer and `{plan, includedMinutes, usedMinutes, periodStart, periodEnd, version}`; `version` is the service's monotonic revision. 200 stored or replayed, 409 older or conflicting (body carries the current `version`), 404 unknown org, 400 malformed.
+The wire shapes are `server/src/commerce/commerce-client.ts` (outbound) and `server/src/routes/commerce.ts` (inbound); both carry the one bearer `COMMERCE_TOKEN`.
 
 ## Invariants
 

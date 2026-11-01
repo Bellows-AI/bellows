@@ -10,8 +10,10 @@ import { HTTP_CONFLICT, HTTP_FORBIDDEN, notFoundJob } from './job-limits.js';
  */
 
 export type FollowUpRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
+export type RetryRefusal = FollowUpRefusal;
 
-export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
+/** The refusals follow-up and retry share; only the verb in the forbidden message differs. */
+function finishedTaskRefusal(reply: FastifyReply, reason: FollowUpRefusal, verb: string) {
     switch (reason) {
         case 'missing':
             return notFoundJob(reply);
@@ -23,31 +25,17 @@ export function followUpRefusal(reply: FastifyReply, reason: FollowUpRefusal) {
             return bad(
                 reply,
                 ERROR_CODES.FORBIDDEN,
-                'Only the account that queued the task or an organization admin can follow it up',
+                `Only the account that queued the task or an organization admin can ${verb}`,
                 HTTP_FORBIDDEN
             );
     }
 }
 
-export type RetryRefusal = 'missing' | 'not_finished' | 'task_done' | 'forbidden';
+export const followUpRefusal = (reply: FastifyReply, reason: FollowUpRefusal) =>
+    finishedTaskRefusal(reply, reason, 'follow it up');
 
-export function retryRefusal(reply: FastifyReply, reason: RetryRefusal) {
-    switch (reason) {
-        case 'missing':
-            return notFoundJob(reply);
-        case 'not_finished':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is not finished', code: ERROR_CODES.NOT_FINISHED });
-        case 'task_done':
-            return reply.code(HTTP_CONFLICT).send({ error: 'Task is done', code: ERROR_CODES.TASK_DONE });
-        case 'forbidden':
-            return bad(
-                reply,
-                ERROR_CODES.FORBIDDEN,
-                'Only the account that queued the task or an organization admin can retry it',
-                HTTP_FORBIDDEN
-            );
-    }
-}
+export const retryRefusal = (reply: FastifyReply, reason: RetryRefusal) =>
+    finishedTaskRefusal(reply, reason, 'retry it');
 
 /** The refusal answers both wait-control verbs (issue #328) share; the ok paths differ per route. */
 export type WaitControlRefusal = 'missing' | 'forbidden' | 'no_wait';

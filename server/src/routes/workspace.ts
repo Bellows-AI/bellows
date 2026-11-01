@@ -193,17 +193,14 @@ async function handleGetWorkspace(deps: WorkspaceDeps, request: FastifyRequest, 
 // fetched every few seconds — so this on-demand read is the one place a client gets them back,
 // once per dialog open rather than on a poll.
 async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    const rt = await runtimeOf(deps.orgs, request);
-    if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
-    const { userExecutors: executors } = rt;
-    if (!executors) return reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
+    const ctx = await personalExecutorContext(deps, request, reply);
+    if (!ctx) return reply;
+    const { userId, executors } = ctx;
 
     const loaded = await guard(
         reply,
         (e) => request.log.error({ err: e }),
-        () => executors.listWithConfigs(caller.user.id)
+        () => executors.listWithConfigs(userId)
     );
     if (!loaded.ok) return reply;
 
@@ -215,12 +212,9 @@ async function handleGetExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
 // PUT, whole-list replace. The body is the entire list,
 // so replaying it after a dropped connection changes nothing.
 async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    const rt = await runtimeOf(deps.orgs, request);
-    if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
-    const { userExecutors: executors } = rt;
-    if (!executors) return reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
+    const ctx = await personalExecutorContext(deps, request, reply);
+    if (!ctx) return reply;
+    const { userId, executors } = ctx;
 
     const parsed = validateExecutorList(request.body);
     if (!parsed.ok) return bad(reply, parsed.code, parsed.message);
@@ -230,9 +224,9 @@ async function handlePutExecutors(deps: WorkspaceDeps, request: FastifyRequest, 
         reply,
         (e) => request.log.error({ err: e }),
         async () => {
-            await executors.replace(caller.user.id, list);
+            await executors.replace(userId, list);
             // Answered from the store, not echoed from the body: created_at is the database's.
-            return executors.list(caller.user.id);
+            return executors.list(userId);
         }
     );
     if (!saved.ok) return reply;
@@ -305,12 +299,9 @@ async function handleSuspendExecutor(deps: WorkspaceDeps, request: FastifyReques
  * cannot resolve is not a default they can hold.
  */
 async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyRequest, reply: FastifyReply) {
-    const caller = callerOf(request);
-    if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
-    const rt = await runtimeOf(deps.orgs, request);
-    if ('error' in rt) return bad(reply, rt.code, rt.error, rt.status);
-    const { userExecutors: executors } = rt;
-    if (!executors) return reply.code(HTTP_UNAVAILABLE).send(NO_EXECUTOR_STORE);
+    const ctx = await personalExecutorContext(deps, request, reply);
+    if (!ctx) return reply;
+    const { userId, executors } = ctx;
 
     const fields = jsonBody(request.body);
     const name = fields.executor;
@@ -324,7 +315,7 @@ async function handlePutDefaultExecutor(deps: WorkspaceDeps, request: FastifyReq
     // failure — the store throws the typed refusal, this route names it; anything else is a real
     // failure and reaches the error handler as one.
     try {
-        await executors.setDefault(caller.user.id, { scope: scope as ExecutorScope, name });
+        await executors.setDefault(userId, { scope: scope as ExecutorScope, name });
     } catch (error) {
         if (error instanceof ExecutorSuspendedError) {
             return bad(

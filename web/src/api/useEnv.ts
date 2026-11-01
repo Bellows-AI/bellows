@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { refusalOf } from './refusal.js';
-import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
-import { JSON_HEADERS } from '@factory-ai/core';
+import { useCallback, useState } from 'react';
+import { mutate } from './mutate.js';
+import { useResource } from './useResource.js';
 
 /** What a list read echoes. A secret's `value` is null for every caller — the write-only contract. */
 export interface EnvVarView {
@@ -50,6 +49,8 @@ export interface UseEnv {
     saveRepo: (repo: { owner: string; name: string }, vars: EnvVarInput[]) => Promise<EnvSaveResult>;
 }
 
+const selectEnv = (body: EnvPayload) => body;
+
 /**
  * The runner environment, fetched once and refetched after each save.
  *
@@ -58,68 +59,18 @@ export interface UseEnv {
  * the editors, remounting them under a typing hand.
  */
 export function useEnv(): UseEnv {
-    const [data, setData] = useState<EnvPayload | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const { data, loading, error, refresh } = useResource('/api/env', selectEnv);
     const [saving, setSaving] = useState(false);
-    const controller = useRef<AbortController | null>(null);
-
-    const load = useCallback(async (signal: AbortSignal) => {
-        try {
-            const response = await fetch('/api/env', { signal });
-            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                // Handed to the gate rather than rendered as a banner — every later request would
-                // 401 too, so a banner would never clear.
-                reportUnauthenticated();
-                setLoading(false);
-                return;
-            }
-            if (!response.ok) {
-                setError((await refusalOf(response)).error);
-                setLoading(false);
-                return;
-            }
-            setData((await response.json()) as EnvPayload);
-            setError(null);
-        } catch (e) {
-            if (signal.aborted) return;
-            setError((e as Error).message);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    const refresh = useCallback(() => {
-        controller.current?.abort();
-        const own = new AbortController();
-        controller.current = own;
-        void load(own.signal);
-    }, [load]);
-
-    useEffect(() => {
-        refresh();
-        return () => controller.current?.abort();
-    }, [refresh]);
 
     const put = useCallback(async (url: string, body: unknown): Promise<EnvSaveResult> => {
         setSaving(true);
         try {
-            const response = await fetch(url, {
-                method: 'PUT',
-                headers: JSON_HEADERS,
-                body: JSON.stringify(body),
-            });
-            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                reportUnauthenticated();
-                return { error: 'Your session expired', vars: [] };
-            }
-            if (!response.ok) {
-                return { error: (await refusalOf(response, 'Could not save')).error, vars: [] };
-            }
-            const saved = (await response.json()) as { vars: EnvVarView[] };
-            return { error: null, vars: saved.vars };
-        } catch (e) {
-            return { error: (e as Error).message, vars: [] };
+            const result = await mutate(
+                url,
+                { method: 'PUT', body, verb: 'Could not save' },
+                async (response) => ((await response.json()) as { vars: EnvVarView[] }).vars
+            );
+            return result.ok ? { error: null, vars: result.value } : { error: result.error, vars: [] };
         } finally {
             setSaving(false);
         }

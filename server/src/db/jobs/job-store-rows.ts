@@ -305,6 +305,37 @@ export async function exists(sql: Sql | TransactionSql, orgId: string, id: strin
     return rows.length > 0;
 }
 
+/** Locks the running row the lease names: its claim_seq, or why the lease holds nothing. */
+export async function lockRunningAttempt(
+    tx: TransactionSql,
+    orgId: string,
+    id: string,
+    leaseToken: string
+): Promise<{ claim_seq: string } | { result: 'lost' | 'missing' }> {
+    const [row] = await tx<{ claim_seq: string }[]>`
+        select claim_seq from job
+        where org_id = ${orgId} and id = ${id} and status = 'running' and lease_token = ${leaseToken}
+        for update
+    `;
+    if (!row) return { result: (await exists(tx, orgId, id)) ? 'lost' : 'missing' };
+    return row;
+}
+
+/** Why a read under the lease is refused, or null while the lease still holds a running attempt. */
+export async function leaseRefusal(
+    sql: Sql,
+    orgId: string,
+    id: string,
+    leaseToken: string
+): Promise<{ result: 'lost' | 'missing' } | null> {
+    const [row] = await sql<{ lease_token: string | null; status: string }[]>`
+        select lease_token, status from job where org_id = ${orgId} and id = ${id}
+    `;
+    if (!row) return { result: 'missing' };
+    if (row.status !== 'running' || row.lease_token !== leaseToken) return { result: 'lost' };
+    return null;
+}
+
 /**
  * removeThread's one refusal: a member is running. The user stops it first — the per-task
  * worktree is a live runner's checkout, and tearing it out under the container would corrupt a
