@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { startAuthorization, type StartAuthorizationInput } from '../api/connections.js';
+import { useAuthorizationStart } from '../api/useAuthorizationStart.js';
 import { useConnections, type UseConnections } from '../api/useConnections.js';
 import { useIntegrationConfig, type UseIntegrationConfig } from '../api/useIntegrationConfig.js';
 import { JiraConnectionDialog } from '../components/JiraConnectionDialog.js';
@@ -102,20 +102,8 @@ export function SettingsIntegrationsCatalogPage({
     const config = useIntegrationConfig();
     const [filter, setFilter] = useState<IntegrationCategory | typeof ALL>(ALL);
     const [open, setOpen] = useState(false);
-    const [saving, setSaving] = useState(false);
+    const { saving, start } = useAuthorizationStart('jira', RETURN_TO);
     const shown = providers.filter((provider) => filter === ALL || provider.category === filter);
-
-    // Navigation leaves `saving` set: the page is gone. A refusal resets it and stays beside the control.
-    const start = async (input: StartAuthorizationInput): Promise<string | null> => {
-        setSaving(true);
-        const started = await startAuthorization('jira', { ...input, returnTo: RETURN_TO });
-        if (started.ok) {
-            window.location.assign(started.authorizeUrl);
-            return null;
-        }
-        setSaving(false);
-        return started.error;
-    };
 
     return (
         <>

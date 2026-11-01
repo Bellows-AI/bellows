@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { listConnections, type ConnectionView } from './connections.js';
 
 /** The caller's connections: `loading` until the read lands, then `ok` with the rows or `error` with the sentence. */
@@ -7,23 +7,27 @@ export type UseConnections =
     | { state: 'error'; error: string }
     | { state: 'ok'; connections: ConnectionView[] };
 
-/** One read per mount, so each navigation to a page that shows connections asks again. */
-export function useConnections(): UseConnections {
-    const [result, setResult] = useState<UseConnections>({ state: 'loading' });
+/** The read plus `reload`: ask again without going back to `loading`, so a page re-reads after an action in place. */
+export type ConnectionsRead = UseConnections & { reload: () => Promise<void> };
 
-    const load = useCallback(async (isMounted: () => boolean) => {
+/** One read per mount, so each navigation to a page that shows connections asks again. */
+export function useConnections(): ConnectionsRead {
+    const [result, setResult] = useState<UseConnections>({ state: 'loading' });
+    const mounted = useRef(true);
+
+    const reload = useCallback(async () => {
         const read = await listConnections();
-        if (!isMounted()) return;
+        if (!mounted.current) return;
         setResult(read.ok ? { state: 'ok', connections: read.connections } : { state: 'error', error: read.error });
     }, []);
 
     useEffect(() => {
-        let mounted = true;
-        void load(() => mounted);
+        mounted.current = true;
+        void reload();
         return () => {
-            mounted = false;
+            mounted.current = false;
         };
-    }, [load]);
+    }, [reload]);
 
-    return result;
+    return { ...result, reload };
 }
