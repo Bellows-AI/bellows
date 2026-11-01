@@ -17,6 +17,8 @@ export const ATTACHMENT_COLLECT_INTERVAL_MS = 600_000;
 const PASS_DEADLINE_MS = 300_000;
 /** Beyond the upload write bound: covers a stamp's commit latency and a store that finishes a request just after its abort. */
 const DELETE_MARGIN_MS = 120_000;
+/** A `deleted` tombstone's key is deleted once more this long after `deleted_at`, catching a write that finished after the first delete. */
+export const SECOND_DELETE_AFTER_MS = 86_400_000;
 const BATCH = 100;
 const MS_PER_SECOND = 1000;
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
@@ -27,6 +29,7 @@ export interface AttachmentCollectSummary {
     expired: number;
     orphaned: number;
     deleted: number;
+    purged: number;
     failed: number;
 }
 
@@ -36,6 +39,8 @@ interface DeletingRow {
     object_key: string;
     deleting_at: string | null;
 }
+
+type TombstoneRow = Pick<DeletingRow, 'org_id' | 'id' | 'object_key'>;
 
 export interface AttachmentCollector {
     collect(options?: { signal?: AbortSignal; deadlineMs?: number }): Promise<AttachmentCollectSummary>;
@@ -121,33 +126,78 @@ export function createAttachmentCollector({
         return done.length;
     };
 
+    /** One `deleted` tombstone: its key once more, then the conditional `purged_at`. Returns rows marked, or `failed`. */
+    const purge = async (row: TombstoneRow): Promise<number | 'failed'> => {
+        if (!row.object_key.startsWith(namespace)) return 'failed';
+        try {
+            await objects.delete(row.object_key);
+        } catch {
+            // Unconfirmed: `purged_at` stays null and the next pass retries it.
+            return 'failed';
+        }
+        const done = await sql`
+            update input_attachment set purged_at = now()
+            where org_id = ${row.org_id} and id = ${row.id} and state = 'deleted' and purged_at is null
+            returning id
+        `;
+        return done.length;
+    };
+
+    /** A keyset-paged pass over `select`, handing each row to `handle` until a short page or the pass ends. */
+    const sweep = async <T extends { id: string }>(
+        live: () => boolean,
+        select: (last: string) => Promise<T[]>,
+        handle: (row: T) => Promise<number | 'failed'>
+    ): Promise<{ done: number; failed: number }> => {
+        const tally = { done: 0, failed: 0 };
+        let last = NIL_UUID;
+        for (let more = true; more && live(); ) {
+            const batch = await select(last);
+            more = batch.length === BATCH;
+            for (const row of batch) {
+                last = row.id;
+                if (!live()) break;
+                const outcome = await handle(row);
+                if (outcome === 'failed') tally.failed++;
+                else tally.done += outcome;
+            }
+        }
+        return tally;
+    };
+
     return {
         async collect({ signal, deadlineMs = PASS_DEADLINE_MS } = {}) {
             await ready;
             const deadline = Date.now() + deadlineMs;
             const live = (): boolean => !signal?.aborted && Date.now() < deadline;
-            const summary: AttachmentCollectSummary = { expired: 0, orphaned: 0, deleted: 0, failed: 0 };
+            const summary: AttachmentCollectSummary = { expired: 0, orphaned: 0, deleted: 0, purged: 0, failed: 0 };
 
             summary.expired = await drain(expireBatch, live);
             summary.orphaned = await drain(orphanBatch, live);
 
-            let last = NIL_UUID;
-            for (let more = true; more && live(); ) {
-                const batch = await sql<DeletingRow[]>`
+            const finished = await sweep(
+                live,
+                (last) => sql<DeletingRow[]>`
                     select org_id, id, object_key, deleting_at::text as deleting_at from input_attachment
                     where state = 'deleting' and id > ${last}
                       and (deleting_at is null or deleting_at < now() - make_interval(secs => ${graceMs / MS_PER_SECOND}))
                     order by id limit ${BATCH}
-                `;
-                more = batch.length === BATCH;
-                for (const row of batch) {
-                    last = row.id;
-                    if (!live()) break;
-                    const outcome = await finish(row);
-                    if (outcome === 'failed') summary.failed++;
-                    else summary.deleted += outcome;
-                }
-            }
+                `,
+                finish
+            );
+            const purged = await sweep(
+                live,
+                (last) => sql<TombstoneRow[]>`
+                    select org_id, id, object_key from input_attachment
+                    where state = 'deleted' and purged_at is null and id > ${last}
+                      and deleted_at < now() - make_interval(secs => ${SECOND_DELETE_AFTER_MS / MS_PER_SECOND})
+                    order by id limit ${BATCH}
+                `,
+                purge
+            );
+            summary.deleted = finished.done;
+            summary.purged = purged.done;
+            summary.failed = finished.failed + purged.failed;
             return summary;
         },
     };
