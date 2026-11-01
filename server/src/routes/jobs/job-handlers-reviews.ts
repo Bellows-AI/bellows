@@ -1,10 +1,9 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from '../../identifiers.js';
 import type { ReviewRequest } from '../../db/jobs/job-store-types.js';
 import type { OrgRegistry } from '../../orgs.js';
 import { REVIEWER_NAME } from '../../workspace/bellows-reviewers.js';
-import { bad, body, guard } from '../helpers.js';
+import { bad, guard } from '../helpers.js';
 import {
     HTTP_CONFLICT,
     HTTP_CREATED,
@@ -15,7 +14,7 @@ import {
     leaseLost,
     notFoundJob,
 } from './job-limits.js';
-import { resolveLeasedRoute, resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute } from '../route-guards.js';
 import type { JobReviewStore } from '../../db/jobs/job-store-reviews.js';
 
 /**
@@ -100,14 +99,10 @@ function refusedReview(
 }
 
 export async function handleReviewRead(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobReviewStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobReviewStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const { leaseToken, key } = body(request.body);
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
+    const { key } = fields;
     if (typeof key !== 'string' || !REVIEW_KEY.test(key)) {
         return bad(reply, ERROR_CODES.INVALID_REVIEW, BAD_KEY_MESSAGE);
     }

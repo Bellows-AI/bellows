@@ -1,9 +1,8 @@
 import { ERROR_CODES } from '@factory-ai/core';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from '../../identifiers.js';
 import type { PhaseCheckpointPhase } from '../../db/jobs/job-store-phase-checkpoints.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { bad, body, guard } from '../helpers.js';
+import { bad, guard } from '../helpers.js';
 import {
     CONCLUSION_BODY_LIMIT,
     CONTROL_BODY_LIMIT,
@@ -12,7 +11,7 @@ import {
     leaseLost,
     notFoundJob,
 } from './job-limits.js';
-import { resolveLeasedRoute, resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute } from '../route-guards.js';
 import type { PhaseCheckpointStore } from '../../db/jobs/job-store-phase-checkpoints.js';
 
 const PHASES: readonly string[] = ['setup', 'gates', 'post', 'publish'] satisfies PhaseCheckpointPhase[];
@@ -26,15 +25,10 @@ const runClaimSeqOf = (value: unknown): number | null =>
  * both a 409 the writer treats as "not recorded".
  */
 export async function handlePhaseCheckpoint(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof PhaseCheckpointStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof PhaseCheckpointStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken, phase, tree, result } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
+    const { phase, tree, result } = fields;
     const runClaimSeq = runClaimSeqOf(fields.runClaimSeq);
     if (runClaimSeq === null) return bad(reply, ERROR_CODES.BAD_BODY, 'runClaimSeq must be a positive integer');
     if (typeof phase !== 'string' || !PHASES.includes(phase)) {

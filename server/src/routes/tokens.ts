@@ -1,5 +1,5 @@
 import { ERROR_CODES } from '@factory-ai/core';
-import type { FastifyPluginAsync, FastifyReply } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { mintAccessToken } from '../auth/access-token.js';
 import { callerOf } from '../auth/plugin.js';
 import { hashToken } from '../auth/session.js';
@@ -51,18 +51,14 @@ export const tokenRoutes =
          * who mints it — installation access is membership and there are no roles above member,
          * so the org-token routes lost their admin gate with the roster that fed it.
          */
-        const orgIdOf = (request: Parameters<typeof callerOf>[0]): string => {
+        const orgIdOf = (request: FastifyRequest): string => {
             const caller = callerOf(request);
             if (!caller) throw new Error('token routes require a caller');
             return caller.org.id;
         };
 
         /** Mints and stores a token: a personal one belongs to the caller, an org one to nobody. */
-        const createToken = async (
-            request: Parameters<typeof callerOf>[0],
-            reply: FastifyReply,
-            kind: 'personal' | 'org'
-        ) => {
+        const createToken = async (request: FastifyRequest, reply: FastifyReply, kind: 'personal' | 'org') => {
             const caller = callerOf(request);
             if (!caller) return bad(reply, ERROR_CODES.UNAUTHENTICATED, 'Sign in required', HTTP_UNAUTHORIZED);
             const label = parseLabel(request.body);
