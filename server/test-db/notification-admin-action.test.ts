@@ -13,6 +13,7 @@ import { sweepRuntimeWakes } from '../src/db/workflows/workflow-blocks/runtime.j
 import type { WorkflowDefinition } from '../src/db/workflows/workflow-schema.js';
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { testSecretStore } from './env-secrets-harness.js';
+import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { useTestDb } from './harness.js';
 import { mustCreate, testOrg, testUser } from './fixtures.js';
 
@@ -249,8 +250,8 @@ describe.skipIf(!enabled)('task.admin_action — database', () => {
     });
 
     it('an admin event fans out to task.admin_action subscriptions only', async () => {
-        const wanted = await subs.create(fields(['task.admin_action']), credential());
-        const other = await subs.create(fields(['task.blocked']), credential());
+        const wanted = await subs.create(ORG_OWNER, fields(['task.admin_action']), credential());
+        const other = await subs.create(ORG_OWNER, fields(['task.blocked']), credential());
         const root = await finishedTask();
         must(await store.createFollowUp(root, 'admin says', ADMIN, undefined, undefined, true));
 
@@ -263,7 +264,7 @@ describe.skipIf(!enabled)('task.admin_action — database', () => {
     });
 
     it('the outbox lease carries action, actor and author', async () => {
-        const sub = await subs.create(fields(['task.admin_action']), credential());
+        const sub = await subs.create(ORG_OWNER, fields(['task.admin_action']), credential());
         const root = await finishedTask();
         must(await store.createFollowUp(root, 'admin says', ADMIN, undefined, undefined, true));
 
@@ -284,6 +285,6 @@ describe.skipIf(!enabled)('task.admin_action — database', () => {
     });
 
     it('the widened checks accept the kind', async () => {
-        await expect(subs.create(fields(['task.admin_action']), credential())).resolves.toBeTruthy();
+        await expect(subs.create(ORG_OWNER, fields(['task.admin_action']), credential())).resolves.toBeTruthy();
     });
 });

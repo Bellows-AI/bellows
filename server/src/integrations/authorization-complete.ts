@@ -25,6 +25,7 @@ import {
     type AuthorizationClient,
     type FlowCtx,
     type RecoverAuthorizationResult,
+    INTEGRATIONS_RETURN_PATH,
     redirectUriOf,
 } from './authorization-types.js';
 import { encodeGrantPayload, type GrantPayload } from './grant-credentials.js';
@@ -448,9 +449,8 @@ export async function completeAuthorization(
     signal: AbortSignal | undefined
 ): Promise<CompleteAuthorizationResult> {
     requireTrusted(fc, ctx);
-    if (ctx.principal.kind !== 'user' || !input.state) {
-        return { ok: false, returnTo: '/', failure: 'state-mismatch' };
-    }
+    if (ctx.principal.kind !== 'user' || !input.state)
+        return { ok: false, returnTo: INTEGRATIONS_RETURN_PATH, failure: 'state-mismatch' };
     const owner = { orgId: fc.orgId, userId: ctx.principal.userId, stateHash: hashState(input.state) };
     const row = await consumeAuthorization(fc.sql, owner, authorizationWindowMs(fc.lineage.timing));
     if (!row) {

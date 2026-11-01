@@ -4,13 +4,17 @@ import type { SecretIdentity, SecretRef, SecretStore, SecretVersion } from '../s
 /**
  * A subscription's channel credential lives in the secret store (docs/notifications.md): the row keeps the
  * opaque reference and the version it was written at. The identity is rebuilt from the row's slot on every
- * call and never stored, so a reference copied to another subscription or organization reads as
- * `identity-mismatch`.
+ * call and never stored, so a reference copied to another subscription, organization or scope (a personal row
+ * names its user, an org row has none) reads as `identity-mismatch`.
  */
-export function subscriptionSecretIdentity(orgId: string, subscriptionId: string): SecretIdentity {
+export function subscriptionSecretIdentity(
+    orgId: string,
+    subscriptionId: string,
+    userId: string | null
+): SecretIdentity {
     return {
-        owner: { kind: 'organization', orgId },
-        scope: { type: 'organization', id: orgId },
+        owner: userId === null ? { kind: 'organization', orgId } : { kind: 'user', userId, orgId },
+        scope: userId === null ? { type: 'organization', id: orgId } : { type: 'workspace', id: userId },
         purpose: 'notification-credential',
         owningRecord: { type: 'notification-subscription', id: subscriptionId },
     };

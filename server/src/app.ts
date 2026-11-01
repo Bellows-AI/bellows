@@ -97,7 +97,10 @@ export interface AppDeps {
     /** The outbound OAuth runtime whose per-org resolver the broker spends through. */
     integrations?:
         | (Pick<IntegrationRuntime, 'resolverOf'> &
-              Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>>)
+              Partial<Pick<IntegrationRuntime, 'destroyRevokedSecret' | 'flowOf'>> & {
+                  /** The provider ids with an OAuth client registered here; `GET /api/integrations` reports it as booleans. */
+                  configured?: readonly string[] | undefined;
+              })
         | undefined;
     githubMint?: GithubMint | undefined;
     /** Replaces the org's installation revoke, like `githubMint` (the lanes' stand-in, the tests' seam). */
@@ -215,7 +218,8 @@ async function registerRunnerCredentialRoutes(
         }
     }
     // The person-facing connect: a signed-in session, not a lease, so it does not wait for `attemptOfLease`.
-    if (integrations?.flowOf) await app.register(integrationRoutes({ flowOf: integrations.flowOf }));
+    if (integrations?.flowOf)
+        await app.register(integrationRoutes({ flowOf: integrations.flowOf, configured: integrations.configured }));
 }
 
 async function registerCommerce(
@@ -338,7 +342,13 @@ export async function buildApp({
     // routes, the same org-resolution the workflow routes make.
     await app.register(orgExecutorRoutes({ orgs }));
     // Notification subscriptions (BEL-131): the org's settings for who hears about a task verdict.
-    await app.register(notificationSubscriptionRoutes({ orgs, connectors: notificationConnectors }));
+    await app.register(
+        notificationSubscriptionRoutes({
+            orgs,
+            connectors: notificationConnectors,
+            publicUrl: config.integrations.callbackOrigin,
+        })
+    );
     // The member roster and its role writes (issue 410), the same person-shaped surface: the
     // caller's role decides, the store has no role of its own to check.
     if (auth) await app.register(orgMemberRoutes({ store: auth }));

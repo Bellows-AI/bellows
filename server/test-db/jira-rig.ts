@@ -95,7 +95,8 @@ export function jiraRuntime(
                   authorizeUrl: fake.authorizeUrl,
                   tokenUrl: fake.tokenUrl,
                   apiOrigin: fake.origin,
-              }
+              },
+        'https://board.example.test'
     );
     return createIntegrationRuntime({
         sql,

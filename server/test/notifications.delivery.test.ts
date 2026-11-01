@@ -33,7 +33,12 @@ const eventRow = (n: number): NotificationEventRow => ({
 const item = (n: number): OutboxItem => ({
     eventId: eventRow(n).id,
     subscriptionId: `00000000-0000-4000-8000-0000000002${n}`,
-    target: { kind: 'fake', config: { target: `room-${n}` }, credential: { ref: `ref-${n}`, version: `v-${n}` } },
+    target: {
+        kind: 'fake',
+        config: { target: `room-${n}` },
+        userId: null,
+        credential: { ref: `ref-${n}`, version: `v-${n}` },
+    },
     event: eventRow(n),
 });
 

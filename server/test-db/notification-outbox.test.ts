@@ -17,6 +17,7 @@ import { fakeConnector, type FakeScript } from '../test/notifications-fake-conne
 import type { SecretStore } from '../src/secrets/secret-store.js';
 import { subscriptionSecretIdentity } from '../src/notifications/subscription-credential.js';
 import { faultySecrets, testSecretStore } from './env-secrets-harness.js';
+import { ORG_OWNER } from '../src/notifications/subscription-store.js';
 import { useTestDb } from './harness.js';
 import { startRow, testOrg, testUser } from './fixtures.js';
 import { createBatchStore } from '../src/db/batches/batch-store.js';
@@ -34,7 +35,8 @@ const WORKER = 'worker-1';
 const PUBLIC_URL = 'https://board.example.test';
 const T0 = Date.now();
 const ALICE_USER = testUser('alice');
-const db = useTestDb({ max: 4, orgs: [ORG, OTHER], users: [ALICE_USER] });
+const BOB_USER = testUser('bob');
+const db = useTestDb({ max: 4, orgs: [ORG, OTHER], users: [ALICE_USER, BOB_USER] });
 
 let sql: Sql;
 let secrets: SecretStore;
@@ -105,6 +107,8 @@ interface Emit {
     command?: string;
     repo?: string | null;
     workflow?: string | null;
+    /** The task starter (the thread root's execution_user_id). */
+    user?: string | null;
 }
 
 /** Queues, claims and settles one task through the real job store; returns the job id. */
@@ -114,8 +118,9 @@ async function emit({
     command = 'ship the thing',
     repo = null,
     workflow = null,
+    user = null,
 }: Emit = {}): Promise<string> {
-    const created = await store.create(command, null, { repo, executor: null });
+    const created = await store.create(command, user, { repo, executor: null });
     if (typeof created === 'string') throw new Error(created);
     if (workflow !== null) {
         await sql`update job set workflow_name = ${workflow} where org_id = ${org} and id = ${created.id}`;
@@ -158,8 +163,12 @@ const verdict =
 
 describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
     it('fans an event out to each matching enabled subscription', async () => {
-        const a = await subs.create(fields(), credential());
-        const b = await subs.create(fields({ eventKinds: ['task.ready'], repos: ['acme/api'] }), credential());
+        const a = await subs.create(ORG_OWNER, fields(), credential());
+        const b = await subs.create(
+            ORG_OWNER,
+            fields({ eventKinds: ['task.ready'], repos: ['acme/api'] }),
+            credential()
+        );
         await emit({ repo: 'acme/api' });
 
         const found = await rows();
@@ -179,10 +188,10 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
     });
 
     it('does not fan out to a non-matching kind, repo or workflow, or to a null repo/workflow under a filter', async () => {
-        const open = await subs.create(fields(), credential());
-        await subs.create(fields({ eventKinds: ['task.blocked'] }), credential());
-        await subs.create(fields({ repos: ['acme/api'] }), credential());
-        await subs.create(fields({ workflows: ['build'] }), credential());
+        const open = await subs.create(ORG_OWNER, fields(), credential());
+        await subs.create(ORG_OWNER, fields({ eventKinds: ['task.blocked'] }), credential());
+        await subs.create(ORG_OWNER, fields({ repos: ['acme/api'] }), credential());
+        await subs.create(ORG_OWNER, fields({ workflows: ['build'] }), credential());
 
         await emit({ repo: null, workflow: null });
         await emit({ repo: 'acme/web', workflow: 'review' });
@@ -193,20 +202,24 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
     });
 
     it('fans out on the repo and workflow a filter names', async () => {
-        const filtered = await subs.create(fields({ repos: ['acme/api'], workflows: ['build'] }), credential());
+        const filtered = await subs.create(
+            ORG_OWNER,
+            fields({ repos: ['acme/api'], workflows: ['build'] }),
+            credential()
+        );
         await emit({ repo: 'acme/api', workflow: 'build' });
         expect((await rows()).map((r) => r.subscription_id)).toEqual([filtered.id]);
     });
 
     it('does not fan out to a disabled subscription', async () => {
-        await subs.create(fields({ enabled: false }), credential());
+        await subs.create(ORG_OWNER, fields({ enabled: false }), credential());
         await emit();
         expect(await rows()).toHaveLength(0);
     });
 
     it('does not fan out to another org’s subscription', async () => {
-        const theirs = await otherSubs.create(fields(), credential());
-        const mine = await subs.create(fields(), credential());
+        const theirs = await otherSubs.create(ORG_OWNER, fields(), credential());
+        const mine = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         expect((await rows()).map((r) => r.subscription_id)).toEqual([mine.id]);
         expect(await rows(OTHER)).toHaveLength(0);
@@ -215,7 +228,7 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
 
     it('a subscription created after the event receives nothing', async () => {
         await emit();
-        await subs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
         const fake = fakeConnector('fake');
 
         await pass(fake);
@@ -225,7 +238,7 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
     });
 
     it('a duplicate event id fans out once', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         const gated = createJobStore({
             sql,
             orgId: ORG,
@@ -257,7 +270,7 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
     });
 
     it('a batch task.blocked fans out to a matching subscription in the reconcile’s transaction', async () => {
-        const sub = await subs.create(fields({ eventKinds: ['task.blocked'] }), credential());
+        const sub = await subs.create(ORG_OWNER, fields({ eventKinds: ['task.blocked'] }), credential());
         const batches = createBatchStore({
             sql,
             orgId: ORG,
@@ -292,12 +305,12 @@ describe.skipIf(!enabled)('notification outbox — fan-out at emission', () => {
     });
 
     it('deleting a subscription removes its pending rows', async () => {
-        const gone = await subs.create(fields(), credential());
-        const kept = await subs.create(fields(), credential());
+        const gone = await subs.create(ORG_OWNER, fields(), credential());
+        const kept = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         expect(await rows()).toHaveLength(2);
 
-        expect(await subs.remove(gone.id)).toBe(true);
+        expect(await subs.remove(ORG_OWNER, gone.id)).toBe(true);
 
         expect((await rows()).map((r) => r.subscription_id)).toEqual([kept.id]);
     });
@@ -307,11 +320,12 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     it('delivers a settled task’s event through the fake connector to a matching enabled subscription only', async () => {
         const target = `room-${randomUUID()}`;
         const match = await subs.create(
+            ORG_OWNER,
             fields({ connectorConfig: { target }, eventKinds: ['task.ready'] }),
             credential()
         );
-        await subs.create(fields({ eventKinds: ['task.blocked'] }), credential());
-        await subs.create(fields({ enabled: false }), credential());
+        await subs.create(ORG_OWNER, fields({ eventKinds: ['task.blocked'] }), credential());
+        await subs.create(ORG_OWNER, fields({ enabled: false }), credential());
         const id = await emit({ command: 'ship the thing\nmore detail' });
         const fake = fakeConnector('fake');
 
@@ -335,7 +349,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     });
 
     it('a delivered row is not sent again', async () => {
-        await subs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const fake = fakeConnector('fake');
         await pass(fake);
@@ -345,7 +359,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     });
 
     it('a trigger-inserted row is due on the store’s clock', async () => {
-        await subs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const epoch = createNotificationOutboxStore({ sql, orgId: ORG, secrets, now: () => new Date(0) });
 
@@ -355,7 +369,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     });
 
     it('two replicas lease disjoint rows', async () => {
-        await subs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
         for (let i = 0; i < 4; i++) await emit({ command: `task ${i}` });
 
         const [a, b] = await Promise.all([outboxFor().lease(2, LEASE_MS), outboxFor().lease(2, LEASE_MS)]);
@@ -367,7 +381,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     });
 
     it('two concurrent delivery passes post each row once', async () => {
-        await subs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
         for (let i = 0; i < 4; i++) await emit({ command: `task ${i}` });
         const fake = fakeConnector('fake', async (event) => {
             await new Promise((resolve) => setTimeout(resolve, 30));
@@ -382,7 +396,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     });
 
     it('a row leased by a lost replica resumes after its lease lapses', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const lost = outboxFor();
         const lease = await lost.lease(10, LEASE_MS);
@@ -400,7 +414,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
     });
 
     it('a lapsed replica’s late settle changes nothing', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const lost = outboxFor();
         const lease = await lost.lease(10, LEASE_MS);
@@ -421,7 +435,7 @@ describe.skipIf(!enabled)('notification outbox — delivery', () => {
 
 describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     it('a retryable send backs off and then delivers', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const fake = fakeConnector('fake', verdict({ status: 'retryable', reason: 'transport' }));
 
@@ -441,7 +455,7 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     });
 
     it('retryAfterMs beyond the backoff is honoured and capped', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const fake = fakeConnector(
             'fake',
@@ -460,7 +474,7 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     });
 
     it('a timed-out send is retryable, never delivered or parked', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const fake = fakeConnector(
             'fake',
@@ -478,7 +492,7 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     });
 
     it('a throwing connector retries', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const fake = fakeConnector('fake', async () => {
             throw new Error('boom');
@@ -491,7 +505,7 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
 
     it('a permanent verdict parks the row and logs it without the config', async () => {
         const target = `room-${randomUUID()}`;
-        const sub = await subs.create(fields({ connectorConfig: { target } }), credential());
+        const sub = await subs.create(ORG_OWNER, fields({ connectorConfig: { target } }), credential());
         await emit();
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const fake = fakeConnector('fake', verdict({ status: 'permanent', reason: 'destination-refused' }));
@@ -511,9 +525,9 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     });
 
     it('a subscription disabled after enqueue is parked, not sent, and not replayed on re-enable', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
-        await subs.update(sub.id, fields({ enabled: false }), null);
+        await subs.update(ORG_OWNER, sub.id, fields({ enabled: false }), null);
         const fake = fakeConnector('fake');
 
         await pass(fake);
@@ -522,17 +536,17 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
         expect(await rowOf(sub.id)).toMatchObject({ last_error: 'subscription-disabled', claim_token: null });
         expect((await rowOf(sub.id)).parked_at).toEqual(new Date(T0));
 
-        await subs.update(sub.id, fields({ enabled: true }), null);
+        await subs.update(ORG_OWNER, sub.id, fields({ enabled: true }), null);
         clock.t = T0 + RETRY_CAP_MS;
         await pass(fake);
         expect(fake.sent).toHaveLength(0);
     });
 
     it('a disabled subscription’s rows do not stop other subscriptions’ rows in the same lease', async () => {
-        const off = await subs.create(fields(), credential());
-        const on = await subs.create(fields(), credential());
+        const off = await subs.create(ORG_OWNER, fields(), credential());
+        const on = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
-        await subs.update(off.id, fields({ enabled: false }), null);
+        await subs.update(ORG_OWNER, off.id, fields({ enabled: false }), null);
         const store = outboxFor();
 
         const lease = await store.lease(1, LEASE_MS);
@@ -544,10 +558,10 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
     });
 
     it('a subscription’s config edited after enqueue is sent with the new config', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const target = `room-${randomUUID()}`;
-        await subs.update(sub.id, fields({ connectorConfig: { target } }), null);
+        await subs.update(ORG_OWNER, sub.id, fields({ connectorConfig: { target } }), null);
         const fake = fakeConnector('fake');
 
         await pass(fake);
@@ -558,7 +572,7 @@ describe.skipIf(!enabled)('notification outbox — retry and park', () => {
 
 describe.skipIf(!enabled)('notification outbox — pass bounds and scope', () => {
     it('a pass past its deadline releases the leased rows it did not send', async () => {
-        await subs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
         for (let i = 0; i < 3; i++) await emit({ command: `task ${i}` });
         let slow = true;
         const fake = fakeConnector('fake', async (event) => {
@@ -581,8 +595,8 @@ describe.skipIf(!enabled)('notification outbox — pass bounds and scope', () =>
     });
 
     it('an org’s store never leases another org’s rows', async () => {
-        await subs.create(fields(), credential());
-        await otherSubs.create(fields(), credential());
+        await subs.create(ORG_OWNER, fields(), credential());
+        await otherSubs.create(ORG_OWNER, fields(), credential());
         await emit();
         await emit({ store: otherJobs, org: OTHER });
 
@@ -601,7 +615,7 @@ describe.skipIf(!enabled)('notification outbox — pass bounds and scope', () =>
 describe.skipIf(!enabled)('notification outbox — credential', () => {
     /** A subscription, one emitted event and its leased item. */
     async function leased(value = credential()) {
-        const sub = await subs.create(fields(), value);
+        const sub = await subs.create(ORG_OWNER, fields(), value);
         await emit();
         const outbox = outboxFor();
         const lease = await outbox.lease(10, LEASE_MS);
@@ -665,7 +679,7 @@ describe.skipIf(!enabled)('notification outbox — credential', () => {
 
         // not-found: the record is deleted behind the row's back.
         const deleted = await secrets.delete({
-            identity: subscriptionSecretIdentity(ORG, sub.id),
+            identity: subscriptionSecretIdentity(ORG, sub.id, null),
             ref: row.secret_ref as never,
             expectedVersion: row.secret_version as never,
             operationId: await secrets.issueOperationId(),
@@ -675,13 +689,13 @@ describe.skipIf(!enabled)('notification outbox — credential', () => {
     });
 
     it('a delivery whose credential is unavailable is retryable, never parked, never sent', async () => {
-        const sub = await subs.create(fields(), credential());
+        const sub = await subs.create(ORG_OWNER, fields(), credential());
         await emit();
         const [row] = await sql<{ secret_ref: string; secret_version: string }[]>`
             select secret_ref, secret_version from notification_subscription where org_id = ${ORG} and id = ${sub.id}
         `;
         await secrets.delete({
-            identity: subscriptionSecretIdentity(ORG, sub.id),
+            identity: subscriptionSecretIdentity(ORG, sub.id, null),
             ref: row!.secret_ref as never,
             expectedVersion: row!.secret_version as never,
             operationId: await secrets.issueOperationId(),
@@ -702,16 +716,125 @@ describe.skipIf(!enabled)('notification outbox — credential', () => {
 
     it('the credential the subscription holds reaches the connector, and a rotation applies to the next send', async () => {
         const first = credential();
-        const sub = await subs.create(fields(), first);
+        const sub = await subs.create(ORG_OWNER, fields(), first);
         await emit();
         const fake = fakeConnector('fake');
         await pass(fake);
         expect(fake.sent.map((s) => s.credential)).toEqual([first]);
 
         const second = credential();
-        await subs.update(sub.id, fields(), second);
+        await subs.update(ORG_OWNER, sub.id, fields(), second);
         await emit({ command: 'another one' });
         await pass(fake);
         expect(fake.sent.map((s) => s.credential)).toEqual([first, second]);
+    });
+});
+
+const ALICE = ALICE_USER.id;
+const BOB = BOB_USER.id;
+const owner = (userId: string) => ({ kind: 'user', userId }) as const;
+
+describe.skipIf(!enabled)('notification outbox — personal subscriptions (BEL-177)', () => {
+    beforeEach(async () => {
+        if (!enabled) return;
+        await sql`delete from notification_subscription where org_id = ${ORG}`;
+        for (const user of [ALICE, BOB]) {
+            await sql`
+                insert into org_membership (org_id, github_login, user_id, claimed_at)
+                values (${ORG}, ${`m-${user.slice(0, 8)}`}, ${user}, now())
+                on conflict do nothing
+            `;
+        }
+    });
+
+    const targets = async () => (await rows()).map((r) => r.subscription_id).sort();
+
+    it('a personal subscription receives task.ready of a task its user started', async () => {
+        const mine = await subs.create(owner(ALICE), fields({ eventKinds: ['task.ready'] }), credential());
+        await emit({ user: ALICE });
+        expect(await targets()).toEqual([mine.id]);
+    });
+
+    it('a personal subscription receives task.blocked and task.question of its user’s task', async () => {
+        const mine = await subs.create(
+            owner(ALICE),
+            fields({ eventKinds: ['task.blocked', 'task.question'] }),
+            credential()
+        );
+        const root = await emit({ user: ALICE });
+        for (const kind of ['task.blocked', 'task.question']) {
+            const [event] = await sql<{ id: string }[]>`
+                insert into notification_event (org_id, id, kind, job_id, root_job_id, command, occurred_at)
+                values (${ORG}, ${randomUUID()}, ${kind}, ${root}, ${root}, 'task', now()) returning id
+            `;
+            await sql`select notification_event_fan_out(${ORG}, ${event!.id})`;
+        }
+        const found = await rows();
+        expect(found).toHaveLength(2);
+        expect(new Set(found.map((r) => r.subscription_id))).toEqual(new Set([mine.id]));
+    });
+
+    it('a personal subscription does not receive another member’s task events', async () => {
+        await subs.create(owner(ALICE), fields(), credential());
+        await emit({ user: BOB });
+        await emit({ user: null });
+        expect(await rows()).toHaveLength(0);
+    });
+
+    it('a personal subscription receives task.admin_action where its user is the actor or the author', async () => {
+        const asActor = await subs.create(owner(ALICE), fields({ eventKinds: ['task.admin_action'] }), credential());
+        const asAuthor = await subs.create(owner(BOB), fields({ eventKinds: ['task.admin_action'] }), credential());
+        const root = await emit({ user: BOB });
+        const [event] = await sql<{ id: string }[]>`
+            insert into notification_event
+                (org_id, id, kind, job_id, root_job_id, command, action, actor_user_id, actor_login,
+                 author_user_id, author_login, occurred_at)
+            values (${ORG}, ${randomUUID()}, 'task.admin_action', ${root}, ${root}, 'task', 'follow-up', ${ALICE}, 'alice',
+                    ${BOB}, 'bob', now())
+            returning id
+        `;
+        await sql`select notification_event_fan_out(${ORG}, ${event!.id})`;
+        expect(await targets()).toEqual([asActor.id, asAuthor.id].sort());
+    });
+
+    it('a personal subscription respects event kind, repo and workflow filters like an org row', async () => {
+        await subs.create(owner(ALICE), fields({ eventKinds: ['task.blocked'] }), credential());
+        await subs.create(owner(ALICE), fields({ repos: ['acme/other'] }), credential());
+        await subs.create(owner(ALICE), fields({ workflows: ['other'] }), credential());
+        const ok = await subs.create(owner(ALICE), fields({ repos: ['acme/api'], workflows: ['build'] }), credential());
+        await emit({ user: ALICE, repo: 'acme/api', workflow: 'build' });
+        expect(await targets()).toEqual([ok.id]);
+    });
+
+    it('a personal subscription stops matching once its user’s membership is removed, and the row is kept', async () => {
+        const mine = await subs.create(owner(ALICE), fields(), credential());
+        await sql`delete from org_membership where org_id = ${ORG} and user_id = ${ALICE}`;
+        await emit({ user: ALICE });
+        expect(await rows()).toHaveLength(0);
+        expect((await subs.list(owner(ALICE))).map((s) => s.id)).toEqual([mine.id]);
+    });
+
+    it('an org subscription still receives every matching event', async () => {
+        const org = await subs.create(ORG_OWNER, fields(), credential());
+        await subs.create(owner(ALICE), fields(), credential());
+        await emit({ user: BOB });
+        expect(await targets()).toEqual([org.id]);
+    });
+
+    it('a disabled personal subscription receives nothing', async () => {
+        await subs.create(owner(ALICE), fields({ enabled: false }), credential());
+        await emit({ user: ALICE });
+        expect(await rows()).toHaveLength(0);
+    });
+
+    it('a personal lease delivers with the credential read under the user identity', async () => {
+        const secret = credential();
+        const mine = await subs.create(owner(ALICE), fields(), secret);
+        await emit({ user: ALICE });
+        const fake = fakeConnector('fake');
+        await pass(fake);
+        expect(fake.sent).toHaveLength(1);
+        expect(fake.sent[0]?.credential).toBe(secret);
+        expect((await rowOf(mine.id)).delivered_at).not.toBeNull();
     });
 });

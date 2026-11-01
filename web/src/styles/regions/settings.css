@@ -655,6 +655,149 @@
         /* No text-transform: the repository label carries case-sensitive owner/name. */
     }
 
+    /* ── integrations: the member's connections as link cards, and one connection's page ── */
+    .provider-mark {
+        background: var(--surface-sunken);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        box-sizing: border-box;
+        flex: none;
+        height: 40px;
+        padding: 8px;
+        width: 40px;
+    }
+
+    /* The glyph's brand color is the CSS rule's; the svg's own fill attribute is the same token, for a render with no stylesheet. */
+    .provider-mark[data-provider='jira'] {
+        fill: var(--brand-jira);
+    }
+
+    .provider-mark[data-provider='slack'] {
+        fill: var(--brand-slack);
+    }
+
+    .provider-mark[data-provider='discord'] {
+        fill: var(--brand-discord);
+    }
+
+    .provider-mark[data-provider='github'] {
+        fill: var(--brand-github);
+    }
+
+    .provider-mark[data-provider='gitlab'] {
+        fill: var(--brand-gitlab);
+    }
+
+    .provider-mark[data-provider='mcp'] {
+        fill: var(--brand-mcp);
+    }
+
+    .integration-list {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+        list-style: none;
+        margin: 0;
+        padding: 0;
+    }
+
+    .integration-card {
+        align-items: center;
+        background: var(--surface-raised);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        min-width: 0;
+        padding: 14px 16px;
+        text-decoration: none;
+    }
+
+    .integration-card:hover {
+        background: var(--surface-strong);
+    }
+
+    /* A basis the actions cannot squeeze below: when they do not fit beside it they wrap under it. */
+    .integration-card-text {
+        display: grid;
+        flex: 1 1 11rem;
+        min-width: 0;
+    }
+
+    .integration-card-title {
+        font-weight: 600;
+    }
+
+    .integration-card-site,
+    .integration-card-account {
+        color: var(--ink-muted);
+        font-size: 13px;
+        overflow-wrap: anywhere;
+    }
+
+    .integration-empty {
+        display: grid;
+        gap: 8px;
+    }
+
+    .integration-preview {
+        display: grid;
+        gap: 12px;
+        margin-top: 24px;
+    }
+
+    .integration-preview h2 {
+        margin: 0;
+    }
+
+    .catalog-filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 16px;
+    }
+
+    .catalog-filter {
+        min-height: 44px;
+    }
+
+    .catalog-filter[aria-pressed='true'] {
+        background: var(--surface-strong);
+        border-color: var(--ink-muted);
+    }
+
+    .catalog-card-state {
+        align-items: center;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-left: auto;
+    }
+
+    .integration-actions {
+        margin-top: 16px;
+    }
+
+    .integration-back {
+        align-items: center;
+        display: inline-flex;
+        min-height: 44px;
+    }
+
+    @media (max-width: 640px) {
+        .integration-card {
+            align-items: flex-start;
+            flex-wrap: wrap;
+        }
+
+        .integration-card .pill {
+            margin-left: 52px;
+        }
+    }
+
     /* ── settings touch targets (44px, issue 189) ── */
     @media (max-width: 900px) {
         .env-tab,
@@ -666,7 +809,8 @@
         .unsaved-actions button,
         .env-add,
         .org-executor-add,
-        button.jira-connection-add,
+        button.notification-subscription-add,
+        .integration-actions button,
         .env-advanced-toggle,
         .env-raw input,
         .env-raw select,

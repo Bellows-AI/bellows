@@ -2,7 +2,7 @@ import { ConfigurationScope } from '../components/ConfigurationScope.js';
 import { DraftReturnBanner } from '../components/DraftReturnBanner.js';
 import { PageHeader } from '../components/PageHeader.js';
 import { EnvVarsPanel } from '../panels/EnvVarsPanel.js';
-import { JiraConnectionsSection } from '../panels/JiraConnectionsSection.js';
+import { NotificationSubscriptionsSection } from '../panels/NotificationSubscriptionsSection.js';
 import type { UseEnv } from '../api/useEnv.js';
 import { useSettingsPage } from './SettingsLayout.js';
 
@@ -25,8 +25,9 @@ function WorkspaceEnvEditor({ env }: { env: UseEnv }) {
 }
 
 /**
- * The Workspace section of the settings tree: the member's Jira connection and own environment
- * scope. The board keeps no filesystem workspace, so there is no checkout state to show.
+ * The Workspace section of the settings tree: the member's own notification subscriptions and environment
+ * scope. Their Jira connections live under Integrations. The board keeps no filesystem workspace, so there is no
+ * checkout state to show.
  */
 export function SettingsWorkspacePage() {
     const { env, session } = useSettingsPage();
@@ -35,7 +36,7 @@ export function SettingsWorkspacePage() {
             <PageHeader eyebrow="Settings" title="Workspace" />
             <DraftReturnBanner />
 
-            <JiraConnectionsSection session={session} />
+            <NotificationSubscriptionsSection session={session} scope="workspace" />
 
             <ConfigurationScope scope="workspace" />
 
