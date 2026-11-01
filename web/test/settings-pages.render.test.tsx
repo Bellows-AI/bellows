@@ -312,18 +312,32 @@ describe('Settings executors page', () => {
             },
         });
         expect(html).toContain('page-header-description');
-        expect(html).toContain('Each task runs with its selected executor');
-        expect(html).toContain('<h2>My workspace</h2>');
-        // The resolved default names the personal row: that one carries the caption (issue 391's
+        expect(html).toContain('My workspace<span class="count">2</span>');
+        // The resolved default names the personal row: that one carries the tag (issue 391's
         // preference shape, the old isDefault flag's successor).
-        expect(html.match(/Default — selected on new tasks/g)?.length).toBe(1);
+        expect(html.match(/<span class="pill">Default<\/span>/g)?.length).toBe(1);
         // The organization panel renders below the personal one, with the shared profile.
-        expect(html).toContain('<h2>Organization</h2>');
+        expect(html).toContain('Organization<span class="count">1</span>');
         expect(html).toContain('team-runner');
         expect(html).toContain('Add executor');
         // The save announcement's region is mounted before any save, so the sentence is heard
         // when it arrives (issue 261).
         expect(html).toMatch(/<p class="muted" role="status"><\/p>/);
+    });
+
+    it('the executor guidance renders once, inside a disclosure', () => {
+        const html = render('/settings/executors', {
+            workspace: {
+                loading: false,
+                data: { executors: [], orgExecutors: [], defaultExecutor: null },
+            },
+        });
+        expect(html.match(/Each task runs with its selected executor/g)?.length).toBe(1);
+        expect(html).toMatch(
+            /<details[^>]*><summary[^>]*>About executors<\/summary>[\s\S]*Each task runs with its selected executor/
+        );
+        // The page header no longer owns an Add: each scope head does.
+        expect(html).not.toMatch(/class="primary"[^>]*>Add executor/);
     });
 
     it('renders no list after a failed workspace read — the error is the whole story', () => {
@@ -554,7 +568,7 @@ describe('settings page headers', () => {
         expect(render('/settings/repos')).toContain('aria-label="Tracked repositories"');
     });
 
-    it('puts Add executor in the executors page header', () => {
+    it('puts Add executor in the My workspace head, not the page header', () => {
         const html = render('/settings/executors', {
             workspace: {
                 loading: false,
@@ -565,8 +579,8 @@ describe('settings page headers', () => {
                 },
             },
         });
-        expect(html).toContain('page-header-actions');
-        expect(html).toContain('Add executor');
+        expect(html).not.toContain('page-header-actions');
+        expect(html).toMatch(/<div class="panel-head"><h2>My workspace[\s\S]*?Add executor<\/button><\/div>/);
     });
 });
 

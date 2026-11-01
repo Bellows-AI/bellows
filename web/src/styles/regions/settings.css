@@ -414,6 +414,23 @@
         min-height: 36px;
     }
 
+    /* Default and Suspended tags sit under the executor's name, wrapping rather than widening the cell. */
+    .data-compact td > .pill-list {
+        margin-top: 4px;
+    }
+
+    /* The page's one explanation of executors: collapsed, so the lists are what the page opens on. */
+    .executor-about {
+        margin-bottom: 12px;
+    }
+
+    .executor-about > summary {
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 6px 0;
+    }
+
     .pill-list .pill {
         max-width: 24ch;
         overflow: hidden;
@@ -886,6 +903,7 @@
         .settings-actions button,
         .unsaved-actions button,
         .env-add,
+        .executor-add,
         .org-executor-add,
         button.notification-subscription-add,
         .integration-actions button,
@@ -894,6 +912,7 @@
         .env-raw select,
         .env-raw button,
         .picker-advanced > summary,
+        .executor-about > summary,
         .picker-field-actions button,
         .picker-actions button {
             align-items: center;
@@ -903,7 +922,8 @@
         }
 
         /* The Advanced summary keeps its native disclosure marker. */
-        .picker-advanced > summary {
+        .picker-advanced > summary,
+        .executor-about > summary {
             display: list-item;
         }
 

@@ -35,9 +35,10 @@ describe('the organization executors panel', () => {
             executors: [executor('team-runner', 'claude-code'), executor('oc', 'opencode')],
             defaultName: 'team-runner',
         });
-        // The default row answers with its caption instead — a click there would write nothing.
+        // The default row answers with its Default tag instead — a click there would write nothing.
         expect(html.match(/>Make default</g)?.length).toBe(1);
-        expect(html.match(/Default — selected on new tasks/g)?.length).toBe(1);
+        expect(html.match(/<span class="pill">Default<\/span>/g)?.length).toBe(1);
+        expect(html).not.toContain('Default — selected on new tasks');
     });
 
     it('disables Make default while a save is in flight', () => {
@@ -47,6 +48,17 @@ describe('the organization executors panel', () => {
         });
         expect(html).toMatch(/>Make default<\/button>/);
         expect(html).toContain('disabled');
+    });
+
+    it('heads the list with a count, and an admin gets Add organization executor in that head', () => {
+        const admin = renderPanel({ isAdmin: true, onAdd: noop });
+        expect(admin).toMatch(/<div class="panel-head"><h2>Organization<span class="count">1<\/span><\/h2>/);
+        expect(admin).toMatch(/<\/h2><button[^>]*>(<svg.*?<\/svg>)?Add organization executor<\/button><\/div>/);
+        expect(admin).toContain('<table class="data data-compact table-cards"');
+        // A member sees the rows read-only, with no add action at all.
+        expect(renderPanel()).not.toContain('Add organization executor');
+        // The scope guidance is the page's one disclosure, not repeated under this head.
+        expect(admin).not.toContain('Each task runs with its selected executor');
     });
 
     it('shows an admin Edit inline and one overflow trigger naming the profile', () => {
