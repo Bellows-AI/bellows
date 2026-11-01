@@ -6,7 +6,7 @@ import { AUTH_DATABASE_URL, E2E_LOGIN, IDP_PORT } from '../playwright.config.js'
 import { throughSignIn } from './signin.js';
 
 /**
- * The Jira connections of the Workspace settings page and the Organization page that no longer has
+ * The Jira connections of the Integrations settings page and the Organization page that no longer has
  * one (BEL-61), through the real board's OAuth flow against the Atlassian stand-in in
  * `e2e/stub-idp.mjs` (`POST /atlassian/_control` picks the account that "consents", or denies).
  *
@@ -47,7 +47,7 @@ async function pickFromMenu(page: Page, row: ReturnType<Page['locator']>, name: 
     await page.getByRole('menuitem', { name }).click();
 }
 
-const panel = (page: Page) => page.getByRole('region', { name: 'Jira connections' });
+const panel = (page: Page) => page.getByRole('region', { name: 'Connected accounts' });
 
 async function connect(page: Page, options: { comments?: boolean } = {}) {
     await page.getByRole('button', { name: 'Connect Jira' }).click();
@@ -70,8 +70,8 @@ test.afterEach(async ({ page }) => {
 });
 
 test('connecting through the stub shows the site, the account and read access', async ({ page }) => {
-    await page.goto('/settings/workspace');
-    await expect(panel(page).getByText('No Jira connections yet.')).toBeVisible();
+    await page.goto('/settings/integrations');
+    await expect(panel(page).getByText('No connections yet. Connect a service to make it available to your tasks.')).toBeVisible();
     await connect(page);
 
     await expect(panel(page).getByText('Jira connected.')).toBeVisible();
@@ -91,11 +91,11 @@ test('connecting through the stub shows the site, the account and read access', 
     // The result is shown once: it left the address above, and Disconnect (the destructive entry) clears it.
     await pickFromMenu(page, row, 'Disconnect');
     await expect(panel(page).getByText('Jira connected.')).toHaveCount(0);
-    await expect(panel(page).getByText('No Jira connections yet.')).toBeVisible();
+    await expect(panel(page).getByText('No connections yet. Connect a service to make it available to your tasks.')).toBeVisible();
 });
 
 test('reconnecting as another account is refused and the row keeps the first account', async ({ page }) => {
-    await page.goto('/settings/workspace');
+    await page.goto('/settings/integrations');
     await connect(page);
     await expect(panel(page).getByText('Jira connected.')).toBeVisible();
 
@@ -109,17 +109,17 @@ test('reconnecting as another account is refused and the row keeps the first acc
 });
 
 test('a denied consent says so and leaves no row', async ({ page }) => {
-    await page.goto('/settings/workspace');
+    await page.goto('/settings/integrations');
     await consentAs(page, 'a', true);
     await connect(page);
 
     await expect(panel(page).getByText(/consent was denied/)).toBeVisible();
     await expect(panel(page).getByRole('row').filter({ hasText: SITE })).toHaveCount(0);
-    await expect(panel(page).getByText('No Jira connections yet.')).toBeVisible();
+    await expect(panel(page).getByText('No connections yet. Connect a service to make it available to your tasks.')).toBeVisible();
 });
 
 test('allowing adding comments reconnects and the row shows write', async ({ page }) => {
-    await page.goto('/settings/workspace');
+    await page.goto('/settings/integrations');
     await connect(page);
     await expect(panel(page).getByText('Jira connected.')).toBeVisible();
     const row = panel(page).getByRole('row').filter({ hasText: SITE });
@@ -137,7 +137,7 @@ test('allowing adding comments reconnects and the row shows write', async ({ pag
     await expect(row.getByRole('button', { name: 'Reconnect' })).toBeVisible();
 });
 
-test('a member sees no Jira panel on the Organization page, and their own on Workspace', async ({ page }) => {
+test('a member sees no Jira panel on the Organization page, and their own on Integrations', async ({ page }) => {
     await setRole(MEMBER_ROLE);
     await page.goto('/settings/organization');
     await expect(page.getByRole('heading', { name: 'Core (organization)' })).toBeVisible();
@@ -145,6 +145,6 @@ test('a member sees no Jira panel on the Organization page, and their own on Wor
     await expect(page.getByText(/Jira connection/)).toHaveCount(0);
     await page.screenshot({ path: `${SHOTS}/settings-organization-no-jira.png`, fullPage: true });
 
-    await page.goto('/settings/workspace');
+    await page.goto('/settings/integrations');
     await expect(panel(page)).toBeVisible();
 });
