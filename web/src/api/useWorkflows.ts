@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { mutate } from './mutate.js';
+import { useResource } from './useResource.js';
 import { refusalOf } from './refusal.js';
 import { HTTP_STATUS_UNAUTHORIZED, reportUnauthenticated } from './useSession.js';
 import type { WorkflowParamChoice } from '../task-composer.js';
-import { JSON_HEADERS } from '@factory-ai/core';
 
 /**
  * One workflow the composer can offer: the id and name a `POST /api/jobs` body names, the scope it
@@ -112,6 +113,8 @@ export interface WorkflowDetailView extends WorkflowSummaryView {
     definition: unknown;
 }
 
+const readRecord = async (response: Response) => (await response.json()) as WorkflowDetailView;
+
 /** A read or write that named its own refusal, `code` included — the panel renders `code: error`
  * so a validator refusal (UNKNOWN_KEY, NO_PUBLISH_PATH, …) is diagnosable, not just a sentence. */
 export type WorkflowResult = { ok: true; record: WorkflowDetailView } | { ok: false; error: string; code?: string };
@@ -127,6 +130,8 @@ export interface UseWorkflowsManagement {
     remove: (id: string) => Promise<string | null>;
 }
 
+const selectWorkflows = (body: { workflows: WorkflowSummaryView[] }) => body.workflows;
+
 /**
  * The settings management panel's CRUD surface (issue 131): the caller-visible list — org-level
  * and the caller's own user-level workflows, the no-repo-context list — plus fetch-one, create, update and delete. No polling, like
@@ -139,47 +144,7 @@ export interface UseWorkflowsManagement {
  * panel does not offer creating anyway — repo-scoped definitions stay the API's own surface.
  */
 export function useWorkflowsManagement(): UseWorkflowsManagement {
-    const [workflows, setWorkflows] = useState<WorkflowSummaryView[] | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-    const controller = useRef<AbortController | null>(null);
-
-    const load = useCallback(async (signal: AbortSignal) => {
-        try {
-            const response = await fetch('/api/workflows', { signal });
-            if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                reportUnauthenticated();
-                setLoading(false);
-                return;
-            }
-            if (!response.ok) {
-                const refusal = await refusalOf(response);
-                setError(refusal.error);
-                setLoading(false);
-                return;
-            }
-            const body = (await response.json()) as { workflows: WorkflowSummaryView[] };
-            setWorkflows(body.workflows);
-            setError(null);
-        } catch (e) {
-            if (signal.aborted) return;
-            setError((e as Error).message);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    const refresh = useCallback(() => {
-        controller.current?.abort();
-        const own = new AbortController();
-        controller.current = own;
-        void load(own.signal);
-    }, [load]);
-
-    useEffect(() => {
-        refresh();
-        return () => controller.current?.abort();
-    }, [refresh]);
+    const { data: workflows, loading, error, refresh } = useResource('/api/workflows', selectWorkflows);
 
     const fetchOne = useCallback(async (id: string): Promise<WorkflowResult> => {
         try {
@@ -197,64 +162,30 @@ export function useWorkflowsManagement(): UseWorkflowsManagement {
 
     const create = useCallback(
         async (input: { name: string; scope: 'org' | 'user'; definition: unknown }): Promise<WorkflowResult> => {
-            try {
-                const response = await fetch('/api/workflows', {
-                    method: 'POST',
-                    headers: JSON_HEADERS,
-                    body: JSON.stringify(input),
-                });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return { ok: false, error: 'Your session expired' };
-                }
-                if (!response.ok) return { ok: false, ...(await refusalOf(response)) };
-                const record = (await response.json()) as WorkflowDetailView;
-                refresh();
-                return { ok: true, record };
-            } catch (e) {
-                return { ok: false, error: (e as Error).message };
-            }
+            const result = await mutate('/api/workflows', { method: 'POST', body: input }, readRecord);
+            if (!result.ok) return result;
+            refresh();
+            return { ok: true, record: result.value };
         },
         [refresh]
     );
 
     const update = useCallback(
         async (id: string, input: { name: string; definition: unknown }): Promise<WorkflowResult> => {
-            try {
-                const response = await fetch(`/api/workflows/${id}`, {
-                    method: 'PUT',
-                    headers: JSON_HEADERS,
-                    body: JSON.stringify(input),
-                });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return { ok: false, error: 'Your session expired' };
-                }
-                if (!response.ok) return { ok: false, ...(await refusalOf(response)) };
-                const record = (await response.json()) as WorkflowDetailView;
-                refresh();
-                return { ok: true, record };
-            } catch (e) {
-                return { ok: false, error: (e as Error).message };
-            }
+            const result = await mutate(`/api/workflows/${id}`, { method: 'PUT', body: input }, readRecord);
+            if (!result.ok) return result;
+            refresh();
+            return { ok: true, record: result.value };
         },
         [refresh]
     );
 
     const remove = useCallback(
         async (id: string): Promise<string | null> => {
-            try {
-                const response = await fetch(`/api/workflows/${id}`, { method: 'DELETE' });
-                if (response.status === HTTP_STATUS_UNAUTHORIZED) {
-                    reportUnauthenticated();
-                    return 'Your session expired';
-                }
-                if (!response.ok) return (await refusalOf(response)).error;
-                refresh();
-                return null;
-            } catch (e) {
-                return (e as Error).message;
-            }
+            const result = await mutate(`/api/workflows/${id}`, { method: 'DELETE' });
+            if (!result.ok) return result.error;
+            refresh();
+            return null;
         },
         [refresh]
     );

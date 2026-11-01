@@ -4,10 +4,9 @@ import { callerOf } from '../../auth/plugin.js';
 import { BINDABLE_PROVIDERS } from '../../db/connection-bindings.js';
 import type { JobActionStore } from '../../db/jobs/job-store-actions.js';
 import type { JobWorkerStore } from '../../db/jobs/job-store-worker.js';
-import { UUID } from '../../identifiers.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { bad, body, guard } from '../helpers.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { bad, guard } from '../helpers.js';
+import { resolveJobRoute, resolveLeasedRoute } from '../route-guards.js';
 import { HTTP_CONFLICT, HTTP_OK, leaseLost, notFoundJob } from './job-limits.js';
 
 /** The runtime connection requirement: the runner's ask and the owner's dismissal. */
@@ -16,14 +15,10 @@ const TARGET = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$/;
 // The running attempt asks for a connection its task needs: lease-fenced like every worker write. The
 // answer is the store's verdict; `waiting` is what makes the driver end the run and hand it back.
 export async function handleRequirement(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof JobWorkerStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof JobWorkerStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const { leaseToken, provider, target } = body(request.body);
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
+    const { provider, target } = fields;
     if (typeof provider !== 'string' || !BINDABLE_PROVIDERS.includes(provider)) {
         return bad(reply, ERROR_CODES.BAD_CONNECTION, `provider must be one of: ${BINDABLE_PROVIDERS.join(', ')}`);
     }

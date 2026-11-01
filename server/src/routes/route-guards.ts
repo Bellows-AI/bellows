@@ -92,3 +92,26 @@ export function resolveCallerRoute(
     }
     return { caller, id };
 }
+
+/** The `leaseToken` of the body when it is a uuid, else null once the BAD_TOKEN refusal is sent. */
+function leaseTokenOf(reply: FastifyReply, fields: Record<string, unknown>): string | null {
+    const { leaseToken } = fields;
+    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
+        bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
+        return null;
+    }
+    return leaseToken;
+}
+
+/** `resolveJobRoute` for the lease-holder's routes: also the body fields and their uuid `leaseToken`. */
+export async function resolveLeasedRoute<K extends keyof JobStore = keyof JobStore>(
+    orgs: OrgRegistry,
+    request: FastifyRequest,
+    reply: FastifyReply
+) {
+    const route = await resolveJobRoute<K>(orgs, request, reply);
+    if (!route) return null;
+    const fields = body(request.body);
+    const leaseToken = leaseTokenOf(reply, fields);
+    return leaseToken === null ? null : { ...route, fields, leaseToken };
+}

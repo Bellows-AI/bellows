@@ -5,9 +5,8 @@
  */
 
 import type { BoardJob } from './board.js';
+import { leasedWriter, type Post } from './board-lease-write.js';
 
-const HTTP_NOT_FOUND = 404;
-const HTTP_CONFLICT = 409;
 const CONFLICT_CODE = 'PHASE_CHECKPOINT_CONFLICT';
 
 /**
@@ -32,13 +31,6 @@ export interface PhaseCheckpointWrite {
     tree: string | null;
     result: unknown;
 }
-
-type Post = (
-    path: string,
-    body: unknown,
-    allow404?: boolean,
-    options?: { signal?: AbortSignal | undefined; allow?: readonly number[] }
-) => Promise<Response>;
 
 /** A row read field by field: anything the driver cannot vouch for makes the whole answer unreadable. */
 function rowOf(raw: unknown): PhaseCheckpoint | null {
@@ -71,23 +63,10 @@ export interface PhaseCheckpointBoard {
 }
 
 export function phaseCheckpointCalls(post: Post): PhaseCheckpointBoard {
+    const leased = leasedWriter(post, CONFLICT_CODE);
     return {
         async phaseCheckpoint(job, checkpoint, signal) {
-            try {
-                const response = await post(
-                    `/api/jobs/${job.id}/phase-checkpoint`,
-                    { leaseToken: job.leaseToken, ...checkpoint },
-                    true,
-                    { signal }
-                );
-                if (response.ok) return 'ok';
-                if (response.status === HTTP_NOT_FOUND) return 'lost';
-                if (response.status !== HTTP_CONFLICT) return 'rejected';
-                const code = ((await response.json().catch(() => ({}))) as { code?: unknown }).code;
-                return code === CONFLICT_CODE ? 'rejected' : 'lost';
-            } catch {
-                return 'rejected';
-            }
+            return leased(`/api/jobs/${job.id}/phase-checkpoint`, job, checkpoint, signal);
         },
 
         async phaseCheckpoints(job, runClaimSeq, signal) {

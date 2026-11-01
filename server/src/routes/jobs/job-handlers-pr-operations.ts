@@ -8,10 +8,10 @@ import {
     type PrOperationWrite,
 } from '../../db/jobs/job-store-pr-operations.js';
 import type { OrgRegistry } from '../../orgs.js';
-import { bad, body, guard, repoReason } from '../helpers.js';
+import { bad, guard, repoReason } from '../helpers.js';
 import { isBranchField } from './job-field-validation.js';
 import { CONTROL_BODY_LIMIT, HTTP_OK, INT4_MAX, leaseLost, notFoundJob, PR_URL, PR_URL_LIMIT } from './job-limits.js';
-import { resolveJobRoute } from '../route-guards.js';
+import { resolveLeasedRoute } from '../route-guards.js';
 
 /** The operation a write names, field by field, or the reason it is refused. */
 function validateOperation(
@@ -52,15 +52,9 @@ function validateOperation(
  * and the org comes from the job's own scope.
  */
 export async function handlePrOperation(orgs: OrgRegistry, request: FastifyRequest, reply: FastifyReply) {
-    const route = await resolveJobRoute<keyof PrOperationStore>(orgs, request, reply);
+    const route = await resolveLeasedRoute<keyof PrOperationStore>(orgs, request, reply);
     if (!route) return reply;
-    const { store, id } = route;
-
-    const fields = body(request.body);
-    const { leaseToken } = fields;
-    if (typeof leaseToken !== 'string' || !UUID.test(leaseToken)) {
-        return bad(reply, ERROR_CODES.BAD_TOKEN, 'leaseToken must be a uuid');
-    }
+    const { store, id, fields, leaseToken } = route;
     const checked = validateOperation(fields);
     if (!checked.ok) return bad(reply, ERROR_CODES.BAD_BODY, checked.message);
 
