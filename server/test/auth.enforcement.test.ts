@@ -298,6 +298,7 @@ const ROUTE_TABLE: readonly (readonly [string, string])[] = [
     ['/api/connections', 'user'],
     ['/api/connections/:id', 'user'],
     // Starting and finishing an outbound OAuth connect is a person's act in their own browser session.
+    ['/api/integrations', 'user'],
     ['/api/integrations/:provider/authorizations', 'user'],
     ['/api/integrations/:provider/callback', 'user'],
     ['/api/otlp/v1/logs', 'ingest'],

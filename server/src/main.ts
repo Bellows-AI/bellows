@@ -223,7 +223,7 @@ export async function start(options: StartOptions = {}): Promise<void> {
         notificationConnectors: connectors,
         store,
         secrets,
-        integrations,
+        integrations: { ...integrations, configured: jira.configured },
         auth: authStore,
         // The branch route's runner credential: the job id + lease token pair a reporter presents
         // resolves to the org whose attempt it is. Built from the job store's SQL — the one

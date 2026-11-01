@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import {
     deleteConnection,
     listConnections,
@@ -8,7 +7,7 @@ import {
     type StartAuthorizationInput,
 } from '../api/connections.js';
 import type { Session } from '../api/useSession.js';
-import { integrationNotice, type IntegrationNotice } from '../settings/integration-providers.js';
+import { useIntegrationNotice } from '../settings/useIntegrationNotice.js';
 import { JiraConnectionsPanel } from './JiraConnectionsPanel.js';
 
 /**
@@ -22,20 +21,7 @@ export function JiraConnectionsSection({ session }: { session: Session | null })
     const [connections, setConnections] = useState<ConnectionView[] | null>(null);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [notice, setNotice] = useState<IntegrationNotice | null>(null);
-    const [params, setParams] = useSearchParams();
-
-    // The callback's `?integration=&result=` is consumed once: kept as state, taken off the URL, so a
-    // reload or a bookmark does not bring the sentence back.
-    useEffect(() => {
-        const found = integrationNotice(params.get('integration'), params.get('result'));
-        if (!found) return;
-        setNotice(found);
-        const next = new URLSearchParams(params);
-        next.delete('integration');
-        next.delete('result');
-        setParams(next, { replace: true });
-    }, [params, setParams]);
+    const { notice, clear: clearNotice } = useIntegrationNotice();
 
     const refresh = useCallback(async () => {
         const result = await listConnections();
@@ -52,7 +38,7 @@ export function JiraConnectionsSection({ session }: { session: Session | null })
 
     const start = async (input: StartAuthorizationInput): Promise<string | null> => {
         setError(null);
-        setNotice(null);
+        clearNotice();
         setSaving(true);
         const started = await startAuthorization('jira', input);
         if (started.ok) {
@@ -65,7 +51,7 @@ export function JiraConnectionsSection({ session }: { session: Session | null })
 
     const remove = async (connection: ConnectionView) => {
         setError(null);
-        setNotice(null);
+        clearNotice();
         setSaving(true);
         const message = await deleteConnection(connection.id);
         if (message) setError(message);

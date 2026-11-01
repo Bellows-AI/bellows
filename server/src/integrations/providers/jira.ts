@@ -135,6 +135,8 @@ async function getJson(fetchFn: FetchFn, url: string, accessToken: string, signa
 export function jiraRegistration(cfg: JiraHooksConfig | null) {
     const hooks = cfg ? createJiraHooks(cfg) : undefined;
     return {
+        /** The provider ids this registration can connect: Jira exactly when it is configured. */
+        configured: cfg ? ['jira'] : [],
         providers: (provider: string) => (provider === 'jira' ? hooks : undefined),
         clients: (provider: string) =>
             provider === 'jira' && cfg ? { clientId: cfg.clientId, scopesFor: jiraScopesFor } : undefined,

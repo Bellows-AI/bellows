@@ -2,6 +2,7 @@ import { ERROR_CODES, selectedBy } from '@factory-ai/core';
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
 import { callerOf, orgOf } from '../auth/plugin.js';
 import type { AuthorizationFlow, StartAuthorizationInput } from '../integrations/authorization-flow.js';
+import { INTEGRATIONS_RETURN_PATH } from '../integrations/authorization-types.js';
 import { contextOfSession } from '../integrations/trusted-context.js';
 import { bad, body as jsonBody, guard } from './helpers.js';
 
@@ -26,8 +27,13 @@ const NOT_CONFIGURED =
 /** Only the path, query and fragment of a redirect are ever used; the host is a placeholder for the URL parser. */
 const REDIRECT_BASE = 'http://board.invalid';
 
+/** The providers the catalog asks about; each is answered with whether this deployment can connect it. */
+const CATALOG_PROVIDERS = ['jira'] as const;
+
 export interface IntegrationRoutesDeps {
     flowOf: (orgId: string) => AuthorizationFlow;
+    /** The provider ids this deployment registered an OAuth client for. */
+    configured?: readonly string[] | undefined;
 }
 
 /** The start body's fields, or the sentence it is refused with: every key known, every value a string. */
@@ -56,7 +62,7 @@ function redirectTo(returnTo: string, provider: string, result: string): string 
 const signInRequired = (reply: FastifyReply) =>
     reply.code(HTTP_UNAUTHORIZED).send({ error: 'Sign in required', code: ERROR_CODES.UNAUTHENTICATED });
 
-export function integrationRoutes({ flowOf }: IntegrationRoutesDeps): FastifyPluginAsync {
+export function integrationRoutes({ flowOf, configured = [] }: IntegrationRoutesDeps): FastifyPluginAsync {
     const start = async (request: FastifyRequest, reply: FastifyReply) => {
         const caller = callerOf(request);
         if (!caller) return signInRequired(reply);
@@ -111,11 +117,23 @@ export function integrationRoutes({ flowOf }: IntegrationRoutesDeps): FastifyPlu
         } catch {
             // Closed diagnostics only: the flow already logged its event, and an error may quote a code or a token.
             request.log.warn({ provider }, 'integration authorization callback failed');
-            return reply.redirect(redirectTo('/', provider, 'error'), HTTP_SEE_OTHER);
+            return reply.redirect(redirectTo(INTEGRATIONS_RETURN_PATH, provider, 'error'), HTTP_SEE_OTHER);
         }
     };
 
+    // Booleans only: whether a provider can be connected here, never a client id, origin or secret.
+    const list = async (request: FastifyRequest, reply: FastifyReply) => {
+        if (!callerOf(request)) return signInRequired(reply);
+        return reply.header('cache-control', 'no-store').send({
+            integrations: CATALOG_PROVIDERS.map((provider) => ({
+                provider,
+                configured: configured.includes(provider),
+            })),
+        });
+    };
+
     return async (app) => {
+        app.get('/api/integrations', list);
         app.post('/api/integrations/:provider/authorizations', { bodyLimit: START_BODY_LIMIT }, start);
         // `warn`: the request line of this route would carry the query, which holds the code and the state.
         app.get('/api/integrations/:provider/callback', { logLevel: 'warn' }, callback);

@@ -43,6 +43,19 @@ describe('the provider registry', () => {
         expect(new Set(ids).size).toBe(ids.length);
     });
 
+    it('files the catalog the way it is browsed', () => {
+        const byCategory = (category: string) =>
+            INTEGRATION_PROVIDERS.filter((provider) => provider.category === category).map((provider) => provider.id);
+        expect(INTEGRATION_CATEGORIES).toEqual(['Issue tracking', 'Communication', 'Agent tools', 'CI / DevOps']);
+        expect(byCategory('Issue tracking')).toEqual(['jira']);
+        expect(byCategory('Communication')).toEqual(['slack', 'discord']);
+        expect(byCategory('Agent tools')).toEqual(['mcp']);
+        expect(byCategory('CI / DevOps')).toEqual(['github', 'gitlab']);
+        expect(integrationProvider('mcp')?.label).toBe('MCP servers');
+        expect(integrationProvider('github')?.availability).toBe('organization');
+        expect(integrationProvider('gitlab')?.availability).toBe('planned');
+    });
+
     it('lets only an oauth provider connect', () => {
         for (const provider of INTEGRATION_PROVIDERS) {
             expect(canConnect(provider)).toBe(provider.availability === 'oauth');

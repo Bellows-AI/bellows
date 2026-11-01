@@ -1,6 +1,6 @@
 import type { Sql, TransactionSql } from 'postgres';
 import { type AttachGrantConnection, attachInTx, attachRefusalOf } from '../db/connection-grants.js';
-import type { AuthorizationFailure, CompleteFailure } from './authorization-types.js';
+import { type AuthorizationFailure, type CompleteFailure, INTEGRATIONS_RETURN_PATH } from './authorization-types.js';
 
 /**
  * SQL for `integration_authorization` (097). Every transition is one guarded statement, so two racers, a late
@@ -181,7 +181,7 @@ export async function classifyUnconsumed(
     `;
     return rows[0]
         ? { failure: 'replayed', returnTo: rows[0].return_to }
-        : { failure: 'state-mismatch', returnTo: '/' };
+        : { failure: 'state-mismatch', returnTo: INTEGRATIONS_RETURN_PATH };
 }
 
 /**

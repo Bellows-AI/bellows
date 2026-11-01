@@ -8,6 +8,7 @@ import { BatchNewPage } from './pages/BatchNewPage.js';
 import { DashboardPage } from './pages/DashboardPage.js';
 import { OnboardingPage } from './pages/OnboardingPage.js';
 import { SettingsExecutorsPage } from './pages/SettingsExecutorsPage.js';
+import { SettingsIntegrationsCatalogPage } from './pages/SettingsIntegrationsCatalogPage.js';
 import { SettingsIntegrationDetailPage } from './pages/SettingsIntegrationDetailPage.js';
 import { SettingsIntegrationsPage } from './pages/SettingsIntegrationsPage.js';
 import { SettingsLayout } from './pages/SettingsLayout.js';
@@ -57,6 +58,7 @@ export const appRoutes: RouteObject[] = createRoutesFromElements(
                 <Route path="workspace" element={<SettingsWorkspacePage />} />
                 <Route path="integrations">
                     <Route index element={<SettingsIntegrationsPage />} />
+                    <Route path="available" element={<SettingsIntegrationsCatalogPage />} />
                     <Route path=":provider/:connectionId" element={<SettingsIntegrationDetailPage />} />
                 </Route>
                 <Route path="repos" element={<SettingsRepositoriesPage />} />
